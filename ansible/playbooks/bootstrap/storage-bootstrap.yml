@@ -71,7 +71,7 @@
 
     - name: Detect existing ZFS datasets for each configured pool
       ansible.builtin.command: "zfs list -H -o name -r {{ item.name }}"
-      loop: "{{ zfs_pools }}"
+      loop: "{{ nas_storage_zfs_pools }}"
       loop_control:
         label: "{{ item.name }}"
       register: existing_datasets
@@ -103,7 +103,7 @@
     - name: Check if bind sources exist
       ansible.builtin.stat:
         path: "{{ item.bind_source }}"
-      loop: "{{ nfs_exports }}"
+      loop: "{{ nas_storage_exports }}"
       loop_control:
         label: "{{ item.bind_source | default('N/A') }}"
       register: bind_sources
@@ -145,7 +145,7 @@
       ansible.builtin.set_fact:
         pools_to_create: >-
           {{
-            zfs_pools | map(attribute='name') | list |
+            nas_storage_zfs_pools | map(attribute='name') | list |
             difference(existing_pool_list | default([]))
           }}
 
@@ -153,7 +153,7 @@
       ansible.builtin.set_fact:
         datasets_to_create: >-
           {%- set result = [] -%}
-          {%- for pool in zfs_pools -%}
+          {%- for pool in nas_storage_zfs_pools -%}
             {%- for dataset in pool.datasets -%}
               {%- if dataset.name not in (existing_dataset_map[pool.name] | default([])) -%}
                 {%- set _ = result.append(dataset.name) -%}
@@ -278,7 +278,7 @@
         -o {{ prop }}={{ value }}
         {% endfor %}
         {{ item.1.name }}
-      loop: "{{ zfs_pools | subelements('datasets') }}"
+      loop: "{{ nas_storage_zfs_pools | subelements('datasets') }}"
       loop_control:
         label: "{{ item.1.name }}"
       when:
@@ -295,7 +295,7 @@
         msg: >-
           SKIPPED (encrypted — create manually with keyformat/keylocation per
           docs/32-zfs-encryption.md, then re-run): {{ item.1.name }}
-      loop: "{{ zfs_pools | subelements('datasets') }}"
+      loop: "{{ nas_storage_zfs_pools | subelements('datasets') }}"
       loop_control:
         label: "{{ item.1.name }}"
       when:
@@ -349,7 +349,7 @@
         owner: "{{ item.owner | default('root') }}"
         group: "{{ item.group | default('root') }}"
         mode: "{{ item.mode | default('0755') }}"
-      loop: "{{ nfs_exports }}"
+      loop: "{{ nas_storage_exports }}"
       loop_control:
         label: "{{ item.path }}"
 
@@ -360,7 +360,7 @@
         owner: "{{ item.owner | default('root') }}"
         group: "{{ item.group | default('root') }}"
         mode: "{{ item.mode | default('0755') }}"
-      loop: "{{ nfs_exports }}"
+      loop: "{{ nas_storage_exports }}"
       loop_control:
         label: "{{ item.bind_source | default('N/A') }}"
       when: item.bind_source is defined
@@ -393,26 +393,26 @@
   tasks:
     - name: Run NFS configuration
       ansible.builtin.include_role:
-        name: nas_storage
+        name: weisssrv.infra.nas_storage
         tasks_from: nfs.yml
 
     - name: Run MergerFS configuration
       ansible.builtin.include_role:
-        name: nas_storage
+        name: weisssrv.infra.nas_storage
         tasks_from: mergerfs.yml
-      when: mergerfs_mounts is defined
+      when: nas_storage_mergerfs_mounts is defined
 
     - name: Run Samba configuration
       ansible.builtin.include_role:
-        name: nas_storage
+        name: weisssrv.infra.nas_storage
         tasks_from: samba.yml
-      when: samba_shares is defined
+      when: nas_storage_samba_shares is defined
 
     - name: Run media-mover configuration
       ansible.builtin.include_role:
-        name: nas_storage
+        name: weisssrv.infra.nas_storage
         tasks_from: media_mover.yml
-      when: media_mover_enabled | default(false)
+      when: nas_storage_media_mover_enabled | default(false)
 
 - name: Phase 7 - Verification
   hosts: pve-nas-01

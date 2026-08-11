@@ -35,7 +35,7 @@ recordsize: 1M (tank/media), 128K (tank/share, default)
 - `tank/proxmox` - Proxmox VM backup target (mounted `/mnt/tank/proxmox`)
 - `tank/pve` - Ephemeral Proxmox VM/LXC images (mounted `/mnt/tank/pve`)
 - `tank/backups` - General backup target (encryption root; replicated to `archive`)
-- `tank/nextcloud-data` - Nextcloud data (planned app; encryption root, replicated)
+- `tank/nextcloud-data` - Nextcloud data (encryption root, replicated)
 - `tank/immich-data` - Immich data (encryption root, replicated). Holds the
   `tank/immich-data/disk` zvol — the 2 TB **sparse** photo library for the Immich
   VM (.157), ext4, mounted `/mnt/immich-data` on the guest. Inherits the parent's
@@ -187,11 +187,11 @@ zpool list -v archive
 
 **Drive mapping** (source of truth for which physical drive backs each
 `archive-N` raidz1 member; the pool is built directly on the by-id devices,
-feeds `smartd_archive_disks`, and guides resilver ops):
+feeds `nas_storage_smartd_archive_disks`, and guides resilver ops):
 
 | Archive member | Physical drive (by-id) | Notes |
 |----------------|------------------------|-------|
-| archive-1 | ata-SEAGATE_ST6000NM0024_Z4D2BDD2 | Replaced Z4D1NC3Z 2026-06-06 |
+| archive-1 | ata-SEAGATE_ST6000NM0024_Z4D2BDD2 | |
 | archive-2 | ata-ST6000NM0024-1HT17Z_Z4D1JCL6 | |
 | archive-3 | ata-ST6000NM0024-1HT17Z_Z4D1RQSM | |
 | archive-4 | ata-ST6000NM0024-1HT17Z_Z4D1JQBA | |
@@ -364,7 +364,7 @@ Regular scrubs verify data integrity and repair any errors.
 
 - **NAS pools (tank/ssd/nvme/archive)**: the `nas_storage` role enables the
   zfsutils-linux `zfs-scrub-<schedule>@<pool>.timer` template units per pool
-  (`zfs_scrub_schedule`, default `monthly`; gated on `zfs_scrub_enabled`).
+  (`nas_storage_zfs_scrub_schedule`, default `monthly`; gated on `nas_storage_zfs_scrub_enabled`).
   The `archive` pool's timer is toggled by `archive-backupctl plug/unplug`
   so an exported pool is never scrub-targeted.
 - **Compute `local-ssd` pools (5 hosts)**: deliberately rely on the
@@ -479,11 +479,16 @@ sudo zfs get compression,compressratio
 
 The compute Proxmox hosts carry a group-wide **8 GiB ARC cap**
 (`zfs_arc_cap_max_bytes` in `group_vars/proxmox.yml`, applied by the
-`zfs_arc_cap` role on every non-NAS host). On the 14-15 GiB opt/laptop hosts it
-is a harmless ceiling; on the **62 GiB `pve-prec-01`** it is the protective cap
-that keeps the ARC from colliding with VM 207's VFIO-pinned, non-swappable GPU
-RAM — see [docs/43](43-gpu-passthrough.md). (The NAS's separate 4 GiB cap is
-below, under *NAS memory management*.)
+`zfs_arc_cap` role on every non-NAS host). That default is sized for the
+**62 GiB `pve-prec-01`**, where it keeps the ARC from colliding with VM 207's
+VFIO-pinned, non-swappable GPU RAM — see [docs/43](43-gpu-passthrough.md).
+
+The four 14-15 GiB opt/laptop hosts each **override it to 2 GiB** in their
+`host_vars`: on a host that small an 8 GiB ceiling is not self-limiting (one was
+measured at 4.3 GiB ARC with 2 GiB available and 1.7 GiB swapped), so the cap has
+to be set below what the host can actually spare.
+
+The NAS carries its own, larger cap — see *NAS memory management* below.
 
 Monitor ARC usage:
 
@@ -564,7 +569,7 @@ are Ansible-managed by the `proxmox_backup` role (config in
 with `vers=4.2,xprtsec=tls`; migrating the legacy IP-based entry is a
 one-time supervised step (outside a backup window:
 `pvesh delete /storage/tank-proxmox` — config only, data untouched — then
-re-run the role). See `ansible/roles/proxmox_backup/README.md`.
+re-run the role). See weisssrv-lib `ansible_collections/weisssrv/infra/roles/proxmox_backup/README.md`.
 
 ## Ansible Management
 
@@ -599,17 +604,21 @@ sudo zpool status tank
 
 ### NAS memory management (ARC cap, swappiness, swap reset)
 
-pve-nas-01 has ~124 GiB usable and commits ~84 GiB of guest maximums plus a
-16 GiB ARC ceiling, leaving roughly 20 GiB spare with every guest at its maximum.
+pve-nas-01 has ~124 GiB usable. Guest maximums total ~84 GiB of VMs plus the two
+LXC ceilings (plex and immich-ml at `proxmox_lxc_memory: 8192` each), and the ARC ceiling
+adds 16 GiB — so worst case, with every guest pinned at its cap, the commit is
+~120 GiB of ~124. Both LXCs peak well under 1 GiB in practice, so the realistic
+spare is ~20 GiB; the ceilings are cgroup caps, which cost nothing until
+something genuinely asks for the memory.
 It is not memory-tight, and the five levers below are what keep it that way —
 most of them are **guards** rather than fixes: they cost nothing while there is
 headroom, and they are what stops a new workload silently re-creating the swap
-ratchet this host suffered in July 2026.
+ratchet this host is prone to.
 
 The first three live in `host_vars/pve-nas-01.yml`, the fourth in `hosts.yml`,
 the fifth in the GitLab runner config:
 
-1. **ARC cap `zfs_arc_max_bytes` = `17179869184` (16 GiB).** The `nas_storage`
+1. **ARC cap `nas_storage_zfs_arc_max_bytes` = `17179869184` (16 GiB).** The `nas_storage`
    role renders `/etc/modprobe.d/zfs.conf` and notifies an `update-initramfs`
    handler (the pools import from the initramfs at early boot, so a bare
    modprobe.d write would only apply on the next module reload). The cap is a
@@ -628,7 +637,7 @@ the fifth in the GitLab runner config:
    1 it reclaims from ARC — instantly reclaimable — and only swaps under genuine
    near-OOM pressure. Free RAM slows that ratchet but does not remove it, and
    swapping buys this host nothing it does not already have.
-3. **Daily swap reset** (`nas_swap_clean_enabled`). swappiness=1 stops the
+3. **Daily swap reset** (`nas_storage_swap_clean_enabled`). swappiness=1 stops the
    *opportunistic* parking, but a full host still swaps under real peak events
    (deploys/backups/ML) and that swap never self-clears. A `swap-clean.timer`
    (nightly) runs `/usr/local/sbin/swap-clean.sh`, which shrinks ARC for headroom,
@@ -637,7 +646,7 @@ the fifth in the GitLab runner config:
    unchanged now that swap is `/dev/mapper/cryptswap` (`encrypted_swap`, see the
    At Rest table below and docs/42); its pre-flight skips the cycle while the
    mapper is still pending on a host that has not yet rebooted into it.
-   **Recovery escalation** (`nas_swap_clean_stop_guests`): if the ARC-shrink
+   **Recovery escalation** (`nas_storage_swap_clean_stop_guests`): if the ARC-shrink
    headroom alone can't cover the swap, rather than just aborting the reset
    *gracefully shuts down* heavy guests from an ordered candidate list
    (`vmid:name:timeout` — immich → GitLab → nextcloud), **only as many as needed**
@@ -672,13 +681,12 @@ the fifth in the GitLab runner config:
    pure capacity it is the least-loaded machine in the fleet (20 cores at ~9 %
    load, against 4-core opt nodes at 58–68 %).
    **The taint is the lever**: to tighten this, raise it to `NoSchedule` rather
-   than adding an affinity exclusion, so the decision lives in one place. History
-   worth knowing: a 2026-07-20 forensic sweep found CI molecule/DinD builds
-   spilling onto this node — 15 job pods, peak 7 concurrent, ~1.5–2.5 GB each —
-   to be the **#1 driver** of that day's swap ratchet, back when the host was
-   over-committed. Including the agent's 6 cores makes the CI-eligible pool
-   25 cores, which is what `concurrent: 12` and the matching ResourceQuota are
-   sized against.
+   than adding an affinity exclusion, so the decision lives in one place. Spilled
+   molecule/DinD jobs are memory-heavy (~1.5–2.5 GB each, up to 7 concurrent) and
+   were the main driver of swap pressure back when this host was over-committed,
+   so keep an eye on the mix if the taint is ever relaxed. Including the agent's
+   6 cores makes the CI-eligible pool 25 cores, which is what `concurrent: 12`
+   and the matching ResourceQuota are sized against.
 
 ```bash
 # View ARC size + hit ratio
@@ -693,7 +701,7 @@ sudo /usr/local/sbin/swap-clean.sh
 # Timer status
 systemctl status swap-clean.timer; journalctl -t swap-clean --since today
 
-# Permanent changes: edit host_vars (zfs_arc_max_bytes / nic_tuning_vm_swappiness
+# Permanent changes: edit host_vars (nas_storage_zfs_arc_max_bytes / nic_tuning_vm_swappiness
 # / nas_swap_clean_*) and redeploy
 task storage:deploy
 ```
@@ -731,7 +739,7 @@ the posture is explicit rather than assumed.
 
 ### At Rest
 
-> **Current state (post-rollout, 2026-06).** `tank` and `ssd` use ZFS-native
+> **Encryption.** `tank` and `ssd` use ZFS-native
 > dataset-level encryption with boot-time passphrase unlock via 1Password Connect
 > (`zfs_encryption` role; model and runbooks in
 > [`docs/32-zfs-encryption.md`](32-zfs-encryption.md)). Pool roots stay plaintext;
@@ -752,7 +760,7 @@ the posture is explicit rather than assumed.
 | Compute-node `local-ssd` ZFS pools (5 hosts) | No | Intentionally plaintext — see `docs/32-zfs-encryption.md` for the cold-boot rationale. |
 | App PVCs — zvol-backed (Authentik PG, Mealie PG, GitLab repos, Prometheus, Loki) | Yes | Each is a zvol under `ssd/appdata/*` → inherits the encrypted parent. |
 | App PVCs — NFS-backed (Grafana) | Yes | Grafana SQLite DB on an NFS PV (`pve-nas-01.esweiss.com:/appdata/grafana`, i.e. `ssd/appdata/grafana`) — not a zvol, but the export lives on the encrypted `ssd/appdata` dataset. |
-| Proxmox VM disks | Mixed | App-data zvols under `ssd/appdata/*` are encrypted; VM root disks on `local-ssd`, `tank/pve`, and the `ssd` pool root are not. |
+| Proxmox VM disks | Mixed | App-data zvols under `ssd/appdata/*` are encrypted, and the NAS app-VM root disks land on `ssd/pve`, which **is** an encryption root (GitLab, Nextcloud, Immich — docs/32, docs/35, docs/36). Guest disks on `local-ssd` (every k3s VM) and `tank/pve` (ephemeral images) are plaintext by design. **The `ssd` Proxmox storage entry that points at `ssd/pve` is not codified** — `proxmox_backup_storage` declares only `tank-proxmox` — so verify `storage.cfg`'s dataset for the `ssd` id after any host rebuild, or the roots silently land plaintext. Tracked in docs/16. |
 | K3s Secrets in etcd | Yes | `secrets-encryption: true` (`reencrypt_finished` confirmed). |
 | 1Password Connect on-disk cache | Yes | Connect server's encrypted SQLite (AES via bootstrap creds). |
 | 1Password vault (cloud + Connect sync source) | Yes | Vendor end-to-end (SRP + secret key). |
@@ -776,13 +784,13 @@ the posture is explicit rather than assumed.
 | Pod-to-pod (CNI) | Yes (cross-node) | flannel-wireguard-native, UDP/51820, WireGuard (Curve25519 + ChaCha20-Poly1305). Same-node pod-to-pod stays on the local bridge unencrypted. |
 | ESO → 1Password Connect | Yes (cross-node) | Plain HTTP at L7; cross-node hops ride flannel-wireguard. Same-node hop on `cni0` is unencrypted. |
 | Alloy → Loki ingestion | Yes (cross-node) | Plain HTTP at L7; cross-node hops ride flannel-wireguard. Same-node hop on `cni0` is unencrypted. |
-| Host Alloy → Loki | Yes | `alloy_host_loki_url` defaults to `https://loki.esweiss.com/loki/api/v1/push` (Traefik IngressRoute, lan-tailscale-only). The plain NodePort `:31100` is kept as an emergency fallback. |
+| Host Alloy → Loki | Yes | `alloy_host_loki_url` is set to `https://loki.esweiss.com/loki/api/v1/push` (Traefik IngressRoute, lan-tailscale-only). The plaintext `:31100` NodePort is not in git — it is applied by hand only for the duration of an ingress outage and deleted afterwards (docs/12 § Loki break-glass NodePort). |
 | AdGuard sync (dns-01 → dns-02) | Yes | adguardhome-sync URLs target the Traefik-fronted `dns-{01,02}.esweiss.com` hostnames; TLS terminated by Traefik with the wildcard cert. |
 | Local clients → smtp-relay | Yes | `smtp_tls_security_level: encrypt`. |
 | smtp-relay → Gmail | Yes | `smtp_tls_security_level: secure` (encrypts AND verifies Gmail's certificate against the system CA bundle). |
 | Unbound → upstream resolvers | Yes | DoT with `tls-cert-bundle`. |
 | LAN clients → AdGuard (port 53) | Partial | Plain UDP/TCP 53; DoT exposed but stub resolvers rarely use it. |
-| NFS exports | TLS for k3s + Proxmox backup target; one plaintext exception | NFSv4 over kernel-TLS via `tlshd` (`nfs_tls` role, `nfs_tls_enabled: true` on every k3s agent and all six Proxmox hosts). The k3s client lines of `/export/{appdata,share,media}` **require TLS** (`xprtsec=tls` — plaintext rejected); the k3s PVs *mount* with `xprtsec=tls`, **by hostname** (`pve-nas-01.esweiss.com`, so the `*.esweiss.com` cert verifies — an IP mount fails the handshake). `xprtsec` is per-client, so the require-TLS k3s lines coexist with the one documented plaintext exception: HAOS (.154) on `/export/media` — its Supervisor hardcodes NFS mount options and the appliance has no `tlshd`, so it can never request TLS (see docs/24). The Proxmox `tank-proxmox` backup target is codified as hostname + `xprtsec=tls` via the `proxmox_backup` role (one-time migration of the legacy IP entry is a supervised post-merge step). See `ansible/roles/nfs_tls/README.md`. |
+| NFS exports | TLS for k3s + Proxmox backup target; one plaintext exception | NFSv4 over kernel-TLS via `tlshd` (`nfs_tls` role, `nfs_tls_enabled: true` on every k3s agent and all six Proxmox hosts). The k3s client lines of `/export/{appdata,share,media}` **require TLS** (`xprtsec=tls` — plaintext rejected); the k3s PVs *mount* with `xprtsec=tls`, **by hostname** (`pve-nas-01.esweiss.com`, so the `*.esweiss.com` cert verifies — an IP mount fails the handshake). `xprtsec` is per-client, so the require-TLS k3s lines coexist with the one documented plaintext exception: HAOS (.154) on `/export/media` — its Supervisor hardcodes NFS mount options and the appliance has no `tlshd`, so it can never request TLS (see docs/24). The Proxmox `tank-proxmox` backup target mounts with hostname + `xprtsec=tls` via the `proxmox_backup` role, though its export does not yet *require* TLS (docs/16). See weisssrv-lib `ansible_collections/weisssrv/infra/roles/nfs_tls/README.md`. |
 | Samba | Yes | `smb encrypt = required` + `server min protocol = SMB3_00` in smb.conf — every SMB session is encrypted. |
 | Tailscale (admin remote access) | Yes | WireGuard. |
 | K3s API server | Yes | TLS, kube-vip + standard k3s API certs. |
@@ -822,7 +830,7 @@ in `docs/32-zfs-encryption.md`. Scope (post-rollout):
   wireguard-native` in `group_vars/k3s.yml`, rendered as
   `flannel-backend:` in `/etc/rancher/k3s/config.yaml`; encrypts every
   cross-node pod hop. Cost ~5% throughput; matrix updated above.
-- **AdGuard sync over HTTPS** — `adguardhome_sync_origin/replica`
+- **AdGuard sync over HTTPS** — `adguard_sync_origin/replica`
   target the Traefik-fronted `dns-{01,02}.esweiss.com` hostnames.
 
 Earlier guidance was to skip ZFS-native encryption on `tank`/`ssd`. That
@@ -833,7 +841,7 @@ recovery. For a single-tenant homelab on a LAN-trusted network, the
 ~5% throughput cost of a WireGuard CNI is small relative to the
 encryption-at-rest gain on disk theft / RMA exposure.
 
-## References
+## Related documentation
 
 - [OpenZFS Documentation](https://openzfs.github.io/openzfs-docs/)
 - [ZFS Best Practices](https://pthree.org/2012/12/13/zfs-administration-part-ix-copy-on-write/)

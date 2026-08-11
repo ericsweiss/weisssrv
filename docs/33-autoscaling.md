@@ -30,8 +30,8 @@ stays manual — see the last section for why.
   **recommend-only VPA** (`updateMode: Off`, `configs/vpa/platform.yaml`) rather
   than an Auto one. The durability fix — raise it to 2 replicas and add a memory
   limit via a k3s `HelmChartConfig` override — is a k3s/Ansible change tracked in
-  [docs/16-next-steps.md](./16-next-steps.md) (Deferred from the 2026 comprehensive
-  review).
+  [docs/16-next-steps.md](./16-next-steps.md) § Deferred refactors and durability
+  work.
 - **Horizontal autoscaling for the stateless, HA-fronting tiers.** Prefer each
   chart's own autoscaling toggle over a standalone HPA — so the chart omits
   static `.spec.replicas` and nothing re-asserts a replica count against the HPA
@@ -117,7 +117,7 @@ VPAs keep their default `controlledValues: RequestsAndLimits`. A VPA scales an
 request:limit ratio, but never *adds* a limit that is not there (verified on the
 runner managers: no CPU limit declared, none imposed live), so memory limits keep
 tracking the recommendation while CPU stays limit-free. "Live pod spec" is not
-the same as "rendered manifest" — see [Live drift](#live-drift-git-says-no-cpu-limit-the-cluster-disagrees)
+the same as "rendered manifest" — see [Live drift](#live-drift-a-limit-git-does-not-declare)
 below. The subtlety:
 "rendered" includes **chart-default limits a Helm chart injects even when the
 values file sets none** — node-exporter's chart still rendered a ~110m CPU limit,
@@ -149,76 +149,64 @@ OOMKills and left authentik-server at request == limit == 878Mi. It sees only
 pod specs in the kustomize corpus (a chart-rendered spec is invisible to it), so
 `VPARecommendationExceedsLimit` is the runtime backstop for the rest.
 
-### Live drift: git says no CPU limit, the cluster disagrees
+### Live drift: a limit git does not declare
 
-Those checks prove the policy holds **in git**. They cannot prove it holds in the
-cluster, and for months it did not: all four Flux controllers and the gitlab-agent
-Deployment ran with a `limits.cpu` that no manifest declares. Cause in both cases
-is server-side apply — the pre-migration bootstrap field manager (`flux` for
-flux-system, `helm` for gitlab-agent, both dated 2026-04-16) still **co-owns**
-`f:resources.f:limits.f:cpu`, and a controller dropping a field from its *own*
-fieldset cannot delete a field another manager owns. The removal patch at
-`kubernetes/clusters/weisssrv/flux-system/kustomization.yaml` therefore rendered
-correctly and changed nothing live. The VPA then made it worse rather than
-better: with `RequestsAndLimits` it scaled the *surviving* limit down in lockstep
-with each request revision, so helm-controller ended up at a 250m limit against a
-197m peak (79%) with measurable CFS throttling on the GitOps engine itself.
+The checks above prove the policy holds **in git**; they cannot prove it holds in
+the cluster. Server-side apply makes that a real gap: if a retired field manager
+still co-owns `f:resources.f:limits.f:cpu`, a controller dropping the field from
+its *own* fieldset cannot delete it, so a removal patch renders correctly and
+changes nothing live. A mutating VPA then compounds it — with
+`RequestsAndLimits` it scales the surviving limit down in lockstep with each
+request revision, which is how a control-plane pod ends up CFS-throttled against
+a limit no manifest declares.
 
-`task flux:verify` now runs `scripts/check-live-cpu-limits.py` over live pods to
-catch exactly this. It **warns** there rather than failing (`flux:verify` is the
-post-deploy/DR gate and must be able to go green on a healthy cluster; it also
-runs the secret-ownership check alongside, and a stop-on-first-error would have
-masked one behind the other). `task flux:verify-cpu-limits` runs the same check
-standalone and exits non-zero — that is the one to use when confirming the fix.
+**Detector**: `scripts/check-live-cpu-limits.py`. `task flux:verify` runs it over
+live pods and **warns** (that task is the post-deploy/DR gate and must be able to
+go green on a healthy cluster; it also runs the secret-ownership check, and
+stop-on-first-error would mask one behind the other). `task flux:verify-cpu-limits`
+runs the same check standalone and exits non-zero — use that when confirming a fix.
 
-Remediation is a one-time field release per workload (it must be done once;
-nothing in the reconcile loop can do it):
+**Fix**: release the field once, per workload. Nothing in the reconcile loop can
+do it.
 
 ```bash
-# Inspect the owners first — the retired manager is the one listing f:cpu:
-kubectl -n flux-system get deploy helm-controller --show-managed-fields -o json \
+# Identify the stale owner — it is the manager whose fieldset lists f:cpu:
+kubectl -n <ns> get deploy <name> --show-managed-fields -o json \
   | jq '.metadata.managedFields[] | {manager, resources: (.fieldsV1 | .. | .["f:resources"]? // empty)}'
 
-# Release it (repeat for kustomize-, source-, notification-controller):
-kubectl -n flux-system patch deploy helm-controller --type=json \
-  -p '[{"op":"remove","path":"/spec/template/spec/containers/0/resources/limits/cpu"}]'
-
-# gitlab-agent carries the same drift from the pre-Flux `helm install`:
-kubectl -n gitlab-agent patch deploy weisssrv-k3s-gitlab-agent-v2 --type=json \
+# Release it:
+kubectl -n <ns> patch deploy <name> --type=json \
   -p '[{"op":"remove","path":"/spec/template/spec/containers/0/resources/limits/cpu"}]'
 
 kubectl get pods -A -o json | python3 scripts/check-live-cpu-limits.py   # must exit 0
 ```
 
-A `kubectl patch` on a Flux-managed object is normally forbidden here; this is
-the documented exception, because the field is not one Flux owns — releasing it
-is what lets Flux's rendered state become the effective state.
+A `kubectl patch` on a Flux-managed object is normally forbidden here. This is
+the documented exception: the field is not one Flux owns, and releasing it is
+what lets Flux's rendered state become the effective state.
 
 ## Update-mode tiers
 
 | Mode | Used for | Behavior |
 |---|---|---|
-| `Auto` | exporters (proxmox, blackbox, plex, redis, exportarr, zfs, adguard, unbound, dcgm), metallb-controller, cert-manager (controller + cainjector), ESO, Connect, alloy, node-exporter, kube-state-metrics, kps operator | updater evicts to apply new requests (brief restart) |
-| `Initial` | **Traefik** (moved from Auto — see below), metallb-speaker + cert-manager-webhook (host-network / admission paths), apps (downloads incl. the gluetun sidecars caught by wildcard `*` policies, recipes incl. bar-assistant redis/meilisearch/salt-rim, authentik server/worker, runners, agent), external-dns (single replica, no PDB), tailscale-operator, Flux controllers, Grafana | new requests apply only when the pod restarts naturally — no surprise evictions mid-download or mid-reconcile |
+| `Auto` | exporters (proxmox, blackbox, plex, redis, exportarr, zfs, adguard, unbound, dcgm), cert-manager (controller + cainjector), ESO, Connect, alloy, node-exporter, kube-state-metrics, kps operator | updater evicts to apply new requests (brief restart) |
+| `Initial` | **Traefik** (moved from Auto — see below), the MetalLB controller and speaker + cert-manager-webhook (host-network / admission paths), every app VPA except the three `Off` ones below — downloads (incl. the gluetun sidecars caught by wildcard `*` policies), recipes, authentik server + worker, homarr, hermes, registry-cache, tailnet-dns, wg-easy, runners, agent, external-dns (single replica, no PDB), tailscale-operator, Flux controllers, Grafana | new requests apply only when the pod restarts naturally — no surprise evictions mid-download or mid-reconcile. The flip side: a workload that never restarts can sit under-sized for months, which is why `VPARecommendationExceedsLimit` covers this tier |
 | `Off` | Prometheus, Alertmanager, Loki, both PostgreSQLs (the Prometheus/Alertmanager VPAs target the operator CRs, not the StatefulSets — see docs/31), **Hindsight**, coredns/metrics-server/kube-vip (k3s add-ons) | recommendation-only; requests stay hand-tuned in the HelmRelease/manifest (zvol-pinned, eviction-sensitive). Hindsight stays `Off` because its llama container is GPU-pinned (`nvidia.com/gpu`) and its memory is VRAM/model-dictated, not usage-history driven (docs/43) |
 
-**Traefik is `Initial`, not `Auto`** (changed after the ingress-churn
-incident): Traefik is the ingress data path for every service, including the
-container registry. Under CI-burst load the Auto updater evicted Traefik to
-apply a new memory request, and each replacement pod's startup readiness gap
-surfaced as transient 502s on `registry.git.ericsweiss.com` (ImagePullBackOff
-in CI), `git.esweiss.com` hangs, and Unhealthy events — a PDB doesn't help
-because the disruption is the replacement pod's own readiness gap. `Initial`
-still right-sizes on natural restarts (chart upgrades, node drains) without
-the updater ever evicting the data path. Rationale comment lives in
-`configs/vpa/platform.yaml`.
+**Traefik is `Initial`, not `Auto`.** Traefik is the ingress data path for every
+service, including the container registry. Under CI-burst load the `Auto` updater
+evicts it to apply a new memory request, and each replacement pod's startup
+readiness gap surfaces as transient 502s (`registry.git.ericsweiss.com`,
+`git.esweiss.com`). A PDB does not help — the disruption *is* the replacement
+pod's own readiness gap. `Initial` still right-sizes on natural restarts (chart
+upgrades, node drains) without the updater ever evicting the data path.
 
-The rows above are representative, not exhaustive — the canonical coverage
-lives in the VPA policy files under `kubernetes/infrastructure/configs/vpa/`
-(platform + Flux; `platform.yaml`, `flux-system.yaml`),
+**The tier table is representative, not exhaustive.** The live set is dozens of
+VPAs across many namespaces. Canonical coverage lives in the policy files —
+`kubernetes/infrastructure/configs/vpa/{platform,flux-system}.yaml`,
 `kubernetes/infrastructure/observability/vpa.yaml`, and
-`kubernetes/apps/<app>/vpa.yaml`. Audit live coverage with
-`kubectl get vpa -A`.
+`kubernetes/apps/<app>/vpa.yaml` — and `kubectl get vpa -A` is the only reliable
+audit of what is live.
 
 Every policy carries `minAllowed`/`maxAllowed` caps so a recommendation
 can't starve or balloon a workload. A per-container `mode: "Off"` is the one
@@ -274,7 +262,10 @@ short burst needs sustained pressure before a pod is added.
 kube-state-metrics exports the VPA recommendations via its
 `customResourceState` config (kube-prometheus-stack `release.yaml`) as
 `vpa_recommendation_target` and `vpa_recommendation_uncappedtarget` — the
-capped and uncapped recommendation per container/resource. The
+capped and uncapped recommendation per container/resource. The alerts that
+consume them live under `kubernetes/infrastructure/observability/rules/`
+(`VPARecommendation*` in `infrastructure.yaml`, `ContainerOOMKilled` in
+`kubernetes-resources.yaml`). The
 **`VPARecommendationCapped`** alert fires when `uncappedtarget > target` for
 24h: the recommendation has been clamped by `maxAllowed` for a full day, i.e.
 the workload has outgrown its ceiling (a brief clamp during a burst is
@@ -308,13 +299,14 @@ recorded target sat at 684Mi against a 512Mi limit for weeks and then OOMKilled
 the SSO database. Two alerts now close it:
 
 - **`VPARecommendationExceedsLimit`** — the VPA's memory target has been above
-  the container's configured memory limit for 6h. Scoped to `Off`-tier and
-  `controlledValues: RequestsOnly` VPAs (kube-state-metrics exports both through
-  the `update_mode` / `controlled_values` labels), because those are the ones
-  where nothing else ever moves the limit; a mutating VPA on the default
-  `RequestsAndLimits` re-scales its own limit at the next admission and would
-  otherwise page for hours on a condition it fixes itself. Response: apply the
-  recommendation in git.
+  the container's configured memory limit for 6h. Scoped to `Off`- and
+  `Initial`-tier VPAs and to `controlledValues: RequestsOnly`
+  (kube-state-metrics exports both through the `update_mode` /
+  `controlled_values` labels). `Auto` is excluded because a mutating VPA on the
+  default `RequestsAndLimits` re-scales its own limit at the next admission and
+  would otherwise page for hours on a condition it fixes itself. `Initial` is
+  **included**: "the next admission fixes it" can be months away on a workload
+  that never restarts. Response: apply the recommendation in git.
   (Distinct from `VPARecommendationCapped`, which is about the *policy's*
   `maxAllowed` clamping the recommendation, not the *container's* limit.)
 - **`ContainerOOMKilled`** — the kill itself. Upstream's rules only catch a
@@ -325,11 +317,11 @@ Both are unit-tested in `scripts/prometheus-rule-tests/memory-sizing.test.yaml`.
 
 ## Hand-tuned request baselines
 
-Set from observed working sets (2026-06). The `Off`-tier (recommendation-only)
+Set from observed working sets. The `Off`-tier (recommendation-only)
 workloads keep these hand-tuned numbers permanently: Prometheus 2Gi request / 4Gi
-limit at 365d retention; Loki 512Mi/1Gi; authentik-postgresql 640Mi/1Gi (raised
-2026-07 from the recorded 684Mi target after the 512Mi limit OOMKilled it —
-the worked example of applying an `Off`-tier recommendation). The `Initial`-tier workloads start from
+limit at 365d retention; Loki 640Mi/1Gi; authentik-postgresql 640Mi/1Gi (raised
+from a 512Mi limit that OOMKilled it — the worked example of applying an
+`Off`-tier recommendation). The `Initial`-tier workloads start from
 these baselines but let the VPA right-size them on the next natural restart:
 Grafana 512Mi/1Gi; Flux controllers 256Mi requests (patched in
 `kubernetes/clusters/weisssrv/flux-system/kustomization.yaml`).
@@ -338,11 +330,17 @@ Grafana 512Mi/1Gi; Flux controllers 256Mi requests (patched in
 
 - VM allocations are inventory-pinned (`hosts.yml`); there is no API-driven
   node autoscaler and adding one isn't worth it for 6 fixed hosts.
-- Headroom (`node_memory_MemAvailable_bytes`, 2026-07 with pve-laptop-01 out of
-  the fold for hardware work, so its guests are running elsewhere): pve-nas-01
-  12.4G, pve-prec-01 13.9G, pve-opt-01 5.1G, pve-opt-02 5.6G, pve-opt-03 5.8G.
-  The three opt nodes are the tight hosts — grow agent VMs on pve-nas-01 or
-  pve-prec-01 first if k8s requests start failing to schedule. Re-measure before
-  acting: the split moves several GiB whenever a host leaves the fold.
-- The 2026-06-11 laptop agent memory-wedge was unbounded pod memory, not VM
-  sizing; VPA + request coverage is the fix, not more RAM.
+- **The three opt nodes are the tight hosts.** Grow agent VMs on pve-nas-01 or
+  pve-prec-01 first if k8s requests start failing to schedule. Absolute headroom
+  numbers are deliberately not recorded here — they move by several GiB whenever
+  a host leaves or rejoins the fold. Measure before acting:
+  `node_memory_MemAvailable_bytes` per host, with every host in the fold.
+- An agent memory wedge is almost always unbounded pod memory rather than VM
+  sizing; VPA plus request coverage is the fix, not more RAM.
+
+## Related documentation
+
+- [docs/31-observability.md](31-observability.md) — metrics, alerts and the VPA/HPA dashboards
+- [docs/29-flux-operations.md](29-flux-operations.md) — how these manifests reconcile
+- [docs/43-gpu-passthrough.md](43-gpu-passthrough.md) — why the GPU workloads are VPA-exempt
+- [docs/06-zfs.md](06-zfs.md) — the NAS memory budget these sizings live inside

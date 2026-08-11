@@ -6,7 +6,6 @@ apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
 metadata:
   name: homarr
-  namespace: homarr
 spec:
   targetRef: {apiVersion: apps/v1, kind: Deployment, name: homarr}
   updatePolicy: {updateMode: Initial}

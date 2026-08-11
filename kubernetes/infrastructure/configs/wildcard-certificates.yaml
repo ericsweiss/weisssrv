@@ -7,11 +7,8 @@
 # cert-manager ClusterIssuer (letsencrypt-prod) issues these via DNS-01
 # over Cloudflare. Renewal happens 30 days before expiration.
 #
-# Namespace-specific wildcard certs (e.g., the one in the downloads
-# namespace at kubernetes/apps/download-clients/certificate.yaml or
-# authentik's per-namespace cert at kubernetes/apps/authentik/
-# certificate.yaml) are in addition to these — those serve apps that
-# don't share the `default` namespace TLS secret.
+# Apps outside the `default` namespace carry their own wildcard Certificate,
+# because Traefik reads TLS Secrets only from the IngressRoute's own namespace.
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:

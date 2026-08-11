@@ -1,27 +1,48 @@
 #!/usr/bin/env python3
-"""Generate scripts/hosts.env from ansible/inventories/prod/hosts.yml.
+"""Generate a shell-sourceable host roster (`hosts.env`) from an Ansible inventory.
 
-hosts.yml is the single source of truth for the cluster's host/IP roster. This
-script flattens the groups an operator tool actually needs into a small,
-shell-sourceable (and go-task `dotenv:`-loadable) env file so the roster is
-defined once instead of being hand-copied into the Taskfile, collect-state.sh,
-diagnose-network-issues.sh, and the CI ssh-keyscan list.
+The inventory is the single source of truth for the cluster's host/IP roster.
+This flattens the groups an operator tool actually needs into a small
+shell-sourceable (and go-task `dotenv:`-loadable) env file, so the roster is
+defined once instead of being hand-copied into a Taskfile, ops scripts and a CI
+ssh-keyscan list.
 
-Consumers:
-  - Taskfile.yml           via `dotenv: ['scripts/hosts.env']` — {{.PVE_HOSTS}}
-                           (hostnames) and {{.K3S_SERVERS}} (IPs).
-  - scripts/collect-state.sh          `. hosts.env` — builds its host arrays.
-  - scripts/diagnose-network-issues.sh `. hosts.env` — PVE_IPS + K3S_SERVERS.
-  - .gitlab-ci.yml (.deploy-base)      $ALL_SSH_IPS for the TOFU keyscan.
-  - kubernetes NetworkPolicies (out of this repo's tooling scope) reuse the
-    K3S_SERVERS values as the apiserver egress allowlist — kept in step here.
+WHICH groups become WHICH variables is consumer data, so it lives in an export
+map (YAML), not here:
 
-Precedent: scripts/generate-versions-configmap.py + the flux-versions-sync CI
-drift job. This script is idempotent; the hosts-env-sync CI job fails if the
-committed output differs from what this produces. Run via `task hosts:sync`.
+    output: scripts/hosts.env
+    exports:
+      - key: PVE_HOSTS
+        group: proxmox
+        value: names          # names | ips | ip
+      - key: PVE_IPS
+        group: proxmox
+        value: ips
+      - key: HOME_ASSISTANT_IP
+        group: services
+        host: home            # a single host inside the group
+        value: ip
+      - key: WINDOWS_IP
+        group: windows_vms
+        host: windows
+        value: ip
+        required: false       # empty string instead of an error when absent
+      - key: ALL_SSH_IPS
+        combine: [PVE_IPS, DNS_IPS]   # union of earlier keys, in order
+
+`required` defaults to true: a group that resolves to zero hosts fails loudly
+(renamed/removed in the inventory) instead of emitting an empty roster value.
+A host with no `ansible_host` always fails.
+
+Idempotent — pair it with a CI job that regenerates and diffs the committed
+output.
+
+  generate-hosts-env.py --inventory <hosts.yml> --map <exports.yml>
+                        [--output <hosts.env>] [--regen-command "<cmd>"]
 """
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -30,9 +51,7 @@ try:
 except ImportError:
     sys.exit("PyYAML required: pip install pyyaml")
 
-REPO = Path(__file__).resolve().parent.parent
-HOSTS_YML = REPO / "ansible" / "inventories" / "prod" / "hosts.yml"
-OUT = REPO / "scripts" / "hosts.env"
+VALUE_KINDS = ("names", "ips", "ip")
 
 
 def _group_hosts(data: dict, group: str) -> dict:
@@ -41,132 +60,132 @@ def _group_hosts(data: dict, group: str) -> dict:
     return (children.get(group) or {}).get("hosts") or {}
 
 
-def _ips(data: dict, group: str) -> list[str]:
+def _host_ip(name: str, hostvars: dict | None) -> str:
+    ip = (hostvars or {}).get("ansible_host")
+    if not ip:
+        raise ValueError(f"host {name!r} has no ansible_host")
+    return str(ip)
+
+
+def _resolve(data: dict, spec: dict) -> list[str]:
+    group = spec.get("group")
+    if not group:
+        raise ValueError(f"export {spec.get('key')!r} has no group")
     hosts = _group_hosts(data, group)
-    out: list[str] = []
-    for name, hv in hosts.items():
-        ip = (hv or {}).get("ansible_host")
-        if not ip:
-            raise ValueError(f"host {name!r} in group {group!r} has no ansible_host")
-        out.append(str(ip))
-    return out
+    host = spec.get("host")
+    if host is not None:
+        hostvars = hosts.get(host)
+        if hostvars is None:
+            return []
+        return [host] if spec.get("value") == "names" else [_host_ip(host, hostvars)]
+    if spec.get("value") == "names":
+        return list(hosts.keys())
+    return [_host_ip(name, hv) for name, hv in hosts.items()]
 
 
-def _required_ips(data: dict, group: str) -> list[str]:
-    """Like _ips, but fail loudly when a required group resolves to zero hosts
-    (renamed/removed in hosts.yml) instead of emitting an empty roster value."""
-    ips = _ips(data, group)
-    if not ips:
-        raise ValueError(
-            f"required group {group!r} resolved to zero hosts — renamed/removed in hosts.yml?"
-        )
-    return ips
-
-
-def build(data: dict) -> list[tuple[str, str]]:
-    """Return ordered (KEY, space-joined-value) pairs for hosts.env."""
-    pve = _group_hosts(data, "proxmox")
-    pve_names = list(pve.keys())
-    pve_ips = _required_ips(data, "proxmox")
-
-    dns_ips = _required_ips(data, "dns")
-    mail_ips = _required_ips(data, "mail")
-    plex_ips = _required_ips(data, "plex_servers")
-    gitlab_ips = _required_ips(data, "gitlab_servers")
-    nextcloud_ips = _required_ips(data, "nextcloud_servers")
-    immich_ips = _required_ips(data, "immich_servers")
-    immich_ml_ips = _required_ips(data, "immich_ml_servers")
-
-    services = _group_hosts(data, "services")
-    home_ip = str((services.get("home") or {}).get("ansible_host") or "")
-    if not home_ip:
-        raise ValueError("services.home has no ansible_host")
-    # windows lives in its own windows_vms group (now IaC-provisioned by
-    # proxmox_vm — see hosts.yml). It still runs no sshd we manage, so it stays
-    # excluded from ALL_SSH_IPS below.
-    windows_vms = _group_hosts(data, "windows_vms")
-    windows_ip = str((windows_vms.get("windows") or {}).get("ansible_host") or "")
-
-    k3s_servers = _required_ips(data, "k3s_servers")
-    k3s_agents = _required_ips(data, "k3s_agents")
-
-    # ssh-keyscan / general SSH reachability set: every host CI or an operator
-    # SSHes into. Excludes the Windows guest (.155) — it runs no sshd we manage,
-    # matching the pre-generator keyscan list.
-    all_ssh = (
-        pve_ips
-        + dns_ips
-        + mail_ips
-        + plex_ips
-        + gitlab_ips
-        + nextcloud_ips
-        + immich_ips
-        + immich_ml_ips
-        + [home_ip]
-        + k3s_servers
-        + k3s_agents
-    )
-
-    pairs: list[tuple[str, str]] = [
-        ("PVE_HOSTS", " ".join(pve_names)),
-        ("PVE_IPS", " ".join(pve_ips)),
-        ("DNS_IPS", " ".join(dns_ips)),
-        ("MAIL_IPS", " ".join(mail_ips)),
-        ("PLEX_IP", " ".join(plex_ips)),
-        ("GITLAB_IP", " ".join(gitlab_ips)),
-        ("NEXTCLOUD_IP", " ".join(nextcloud_ips)),
-        ("IMMICH_IP", " ".join(immich_ips)),
-        ("IMMICH_ML_IP", " ".join(immich_ml_ips)),
-        ("HOME_ASSISTANT_IP", home_ip),
-        ("WINDOWS_IP", windows_ip),
-        ("K3S_SERVERS", " ".join(k3s_servers)),
-        ("K3S_AGENTS", " ".join(k3s_agents)),
-        ("ALL_SSH_IPS", " ".join(all_ssh)),
-    ]
+def build(data: dict, exports: list[dict]) -> list[tuple[str, str]]:
+    """Return ordered (KEY, space-joined-value) pairs for the env file."""
+    values: dict[str, list[str]] = {}
+    pairs: list[tuple[str, str]] = []
+    for spec in exports:
+        key = spec.get("key")
+        if not key:
+            raise ValueError(f"export entry has no key: {spec!r}")
+        combine = spec.get("combine")
+        if combine:
+            resolved: list[str] = []
+            for src in combine:
+                if src not in values:
+                    raise ValueError(
+                        f"export {key!r} combines {src!r}, which is not defined above it"
+                    )
+                resolved.extend(values[src])
+        else:
+            kind = spec.get("value", "ips")
+            if kind not in VALUE_KINDS:
+                raise ValueError(f"export {key!r} has unknown value kind {kind!r}")
+            resolved = _resolve(data, spec)
+            if not resolved and spec.get("required", True):
+                target = spec.get("host") or f"group {spec.get('group')!r}"
+                raise ValueError(
+                    f"required export {key!r} resolved to nothing ({target} renamed/removed?)"
+                )
+        values[key] = resolved
+        pairs.append((key, " ".join(resolved)))
     return pairs
 
 
-HEADER = (
-    "# AUTO-GENERATED by scripts/generate-hosts-env.py from\n"
-    "# ansible/inventories/prod/hosts.yml. Do NOT edit by hand.\n"
-    "# Run `task hosts:sync` to regenerate. CI fails if out of sync.\n"
-    "#\n"
-    "# Shell-sourceable and go-task `dotenv:`-loadable. PVE_HOSTS is hostnames\n"
-    "# (Tailscale/LAN resolvable); every other list is IPs.\n"
-)
+def header(inventory: Path, regen_command: str) -> str:
+    return (
+        "# AUTO-GENERATED by generate-hosts-env.py from\n"
+        f"# {inventory}. Do NOT edit by hand.\n"
+        f"# Run `{regen_command}` to regenerate. CI fails if out of sync.\n"
+        "#\n"
+        "# Shell-sourceable and go-task `dotenv:`-loadable.\n"
+    )
 
 
-def render(pairs: list[tuple[str, str]]) -> str:
-    lines = [HEADER]
+def render(pairs: list[tuple[str, str]], inventory: Path, regen_command: str) -> str:
+    lines = [header(inventory, regen_command)]
     for key, value in pairs:
         lines.append(f'{key}="{value}"\n')
     return "".join(lines)
 
 
-def main() -> int:
-    if not HOSTS_YML.exists():
-        print(f"ERROR: {HOSTS_YML} not found", file=sys.stderr)
+def load_map(path: Path) -> tuple[list[dict], str | None]:
+    """Return (exports, output-path-from-map)."""
+    with path.open() as f:
+        doc = yaml.safe_load(f)
+    if not isinstance(doc, dict):
+        raise ValueError(f"{path} top-level is not a mapping")
+    exports = doc.get("exports")
+    if not isinstance(exports, list) or not exports:
+        raise ValueError(f"{path} has no non-empty `exports` list")
+    return exports, doc.get("output")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Generate a hosts.env from an Ansible inventory.")
+    parser.add_argument("--inventory", type=Path, required=True)
+    parser.add_argument("--map", dest="map_file", type=Path, required=True)
+    parser.add_argument("--output", type=Path, help="overrides `output:` in the map")
+    parser.add_argument("--regen-command", default="generate-hosts-env.py")
+    args = parser.parse_args(argv)
+
+    if not args.inventory.exists():
+        print(f"ERROR: {args.inventory} not found", file=sys.stderr)
         return 1
     try:
-        with HOSTS_YML.open() as f:
+        exports, map_output = load_map(args.map_file)
+    except (OSError, ValueError, yaml.YAMLError) as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
+    out = args.output or (Path(map_output) if map_output else None)
+    if out is None:
+        print("ERROR: no output path (pass --output or set `output:` in the map)", file=sys.stderr)
+        return 1
+
+    try:
+        with args.inventory.open() as f:
             data = yaml.safe_load(f)
     except yaml.YAMLError as e:
-        print(f"ERROR: failed to parse {HOSTS_YML.relative_to(REPO)}: {e}", file=sys.stderr)
+        print(f"ERROR: failed to parse {args.inventory}: {e}", file=sys.stderr)
         return 1
     if not isinstance(data, dict):
-        print(f"ERROR: {HOSTS_YML.relative_to(REPO)} top-level is not a mapping", file=sys.stderr)
+        print(f"ERROR: {args.inventory} top-level is not a mapping", file=sys.stderr)
         return 1
     try:
-        pairs = build(data)
+        pairs = build(data, exports)
     except ValueError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return 1
     try:
-        OUT.write_text(render(pairs))
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(render(pairs, args.inventory, args.regen_command))
     except OSError as e:
-        print(f"ERROR: failed to write {OUT}: {e}", file=sys.stderr)
+        print(f"ERROR: failed to write {out}: {e}", file=sys.stderr)
         return 1
-    print(f"Wrote {len(pairs)} keys to {OUT.relative_to(REPO)}")
+    print(f"Wrote {len(pairs)} keys to {out}")
     return 0
 
 

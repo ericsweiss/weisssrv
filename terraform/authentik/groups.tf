@@ -5,6 +5,9 @@
 #
 # Deliberately unmanaged: "authentik Read-only" (auto-generated alongside its
 # managed role by authentik's RBAC bootstrap).
+#
+# Every group carries prevent_destroy: a rename plans as destroy+create, which
+# drops the memberships and every binding referencing it (README § Guardrails).
 
 locals {
   # App-access groups, all with the single human operator as member. The
@@ -13,7 +16,7 @@ locals {
   # basic-auth injection attributes too, so they are explicit resources below,
   # not list entries.)
   member_groups = [
-    "admin",                # wg-easy admin UI (docs/38)
+    "admin",                # legacy imported group; no binding in this module
     "bar-assistant-users",  # `bar` application binding
     "gitlab-admins",        # GitLab SAML group mapping (docs/27)
     "gitlab-users",         # GitLab SAML mapping + `git` app binding
@@ -36,6 +39,10 @@ resource "authentik_group" "app" {
 
   name  = each.value
   users = [data.authentik_user.eric.pk]
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 # Role groups that ALSO carry basic-auth injection attributes (explicit
@@ -55,6 +62,10 @@ resource "authentik_group" "media_admins" {
     nzbget_user     = var.basic_auth_nzbget_username
     nzbget_password = var.basic_auth_nzbget_password
   })
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 # dns-admins gates the two AdGuard SSO dashboards (policy_bindings.tf) and
@@ -66,6 +77,10 @@ resource "authentik_group" "dns_admins" {
     adguard_user     = var.basic_auth_adguard_username
     adguard_password = var.basic_auth_adguard_password
   })
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 # authentik's built-in superuser group. Managed (unlike "authentik Read-only")
@@ -78,4 +93,8 @@ resource "authentik_group" "authentik_admins" {
     data.authentik_user.akadmin.pk,
     data.authentik_user.eric.pk,
   ]
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }

@@ -1,0 +1,148 @@
+---
+# promtool unit tests for the backup alerts whose `for:` is measured in DAYS
+# (ResticOffsite*Prolonged 24h, PruneBlocked 48h, RepoShrank's 2d delta window).
+#
+# Split out of backup.test.yaml for one reason: promtool re-evaluates EVERY rule
+# in the corpus once per evaluation_interval for the whole eval_time horizon, so
+# a 73h test at the 1m interval the other files use costs ~4400 evaluations of
+# 150+ rules. A 30m interval still lands two evaluations inside the shortest
+# `for:` here (1h) and runs two orders of magnitude cheaper. Input series stay at
+# 5m so they never go stale between evaluations (the 5m lookback delta).
+rule_files:
+  - rules.yaml
+evaluation_interval: 30m
+tests:
+  # ResticOffsiteFailedProlonged: `last_backup_success == 0` OR a failed run
+  # with NO backup metric at all (the pre-split emitter, or an abort before the
+  # backup stage). The `unless on (instance)` arm is what makes the second case
+  # work and is invisible to review — pinned in all three states below.
+  - interval: 5m
+    input_series:
+      - series: 'restic_offsite_last_backup_success{instance="192.168.0.102:9101"}'
+        values: '0+0x400'
+      - series: 'restic_offsite_last_run_success{instance="192.168.0.102:9101"}'
+        values: '0+0x400'
+    alert_rule_test:
+      - eval_time: 24h5m
+        alertname: ResticOffsiteFailedProlonged
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              instance: 192.168.0.102:9101
+  # Failed run, no backup-success series: the `unless` arm carries it.
+  - interval: 5m
+    input_series:
+      - series: 'restic_offsite_last_run_success{instance="192.168.0.102:9101"}'
+        values: '0+0x400'
+    alert_rule_test:
+      - eval_time: 24h5m
+        alertname: ResticOffsiteFailedProlonged
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              instance: 192.168.0.102:9101
+  # The backup landed but the RUN failed later (a crashed prune). The `unless`
+  # suppresses the run arm and last_backup_success==0 does not match, so this
+  # is deliberately NOT the prolonged-offsite-loss alert — ResticOffsiteFailed
+  # covers the run.
+  - interval: 5m
+    input_series:
+      - series: 'restic_offsite_last_backup_success{instance="192.168.0.102:9101"}'
+        values: '1+0x400'
+      - series: 'restic_offsite_last_run_success{instance="192.168.0.102:9101"}'
+        values: '0+0x400'
+    alert_rule_test:
+      - eval_time: 24h5m
+        alertname: ResticOffsiteFailedProlonged
+        exp_alerts: []
+
+  # The retention pair. A ceiling refusal sets retention_blocked=1 and
+  # last_prune_success=0: ONLY ResticOffsitePruneBlocked may fire, with its
+  # own 48h grace. Before the `unless`, PruneFailed announced the same state
+  # 24h earlier under "usually a stale repository lock".
+  - interval: 5m
+    input_series:
+      - series: 'restic_offsite_last_prune_success{instance="192.168.0.102:9101"}'
+        values: '0+0x700'
+      - series: 'restic_offsite_retention_blocked{instance="192.168.0.102:9101"}'
+        values: '1+0x700'
+    alert_rule_test:
+      - eval_time: 24h5m
+        alertname: ResticOffsitePruneFailed
+        exp_alerts: []
+      - eval_time: 48h5m
+        alertname: ResticOffsitePruneBlocked
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: 192.168.0.102:9101
+
+  # A genuine prune error leaves retention_blocked at 0, so PruneFailed fires
+  # and PruneBlocked stays silent.
+  - interval: 5m
+    input_series:
+      - series: 'restic_offsite_last_prune_success{instance="192.168.0.102:9101"}'
+        values: '0+0x700'
+      - series: 'restic_offsite_retention_blocked{instance="192.168.0.102:9101"}'
+        values: '0+0x700'
+    alert_rule_test:
+      - eval_time: 24h5m
+        alertname: ResticOffsitePruneFailed
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: 192.168.0.102:9101
+      - eval_time: 48h5m
+        alertname: ResticOffsitePruneBlocked
+        exp_alerts: []
+
+  # ResticOffsiteRepoShrank must ignore the emitter's "0 = unknown" sentinel,
+  # which the EXIT trap writes on EVERY aborted run. Unguarded, the delta is
+  # hugely negative against a right-hand side of -0.2*0 = 0, so the comparison
+  # is trivially true and pages CRITICAL for a repo that never shrank.
+  # (5m sample interval throughout: `for: 1h` is evaluated at 1m resolution, so
+  # a 1h input interval would leave the series stale between samples and the
+  # alert could never reach firing.)
+  - interval: 5m
+    input_series:
+      - series: 'restic_offsite_repo_size_bytes{instance="192.168.0.102:9101"}'
+        values: '666000000000+0x600 0+0x300'
+    alert_rule_test:
+      - eval_time: 73h
+        alertname: ResticOffsiteRepoShrank
+        exp_alerts: []
+
+  # A real 50% shrink over the same window still fires.
+  - interval: 5m
+    input_series:
+      - series: 'restic_offsite_repo_size_bytes{instance="192.168.0.102:9101"}'
+        values: '666000000000+0x600 333000000000+0x300'
+    alert_rule_test:
+      - eval_time: 73h
+        alertname: ResticOffsiteRepoShrank
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              instance: 192.168.0.102:9101
+
+  # Recovery after a sentinel: the 0 is now the FIRST sample in the 2d window,
+  # which makes delta positive — so the alert cannot false-fire on the run
+  # after an abort either, and no second guard is needed for it.
+  - interval: 5m
+    input_series:
+      - series: 'restic_offsite_repo_size_bytes{instance="192.168.0.102:9101"}'
+        values: '0+0x300 666000000000+0x600'
+    alert_rule_test:
+      - eval_time: 73h
+        alertname: ResticOffsiteRepoShrank
+        exp_alerts: []
+
+  # Steady growth never fires.
+  - interval: 5m
+    input_series:
+      - series: 'restic_offsite_repo_size_bytes{instance="192.168.0.102:9101"}'
+        values: '600000000000+100000000x900'
+    alert_rule_test:
+      - eval_time: 73h
+        alertname: ResticOffsiteRepoShrank
+        exp_alerts: []

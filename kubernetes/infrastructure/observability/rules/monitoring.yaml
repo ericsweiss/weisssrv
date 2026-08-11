@@ -1,0 +1,584 @@
+---
+# Proxmox host / guest health, k3s node state, ZFS pool integrity, blackbox
+# endpoint reachability. Runbooks: docs/12-runbooks.md.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: homelab-monitoring
+  namespace: observability
+spec:
+  groups:
+    - name: homelab.monitoring
+      rules:
+        - alert: ProxmoxHostDown
+          expr: >-
+            min by (id) (max_over_time(pve_up{id=~"node/.*"}[5m])) == 0
+            or absent(pve_up{id=~"node/.*"})
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            summary: 'Proxmox host {{ $labels.id }} is down'
+            description: >-
+              Proxmox host {{ $labels.id }} has been unreachable for 5 minutes.
+              If id is empty, the Proxmox exporter itself may be down.
+
+        # ProxmoxHostDown covers only id=~"node/.*", so the HA-managed infra
+        # guests (dns-01/dns-02, smtp-relay, Home Assistant) need their own rule.
+        # 5m avoids paging on a normal HA failover/migration.
+        - alert: HAInfraGuestDown
+          expr: max by (id) (pve_up{id=~"lxc/(150|151|160)|qemu/154"}) == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            summary: 'HA infrastructure guest {{ $labels.id }} is stopped'
+            description: >-
+              Proxmox guest {{ $labels.id }} (a DNS resolver, the SMTP
+              relay, or the Home Assistant VM) has reported stopped for 5
+              minutes. HA should have restarted it on another node — if it
+              has not, investigate the guest and its host.
+
+        # nfsd on pve-nas-01 backs every k3s NFS PV, Grafana storage and the HAOS
+        # media mount, and a hung/stopped nfsd otherwise surfaces only as pod I/O
+        # errors. Zero threads = not serving; absent = the NAS exporter is dark.
+        - alert: NFSServerDown
+          expr: >-
+            node_nfsd_server_threads{instance="192.168.0.102:9101"} == 0
+            or absent(node_nfsd_server_threads{instance="192.168.0.102:9101"})
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#nfs-server-recovery-pve-nas-01'
+            summary: 'NFS server on pve-nas-01 is not serving'
+            description: >-
+              node_nfsd_server_threads on 192.168.0.102 has been 0 (or
+              absent) for 5 minutes — all NFS-backed storage (k3s PVs,
+              Grafana, HAOS media) is stalled. Check
+              `systemctl status nfs-server` on pve-nas-01; after a
+              stop-hang, `systemctl reset-failed nfs-server` then start
+              it. Pods with established mounts may need deleting after
+              recovery (stale handles).
+
+        # A node left Ready,SchedulingDisabled is invisible to KubeNodeNotReady.
+        # 30m is well past a normal kured cycle (~5m) or op-3 cordon (~2m).
+        - alert: NodeStuckCordoned
+          expr: kube_node_spec_unschedulable == 1
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            summary: 'Node {{ $labels.node }} cordoned (unschedulable) for 30m'
+            description: >-
+              Node {{ $labels.node }} has been SchedulingDisabled for 30
+              minutes. If maintenance is not in progress, suspect a stuck
+              kured uncordon or a timed-out drain — investigate, then
+              `kubectl uncordon {{ $labels.node }}`.
+
+        # maintenance's _reboot-if-needed.yml writes this textfile metric when it
+        # defers a host reboot to an operator. It self-clears once the host no
+        # longer needs a reboot.
+        - alert: MaintenanceRebootDeferred
+          expr: maintenance_reboot_deferred == 1
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            summary: 'Host {{ $labels.host }} has a maintenance-deferred reboot pending'
+            description: >-
+              Maintenance deferred a kernel reboot of {{ $labels.host }} to an
+              operator. Reboot it manually when convenient (unlock ZFS keys +
+              start its VMs after, for pve-nas-01); the alert clears on the
+              next run once the host no longer needs a reboot.
+
+        # A node holds kured's reboot sentinel. A full 9-node serial
+        # (concurrency:1) rollout clears each node well inside ~2h, so a node
+        # still flagged at 3h means the cycle is stuck: a dead kured pod holding
+        # the cluster lock, a blockingPodSelector CI job that never ended, or a
+        # PDB blocking the drain.
+        - alert: KuredRebootStuck
+          expr: kured_reboot_required == 1
+          for: 3h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            summary: 'kured reboot for {{ $labels.node }} pending over 3h (stuck cycle)'
+            description: >-
+              Node {{ $labels.node }} has held the kured reboot sentinel for
+              more than 3 hours without being rebooted. The reboot cycle is
+              stuck — check the cluster-wide lock (`kubectl -n kube-system
+              get ds kured -o jsonpath='{.metadata.annotations}'`), any
+              infrastructure CI job pinning the node, and PDBs blocking the
+              drain. Clear a dead lock with `kubectl -n kube-system annotate
+              ds/kured weave.works/kured-node-lock-`.
+
+        # corosync pinned near 100% CPU with the process still alive: pmxcfs is
+        # frozen while ProxmoxHostDown and the systemd unit both stay green.
+        # Normal corosync CPU is 1-2%; membership-change spikes are far under 10m.
+        - alert: CorosyncWedged
+          expr: avg_over_time(proxmox_corosync_cpu_percent[10m]) > 90
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            summary: 'corosync stuck at high CPU on {{ $labels.instance }}'
+            description: >-
+              corosync on {{ $labels.instance }}
+              has averaged
+              {{ $value | printf "%.1f" }}%
+              CPU over the last 10 minutes. Likely wedged
+              — pmxcfs replication has probably stopped on this node.
+              Mitigation: `systemctl restart corosync` on that host;
+              check `journalctl -u corosync` for the last log line
+              before the silence to file an upstream bug.
+
+        # pmxcfs split-brain, via the age of /etc/pve/ha/manager_status (the HA
+        # CRM master rewrites it every few seconds). A stale file on one node
+        # means that node stopped receiving pmxcfs updates.
+        #
+        # A deleted file reads as mtime=0 and fires — deliberately. Guarding
+        # `> 0` would let a file delete suppress the very signal this detects.
+        - alert: PmxcfsStale
+          expr: >-
+            time() - proxmox_pmxcfs_manager_status_mtime_seconds > 600
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            summary: 'pmxcfs on {{ $labels.instance }} appears stale (split-brain)'
+            description: >-
+              /etc/pve/ha/manager_status on {{ $labels.instance }}
+              has not been updated in
+              {{ $value | humanizeDuration }}.
+              pmxcfs replication has stopped on this node — its
+              view of the cluster is frozen. Compare
+              `sudo cat /etc/pve/ha/manager_status` across nodes
+              to confirm, then `systemctl restart corosync pve-cluster`
+              on the affected node.
+
+        # PSI is the earliest saturation signal collected on the bare-metal
+        # hosts; the stock NodeDiskIOSaturation / NodeMemory* rules are scoped to
+        # the k3s node-exporter job and never see :9101. On pve-nas-01 sustained
+        # I/O pressure precedes a dirty-writeback -> memory-reclaim -> host
+        # freeze; the codified guard is bwlimit on the vzdump job.
+        - alert: ProxmoxHostIOPressure
+          expr: >-
+            rate(node_pressure_io_waiting_seconds_total{job="node-exporter-host", instance=~"192\\.168\\.0\\.10[2-7]:9101"}[5m]) > 0.20
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            summary: 'Proxmox host {{ $labels.instance }} is I/O-pressure stalled'
+            description: >-
+              {{ $labels.instance }} has spent
+              {{ $value | humanizePercentage }}
+              of the last 5 minutes with tasks stalled waiting on disk I/O.
+              Sustained pool saturation — on pve-nas-01 this precedes a
+              dirty-writeback -> memory-reclaim stall -> whole-host freeze.
+              Find the heavy writer (`iotop`; usually vzdump/scrub) and
+              throttle or reschedule it; bwlimit on the vzdump job is the
+              codified guard.
+        - alert: ProxmoxHostMemoryPressure
+          expr: >-
+            rate(node_pressure_memory_waiting_seconds_total{job="node-exporter-host", instance=~"192\\.168\\.0\\.10[2-7]:9101"}[5m]) > 0.10
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            summary: 'Proxmox host {{ $labels.instance }} is under memory-reclaim pressure'
+            description: >-
+              {{ $labels.instance }} has spent
+              {{ $value | humanizePercentage }}
+              of the last 5 minutes with tasks stalled on memory reclaim.
+              On the memory-over-committed NAS this cascades from I/O
+              saturation (stalled dirty-page writeback) into a KVM
+              page-fault wedge. Check swap use / ARC / a heavy writer and
+              correlate with ProxmoxHostIOPressure.
+
+        # Collector meta-failure (the textfile script ran but is stuck).
+        # Deliberately silent when the metric is wholly absent on a host —
+        # HostExporterDown covers a dark exporter.
+        - alert: CorosyncHealthCollectorStale
+          expr: >-
+            time() - proxmox_corosync_health_collector_last_success_seconds > 300
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            summary: 'corosync-health-collector textfile script is degraded on {{ $labels.instance }}'
+            description: >-
+              proxmox_corosync_health_collector_last_success_seconds
+              on {{ $labels.instance }}
+              has not advanced in over 5 minutes. The CorosyncWedged +
+              PmxcfsStale alerts on this host are now serving stale
+              inputs. Check
+              `journalctl -u corosync-health-collector.service` and
+              `systemctl status corosync-health-collector.timer`.
+
+        # ZFS pool integrity from the zpool-status textfile collector on every
+        # Proxmox host, so compute local-ssd pools are covered too. Pool HEALTH
+        # alone misses silent corruption: vdev checksum errors accumulate while
+        # the pool stays ONLINE. Counters reset on `zpool clear`, so the alert
+        # clears once the operator has investigated.
+        - alert: ZFSPoolDeviceErrors
+          expr: sum by (instance, pool) (zfs_pool_status_errors_total) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#handling-disk-failure-zfs'
+            summary: 'ZFS pool {{ $labels.pool }} on {{ $labels.instance }} has device errors'
+            description: >-
+              zpool status reports {{ $value | printf "%.0f" }}
+              read/write/cksum errors on pool {{ $labels.pool }}
+              ({{ $labels.instance }}). The pool may still show
+              ONLINE — this is the silent-corruption signature.
+              Run `zpool status -v {{ $labels.pool }}` on the host,
+              identify affected datasets, and `zpool clear` only
+              after investigating.
+
+        - alert: ZFSPoolDataErrors
+          expr: zfs_pool_status_data_errors > 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#handling-disk-failure-zfs'
+            summary: 'ZFS pool {{ $labels.pool }} on {{ $labels.instance }} has permanent data errors'
+            description: >-
+              zpool status -v lists {{ $value | printf "%.0f" }}
+              entries with unrecoverable data on pool
+              {{ $labels.pool }} ({{ $labels.instance }}). Affected
+              files/zvols need restore-or-rebuild; on a single-vdev
+              pool ZFS cannot self-heal these.
+
+        - alert: ZFSPoolNotOnline
+          expr: zfs_pool_status_health_code > 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#handling-disk-failure-zfs'
+            summary: 'ZFS pool {{ $labels.pool }} on {{ $labels.instance }} is not ONLINE'
+            description: >-
+              Pool {{ $labels.pool }} on {{ $labels.instance }}
+              reports DEGRADED or worse (health code
+              {{ $value | printf "%.0f" }}).
+
+        # The == 0 branch covers never-scrubbed pools and makes a scrub-timestamp
+        # parser regression loud (the collector emits 0 when it cannot parse a
+        # completion time).
+        - alert: ZFSPoolScrubStale
+          expr: >-
+            (zfs_pool_status_last_scrub_seconds == 0)
+            or (
+              zfs_pool_status_last_scrub_seconds > 0
+              and time() - zfs_pool_status_last_scrub_seconds > 35 * 86400
+            )
+          for: 6h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#handling-disk-failure-zfs'
+            summary: 'ZFS pool {{ $labels.pool }} on {{ $labels.instance }} has no recent completed scrub'
+            description: >-
+              Pool {{ $labels.pool }} on {{ $labels.instance }}
+              either has never completed a scrub (timestamp 0) or
+              its last scrub finished more than 35 days ago.
+              Without scrubs, latent corruption surfaces only when
+              something reads the bad blocks (e.g. vzdump).
+
+        # The `or ... unless` branch closes the missing-series blind spot: a
+        # staleness expression yields nothing if the collector never wrote a
+        # sample. The corosync sentinel (same hosts, same job) is the existence
+        # witness.
+        - alert: ZFSPoolCollectorStale
+          expr: >-
+            (time() - zfs_pool_status_collector_last_success_seconds > 900)
+            or on(instance) (
+              proxmox_corosync_health_collector_last_success_seconds
+              unless on(instance) zfs_pool_status_collector_last_success_seconds
+            )
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#handling-disk-failure-zfs'
+            summary: 'zpool-status-collector is degraded or missing on {{ $labels.instance }}'
+            description: >-
+              zfs_pool_status_collector_last_success_seconds on
+              {{ $labels.instance }} is stale (>15m) or entirely
+              absent while the host reports other collector metrics —
+              the ZFS pool alerts on this host are serving stale or
+              no inputs. Check
+              `journalctl -u zpool-status-collector.service` and
+              `systemctl status zpool-status-collector.timer`.
+
+        # node_filesystem math cannot stand in for a pool: a dataset's size
+        # shrinks as zvols fill the pool, so DiskUsage* stays low on a nearly-full
+        # pool while VM I/O is about to stall. (instance, pool) is required —
+        # all five compute hosts name their pool local-ssd.
+        - alert: ZFSPoolSpaceWarning
+          expr: (zfs_pool_status_allocated_bytes / zfs_pool_status_size_bytes) * 100 > 80
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#handling-disk-failure-zfs'
+            summary: 'ZFS pool {{ $labels.pool }} on {{ $labels.instance }} above 80% capacity'
+            description: 'ZFS pool {{ $labels.pool }} on {{ $labels.instance }} is at {{ $value | printf "%.1f" }}% capacity.'
+
+        - alert: ZFSPoolSpaceCritical
+          expr: (zfs_pool_status_allocated_bytes / zfs_pool_status_size_bytes) * 100 > 90
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#handling-disk-failure-zfs'
+            summary: 'ZFS pool {{ $labels.pool }} on {{ $labels.instance }} above 90% capacity'
+            description: 'ZFS pool {{ $labels.pool }} on {{ $labels.instance }} is at {{ $value | printf "%.1f" }}% capacity.'
+
+        - alert: EndpointDown
+          # The Windows VM RDP target (192.168.0.155:3389) is excluded and
+          # routed to the purpose-built WindowsRdpDown (30m) below: it's an
+          # on-demand desktop that is legitimately powered off much of the
+          # time, so a catch-all warning would be noise.
+          # for: 10m (not 5m): the warning tier absorbs brief intermittent
+          # probe dips (an SSO-fronted *arr that momentarily 5xx's) that a
+          # 5m hold re-fires on. The load-bearing three still page fast —
+          # EndpointDownCritical below stays at 5m.
+          expr: max by (instance) (probe_success{instance!="192.168.0.155:3389"}) == 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#network-connectivity-issues'
+            summary: 'Endpoint {{ $labels.instance }} is down'
+            description: 'Blackbox probe for {{ $labels.instance }} has failed for 10 minutes.'
+
+        # Both immich-server metrics ports live on one monolithic server, so
+        # min by (job) fires if EITHER stops scraping while still yielding a
+        # single alert; absent() catches the whole target vanishing.
+        - alert: ImmichDown
+          expr: min by (job) (up{job="immich-metrics"}) == 0 or absent(up{job="immich-metrics"})
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/36-immich.md'
+            summary: 'Immich is down'
+            description: >-
+              Prometheus has been unable to scrape Immich's native metrics
+              (immich-server 8081/8082) for 5 minutes — the compose stack on
+              the Immich VM (192.168.0.157) is down or unreachable, or the
+              scrape target is missing. Photo access is offline.
+        # VM 155 is a start-on-demand desktop (onboot=0), so the probe is gated
+        # on the VM being powered on and self-silences while it is intentionally
+        # off. pve_up{qemu/155} comes from TWO proxmox-exporter targets, so it
+        # must be aggregated — a bare vector right of `and on()` errors on
+        # duplicate series. The target is excluded from EndpointDown above.
+        - alert: WindowsRdpDown
+          expr: >-
+            probe_success{instance="192.168.0.155:3389"} == 0
+            and on() (max(pve_up{id="qemu/155"}) == 1)
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/39-windows-vm.md'
+            summary: 'Windows VM RDP (192.168.0.155:3389) unreachable while VM is running'
+            description: >-
+              The Windows 11 VM is powered on (pve_up qemu/155 == 1) but has
+              not answered an RDP (3389) blackbox probe for 30 minutes. Check
+              `task windows:status` and the Proxmox console. (The alert is
+              gated on VM power state, so it stays silent when the VM is
+              intentionally off.) See docs/39-windows-vm.md.
+
+        # The load-bearing three (SSO front door, GitOps source, home
+        # controller) page email, not just Discord. EndpointDown still fires
+        # alongside; the Alertmanager alertname pair on `instance` dedups.
+        - alert: EndpointDownCritical
+          expr: >-
+            max by (instance) (
+              probe_success{instance=~"https://(auth|git|home)\\.esweiss\\.com"}
+            ) == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#network-connectivity-issues'
+            summary: 'Key endpoint {{ $labels.instance }} is down'
+            description: >-
+              Blackbox probe for {{ $labels.instance }} has failed for 5
+              minutes. This endpoint is load-bearing infrastructure
+              (SSO front door, GitOps source, or home automation).
+
+        # nextcloud_up flips to 0 when the exporter cannot reach the serverinfo
+        # API (app/DB down, or maintenance mode); absent() covers the exporter
+        # or scrape being down. EndpointDown covers the ingress/TLS path.
+        - alert: NextcloudDown
+          expr: max(nextcloud_up) == 0 or absent(nextcloud_up)
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/35-nextcloud.md'
+            summary: 'Nextcloud is unreachable'
+            description: >-
+              The nextcloud-exporter reports Nextcloud unreachable
+              (nextcloud_up == 0) for 10 minutes, or the metric is absent
+              (exporter/scrape down). Check the compose stack on the
+              Nextcloud VM (192.168.0.156): `task nextcloud:status`.
+
+        # Critical aggregate for total DNS loss. The failed count is compared
+        # against the number of resolver probes PRESENT, not a hardcoded 2, so a
+        # dropped target cannot silently disarm it (DNSResolverProbeMissing
+        # catches the drop itself).
+        - alert: DNSResolutionDown
+          expr: >-
+            count(
+              max by (instance) (probe_success{instance=~"192\\.168\\.0\\.(150|160):53"}) == 0
+            )
+            ==
+            count(
+              max by (instance) (probe_success{instance=~"192\\.168\\.0\\.(150|160):53"})
+            )
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#network-connectivity-issues'
+            summary: 'All DNS resolvers are failing to answer'
+            description: >-
+              Every probed AdGuard resolver (192.168.0.150 /
+              192.168.0.160) has failed its DNS blackbox probe for 5
+              minutes — name resolution is down cluster-wide.
+
+        # Config-drift guard for the self-scaling aggregate above: pin each
+        # resolver's series so a removed/renamed target is loud.
+        - alert: DNSResolverProbeMissing
+          expr: >-
+            absent(probe_success{instance="192.168.0.150:53"})
+            or absent(probe_success{instance="192.168.0.160:53"})
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#network-connectivity-issues'
+            summary: 'DNS resolver probe for {{ $labels.instance }} is missing'
+            description: >-
+              No probe_success series for {{ $labels.instance }} — its
+              blackbox target was removed or renamed, and the
+              DNSResolutionDown aggregate no longer covers this resolver.
+              Restore the target in exporters/blackbox-exporter.yaml.
+
+        - alert: BlackboxExporterDown
+          expr: absent(up{job=~".*blackbox.*"} == 1)
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#network-connectivity-issues'
+            summary: 'Blackbox exporter is down'
+            description: 'All endpoint monitoring is blind — blackbox exporter has been down for 5 minutes.'
+
+        # TLS-expiry backstop for the Cloudflare-edge certs that neither
+        # cert-manager nor the acme.sh wildcard covers. Scoped to every
+        # *.ericsweiss.com probe so it widens as external probes are added, MINUS
+        # the hostnames whose TLS this cluster terminates itself — those would
+        # double-page with CertExpiring* on one lapsing cert. A future
+        # proxy-bypassed hostname not excluded here double-warns rather than
+        # going unwatched, which is the safe direction.
+        - alert: BlackboxCertExpiringSoon
+          expr: >-
+            probe_ssl_earliest_cert_expiry{
+              instance=~"https://.*\\.ericsweiss\\.com",
+              instance!~"https://(git|registry\\.git|ide\\.git|photos|auth)\\.ericsweiss\\.com"
+            } - time() < 86400 * 14
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#certificate-renewal-issues'
+            summary: 'Edge TLS cert for {{ $labels.instance }} expires in under 14 days'
+            description: >-
+              The TLS certificate presented by {{ $labels.instance }}
+              (Cloudflare edge — not cert-manager/acme.sh managed) expires in
+              {{ $value | humanizeDuration }}. Cloudflare normally auto-renews;
+              investigate if this does not clear.
+
+        - alert: NodeMemoryPressure
+          expr: kube_node_status_condition{condition="MemoryPressure", status="true"} == 1
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            summary: 'Node {{ $labels.node }} is under memory pressure'
+            description: 'Kubelet on {{ $labels.node }} has been reporting memory pressure for 5 minutes. Pods may be evicted.'
+
+        # Storm-control source for the node-outage inhibit in
+        # alertmanager-config.yaml, deliberately time-bounded: it fires only
+        # while the node was Ready at some point in the last 6h, so a multi-day
+        # outage stops suppressing the rest of the cluster's workload alerts.
+        # severity:none keeps it null-routed — it exists to be an inhibit source.
+        - alert: NodeOutageStormControl
+          expr: >-
+            kube_node_status_condition{condition="Ready", status="true"} == 0
+            and max_over_time(kube_node_status_condition{condition="Ready", status="true"}[6h]) == 1
+          for: 5m
+          labels:
+            severity: none
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            summary: 'Node {{ $labels.node }} NotReady — workload alerts inhibited'
+            description: >-
+              {{ $labels.node }} has been NotReady for under 6 hours; per-pod and
+              per-workload warnings are inhibited while it recovers.
+
+        # The escalation that bounds the inhibit above: past 6h a node outage is
+        # an incident, not maintenance churn, and it pages email.
+        - alert: NodeNotReadyProlonged
+          expr: kube_node_status_condition{condition="Ready", status="true"} == 0
+          for: 6h
+          labels:
+            severity: critical
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            summary: 'Node {{ $labels.node }} has been NotReady for over 6 hours'
+            description: >-
+              {{ $labels.node }} has been NotReady for more than 6 hours. Its
+              workloads are rescheduled or degraded, and the storm-control
+              inhibit no longer suppresses cluster-wide workload alerts. Either
+              return the node or cordon/drain it out of the fold deliberately.
+
+        # 2/3 etcd members is quorum but zero fault tolerance: one more server
+        # loss destroys the control plane. Upstream etcdMembersDown is warning
+        # and etcdInsufficientMembers only fires once quorum is already gone, so
+        # the degraded-but-surviving state had no critical. absent() covers the
+        # whole job being down (count(up==1) yields no series then).
+        - alert: EtcdQuorumAtRisk
+          expr: >-
+            count(up{job="kube-etcd"} == 1) <= 2
+            or absent(up{job="kube-etcd"} == 1)
+          for: 6h
+          labels:
+            severity: critical
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/19-k3s-deployment.md'
+            summary: 'k3s etcd has been running without fault tolerance for 6h'
+            description: >-
+              Fewer than 3 etcd members have been reachable for 6 hours. The
+              cluster still has quorum but cannot survive another server loss —
+              restore the missing k3s server node now (docs/19).

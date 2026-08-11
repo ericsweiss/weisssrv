@@ -1,4 +1,0 @@
----
-# Whether to detect and fix disks mounted at wrong locations
-# Enabled by default - handles non-deterministic /dev/sdX naming after reboot
-zvol_mount_fix_wrong_locations: true

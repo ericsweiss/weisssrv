@@ -1,49 +1,19 @@
 ---
-# Aggregate resource bounds for the privileged-runner namespace, sized to admit
-# concurrent:12 (see release.yaml) plus a transition buffer.
+# Aggregate bounds for the privileged-runner namespace. Every dimension derives
+# from release.yaml's `concurrent` and must move with it: a quota that admits
+# fewer pods than the runner submits does not throttle, it 403s the job into
+# runner_system_failure.
 #
-# Measured per-job usage during a full molecule matrix: ~0.55Gi memory (build
-# ~250-400Mi ansible control, dind ~120Mi, helper ~18Mi) and ~1.5 cpu (build
-# 900m + dind 500m + helper 100m). Declared per-job sizing is ~1Gi requests /
-# ~3.25Gi limits.
-#
-# Every dimension is derived from concurrent, and they MUST move together — a
-# quota that admits fewer pods than `concurrent` submits does not throttle
-# gracefully, it 403s ("exceeded quota" -> runner_system_failure).
-#
-# `pods` is the ONLY dimension that should ever bind. Every other one is sized to
-# admit that same number, because the two failure modes are not symmetric: an
-# over-tight pods count queues work in GitLab (harmless), while an over-tight
-# cpu/memory dimension 403s a job into runner_system_failure. So each is the full
-# pods allowance x per-job sizing, rounded up:
-#   pods 25              = concurrent:12 + a 13-pod churn allowance (Terminating
-#                          pods still count against the quota)
-#   requests.cpu 38      = 25 x 1.5 cpu   (37.5)
+# `pods` is the only dimension that should ever bind (an over-tight pods count
+# just queues work in GitLab). The rest are sized to the full pods allowance:
+#   pods 25              = concurrent:12 + churn (Terminating pods still count)
+#   requests.cpu 38      = 25 x 1.5 cpu
 #   requests.memory 25Gi = 25 x ~1Gi
-#   limits.memory 82Gi   = 25 x ~3.25Gi   (81.25)
+#   limits.memory 82Gi   = 25 x ~3.25Gi
 #
-# This is a correction, not just a rescale. The previous shape sized cpu as
-# "concurrent + a transition buffer" and limits.memory as a per-pod ratio, which
-# left them admitting far fewer pods than the stated allowance — so a full
-# churn burst 403d on cpu long before the pods ceiling was reached, and the
-# dimension that was supposed to be the limiter never got to be.
-#
-# concurrent:12 is what the 25-core CI-eligible pool supports at the fixed
-# 1.5 cpu/job reservation; see release.yaml's `concurrent` note. This quota
-# tracks that value — it must never be the thing that binds first.
-#
-# requests.* are the scheduler's reservation (placement gate) and match real
-# usage, so the scheduler — not this quota — caps effective parallelism at what
-# the agents (shared with apps/observability) can run and queues the rest as
-# Pending. limits.memory is an admission ceiling for DECLARED limits, not a
-# reservation; per-pod limits + scheduler + kubelet OOM-kill protect nodes.
-# Move requests.cpu in lockstep with concurrent × per-job cpu (sizing history:
-# release.yaml's concurrent: note).
-#
-# Deliberately NO cpu / limits.cpu quota dimension: a CPU-limit quota would force
-# EVERY pod in the namespace to declare a CPU limit, which would reject the
-# runner manager (it intentionally runs with no CPU limit to avoid CFS
-# throttling). CPU is bounded via requests.cpu, memory via both.
+# Deliberately NO cpu / limits.cpu dimension: it would force every pod here to
+# declare a CPU limit, rejecting the runner manager (which runs without one to
+# avoid CFS throttling). CPU is bounded by requests.cpu.
 apiVersion: v1
 kind: ResourceQuota
 metadata:

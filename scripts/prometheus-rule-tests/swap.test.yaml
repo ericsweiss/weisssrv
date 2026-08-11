@@ -30,7 +30,8 @@ tests:
         exp_alerts: []
 
   # SwapCleanStoppedGuests fires when the escalation stopped any guest in the
-  # last day (max_over_time > 0).
+  # 6h window (max_over_time > 0). Severity info: the escalation working as
+  # designed is a record, not an action item.
   - interval: 30m
     input_series:
       - series: 'swap_clean_guests_stopped_count{instance="192.168.0.102:9101"}'
@@ -40,7 +41,7 @@ tests:
         alertname: SwapCleanStoppedGuests
         exp_alerts:
           - exp_labels:
-              severity: warning
+              severity: info
               instance: '192.168.0.102:9101'
 
   # No guests stopped (count 0) must not fire.

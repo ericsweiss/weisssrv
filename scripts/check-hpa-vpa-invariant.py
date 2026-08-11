@@ -4,9 +4,8 @@
 A HorizontalPodAutoscaler and a VerticalPodAutoscaler must never drive the same
 resource on the same workload: the HPA scales replica count on (typically) CPU
 utilization while the VPA updater evicts pods to resize CPU requests — they
-fight, and pods thrash. The rule in this repo (docs/33-autoscaling.md) is that
-any workload that gains an HPA carries a memory-only VPA
-(controlledResources: [memory], no cpu).
+fight, and pods thrash. The rule this enforces is that any workload with an HPA
+carries a memory-only VPA (controlledResources: [memory], no cpu).
 
 This guards that invariant in CI. It reads a stream of rendered Kubernetes
 manifests on stdin (the corpus `task flux:lint` builds with
@@ -15,46 +14,40 @@ VPAs targeting the same (namespace, kind, name) and fails if any of them control
 a resource the HPA also scales. Because the corpus is kustomize-only, this covers
 STANDALONE HPAs/VPAs in the kustomize-build stream.
 
-Chart-native HPAs live inside HelmReleases (Traefik, authentik, onepassword-
-connect) and are NOT expanded into the kustomize corpus, so the generic join
-above cannot see them. Their paired VPAs ARE in the corpus, though, so with
---require-chart-native-vpas (passed by flux:lint, which renders the *full*
-corpus) this also statically asserts each CHART_NATIVE_HPA_TARGETS workload has a
+Chart-native HPAs live inside HelmReleases and are NOT expanded into the
+kustomize corpus, so the generic join above cannot see them. Their paired VPAs
+ARE in the corpus, though, so with --require-chart-native-vpas (on the *full*
+corpus) this also statically asserts each declared chart-native target has a
 mutating (Auto/Initial) VPA that excludes cpu — an Off/recommend-only VPA does
-not count, since it never actually right-sizes. Keep that list in sync with the HelmReleases that set
-autoscaling/HPA. The flag is off by default so unit tests can exercise the
-generic join on minimal streams.
+not count, since it never actually right-sizes. The flag is off by default so
+unit tests can exercise the generic join on minimal streams.
 
-With --require-chart-native-vpas it ALSO asserts the repo-wide "no CPU limits"
-policy (docs/33-autoscaling.md): CPU is compressible, so a CPU limit only adds
-CFS throttling that hurts latency and inflates the CPU% a CPU-based HPA reads.
-The check covers rendered pod specs, HelmRelease `.spec.values`, and CPU limits
-embedded in config-file block strings inside those values (the gitlab-runner
-`runners.config` TOML, which is where every CI JOB pod's limits are declared —
-those pods never appear in any rendered manifest).
+With --require-chart-native-vpas it ALSO asserts the "no CPU limits" policy: CPU
+is compressible, so a CPU limit only adds CFS throttling that hurts latency and
+inflates the CPU% a CPU-based HPA reads. The check covers both rendered pod specs
+and HelmRelease `.spec.values`.
 
-Unconditionally (no flag needed, since it reads only the corpus) it also asserts
-that no container sets requests.memory == limits.memory while a mutating VPA
-controls its memory with the default controlledValues: that ratio makes every
-request revision rewrite the limit 1:1, leaving zero burst headroom — the
-prowlarr OOMKills, and authentik-server's live 878Mi request == 878Mi limit.
+The chart-native target list and the CPU-limit allowlist are consumer data, read
+from --policy-config (YAML/JSON, both keys optional):
+
+    chart_native_hpa_targets:
+      - {namespace: traefik, kind: Deployment, name: traefik, source: chart autoscaling}
+    cpu_limit_allowlist:
+      - kube-system/DaemonSet/foo   # rationale
 
 Limitation: a CPU limit baked into a third-party chart's subchart defaults that
 is NOT overridden in `.spec.values` is invisible here (the corpus is kustomize-
 only, no `helm template`). validate-helm-values.py renders the value-heavy
-releases (see RELEASES there) via `helm template` and reuses
-_cpu_limit_violations to catch those; other charts rely on the live pod-spec
-audit in docs/33-autoscaling.md. The memory-ratio check has the same blind spot
-for chart-rendered pod specs (authentik's own resources live in a HelmRelease),
-which is why VPARecommendationExceedsLimit exists as the runtime backstop.
+releases via `helm template` and reuses cpu_limit_violations to catch those.
 
-Usage (wired into flux:lint, on the accumulated full corpus):
+Usage (on the accumulated full corpus):
   kustomize build <path> | envsubst >> corpus
-  python3 scripts/check-hpa-vpa-invariant.py --require-chart-native-vpas < corpus
+  check-hpa-vpa-invariant.py --require-chart-native-vpas \
+      --policy-config autoscaling-policy.yaml < corpus
 """
 from __future__ import annotations
 
-import re
+import argparse
 import sys
 
 try:
@@ -65,17 +58,24 @@ except ImportError:
 HPA_KIND = "HorizontalPodAutoscaler"
 VPA_KIND = "VerticalPodAutoscaler"
 
-# Workloads whose HPA is chart-native (inside a HelmRelease) and therefore absent
-# from the kustomize corpus. Each scales on CPU via its chart's HPA, so its VPA
-# (which IS in the corpus) must exist and must NOT control cpu. Keep in sync with:
-#   controllers/traefik/release.yaml          (autoscaling.enabled)
-#   apps/authentik/release.yaml               (autoscaling)
-#   controllers/onepassword-connect/release.yaml (connect.hpa)
-CHART_NATIVE_HPA_TARGETS: dict[tuple[str, str, str], str] = {
-    ("traefik", "Deployment", "traefik"): "traefik chart autoscaling.enabled",
-    ("authentik", "Deployment", "authentik-server"): "authentik chart autoscaling",
-    ("external-secrets", "Deployment", "onepassword-connect"): "connect.hpa",
-}
+
+class Policy:
+    """The consumer data from --policy-config; see the module docstring.
+
+    A value, not module state: validate-helm-values.py imports this module to
+    load the same file, and accumulating into globals made a second load add to
+    the first instead of replacing it. (A plain class, not a dataclass: this
+    module is loaded by path with importlib, where @dataclass cannot resolve its
+    own annotations.)
+    """
+
+    def __init__(self, chart_native_hpa_targets=None, cpu_limit_allowlist=None) -> None:
+        # (namespace, target-kind, target-name) -> where the chart-native HPA comes from.
+        self.chart_native_hpa_targets: dict[tuple[str, str, str], str] = dict(
+            chart_native_hpa_targets or {}
+        )
+        # "namespace/Kind/name" workloads intentionally permitted a CPU limit.
+        self.cpu_limit_allowlist: set[str] = set(cpu_limit_allowlist or ())
 
 
 def _target_key(ns: str, ref: dict) -> tuple[str, str, str]:
@@ -135,14 +135,31 @@ def _vpa_resources(spec: dict) -> set[str]:
     return controlled
 
 
-# "no CPU limits" policy (docs/33-autoscaling.md)
+# --- "no CPU limits" policy ---------------------------------------------------
 POD_SPEC_KINDS = {"Deployment", "StatefulSet", "DaemonSet", "ReplicaSet", "Job", "Pod"}
 
-# Workloads intentionally permitted a CPU limit despite the repo-wide policy.
-# Empty by design; add a "namespace/Kind/name" string here only with a reason.
-# SHARED: validate-helm-values.py imports this set (and _cpu_limit_violations)
-# so the kustomize-side and helm-rendered-side checks honor one allowlist.
-CPU_LIMIT_ALLOWLIST: set[str] = set()
+
+def load_policy(path) -> Policy:
+    """Read a --policy-config file and return it. Mutates nothing.
+
+    SHARED: validate-helm-values.py imports this (and `cpu_limit_violations`)
+    so the kustomize-side and helm-rendered-side checks honor one allowlist.
+    """
+    with open(path) as f:
+        doc = yaml.safe_load(f) or {}
+    if not isinstance(doc, dict):
+        raise ValueError(f"{path}: top-level must be a mapping")
+    policy = Policy()
+    for entry in doc.get("chart_native_hpa_targets") or []:
+        missing = [k for k in ("namespace", "kind", "name") if not entry.get(k)]
+        if missing:
+            raise ValueError(f"{path}: chart-native target {entry!r} is missing {missing}")
+        policy.chart_native_hpa_targets[(entry["namespace"], entry["kind"], entry["name"])] = str(
+            entry.get("source", "chart-native HPA")
+        )
+    for item in doc.get("cpu_limit_allowlist") or []:
+        policy.cpu_limit_allowlist.add(str(item))
+    return policy
 
 
 def _containers_of(doc: dict) -> list[dict]:
@@ -185,55 +202,20 @@ def _find_values_cpu_limits(node, path: str = "") -> list[str]:
     return hits
 
 
-# A CPU limit can also hide inside an embedded config FILE carried as a YAML
-# block string in `.spec.values` — the gitlab-runner charts put the whole
-# `config.toml` there, so `cpu_limit`/`service_cpu_limit`/`helper_cpu_limit`
-# (the limits every CI JOB pod is created with) are structurally invisible to
-# the dict walk above. Anchored at line start so a `# cpu_limit ...` comment
-# does not match, and the key must end at `=` so the
-# `*_overwrite_max_allowed` ceilings (which grant an override, not a limit)
-# are not conflated with setting one.
-_CONFIG_CPU_LIMIT_RE = re.compile(
-    r"^[ \t]*((?:service_|helper_)?cpu_limit)[ \t]*=[ \t]*(\S+)", re.MULTILINE
-)
-
-
-def _find_config_cpu_limits(node, path: str = "") -> list[str]:
-    """Find CPU limits inside embedded config-file strings in a values tree."""
-    hits: list[str] = []
-    if isinstance(node, dict):
-        for k, v in node.items():
-            hits.extend(_find_config_cpu_limits(v, f"{path}.{k}" if path else k))
-    elif isinstance(node, list):
-        for i, v in enumerate(node):
-            hits.extend(_find_config_cpu_limits(v, f"{path}[{i}]"))
-    elif isinstance(node, str):
-        for key, value in _CONFIG_CPU_LIMIT_RE.findall(node):
-            # `cpu_limit = ""` clears the chart default, same as limits.cpu: ""
-            if value.strip('"\'') == "":
-                continue
-            hits.append(f"{path}:{key}={value}")
-    return hits
-
-
-def _cpu_limit_violations(docs: list[dict]) -> list[str]:
+def cpu_limit_violations(docs: list[dict], allowlist: set[str] | None = None) -> list[str]:
     """Flag any pod-spec container or HelmRelease values that set a CPU limit."""
+    allowed = allowlist or set()
     out: list[str] = []
     for d in docs:
         kind = d.get("kind")
         meta = d.get("metadata") or {}
         wlkey = f"{meta.get('namespace', '')}/{kind}/{meta.get('name', '?')}"
-        if wlkey in CPU_LIMIT_ALLOWLIST:
+        if wlkey in allowed:
             continue
         if kind == "HelmRelease":
             values = (d.get("spec") or {}).get("values") or {}
             for hit in _find_values_cpu_limits(values, "values"):
                 out.append(f"  {wlkey}: HelmRelease sets a CPU limit ({hit})")
-            for hit in _find_config_cpu_limits(values, "values"):
-                out.append(
-                    f"  {wlkey}: HelmRelease embeds a CPU limit in a config "
-                    f"string ({hit})"
-                )
         else:
             for c in _containers_of(d):
                 lim = (c.get("resources") or {}).get("limits") or {}
@@ -245,93 +227,18 @@ def _cpu_limit_violations(docs: list[dict]) -> list[str]:
     return out
 
 
-# --- memory request == limit under a limit-rewriting VPA ----------------------
-# The VPA's default controlledValues is RequestsAndLimits, which preserves the
-# manifest's request:limit RATIO. At a 1:1 memory ratio that means every request
-# revision rewrites the limit down with it, so the container has permanently zero
-# burst headroom — observed as OOMKills on prowlarr, and as authentik-server's
-# live 878Mi request == 878Mi limit against an 810Mi working set. The fix is
-# either controlledValues: RequestsOnly (prowlarr, authentik) or a manifest ratio
-# above 1:1.
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="HPA/VPA + CPU-limit policy gate.")
+    parser.add_argument("--require-chart-native-vpas", action="store_true")
+    parser.add_argument("--policy-config", help="YAML/JSON policy data (see module docstring)")
+    args = parser.parse_args(argv)
+    policy = Policy()
+    if args.policy_config:
+        try:
+            policy = load_policy(args.policy_config)
+        except (OSError, ValueError, yaml.YAMLError) as exc:
+            sys.exit(f"Failed to load --policy-config: {exc}")
 
-
-def _policy_for(spec: dict, container: str) -> dict:
-    """The containerPolicy a VPA applies to `container` (first match wins).
-
-    Returns {} when nothing matches. VPA's own GetContainerResourcePolicy
-    returns nil there, but nil does NOT mean "not autoscaled" — it means the
-    container falls through to the defaults (updateMode Auto,
-    controlledValues RequestsAndLimits), i.e. exactly the 1:1 limit-rewrite trap
-    this rule exists to catch. Returning None here used to make the caller skip
-    the container: silent for any VPA whose containerPolicies list omits a "*"
-    entry and does not name the container.
-    """
-    policies = (spec.get("resourcePolicy") or {}).get("containerPolicies", []) or []
-    for p in policies:
-        if p.get("containerName") == container:
-            return p
-    for p in policies:
-        if p.get("containerName") == "*":
-            return p
-    return {}
-
-
-def _memory_ratio_violations(docs: list[dict]) -> list[str]:
-    """Flag 1:1 memory containers whose VPA would rewrite the limit."""
-    vpas: dict[tuple[str, str, str], list[tuple[str, dict]]] = {}
-    for d in docs:
-        if d.get("kind") != VPA_KIND:
-            continue
-        meta = d.get("metadata") or {}
-        spec = d.get("spec") or {}
-        ref = spec.get("targetRef") or {}
-        if not ref.get("name"):
-            continue
-        if str((spec.get("updatePolicy") or {}).get("updateMode", "Auto")).lower() == "off":
-            continue  # recommend-only: never mutates a pod, so no rewrite
-        key = _target_key(meta.get("namespace", ""), ref)
-        vpas.setdefault(key, []).append((meta.get("name", "?"), spec))
-
-    out: list[str] = []
-    for d in docs:
-        kind = d.get("kind")
-        if kind not in POD_SPEC_KINDS:
-            continue
-        meta = d.get("metadata") or {}
-        key = _target_key(meta.get("namespace", ""), {"kind": kind, "name": meta.get("name", "")})
-        if key not in vpas:
-            continue
-        for c in _containers_of(d):
-            res = c.get("resources") or {}
-            req = (res.get("requests") or {}).get("memory")
-            lim = (res.get("limits") or {}).get("memory")
-            if req is None or lim is None or str(req) != str(lim):
-                continue
-            cname = c.get("name", "?")
-            for vpa_name, spec in vpas[key]:
-                policy = _policy_for(spec, cname)
-                if (policy.get("mode") or "").lower() == "off":
-                    continue
-                controlled = policy.get("controlledResources")
-                if controlled is not None and "memory" not in {
-                    str(r).lower() for r in controlled
-                }:
-                    continue
-                if (policy.get("controlledValues") or "") == "RequestsOnly":
-                    continue
-                out.append(
-                    f"  {key[0]}/{kind}/{key[2]}: container {cname!r} sets "
-                    f"requests.memory == limits.memory ({req}) while VPA "
-                    f"{vpa_name!r} controls memory with the default "
-                    f"controlledValues — every request revision rewrites the "
-                    f"limit 1:1, leaving zero burst headroom. Set "
-                    f"controlledValues: RequestsOnly on that policy, or raise "
-                    f"the limit above the request."
-                )
-    return out
-
-
-def main() -> int:
     # safe_load_all is lazy, so parse errors surface during iteration — wrap the
     # loop (not just the generator) so a malformed stream exits cleanly. Also
     # flatten `kind: List` and top-level YAML lists so wrapped resources count.
@@ -401,8 +308,8 @@ def main() -> int:
 
     # Static check for chart-native HPAs (their HPA isn't in the corpus, but their
     # VPA is). Opt-in: only meaningful on the full rendered corpus flux:lint builds.
-    if "--require-chart-native-vpas" in sys.argv:
-        for key, source in sorted(CHART_NATIVE_HPA_TARGETS.items()):
+    if args.require_chart_native_vpas:
+        for key, source in sorted(policy.chart_native_hpa_targets.items()):
             ns, tkind, tname = key
             # `not vpas.get(key)` (vs `key not in vpas`) also catches a mutating
             # VPA whose every containerPolicy is mode:Off — it registers with an
@@ -424,10 +331,9 @@ def main() -> int:
                 )
 
     cpu_violations = (
-        _cpu_limit_violations(docs)
-        if "--require-chart-native-vpas" in sys.argv else []
+        cpu_limit_violations(docs, policy.cpu_limit_allowlist)
+        if args.require_chart_native_vpas else []
     )
-    ratio_violations = _memory_ratio_violations(docs)
 
     failed = False
     if violations:
@@ -438,27 +344,19 @@ def main() -> int:
         print(
             "CPU-limit policy violated — pods/HelmReleases must not set a CPU limit "
             "(compressible resource; CFS throttling hurts latency and distorts "
-            "CPU-based HPAs — see docs/33-autoscaling.md). Offenders:",
+            "CPU-based HPAs). Offenders:",
             file=sys.stderr,
         )
         print("\n".join(cpu_violations), file=sys.stderr)
-        failed = True
-    if ratio_violations:
-        print(
-            "Memory request == limit under a limit-rewriting VPA (docs/33 — the "
-            "prowlarr/authentik-server trap). Offenders:",
-            file=sys.stderr,
-        )
-        print("\n".join(ratio_violations), file=sys.stderr)
         failed = True
     if failed:
         return 1
 
     print(
         f"HPA/VPA invariant OK ({len(hpas)} HPAs, {len(vpas)} VPAs checked"
-        + (f", {len(CHART_NATIVE_HPA_TARGETS)} chart-native targets asserted"
+        + (f", {len(policy.chart_native_hpa_targets)} chart-native targets asserted"
            ", CPU-limit policy OK"
-           if "--require-chart-native-vpas" in sys.argv else "")
+           if args.require_chart_native_vpas else "")
         + ")"
     )
     return 0

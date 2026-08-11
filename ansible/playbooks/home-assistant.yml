@@ -32,4 +32,4 @@
     # the inventory entry correctly.
     - ../inventories/prod/host_vars/home.yml
   roles:
-    - home_assistant
+    - weisssrv.infra.home_assistant

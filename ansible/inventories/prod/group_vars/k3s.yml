@@ -4,6 +4,20 @@
 # Cluster configuration
 k3s_api_vip: 192.168.0.161
 k3s_api_port: 6443
+# apiserver SAN list. The role adds the VIP, inventory_hostname and
+# ansible_host itself; this is the stable service name clients use.
+k3s_tls_sans:
+  - "k3s.{{ internal_domain }}"
+
+# /etc/hosts pins so a node can pull images and mount its NFS PVs while cluster
+# DNS is down (both names are served by AdGuard, which runs in guests that may
+# themselves be waiting on the cluster).
+k3s_registry_host_pins:
+  - name: "registry.git.{{ external_domain }}"
+    ip: 192.168.0.101
+k3s_storage_host_pins:
+  - name: "pve-nas-01.{{ internal_domain }}"
+    ip: 192.168.0.102
 
 # Server (control-plane) token — grants the ability to join as a SERVER and pull
 # cluster CA material (from 1Password at runtime).
@@ -96,8 +110,8 @@ k3s_kubelet_args:
 # k3s_etcd_snapshot_offnode_enabled below). Both are pure TLS clients: they need
 # only the system CA truststore (ca-certificates) to verify pve-nas-01's cert
 # and present no cert/key of their own — only pve-nas-01 (the server side) holds
-# the wildcard cert+key. Do NOT re-add k3s nodes to cert_distribution_targets in
-# host_vars/dns-01.yml; the nfs_tls role scrubs stale cert/key material from
+# the wildcard cert+key. Do NOT re-add k3s nodes to
+# acme_certs_distribution_targets in host_vars/dns-01.yml; the nfs_tls role scrubs stale cert/key material from
 # client-only nodes (least privilege, see docs/16).
 nfs_tls_enabled: true
 
@@ -111,9 +125,30 @@ nfs_tls_enabled: true
 # k3s_servers (playbooks/site.yml) + its scrape Endpoints (kubernetes
 # observability), and the servers already in the nfs_clients ipset.
 k3s_etcd_snapshot_offnode_enabled: true
+# Mounted by hostname — the *.esweiss.com cert has no IP SAN, so an IP mount
+# fails the TLS handshake.
+k3s_etcd_snapshot_nfs_server: "pve-nas-01.{{ internal_domain }}"
+
+# kube-apiserver audit logging (servers only; docs/19 + docs/31). k3s ships this
+# OFF, which left the cluster with no record of who read a Secret or granted
+# themselves a ClusterRole. The role's default policy is deliberately narrow —
+# Metadata on secrets/configmaps/serviceaccounts, RequestResponse on RBAC
+# writes, Metadata on RBAC reads, and no catch-all — so volume stays small.
+#
+# The log lands on EACH SERVER'S LOCAL DISK (/var/lib/rancher/k3s/server/logs/
+# audit.log), rotated by the apiserver itself and capped at ~1.1 GB per node
+# (100 MB x 10 backups + current). It is NOT shipped to Loki: alloy_host reads
+# journald only and the apiserver writes this file directly, so it is node-local
+# forensic material — see docs/31-observability.md § kube-apiserver audit log.
+#
+# Renders a kube-apiserver-arg block into /etc/rancher/k3s/config.yaml, so
+# turning this on costs a ROLLING CONTROL-PLANE RESTART on the next
+# `task k3s:deploy` (serial: 1 across the 3 servers, one API-VIP failover each).
+# Needs a healthy etcd quorum — do not deploy it with a server node down.
+k3s_audit_enabled: true
 
 # kube-vip configuration
-kube_vip_interface: "eth0"
+k3s_kube_vip_interface: "eth0"
 
 # Boot order (DNS 10 -> SMTP 20 -> k3s servers 30 -> agents 40 -> apps 50) and
 # the `platform` resource pool are set per host in hosts.yml — servers and
@@ -123,4 +158,4 @@ kube_vip_interface: "eth0"
 # VM and cloud-init defaults inherited from proxmox_vm role
 # Override in host_vars if needed (see hosts.yml for per-host resources)
 
-# postfix_sasl_user and postfix_sasl_password are defined in all.yml
+# The relay host and SASL credentials are defined in all.yml.

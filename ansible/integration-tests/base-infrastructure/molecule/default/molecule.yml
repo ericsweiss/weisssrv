@@ -7,7 +7,7 @@ driver:
 
 platforms:
   - name: base-test-01
-    image: registry.git.ericsweiss.com/eric/weisssrv/molecule-test:latest
+    image: "${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:v0.6.0}"
     pre_build_image: true
     privileged: true
     cgroupns_mode: host
@@ -26,7 +26,7 @@ platforms:
       - qol_enabled
 
   - name: base-test-02
-    image: registry.git.ericsweiss.com/eric/weisssrv/molecule-test:latest
+    image: "${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:v0.6.0}"
     pre_build_image: true
     privileged: true
     cgroupns_mode: host
@@ -44,10 +44,16 @@ platforms:
       - base_managed
       - qol_enabled
 
+dependency:
+  name: galaxy
+  options:
+    # The single source of truth for the weisssrv.infra pin these
+    # scenarios exercise. Resolved by ansible-galaxy in molecule's CWD,
+    # which is the scenario's stack dir (ansible/integration-tests/<stack>).
+    requirements-file: ../../requirements.yml
 provisioner:
   name: ansible
   env:
-    ANSIBLE_ROLES_PATH: ../../../../roles
     # Required for molecule_docker plugin (upstream broken conditional in destroy.yml)
     ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
     # Provide dummy SSH key for testing (base role expects this via all.yml lookup)
@@ -61,7 +67,7 @@ provisioner:
         # Base role configuration
         # timezone inherited from production all.yml (America/Los_Angeles)
         # admin_user (eric) comes from production all.yml via converge vars_files
-        common_packages:
+        base_common_packages:
           - curl
           - wget
           - git
@@ -72,43 +78,28 @@ provisioner:
         # SSH hardening is exercised end-to-end by the base role's own molecule
         # scenario (sshd -T asserted); skip it here to keep this integration
         # test focused on the base+qol+tailscale interaction.
-        skip_ssh_config: true
-        skip_dns_config: true  # DNS resolver needs real network
-
-        # Tailscale configuration
-        tailscale_auth_key: "tskey-test-key-not-real"
-        skip_tailscale_up: true  # Can't actually connect in container
+        base_skip_ssh_config: true
+        base_skip_dns_config: true  # DNS resolver needs real network
+        # No TAILSCALE_AUTH_KEY in the env, so the role installs and configures
+        # the daemon but never runs `tailscale up` — which is what makes this
+        # scenario runnable in a container.
 
       qol_enabled:
-        # Note: Versions loaded from production group_vars via vars_files in converge.yml
-
-        # QoL configuration
-        zsh_plugins:
+        # Trimmed to what the role actually reads: only OMZ-bundled plugins are
+        # supported (the role templates the plugins=() array, it never clones
+        # external ones), and the neovim plugin list drives Vundle.
+        qol_omz_plugins:
           - git
           - docker
           - kubectl
           - ansible
           - golang
-          - python
-          - poetry
-          - terraform
-          - tmux
           - systemd
-          - sudo
-          - ssh-agent
-          - gpg-agent
-          - colored-man-pages
-          - command-not-found
-          - extract
-          - safe-paste
-          - zsh-syntax-highlighting
-          - zsh-autosuggestions
-        neovim_plugins:
-          - VundleVim/Vundle.vim
+          - tmux
+        qol_nvim_plugins:
           - tpope/vim-fugitive
-          - preservim/nerdtree
-        install_fzf: true
-        install_ripgrep: true
+          - sheerun/vim-polyglot
+          - joshdick/onedark.vim
 
 verifier:
   name: ansible

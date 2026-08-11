@@ -2,10 +2,9 @@
 # fingerprint) lives in the "GitLab SSO" 1Password item and gitlab.rb — only
 # the authentik side is managed here.
 #
-# NOT representable by provider 2026.5.0 (no schema field): the NameID policy
-# ("default_name_id_policy"). The live value is the server default
-# (urn:oasis:names:tc:SAML:2.0:nameid-format:persistent), so nothing drifts;
-# if it is ever changed in the UI, Terraform will neither see nor revert it.
+# The NameID policy ("default_name_id_policy") has no schema field in the
+# provider. The live value is the server default (…nameid-format:persistent), so
+# nothing drifts — but a UI change to it is invisible to Terraform.
 
 locals {
   # Server-side ordering of the default SAML mappings on the GitLab provider.
@@ -49,4 +48,8 @@ resource "authentik_provider_saml" "gitlab" {
   sign_logout_response = false
 
   default_relay_state = ""
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }

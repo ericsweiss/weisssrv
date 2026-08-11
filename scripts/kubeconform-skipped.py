@@ -1,9 +1,4 @@
 #!/usr/bin/env python3
-# DUAL-MAINTAINED: eric/weisssrv-lib ships a copy of this script for its other
-# consumers, and the library CI templates take the script PATH from the consumer
-# tree (.gitlab-ci.yml inputs), so this repo-local copy is the one CI runs. A
-# behaviour change here should be mirrored into weisssrv-lib and released with
-# the next tag bump; nothing compares the two automatically.
 """Print the distinct kinds kubeconform SKIPPED (no schema in the catalog).
 
 flux-lint runs kubeconform with `-ignore-missing-schemas`, which silently marks
@@ -44,7 +39,7 @@ def main() -> int:
         print(f"{len(skipped)} kind(s) skipped — no schema in catalog, UNVALIDATED:")
         for s in skipped:
             print(f"  - {s}")
-        print("If a kind here is new, vendor its CRD schema or accept the gap (docs/16).")
+        print("If a kind here is new, vendor its CRD schema or accept the gap.")
     else:
         print("All rendered kinds were schema-validated (no skips).")
     return 0

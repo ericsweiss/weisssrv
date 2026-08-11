@@ -19,17 +19,24 @@ spec:
       targetPort: 9167
 
 ---
-apiVersion: v1
-kind: Endpoints
+# discovery.k8s.io/v1, not the deprecated core/v1 Endpoints. The Service is
+# selectorless, so nothing controls this slice but this file; conditions.ready is
+# set explicitly because a hand-written slice has no controller to fill it in.
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
 metadata:
   name: unbound-exporter-dns-01
   namespace: observability
-subsets:
-  - addresses:
-      - ip: 192.168.0.150
-    ports:
-      - name: metrics
-        port: 9167
+  labels:
+    kubernetes.io/service-name: unbound-exporter-dns-01
+addressType: IPv4
+ports:
+  - name: metrics
+    port: 9167
+    protocol: TCP
+endpoints:
+  - addresses: ["192.168.0.150"]
+    conditions: {ready: true}
 
 ---
 # dns-02 (192.168.0.160)
@@ -49,17 +56,24 @@ spec:
       targetPort: 9167
 
 ---
-apiVersion: v1
-kind: Endpoints
+# discovery.k8s.io/v1, not the deprecated core/v1 Endpoints. The Service is
+# selectorless, so nothing controls this slice but this file; conditions.ready is
+# set explicitly because a hand-written slice has no controller to fill it in.
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
 metadata:
   name: unbound-exporter-dns-02
   namespace: observability
-subsets:
-  - addresses:
-      - ip: 192.168.0.160
-    ports:
-      - name: metrics
-        port: 9167
+  labels:
+    kubernetes.io/service-name: unbound-exporter-dns-02
+addressType: IPv4
+ports:
+  - name: metrics
+    port: 9167
+    protocol: TCP
+endpoints:
+  - addresses: ["192.168.0.160"]
+    conditions: {ready: true}
 
 ---
 apiVersion: monitoring.coreos.com/v1

@@ -1,5 +1,15 @@
 # Cluster access, secrets & conventions
 
+## Local toolchain
+
+- `pip install -r requirements.txt` (Ansible, Molecule, ansible-lint, yamllint)
+  plus `pytest` + `pyyaml` for the script tests.
+- `ansible-galaxy install -r ansible/requirements.yml` pulls the `weisssrv.infra`
+  collection at the pinned tag — nothing Ansible-side resolves without it, and it
+  needs read access to `git.ericsweiss.com/eric/weisssrv-lib`. Re-run with
+  `--force` after a pin bump.
+- `op` (1Password CLI) signed in; `task op:check` confirms the session.
+
 ## kubeconfig
 
 - Fetch with `task k3s:kubeconfig` — it SSHes the first reachable k3s server,

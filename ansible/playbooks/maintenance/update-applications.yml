@@ -13,7 +13,7 @@
     force_adguard_upgrade: false  # Set to true to force upgrade even if version matches
   tasks:
     - name: Check current AdGuard Home version
-      ansible.builtin.command: "{{ adguard_install_path }}/AdGuardHome --version"
+      ansible.builtin.command: "{{ adguard_home_install_path }}/AdGuardHome --version"
       register: current_version
       changed_when: false
       failed_when: false
@@ -84,8 +84,8 @@
 
         - name: Backup AdGuard Home configuration
           ansible.builtin.copy:
-            src: "{{ adguard_install_path }}/AdGuardHome.yaml"
-            dest: "{{ adguard_install_path }}/AdGuardHome.yaml.backup-{{ ansible_date_time.epoch }}"
+            src: "{{ adguard_home_install_path }}/AdGuardHome.yaml"
+            dest: "{{ adguard_home_install_path }}/AdGuardHome.yaml.backup-{{ ansible_date_time.epoch }}"
             remote_src: true
             mode: "0644"
 
@@ -107,7 +107,7 @@
         - name: Install new binary
           ansible.builtin.copy:
             src: /tmp/AdGuardHome/AdGuardHome
-            dest: "{{ adguard_install_path }}/AdGuardHome"
+            dest: "{{ adguard_home_install_path }}/AdGuardHome"
             owner: root
             group: root
             mode: "0755"
@@ -120,7 +120,7 @@
 
         - name: Wait for AdGuard Home to be ready
           ansible.builtin.wait_for:
-            port: "{{ adguard_http_port }}"
+            port: "{{ adguard_home_http_port }}"
             timeout: 60
 
         # Restore original DNS configuration after AdGuard is back up
@@ -193,7 +193,7 @@
             msg: "AdGuard Home upgrade failed. Service has been restarted with previous version."
 
     - name: Verify new version
-      ansible.builtin.command: "{{ adguard_install_path }}/AdGuardHome --version"
+      ansible.builtin.command: "{{ adguard_home_install_path }}/AdGuardHome --version"
       changed_when: false
       register: new_version
 
@@ -221,7 +221,7 @@
 
     - name: Display current vs target version
       ansible.builtin.debug:
-        msg: "Current: {{ current_sync_version.stdout | default('not installed') }}, Target: {{ adguardhome_sync_version }}"
+        msg: "Current: {{ current_sync_version.stdout | default('not installed') }}, Target: {{ adguard_sync_version }}"
 
     - name: Determine if sync upgrade needed
       ansible.builtin.set_fact:
@@ -229,12 +229,12 @@
           {{
             force_sync_upgrade or
             not sync_binary.stat.exists or
-            adguardhome_sync_version not in (current_sync_version.stdout | default(''))
+            adguard_sync_version not in (current_sync_version.stdout | default(''))
           }}
 
     - name: Skip if no upgrade needed
       ansible.builtin.debug:
-        msg: "adguardhome-sync already at version {{ adguardhome_sync_version }}, skipping"
+        msg: "adguardhome-sync already at version {{ adguard_sync_version }}, skipping"
       when: not needs_sync_upgrade
 
     - name: Upgrade adguardhome-sync with safe restart handling
@@ -247,17 +247,17 @@
 
         - name: Download new adguardhome-sync version
           ansible.builtin.get_url:
-            url: "https://github.com/bakito/adguardhome-sync/releases/download/v{{ adguardhome_sync_version }}/adguardhome-sync_{{ adguardhome_sync_version }}_linux_{{ adguard_sync_arch }}.tar.gz"  # noqa yaml[line-length]
+            url: "https://github.com/bakito/adguardhome-sync/releases/download/v{{ adguard_sync_version }}/adguardhome-sync_{{ adguard_sync_version }}_linux_{{ adguard_sync_arch }}.tar.gz"  # noqa yaml[line-length]
             # Use upstream filename so get_url's checksum lookup matches an entry in checksums.txt
-            dest: "/tmp/adguardhome-sync_{{ adguardhome_sync_version }}_linux_{{ adguard_sync_arch }}.tar.gz"
+            dest: "/tmp/adguardhome-sync_{{ adguard_sync_version }}_linux_{{ adguard_sync_arch }}.tar.gz"
             mode: "0644"
             timeout: 60
-            checksum: "sha256:https://github.com/bakito/adguardhome-sync/releases/download/v{{ adguardhome_sync_version }}/checksums.txt"
+            checksum: "sha256:https://github.com/bakito/adguardhome-sync/releases/download/v{{ adguard_sync_version }}/checksums.txt"
           register: sync_download
 
         - name: Extract adguardhome-sync
           ansible.builtin.unarchive:
-            src: "/tmp/adguardhome-sync_{{ adguardhome_sync_version }}_linux_{{ adguard_sync_arch }}.tar.gz"
+            src: "/tmp/adguardhome-sync_{{ adguard_sync_version }}_linux_{{ adguard_sync_arch }}.tar.gz"
             dest: /tmp
             remote_src: true
 
@@ -287,13 +287,13 @@
         path: "{{ item }}"
         state: absent
       loop:
-        - "/tmp/adguardhome-sync_{{ adguardhome_sync_version }}_linux_{{ adguard_sync_arch }}.tar.gz"
+        - "/tmp/adguardhome-sync_{{ adguard_sync_version }}_linux_{{ adguard_sync_arch }}.tar.gz"
         - /tmp/adguardhome-sync
       when: needs_sync_upgrade
 
     - name: Display upgrade result
       ansible.builtin.debug:
-        msg: "adguardhome-sync {{ 'upgraded' if needs_sync_upgrade else 'already at version ' + adguardhome_sync_version }}"
+        msg: "adguardhome-sync {{ 'upgraded' if needs_sync_upgrade else 'already at version ' + adguard_sync_version }}"
 
 - name: Update Tailscale (Proxmox hosts only)
   hosts: proxmox

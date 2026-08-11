@@ -26,9 +26,7 @@ spec:
     # Raise with the quota.
     concurrent: 7
 
-    # Kubernetes executor configuration
     runners:
-      # Runner name prefix
       name: k3s-runner-shared
 
       # Existing Secret (created by ESO externalsecret.yaml) containing the
@@ -38,42 +36,33 @@ spec:
       # Tags for explicit targeting from other projects
       tags: "k8s-deploy"
 
-      # Run untagged jobs from any project
-      # This makes it the default runner for projects that don't specify tags.
-      # weisssrv jobs use tags: [infrastructure] and go to the privileged runner instead.
+      # Default runner for projects that specify no tags; weisssrv jobs are
+      # tagged [infrastructure] and go to the privileged runner instead.
       runUntagged: true
 
-      # Protected branches only.
-      # ACCEPTED RISK (homelab): protected:false lets the shared runner accept
-      # untagged jobs from any project on any (unprotected) branch. This runner
-      # is non-privileged (run_as_non_root, no DinD) and its job pods are
-      # egress-contained (default-deny-egress + internet-only shared-jobs-egress,
-      # RFC1918 blocked — see networkpolicy.yaml), so untrusted branch code is
-      # boxed in. In production/team environments, set protected:true to restrict
-      # to protected branches.
+      # ACCEPTED RISK (homelab): protected:false lets this runner accept
+      # untagged jobs from any project on any branch. It is non-privileged
+      # (run_as_non_root, no DinD) and its job pods are egress-contained with
+      # RFC1918 blocked (networkpolicy.yaml), so untrusted branch code is boxed
+      # in. A team environment would set protected:true.
       protected: false
 
       executor: kubernetes
 
-      # Kubernetes executor config
       config: |
         [[runners]]
           # Keep clones on the LAN path too (see gitlabUrl above).
           clone_url = "https://git.esweiss.com"
 
-          # Environment variables for all job containers
-          # When running as non-root (UID 1000), containers may lack /etc/passwd entry,
-          # causing HOME to be unset. Git then tries to write to //.gitconfig which fails.
-          # Solution: Set HOME to a writable directory and explicitly set GIT_CONFIG paths.
-          # See: https://gitlab.com/gitlab-org/gitlab-runner/-/issues/37408
+          # Non-root job containers may lack an /etc/passwd entry, leaving HOME
+          # unset so git writes to //.gitconfig and fails. Pin both explicitly.
+          # gitlab-org/gitlab-runner#37408
           environment = ["HOME=/home/gitlab-runner", "GIT_CONFIG_GLOBAL=/home/gitlab-runner/.gitconfig"]
 
           # TOML sections are POSITIONAL — scalar keys must precede any
-          # sub-table or they silently land inside it (a past layout had
-          # cpu/memory limits misparsed as pod_labels with chart defaults
-          # silently applied, and pull_policy + node_selector_overwrite_allowed
-          # swallowed by the empty_dir volume table). Scalars first,
-          # sub-tables last.
+          # sub-table or they silently land inside it (limits misparsed as
+          # pod_labels, pull_policy swallowed by a volume table). Scalars
+          # first, sub-tables last.
           [runners.kubernetes]
             namespace = "gitlab-runner"
             # Default CI job image, digest-pinned for reproducibility (the

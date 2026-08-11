@@ -1,0 +1,39 @@
+---
+# ansible-lint configuration for weisssrv homelab
+# https://ansible.readthedocs.io/projects/lint/configuring/
+#
+# Location matters: ansible-lint discovers this file by walking UP from its
+# working directory, never down into a subdirectory. Both callers run from the
+# repository root over `ansible/` — the CI ansible-lint job (weisssrv-lib
+# /ci/lint/ansible-lint.yml) and `task ansible:lint` — so the file lives here,
+# not in ansible/. Under ansible/ it was invisible to the root-cwd run, and the
+# opt-in rules the profile suppresses (run-once) came back.
+
+# Use production profile - this is production infrastructure. The profile also
+# decides WHICH rules run: with no profile ansible-lint enables its opt-in rules
+# too, and run-once[task] then fires on every deliberate `run_once:`.
+profile: production
+
+# Exclude paths (for third-party code, generated files, etc.), relative to the
+# repository root.
+exclude_paths:
+  - .cache/
+  - .github/
+  - venv/
+  # Where ansible-galaxy installs weisssrv.infra — the library lints itself
+  # upstream, and an installed copy must not be reported as this repo's
+  # failures. `profile: production` lints the roles a playbook resolves, so
+  # without these the collection's own files land in this job's output.
+  # .ansible-home/ is the CI job's ANSIBLE_HOME (its collections/ subtree is the
+  # galaxy install target); the other two cover a local install at the root or
+  # under ansible/.
+  - .ansible-home/
+  - ansible_collections/
+  - ansible/ansible_collections/
+
+# Skip only rules that don't apply to homelab context
+skip_list:
+  - var-naming[no-role-prefix]  # Global vars (admin_user, etc.) are intentional
+
+# offline: false — allow ansible-lint to resolve missing dependencies
+offline: false

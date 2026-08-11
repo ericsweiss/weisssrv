@@ -1,11 +1,8 @@
 ---
-# salt-rim is a stateless nginx frontend (configMap mount only, no PVC, no
-# session affinity, DNS-only egress). Standalone HPA because salt-rim is a raw
-# Deployment, not a Helm chart, so there is no autoscaling toggle to flip. The
-# Deployment drops its static .spec.replicas so Flux's server-side apply does
-# not contend with the HPA. salt-rim's VPA (vpa.yaml) is memory-only so CPU is
-# owned solely by this HPA. CPU threshold kept high (80%) because the pod idles
-# near zero; min=2 is the HA floor, scaling above it is the burst headroom.
+# salt-rim is a stateless nginx frontend, so min=2 is an HA floor and anything
+# above it is burst headroom. The Deployment omits .spec.replicas so Flux's
+# server-side apply does not contend with this HPA, and salt-rim's VPA is
+# memory-only so CPU is owned here alone.
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
@@ -25,14 +22,9 @@ spec:
         target:
           type: Utilization
           averageUtilization: 80
-  # Be honest about what this is: at a 50m request an 80% target trips at 40m,
-  # and 7d per-pod CPU is p95 0.2m — three orders of magnitude below it. This
-  # HPA is an HA floor (min=2) far more than an autoscaler, the same candour the
-  # coredns pin carries in configs/coredns/hpa.yaml. The behavior block exists
-  # because that gap cuts both ways: a single scrape-window blip (config reload,
-  # a burst of concurrent asset requests) clears 40m easily and, with the default
-  # 0s scaleUp window, takes it straight to max=4 where the 5-min downscale
-  # damping parks it. Same shape as the traefik/authentik-server blocks.
+  # The CPU target is effectively inert at this load, so the behavior block is
+  # what earns its keep: it damps a single scrape-window blip that would
+  # otherwise jump straight to max and park there for the downscale window.
   behavior:
     scaleUp:
       stabilizationWindowSeconds: 120

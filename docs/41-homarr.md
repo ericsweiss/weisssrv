@@ -30,7 +30,7 @@ NAS-avoiding + modern-CPU (state is on NFS, not a node-local zvol). The
 nginx-fronted image runs its **own root entrypoint** (it templates `/etc/nginx`
 at boot), so it does **not** run fully non-root — forcing `runAsUser: 1000`
 crash-looped it on first deploy (EACCES templating `/etc/nginx`; see the
-`deployment.yaml` comment / !182). It still hardens everything it can: the
+`deployment.yaml` comment). It still hardens everything it can: the
 container drops **ALL** capabilities and adds back only the four load-bearing
 ones — `CHOWN`, plus `SETUID`/`SETGID` (the nginx master stays root and drops
 its workers to the `nginx` user) and `DAC_OVERRIDE` (nginx tmp/log dirs) — with
@@ -46,7 +46,7 @@ All state lives under a single writable mount at `/appdata` (the SQLite DB is
 `ssd/appdata` dataset — captured by the nightly `ssd/appdata -> archive`
 raw-ZFS replication (docs/06). The NFS export `all_squash`es every write to
 `1000:2000`; the `/appdata/homarr` subdir is created + owned `1000:2000` by the
-`nas_storage` role (`nas_appdata_dirs`).
+`nas_storage` role (`nas_storage_appdata_dirs`).
 
 SQLite tolerates exactly **one writer**. `replicas: 1` + `strategy: Recreate`
 guarantee no two pods ever dual-mount the RWO PV, which is what makes
@@ -69,7 +69,7 @@ NetworkPolicy admits only the Traefik namespace on :7575.
 Key env (see `deployment.yaml`):
 
 - `AUTH_PROVIDERS=oidc` — **SSO-only**. The onboarding-era credentials
-  break-glass has been retired (!193); there is no standing local admin. Admin
+  break-glass is retired; there is no standing local admin. Admin
   now rides the `homarr-admins` OIDC groups claim: the Terraform-managed
   Authentik `homarr-admins` group maps to the same-named Homarr admin group,
   which is what grants admin. This is also the fix for Homarr's OIDC-only
@@ -217,7 +217,7 @@ documented manual step; it could later be codified in a `proxmox_*` role). In
 the Homarr Proxmox widget, use `https://192.168.0.102:8006` (any node), the
 token-id (e.g. `homarr@pve!homarr`) and the token secret. Leave "ignore
 TLS"/self-signed **off**: the PVE cluster CA is trusted process-wide via
-`NODE_EXTRA_CA_CERTS` (!191), so `https://<node>:8006` verifies. Toggling
+`NODE_EXTRA_CA_CERTS`, so `https://<node>:8006` verifies. Toggling
 ignore-TLS is an un-codified verification downgrade — invisible to git review —
 and must be avoided.
 
@@ -307,7 +307,7 @@ above), and the NAS `/appdata/homarr` dir + DNS rewrite are deployed.
      `AdGuard Home` user/pass.
    - Proxmox → `https://192.168.0.102:8006` + 1P `Homarr Proxmox Token`
      token-id/secret. Leave "ignore TLS" **off** — the PVE cluster CA is trusted
-     process-wide via `NODE_EXTRA_CA_CERTS` (!191), so the cert verifies;
+     process-wide via `NODE_EXTRA_CA_CERTS`, so the cert verifies;
      toggling it is an un-codified verification downgrade to avoid.
    - Plex → `http://192.168.0.152:32400` + 1P `Plex Token`.
    - Home Assistant → `http://192.168.0.154:8123` + 1P `Home Assistant API

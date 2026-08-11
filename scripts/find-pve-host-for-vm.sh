@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
 # Locate which Proxmox host currently runs a given VM ID, printing the host
-# name to stdout. Used by the home-assistant:vm-* and similar Taskfile tasks.
+# name to stdout. For task wrappers that act on a VM without pinning its node.
 #
-# Usage: scripts/find-pve-host-for-vm.sh <vmid> <host1> [host2 ...]
+# Usage: find-pve-host-for-vm.sh <vmid> <host1> [host2 ...]
 # Exit 0 with host on stdout if found; exit 1 with diagnostics on stderr.
+#
+# Environment:
+#   PVE_NODE_PREFIX  prefix this site's SSH targets carry that the Proxmox node
+#                    names do not (default "pve-"). Applied to both API-derived
+#                    answers (steps 2 and 3); step 4 already yields an SSH
+#                    target. Set to "" for a site whose names need no rewrite.
 #
 # Resolution strategy (HA-resilient):
 #   1. Find the first reachable host from the provided list.
@@ -26,10 +32,13 @@ VMID="$1"
 shift
 HOSTS=("$@")
 
-# VMID is interpolated into a remote shell command (`grep "service vm:${VMID}"`)
-# and an inline Python snippet (`if x.get('vmid') == ${VMID}`) below. Pin it to
-# a positive integer up front so a hostile or malformed input can't break out of
-# either context. Proxmox VMIDs are always positive integers in [100, 999999999].
+# The API reports the bare Proxmox node name; the SSH target may carry a
+# prefix. `${x-y}` (not `${x:-y}`) so an explicitly empty value disables the
+# rewrite.
+PVE_NODE_PREFIX="${PVE_NODE_PREFIX-pve-}"
+
+# VMID is interpolated into a remote shell command and an inline Python
+# snippet below, so pin it to a positive integer first.
 if [[ ! "$VMID" =~ ^[0-9]+$ ]]; then
     echo "ERROR: VMID must be a positive integer (got: ${VMID})" >&2
     exit 2
@@ -48,20 +57,11 @@ if [ -z "$REACHABLE" ]; then
     exit 1
 fi
 
-# Step 2: ha-manager (preferred when service is HA-managed).
-# `|| true` swallows the non-zero exit when the VM isn't HA-managed —
-# without it, the upstream grep miss + pipefail aborts the script under
-# `set -e` before steps 3/4 can run.
-#
-# Boundary: match vm:<N> followed by whitespace or end-of-line so
-# vm:154 doesn't match vm:1540. The earlier form used `\b` which is a
-# GNU-grep extension to ERE — fine on Debian/PVE today, but the
-# explicit `( |\t|$)` is portable across BSD grep / busybox in case
-# this script ever gets reused outside the Proxmox cluster.
-# `sed -n ...p` only prints lines where the substitution actually matched.
-# Without `-n` (and the trailing `p`), a line that grep matched but whose
-# `(node,...)` shape sed can't parse would be echoed VERBATIM, putting the
-# whole status line into $NODE instead of falling through to steps 3/4.
+# Step 2: ha-manager (preferred when the service is HA-managed). `|| true`
+# swallows the grep miss for a non-HA VM so steps 3/4 still run. The
+# `([[:space:]]|$)` boundary keeps vm:154 from matching vm:1540, and `sed -n
+# …p` prints only lines the substitution matched, so an unparseable status
+# line falls through instead of landing verbatim in $NODE.
 NODE=$(ssh_probe "$REACHABLE" "sudo ha-manager status 2>/dev/null | grep -E 'service vm:${VMID}([[:space:]]|\$)'" 2>/dev/null \
     | sed -n 's/.*(\([^,]*\),.*/\1/p' || true)
 
@@ -71,10 +71,13 @@ if [ -z "$NODE" ]; then
         "sudo pvesh get /cluster/resources --type vm --output-format json 2>/dev/null" 2>/dev/null \
         | python3 -c "import sys, json; d = json.load(sys.stdin); v = [x for x in d if x.get('vmid') == ${VMID}]; print(v[0]['node'] if v else '')" 2>/dev/null \
         || true)
-    if [ -n "$NODE" ]; then
-        # Normalize: ensure pve- prefix
-        NODE="pve-${NODE#pve-}"
-    fi
+fi
+
+# Both API-derived branches normalize here, to exactly one $PVE_NODE_PREFIX.
+# Before step 4 on purpose: that branch sets NODE from the caller's own SSH
+# targets, which are already connectable names.
+if [ -n "$NODE" ] && [ -n "$PVE_NODE_PREFIX" ]; then
+    NODE="${PVE_NODE_PREFIX}${NODE#"$PVE_NODE_PREFIX"}"
 fi
 
 # Step 4: per-host scan (fallback when cluster API unavailable)

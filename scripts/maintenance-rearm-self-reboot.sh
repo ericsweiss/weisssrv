@@ -1,21 +1,14 @@
 #!/usr/bin/env bash
 # Run from a maintenance CI job's `after_script`. If the run armed a DETACHED
-# self-host reboot (a marker written by _reboot-if-needed.yml when the executor's
-# own Proxmox host needs a reboot), re-arm it to fire PROMPTLY (+60s) now that the
-# job is ending, and disarm the long fallback timer.
+# self-host reboot (marker written by _reboot-if-needed.yml when the executor's
+# own Proxmox host needs one), re-arm it to fire at +60s and disarm the long
+# fallback timer. No-op if no self-host was recorded.
 #
-# Why: arming only a fixed long timer (e.g. 5400s) during the run is a cliff — a
-# run that overruns the delay reboots the host mid-job and kills the executor.
-# The after_script always runs (success, failure, OR cancel), so re-arming here
-# anchors the reboot to the actual job end, not a guess, and disarms the timer if
-# the run was cancelled. The long timer armed during the run remains the FALLBACK
-# for the case this after_script never runs (runner crash) OR overruns GitLab's
-# after_script timeout (it is bounded separately from the job): if op/SSH is slow
-# and this gets killed, the host still reboots on the long fallback, just later.
-#
+# after_script always runs (success, failure, cancel), so this anchors the reboot
+# to the real job end rather than a fixed delay that could fire mid-job. The long
+# timer stays as the fallback for a runner crash or an after_script timeout.
 # Quorum-safe by construction: _reboot-if-needed.yml only takes the detached path
-# on a safe opt-* host (NO etcd member), so a prompt reboot here cannot endanger
-# the etcd quorum regardless of kured's state. No-op if no self-host was recorded.
+# on an opt-* host, which carries no etcd member.
 set -uo pipefail
 
 MARKER="${1:-/tmp/maintenance-self-host}"

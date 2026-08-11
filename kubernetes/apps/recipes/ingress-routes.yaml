@@ -116,32 +116,15 @@ spec:
 ---
 # Canonical-host redirect for bar.esweiss.com -> bar.ericsweiss.com.
 #
-# Bar Assistant can only ever have ONE callback origin: Socialite is handed
-# services.authentik.redirect (env AUTHENTIK_REDIRECT_URI) as a fixed absolute
-# URL and uses it verbatim, and SSOAuthController never calls redirectUrl() to
-# vary it per request. Note the login itself is NOT session-bound -- the
-# controller calls ->stateless(), so nothing here is about a lost state cookie.
+# Bar Assistant pins ONE callback origin (Socialite gets a fixed absolute
+# AUTHENTIK_REDIRECT_URI and never varies it per request), so a login begun on
+# the internal name completes against the external one and leaves the internal
+# origin permanently logged out. Redirecting it keeps old bookmarks and Homarr
+# tiles working. Mealie needs none of this — it derives its redirect from the
+# request host (mealie.yaml).
 #
-# The consequence is subtler: a login begun on bar.esweiss.com completes
-# successfully but lands on bar.ericsweiss.com, so the issued token is stored
-# against THAT origin. bar.esweiss.com could never end up logged in, and simply
-# bounced you to the other hostname mid-flow.
-#
-# So the internal name is made an explicit redirect to the canonical one instead
-# of a second, permanently-logged-out origin. Old bookmarks and Homarr tiles keep
-# working.
-#
-# permanent: false (302), deliberately, even though the redirect is semantically
-# "canonical". redirectRegex only offers 301 (permanent: true) or 302; there is
-# no 308 here. A 301 is cached hard and indefinitely by browsers, and this
-# redirect exists only to compensate for an upstream app limitation -- if Bar
-# Assistant ever derives its callback per request (as Mealie does), this route
-# goes away, and anyone holding a cached 301 would keep being bounced with no way
-# to clear it but wiping browser state. 302 keeps that reversible for the cost of
-# one revalidation.
-#
-# Mealie needs none of this: it derives its redirect from the request host, so
-# both of its hostnames work natively (see mealie.yaml BASE_URL).
+# 302, not 301: redirectRegex offers only those two, and a hard-cached 301 would
+# be unclearable if Bar Assistant ever gains per-request callbacks.
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:

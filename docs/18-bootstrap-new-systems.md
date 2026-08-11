@@ -93,7 +93,10 @@ ls -lh /var/lib/vz/template/cache/
 
 ### Step 2: Create LXC Container
 
-Choose a VMID (container ID) that doesn't conflict with existing containers. Check existing IDs:
+Choose a VMID (container ID) that doesn't conflict with existing containers. The
+allocated VMIDs are 150-158 (infrastructure + app guests) and 202-207 / 222 /
+223 / 227 (the k3s fleet) — the examples below use 240 to stay clear of both.
+Check what is live:
 
 ```bash
 pct list
@@ -120,9 +123,10 @@ pct create <VMID> \
 ```
 
 **Parameter Notes**:
-- `<VMID>`: Container ID (e.g., 201, 202)
-- `<hostname>`: DNS name (e.g., app-01)
-- `<IP>`: Static IP (e.g., 192.168.0.201)
+- `<VMID>`: Container ID (e.g. 240, 241 — outside the allocated ranges above)
+- `<hostname>`: DNS name (e.g. app-01)
+- `<IP>`: Static IP (e.g. 192.168.0.240 — outside the allocated `.99-.161`,
+  `.202-.207` and `.222/.223/.227` bands; see docs/01 for the full map)
 - `--rootfs local-lvm:8`: 8GB root filesystem (adjust as needed)
 - `--unprivileged 1`: Run as unprivileged (security best practice)
 - `--features nesting=1`: Enable nested containers (required for Docker/K8s)
@@ -131,10 +135,10 @@ pct create <VMID> \
 
 **Example**:
 ```bash
-pct create 201 \
+pct create 240 \
   local:vztmpl/debian-13-standard_13.0-1_amd64.tar.zst \
   --hostname app-01 \
-  --net0 name=eth0,bridge=vmbr0,ip=192.168.0.201/24,gw=192.168.0.1 \
+  --net0 name=eth0,bridge=vmbr0,ip=192.168.0.240/24,gw=192.168.0.1 \
   --nameserver 192.168.0.150 \
   --nameserver 192.168.0.160 \
   --storage local-lvm \
@@ -224,7 +228,7 @@ Add to appropriate group:
 ```yaml
 # Example: a k3s agent node. NOTE: the k3s VM fleet (3 servers + 6 agents) is
 # normally created and provisioned by Ansible (`task k3s:provision-vms`, the
-# proxmox_vm role + cloud-init), not bootstrapped by hand — this snippet just
+# weisssrv.infra.proxmox_vm role + cloud-init), not bootstrapped by hand — this snippet just
 # shows the inventory shape. Groups are k3s_servers / k3s_agents with
 # k3s_role: server|agent.
 k3s_agents:
@@ -237,11 +241,11 @@ k3s_agents:
 Or for a standalone service:
 
 ```yaml
-# Example: Adding a monitoring service
+# Example: Adding a standalone service on the bootstrapped container above
 monitoring:
   hosts:
-    grafana-01:
-      ansible_host: 192.168.0.210
+    app-01:
+      ansible_host: 192.168.0.240
       ansible_user: eric
 ```
 
@@ -314,6 +318,9 @@ app-01 | SUCCESS => {
 
 Run Ansible to configure the system:
 
+The roles live in the `weisssrv.infra` collection, so install it first if this
+is a fresh checkout (`task ansible:install-collections`, docs/02 § 4).
+
 ```bash
 # Check what would change (dry run)
 task infra:check -- --limit app-01
@@ -338,7 +345,7 @@ Or manually verify:
 
 ```bash
 # SSH should still work
-ssh eric@192.168.0.201
+ssh eric@192.168.0.240
 
 # Check services
 systemctl status ssh
@@ -356,7 +363,7 @@ which htop neovim git
 ## VM Bootstrap
 
 VMs (including the entire 9-node k3s fleet and the GitLab/HAOS VMs) are normally
-created and provisioned by Ansible — the `proxmox_vm` role builds them from the
+created and provisioned by Ansible — the `weisssrv.infra.proxmox_vm` role builds them from the
 Debian cloud image with cloud-init, driven by the inventory (`task k3s:provision-vms`,
 `task gitlab:deploy`). The manual `qm` steps below are retained for reference and
 for bootstrapping a VM outside that flow; prefer the automated path for k3s nodes.
@@ -429,7 +436,8 @@ If not using cloud-init:
 
 ## What the Base Role Expects
 
-The `base` role (first role applied to all systems) expects these minimum prerequisites:
+The `weisssrv.infra.base` role (first role applied to all systems) expects these
+minimum prerequisites:
 
 ### Must Exist Before Base Role
 

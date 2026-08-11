@@ -1,16 +1,11 @@
 #!/usr/bin/env bash
-# Restart the Home Assistant VM and wait for it to come back online.
-# Replaces the prior fixed `sleep 30`, which would mark the job successful
-# even if HA was still down.
+# Restart the Home Assistant VM (Proxmox-HA-managed, VMID 154) and wait for it
+# to come back online.
 #
-# VM 154 (Home Assistant) is Proxmox-HA-managed. There is NO `ha-manager restart`
-# subcommand (the prior version of this script used it and failed with
-# "unknown command 'ha-manager restart'"). Restart it with `qm reset` — a hard
-# reset HA tolerates (the VM stays on its node) and which, unlike `qm reboot`,
-# avoids a QEMU Guest Agent timeout when HAOS lacks agent config (matches the
-# home-assistant:vm-restart task). The command runs across ALL proxmox hosts;
-# only the node whose `qm list` shows 154 acts (the VM may have HA-migrated off
-# proxmox[0]).
+# `qm reset`, not `ha-manager restart` (no such subcommand) and not `qm reboot`
+# (times out on the QEMU Guest Agent when HAOS lacks agent config). Runs across
+# ALL proxmox hosts; only the node whose `qm list` shows 154 acts, since HA may
+# have migrated the VM.
 
 set -euo pipefail
 # Source the pure-logic helpers (token verdict + down-then-up debounce) before
@@ -21,22 +16,14 @@ _SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$_SCRIPT_DIR/../ansible"
 
 echo "Restarting Home Assistant VM (vm:154) via qm reset on its current host..."
-# Run across the whole proxmox group; only the node whose `qm list` shows 154
-# acts (HA may have migrated it off proxmox[0]). Capture output with `|| true`
-# so an UNRELATED unreachable host (common mid-maintenance, when nodes may be
-# rebooting) does not abort this step under `set -e` — `ansible <group>` exits
-# non-zero if ANY host is unreachable, even when the reset succeeded on 154's
-# host.
+# `|| true`: `ansible <group>` exits non-zero if ANY host is unreachable, which
+# is common mid-maintenance and unrelated to the reset.
 #
-# The remote snippet ALWAYS exits 0 and reports its outcome as a status token
-# rather than letting `qm reset` failure fail the Ansible task. Why: a FAILED
-# task echoes the command SOURCE back in its result dump, so a success marker
-# that is a literal substring of that source would let grep match the echoed
-# command instead of a real reset (false success — e.g. when `qm reset` fails
-# because the VM is locked by a concurrent vzdump backup). The token is
-# assembled at runtime (`vmreset:$r`), so the grepped strings `vmreset:ok` /
-# `vmreset:err` never appear literally in the source — collision-proof even
-# under `-v`, where successful tasks also dump cmd.
+# The remote snippet always exits 0 and reports via a status token, because a
+# FAILED Ansible task echoes the command SOURCE in its result dump — a literal
+# marker would then match the echo instead of a real reset. The token is
+# assembled at runtime (`vmreset:$r`), so `vmreset:ok` / `vmreset:err` never
+# appear literally in the source.
 reset_output=$(op run -- ansible proxmox -i inventories/prod -m shell -a \
   "if qm list 2>/dev/null | awk 'NR>1 {print \$1}' | grep -qx 154; then if qm reset 154; then r=ok; else r=err; fi; echo \"vmreset:\$r host=\$(hostname)\"; fi" 2>&1 || true)
 echo "$reset_output"
@@ -68,31 +55,16 @@ case "$reset_verdict" in
 esac
 
 echo "Waiting for Home Assistant to come back online (up to 5 min)..."
-# Wait for an observed down-then-up transition. ha-manager restart returns
-# immediately, and the HTTP endpoint can still respond for a few seconds
-# before the VM actually goes down — without the down requirement we'd risk
-# marking the job successful before the restart even took effect. Debounce
-# `ha_went_down` with a 2-failure streak so a single transient curl error
-# doesn't satisfy the down requirement on its own.
+# Success requires an OBSERVED down-then-up transition: the endpoint keeps
+# answering for a few seconds after the reset, so "up" alone proves nothing.
+# `ha_went_down` debounces on a 2-failure streak against a transient curl error.
 #
-# A `qm reset` can be fast enough that we never catch the 2-failure down
-# streak (the VM is back before two consecutive probes fail). In that case the
-# endpoint stays healthy throughout and we NEVER observe the VM go down, so we
-# cannot confirm the reset actually cycled it (the endpoint may simply have
-# stayed up because the reset had no observable effect on the HTTP probe). To
-# avoid timing out at 300s with a misleading "did not come back online" error,
-# we accept this never-down path once a short settle window (HA_SETTLE_SECS)
-# has elapsed — but we mark it UNVERIFIED so it is not reported identically to
-# a confirmed down-then-up recovery.
-#
-# Exit semantics for the UNVERIFIED path are controlled by HA_UNVERIFIED_EXIT
-# (default 0): the never-down fast reset is the EXPECTED, benign outcome of a
-# quick `qm reset`, and this script runs as the last step of maintenance-all-ops
-# under `set -e`, so a non-zero default would flip an entire routine maintenance
-# run to FAILED. The path is therefore loudly LABELED as UNVERIFIED in the
-# output (not silently equated with a verified recovery), and a caller that
-# wants strict semantics can set HA_UNVERIFIED_EXIT=75 (EX_TEMPFAIL) to make
-# the never-down run exit distinctly from both success and hard failure.
+# A fast `qm reset` can complete before two probes fail, leaving the endpoint up
+# throughout. After HA_SETTLE_SECS that path is accepted but labelled
+# UNVERIFIED, never equated with a confirmed recovery. It exits
+# HA_UNVERIFIED_EXIT (default 0) because it is the expected outcome of a quick
+# reset and this is the last step of maintenance-all-ops under `set -e`; set 75
+# (EX_TEMPFAIL) for strict semantics.
 HA_SETTLE_SECS=60
 HA_UNVERIFIED_EXIT="${HA_UNVERIFIED_EXIT:-0}"
 # ha_state: pending | healthy (confirmed down-then-up) | unverified (never-down

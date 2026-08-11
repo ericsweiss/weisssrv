@@ -45,6 +45,7 @@ In addition to the built-in scrape targets, custom ServiceMonitors collect metri
 | Exportarr (Sonarr, Radarr, Lidarr, Prowlarr) | observability | `/metrics` | 60s |
 | Redis exporter (Bar Assistant cache) | observability | `/metrics` | 60s |
 | Meilisearch (Bar Assistant search) | recipes | `/metrics` | 60s |
+| Authentik worker (PodMonitor, port 9300) | authentik | `/metrics` | 60s |
 | GitLab (VM) | observability (external endpoint) | `/-/metrics` | 60s |
 | Home Assistant (VM) | observability (external endpoint) | `/api/prometheus` | 60s |
 | Immich (VM: api + microservices) | observability (external endpoint) | `/metrics` | 60s |
@@ -59,6 +60,29 @@ In addition to the built-in scrape targets, custom ServiceMonitors collect metri
 | external-secrets | external-secrets | `/metrics` | (chart default) |
 
 Controller ServiceMonitors (cert-manager, Traefik, MetalLB, external-dns, external-secrets) are created by their respective Helm charts when `serviceMonitor.enabled: true`.
+
+#### PostgreSQL coverage
+
+All five production databases export `postgres_exporter` on **9187**, in three
+shapes (`observability/service-monitors/postgres.yaml`). `PostgresDown` and
+`PostgresConnectionsHigh` consume `pg_up` / `pg_stat_activity_count` from all
+three — they carry no `job` matcher, so the shape is invisible to them.
+
+| Database | Shape | Target | Reachability requirement |
+|---|---|---|---|
+| Authentik | metrics sidecar rendered by the bundled `postgresql` subchart | chart-rendered ServiceMonitor (`postgresql.metrics.serviceMonitor.enabled`), ns `authentik` | ingress allow from observability on 9187 (`apps/authentik/networkpolicy.yaml`) |
+| Mealie | sidecar in the `mealie-postgres` pod | PodMonitor, ns `recipes` | ingress allow from observability on 9187 (`apps/recipes/networkpolicy.yaml`) |
+| GitLab | omnibus-bundled exporter | static target `192.168.0.153:9187` | 9187 open to `k3s_nodes` in `sg-gitlab` |
+| Nextcloud | compose service on the VM | static target `192.168.0.156:9187` | 9187 open to `k3s_nodes` in `sg-nextcloud` |
+| Immich | compose service on the VM | static target `192.168.0.157:9187` | 9187 open to `k3s_nodes` in `sg-immich` |
+
+The three VM targets arrive through one selectorless headless Service +
+EndpointSlice each, with `jobLabel: app.kubernetes.io/instance`, so they land as
+`job=gitlab` / `nextcloud` / `immich` rather than sharing a Service name. Both
+in-cluster namespaces are default-deny-ingress — a missing allow leaves the pod
+healthy and the scrape silently REJECTed (`task flux:lint` runs
+`scripts/check-scrape-netpol.py` for the namespace-level half of that pairing;
+the port-level half is a review check).
 
 ## Architecture
 
@@ -80,7 +104,15 @@ observability    (parallel)
 
 Flux reconciles the observability stack after `infrastructure-configs` is Ready (so the ClusterSecretStore, ClusterIssuer, and MetalLB IP pools exist). `apps` branches off `infrastructure-configs` in parallel — deliberately NOT gated on observability health, so a failed observability upgrade cannot freeze application reconciliation.
 
-The `monitoring.coreos.com` CRDs are installed up-front by the `infrastructure-crds` stage (before controllers), so on a fresh bootstrap the monitoring CRs under `apps/` (the qbittorrent PodMonitor, the authentik chart ServiceMonitor) and this stack's own ServiceMonitors render cleanly — no manual CRD pre-apply. kube-prometheus-stack runs with `crds.enabled: false` + `install/upgrade.crds: Skip` (the CRD stage owns them). See docs/29 (Fresh bootstrap / disaster recovery) for the one-time live-cluster CRD adoption. In steady state the CRDs persist even if this Kustomization temporarily fails, so apps are unaffected by observability incidents.
+The `monitoring.coreos.com` CRDs are installed up-front by the
+`infrastructure-crds` stage (before controllers), so on a fresh bootstrap the monitoring CRs
+under `apps/` (the qbittorrent PodMonitor, the authentik chart ServiceMonitor)
+and this stack's own ServiceMonitors render cleanly — no manual CRD pre-apply.
+kube-prometheus-stack runs with `crds.enabled: false` + `install/upgrade.crds:
+Skip` (the CRD stage owns them). See docs/29 (Fresh bootstrap / disaster
+recovery) for the one-time live-cluster CRD adoption. In steady state the CRDs
+persist even if this Kustomization temporarily fails, so apps are unaffected by
+observability incidents.
 
 ### Namespace
 
@@ -122,11 +154,39 @@ Grafana uses an NFS-backed PV for its SQLite database (user preferences, service
 
 **In-cluster:** Alloy runs as a DaemonSet on all 9 k8s nodes (tolerates all taints). It tails pod logs from `/var/log/pods` and ships them to Loki's ClusterIP service.
 
-**Host-side:** The `alloy_host` Ansible role installs Alloy from the Grafana APT repository on all non-k8s hosts and k3s VMs. This includes 6 Proxmox hosts, 2 DNS containers, smtp-relay, GitLab VM, Plex LXC, and all 9 k3s VMs (3 servers + 6 agents). It reads from systemd journald and ships to Loki over the TLS ingress at `https://loki.esweiss.com/loki/api/v1/push` (lan-tailscale-only + basic-auth middleware; credentials from the "Loki Push Auth" 1Password item, injected at deploy time). The plain NodePort `:31100` via the kube-vip VIP remains only as an emergency fallback — override `alloy_host_loki_url` per host if Traefik is down.
+**Host-side:** The `alloy_host` Ansible role installs Alloy from the Grafana APT
+repository on all non-k8s hosts and k3s VMs. This includes 6 Proxmox hosts, 2
+DNS containers, smtp-relay, GitLab VM, Plex LXC, and all 9 k3s VMs (3 servers +
+6 agents). It reads from systemd journald and ships to Loki over the TLS ingress
+at `https://loki.esweiss.com/loki/api/v1/push` (lan-tailscale-only + basic-auth
+middleware; credentials from the "Loki Push Auth" 1Password item, injected at
+deploy time). There is no NodePort Service in git: the `:31100` break-glass path
+is applied by hand for the duration of an ingress outage and deleted afterwards
+— the manifest and the `alloy_host_loki_url` override are in
+[docs/12-runbooks.md](12-runbooks.md#loki-break-glass-nodeport-host-log-shipping-when-the-ingress-is-down)
+§ Loki break-glass NodePort.
 
 On k3s VMs, alloy_host collects kubelet, containerd, etcd, and other systemd journal entries. This complements (not duplicates) the in-cluster DaemonSet, which only collects container logs from `/var/log/pods`. The two collectors cover different log sources with no overlap.
 
 Home Assistant (HAOS) does not support Alloy installation — it is a managed appliance OS without package management.
+
+#### kube-apiserver audit log
+
+One log source is deliberately **not** shipped. `group_vars/k3s.yml` sets
+`k3s_audit_enabled: true`, so each of the three k3s servers writes a
+kube-apiserver audit log to `/var/lib/rancher/k3s/server/logs/audit.log` (policy
+at `/var/lib/rancher/k3s/server/audit-policy.yaml`; what it captures is in
+[docs/19-k3s-deployment.md](19-k3s-deployment.md#kube-apiserver-audit-logging)).
+
+The apiserver writes that file directly, and `alloy_host` collects **journald
+only** (`loki.source.journal`) — so the audit log does not reach Loki and is not
+queryable in Grafana. It stays node-local, rotated by the apiserver itself: 100
+MB per file, 10 backups, discarded after 30 days, bounding it at ~1.1 GB per
+server. Treat it as forensic material read on the node (`jq` over the file, see
+docs/19), not as a log stream. Shipping it would need a new `loki.source.file`
+component in the `alloy_host` config plus a Loki stream-label and retention
+decision for a high-cardinality source; that is not built, and is a deliberate
+scope boundary rather than an oversight.
 
 **Loki ruler (host-log-staleness alerts).** Loki runs its in-process ruler
 (`loki.rulerConfig` in `loki/release.yaml`; `ruler.replicas: 0` — evaluated under
@@ -167,21 +227,47 @@ nodes). `site.yml` targets `proxmox:dns:mail:gitlab_servers:nextcloud_servers:im
 
 Each bare host is scraped via a headless `Service` + manually pinned `Endpoints` in `kubernetes/infrastructure/observability/exporters/node-exporter-host.yaml`, selected by a single `ServiceMonitor` (`jobLabel: app.kubernetes.io/name`). The GitLab VM's 9101 scrape is authorized by the `sg-metrics` security group it already carries.
 
-The role also configures the **textfile collector** directory (`/var/lib/node_exporter/`), which allows custom scripts to expose metrics by writing `.prom` files. Scripts running on the host (archive-backupctl, media-mover, acme.sh cert renewal, the GitLab backup wrapper) write timestamped success/failure metrics that node_exporter serves alongside its built-in hardware metrics. Prometheus scrapes these via ServiceMonitors targeting the external Endpoints, and PrometheusRules fire alerts (ArchiveBackupFailed/Stale, MediaMoverFailed/Stale, CertRenewalFailed, CertExpiringSoon/Critical, GitLabBackupFailed/Stale/StaleCritical, VzdumpBackupFailed/Stale, EtcdSnapshotStale — see Alert Rules) when scripts fail, become stale, or (for certs) approach expiry.
+The role also configures the **textfile collector** directory
+(`/var/lib/node_exporter/`), which allows custom scripts to expose metrics by
+writing `.prom` files. Scripts running on the host (archive-backupctl,
+media-mover, acme.sh cert renewal, the GitLab backup wrapper) write timestamped
+success/failure metrics that node_exporter serves alongside its built-in
+hardware metrics. Prometheus scrapes these via ServiceMonitors targeting the
+external Endpoints, and PrometheusRules fire alerts (ArchiveBackupFailed/Stale,
+MediaMoverFailed/Stale, CertRenewalFailed, CertExpiringSoon/Critical,
+GitLabBackupFailed/Stale/StaleCritical, VzdumpBackupFailed/Stale,
+EtcdSnapshotStale — see Alert Rules) when scripts fail, become stale, or (for
+certs) approach expiry.
 
 ### Shared exporter install pipeline
 
-The two download-based exporters — `zfs_exporter` (release tarball, on pve-nas-01) and `unbound_exporter` (release `.deb`, on dns-01/dns-02) — share a single install pipeline in the `prometheus_exporter` Ansible role: probe the installed version, conditionally download + verify + install the artifact, then enable/start the service and health-check it. Each remains a thin wrapper that supplies its own systemd unit (`zfs-exporter.service` runs as root for `/dev/zfs`; `unbound-exporter.service` uses `DynamicUser` + the unbound control socket) and passes its specifics (download URL, checksum, version-check command, port) to the shared role.
+The two download-based exporters — `zfs_exporter` (release tarball, on
+pve-nas-01) and `unbound_exporter` (release `.deb`, on dns-01/dns-02) — share a
+single install pipeline in the `prometheus_exporter` Ansible role: probe the
+installed version, conditionally download + verify + install the artifact, then
+enable/start the service and health-check it. Each remains a thin wrapper that
+supplies its own systemd unit (`zfs-exporter.service` runs as root for
+`/dev/zfs`; `unbound-exporter.service` uses `DynamicUser` + the unbound control
+socket) and passes its specifics (download URL, checksum, version-check command,
+port) to the shared role.
 
-`node_exporter_host` is intentionally NOT built on this pipeline: it installs from the Debian apt repo (`prometheus-node-exporter`), ships a systemd drop-in override rather than a full unit, and carries bespoke textfile collectors (corosync + zpool health) and the drivetemp module — none of which generalize. See `ansible/roles/prometheus_exporter/README.md` for the parameter reference and the full exclusion rationale.
+`node_exporter_host` is intentionally NOT built on this pipeline: it installs from the Debian apt repo (`prometheus-node-exporter`), ships a systemd drop-in override rather than a full unit, and carries bespoke textfile collectors (corosync + zpool health) and the drivetemp module — none of which generalize. See weisssrv-lib `ansible_collections/weisssrv/infra/roles/prometheus_exporter/README.md` for the parameter reference and the full exclusion rationale.
 
 ### Secrets
 
-Two ExternalSecrets and one templated ExternalSecret pull credentials from 1Password:
+Four ExternalSecrets in the `observability` namespace pull credentials from
+1Password:
 
-1. **observability-secrets** -- Grafana OIDC client ID/secret.
-2. **alertmanager-config** -- Alertmanager SMTP password, Discord webhook URL, and healthchecks.io Watchdog ping URL (rendered into alertmanager.yaml via ESO template, because Prometheus Operator does not support `webhook_url_file` for Discord configs).
-3. **observability-exporter-secrets** -- Proxmox API token, Plex token, AdGuard Home credentials, Home Assistant API token, Meilisearch master key, and *arr API keys (Sonarr, Radarr, Lidarr, Prowlarr).
+| ExternalSecret | 1Password item | Contents |
+|---|---|---|
+| `observability-secrets` | Grafana SSO | `grafana-oidc-client-id`, `grafana-oidc-client-secret` |
+| `alertmanager-config` | Discord Alert Webhook, Healthchecks Watchdog, SMTP Relay Auth | SMTP password, `discordWebhookUrl`, Watchdog ping URL — **templated**: ESO renders them into `alertmanager.yaml`, because Prometheus Operator does not support `webhook_url_file` for Discord configs |
+| `observability-exporter-secrets` | Proxmox API Token, Plex Token, AdGuard Home, Home Assistant API Token, Bar Assistant Secrets, Download Client API Keys | exporter credentials |
+| `loki-push-auth` | Loki Push Auth | `htpasswd` for the Loki push IngressRoute's basicAuth middleware |
+
+> Because `alertmanager-config` is templated, the **rendered Secret contains only
+> `alertmanager.yaml`** — the individual keys exist on the ExternalSecret's `data`
+> list, not on the Secret. Read them from the ExternalSecret when debugging.
 
 ### Ingress
 
@@ -238,15 +324,22 @@ On any Proxmox host:
 3. Uncheck "Privilege Separation" if using the same user's permissions
 4. In the 1Password item, store the user (e.g., `monitoring@pve`), token name (e.g., `exporter`), and the secret UUID as separate fields
 
-### 3. Configure Authentik OIDC for Grafana
+### 3. Authentik OIDC for Grafana (Terraform)
 
-In the Authentik admin UI (`auth.esweiss.com`):
-1. Create an **OAuth2/OpenID Provider** named "Grafana"
-   - Client type: Confidential
-   - Redirect URIs: `https://grafana.esweiss.com/login/generic_oauth`
-   - Scopes: `openid`, `profile`, `email`
-2. Create an **Application** named "Grafana" linked to the provider
-3. Copy the Client ID and Client Secret into the "Grafana SSO" 1Password item
+The Grafana OAuth2 provider, application and `grafana-*` groups are declared in
+`terraform/authentik/` and applied under supervision
+([docs/40](40-authentik-terraform.md)) — **not** in the Authentik admin UI, where
+edits become drift the next apply reverts. Values Terraform sets:
+
+| Setting | Value |
+|---|---|
+| Provider / application name | `Grafana` |
+| Client type | Confidential |
+| Redirect URI | `https://grafana.esweiss.com/login/generic_oauth` |
+| Scopes | `openid`, `profile`, `email` |
+
+The client ID and secret live on the **Grafana SSO** 1Password item and are read
+by both ESO and Terraform, so the two cannot disagree.
 
 ### 4. Enable Home Assistant Prometheus Integration (optional)
 
@@ -256,7 +349,9 @@ Add to Home Assistant `configuration.yaml` (deployed via `task home-assistant:de
 prometheus:
 ```
 
-This enables the `/api/prometheus` endpoint. After enabling, uncomment `home-assistant.yaml` in `kubernetes/infrastructure/observability/service-monitors/kustomization.yaml` and commit.
+This enables the `/api/prometheus` endpoint. The `home-assistant` ServiceMonitor
+is already active cluster-side — the in-guest enablement above is the only
+remaining part.
 
 ### 5. Enable GitLab Prometheus Metrics (optional)
 
@@ -266,7 +361,8 @@ In `gitlab.rb` on the GitLab VM:
 prometheus_monitoring['enable'] = true
 ```
 
-Then `sudo gitlab-ctl reconfigure`. After enabling, uncomment `gitlab.yaml` in `kubernetes/infrastructure/observability/service-monitors/kustomization.yaml` and commit.
+Then `sudo gitlab-ctl reconfigure`. The `gitlab` ServiceMonitor is already active
+cluster-side — the in-guest enablement above is the only remaining part.
 
 ### 6. Provision ZFS zvols
 
@@ -284,7 +380,7 @@ Add an internal DNS entry so `grafana.esweiss.com` resolves to the MetalLB inter
 
 ```yaml
 # ansible/inventories/prod/group_vars/dns.yml — append to existing list
-adguard_rewrites:
+adguard_home_rewrites:
   # ... existing rewrites ...
   - domain: "grafana.esweiss.com"
     answer: "192.168.0.101"
@@ -411,7 +507,7 @@ gitlab.json/recipes.json style. Homarr is intentionally **not** dashboarded — 
 exposes no Prometheus `/metrics` endpoint; its availability is covered by the
 `dashboard.esweiss.com` blackbox probe + the generic `EndpointDown` alert.
 
-**Community-dashboard audit fixes (repo-wide review, 2026-07).** The vendored
+**Community-dashboard audit fixes.** The vendored
 community imports were corrected against live metrics: the traefik ServiceMonitor
 gained `honorLabels: true` (`controllers/traefik/release.yaml`) so the
 traefik-official `$service` panels resolve per-backend instead of collapsing to a
@@ -563,9 +659,29 @@ To expand a zvol (e.g., Prometheus needs more than 150GB):
 |----------|-----------|-----------------|
 | **critical** | Email (`ericsweiss1@gmail.com`) + Discord webhook | 4h |
 | **warning** | Discord webhook only | 12h |
+| **info** | Discord webhook only — a notice, not a fault | 24h |
+| **none** | null-routed (InfoInhibitor, NodeOutageStormControl) | — |
 | **Watchdog** (always firing) | healthchecks.io heartbeat (`watchdog-heartbeat` receiver) | 1m configured, **~2m observed** |
 
-Alerts are grouped by `alertname`, `namespace` and `instance` with a 30s group wait and 10m group interval; warnings repeat at 12h. Node-outage inhibition suppresses per-pod/per-target warnings while a `KubeNodeNotReady`/`KubeNodeUnreachable` alert is firing, and the custom warning/critical pairs inhibit on `instance`+`component`.
+Alerts group on `alertname` + `namespace` + `instance` (30s group wait, 10m
+group interval). `instance` is in the key so host-level alerts — thermals,
+ZFS/corosync, node-exporter-host — group per host instead of collapsing into one
+empty-namespace bucket.
+
+**Inhibition.** Every warning/critical pair that uses distinct alertnames is
+inhibited explicitly on its own identity labels (the generic
+`same alertname + namespace` rule cannot match them): thermals on
+`instance`+`component`, SATA/NVMe on `instance`+`chip` (many drives per host
+share a component, so component-level pairing would let one drive silence
+another), disk/inode on `instance`+`mountpoint`, PVC on
+`namespace`+`persistentvolumeclaim`, ZFS space on `instance`+`pool`, and each
+backup/cert `*Prolonged` / `*Critical` on its warning twin.
+
+Node-outage suppression sources from **`NodeOutageStormControl`**, a null-routed
+`severity: none` rule that only fires while the node was Ready within the last
+6h. Past that window the suppression lifts by itself and `NodeNotReadyProlonged`
+(critical) takes over — an outage can no longer blind the rest of the fleet's
+alerts indefinitely.
 
 **Dead-man's switch:** the chart's always-firing `Watchdog` alert is routed to
 healthchecks.io (ping URL from the `Healthchecks Watchdog` 1Password item via
@@ -597,11 +713,14 @@ to the customResourceState config + RBAC when they're first adopted.
 
 ### Alert Rules
 
-The `additionalPrometheusRulesMap` in
-`kubernetes/infrastructure/observability/kube-prometheus-stack/release.yaml`
-is the **authoritative** list of custom alerts (every rule carries a
-`runbook_url` into docs/12). The tables below summarize the groups; consult
-the release for exact expressions and thresholds.
+Custom alert rules live under
+`kubernetes/infrastructure/observability/rules/`, one `PrometheusRule` manifest
+per group. Those manifests are **authoritative** — every rule carries a
+`runbook_url` into docs/12. The tables below summarize the groups; read the
+manifests for exact expressions and thresholds.
+
+`scripts/prometheus-rule-tests/` holds `promtool test rules` unit tests for the
+rule families; the `prometheus-config-lint` CI job runs them (docs/13).
 
 #### Storage Alerts (`homelab.storage`)
 
@@ -623,7 +742,8 @@ the release for exact expressions and thresholds.
 | VPNDown | Gluetun VPN status != 1 (downloads ns) | critical | 15m |
 | VPNExporterDown | gluetun_vpn_status series absent (downloads ns) | warning | 15m |
 | LokiRequestFailures | Loki 5xx rate > 5% | warning | 15m |
-| LokiIngestionRateLimited | Loki discarding samples (any reason, incl. `too_far_behind` out-of-order rejections) | warning | 5m |
+| LokiDiscardsRateLimited | Loki discarding samples for rate/limit reasons (ingestion or per-stream limits) | warning | 5m |
+| LokiDiscardsOutOfOrder | Loki rejecting samples as `too_far_behind` / out-of-order (a sender WAL replay, not a limit) | warning | 5m |
 | LokiRulerRulesMissing / LokiRulerEvaluationFailures / LokiRulerNotificationFailures | meta-monitoring for the Loki-ruler alert path (see below) | warning | 15m |
 | FluxReconciliationFailure | Flux controller reconcile error rate > 0 | warning | 15m |
 | FluxResourceNotReady | gotk_resource_info shows Ready=False | warning | — |
@@ -635,7 +755,15 @@ the release for exact expressions and thresholds.
 | TraefikHighErrorRate | 5xx rate > 5% | warning | 5m |
 | VPARecommendationCapped | VPA uncapped target > capped target for 24h (maxAllowed ceiling outgrown — see docs/33) | warning | 24h |
 | WgEasyDown | wg-easy VPN target down | critical | 15m |
+| WgEasyEndpointVipMissing / WgEasyMetricsMissing | the `.99` endpoint VIP or the wg-easy metrics series is gone | warning | 15m |
 | HindsightDown | Hindsight (Hermes memory backend) down | warning | 15m |
+| RegistryCacheDown | pull-through registry cache down | warning | 15m |
+| TailscaleOperatorDown / TailscaleProxyDown | Tailscale operator or a proxy pod down | warning | 15m |
+| GitLabAgentDown | GitLab k8s agent down (Flux push-reconcile stops) | warning | 15m |
+| AuthentikWorkerDown | authentik-worker scrape target down — blueprints, outposts and mail stop while the server keeps serving stale config | warning | 15m |
+| PostgresDown | `pg_up == 0` or absent for any of the five databases | critical | 5m |
+| PostgresConnectionsHigh | `pg_stat_activity_count` near `max_connections` | warning | 15m |
+| VPARecommendationExceedsLimit | VPA target above the container's own limit (see docs/33) | warning | 24h |
 
 #### Cluster & Platform Health (`homelab.monitoring`)
 
@@ -644,7 +772,7 @@ the release for exact expressions and thresholds.
 | ProxmoxHostDown | pve_up == 0 for a cluster node | critical |
 | HAInfraGuestDown | HA-managed guest down — `pve_up` == 0 for lxc/150, lxc/151, lxc/160, or qemu/154 (covers the HAOS VM, not just the LXCs) | critical |
 | NFSServerDown | nfsd threads on pve-nas-01 == 0 or metric absent | critical |
-| NodeStuckCordoned / MaintenanceRebootDeferred | kured maintenance flow stuck (see docs/33 / docs/12) | warning |
+| NodeStuckCordoned / MaintenanceRebootDeferred / KuredRebootStuck | kured maintenance flow stuck (see docs/33 / docs/12) | warning |
 | CorosyncWedged / PmxcfsStale / CorosyncHealthCollectorStale | Proxmox cluster-stack health (textfile collector) | critical / warning |
 | ZFSPoolDeviceErrors / ZFSPoolDataErrors / ZFSPoolNotOnline / ZFSPoolScrubStale / ZFSPoolCollectorStale | zpool-health textfile collector (per-device read/write/cksum errors, data errors, pool state, scrub age, collector freshness) | warning-critical |
 | ZFSPoolSpaceWarning / ZFSPoolSpaceCritical | Pool allocated/size > 80% / > 90% (`zfs_pool_status_*` from the zpool-status **textfile collector**, so the five compute `local-ssd` pools are covered too — not the NAS-only `zfs_exporter`) | warning / critical |
@@ -654,6 +782,10 @@ the release for exact expressions and thresholds.
 | DNSResolverProbeMissing | the .150/.160 DNS probe series is absent (probe config lost) | warning |
 | BlackboxExporterDown | blackbox exporter itself unreachable (no `up == 1` for any blackbox target) | critical |
 | NodeMemoryPressure | Node available memory critically low | warning |
+| NodeOutageStormControl | null-routed source for the node-outage inhibit — bounded to 6h, so a longer outage stops suppressing everything else | none |
+| NodeNotReadyProlonged | a node has been NotReady for 6h (takes over once the storm-control inhibit lifts) | critical |
+| EtcdQuorumAtRisk | `up{job="kube-etcd"}` at 2 of 3 (or absent) for 6h — one more loss is quorum | critical |
+| BlackboxCertExpiringSoon | a probed endpoint's served certificate expires soon | warning |
 | ProxmoxHostIOPressure | Proxmox host PSI I/O pressure sustained | warning |
 | ProxmoxHostMemoryPressure | Proxmox host PSI memory pressure sustained | warning |
 | ImmichDown | Immich scrape target down or absent | warning |
@@ -709,12 +841,21 @@ These alerts use metrics exposed via the node_exporter textfile collector on Pro
 | GitLabBackupFailed | gitlab-backup-run.sh last run exit code != 0 | warning | 1h |
 | GitLabBackupStale | GitLab backup last success > 2 days ago (or metric absent) | warning | 1h |
 | GitLabBackupStaleCritical | GitLab backup last success > 4 days ago | critical | 1h |
-| EtcdSnapshotStale | newest off-node etcd snapshot copy > 26h old, or metric absent (docs/17) | warning | 1h |
-| VzdumpBackupFailed / VzdumpBackupStale | nightly vzdump guest-image backup failed / stale (hookscript deployed fleet-wide by node_exporter_host) | warning | 1h |
+| EtcdSnapshotStale | newest off-node etcd snapshot copy > 36h old (three 12h cycles), or metric absent (docs/17) | warning | 1h |
+| VzdumpBackupFailed / VzdumpBackupStale | nightly vzdump guest-image backup failed / no success in 36h (hookscript deployed fleet-wide by node_exporter_host) | warning | 1h |
+| VzdumpBackupStaleCritical | no successful vzdump in 4 days | critical | 1h |
+| PveClusterBackupFailed / PveClusterBackupStale | `/etc/pve` cluster-config tar failed / no success in 36h | warning | 1h |
 | NextcloudBackupFailed / NextcloudBackupStale | Nextcloud pg_dump failed / last success > 2 days ago (or metric absent) | warning | 1h |
 | ImmichBackupFailed / ImmichBackupStale | Immich pg_dump failed / last success > 2 days ago (or metric absent) | warning | 1h |
-| ResticOffsiteFailed | nightly restic offsite-to-B2 run failed (`restic_offsite_last_run_success == 0`) | warning | 1h |
+| ResticOffsiteFailed | the B2 **upload** stage failed (`restic_offsite_last_backup_success == 0`; falls back to the older combined `_last_run_success` only while the split metric is absent) | warning | 1h |
+| ResticOffsiteFailedProlonged | uploads failing for a full day — B2 is the only offsite copy | critical | 24h |
+| ResticOffsitePruneFailed | the forget/prune stage failed while uploads keep succeeding (usually a stale repo lock) | warning | 24h |
+| ResticOffsitePruneBlocked | the forget-ceiling guard refused to expire snapshots; the delete set only grows from here | warning | 48h |
+| ResticOffsiteRepoShrank | repo size dropped > 20% in 2 days — possible over-broad forget, recover inside B2's 30-day hide window | critical | 1h |
 | ResticOffsiteStale | restic offsite last success > 50h ago, or metric absent (50h tolerates one skipped night — B2 chains off archive, which can defer) | warning | 1h |
+| ResticOffsiteStaleCritical | no successful offsite run in 4 days | critical | 1h |
+| ResticOffsiteVerifyFailed | the weekly `restic check` found repository damage | critical | 1h |
+| ResticOffsiteVerifyStale / …StaleCritical | no `restic check` in 8 days / 14 days | warning / critical | 1h |
 | BackupArtifactStale | NAS-side mtime of the newest `tank/backups/apps/<app>` dump > 50h old (or collector absent) — the "the dump landed offsite-eligible" signal, independent of the VM-side "the dump ran" metric | warning | 1h |
 
 Note: the three restic/backup-artifact metrics above appear only once the
@@ -725,7 +866,7 @@ series to have existed) and the `Backup — Nightly Jobs` dashboard panels rende
 
 #### Other Groups
 
-- **`homelab.temperature`** — SATA/NVMe drive, CPU, GPU, and NIC temperature warning/critical pairs (drivetemp + hwmon via node_exporter_host).
+- **`homelab.temperature`** — SATA/NVMe drive, CPU, host GPU (`HostGpuTemp*`, hwmon on the Proxmox host) and NIC temperature warning/critical pairs (drivetemp + hwmon via node_exporter_host), all scoped to the six physical hosts so the LXC guests do not double-page their host's sensors. The 1660 Ti's own telemetry is the DCGM `GpuTemp*` pair in `homelab.gpu`.
 - **`homelab.gpu`** — GpuExporterDown, GpuTempWarning/Critical, HindsightGpuOffloadIdle, GpuTelemetryMissing (DCGM exporter on the pve-prec-01 1660 Ti; GpuTelemetryMissing catches "exporter up but zero GPU series"). See [docs/43](43-gpu-passthrough.md).
 - **`homelab.mail`** — PostfixQueueBacklog, PostfixDown, PostfixQueueCollectorStale (smtp-relay queue textfile collector).
 - **`homelab.kubernetes-resources`** — the tuned KubeCPUOvercommit replacement (see Built-in Alerts below).
@@ -736,7 +877,7 @@ The kube-prometheus-stack chart ships built-in alerts for Kubernetes components 
 
 **Disabled k3s-irrelevant alerts:** KubeProxyDown, KubeSchedulerDown, and KubeControllerManagerDown are disabled because k3s embeds these components into the main process and does not expose separate metrics endpoints. Leaving them enabled causes persistent false-positive alerts.
 
-**etcd IS scraped:** the k3s server nodes run with `etcd-expose-metrics: true` (ansible/roles/k3s), serving standard etcd metrics on `:2381` (plain HTTP, firewall-restricted to `k3s_nodes` — docs/11). `kubeEtcd.enabled: true` in the chart builds the Service/Endpoints from the server-node IPs and re-enables the upstream etcd alert rules (quorum, leader flapping, DB size).
+**etcd IS scraped:** the k3s server nodes run with `etcd-expose-metrics: true` (the `weisssrv.infra.k3s` role), serving standard etcd metrics on `:2381` (plain HTTP, firewall-restricted to `k3s_nodes` — docs/11). `kubeEtcd.enabled: true` in the chart builds the Service/Endpoints from the server-node IPs and re-enables the upstream etcd alert rules (quorum, leader flapping, DB size).
 
 **Tuned replacement:** the upstream KubeCPUOvercommit is disabled and re-added (`homelab.kubernetes-resources`) with the `gitlab-runner*` namespaces' deliberately over-requested burst CPU subtracted, so CI bursts no longer flap it.
 
@@ -746,7 +887,41 @@ The kube-prometheus-stack chart ships built-in alerts for Kubernetes components 
 
 **Resolved issues:**
 - **PrometheusOperatorSyncFailed** -- resolved by converting the alertmanager-config Secret to an ExternalSecret template that injects `webhook_url` directly instead of using `webhook_url_file` (the Alertmanager pod could not read files from the mounted Secret)
-- **CPUThrottlingHigh** -- resolved by *removing* the CPU limit (request-only, memory limit kept) on the bursty scrape exporters, since CFS throttling on a poll/scrape control loop is an anti-pattern that fires this alert without indicating real CPU starvation. This applies to the in-tree exporters (proxmox / adguard / redis / blackbox), the kube-prometheus-stack `node-exporter` DaemonSet, and the GitLab runner managers. The general rule: drop the CPU limit on bursty controllers/exporters, keep the memory limit (OOM is a real failure mode). Per-exporter VPAs still right-size the *requests*. (Do not re-add per-exporter CPU-limit numbers here — they drift; the HelmReleases/manifests are the source of truth.)
+- **CPUThrottlingHigh** -- resolved by *removing* the CPU limit (request-only,
+  memory limit kept) on the bursty scrape exporters, since CFS throttling on a
+  poll/scrape control loop is an anti-pattern that fires this alert without
+  indicating real CPU starvation. This applies to the in-tree exporters (proxmox /
+  adguard / redis / blackbox), the kube-prometheus-stack `node-exporter`
+  DaemonSet, and the GitLab runner managers. The general rule: drop the CPU limit
+  on bursty controllers/exporters, keep the memory limit (OOM is a real failure
+  mode). Per-exporter VPAs still right-size the *requests*. (Do not re-add
+  per-exporter CPU-limit numbers here — they drift; the HelmReleases/manifests are the
+  source of truth.)
+
+### Loki self-monitoring
+
+Loki emits its own operational metrics, and the failure mode that matters is
+**silent**: when an ingestion limit is exceeded Loki drops log lines and returns
+success to the client, so Alloy reports nothing wrong and the logs simply are not
+there.
+
+| Signal | What it means |
+|---|---|
+| `loki_discarded_samples_total` (by `reason`) | lines dropped at ingestion — rate-limit, per-stream limit, out-of-order, too-old. Any sustained non-zero value is data loss |
+| `loki_ingester_wal_*` | WAL replay/flush health — see [Loki WAL Issues](#loki-wal-issues) |
+| `loki_request_duration_seconds` | push/query latency, split by route |
+
+Limits are set in `kubernetes/infrastructure/observability/loki/release.yaml`
+under `loki.limits_config`; raising them is the usual fix once a discard alert
+fires, after confirming the volume is legitimate rather than a runaway logger.
+
+### PostgreSQL metrics coverage
+
+There is **no** PostgreSQL exporter on any of the five databases (Authentik,
+Mealie, Nextcloud, Immich, GitLab). Database health is currently inferred from
+app-level probes and the backup-freshness alerts, so connection saturation,
+replication-free bloat and long-running transactions are invisible. Adding
+`postgres_exporter` is tracked in docs/16.
 
 ### Flux Metrics
 
@@ -860,10 +1035,13 @@ Flux controller metrics (source-controller, kustomize-controller, helm-controlle
    # Open http://localhost:9093 and check the Alerts tab
    ```
 
-2. Verify the `observability-secrets` ExternalSecret synced:
+2. Verify the `alertmanager-config` ExternalSecret synced (this is the one that
+   carries the routing credentials; `observability-secrets` holds only Grafana's
+   OIDC pair):
    ```bash
-   kubectl get externalsecret -n observability observability-secrets
-   kubectl get secret -n observability observability-secrets -o jsonpath='{.data}' | jq 'keys'
+   kubectl get externalsecret -n observability alertmanager-config
+   # The rendered Secret is templated, so it contains only alertmanager.yaml:
+   kubectl get secret -n observability alertmanager-config -o jsonpath='{.data}' | jq 'keys'
    ```
 
 3. Check Alertmanager logs for delivery failures:
@@ -876,11 +1054,13 @@ Flux controller metrics (source-controller, kustomize-controller, helm-controlle
    kubectl run -it --rm debug --image=busybox -- nc -zv 192.168.0.151 587
    ```
 
-5. For Discord issues, test the webhook URL manually:
+5. For Discord issues, test the webhook URL manually. The URL is not readable
+   from the rendered Secret (it is templated into `alertmanager.yaml`), so take it
+   from 1Password:
    ```bash
    curl -X POST -H "Content-Type: application/json" \
      -d '{"content": "Test alert from weisssrv"}' \
-     "$(kubectl get secret -n observability observability-secrets -o jsonpath='{.data.discord-webhook-url}' | base64 -d)"
+     "$(op read 'op://Homelab/Discord Alert Webhook/url')"
    ```
 
 ### Grafana OIDC Issues
@@ -941,7 +1121,7 @@ task observability:restart   # Restart all observability workloads
 task observability:silence   # Create Alertmanager silence (ALERT=alertname, DURATION=2H — BSD date units)
 ```
 
-## Related Documentation
+## Related documentation
 
 - `docs/12-runbooks.md` -- Observability-specific runbook entries
 - `docs/29-flux-operations.md` -- Flux day-2 operations (reconcile, suspend/resume)

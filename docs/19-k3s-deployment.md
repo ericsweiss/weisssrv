@@ -167,29 +167,30 @@ openssl rand -base64 32
 # Value: <generated token>
 ```
 
-#### Agent token (lower-privilege worker join) — optional
+#### Agent token (lower-privilege worker join)
 
-By default agents join with the cluster (server) token, which also grants
-control-plane join and cluster-CA access. To limit a compromised agent to
-worker-join only, provision a distinct **K3s Agent Token**:
+Agents join with a **separate, lower-privilege worker token** rather than the
+cluster (server) token, which would also grant control-plane join and cluster-CA
+access. The **K3s Agent Token** 1Password item is therefore **required** on a
+rebuild — `K3S_AGENT_TOKEN: op://Homelab/K3s Agent Token/credential` is wired into
+`task k3s:deploy`, the `maintenance-k3s-provision` CI job, and the node-upgrade
+path (`maintenance:update-k3s-nodes` + its CI job, so a binary upgrade keeps
+agents on the lower-privilege token).
 
 ```bash
 openssl rand -base64 32
 # Store in 1Password — Vault: Homelab, Item: "K3s Agent Token", Field: credential
 ```
 
-To enable, after creating the item add
-`K3S_AGENT_TOKEN: op://Homelab/K3s Agent Token/credential` to the `k3s:deploy`
-env, the `maintenance-k3s-provision` CI job, and the node-upgrade path
-(`maintenance:update-k3s-nodes` + its CI job, so a binary upgrade keeps agents on
-the lower-privilege token). It is omitted by default so
-`op run` does not hard-fail on a missing item; when `K3S_AGENT_TOKEN` is unset the
-role falls back to the cluster token (non-breaking). With it set, the server config
-advertises it via `agent-token`, and the role reconciles each agent's `K3S_TOKEN`
-to it on the next deploy (existing nodes stay registered through the change — the
-token is only used at join time). **Rollout:** deploy servers first (they advertise
-the agent-token via a serial control-plane restart), then agents migrate; verify
-all nodes return to `Ready` before proceeding.
+The server config advertises it via `agent-token`, and the role reconciles each
+agent's `K3S_TOKEN` on the next deploy; the token is only used at join time, so
+existing nodes stay registered through a change. If `K3S_AGENT_TOKEN` is unset
+the role falls back to the cluster token, but every wired call site passes it —
+a missing item hard-fails `op run`.
+
+**Rollout order:** deploy servers first (they advertise the agent token via a
+serial control-plane restart), then agents; verify all nodes return to `Ready`
+before proceeding.
 
 ### 2. DNS Configuration
 
@@ -487,85 +488,90 @@ Tailscale without running the daemon themselves. Do not run `tailscale up
 task collect-state
 ```
 
-## Switching flannel backend (vxlan → wireguard-native)
+## Flannel backend
 
-`group_vars/k3s.yml` sets `k3s_flannel_backend: wireguard-native`,
-which the server config template renders as `flannel-backend:` in
-`/etc/rancher/k3s/config.yaml`. K3s reads that on every server
-restart, so pod-to-pod packets across nodes are WireGuard-encrypted.
-Switching between backends after the cluster is up is **disruptive**
-— pods on each node briefly lose connectivity while flanneld
-reconfigures.
+`group_vars/k3s.yml` sets `k3s_flannel_backend: wireguard-native`, which the
+server config template renders as `flannel-backend:` in
+`/etc/rancher/k3s/config.yaml`. All nine nodes carry a `flannel-wg` interface, so
+pod-to-pod packets across nodes are WireGuard-encrypted (UDP/51820, allowed
+between `k3s_nodes` by `sg-k3s-core`).
 
-### Prerequisites
+**Changing the backend on a live cluster is disruptive** — pods on each node lose
+connectivity while flanneld reconfigures. If it is ever necessary: flip the
+variable, then `task k3s:deploy -- --limit <host>` one server at a time (watch for
+`Using backend type:` in `journalctl -u k3s`), then the remaining servers and
+agents. Two things bite:
 
-- `wireguard` kernel module available (modern Debian / Proxmox kernels:
-  yes; `lsmod | grep wireguard` after first run will confirm
-  flanneld loaded it).
-- Firewall rule for `UDP/51820` between `k3s_nodes` (already in
-  `proxmox_firewall` `sg-k3s-core`).
-- Cluster healthy (`task k3s:status`, `task flux:status`) before
-  starting.
+- Verify with `sudo wg show` on every node, not just the first — a partial
+  migration is silent.
+- The retired `flannel.1` device lingers with stale per-subnet `/24` routes that
+  out-rank the new `/16 dev flannel-wg` route, keeping some node pairs on
+  unmanaged VXLAN. Clean it up cluster-wide once every node has migrated:
 
-### Rollout procedure (one server node at a time)
+  ```bash
+  ansible k3s -m ansible.builtin.shell \
+    -a 'ip link del flannel.1 2>/dev/null; ip route | grep -c flannel.1'
+  # every host should report 0
+  ```
 
-```bash
-# Sanity check
-task k3s:status
+A rollback to `vxlan` also needs the UDP/8472 rule re-added to `sg-k3s-core` in
+`cluster.fw.j2` and the firewall redeployed.
 
-# Rolling restart with the new flag — apply to one server first to
-# verify, then the others. The server needs systemctl restart so the
-# new k3s config is read.
-task k3s:deploy -- --limit k3s-srv-nas-01
 
-# Wait for that server to come back, observe flannel logs:
-ssh k3s-srv-nas-01 'sudo journalctl -u k3s -n 200 -f'
-# Look for "Using backend type: wireguard" + a "flannel-wg" interface up.
+## kube-apiserver audit logging
 
-# Verify the WireGuard interface and peers are present:
-ssh k3s-srv-nas-01 'ip -br link show flannel-wg && sudo wg show'
+`group_vars/k3s.yml` sets `k3s_audit_enabled: true`. k3s ships apiserver audit
+logging **off**, so before this the cluster kept no record of who read a Secret
+or granted themselves a ClusterRole. The k3s role renders a `kube-apiserver-arg`
+block into `/etc/rancher/k3s/config.yaml` on the three servers and writes the
+policy it points at.
 
-# Now do the other servers + agents (k3s.yml has no tag declarations, so
-# scope by `--limit` only; `task k3s:deploy` forwards extra args to ansible):
-task k3s:deploy -- --limit k3s-srv-laptop-01,k3s-srv-prec-01
-task k3s:deploy -- --limit k3s_agents
-```
+| Path (per server) | What |
+|---|---|
+| `/var/lib/rancher/k3s/server/audit-policy.yaml` | the `audit.k8s.io/v1` Policy, root-owned `0600` |
+| `/var/lib/rancher/k3s/server/logs/audit.log` | the log itself, in a root-only `0700` directory |
 
-### Verification
+**What is captured.** Rules are evaluated in order, first match wins, and there
+is deliberately **no catch-all** — anything matching no rule is not logged:
 
-```bash
-# All nodes should show a flannel-wg interface and peers:
-for n in k3s-srv-nas-01 k3s-srv-laptop-01 k3s-srv-prec-01 \
-         k3s-agt-nas-01 k3s-agt-laptop-01 k3s-agt-opt-01 \
-         k3s-agt-opt-02 k3s-agt-opt-03 k3s-agt-prec-01; do
-  echo "=== $n ==="
-  ssh "$n" 'sudo wg show interfaces && sudo wg show'
-done
+- `Metadata` on core `secrets`, `configmaps`, `serviceaccounts` — who touched
+  which credential object, as whom. Metadata, never the body: a body-level rule
+  would write Secret contents into a plaintext file on disk.
+- `RequestResponse` on `rbac.authorization.k8s.io` **writes** (create/update/
+  patch/delete/deletecollection) — the full before/after of any privilege grant.
+- `Metadata` on RBAC reads — enumeration is worth recording, but a
+  `RequestResponse` on `list clusterroles` would dump the whole RBAC tree on
+  every controller resync.
+- `None` (first, so they win) on health/version/metrics/openapi endpoints and on
+  `kube-system` leader-election leases — pure churn.
 
-# Pod-to-pod across nodes should still resolve and connect:
-kubectl run -it --rm --image=alpine net-test -- sh -c \
-  'apk add --no-cache curl && curl -sS http://kube-prometheus-stack-grafana.observability:80/api/health'
-```
-
-### Rollback
-
-If something is wrong, set `k3s_flannel_backend: vxlan` in
-`group_vars/k3s.yml`, re-add the UDP/8472 rule to `sg-k3s-core` in
-`cluster.fw.j2` (removed once the migration completed), redeploy the
-firewall, and re-run the same `ansible-playbook` calls.
-
-### Status + a step the procedure above omits
-
-Executed 2026-06-11; all 9 nodes carry `flannel-wg`. One addition to the
-procedure: after the backend flip, the retired `flannel.1` device lingers
-with stale per-subnet `/24` routes that out-rank the new `/16 dev
-flannel-wg` route, silently keeping some node pairs on unmanaged VXLAN.
-Clean it cluster-wide after all nodes have migrated:
+**Rotation and retention.** The apiserver rotates the file itself: 100 MB per
+file, 10 backups kept, discarded after 30 days — worst case ~1.1 GB per server.
+The log stays on that server's local disk; `alloy_host` reads journald only, so
+nothing ships it to Loki (see
+[docs/31-observability.md](31-observability.md#kube-apiserver-audit-log)). Read it
+on the node:
 
 ```bash
-ansible k3s -m ansible.builtin.shell -a 'ip link del flannel.1 2>/dev/null; ip route | grep -c flannel.1'
-# every host should report 0
+ssh k3s-srv-nas-01 'sudo tail -n 200 /var/lib/rancher/k3s/server/logs/audit.log' | \
+  jq -r '[.requestReceivedTimestamp, .user.username, .verb,
+          .objectRef.resource, .objectRef.namespace, .objectRef.name] | @tsv'
 ```
+
+**Deploy implication.** The policy file and the config block are both read once
+at apiserver startup, so enabling this — or later editing the policy — notifies
+`Restart k3s` + `Wait for k3s API healthy`: a rolling control-plane bounce with
+an API-VIP failover per server. The `k3s_servers` play is `serial: 1`, so they
+go one at a time. Run it in a deliberate window with a healthy etcd quorum, and
+never with a server node down. The role writes the policy **before** the config
+that references it, because an apiserver with a missing or unparseable
+`--audit-policy-file` exits at startup; it also asserts the policy variable is a
+well-formed `audit/v1` Policy first, so a bad override fails the play rather than
+crash-looping the control plane.
+
+Turning it off again is another rolling restart, and leaves the unreferenced
+policy file on disk (inert).
+
 
 ## Troubleshooting
 
@@ -644,7 +650,10 @@ kubectl describe svc traefik -n traefik
 
 ### CI molecule flake: "Too many open files" (inotify exhaustion)
 
-**Symptom.** A `molecule-tests` matrix job fails at the prepare step:
+Applies to any Molecule job on these nodes — the `integration-tests` matrix here
+and the role-scenario matrix in `weisssrv-lib`, which runs on the same runner.
+
+**Symptom.** A Molecule job fails at the prepare step:
 
 ```
 TASK [Wait for systemd to be ready]
@@ -654,7 +663,7 @@ CRITICAL Ansible return code was 2 ... prepare-common.yml
 ```
 
 The container is created and passes the creation-wait, then dies within ~7s.
-The failure is `script_failure` (rc 2), which the `.molecule-base` retry
+The failure is `script_failure` (rc 2), which the job's `retry` policy
 deliberately does **not** auto-retry, so it fails the pipeline and has
 historically needed a manual "retry job". It is intermittent, hits at any
 concurrency (even a single job), and clusters on **one node at a time**.
@@ -731,18 +740,20 @@ cluster restore, not a node rebuild — see `docs/17-disaster-recovery.md`.
 
 The current 3-server cluster (k3s-srv-nas-01, k3s-srv-laptop-01, k3s-srv-prec-01) with 6 agents provides etcd quorum tolerating 1 server failure. For full HA tolerating 2 server failures, expand to 5 server nodes.
 
-### HA Expansion Nodes
+### Candidate nodes for servers #4 and #5
 
-The cluster uses a split IP scheme: servers in the .22X range, agents in the .20X range.
+The cluster uses a split IP scheme: servers in the .22X range, agents in the .20X
+range. `hosts.yml` is the source of truth for the current fleet; the two
+addresses below are the reserved slots a 3 → 5 server expansion would claim.
 
 | Node | IP | VMID | Proxmox Host | Purpose |
 |------|-----|------|--------------|---------|
-| k3s-srv-laptop-01 | 192.168.0.223 | 223 | pve-laptop-01 | HA server #2 |
-| k3s-srv-prec-01 | 192.168.0.227 | 227 | pve-prec-01 | HA server #3 |
-| k3s-agt-laptop-01 | 192.168.0.203 | 203 | pve-laptop-01 | Ingress + general agent |
-| k3s-agt-opt-01 | 192.168.0.204 | 204 | pve-opt-01 | Ingress + general agent |
-| k3s-agt-opt-02 | 192.168.0.205 | 205 | pve-opt-02 | Ingress + general agent |
-| k3s-agt-prec-01 | 192.168.0.207 | 207 | pve-prec-01 | General + compute agent |
+| k3s-srv-opt-01 | 192.168.0.224 | 224 | pve-opt-01 | HA server #4 |
+| k3s-srv-opt-02 | 192.168.0.225 | 225 | pve-opt-02 | HA server #5 |
+
+Both hosts already carry an agent, so an expansion means adding a **second**
+guest on each — check the memory budget for those 14-15 GiB hosts first
+(docs/06 § ARC).
 
 ### Step 1: Add New Server Nodes to Inventory
 
@@ -788,9 +799,8 @@ kubectl get pods -n kube-system | grep etcd
 2. **Backups** - already covered by the archive/restic/vzdump chain and the
    per-app logical dumps (docs/17, docs/42); Velero is deliberately not used
 
-## Related Documentation
+## Related documentation
 
-- `docs/14-post-base-plan.md` - k3s platform roadmap (historical)
 - `docs/29-flux-operations.md` - Flux operator guide: bootstrap, adopt, rotate secrets, add an app, suspend, rollback
 - `docs/30-multi-repo-onboarding.md` - Adding external repos that deploy into this cluster
 - `docs/31-observability.md` - Observability stack (Prometheus, Grafana, Loki, Alloy)

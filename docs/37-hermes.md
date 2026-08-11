@@ -76,7 +76,7 @@ would break the s6 privilege drop). PSA is therefore `baseline` (warn/audit
 - **Storage**: NFS `/appdata/hermes` on the encrypted `ssd/appdata` dataset,
   mounted `nfsvers=4.2,hard,noatime,xprtsec=tls` by hostname
   `pve-nas-01.esweiss.com`. The subdir is created + owned `1000:2000` by the
-  `nas_storage` role (`nas_appdata_dirs`). The export is `all_squash,
+  `nas_storage` role (`nas_storage_appdata_dirs`). The export is `all_squash,
   anonuid=1000,anongid=2000`, so every container write lands `1000:2000` on the
   NAS regardless of the in-container UID.
 
@@ -293,10 +293,10 @@ OIDC itself.)
    emergency-revert by re-adding the `HERMES_DASHBOARD_BASIC_AUTH_*` env
    trio + the three ESO entries (values retained on the 1P item).
 
-### Authentik objects — now in Terraform (no UI clicks)
+### Authentik objects (Terraform)
 
 The Authentik side lives in [`terraform/authentik`](../terraform/authentik/)
-(docs/40) — nothing is created in the admin UI anymore:
+(docs/40) — nothing is created in the admin UI:
 
 - `authentik_provider_oauth2.hermes_dashboard` +
   `authentik_application.app["agent"]` — the dashboard's OIDC client on the
@@ -651,7 +651,7 @@ reports both pins.
   `crictl pull --creds '<deploy-token-user>:<deploy-token>' registry.git.esweiss.com/eric/weisssrv/hermes-agent:<hermes_version>`.
 - **Pod stuck `ContainerCreating` with an NFS mount error**: `/appdata/hermes`
   does not exist on the NAS yet. It is created by the `nas_storage` role
-  (`nas_appdata_dirs`) — run `task storage:deploy` (or let the `deploy-storage`
+  (`nas_storage_appdata_dirs`) — run `task storage:deploy` (or let the `deploy-storage`
   CI job run on merge). The kubelet retries the mount, so the pod self-heals once
   the subdir exists; no pod action is needed.
 - **Dashboard won't start**:

@@ -3,11 +3,10 @@
 # `maintenance-run-all` wrapper) to validate that nothing got knocked over.
 #
 # Used by the maintenance-* CI jobs in .gitlab-ci.yml AND by the standalone
-# manual `maintenance-verify` job. The only project-internal dependency is the
-# sibling scripts/maintenance-lib.sh (always cloned alongside this script in
-# CI), which holds the pure parsing helpers so they can be unit-tested without
-# a live cluster. Everything else needs only kubectl + curl, so the same
-# script works from any CI image.
+# manual `maintenance-verify` job. Its only project-internal dependencies are
+# the sibling libs: maintenance-lib.sh (pure parsers) and deploy-verify-lib.sh
+# (the shared GitLab probe only — the jq helpers there are never called here).
+# Everything else needs kubectl + curl, so it runs from any CI image.
 #
 # Exits 0 if cluster is healthy, 1 if any critical check fails.
 
@@ -18,24 +17,21 @@ set -euo pipefail
 _SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=scripts/maintenance-lib.sh
 . "$_SCRIPT_DIR/maintenance-lib.sh"
+# gitlab_health_code — shared with deploy-verify.sh so the two probes cannot drift.
+# shellcheck source=scripts/deploy-verify-lib.sh
+. "$_SCRIPT_DIR/deploy-verify-lib.sh"
 
 echo "=== Post-Maintenance Verification ==="
 ERRORS=0
 
-# kured (Kubernetes Reboot Daemon) reboots flagged k3s nodes one at a time,
-# during AND after a maintenance run (cordon -> drain -> reboot -> uncordon). A
-# node it is mid-reboot on is briefly NotReady and its pods are transiently
-# evicted/rescheduling (incl. NAS-pinned single replicas on RWO storage) — a
-# controlled, expected transient, NOT a maintenance regression. kured annotates
-# such nodes; the checks below treat THAT node's NotReady / unavailable pods as
-# expected (warn, verified next run) instead of failing — but still SURFACE them
-# so a node stuck-after-reboot isn't silently dropped, and scoped to the actual
-# node so an unrelated failure on a healthy node still ERRORs. Read fresh in each
-# check: kured reboots serially over minutes, so a single early snapshot goes
-# stale (a node may start/finish rebooting partway through verify).
-# DEPENDS on configuration.annotateNodes:true in kured/release.yaml — that is what
-# emits weave.works/kured-reboot-in-progress. If it is ever turned off this returns
-# empty and every kured reboot looks like a hard failure here (loud, not silent).
+# Nodes kured is actively rebooting (cordon -> drain -> reboot -> uncordon).
+# Their NotReady state and evicted pods are an expected transient, so the checks
+# below WARN for them and ERROR for everything else — node-scoped, so an
+# unrelated failure elsewhere still fails. Re-read per check: kured reboots
+# serially over minutes and a single early snapshot goes stale.
+# REQUIRES configuration.annotateNodes:true in kured/release.yaml (the source of
+# weave.works/kured-reboot-in-progress); without it every kured reboot reads as
+# a hard failure here.
 kured_rebooting_nodes() {
   # Thin kubectl wrapper: the annotated-AND-cordoned filter itself lives in
   # maintenance-lib.sh (kured_rebooting_filter) so it is unit-testable.
@@ -145,21 +141,12 @@ fi
 if [ -n "$BAD" ]; then
   KURED_NOW=$(kured_rebooting_nodes)
   # NODE-SCOPED kured excuse. Map pod -> node via jsonpath (NOT `-o wide`, whose
-  # RESTARTS "5 (3m ago)" suffix shifts columns). While kured is mid-reboot, excuse
-  # an unhealthy pod ONLY if it is on a kured-rebooting node OR unscheduled (no node
-  # = evicted from one, not yet rescheduled). Any unhealthy pod on a HEALTHY node —
-  # or any unhealthy pod when kured is idle — ERRORs. No status-class shortcut: a
-  # CrashLoop on a healthy node ERRORs (node-scoped), one on a kured-rebooting node
-  # is excused and re-verified next run; bare Error/Failed is already dropped
-  # upstream in maintenance-lib.sh.
-  #
-  # RESIDUAL (unscheduled false-green, accepted): a node-less Pending pod is excused
-  # while kured is active, so a genuinely-unschedulable pod (resource pressure, bad
-  # nodeSelector) UNRELATED to kured WARNs instead of ERRORs in that window. Not
-  # precisely fixable from snapshots — a kured-drain-evicted pod is ALSO briefly
-  # node-less and can transiently read PodScheduled=False, indistinguishable from a
-  # stuck pod at one instant; only persistence-over-minutes separates them, which the
-  # next run re-checks once kured is idle (the excuse only holds mid-reboot).
+  # RESTARTS "5 (3m ago)" suffix shifts columns). An unhealthy pod is excused only
+  # while kured is mid-reboot AND the pod is on a rebooting node or unscheduled;
+  # anything else ERRORs, CrashLoop included.
+  # Accepted limitation: an unschedulable pod unrelated to kured also reads as
+  # node-less and so WARNs during a reboot window — see docs/12-runbooks.md
+  # § Post-maintenance verification.
   pn_ok=true
   if ! POD_NODES=$(kubectl get pods -A \
       -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\t"}{.spec.nodeName}{"\n"}{end}' \
@@ -220,28 +207,14 @@ for dep in traefik:traefik coredns:kube-system cert-manager:cert-manager metallb
       echo "  $name ($ns): ${AVAIL:-0}/${DESIRED:-1} available"
       continue
     fi
-    # Under-replicated. NODE-SCOPED kured excuse: is one of THIS deployment's pods
-    # on a node kured is actively rebooting (a single replica pinned there shows
-    # availableReplicas=0 transiently)? An unrelated down deployment on a healthy
-    # node still ERRORs even while kured reboots elsewhere. Capture the pod-node
-    # lookup so an API blip is 'undetermined -> WARN', not a silent mis-ERROR.
-    # jsonpath name<TAB>node (NOT `-o wide` $7, whose RESTARTS "(3m ago)" suffix
-    # shifts columns); pod name anchored to the no-vowel pod-template-hash charset
-    # so a vowel-bearing sibling (cert-manager-webhook for cert-manager,
-    # coredns-autoscaler for coredns) is not matched.
-    #
-    # RESIDUAL (multi-replica masking, accepted): traefik/coredns/authentik-server
-    # run >=2 replicas. If one replica is genuinely missing on a HEALTHY node while
-    # a SEPARATE replica sits on a kured-rebooting node, this (available<desired +
-    # any-pod-on-kured-node) excuse WARNs and masks the real shortfall for that run.
-    # A precise per-replica fix is infeasible from these snapshots: a missing replica
-    # has no pod object to inspect, and a pod on a kured node may still be Ready
-    # (counted in availableReplicas until evicted), so (desired-available) vs
-    # (#pods-on-kured-nodes) is unreliable and would false-FAIL real kured transients.
-    # Bounded + backstopped: the per-POD pod check above still ERRORs a
-    # CrashLoop/Pending replica on a healthy node regardless of a kured sibling; the
-    # excuse only holds while kured is mid-reboot (serial, minutes) so the next run
-    # re-verifies; and KubeDeploymentReplicasMismatch fires independently in Prometheus.
+    # Under-replicated. NODE-SCOPED kured excuse: excuse only when one of THIS
+    # deployment's pods sits on a rebooting node (or is unscheduled); an API blip
+    # in the lookup is 'undetermined -> WARN', never a silent mis-ERROR. jsonpath
+    # name<TAB>node (NOT `-o wide` $7, whose RESTARTS "(3m ago)" suffix shifts
+    # columns); the pod name is anchored to the no-vowel pod-template-hash charset
+    # so a sibling deployment (cert-manager-webhook, coredns-autoscaler) is not
+    # matched. Accepted limitation on multi-replica deployments — see
+    # docs/12-runbooks.md § Post-maintenance verification.
     dep_excuse=no
     if [ -n "$KURED_NOW" ]; then
       if DEP_PODNODES=$(kubectl get pods -n "$ns" -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.nodeName}{"\n"}{end}' 2>/dev/null); then
@@ -282,19 +255,12 @@ done
 
 echo ""
 echo "Checking for failed Jobs..."
-# list_unhealthy_pods skips terminal Error/Failed pods (mostly flaky CronJob retry
-# pods — see maintenance-lib.sh), which could hide a genuinely-failed one-shot Job
-# (e.g. a DB migration/bootstrap Job that exhausted its backoffLimit). Check Jobs
-# directly: a Failed=True condition that did NOT also Complete, on a NON-CronJob
-# Job. NODE-SCOPE the kured excuse like the pod/deployment checks: a one-shot Job
-# with backoffLimit:0 whose pod is evicted by a kured drain can reach Failed
-# through no fault of its own. Excuse (WARN) only if a pod of the Job is/was on a
-# kured-rebooting node or unscheduled, OR its pods are already gone (TTL cleanup,
-# can't node-scope) AND kured is active; otherwise ERROR — a real, terminal failure.
-# The pods-gone-during-kured case is ambiguous (a real terminal failure looks the
-# same as a reboot-evicted one once pods are TTL-cleaned), so it WARNs here — but
-# the default KubeJobFailed Prometheus alert fires on ANY failed Job independently
-# of this run, so a genuinely-broken Job is never lost to monitoring.
+# list_unhealthy_pods skips terminal Error/Failed pods, so a genuinely-failed
+# one-shot Job is checked here directly: Failed=True without Complete=True, on a
+# non-CronJob Job. The kured excuse is node-scoped like the pod/deployment checks
+# (a backoffLimit:0 Job evicted by a drain fails through no fault of its own);
+# the pods-already-TTL-cleaned case is ambiguous and WARNs, backstopped by the
+# KubeJobFailed Prometheus alert.
 KURED_NOW=$(kured_rebooting_nodes)
 # Split the kubectl query from the awk filter so a query FAILURE (API/RBAC/token)
 # is counted as an ERROR, not silently read as "no failed Jobs". A plain
@@ -334,22 +300,13 @@ while IFS= read -r jk; do
     continue
   fi
   if [ -z "$JOB_NODES" ]; then
-    # RESIDUAL (pods-gone false-green, accepted): a terminal-failed Job whose pods
-    # were already TTL-cleaned/deleted has no node to attribute, so while kured is
-    # active it WARNs rather than ERRORs — a real failure whose pods happened to be
-    # cleaned in a kured window is indistinguishable from a kured eviction here. Not
-    # precisely fixable (no pod = no node); backstopped by the next run's re-verify
-    # and the independent KubeJobFailed Prometheus alert (fires on any failed Job).
+    # No pod left to attribute a node to, so this WARNs while kured is active.
     job_warn="${job_warn} $jk(pods gone; kured active)"
-  # Capture-and-test, NOT `... | grep -q .`: under `set -o pipefail`, grep -q
-  # closes the pipe on its first match, SIGPIPE-killing the upstream grep so the
-  # pipeline returns non-zero EVEN on a match — `!` would then WRONGLY take the
-  # excuse branch and mask a real failure on a healthy node. Capturing the filtered
-  # list reads it fully (no early pipe close); it is empty iff every job pod is
-  # unscheduled (blank) or on a kured-rebooting node. (Capture in a [ -z ] test is
-  # set -e-safe — the inner pipeline's exit is not checked.) NB: SC2143 will
-  # suggest `! grep -q` here — that is precisely the SIGPIPE bug being fixed, so
-  # the capture form is intentional (SC2143 is style-level, below CI's --severity).
+  # Capture-and-test, NOT `! ... | grep -q`: under pipefail grep -q's early pipe
+  # close SIGPIPEs the upstream, so the pipeline is non-zero even on a match and
+  # `!` would wrongly excuse a real failure. (SC2143 suggests exactly that bug.)
+  # The captured list is empty iff every job pod is unscheduled or on a
+  # kured-rebooting node.
   elif [ -z "$(printf '%s\n' "$JOB_NODES" | grep -v '^$' | grep -vxFf <(printf '%s\n' "$KURED_NOW"))" ]; then
     # Excuse ONLY if EVERY pod of the Job is unscheduled (blank) or on a
     # kured-rebooting node. If even one attempt pod failed on a HEALTHY node, that
@@ -370,25 +327,15 @@ ERRORS=$((ERRORS + job_errors))
 
 echo ""
 echo "Checking GitLab health..."
-# Internal chain first (DNS -> Traefik VIP -> GitLab nginx), falling back to the
-# external hostname ONLY on a connection-level failure ("000"/empty) — the same
-# transient-ingress false-000 collect-state's probe_gitlab_http guards against
-# (verify runs right after kured node reboots, peak ingress churn). A real HTTP
-# status (incl 4xx/5xx) means GitLab answered, so trust it rather than let an
-# external 200 mask an internal error.
-# GitLab's VM disk is on an encryption-gated zvol, so a maintenance run that
-# reboots pve-nas-01 leaves GitLab restarting: it can take minutes to finish
-# and returns 404 on /-/readiness until Rails/Workhorse are up. Retry for up to
-# ~4 min so a slow-but-healthy start is not a false failure (a genuinely-down
-# GitLab still fails once the budget is spent). Mirrors deploy-verify.sh's retry;
-# the internal->external fallback on a connection-level 000 is preserved.
+# gitlab_health_code (deploy-verify-lib.sh) owns the internal-first/external-
+# fallback probe. Only the retry budget is local: GitLab's disk is on an
+# encryption-gated zvol, so a run that reboots pve-nas-01 leaves it restarting
+# and answering 404 on /-/readiness for minutes. 4 min keeps a slow-but-healthy
+# start from failing the verify (deploy-verify's 60s budget sees no such reboot).
 GITLAB_CODE=""
 gitlab_start_ts=$(date +%s)
 while true; do
-  GITLAB_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 https://git.esweiss.com/-/readiness 2>/dev/null || true)
-  if [ -z "$GITLAB_CODE" ] || [ "$GITLAB_CODE" = "000" ]; then
-    GITLAB_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 https://git.ericsweiss.com/-/readiness 2>/dev/null || true)
-  fi
+  GITLAB_CODE=$(gitlab_health_code /-/readiness)
   if [ "$GITLAB_CODE" = "200" ]; then break; fi
   gitlab_elapsed=$(( $(date +%s) - gitlab_start_ts ))
   if [ "$gitlab_elapsed" -ge 240 ]; then break; fi
@@ -404,16 +351,12 @@ fi
 
 echo ""
 echo "Checking cluster DNS (internal service resolution)..."
-# Spawn a one-off busybox pod that resolves an in-cluster name (a fresh pod always
-# gets ClusterFirst DNS, so this exercises CoreDNS regardless of the runner pod's
-# own dnsPolicy). IMPORTANT: do NOT use `kubectl run --attach --rm` — attach races
-# a fast-completing pod and loses its stdout, so DNS_PASS/DNS_FAIL was never
-# captured and verify failed every run even though DNS was healthy. Instead create
-# the pod, poll for it to finish, then read its output with `kubectl logs` (always
-# reliable), and delete it. Retry guards a genuinely transient CoreDNS/scheduling
-# blip right after maintenance.
-# Every kubectl call is bounded with --request-timeout so API/network degradation
-# can't hang verify (the old --attach flow had a 40s timeout we must not lose).
+# One-off busybox pod resolving an in-cluster name; a fresh pod always gets
+# ClusterFirst DNS, so this exercises CoreDNS regardless of the runner's own
+# dnsPolicy. Do NOT use `kubectl run --attach --rm`: attach races a
+# fast-completing pod and loses its stdout. Create, poll for a terminal phase,
+# read with `kubectl logs`, delete. Every kubectl call carries
+# --request-timeout so API degradation cannot hang the verify.
 kctl_timeout="--request-timeout=15s"
 dns_ok=false
 dns_saw_fail=false
@@ -423,11 +366,10 @@ for dns_attempt in 1 2 3 4 5; do
   # Clear any leftover pod of the same name (e.g. from an interrupted run) so we
   # cannot read a stale pod's logs and return a wrong verdict.
   kubectl delete pod "$dns_pod" "$kctl_timeout" --ignore-not-found --wait=true >/dev/null 2>&1 || true
-  # Don't swallow a creation failure: without the pod, a later `kubectl logs` could
-  # read a same-named stale pod. On failure, record it and move to the next attempt.
-  # Keep busybox in step with the central pin (busybox_version in
-  # ansible/inventories/prod/group_vars/all.yml); this plain-shell probe can't use
-  # Flux ${busybox_version} substitution, so bump it here when that pin moves.
+  # A creation failure is recorded, not swallowed: without the pod a later
+  # `kubectl logs` could read a same-named stale one.
+  # busybox pin is gated against busybox_version in group_vars/all.yml by
+  # `task lint:busybox-version-pin`; bump both together.
   if ! kubectl run "$dns_pod" "$kctl_timeout" --restart=Never --image=busybox:1.38 --command -- \
       sh -c "nslookup kubernetes.default.svc.cluster.local >/dev/null 2>&1 && echo DNS_PASS || echo DNS_FAIL" \
       >/dev/null 2>&1; then

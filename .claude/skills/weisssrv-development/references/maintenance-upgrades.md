@@ -41,6 +41,36 @@ manager, `scripts/version-bump-mr.py`, is vendored byte-identical from
 flow above: if you are already revising an MR, fold the bumps in there and let
 the bot close its own MR on the next run.
 
+## Bumping weisssrv-lib (CI templates + the weisssrv.infra collection)
+
+The library pin is not a version pin in `all.yml` — it lives in two places and
+both move together, in one MR:
+
+1. `variables.WEISSSRV_LIB_REF` in `.gitlab-ci.yml`, then
+   `scripts/check-lib-pins.py --fix` to rewrite every literal `ref:` on the
+   include entries (the gate fails on drift or on a branch ref).
+2. The collection `version:` in `ansible/requirements.yml`, then
+   `ansible-galaxy install -r ansible/requirements.yml --force`.
+
+While the new tag does not exist yet, both the pinned galaxy install and
+`task ansible:lint` fail on it. Lint against the library checkout instead:
+
+```bash
+WEISSSRV_COLLECTION_PATH=../weisssrv-lib task ansible:lint
+```
+
+It installs the checkout's `weisssrv.infra` (plus the pin file's galaxy deps,
+minus the not-yet-tagged git entry) into `.ansible-home/collections` and lints
+`ansible/` exactly as CI does. Unset it once the tag is cut; the cached copy in
+`.ansible-home/` is refreshed by deleting that directory.
+
+Then: re-vendor the byte-identical scripts (`scripts/check-lib-pins.py`,
+`scripts/version-bump-mr.py`) from the new tag, work the collection's
+`MIGRATING.md` for any variable renamed or emptied in that release and land the
+inventory edits in the same MR, and run the full gate set. Read the library's
+`docs/VERSIONING.md` before assuming a bump is behaviour-neutral — a changed
+input default silently changes this pipeline.
+
 ## Node / cluster upgrades & reboots
 
 - `task maintenance:update-packages` / `:update-applications` / `:update-full` /
@@ -61,6 +91,11 @@ the bot close its own MR on the next run.
   CRD handling before changing its version or that flag.
 - **Reloader** watches ConfigMaps only (`ignoreSecrets: true`); a credential
   Secret rotation is a manual pod restart (`task flux:rotate-secret -- <app>`).
+- **A `*_git_sha` pin must be the peeled commit.** For pins that guard a build
+  against an upstream tag (Hermes, camofox), an annotated tag's own object SHA is
+  not the commit the build checks out — resolve it with
+  `git ls-remote <repo> 'refs/tags/<tag>*'` and take the `^{}` line, or the build
+  job's SHA guard fails.
 
 ## Doc updates that ride with a change
 

@@ -227,11 +227,15 @@
         fail_msg: "SSH service not running"
         success_msg: "SSH service is running"
 
-    # The role's authorized_key task rewrites the key comment to
-    # "eric@dns-01 (cert distribution)" (not the keygen -C comment), so grep
-    # for that.
+    # The role's authorized_key task rewrites the key comment (not the keygen
+    # -C comment) to "cert distribution (<authority host>)", so grep for that.
+    # -F: the parentheses are literal, and the comment is the role's exact
+    # output — matching it loosely would let a key with the wrong provenance
+    # satisfy the assert.
     - name: Check authorized_keys for cert distribution key
-      ansible.builtin.command: grep -c "(cert distribution)" /home/{{ admin_username }}/.ssh/authorized_keys
+      ansible.builtin.command: >-
+        grep -cF "cert distribution ({{ groups['cert_servers'] | first }})"
+        /home/{{ admin_username }}/.ssh/authorized_keys
       register: authorized_key_check
       changed_when: false
       failed_when: false
@@ -275,7 +279,9 @@
     # The whole point of the redesign: the key must be pinned to the forced
     # command and stripped of shell/pty/forwarding — never a login shell.
     - name: Read the cert-distribution authorized_keys line
-      ansible.builtin.command: grep -F "(cert distribution)" /home/{{ admin_username }}/.ssh/authorized_keys
+      ansible.builtin.command: >-
+        grep -F "cert distribution ({{ groups['cert_servers'] | first }})"
+        /home/{{ admin_username }}/.ssh/authorized_keys
       register: authorized_key_line
       changed_when: false
 
@@ -327,7 +333,7 @@
           {% if 'cert_servers' in group_names %}
           acme.sh Installed: {{ 'YES' if hostvars[inventory_hostname].acme_sh.stat.exists else 'NO' }}
           Certificates: {{ hostvars[inventory_hostname].mock_cert_domains | length }} domains
-          Distribution Targets: {{ hostvars[inventory_hostname].cert_distribution_targets | length }} hosts
+          Distribution Targets: {{ hostvars[inventory_hostname].acme_certs_distribution_targets | length }} hosts
           SSH Key for Distribution: {{ 'YES' if hostvars[inventory_hostname].ssh_key.stat.exists else 'NO' }}
           Reload Script: {{ 'YES' if hostvars[inventory_hostname].reload_script.stat.exists else 'NO' }}
           {% else %}

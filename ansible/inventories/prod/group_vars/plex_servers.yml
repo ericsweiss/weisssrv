@@ -1,3 +1,9 @@
 ---
-# Plex servers group configuration
-# postfix_sasl_user, postfix_sasl_password, and mail_aliases are defined in all.yml
+# Plex servers group configuration.
+# The relay host, SASL credentials and aliases are defined in all.yml.
+
+# Custom-certificate hook: acme_certs pushes the wildcard PEM pair to
+# plex_cert_dir and runs plex-cert-reload.sh, which builds the PKCS#12 bundle
+# Plex serves. The passphrase protects that bundle (asserted, no_log).
+plex_cert_domain: "vm.{{ internal_domain }}"
+plex_pfx_passphrase: "{{ lookup('ansible.builtin.env', 'PLEX_PFX_PASSPHRASE', default='') }}"

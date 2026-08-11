@@ -1,16 +1,10 @@
 ---
-# Grafana persistent storage via NFS.
-# Uses the NAS appdata export (/mnt/ssd/appdata/grafana) to persist
-# Grafana's SQLite database (service accounts, user preferences).
-# NFS allows Grafana to float to any node in the cluster.
-#
-# The NAS-side directory (/mnt/ssd/appdata/grafana, owner 1000:2000) is
-# provisioned by the nas_storage role's per-app appdata directory tasks —
-# a from-scratch NAS build needs `task storage:deploy`, not a manual mkdir.
-# Grafana runs as UID 472 in the container, but the NFS export uses
-# all_squash,anonuid=1000,anongid=2000 — all NFS operations are mapped
-# to 1000:2000 regardless of client UID. The directory must be owned by
-# 1000:2000 for writes to succeed.
+# Grafana's SQLite DB (service accounts, preferences) on the NAS appdata NFS
+# export, so Grafana can float to any node. The NAS-side directory is provisioned
+# by nas_storage — a from-scratch build needs `task storage:deploy`, not a mkdir.
+# The export is all_squash,anonuid=1000,anongid=2000, so every write lands as
+# 1000:2000 regardless of Grafana's in-container UID (472) and the directory must
+# be owned by 1000:2000.
 apiVersion: v1
 kind: PersistentVolume
 metadata:

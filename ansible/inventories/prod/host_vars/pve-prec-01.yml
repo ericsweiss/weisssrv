@@ -1,0 +1,23 @@
+---
+# Disable TX/segmentation + receive offloads on the onboard Intel e1000e NIC.
+# Same driver and same TX-hang class as the three OptiPlex hosts (docs/34): this
+# host's nic0 is an I219-LM on `e1000e` at PCI 00:1f.6 (the opt nodes' is
+# 00:19.0). A wedged TX unit is not recoverable by the driver and the link stays
+# up, so nothing fails over — the host simply drops off the cluster.
+#
+# tso/gso/gro are already off on the live host but nothing persisted them (no
+# /etc/network/interfaces.d drop-in, no inventory entry), so a reboot would put
+# them back. nic_tuning applies them live with ethtool and writes the ifup
+# drop-in that survives a reboot.
+#
+# The ZFS ARC cap deliberately stays in group_vars/proxmox.yml for this host —
+# see the hosts.yml comment on pve-prec-01. Do not re-declare it here.
+nic_tuning_overrides:
+  - interface: nic0
+    options:
+      - feature: tso
+        value: "off"
+      - feature: gso
+        value: "off"
+      - feature: gro
+        value: "off"

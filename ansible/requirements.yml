@@ -1,15 +1,23 @@
 ---
-# Ansible Galaxy requirements
-
+# Every role these playbooks address lives in weisssrv.infra — there is no local
+# roles/ directory, so upgrading the platform is a bump of `version:` here.
 collections:
-  # Pin to the tested major line (upper bound) so `ansible-galaxy install -r`
-  # never silently pulls a new major with breaking changes. Bump deliberately.
+  # The collection lives in a subdirectory of the library repo, so the path goes
+  # on the URL fragment. `version:` takes a release tag (pin it) or a branch
+  # (local iteration against an unmerged library change).
+  - name: git+https://git.ericsweiss.com/eric/weisssrv-lib.git#/ansible_collections/weisssrv/infra
+    type: git
+    version: v0.6.0
+
+  # Galaxy dependencies of weisssrv.infra: they install with it. Listed here
+  # only to pin the tested major line for `ansible-galaxy install -r`.
   - name: ansible.posix
     version: ">=2.1.0,<3.0.0"
   - name: community.general
     version: ">=12.2.0,<13.0.0"
-  - name: community.crypto
-    version: ">=3.1.0,<4.0.0"
+
+  # Not a collection dependency — used directly by the integration-test molecule
+  # scenarios (docker_container / docker_network / docker_login).
   - name: community.docker
     version: ">=4.3.0,<5.0.0"
 

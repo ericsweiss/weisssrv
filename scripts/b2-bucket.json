@@ -1,0 +1,17 @@
+{
+  "account_id": "e4c7b180c1a1",
+  "bucket_id": "4ef45c874b3188409cf10a11",
+  "bucket_name": "weisssrv-backup",
+  "desired": {
+    "bucketType": "allPrivate",
+    "defaultServerSideEncryption": {"mode": "SSE-B2", "algorithm": "AES256"},
+    "lifecycleRules": [
+      {
+        "fileNamePrefix": "",
+        "daysFromHidingToDeleting": 30,
+        "daysFromUploadingToHiding": null
+      }
+    ],
+    "defaultRetention": {"mode": null, "period": null}
+  }
+}

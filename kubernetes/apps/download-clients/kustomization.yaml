@@ -33,7 +33,9 @@ resources:
   - ingress-routes
   - ingress-routes-ha-bypass.yaml
   # NetworkPolicies: default-deny + per-app egress allowlist (Gluetun-fronted
-  # qb/nzbget excluded from RFC1918, *arr direct internet for media APIs).
+  # qb/nzbget excluded from RFC1918, *arr direct internet for media APIs). The
+  # local default-deny covers Ingress AND Egress, so it deliberately supersedes
+  # the netpol-baseline component every other app pulls in.
   - networkpolicy.yaml
   - vpa.yaml
 # Use 'labels' instead of 'commonLabels' to avoid modifying deployment selectors.

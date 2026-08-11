@@ -1,12 +1,10 @@
 ---
-# AdGuard Home Exporters — one per DNS instance (distroless image, no shell).
-# dns-01 and dns-02 have independent metrics even though config syncs via adguard_sync.
+# One exporter per DNS instance (distroless, no shell): dns-01 and dns-02 have
+# independent metrics even though adguard_sync replicates their config.
 #
-# The exporters send the AdGuard admin credential via HTTP Basic over plaintext
-# to :3000. This is an accepted risk on the trusted LAN: AdGuard's admin API
-# serves no TLS, it has no read-only role to scope the credential down, and the
-# only encrypted path (the Traefik-fronted dns-0{1,2}.esweiss.com web UI) sits
-# behind SSO middleware that would reject the exporter's basic auth.
+# Each sends the AdGuard admin credential as HTTP Basic over plaintext to :3000 —
+# an accepted LAN risk: the admin API serves no TLS, has no read-only role, and
+# the one encrypted path sits behind SSO middleware that rejects basic auth.
 
 # ── dns-01 ──────────────────────────────────────────────────────────────
 apiVersion: apps/v1

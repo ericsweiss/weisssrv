@@ -15,24 +15,12 @@ metadata:
 spec:
   template:
     spec:
-      # Pod-level DNS fallback: primary + secondary internal resolvers.
-      # When Gluetun is enabled, Gluetun's own DNS_ADDRESS (set on the gluetun
-      # sidecar) takes precedence; if the gluetun container is crashed or the
-      # VPN is disabled, the app falls back to these nameservers.
-      # dns-01/dns-02 are the AdGuard HA VIPs. Either way DNS goes to the LAN
-      # resolvers outside the tunnel (FIREWALL_OUTBOUND_SUBNETS below routes
-      # them via eth0); upstream privacy comes from Unbound's DoT, not the VPN.
-      #
-      # SECURITY TRADEOFF (reviewed, accepted): tracker/indexer hostname lookups
-      # therefore leave the tunnel to the LAN AdGuard — visible to the user's own
-      # resolver only (not the ISP; Unbound's DoT hides the upstream). Routing
-      # them in-tunnel via gluetun's own DoT proxy (DOT=on, DNS_ADDRESS=127.0.0.1
-      # + dnsConfig -> 127.0.0.1) was evaluated and rejected: gluetun execs
-      # `sleep infinity` in VPN-off mode (see the gluetun container below), so
-      # 127.0.0.1:53 would have no listener and app DNS would break whenever the
-      # VPN is disabled; it would also drop internal *.esweiss.com resolution
-      # (the Cloudflare DoT upstream can't see AdGuard's LAN rewrites) and add a
-      # pod-startup race on the DoT proxy. The metadata exposure is accepted.
+      # Pod-level DNS fallback to the AdGuard HA VIPs, used when gluetun is
+      # disabled or crashed; otherwise gluetun's own DNS_ADDRESS wins. Either
+      # way DNS leaves the tunnel via eth0 (FIREWALL_OUTBOUND_SUBNETS) and
+      # upstream privacy comes from Unbound's DoT. Accepted tradeoff: indexer
+      # lookups are visible to the LAN resolver. In-tunnel DoT is not usable —
+      # gluetun sleeps in VPN-off mode and cannot see AdGuard's LAN rewrites.
       dnsPolicy: None
       dnsConfig:
         nameservers:
@@ -41,7 +29,7 @@ spec:
         options:
           - name: ndots
             value: "1"
-      # Init container verifies VPN prerequisites when VPN is enabled
+      # Fails the pod early if VPN is enabled without a usable TUN device.
       initContainers:
         - name: check-vpn-config
           image: busybox:${busybox_version}
@@ -61,15 +49,20 @@ spec:
               else
                 echo "Direct mode - skipping TUN check"
               fi
+          resources:
+            requests:
+              cpu: 5m
+              memory: 8Mi
+            limits:
+              memory: 16Mi
           volumeMounts:
             - name: vpn-config
               mountPath: /config
             - name: tun
               mountPath: /dev/net/tun
       containers:
-        # Gluetun VPN sidecar - provides VPN tunnel when enabled
-        # When VPN is disabled, this container runs `sleep infinity` (minimal
-        # resources — the pod stays healthy; network path bypasses gluetun).
+        # Gluetun VPN sidecar. With the VPN disabled it execs `sleep infinity`
+        # so the pod stays healthy and traffic bypasses the tunnel.
         - name: gluetun
           image: qmcgaw/gluetun:${gluetun_version}
           imagePullPolicy: IfNotPresent
@@ -88,22 +81,12 @@ spec:
                 # disabled path (nzbget default) can never touch the new code.
                 exec sleep infinity
               fi
-              # Provider-aware credential wiring (Part C — live provider switch).
-              # Read the provider the operator selected in the mounted vpn-config
-              # ConfigMap and point Gluetun at the matching credential FILES.
-              # SECRETFILE variants (files, not env) keep the secrets out of the
-              # container environment and `kubectl describe pod`. PrivadoVPN uses
-              # an OpenVPN user/password. VPN Unlimited (KeepSolid) needs ALL of
-              # user, password, client cert AND client key: gluetun's generated
-              # OpenVPN config is cert/key-based (auth-user-pass off), but its
-              # settings validation still REQUIRES a non-empty user + password for
-              # the provider — omit either and gluetun fails validation and the
-              # sidecar crash-loops. The CLIENTCRT/CLIENTKEY *_SECRETFILE names are
-              # gluetun's secret-file override vars for its openvpn_clientcrt /
-              # openvpn_clientkey secrets (the OPENVPN_CERT / OPENVPN_KEY value
-              # envs map to the same two secrets); gluetun parses the mounted file
-              # as PEM, so the stored value is the full PEM block. See the
-              # download-clients README § Provider Switching and docs/21.
+              # Point gluetun at the credential FILES for the provider selected
+              # in the vpn-config ConfigMap — *_SECRETFILE keeps secrets out of
+              # the container env. VPN Unlimited needs user+password AND
+              # clientcrt/clientkey (its settings validation rejects an empty
+              # user/password even though the config is cert-based; the mounted
+              # files are full PEM blocks). README § Provider Switching, docs/21.
               VPN_PROVIDER=$(cat /gluetun/vpn_provider 2>/dev/null || echo "")
               case "$VPN_PROVIDER" in
                 privado)
@@ -124,21 +107,20 @@ spec:
               esac
               echo "VPN enabled - starting Gluetun (provider: $VPN_PROVIDER)"
               exec /gluetun-entrypoint
+          # drop: [ALL] first, or the container silently keeps the runtime's
+          # whole default set on top of the adds. NET_ADMIN is for the tun
+          # device and routing; NET_RAW is required by gluetun's iptables
+          # firewall/killswitch (same pairing as wg-easy).
           securityContext:
             capabilities:
+              drop: ["ALL"]
               add:
                 - NET_ADMIN
+                - NET_RAW
           # env[0]=VPN_SERVICE_PROVIDER and env[1]=SERVER_COUNTRIES are the two
           # per-app configMapKeyRef entries the overlays repoint at their own
-          # ConfigMap (nzbget-vpn-config / qbittorrent-vpn-config) — kept as the
-          # first two entries so the overlay index guards stay simple.
-          #
-          # VPN credentials are NO LONGER static env here: the command wrapper
-          # above reads vpn_provider and exports the matching OPENVPN_*_SECRETFILE
-          # paths pointing at the vpn-credentials Secret mounted read-only at
-          # /vpn-secrets (see volumeMounts). Files (not env) keep the creds out of
-          # `kubectl describe pod`, and per-provider selection means one sidecar
-          # serves PrivadoVPN (user/pass) or VPN Unlimited (client cert/key).
+          # ConfigMap — keep them first so the overlay index guards stay simple.
+          # Credentials are never env here; see the command wrapper above.
           env:
             - name: VPN_SERVICE_PROVIDER
               valueFrom:
@@ -157,15 +139,11 @@ spec:
             # non-tunnel is dropped by gluetun's own firewall.
             - name: FIREWALL_OUTBOUND_SUBNETS
               value: "10.42.0.0/16,10.43.0.0/16,192.168.0.150/32,192.168.0.160/32"
-            # Health + control servers bind loopback only: every consumer (the
-            # exec probes below, the gluetun-exporter sidecar) shares the pod
-            # network namespace. The control API is now role-authenticated via
-            # the config.toml mounted at HTTP_CONTROL_SERVER_AUTH_CONFIG_FILEPATH
-            # (below): the exporter's three read-only status routes require an
-            # X-API-Key, every other control route returns 401. This also
-            # silences gluetun's per-request "route ... is unprotected by
-            # default" WARN spam (v3.40+ warns only for the auto-generated
-            # `public`/none role; a named role suppresses it).
+            # Health + control servers bind loopback only — every consumer (the
+            # exec probes, the gluetun-exporter sidecar) shares this pod's
+            # network namespace. The control API is role-authenticated via the
+            # config.toml below: the exporter's read-only status routes need an
+            # X-API-Key and every other route returns 401.
             - name: HEALTH_SERVER_ADDRESS
               value: "127.0.0.1:8000"
             - name: HEALTH_VPN_DURATION_INITIAL
@@ -198,8 +176,8 @@ spec:
             - name: health
               containerPort: 8000
               protocol: TCP
-          # Only run health checks when VPN is supposed to be active
-          # When disabled, gluetun just sleeps and health checks would fail
+          # Probes short-circuit to success when the VPN is disabled — gluetun
+          # sleeps in that mode and has no health server.
           livenessProbe:
             exec:
               command:
@@ -261,30 +239,15 @@ spec:
         - name: vpn-config
           configMap:
             name: placeholder-vpn-config
-        # config.toml rendered by ESO (ExternalSecret gluetun-control-auth). The
-        # secret also carries an `apikey` key for the exporter env; the items
-        # filter projects only config.toml into the gluetun container.
+        # config.toml rendered by ESO (ExternalSecret gluetun-control-auth); the
+        # items filter projects only that key here.
         #
-        # optional (DELIBERATE — do NOT make this a required mount): the VPN-off
-        # path (nzbget default) execs `sleep infinity` BEFORE gluetun ever reads
-        # config.toml, and a fresh cluster has no gluetun-control-auth Secret
-        # until the operator adds the gluetun-control-apikey field to 1Password.
-        # A required mount would wedge nzbget (and any new deploy) in
-        # ContainerCreating at bootstrap, breaking the fresh-cluster guarantee.
-        # With the Secret present (happy path) the flag is a no-op; with it
-        # absent gluetun falls back to the unprotected control server (the WARNs
-        # return) rather than taking the pod down under the Recreate strategy.
-        # FAIL-OPEN IS ACCEPTABLE because the control server binds 127.0.0.1
-        # (HTTP_CONTROL_SERVER_ADDRESS above) and is reachable only from inside
-        # this pod's shared network namespace — there is no Service and no
-        # NetworkPolicy ingress to it, so an unauthenticated control API is not
-        # reachable off-pod. The apikey auth is defence-in-depth over that
-        # loopback+netns boundary, not the sole control.
-        # qbittorrent's gluetun-exporter reads the same Secret's apikey via an
-        # OPTIONAL secretKeyRef (resources.yaml), so a missing key leaves the
-        # exporter unauthenticated against the then-also-unauthenticated control
-        # server — the scrape still succeeds — instead of wedging that pod. Both
-        # apps therefore degrade symmetrically; neither hard-blocks.
+        # optional: DELIBERATE — a required mount would wedge a fresh cluster in
+        # ContainerCreating before the operator populates the 1P field. Missing
+        # Secret = unauthenticated control server, which is acceptable because it
+        # binds 127.0.0.1 with no Service and no ingress policy; the apikey is
+        # defence-in-depth over that boundary. qbittorrent's exporter reads the
+        # same key optionally, so both apps degrade symmetrically.
         - name: gluetun-auth
           secret:
             secretName: gluetun-control-auth

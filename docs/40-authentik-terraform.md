@@ -13,10 +13,10 @@ quirks, and the add-an-app recipe; this page covers day-2 operations.
 
 **Ground rules** (same posture as `terraform/tailscale`):
 
-- **Apply is a supervised manual step.** No `terraform:authentik-apply` task
-  exists; CI never applies. A wrong provider field can break login for every
-  app at once — review the plan line by line, then `op run -- terraform apply`
-  from `terraform/authentik/`.
+- **Apply is a supervised manual step.** `task terraform:authentik-apply`
+  exists but refuses `-auto-approve`, so the plan review cannot be skipped; CI
+  never applies. A wrong provider field can break login for every app at once —
+  read the plan line by line, then apply and type `yes`.
 - **Plan is always safe.** `task terraform:authentik-plan` is read-only
   against the API and the GitLab-hosted state (`terraform/state/authentik`).
 
@@ -35,11 +35,9 @@ application"); remember a new OAuth2 provider needs its `<App> SSO` 1Password
 item (docs/15) and a `TF_VAR` wired into the Taskfile env anchor AND the
 `authentik-drift-plan` job, while a proxy provider needs an entry in the
 embedded outpost's Terraform-managed provider list (`outpost.tf`) plus the
-Traefik forward-auth wiring (docs/23). The Hermes dashboard OIDC set
-(`hermes_dashboard` provider on the `agent` application, role groups + per-app
-bindings — docs/37 §SSO) was the first Terraform-authored addition and is the
-worked example of this flow; the auth-passthrough wave (NZBGet/AdGuard
-basic-auth injection + the adopted outpost) followed the same pattern.
+Traefik forward-auth wiring (`kubernetes/apps/authentik/README.md`). The Hermes
+dashboard OIDC set (`hermes_dashboard` provider on the `agent` application, role
+groups + per-app bindings — docs/37 § SSO) is the worked example of this flow.
 
 ## Drift handling (Admin-UI edits)
 
@@ -59,16 +57,6 @@ half-in: its **provider list** is managed (`outpost.tf`, drift surfaces), but
 its settings JSON (`config`) is deliberately unconfigured and stays
 invisible.
 
-## Known advisory diff: the Sonarr basic-auth clear
-
-The live Sonarr proxy provider carries a leaked literal credential in its
-(disabled) basic-auth attribute fields; the module pins them empty, which is
-a user-approved clear. Until a supervised apply flushes it, every plan —
-including the CI drift job — shows exactly that single in-place update
-(`Plan: 0 to add, 1 to change, 0 to destroy`). Details in the module README
-("The Sonarr exception"). After clearing, also rotate the leaked password
-wherever it is a real credential.
-
 ## Credentials
 
 - **API token**: 1Password item `Authentik Terraform Token` (field
@@ -84,19 +72,18 @@ wherever it is a real credential.
 
 ## Disaster recovery
 
-State is in the GitLab HTTP backend (`terraform/state/authentik`). If it is
-lost (or you are rebuilding tooling from scratch) nothing is destroyed —
-state is only a mapping:
+State is in the GitLab HTTP backend (`terraform/state/authentik`). Losing it
+destroys nothing — state is only a mapping — but recovery is **not** a single
+command: `imports.tf` and `import.sh` cover the originally adopted objects only,
+and everything the module has authored since has no import block, because
+authentik assigns those pks/uuids at create time. A bare `terraform plan` after
+state loss therefore shows CREATES for objects that already exist.
 
-```bash
-task terraform:authentik-init      # fresh backend init
-task terraform:authentik-import    # import.sh: re-imports all managed objects (idempotent)
-task terraform:authentik-plan      # must be clean again
-```
-
-`imports.tf` carries the same address↔object map declaratively (import
-blocks are a no-op once state is populated), so a future supervised
-`terraform apply` can also perform first-time imports by itself.
+The full runbook (import the adopted set, enumerate the rest from the API and
+import each, then verify a clean plan) lives in
+[`terraform/authentik/README.md`](../terraform/authentik/README.md)
+§ "Import methodology and disaster recovery". Follow it there rather than
+re-deriving it here.
 
 If **authentik itself** is rebuilt from scratch, the module recreates every
 managed object (`terraform plan` will show all-create) — but the unmanaged
@@ -105,3 +92,9 @@ OAuth2 client ids/secrets are pinned, so app configs keep working. The
 embedded outpost is authentik's own object: re-import it (its uuid changes on
 a rebuild — update `imports.tf`), after which the managed provider list
 reapplies; no Admin-UI steps remain.
+
+## Related documentation
+
+- [`terraform/authentik/README.md`](../terraform/authentik/README.md) — the module reference (managed objects, secret injection, provider quirks, add-an-app recipe, DR runbook)
+- [docs/15-credential-rotation.md](15-credential-rotation.md) — the `<App> SSO` 1Password items
+- [`kubernetes/apps/authentik/README.md`](../kubernetes/apps/authentik/README.md) — the in-cluster Authentik deployment and Traefik forward-auth wiring

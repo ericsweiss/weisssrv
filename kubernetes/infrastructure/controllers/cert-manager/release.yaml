@@ -15,10 +15,8 @@ metadata:
 spec:
   interval: 30m
   releaseName: cert-manager
-  # cert-manager CRD upgrades can take several minutes while Helm updates the
-  # CRDs (via crds.enabled below) and the controller validates existing
-  # resources. Give a generous timeout so Flux doesn't remediation-uninstall
-  # mid-upgrade.
+  # CRD upgrades take minutes while the controller revalidates every existing
+  # resource; a short timeout would remediation-uninstall mid-upgrade.
   timeout: 10m
   chart:
     spec:

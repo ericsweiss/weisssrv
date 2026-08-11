@@ -59,7 +59,6 @@ echo "Enter password for user 'eric' (will be set on $HOST_IP)"
 echo "This password will be used for local console access and sudo."
 echo ""
 
-# Prompt for password (hidden input)
 read -r -s -p "Password: " ERIC_PASSWORD
 echo
 read -r -s -p "Confirm password: " ERIC_PASSWORD_CONFIRM
@@ -172,7 +171,6 @@ if ! command -v sudo &>/dev/null; then
         fi
     fi
 
-    # Install sudo
     if apt-get install -y sudo; then
         echo "sudo installed successfully"
     else
@@ -183,7 +181,6 @@ if ! command -v sudo &>/dev/null; then
     # Note: repos are restored automatically by the EXIT trap (restore_repos function)
 fi
 
-# Create user eric if not exists
 if ! id eric &>/dev/null; then
     useradd -m -s /bin/bash eric
     echo "Created user 'eric'"
@@ -191,8 +188,7 @@ else
     echo "User 'eric' already exists"
 fi
 
-# Set password for eric user
-# Decode password from base64 to avoid shell injection vulnerabilities
+# base64 keeps the password out of the remote command line.
 ERIC_PASSWORD=\$(echo "\$ERIC_PASSWORD_B64" | base64 -d)
 echo "eric:\$ERIC_PASSWORD" | chpasswd
 unset ERIC_PASSWORD  # Clear from memory
@@ -209,12 +205,10 @@ if ! grep -q "^%sudo" /etc/sudoers; then
     echo "%sudo   ALL=(ALL:ALL) ALL" >> /etc/sudoers
 fi
 
-# Configure passwordless sudo for eric
 echo 'eric ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/eric
 chmod 440 /etc/sudoers.d/eric
 echo "Configured passwordless sudo for eric"
 
-# Create .ssh directory
 mkdir -p /home/eric/.ssh
 chmod 700 /home/eric/.ssh
 chown eric:eric /home/eric/.ssh

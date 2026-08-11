@@ -39,7 +39,7 @@
       when: _ha_config_done | default(false)
 
   roles:
-    - role: proxmox_ha
+    - role: weisssrv.infra.proxmox_ha
       tags: [proxmox_ha]
 
   post_tasks:
@@ -70,9 +70,9 @@
       tags: [proxmox_ha]
 
 # Storage replication runs on every compute node: the per-job source_node
-# filter in proxmox_ha/tasks/replication.yml makes non-source hosts read-only
+# filter in the role's replication pass makes non-source hosts read-only
 # no-ops, so this needs no per-service host list (the primary layout lives in
-# the storage_replication_jobs comment in group_vars/all.yml). pve-nas-01 is
+# the proxmox_ha_replication_jobs comment in group_vars/all.yml). pve-nas-01 is
 # excluded — no local-ssd pool, never a replication source.
 - name: Configure Proxmox Storage Replication
   hosts: proxmox:!pve-nas-01
@@ -83,7 +83,7 @@
   tasks:
     - name: Include replication management
       ansible.builtin.include_role:
-        name: proxmox_ha
+        name: weisssrv.infra.proxmox_ha
         tasks_from: replication
-      when: storage_replication_jobs is defined and storage_replication_jobs | length > 0
+      when: proxmox_ha_replication_jobs is defined and proxmox_ha_replication_jobs | length > 0
       tags: [proxmox_ha, proxmox_ha_replication]

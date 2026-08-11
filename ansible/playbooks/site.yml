@@ -15,7 +15,7 @@
   hosts: mail
   gather_facts: false
   roles:
-    - role: proxmox_lxc
+    - role: weisssrv.infra.proxmox_lxc
       tags: [proxmox_lxc]
 
 # Runs after the SMTP provisioning play above (which must own the first
@@ -50,9 +50,9 @@
   # means the deploy did nothing at all, which must stay red.
   ignore_unreachable: true
   roles:
-    - role: base
+    - role: weisssrv.infra.base
       tags: [base]
-    - role: nic_tuning
+    - role: weisssrv.infra.nic_tuning
       tags: [nic_tuning, network]
 
 - name: Deploy Proxmox host configuration
@@ -61,30 +61,30 @@
   # See the reachability note on the base_managed play above.
   ignore_unreachable: true
   roles:
-    - role: qol
+    - role: weisssrv.infra.qol
       tags: [qol]
-    - role: postfix_null_client
+    - role: weisssrv.infra.postfix_null_client
       tags: [postfix_null_client]
     # dm-crypt plain-mode random-key encrypted swap on the six bare-metal hosts.
     # Config-only; activation is deferred to each host's next reboot (no live
     # switchover); self-gates on encrypted_swap_enabled.
-    - role: encrypted_swap
+    - role: weisssrv.infra.encrypted_swap
       tags: [encrypted_swap]
     # ZFS ARC cap on the COMPUTE hosts only (proxmox_role != 'nas'):
     # pve-nas-01's ARC is owned by nas_storage on the storage playbook lifecycle.
     # Self-gates on zfs_arc_cap_max_bytes (group_vars/proxmox.yml). Protects the
     # VFIO-passthrough host (pinned guest RAM) from an uncapped ARC — docs/43.
-    - role: zfs_arc_cap
+    - role: weisssrv.infra.zfs_arc_cap
       tags: [zfs_arc_cap]
       when: proxmox_role != 'nas'
     # Host-side GPU VFIO codification (IOMMU cmdline + vfio-pci bind + nouveau
     # blacklist). Self-gates on vfio_passthrough_enabled (set only on
     # pve-prec-01 in hosts.yml); STAGES config + prints reboot-required, never
     # reboots — the operator applies it in a maintenance window (docs/43).
-    - role: vfio_passthrough
+    - role: weisssrv.infra.vfio_passthrough
       tags: [vfio_passthrough]
       when: vfio_passthrough_enabled | default(false)
-    - role: tailscale
+    - role: weisssrv.infra.tailscale
       tags: [tailscale]
       when: tailscale_enabled | bool
     # tlshd on every PVE host (client mode; truststore only) — prerequisite
@@ -94,10 +94,10 @@
     # cert/key-dependent setup runs only in the NAS play below, after acme_certs
     # distributes the wildcard cert — preserving the fresh-bootstrap ordering
     # documented on the NAS play. Client-only hosts need just the CA bundle.
-    - role: nfs_tls
+    - role: weisssrv.infra.nfs_tls
       tags: [nfs_tls]
       when: not (nfs_tls_is_server | default(false))
-    - role: proxmox_firewall
+    - role: weisssrv.infra.proxmox_firewall
       tags: [proxmox_firewall]
 
 - name: Deploy DNS server configuration
@@ -109,13 +109,13 @@
   # batch ends the play — so the OTHER resolver would never be reconciled.
   ignore_unreachable: true
   roles:
-    - role: postfix_null_client
+    - role: weisssrv.infra.postfix_null_client
       tags: [postfix_null_client]
-    - role: unbound
+    - role: weisssrv.infra.unbound
       tags: [unbound]
-    - role: unbound_exporter
+    - role: weisssrv.infra.unbound_exporter
       tags: [unbound_exporter]
-    - role: adguard_home
+    - role: weisssrv.infra.adguard_home
       tags: [adguard_home]
 
 - name: Deploy certificate management and sync
@@ -125,14 +125,14 @@
   # Same serial-batch reasoning as the DNS play above.
   ignore_unreachable: true
   roles:
-    - role: acme_certs
+    - role: weisssrv.infra.acme_certs
       tags: [acme_certs]
-    - role: adguard_sync
+    - role: weisssrv.infra.adguard_sync
       tags: [adguard_sync]
 
 # NAS storage runs AFTER certificate management: nfs_tls's preflight fails loud
 # if the wildcard cert/key aren't present on pve-nas-01, and those are
-# distributed by the acme_certs play above (cert_distribution_targets). Running
+# distributed by the acme_certs play above (acme_certs_distribution_targets). Running
 # the NAS play earlier would fail a fresh `site.yml` bootstrap before the cert
 # exists. (storage.yml is the standalone NAS playbook for re-runs once the cert
 # is already distributed.) Nothing in the DNS/cert plays above depends on NAS
@@ -146,20 +146,20 @@
     # BEFORE nas_storage so tlshd is installed + verified before nas_storage
     # (re)publishes any xprtsec=tls export — otherwise a TLS-required export
     # could be live without a working handshake daemon if nfs_tls later fails.
-    - role: nfs_tls
+    - role: weisssrv.infra.nfs_tls
       tags: [nfs_tls]
-    - role: nas_storage
+    - role: weisssrv.infra.nas_storage
       tags: [nas_storage]
     # Nightly offsite B2 backup (restic + rclone). Runs after nas_storage (needs
     # the archsync snapshots + tank/backups/apps landing zone); chains OnSuccess=
     # after archive-backup.service. No-op while restic_offsite_enabled is false.
-    - role: restic_offsite
+    - role: weisssrv.infra.restic_offsite
       tags: [restic_offsite]
     # Declarative storage.cfg + vzdump jobs (tank-proxmox target). Cluster-wide
     # config, so it runs from this single node; no-op while its lists are empty.
-    - role: proxmox_backup
+    - role: weisssrv.infra.proxmox_backup
       tags: [proxmox_backup]
-    - role: zfs_exporter
+    - role: weisssrv.infra.zfs_exporter
       tags: [zfs_exporter]
 
 - name: Deploy DNS guest firewall rules
@@ -167,20 +167,20 @@
   # See the reachability note on the base_managed play above.
   ignore_unreachable: true
   roles:
-    - role: proxmox_firewall
+    - role: weisssrv.infra.proxmox_firewall
       tags: [proxmox_firewall]
 
 - name: Deploy SMTP relay configuration
   hosts: mail
   become: true
   roles:
-    - role: smtp_relay
+    - role: weisssrv.infra.smtp_relay
       tags: [smtp_relay]
 
 - name: Deploy SMTP guest firewall rules
   hosts: mail
   roles:
-    - role: proxmox_firewall
+    - role: weisssrv.infra.proxmox_firewall
       tags: [proxmox_firewall]
 
 - name: Deploy host-level metrics (node_exporter on bare metal, DNS, mail, GitLab, Nextcloud, Immich, and k3s-server hosts)
@@ -194,7 +194,7 @@
   # by failing every base deploy.
   ignore_unreachable: true
   roles:
-    - role: node_exporter_host
+    - role: weisssrv.infra.node_exporter_host
       tags: [node_exporter_host]
 
 - name: Deploy host-side log collection (Alloy → Loki)
@@ -204,7 +204,7 @@
   # app VM instead of failing the base deploy (the app's own playbook ships alloy_host).
   ignore_unreachable: true
   roles:
-    - role: alloy_host
+    - role: weisssrv.infra.alloy_host
       tags: [alloy_host]
 
 # Deploy guest firewall rules for VMs that can't run Ansible directly (Home
@@ -218,7 +218,7 @@
   hosts: services:windows_vms
   gather_facts: false
   roles:
-    - role: proxmox_firewall
+    - role: weisssrv.infra.proxmox_firewall
       tags: [proxmox_firewall]
 
 # k3s guest .fw files (VMIDs 202-207, 222-227) are otherwise written only by
@@ -231,7 +231,7 @@
   hosts: k3s
   gather_facts: false
   roles:
-    - role: proxmox_firewall
+    - role: weisssrv.infra.proxmox_firewall
       tags: [proxmox_firewall]
 
 # Last, so every play has had its chance to converge: fail the run if any

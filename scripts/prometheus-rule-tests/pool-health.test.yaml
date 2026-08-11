@@ -1,0 +1,139 @@
+---
+# promtool unit tests for the ZFS pool-health and SMART alerts — the data-loss
+# class, where a PromQL edit that makes a rule never fire is invisible until the
+# thing it watches has already failed.
+# rule_files is resolved relative to this file's runtime location; the lint
+# script copies the tests next to the extracted rules.yaml before running them.
+rule_files:
+  - rules.yaml
+evaluation_interval: 1m
+tests:
+  # ZFSPoolNotOnline: health_code is 0 for ONLINE, non-zero for DEGRADED/worse.
+  - interval: 1m
+    input_series:
+      - series: 'zfs_pool_status_health_code{pool="tank", instance="192.168.0.102:9101"}'
+        values: '2+0x10'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: ZFSPoolNotOnline
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              pool: tank
+              instance: '192.168.0.102:9101'
+
+  # An ONLINE pool (code 0) must never fire it — the `> 0` bound is the whole rule.
+  - interval: 1m
+    input_series:
+      - series: 'zfs_pool_status_health_code{pool="tank", instance="192.168.0.102:9101"}'
+        values: '0+0x10'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: ZFSPoolNotOnline
+        exp_alerts: []
+
+  # A pool that degrades must wait out `for: 5m` before paging.
+  - interval: 1m
+    input_series:
+      - series: 'zfs_pool_status_health_code{pool="archive", instance="192.168.0.102:9101"}'
+        values: '0 0 2 2 2 2 2 2 2 2'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: ZFSPoolNotOnline
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: ZFSPoolNotOnline
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              pool: archive
+              instance: '192.168.0.102:9101'
+
+  # ZFSPoolDataErrors: permanent, unrecoverable entries from `zpool status -v`.
+  - interval: 1m
+    input_series:
+      - series: 'zfs_pool_status_data_errors{pool="tank", instance="192.168.0.102:9101"}'
+        values: '3+0x10'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: ZFSPoolDataErrors
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              pool: tank
+              instance: '192.168.0.102:9101'
+
+  - interval: 1m
+    input_series:
+      - series: 'zfs_pool_status_data_errors{pool="tank", instance="192.168.0.102:9101"}'
+        values: '0+0x10'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: ZFSPoolDataErrors
+        exp_alerts: []
+
+  # ZFSPoolDeviceErrors sums read+write+cksum per pool, so a single erroring
+  # vdev must still trip it (the sum-by is what makes per-device labels drop out).
+  - interval: 1m
+    input_series:
+      - series: 'zfs_pool_status_errors_total{pool="archive", instance="192.168.0.102:9101", device="sdb", type="read"}'
+        values: '0+0x10'
+      - series: 'zfs_pool_status_errors_total{pool="archive", instance="192.168.0.102:9101", device="sdc", type="cksum"}'
+        values: '4+0x10'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: ZFSPoolDeviceErrors
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              pool: archive
+              instance: '192.168.0.102:9101'
+
+  # SMARTDeviceUnhealthy: min_over_time rides through standby gaps, so one
+  # FAILED sample keeps the alert firing for the whole 6h window.
+  - interval: 1m
+    input_series:
+      - series: 'smartmon_device_smart_healthy{device="sda", instance="192.168.0.102:9101"}'
+        values: '1 1 0 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 18m
+        alertname: SMARTDeviceUnhealthy
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              device: sda
+              instance: '192.168.0.102:9101'
+
+  # A drive healthy for the whole window never trips it.
+  - interval: 1m
+    input_series:
+      - series: 'smartmon_device_smart_healthy{device="sda", instance="192.168.0.102:9101"}'
+        values: '1+0x20'
+    alert_rule_test:
+      - eval_time: 18m
+        alertname: SMARTDeviceUnhealthy
+        exp_alerts: []
+
+  # SMARTPendingSectors: max_over_time, the mirror image — one non-zero sample
+  # in the window is enough (pending sectors do not un-happen).
+  - interval: 1m
+    input_series:
+      - series: 'smartmon_current_pending_sector_count{device="sdd", instance="192.168.0.102:9101"}'
+        values: '0 0 8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0'
+    alert_rule_test:
+      - eval_time: 18m
+        alertname: SMARTPendingSectors
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              device: sdd
+              instance: '192.168.0.102:9101'
+
+  - interval: 1m
+    input_series:
+      - series: 'smartmon_current_pending_sector_count{device="sdd", instance="192.168.0.102:9101"}'
+        values: '0+0x20'
+    alert_rule_test:
+      - eval_time: 18m
+        alertname: SMARTPendingSectors
+        exp_alerts: []

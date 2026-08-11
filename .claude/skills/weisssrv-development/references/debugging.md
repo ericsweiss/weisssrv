@@ -21,10 +21,11 @@ ops — Flux owns `kubernetes/`. Full day-2 procedures: `docs/29-flux-operations
 
 - `task <ns>:status` / `task <ns>:logs` wrappers exist for the app namespaces —
   `downloads`, `recipes`, `home-assistant`, `gitlab`, `authentik`,
-  `observability`, `hermes`, `immich`, `immich-ml`, `nextcloud`, `vpn`
-  (`task --list` is the source of truth; there are also `downloads:vpn-status`,
-  `observability:silence`, `b2:drift`, `terraform:{tailscale,authentik}-plan`).
-  Otherwise `kubectl -n <ns> describe pod/<p>` + `kubectl -n <ns> logs`.
+  `observability`, `hermes`, `hindsight`, `homarr`, `immich`, `immich-ml`,
+  `nextcloud`, `wg-easy` (`task --list` is the source of truth; there are also
+  `downloads:vpn-status`, `observability:silence`, `b2:drift`, and the
+  terraform plan tasks). Otherwise `kubectl -n <ns> describe pod/<p>` +
+  `kubectl -n <ns> logs`.
 - **NFS stale file handle** on an established mount (after a NAS reboot): delete
   the pod so it remounts (`kubectl -n <ns> delete pod <p>`). The PV is
   hostname+TLS-mounted; a fresh pod re-does the handshake.
@@ -48,7 +49,7 @@ ops — Flux owns `kubernetes/`. Full day-2 procedures: `docs/29-flux-operations
 
 ## Certs
 
-- acme.sh + Cloudflare DNS-01, distributed to guests via `cert_distribution_targets`;
+- acme.sh + Cloudflare DNS-01, distributed to guests via `acme_certs_distribution_targets`;
   in-cluster certs are cert-manager `Certificate` CRs against `letsencrypt-prod`.
   `docs/09-certs.md`.
 
@@ -61,9 +62,12 @@ ops — Flux owns `kubernetes/`. Full day-2 procedures: `docs/29-flux-operations
 
 ## Backups
 
-- Archive-backup health is surfaced as `archive_backup_*` Prometheus metrics with
-  alert rules; runbook in `docs/12-runbooks.md`. Backup config lives in
-  `ansible/roles/nas_storage/templates/archive-backupctl.sh.j2`.
+- Health is surfaced as `archive_backup_*` / `restic_offsite_*` Prometheus
+  metrics with alert rules; runbooks in `docs/12-runbooks.md`. What is backed up
+  is inventory (`nas_storage_archive_backup_sources`, `restic_offsite_sources`);
+  the offsite chain to Backblaze B2, its `restic-offsitectl` CLI, and the restore
+  drill are `docs/42-offsite-backup.md`. Restore paths: `docs/17-disaster-recovery.md`
+  (pool/dataset rebuild: `docs/44-storage-bootstrap.md`).
 
 ## Reboot safety
 
@@ -72,24 +76,17 @@ ops — Flux owns `kubernetes/`. Full day-2 procedures: `docs/29-flux-operations
   A known active-backup bond MAC-flap black-hole and its `nic_tuning` guard:
   `docs/34-bond-mac-flapping.md`.
 
-## Local molecule testing caveats
+## Ansible testing caveats
 
-- Always invoke via `task ansible:test -- <role...>` (→ `ansible/test-all-roles.sh`,
-  which merges the shared `ansible/molecule/base.yml`) — never bare `molecule
-  test`. The `--` is required (go-task only forwards args after it); omit the
-  args to run every scenario. Needs Docker; on Apple Silicon the amd64 emulation
-  works after a binfmt install.
-- Two classes of scenario don't behave like a plain converge:
-  - **Render-only everywhere (CI included)** — these never run the real service,
-    even in CI, so molecule only asserts on rendered output: `home_assistant`
-    (HAOS is not a runnable distro; the scenario flips `home_assistant_render_only=true`)
-    and `zfs_encryption` (no kernel module / Connect endpoint — validates
-    templates, file modes, and systemd ordering only).
-  - **Fully exercised in CI's privileged DinD, but not on a plain local Docker** —
-    `zvol_mount` runs its real loop-device behaviour in CI (the matrix job is
-    privileged) but won't on an unprivileged local engine, and `smtp_relay` /
-    connection-`local-with-become` scenarios need real Postfix / passwordless
-    sudo that a Mac local run can't provide. For these, **CI is the arbiter** of a
-    genuine pass.
-- Do NOT run full molecule suites unless asked — `task lint` + syntax-check +
-  render checks are the normal gate.
+- **Per-role molecule scenarios live in weisssrv-lib**, next to the roles, and
+  run in that repo's matrix. What remains here are the multi-role integration
+  scenarios (`ansible/integration-tests/`), run with `task ansible:test-integration`.
+  Details and coverage: `ansible/TESTING.md`.
+- Needs Docker; on Apple Silicon the amd64 emulation works after a binfmt
+  install. Some scenarios only pass in CI's privileged DinD (real loop devices,
+  Postfix, passwordless sudo), so **CI is the arbiter** of a genuine pass.
+- Do NOT run full suites unless asked — `task lint`, a collection install, and
+  `ansible-playbook --syntax-check` are the normal gate.
+- A play that goes green having done nothing is the failure mode to watch for:
+  `--tags <x>` that matches no declared tag exits 0, and a role variable left at
+  its old (now unread) name silently takes the collection's default.

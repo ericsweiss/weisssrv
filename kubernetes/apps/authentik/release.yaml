@@ -11,9 +11,8 @@ spec:
   interval: 30m
   releaseName: authentik
   # Authentik upgrades run PostgreSQL schema migrations that routinely take
-  # 5-10 minutes on this cluster. The old imperative deploy used
-  # `helm upgrade --timeout 10m`; Flux's default is 5m, which triggers
-  # remediation-uninstall/reinstall mid-migration and risks schema corruption.
+  # 5-10 minutes; Flux's 5m default would remediate mid-migration and risk
+  # schema corruption.
   timeout: 15m
   chart:
     spec:
@@ -263,11 +262,42 @@ spec:
         limits:
           memory: 1536Mi
 
-    # Bundled PostgreSQL - consider external for HA
     postgresql:
       enabled: true
       image:
         tag: "${postgresql_version}"
+      # postgres_exporter sidecar + its metrics Service and ServiceMonitor. This
+      # chart-rendered ServiceMonitor is the ONLY scrape of the exporter —
+      # observability/service-monitors/postgres.yaml deliberately ships no
+      # authentik PodMonitor, which would double-scrape the same podIP:9187.
+      # The observability -> :9187 ingress allow lives in networkpolicy.yaml;
+      # the flux:lint scrape gate is namespace-level only (it asserts that SOME
+      # ingress policy admits the observability namespace, not the port or the
+      # target pod), so mis-scoping the 9187 rule passes CI and surfaces only as
+      # TargetDown.
+      #
+      # extraEnvVars re-point the exporter at the `authentik` role: the subchart
+      # hardcodes DATA_SOURCE_USER to `postgres`, which this deployment's
+      # official-postgres image never creates. Later duplicates win, so these
+      # must stay last.
+      metrics:
+        enabled: true
+        serviceMonitor:
+          enabled: true
+          interval: 30s
+        extraEnvVars:
+          - name: DATA_SOURCE_USER
+            value: authentik
+          - name: DATA_SOURCE_PASS_FILE
+            value: /opt/bitnami/postgresql/secrets/postgresql-password
+          - name: DATA_SOURCE_URI
+            value: 127.0.0.1:5432/authentik?sslmode=disable
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            memory: 128Mi
       auth:
         username: authentik
         database: authentik
@@ -281,12 +311,10 @@ spec:
           size: 10Gi
           storageClass: ""
           existingClaim: authentik-postgres-data  # Use dedicated ZFS zvol PVC
-        # Hand-applied from the Off-tier VPA recommendation (vpa.yaml keeps this
-        # StatefulSet recommendation-only): the 512Mi limit was OOMKilled on
-        # 2026-07-25 with a 7d working-set peak of 504Mi (98.4% of it) while the
-        # recorded target sat at 684Mi. Request is the target rounded down to a
-        # 64Mi boundary, limit is 1Gi (~1.5x the target) for burst headroom. CPU
-        # stays 100m: the recorded CPU target is 50m (uncapped 35m).
+        # Hand-applied from the Off-tier VPA recommendation (vpa.yaml keeps
+        # this StatefulSet recommendation-only): request tracks the recorded
+        # target, limit is ~1.5x it for burst headroom. Re-apply from the
+        # recommendation when it moves (docs/33).
         resources:
           requests:
             cpu: 100m

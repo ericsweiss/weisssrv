@@ -1,19 +1,12 @@
 ---
-# Infrastructure (privileged) GitLab Runner HelmRelease, deployed in its own
-# dedicated `gitlab-runner-privileged` namespace. The namespace separation is
-# the isolation boundary from the untrusted shared runner: the shared runner's
-# namespace-scoped RBAC can no longer read this runner's token Secret. Isolation
-# is also reinforced by a separate ServiceAccount (gitlab-runner-privileged) and
-# the `infrastructure` job tag. Chart version substituted from cluster-versions
-# ConfigMap. Runner token sourced via ExternalSecret (externalsecret.yaml); the
-# chart reads it from the Secret `gitlab-runner-privileged-token` via
-# runners.secret.
+# Infrastructure (privileged) GitLab Runner. Its own namespace is the isolation
+# boundary from the untrusted shared runner — that runner's namespace-scoped
+# RBAC cannot reach this one's token Secret (ESO-rendered,
+# gitlab-runner-privileged-token). Job pods additionally run as a token-less SA
+# (serviceaccount.yaml) and are routed here only by the `infrastructure` tag.
 #
-# The fields shared with ../gitlab-runner/release.yaml (interval, timeout, chart,
-# install/upgrade, gitlabUrl, replicas, checkInterval, rbac, manager resources,
-# affinity, tolerations) are merged in from the
-# kubernetes/components/gitlab-runner-common component (wired in
-# kustomization.yaml); only this runner's deltas live below.
+# Fields shared with ../gitlab-runner/release.yaml come from the
+# kubernetes/components/gitlab-runner-common component; only deltas live below.
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -22,55 +15,16 @@ metadata:
 spec:
   releaseName: gitlab-runner-privileged
   values:
-    # Concurrent jobs. The governor here is CPU, not memory. Memory per job is
-    # tiny (~0.55Gi live: build ~250-400Mi ansible control, dind ~120Mi, helper
-    # ~18Mi) and was correctly right-sized. But an earlier pass set the CPU
-    # *requests* too low (~0.65 cpu/job) while a converge actually uses ~1.5 cpu
-    # (ansible control + dind + the systemd test container). At concurrent:18 the
-    # scheduler packed job pods onto the small 3-core agents (opt-01/02/03) by
-    # those understated requests -> 4+ jobs on a 3-core node -> ~2x LOCAL CPU
-    # oversubscription. Under that starvation the docker-exec-per-task molecule
-    # connection crawls, and task-count-heavy jobs inflated ~4-7x (proxmox_vm
-    # 2.5min -> 18min, storage-stack 3min -> 17min; measured across pipelines
-    # 550/551 @c=10 vs 553 @c=18). Fix: request the real ~1.5 cpu/job (below), so
-    # per-node packing is correct and the scheduler self-limits effective
-    # parallelism to what the agent cores can actually run.
-    #
-    # concurrent is sized to the schedulable pool, NOT above it. Oversubscribing
-    # parks the overflow as Unschedulable PODS — and pod-Pending time burns the
-    # JOB's timeout clock (pipeline 773: two molecule jobs sat Pending ~18.5 min
-    # and were killed by the 20m job timeout without ever converging). At/below
-    # pool capacity the overflow waits in GitLab's job queue instead, where the
-    # timeout clock does not run.
-    #
-    # Pool: 25 cores — opt-01/02/03 3 each, laptop-01 4, prec-01 6, nas-01 6.
-    # After co-tenant requests (~6 cpu) that is ~19 cpu of headroom = ~12 jobs at
-    # 1.5 cpu/job.
-    #
-    # That 1.5 cpu/job is a RESERVATION, not a measurement, and it is the same
-    # for every job: cpu_request 900m + service_cpu_request 500m (dind) +
-    # helper_cpu_request 100m, with no cpu_request_overwrite_max_allowed, so a
-    # job cannot ask for less. The scheduler admits on REQUESTS, never on usage —
-    # so "most jobs are lint work that use far less than they reserve" is true
-    # and irrelevant: a light job still holds 1.5 cpu of a node while it runs.
-    #
-    # That is why this number cannot be tuned upward against the same pool. Any
-    # value above ~12 does not pack tighter, it parks the difference in Pending
-    # pods and burns job timeouts. Raising it honestly means adding cores (the
-    # NAS agent is the only one with room to grow) or lowering the per-job
-    # request — and that request was deliberately raised FROM an understated
-    # ~650m after the understatement oversubscribed the small agents and inflated
-    # molecule jobs 4-7x (proxmox_vm 2.5min -> 18min). Do not undo that to buy
-    # concurrency.
-    #
-    # concurrent stays at/below what the ResourceQuota's requests.cpu admits so
-    # the runner never submits a pod the quota rejects (403). Move in lockstep
-    # with the quota.
+    # Concurrent jobs, governed by CPU. Sized to the schedulable pool and never
+    # above it: overflow above pool capacity parks as Pending pods, and Pending
+    # time burns the JOB timeout, whereas overflow below it waits in GitLab's
+    # queue where the clock does not run. Pool ~25 cores, ~19 free after
+    # co-tenants, 1.5 cpu reserved per job (cpu_request 900m + dind 500m +
+    # helper 100m) => 12. Raising it means adding cores, not lowering the
+    # request. Keep in lockstep with the ResourceQuota's requests.cpu.
     concurrent: 12
 
-    # Kubernetes executor configuration
     runners:
-      # Runner name prefix
       name: k3s-runner-infrastructure
 
       # Existing Secret (created by ESO externalsecret.yaml) containing the
@@ -84,26 +38,16 @@ spec:
       # Other projects' untagged jobs go to the shared non-privileged runner
       runUntagged: false
 
-      # Protected branches only.
-      # ACCEPTED RISK (homelab): protected:false lets this privileged (root +
-      # DinD) runner execute the weisssrv MR pipeline on UNPROTECTED feature
-      # branches. This is deliberate: .gitlab-ci.yml runs every job with
-      # tags:[infrastructure] and triggers on merge_request_event, so the whole
-      # branch+MR CI workflow (lint/validate/test) depends on this runner
-      # accepting unprotected branches. Setting protected:true would silently
-      # break MR CI (no runner would pick up MR jobs) because feature branches
-      # are not protected.
-      # The isolation boundary is the runner REGISTRATION SCOPE, not the tag:
-      # tags are cooperative routing, and any project on the instance can
-      # declare tags:[infrastructure] in its CI. The registration behind the
-      # 1Password "GitLab Runner Privileged" token must therefore be a PROJECT
-      # runner locked to the weisssrv project — never an instance runner — so
-      # no other project's jobs can reach root+DinD execution (docs/27 Step 8).
+      # ACCEPTED RISK (homelab): this privileged root+DinD runner accepts
+      # UNPROTECTED branches, because the whole MR pipeline is tagged
+      # [infrastructure] and feature branches are not protected.
+      # The isolation boundary is the REGISTRATION SCOPE, not the tag — tags are
+      # cooperative and any project can claim one. The token behind this runner
+      # must stay a PROJECT runner locked to weisssrv (docs/27 Step 8).
       protected: false
 
       executor: kubernetes
 
-      # Kubernetes executor config
       config: |
         # TOML sections are POSITIONAL: every key after a [section] header
         # belongs to that section until the next header. All scalar
@@ -119,14 +63,9 @@ spec:
 
           [runners.kubernetes]
             namespace = "gitlab-runner-privileged"
-            # A ~9-job start burst requests ~13.5 cpu, which the 19-core CI pool
-            # fits — pods should schedule promptly, and overflow now queues in
-            # GitLab (see the concurrent: note) rather than as Pending pods. The
-            # default poll_timeout (180s) would still fail a transiently-Pending
-            # pod spuriously as runner_system_failure (co-tenant bursts can delay
-            # placement); 1200s keeps that backstop tolerant. A scalar key — must
-            # stay above the first [runners.kubernetes.*] sub-table (see the
-            # positional note above).
+            # The default 180s fails a transiently-Pending pod as
+            # runner_system_failure when a co-tenant burst delays placement.
+            # A scalar key — must stay above the first sub-table.
             poll_timeout = 1200
             # Default CI job image, digest-pinned for reproducibility (the
             # tag is retained for readability; the digest is authoritative).
@@ -134,32 +73,17 @@ spec:
             image = "python:3.11@sha256:9800957d2a88867f853ce6072ae1669e37fa269cc6f76009fa1aef4757f62212"
             privileged = true
 
-            # CPU/Memory for the build container (runs the pre-built molecule-ci
-            # image — ansible control + molecule, NOT the test workload). Memory
-            # peaks ~250-400Mi, so 1Gi limit / 384Mi request stays. The CPU
-            # REQUEST is the scheduler's per-node reservation: ansible control is
-            # the dominant CPU consumer during converge (~0.9 cpu actively driving
-            # tasks), so request 900m — the earlier 250m under-reserved and let
-            # the scheduler over-pack small nodes (see the concurrent: note).
-            # No cpu_limit: the repo-wide no-CPU-limit policy (docs/33) applies
-            # to job pods too. CPU is compressible, cpu_request already sets the
-            # contention share, and the namespace ResourceQuota deliberately
-            # carries no cpu/limits.cpu dimension (resourcequota.yaml).
+            # Build container: ansible control + molecule, not the test workload.
+            # cpu_request is the scheduler's per-node reservation and must match
+            # what a converge actually drives (~0.9 cpu), or small agents get
+            # over-packed. No cpu_limit (docs/33 repo-wide policy).
             cpu_request = "900m"
             memory_limit = "1Gi"
             memory_request = "384Mi"
 
-            # Service container (docker:dind sidecar) — holds the molecule test
-            # container(s). Memory ~120Mi live; 2Gi limit gives headroom for
-            # multi-container integration scenarios + image layers, 512Mi request.
-            # CPU request 500m reserves the dind daemon + the systemd test
-            # container's steady CPU (build 900m + dind 500m + helper 100m ≈ the
-            # ~1.5 cpu a real converge uses, so per-node packing matches reality).
-            # No service_cpu_limit: dind's load is burst-shaped (image unpack,
-            # parallel molecule containers), and the 2-core limit throttled it
-            # for 28-46% of CFS periods across every measured job pod — pure
-            # CI wall-clock loss, which is exactly what docs/33 says a CPU limit
-            # buys you.
+            # docker:dind sidecar holding the molecule test containers. Its load
+            # is burst-shaped (image unpack, parallel containers), so no
+            # service_cpu_limit — a limit only bought CFS throttling.
             service_cpu_request = "500m"
             service_memory_limit = "2Gi"
             service_memory_request = "512Mi"
@@ -169,45 +93,26 @@ spec:
             helper_memory_limit = "256Mi"
             helper_memory_request = "128Mi"
 
-            # Service account
-            service_account = "gitlab-runner-privileged"
+            # Job pods run as the token-less jobs SA (serviceaccount.yaml), not
+            # the manager SA — they must not inherit its secrets/pods-exec Role.
+            service_account = "gitlab-runner-privileged-jobs"
 
-            # No pod security context restrictions - DinD test jobs require root
-            # Docker daemon needs root privileges to function. Lint and deploy jobs
-            # also run as root here for simplicity since this runner is restricted
-            # to the trusted weisssrv project via the "infrastructure" tag.
-
-            # Pull policy
+            # No pod security context: the DinD daemon needs root, and every job
+            # on this runner comes from the trusted weisssrv project.
             pull_policy = ["if-not-present"]
 
-            # Allow individual CI jobs to override node selector for CPU-compatibility only.
-            # Restricted to esweiss.com/cpu=modern|legacy to prevent arbitrary node targeting.
-            # Example: KUBERNETES_NODE_SELECTOR_CPU: esweiss.com/cpu=modern
+            # Jobs may override the node selector for CPU compatibility only;
+            # the pattern prevents arbitrary node targeting.
             node_selector_overwrite_allowed = "^esweiss\\.com/cpu=(modern|legacy)$"
 
-            # NO node affinity here, deliberately: every agent is eligible for CI,
-            # including the NAS agent (esweiss.com/nas=true).
-            #
-            # Eligible is NOT preferred, and that distinction needs no config here:
-            # that node carries esweiss.com/nas=true:PreferNoSchedule, so the
-            # scheduler exhausts every other agent first and only spills onto it
-            # under real load. The NAS also runs host-side CPU work on demand, so
-            # CI must stay its last claim on the box rather than a standing one.
-            #
-            # If that ever needs tightening, raise THE TAINT to NoSchedule rather
-            # than adding a node_affinity exclusion here — one lever, one place.
-            # See docs/06 (NAS memory management) + docs/27.
+            # No node affinity, deliberately: every agent is eligible, and the
+            # NAS agent's PreferNoSchedule taint already makes it the last
+            # choice. Tighten by raising THAT taint, not by adding a rule here.
 
-            # Pod anti-affinity: spread infrastructure job pods across agents so
-            # a ~15-job burst does not bin-pack many systemd-DinD test pods onto
-            # one node. Simultaneous same-node container starts race the cgroup-v2
-            # setup and die at prepare ("Container is not running") — the dominant
-            # script_failure flake class the in-job retry loop then has to absorb.
-            # Soft (preferred, weight 100): the scheduler spreads when it can but
-            # still packs under CPU pressure rather than leaving jobs Pending. The
-            # selector matches the pod_labels label below, which every infrastructure
-            # job pod carries. A sub-table — keep it after all scalar keys above and
-            # before pod_labels (which must stay LAST; see TOML positionality note).
+            # Soft spread of job pods across agents: simultaneous same-node
+            # DinD starts race cgroup-v2 setup and fail at prepare. Preferred,
+            # not required, so a burst still packs rather than going Pending.
+            # A sub-table — after every scalar key, before pod_labels.
             [runners.kubernetes.affinity.pod_anti_affinity]
               [[runners.kubernetes.affinity.pod_anti_affinity.preferred_during_scheduling_ignored_during_execution]]
                 weight = 100
@@ -219,14 +124,14 @@ spec:
                       operator = "In"
                       values = ["infrastructure"]
 
-            # NetworkPolicy selector: infrastructure job pods keep
-            # unrestricted egress (ansible/SSH to the whole LAN) — see
-            # ./networkpolicy.yaml. Keep this sub-table
-            # LAST (see TOML positionality note above).
+            # NetworkPolicy selector: these job pods keep unrestricted egress
+            # (ansible/SSH to the whole LAN) — see ./networkpolicy.yaml.
+            # Must stay LAST (TOML positionality).
             [runners.kubernetes.pod_labels]
               "esweiss.com/runner-class" = "infrastructure"
 
-    # Service account - separate from non-privileged runner
+    # Manager ServiceAccount (chart-created). Job pods use the token-less
+    # gitlab-runner-privileged-jobs SA instead — see serviceaccount.yaml.
     serviceAccount:
       create: true
       name: gitlab-runner-privileged

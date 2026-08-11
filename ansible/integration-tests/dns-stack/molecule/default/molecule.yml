@@ -7,7 +7,7 @@ driver:
 
 platforms:
   - name: dns-01
-    image: registry.git.ericsweiss.com/eric/weisssrv/molecule-test:latest
+    image: "${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:v0.6.0}"
     pre_build_image: true
     privileged: true
     cgroupns_mode: host
@@ -30,7 +30,7 @@ platforms:
       - dns_primary
 
   - name: dns-02
-    image: registry.git.ericsweiss.com/eric/weisssrv/molecule-test:latest
+    image: "${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:v0.6.0}"
     pre_build_image: true
     privileged: true
     cgroupns_mode: host
@@ -52,10 +52,16 @@ platforms:
       - dns
       - dns_replica
 
+dependency:
+  name: galaxy
+  options:
+    # The single source of truth for the weisssrv.infra pin these
+    # scenarios exercise. Resolved by ansible-galaxy in molecule's CWD,
+    # which is the scenario's stack dir (ansible/integration-tests/<stack>).
+    requirements-file: ../../requirements.yml
 provisioner:
   name: ansible
   env:
-    ANSIBLE_ROLES_PATH: ../../../../roles
     # Required for molecule_docker plugin (upstream broken conditional in destroy.yml)
     ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
     # Provide dummy SSH key for testing (base role expects this via all.yml lookup)
@@ -72,39 +78,46 @@ provisioner:
         # Common DNS configuration
         timezone: "America/Chicago"
         # Docker containers have /etc/resolv.conf as a bind mount that can't be replaced
-        skip_resolv_conf_update: true
+        adguard_home_skip_resolv_conf_update: true
         # Disable PrivateTmp in systemd service for Docker container compatibility
         # PrivateTmp can cause container crashes when systemd tries to create private mounts
-        adguard_use_private_tmp: false
+        adguard_home_use_private_tmp: false
         # Disable ProtectSystem in systemd service for Docker container compatibility
         # ProtectSystem=strict can crash containers when systemd creates private mounts over system directories
-        adguard_use_protect_system: false
+        adguard_home_use_protect_system: false
+        # No real certificates exist in these containers, so DoT/DoH/DoQ is off
+        # on BOTH servers. The role defaults this to true and asserts
+        # adguard_home_tls_server_name is non-empty when it is, so setting it
+        # per-host (dns_primary only) leaves the replica failing that assert —
+        # it belongs to the whole `dns` group. The TLS path itself is covered by
+        # the collection's own adguard_home `tls` molecule scenario.
+        adguard_home_tls_enabled: false
         # AdGuard Home API configuration (required for full initialization)
-        adguard_protection_enabled: true
-        adguard_upstream_mode: "load_balance"
-        adguard_fallback_dns: []
-        adguard_enable_dnssec: false
-        adguard_resolve_clients: true
-        adguard_use_private_ptr_resolvers: false
-        adguard_disable_ipv6: false
-        adguard_cache_enabled: true
-        adguard_cache_size: 4194304
-        adguard_cache_ttl_min: 0
-        adguard_cache_ttl_max: 0
-        adguard_cache_optimistic: false
-        adguard_ratelimit: 20
-        adguard_ratelimit_whitelist: []
-        adguard_dhcp_enabled: false
+        adguard_home_protection_enabled: true
+        adguard_home_upstream_mode: "load_balance"
+        adguard_home_fallback_dns: []
+        adguard_home_enable_dnssec: false
+        adguard_home_resolve_clients: true
+        adguard_home_use_private_ptr_resolvers: false
+        adguard_home_disable_ipv6: false
+        adguard_home_cache_enabled: true
+        adguard_home_cache_size: 4194304
+        adguard_home_cache_ttl_min: 0
+        adguard_home_cache_ttl_max: 0
+        adguard_home_cache_optimistic: false
+        adguard_home_ratelimit: 20
+        adguard_home_ratelimit_whitelist: []
+        adguard_home_dhcp_enabled: false
         # Codified DNS rewrites (TEST-NET-1, RFC 5737). api_config.yml runs on
         # dns-01 only and reconciles the live rewrite list to exactly this set;
         # verify.yml asserts both landed. Empty user_rules leaves filtering
         # untouched (set_rules only fires on drift).
-        adguard_rewrites:
+        adguard_home_rewrites:
           - domain: "test-a.molecule.local"
             answer: "192.0.2.10"
           - domain: "test-b.molecule.local"
             answer: "192.0.2.11"
-        adguard_user_rules: []
+        adguard_home_user_rules: []
         # Unbound upstream forwarders (DoT), set at the GROUP level so BOTH the
         # explicit "Apply unbound role" task AND adguard_home's own
         # `dependencies: [unbound]` re-apply resolve the SAME list. Passing this
@@ -120,19 +133,26 @@ provisioner:
 
       dns_primary:
         # Primary DNS server (dns-01)
-        adguard_http_port: 3000
-        adguard_dns_port: 53
-        adguard_admin_user: admin
+        adguard_home_http_port: 3000
+        adguard_home_dns_port: 53
+        adguard_home_admin_user: admin
         # bcrypt hash is generated automatically from password by adguard_home role
-        adguard_admin_password: password
+        adguard_home_admin_password: password
         unbound_port: 5335
         unbound_interface: 127.0.0.1
-        adguard_tls_enabled: false  # Disable TLS in tests (no real certificates)
+        # This host runs the rewrite/filtering API pass (was an
+        # inventory_hostname == 'dns-01' check inside the role).
+        adguard_home_is_primary: true
         # AdGuard Sync configuration (sync FROM dns-01 TO dns-02)
-        adguardhome_sync_enabled: true
-        adguardhome_sync_origin: "http://dns-01:3000"
-        adguardhome_sync_replica: "http://dns-02:3000"
-        adguardhome_sync_features:
+        adguard_sync_enabled: true
+        adguard_sync_version: "0.9.2"
+        # The sync role owns its API credentials now — it no longer borrows the
+        # adguard_home pair.
+        adguard_sync_admin_user: admin
+        adguard_sync_admin_password: password
+        adguard_sync_origin: "http://dns-01:3000"
+        adguard_sync_replica: "http://dns-02:3000"
+        adguard_sync_features:
           dns:
             accessLists: true
             serverConfig: true
@@ -146,11 +166,11 @@ provisioner:
 
       dns_replica:
         # Replica DNS server (dns-02)
-        adguard_http_port: 3000
-        adguard_dns_port: 53
-        adguard_admin_user: admin
+        adguard_home_http_port: 3000
+        adguard_home_dns_port: 53
+        adguard_home_admin_user: admin
         # bcrypt hash is generated automatically from password by adguard_home role
-        adguard_admin_password: password
+        adguard_home_admin_password: password
         unbound_port: 5335
         unbound_interface: 127.0.0.1
 

@@ -131,7 +131,7 @@ qm set 154 --onboot 1 --startup order=50,up=10
 pvesh set /pools/apps-public -vms 154
 ```
 
-> **Storage must be `local-ssd` (ZFS), not `local-lvm`.** vmid 154 participates in the configured `storage_replication_jobs` (154-0..154-3 in `group_vars/all.yml`) and Proxmox HA failover, both of which require a ZFS-backed disk. `local-lvm` (LVM-thin) cannot be ZFS-replicated, so a VM created on it would silently break ZFS-to-ZFS replication and HA failover. This matches `host_vars/home.yml` (`vm_storage: local-ssd`).
+> **Storage must be `local-ssd` (ZFS), not `local-lvm`.** vmid 154 participates in the configured `proxmox_ha_replication_jobs` (154-0..154-3 in `group_vars/all.yml`) and Proxmox HA failover, both of which require a ZFS-backed disk. `local-lvm` (LVM-thin) cannot be ZFS-replicated, so a VM created on it would silently break ZFS-to-ZFS replication and HA failover. This matches `host_vars/home.yml` (`proxmox_storage: local-ssd`).
 
 ### Step 2: Start the VM
 
@@ -387,15 +387,15 @@ data:
 
 **Configuration Files:**
 
-Templates are version-controlled in the Ansible role:
-- `ansible/roles/home_assistant/templates/configuration.yaml.j2` - Main configuration
-- `ansible/roles/home_assistant/templates/secrets.yaml.j2` - Secrets template
-- `ansible/roles/home_assistant/defaults/main.yml` - Default variables
+Templates are version-controlled in the `weisssrv.infra.home_assistant` role (weisssrv-lib):
+- `ansible_collections/weisssrv/infra/roles/home_assistant/templates/configuration.yaml.j2` - Main configuration
+- `ansible_collections/weisssrv/infra/roles/home_assistant/templates/secrets.yaml.j2` - Secrets template
+- `ansible_collections/weisssrv/infra/roles/home_assistant/defaults/main.yml` - Default variables
 - `ansible/playbooks/home-assistant.yml` - Deployment playbook
 
 **Making Changes:**
 
-1. Edit templates in `ansible/roles/home_assistant/templates/`
+1. Edit templates in weisssrv-lib `ansible_collections/weisssrv/infra/roles/home_assistant/templates/`
 2. Update variables in `defaults/main.yml` if needed
 3. Commit to Git
 4. Deploy configuration: `task home-assistant:deploy-config`. Ingress lives in Flux; edit `kubernetes/apps/vm-ingress/home-assistant.yaml` + `services-default.yaml`, commit, push.
@@ -424,7 +424,7 @@ Home Assistant can access the unified media library (mergerfs) via NFS for brows
 
 The NFS export is already configured on pve-nas-01 for 192.168.0.154 as read-only:
 ```yaml
-# In ansible/inventories/prod/host_vars/pve-nas-01.yml (nfs_exports -> /export/media)
+# In ansible/inventories/prod/host_vars/pve-nas-01.yml (nas_storage_exports -> /export/media)
 - spec: "192.168.0.154/32"
   options: "ro,sync,no_subtree_check,root_squash,fsid=20"
 ```
@@ -506,12 +506,21 @@ HA's built-in remote-backup integrations.
 
 **Step 2: Configure Automatic Backups**
 
-1. Go to **Settings > System > Backups**
-2. Click **Settings** (gear icon)
-3. Configure:
-   - **Automatic backups**: Enabled
-   - **Days to keep**: 7
-   - **Backup folder**: `/mnt/backups` (if NFS mounted)
+1. **Settings → System → Storage → Add network storage**:
+   - Name: `nas_backup` (alphanumerics and underscores only), Usage: **Backup**
+   - Server `192.168.0.102`, Protocol **NFS**, version **4**, remote share
+     `/backups-apps/home-assistant` (HAOS mounts this plaintext — the documented
+     `.154` exception above)
+2. **Settings → System → Backups → Automatic backups**: enable, keep 7 days, and
+   set the **location** to the `nas_backup` network storage.
+3. Download the emergency kit (Backups → ⋮) and store the backup encryption key
+   as `backup_encryption_key` on the **Home Assistant API Token** 1Password item.
+   Automatic backups are `protected: true` — **without that key the offsite tars
+   are undecryptable**.
+
+Backups written there ride `tank/backups → archive` and the restic B2 walk, and
+their freshness is watched by `BackupArtifactStale{app="home-assistant"}`
+([docs/42](42-offsite-backup.md)).
 
 **Step 3: Manual Backup**
 
@@ -665,64 +674,22 @@ task home-assistant:vm-restart
 > codified in `terraform/authentik/` (`providers_oauth2.tf`, `applications.tf`,
 > `policy_bindings.tf`, `groups.tf`) and changed via a supervised `terraform apply`
 > — **not the Authentik UI** ([docs/40-authentik-terraform.md](40-authentik-terraform.md)).
-> The UI walkthrough below is retained only as a reference for the redirect URIs
-> and `configure_url`; make the actual provider/app/binding changes in the `.tf`
-> files.
 
-#### Create OAuth2 Provider
+The values Terraform sets — match these when configuring the HA side:
 
-1. Log into Authentik at `https://auth.ericsweiss.com`
-2. Navigate to **Applications -> Providers**
-3. Click **Create**
-4. Select **OAuth2/OpenID Provider**
-5. Configure:
+| Setting | Value |
+|---|---|
+| Provider / application name | `Home Assistant` |
+| Application slug | `home` |
+| Client type | Confidential |
+| Authorization flow | `default-authorization-flow` (implicit consent) |
+| Scopes | `openid`, `email`, `profile` |
+| Launch URL | `https://home.ericsweiss.com` |
+| Redirect URI regex | `https://home\.ericsweiss\.com/auth/openid/callback$`<br>`https://home\.esweiss\.com/auth/openid/callback$` |
+| Access gate | `home-assistant-users` group binding |
 
-| Field | Value |
-|-------|-------|
-| **Name** | `Home Assistant` |
-| **Authorization flow** | `default-authorization-flow` (implicit-consent) |
-| **Client type** | `Confidential` |
-| **Client ID** | (auto-generated - **COPY THIS**) |
-| **Client Secret** | (auto-generated - **COPY THIS**) |
-| **Redirect URIs/Origins (Regex)** | See below |
-| **Signing Key** | Select any available certificate |
-| **Scopes** | `openid`, `email`, `profile` |
-
-**Redirect URIs/Origins (Regex)**:
-```
-https://home\.ericsweiss\.com/auth/openid/callback$
-https://home\.esweiss\.com/auth/openid/callback$
-```
-
-6. Click **Finish**
-7. **Save the Client ID and Client Secret** - you'll need them for 1Password
-
-#### Create Authentik Application
-
-1. Navigate to **Applications -> Applications**
-2. Click **Create**
-3. Configure:
-
-| Field | Value |
-|-------|-------|
-| **Name** | `Home Assistant` |
-| **Slug** | `home` |
-| **Provider** | `Home Assistant` (select the provider created above) |
-| **Launch URL** | `https://home.ericsweiss.com` |
-
-4. Click **Create**
-
-#### Optional: Bind User Group
-
-If you want to restrict access:
-
-1. Create a group: **Directory -> Groups -> Create** (`home-assistant-users`)
-2. Add users to the group
-3. Open the `Home Assistant` application
-4. Go to **Policy / Group / User Bindings**
-5. Click **Bind existing policy/group/user**
-6. Select **Group** and choose `home-assistant-users`
-7. Click **Create**
+The client ID and secret live on the **Home Assistant SSO** 1Password item and
+are read by both ESO and `terraform/authentik`, so they cannot disagree.
 
 ### Step 4: Store Credentials in 1Password
 
@@ -809,7 +776,7 @@ Repeat for each Authentik user who needs access.
 
 With `block_login: true`, only the SSO login button is displayed. To re-enable local login as a fallback:
 
-1. Edit `ansible/roles/home_assistant/templates/configuration.yaml.j2`
+1. Edit weisssrv-lib `ansible_collections/weisssrv/infra/roles/home_assistant/templates/configuration.yaml.j2`
 2. Set `block_login: false`
 3. Redeploy: `task home-assistant:deploy-config && task home-assistant:restart-after-config`
 
@@ -910,8 +877,8 @@ To rotate the client secret:
 ### Configuration Reference
 
 The SSO configuration is managed by:
-- **Templates**: `ansible/roles/home_assistant/templates/configuration.yaml.j2`, `secrets.yaml.j2`
-- **Defaults**: `ansible/roles/home_assistant/defaults/main.yml`
+- **Templates**: weisssrv-lib `ansible_collections/weisssrv/infra/roles/home_assistant/templates/configuration.yaml.j2`, `secrets.yaml.j2`
+- **Defaults**: weisssrv-lib `ansible_collections/weisssrv/infra/roles/home_assistant/defaults/main.yml`
 - **Taskfile**: `home-assistant:deploy-config` task with 1Password env vars
 - **1Password**: `Home Assistant SSO` item in Homelab vault
 
@@ -1013,16 +980,17 @@ http:
 
 ### Backup Home Assistant
 
-Home Assistant manages its own backups:
+Two automated tiers cover HA; neither needs a manual download.
 
-1. Settings > System > Backups
-2. Create a full backup
-3. Download backup file for off-site storage
+| Tier | What it captures | Watched by |
+|---|---|---|
+| Nightly `vzdump` of the HAOS VM (.154) | whole-VM image, local + archive | `VzdumpBackupStale` |
+| HA's own automatic backups to the `nas_backup` network storage | granular, encrypted tars on `tank/backups/apps/home-assistant`, riding archive + restic B2 | `BackupArtifactStale{app="home-assistant"}` |
 
-For off-site durability, download backups for external storage. NAS-backed HAOS
-backups over the `appdata` NFS export are not possible (TLS-required, HAOS not in
-the export) — see the "Backup Configuration" note above for the constraint and
-the dedicated-export workaround.
+An ad-hoc full backup is still available under **Settings → System → Backups →
+Create Backup** when you want a restore point before a risky change. Restoring
+the granular tars needs `backup_encryption_key` from the **Home Assistant API
+Token** 1Password item.
 
 ### Update Home Assistant
 
@@ -1051,7 +1019,7 @@ DNS is already configured. For reference:
 
 In `ansible/inventories/prod/group_vars/dns.yml`:
 ```yaml
-adguard_rewrites:
+adguard_home_rewrites:
   - domain: "home.esweiss.com"
     answer: "192.168.0.101"  # Traefik internal VIP
   - domain: "home-direct.esweiss.com"
@@ -1087,7 +1055,7 @@ This allows:
 
 No additional firewall rules are needed.
 
-## Related Documentation
+## Related documentation
 
 - `docs/19-k3s-deployment.md` - K3s cluster and platform services
 - `docs/23-recipes-sso-setup.md` - Authentik SSO configuration patterns

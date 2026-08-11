@@ -20,7 +20,7 @@ dns-01 (Primary)
   ├── acme.sh issues cert via Cloudflare DNS-01
   ├── Installs to /opt/AdGuardHome/certs
   ├── Runs homelab-cert-reload.sh hook
-  └── Distributes certs to (cert_distribution_targets in host_vars/dns-01.yml):
+  └── Distributes certs to (acme_certs_distribution_targets in host_vars/dns-01.yml):
       ├── Forced-command receiver targets (one SSH round-trip each; the
       │   receiver validates, installs, and reloads):
       │   ├── dns-02 (AdGuard Home)
@@ -109,7 +109,7 @@ If you prefer to install manually instead of using Ansible:
 ### Distribution Script
 
 The `homelab-cert-reload.sh` script on `dns-01` is generated from the
-data-driven `cert_distribution_targets` list in `host_vars/dns-01.yml` —
+data-driven `acme_certs_distribution_targets` list in `host_vars/dns-01.yml` —
 the source of truth for targets, per-target SSH host-key pinning, cert
 paths/permissions, and restart commands. It also emits per-target
 Prometheus metrics.
@@ -158,7 +158,7 @@ from="192.168.0.150",command="sudo /usr/local/sbin/cert-receive",restrict ssh-ed
   expired, key matches the leaf, and the SAN covers `*.esweiss.com` — before
   an atomic install with **baked-in** owner/group/mode and the baked-in
   reload command. Paths, permissions, and reload are rendered at deploy time
-  from `cert_distribution_targets`; the client controls only the cert bytes.
+  from `acme_certs_distribution_targets`; the client controls only the cert bytes.
 - Unchanged-vs-apply is decided **server-side** (sha256 marker written only
   after a clean reload, so a failed reload self-heals on the next push).
 - Blast radius of a leaked key: install a *validated* wildcard cert and run
@@ -318,7 +318,7 @@ sudo journalctl -u postfix -f
 ### Distribution Failing
 
 1. **Check SSH connectivity** (using the cert distribution key; repeat for
-   each target in `cert_distribution_targets`). On the seven sudo targets the
+   each target in `acme_certs_distribution_targets`). On the seven sudo targets the
    key is pinned to the forced-command receiver, so any connection runs
    `cert-receive` — an empty stdin probe answering `FAIL: empty bundle`
    proves SSH + forced command + sudoers are all wired:
@@ -415,15 +415,15 @@ ansible-playbook ansible/playbooks/site.yml --tags acme_certs
 Configured in `group_vars/dns.yml`:
 
 ```yaml
-adguard_tls_enabled: true
-adguard_cert_path: /opt/AdGuardHome/certs
+adguard_home_tls_enabled: true
+adguard_home_cert_path: /opt/AdGuardHome/certs
 
 secrets:
   cloudflare_api_token: "op://Homelab/Cloudflare DNS Token/credential"
   cloudflare_account_id: "op://Homelab/Cloudflare DNS Token/username"
 ```
 
-## References
+## Related documentation
 
 - [acme.sh Documentation](https://github.com/acmesh-official/acme.sh)
 - [Cloudflare DNS-01](https://github.com/acmesh-official/acme.sh/wiki/dnsapi#dns_cf)

@@ -1,94 +1,129 @@
 #!/usr/bin/env python3
-"""Drift guard: every offsite (restic → B2) source must also be an archive source.
+"""Drift guard: the offsite (restic -> B2) and archive dataset lists must agree.
 
-Two hand-kept dataset lists must never diverge:
+The original gate read `ansible/roles/{restic_offsite,nas_storage}/...`; both
+roles moved to the weisssrv.infra collection, and with them the defaults. What
+did NOT move is the data: this cluster's two lists now live side by side in
+`ansible/inventories/prod/host_vars/pve-nas-01.yml`, so the invariant is
+re-expressed against the inventory and needs no collection checkout.
 
-  * restic_offsite include set — `restic_offsite_sources` (mountpoints) +
-    `restic_offsite_zvol_sources` (zvols), in
-    ansible/roles/restic_offsite/defaults/main.yml. These are the datasets
-    restic uploads to Backblaze B2.
-  * nas_storage archive `SRC_LIST` — the bash array in
-    ansible/roles/nas_storage/templates/archive-backupctl.sh.j2. These are the
-    datasets the local `archive` raw-`zfs send -w` replication covers.
+The durability invariant (docs/42): restic reads the newest `archsync-*`
+snapshot of each source, and its freshness guard aborts when that snapshot is
+stale. An offsite source that is NOT an archive source therefore has no snapshot
+to read and would silently never upload.
 
-restic reads the newest `archsync-*` snapshot of each source and its freshness
-guard aborts if that snapshot is stale (docs/42) — so an offsite source that is
-NOT an archive source has no snapshot to read and would silently never upload.
-This test fails the moment someone adds a restic source without adding the
-matching archive source.
+Both directions are asserted:
 
-Archive replication is recursive (`zfs send -R` includes children), so a restic
-source is "covered" if it, OR any ancestor dataset, is in `SRC_LIST` — that is
-how the two file-bearing zvols (`tank/immich-data/disk`,
-`tank/nextcloud-data/disk`) are covered by their parents in `SRC_LIST`.
+  * every restic source is covered by an archive source (itself or an ancestor —
+    archive replication is recursive, which is how the two file-bearing zvols
+    `tank/{immich,nextcloud}-data/disk` are covered by their parents);
+  * every archive source is either an offsite source or listed in
+    ARCHIVE_ONLY with a reason, so dropping a dataset from the restic list
+    cannot pass as "intentional" without saying so.
 
 Run with pytest:
     pytest scripts/test_offsite_archive_coverage.py -v
 """
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 import pytest
 import yaml
 
 REPO = Path(__file__).resolve().parent.parent
-RESTIC_DEFAULTS = REPO / "ansible" / "roles" / "restic_offsite" / "defaults" / "main.yml"
-ARCHIVE_J2 = (
-    REPO / "ansible" / "roles" / "nas_storage" / "templates" / "archive-backupctl.sh.j2"
-)
+NAS_HOST_VARS = REPO / "ansible/inventories/prod/host_vars/pve-nas-01.yml"
+
+# Archive sources deliberately NOT uploaded offsite, dataset -> reason. Every
+# entry is a decision recorded in docs/42; adding one is the reviewable act.
+ARCHIVE_ONLY = {
+    "tank/proxmox": (
+        "vzdump guest images: nightly-fresh, poorly dedupable .zst — excluded "
+        "from B2 on cost grounds (docs/42 Cost). The guests' own logical dumps "
+        "under tank/backups/apps are what ride offsite."
+    ),
+    "tank/immich-data": (
+        "the photo library lives inside the guest filesystem on the child zvol "
+        "tank/immich-data/disk, which IS an offsite source (a file walk cannot "
+        "see a live zvol's block device)."
+    ),
+    "tank/nextcloud-data": (
+        "same shape as tank/immich-data: the user files ride offsite through "
+        "the child zvol tank/nextcloud-data/disk."
+    ),
+}
+
+
+def _host_vars() -> dict:
+    return yaml.safe_load(NAS_HOST_VARS.read_text()) or {}
 
 
 def restic_offsite_datasets() -> set[str]:
     """ZFS datasets in the restic_offsite include set.
 
-    `restic_offsite_sources[].mountpoint` is `/mnt/<dataset>` (strip the prefix);
-    `restic_offsite_zvol_sources[].zvol` is the dataset name verbatim.
+    `restic_offsite_sources[].mountpoint` is `/mnt/<dataset>` (strip the
+    prefix); `restic_offsite_zvol_sources[].zvol` is the dataset name verbatim.
     """
-    data = yaml.safe_load(RESTIC_DEFAULTS.read_text())
+    data = _host_vars()
     datasets = {
         src["mountpoint"].removeprefix("/mnt/")
-        for src in data["restic_offsite_sources"]
+        for src in data.get("restic_offsite_sources") or []
     }
-    datasets |= {z["zvol"] for z in data["restic_offsite_zvol_sources"]}
+    datasets |= {z["zvol"] for z in data.get("restic_offsite_zvol_sources") or []}
     return datasets
 
 
-def archive_src_list() -> set[str]:
-    """Datasets in the nas_storage archive `SRC_LIST=(...)` bash array.
-
-    Anchored to the array *definition* (`^SRC_LIST=(` ... `^)`) so the many
-    `"${SRC_LIST[@]}"` usages elsewhere in the template are not mis-parsed.
-    """
-    text = ARCHIVE_J2.read_text()
-    match = re.search(r"^SRC_LIST=\((.*?)^\)", text, re.DOTALL | re.MULTILINE)
-    assert match, f"SRC_LIST=( ... ) array not found in {ARCHIVE_J2.name}"
-    return set(re.findall(r'"([^"]+)"', match.group(1)))
+def archive_datasets() -> set[str]:
+    """Datasets in nas_storage_archive_backup_sources (recursive raw send)."""
+    return set(_host_vars().get("nas_storage_archive_backup_sources") or [])
 
 
-def _covered(dataset: str, src_list: set[str]) -> bool:
-    """True if `dataset` or any ancestor dataset is in `src_list` (recursive send)."""
+def _covered(dataset: str, sources: set[str]) -> bool:
+    """True if `dataset` or any ancestor is in `sources` (recursive send)."""
     parts = dataset.split("/")
-    return any("/".join(parts[:i]) in src_list for i in range(1, len(parts) + 1))
+    return any("/".join(parts[:i]) in sources for i in range(1, len(parts) + 1))
 
 
-class TestOffsiteSubsetOfArchive:
+class TestOffsiteArchiveParity:
     def test_lists_are_non_empty(self):
-        # Guard against a parser returning {} and the coverage test passing vacuously.
+        # Guard against a parser returning set() and the coverage tests passing
+        # vacuously — a renamed inventory key must fail loudly, not silently.
         assert restic_offsite_datasets(), "parsed no restic_offsite datasets"
-        assert archive_src_list(), "parsed no archive SRC_LIST datasets"
+        assert archive_datasets(), "parsed no nas_storage_archive_backup_sources"
 
     def test_every_offsite_source_is_an_archive_source(self):
-        restic = restic_offsite_datasets()
-        archive = archive_src_list()
+        restic, archive = restic_offsite_datasets(), archive_datasets()
         uncovered = sorted(d for d in restic if not _covered(d, archive))
         assert not uncovered, (
-            "restic_offsite sources with no archive SRC_LIST coverage "
-            f"(add them to nas_storage SRC_LIST): {uncovered}\n"
+            "restic_offsite sources with no archive coverage — restic reads the "
+            "newest archsync-* snapshot of each source, so these would silently "
+            f"never upload. Add them to nas_storage_archive_backup_sources: {uncovered}\n"
             f"  restic offsite: {sorted(restic)}\n"
-            f"  archive SRC_LIST: {sorted(archive)}"
+            f"  archive sources: {sorted(archive)}"
         )
+
+    def test_every_archive_source_is_offsite_or_documented(self):
+        restic, archive = restic_offsite_datasets(), archive_datasets()
+        undocumented = sorted(
+            d
+            for d in archive
+            if d not in ARCHIVE_ONLY
+            and not any(_covered(r, {d}) for r in restic)
+        )
+        assert not undocumented, (
+            "archive sources that reach no offsite source and carry no recorded "
+            "reason — either add them to restic_offsite_sources or give them an "
+            f"ARCHIVE_ONLY entry saying why they stay on-site: {undocumented}"
+        )
+
+    def test_archive_only_entries_are_still_archive_sources(self):
+        """A stale exemption hides the next real gap."""
+        stale = sorted(set(ARCHIVE_ONLY) - archive_datasets())
+        assert not stale, f"ARCHIVE_ONLY names datasets no longer archived: {stale}"
+
+    @pytest.mark.parametrize("dataset", sorted(ARCHIVE_ONLY))
+    def test_archive_only_entries_carry_a_reason(self, dataset):
+        assert ARCHIVE_ONLY[dataset].strip(), f"{dataset}: empty reason"
 
 
 if __name__ == "__main__":

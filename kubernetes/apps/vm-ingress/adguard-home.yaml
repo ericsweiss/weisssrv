@@ -1,26 +1,14 @@
 ---
 # AdGuard Home dashboards, two route flavours per instance (docs/08):
-#   * dns-01/dns-02.esweiss.com — the RAW routes (below): no SSO, AdGuard's
-#     own login. Kept as the break-glass path — together with the direct IPs
-#     (.150/.160) they stay reachable when Authentik or the cluster is degraded
-#     (DNS is the one service that must never depend on the SSO stack to
-#     administer). Because AdGuard's own login is the only gate, these two use
-#     lan-tailscale-STRICT (LAN + Tailscale, no k3s pod CIDR) rather than
-#     lan-tailscale-only: an in-cluster pod holding blanket :443 egress to the
-#     traefik namespace (hermes, homarr) must not reach the DNS admin UI.
-#     In-cluster consumers of AdGuard use the direct IPs, not these routes.
-#   * adguard/adguard-02.esweiss.com — the SSO routes (further below):
-#     Authentik forward-auth (dns-admins group) with basic-auth credential
-#     injection, so members land straight on the dashboard with no second
-#     login. These use the authentik-auth-basic middleware (NOT the shared
-#     authentik-auth): the provider injects the AdGuard admin credentials as
-#     an Authorization header and only the -basic variant forwards it
-#     (kubernetes/apps/authentik/middleware.yaml). Providers/apps/group in
+#   * dns-01/dns-02.esweiss.com — RAW routes, no SSO: AdGuard's own login is the
+#     break-glass path when Authentik or the cluster is degraded. Because that
+#     login is the only gate, they use lan-tailscale-STRICT, which drops the k3s
+#     pod CIDR so in-cluster pods cannot reach the DNS admin UI.
+#   * adguard/adguard-02.esweiss.com — SSO routes: Authentik forward-auth
+#     (dns-admins) via the authentik-auth-basic middleware, which is the only
+#     variant that forwards the injected credential header. Objects live in
 #     terraform/authentik (docs/40).
-# All four routes share the two existing adguard-home-0X-backend Services
-# (services-default.yaml, 443/https via the vm-tls-wildcard ServersTransport
-# — AdGuard serves its UI over TLS, adguard_https_port 443 in group_vars).
-
+# All four share the adguard-home-0X-backend Services over 443/https.
 # IngressRoute for dns-01.esweiss.com (AdGuard Home primary, internal-only)
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute

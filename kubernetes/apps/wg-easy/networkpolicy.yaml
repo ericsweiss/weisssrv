@@ -60,24 +60,15 @@ spec:
 ---
 # Egress from the wg-easy pod — THE CNI-layer no-LAN killswitch.
 #
-# All tunneled client traffic is NAT'd out through this pod's eth0, so it leaves
-# with the pod's source IP and is governed by THIS pod's egress policy. Allowing
-# 0.0.0.0/0 EXCEPT every RFC1918 / CGNAT / link-local block (all ports, TCP+UDP)
-# means a connected friend can reach the internet but CANNOT reach 192.168.0.0/24
-# (the home LAN), the pod/service CIDRs, the tailnet, or link-local — no matter
-# what AllowedIPs their client is configured with. This is the guarantee that
-# does not depend on trusting the client (docs/38, layer 2).
+# Tunneled client traffic is NAT'd out through this pod's eth0, so it is governed
+# by this policy: 0.0.0.0/0 EXCEPT every RFC1918/CGNAT/link-local block means a
+# connected peer reaches the internet but never the LAN, pod/service CIDRs or the
+# tailnet, whatever AllowedIPs their client carries (docs/38, layer 2).
 #
-# There is deliberately NO kube-dns egress allow. Because forwarded client
-# traffic is subject to these same egress rules, an additive kube-dns allow (to
-# k8s-app=kube-dns on 53) would let a connected client point its resolver at the
-# CoreDNS ClusterIP 10.43.0.10 and reach cluster DNS — an open internal resolver
-# that violates the no-LAN / "no internal DNS" invariant. Instead the pod runs
-# with dnsPolicy:None → 1.1.1.1/1.0.0.1 (deployment.yaml), so it needs no
-# cluster DNS of its own, and 10.43.0.10 (inside the excepted 10.0.0.0/8, as are
-# the CoreDNS pod IPs) is dropped here. Client DNS is likewise pushed to
-# 1.1.1.1/1.0.0.1, public and covered by the internet rule. No apiserver / smtp
-# egress: wg-easy needs neither.
+# There is deliberately NO kube-dns allow: it would let a client point its
+# resolver at the CoreDNS ClusterIP and turn this into an open internal
+# resolver. The pod runs dnsPolicy:None with public resolvers instead, and
+# client DNS is pushed the same way. No apiserver or SMTP egress either.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

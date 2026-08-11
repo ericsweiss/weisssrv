@@ -1,4 +1,8 @@
 ---
+# Blackbox exporter + its probe target list. Every https target feeds the generic
+# EndpointDown alert; the three load-bearing hostnames also feed
+# EndpointDownCritical, and every *.ericsweiss.com target feeds
+# BlackboxCertExpiringSoon (rules/monitoring.yaml).
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -97,18 +101,18 @@ spec:
         - name: bar-assistant
           url: https://bar.esweiss.com
           module: http_sso
-        # Hermes dashboard: an unauthenticated probe is answered by the
-        # dashboard's own OIDC auth gate with a 302 -> /login (docs/37 §SSO).
-        # http_sso accepts the 302, so the probe verifies ingress + TLS +
-        # reachability. The generic EndpointDown alert covers it (warning at
-        # probe_success==0 for 5m).
+        # Hermes dashboard: an unauthenticated probe is answered by its OIDC
+        # gate with a 302, which http_sso accepts (docs/37 §SSO).
         - name: hermes
           url: https://agent.esweiss.com
           module: http_sso
-        # Homarr dashboard (dashboard.esweiss.com): an unauthenticated probe is
-        # answered by Homarr's own OIDC login with a 302, which http_sso accepts
-        # (200/301/302/401/403) — the probe verifies ingress + TLS + reachability.
-        # The generic EndpointDown alert covers it (warning at probe_success==0).
+        # The gateway API is a separate Traefik router from the dashboard above
+        # and is the path the agent itself serves on. `/` is a 404, so the probe
+        # targets its health endpoint.
+        - name: hermes-api
+          url: https://agent-api.esweiss.com/health
+          module: http_2xx
+        # Homarr answers an unauthenticated probe with a 302 to its OIDC login.
         - name: homarr
           url: https://dashboard.esweiss.com
           module: http_sso
@@ -121,36 +125,55 @@ spec:
         - name: gitlab
           url: https://git.esweiss.com
           module: http_2xx
-        # Nextcloud is SSO-only: the root redirects to Authentik (302), which
-        # http_sso accepts (200/301/302/401/403) — the probe verifies the
-        # ingress + TLS + backend reachability, not an authenticated session.
+        # SSO-only: the root redirects to Authentik (302). Like every http_sso
+        # target here, the probe verifies ingress + TLS + backend reachability,
+        # not an authenticated session.
         - name: nextcloud
           url: https://cloud.esweiss.com
           module: http_sso
-        # Immich is Authentik OIDC SSO-only (docs/36), same as Nextcloud above,
-        # so it uses http_sso for parity: the probe verifies ingress + TLS +
-        # backend reachability without depending on following an SSO redirect to
-        # a 200. photos.esweiss.com currently answers 200 directly (the SPA loads
-        # then redirects client-side), which http_sso also accepts; switching off
-        # http_2xx keeps the probe correct if a future 302/401/403 SSO gate lands.
+        # Immich answers 200 directly today (the SPA redirects client-side);
+        # http_sso keeps the probe correct if a server-side SSO gate ever lands.
         - name: immich
           url: https://photos.esweiss.com
           module: http_sso
         - name: pulsarr
           url: https://pulsarr.esweiss.com
           module: http_sso
-        # wg-easy admin UI reachability. It sits behind authentik-auth
-        # ForwardAuth, so an unauthenticated probe gets a 302 to Authentik —
-        # http_sso (accepts 200/301/302/401/403) verifies the ingress + TLS +
-        # ForwardAuth hop are alive. EndpointDown fires on probe_success==0.
+        # wg-easy ADMIN UI only — behind authentik-auth ForwardAuth, so the
+        # probe verifies the ingress + TLS + ForwardAuth hop. The WAN WireGuard
+        # endpoint itself is UDP and unprobeable here; WgEasyEndpointVipMissing
+        # (rules/infrastructure.yaml) watches that datapath instead.
         - name: wg-easy
           url: https://vpn.esweiss.com
           module: http_sso
         # Host-side Alloy's log-shipping path: loki-push-auth returns 401
-        # without credentials, which http_sso accepts — the probe verifies the
-        # ingress + TLS + Loki hop, not auth.
+        # without credentials, which http_sso accepts.
         - name: loki-push
           url: https://loki.esweiss.com
+          module: http_sso
+        # 1Password Connect is the secrets backend for every ExternalSecret AND
+        # the ZFS key-load path at boot. OnePasswordConnectDown watches the
+        # Deployment and ExternalSecretSyncFailure the consumer; neither covers
+        # the ingress + TLS hop. `/` is a 404, so probe the health endpoint.
+        - name: onepassword-connect
+          url: https://connect.esweiss.com/health
+          module: http_2xx
+        # AdGuard UIs. adguard*/dns-0* are two router pairs onto the same two
+        # resolvers: the adguard* names sit behind Authentik ForwardAuth (302 to
+        # auth), the dns-0* names go straight to AdGuard's own login (302).
+        # Resolver FUNCTION is covered by the DNS probes below; these cover the
+        # management path.
+        - name: adguard-dns-01
+          url: https://adguard.esweiss.com
+          module: http_sso
+        - name: adguard-dns-02
+          url: https://adguard-02.esweiss.com
+          module: http_sso
+        - name: adguard-ui-dns-01
+          url: https://dns-01.esweiss.com
+          module: http_sso
+        - name: adguard-ui-dns-02
+          url: https://dns-02.esweiss.com
           module: http_sso
         - name: dns-01
           url: 192.168.0.150:53
@@ -183,17 +206,12 @@ spec:
         - name: gitlab-registry
           url: https://registry.git.esweiss.com
           module: http_sso
-        # External path (Cloudflare -> WAN -> MetalLB .100): catches DDNS
-        # drift and public-ingress breakage that the internal probes can't see.
-        # That rationale is not specific to these two hostnames — every
-        # *.ericsweiss.com record BUT ONE leaves the LAN from this pod (the
-        # blackbox pod resolves via CoreDNS -> AdGuard, which rewrites only
-        # *.esweiss.com; verified: home -> the Cloudflare edge IPs, git/photos ->
-        # direct.ericsweiss.com/the WAN address), so each externally-published
-        # app is probed on BOTH names. The exception is auth.ericsweiss.com —
-        # see its target below. Modules mirror each app's internal probe
-        # (http_sso where an SSO gate answers the unauthenticated probe with a
-        # 302/401).
+        # External path (Cloudflare -> WAN -> MetalLB .100): catches DDNS drift
+        # and public-ingress breakage the internal probes cannot see. AdGuard
+        # rewrites only *.esweiss.com, so every *.ericsweiss.com probe below
+        # genuinely leaves the LAN — except auth.ericsweiss.com, see its target.
+        # Each externally-published app is probed on BOTH names, with modules
+        # mirroring its internal probe.
         - name: home-assistant-external
           url: https://home.ericsweiss.com
           module: http_2xx
@@ -203,19 +221,12 @@ spec:
         - name: gitlab-registry-external
           url: https://registry.git.ericsweiss.com
           module: http_sso
-        # NOT an external probe, despite the hostname: auth.ericsweiss.com is
-        # the documented AdGuard split-horizon exception (group_vars/dns.yml)
-        # and answers 192.168.0.101 on the LAN, so this pod reaches the INTERNAL
-        # Traefik VIP with SNI auth.ericsweiss.com — which is precisely the path
-        # every server-side OIDC discovery/JWKS fetch takes (hermes, immich,
-        # nextcloud, grafana fetch from the issuer host, deliberately kept off
-        # the Cloudflare hairpin because its bot filter 403s non-browser UAs).
-        # That router + the separate authentik-tls certificate are not covered
-        # by the auth.esweiss.com probe, which presents the other SNI. The
-        # genuinely public front door cannot be probed from in-cluster while the
-        # rewrite stands (a hostAlias pinning a Cloudflare anycast IP would page
-        # on their rotation, not on ours), and an external browser login failing
-        # at the edge surfaces through the other *-external probes.
+        # NOT an external probe despite the hostname: auth.ericsweiss.com is the
+        # AdGuard split-horizon exception (group_vars/dns.yml), so this pod
+        # reaches the INTERNAL Traefik VIP with that SNI — exactly the path every
+        # server-side OIDC discovery/JWKS fetch takes, and a different router and
+        # certificate from the auth.esweiss.com probe. The genuinely public front
+        # door cannot be probed from in-cluster while the rewrite stands.
         - name: authentik-oidc-issuer
           url: https://auth.ericsweiss.com
           module: http_2xx
@@ -242,6 +253,12 @@ spec:
           module: http_sso
         - name: plex-external
           url: https://plex.ericsweiss.com
+          module: http_sso
+        # Web IDE extension host — a separate router and origin from
+        # git.ericsweiss.com, and the SOP isolation it provides is load-bearing
+        # (docs/27). Answers 302 to GitLab's sign-in unauthenticated.
+        - name: gitlab-webide-external
+          url: https://ide.git.ericsweiss.com
           module: http_sso
     resources:
       requests:

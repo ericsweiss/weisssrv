@@ -1,14 +1,10 @@
 ---
-# VPA policies for platform controllers. Most use updateMode Auto (the updater
-# may evict to apply new requests — these tolerate restarts). Components on the
-# synchronous request/admission path use Initial instead (apply recommendations
-# on the next natural restart, never proactive eviction): Traefik (ingress for
-# every service — an Auto eviction blip 502'd the registry and hung
-# git.esweiss.com under CI-burst load, even with a PDB), cert-manager-webhook
-# (single-replica admission), external-dns (single-replica, no PDB),
-# metallb-speaker (L2/ARP VIP announcer — eviction triggers a stale-ARP VIP
-# failover), and tailscale-operator (single-replica admission webhook). Lives in
-# configs/ because the VPA CRD is installed by controllers/vpa.
+# VPA policies for platform controllers. Default is updateMode Auto (the updater
+# may evict to apply new requests). Anything on the synchronous request or
+# admission path uses Initial instead — recommendations land on the next natural
+# restart, never by eviction: Traefik, cert-manager-webhook, external-dns,
+# metallb-speaker and tailscale-operator, each annotated below.
+# Lives in configs/ because controllers/vpa installs the CRD.
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
 metadata:
@@ -38,14 +34,10 @@ spec:
     apiVersion: apps/v1
     kind: DaemonSet
     name: metallb-speaker
-  # Initial (not Auto): the speaker is the L2/ARP announcer for every MetalLB
-  # LoadBalancer VIP (.99/.100/.101), including the ones Traefik sits behind. An
-  # Auto updater eviction of the pod currently announcing a VIP forces a leader
-  # re-election + gratuitous-ARP failover — the stale-ARP blip that has surfaced
-  # as an apparent ingress/GitLab outage during maintenance. Same data-path
-  # rationale as Traefik/cert-manager-webhook above: apply memory recommendations
-  # on the next natural restart, never by proactive eviction. metallb-controller
-  # stays Auto — it does not announce VIPs.
+  # Initial (not Auto): the speaker announces every MetalLB VIP, so evicting the
+  # announcing pod forces a leader re-election + gratuitous-ARP failover that
+  # reads as an ingress outage. metallb-controller stays Auto — it announces
+  # nothing.
   updatePolicy:
     updateMode: Initial
   resourcePolicy:
@@ -65,21 +57,15 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: traefik
-  # Initial (not Auto): Traefik is the ingress data path for EVERY service,
-  # including the container registry. Under CI-burst load the Auto updater evicted
-  # Traefik to apply a new memory request, and the recreated pod's startup
-  # readiness gap surfaced as transient 502s on registry.git.ericsweiss.com (CI
-  # image pulls -> ImagePullBackOff), git.esweiss.com hangs (collect-state false
-  # 000), and Unhealthy events — a PDB doesn't help, since each replacement pod is
-  # briefly not-ready regardless. Initial applies memory recommendations on the
-  # next natural restart instead of evicting a serving ingress pod.
+  # Initial (not Auto): Traefik is the ingress data path for every service. An
+  # Auto eviction's readiness gap shows up as 502s on the registry and hung
+  # git.esweiss.com under CI-burst load, and a PDB cannot help — each replacement
+  # pod is briefly not-ready regardless.
   updatePolicy:
     updateMode: Initial
   resourcePolicy:
-    # Memory only: Traefik's chart-native autoscaling (autoscaling.enabled in
-    # controllers/traefik/release.yaml) scales on CPU, so this VPA must not also
-    # control CPU (an HPA and a VPA driving the same resource conflict).
-    # controlledResources excludes cpu accordingly.
+    # Memory only: Traefik's chart-native HPA owns CPU, and an HPA and a VPA must
+    # never drive the same resource.
     containerPolicies:
       - containerName: "*"
         minAllowed: {memory: 64Mi}
@@ -134,10 +120,9 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: cert-manager-webhook
-  # Initial (not Auto): the webhook is single-replica and sits on the synchronous
-  # admission path — a VPA updater eviction would briefly fail-closed validating
-  # cert-manager CRs. A PDB can't help a single replica (minAvailable:1 would
-  # block node drains entirely), so apply recommendations on natural restart.
+  # Initial (not Auto): single-replica on the synchronous admission path, so an
+  # eviction would briefly fail-closed validating cert-manager CRs. A PDB cannot
+  # help one replica without blocking drains outright.
   updatePolicy:
     updateMode: Initial
   resourcePolicy:
@@ -157,10 +142,8 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: external-dns
-  # Initial (not Auto): external-dns runs a single replica with no PDB, so the
-  # updater evicting the only pod to apply new requests would briefly halt
-  # Cloudflare record reconciliation. Initial applies recommendations on the
-  # next natural restart instead.
+  # Initial (not Auto): a single replica with no PDB — evicting it would halt
+  # Cloudflare record reconciliation.
   updatePolicy:
     updateMode: Initial
   resourcePolicy:
@@ -182,9 +165,8 @@ spec:
     name: external-secrets
   updatePolicy:
     updateMode: Auto
-  # cpu+memory: ESO has no HPA (it doesn't shard ExternalSecrets, so horizontal
-  # scaling buys nothing — it runs 2 static replicas with leader election for
-  # HA). With no HPA on the CPU axis, this VPA owns both resources.
+  # cpu+memory: ESO has no HPA (it does not shard ExternalSecrets), so this VPA
+  # owns both axes.
   resourcePolicy:
     containerPolicies:
       - containerName: "*"
@@ -252,11 +234,9 @@ spec:
         maxAllowed: {memory: 512Mi}
         controlledResources: [memory]
 ---
-# CoreDNS is HPA-pinned (configs/coredns/hpa.yaml, min==max==2), so this VPA is
-# recommend-only (updateMode: Off) — it never mutates pods (which would conflict
-# with the HPA), it just records a right-sizing signal for the operator so a
-# request bump is data-driven if DNS QPS grows. Inspect with
-# `kubectl describe vpa coredns -n kube-system`.
+# CoreDNS is HPA-pinned (configs/coredns/hpa.yaml), so this VPA is
+# recommend-only — it records a right-sizing signal without mutating pods the
+# HPA also drives.
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
 metadata:
@@ -276,14 +256,9 @@ spec:
         maxAllowed: {cpu: 500m, memory: 256Mi}
         controlledResources: [cpu, memory]
 ---
-# kube-vip (Ansible-rendered DaemonSet, roles/k3s/templates/kube-vip-manifest.yaml.j2)
-# owns the API VIP on all three control-plane nodes. Recommend-only
-# (updateMode: Off): the updater must never evict the pod that serves the API
-# endpoint every kubectl call, Flux reconcile and kubelet uses. Its requests are
-# hand-set in the Ansible template — this records the signal to retune them,
-# matching the metrics-server AddOn treatment below.
-# (local-path-provisioner had the same Off VPA until local-storage was added to
-# k3s_disable — group_vars/k3s.yml — which removes the Deployment entirely.)
+# kube-vip owns the API VIP on all three control-plane nodes and is rendered by
+# Ansible (roles/k3s), not Flux. Recommend-only: the updater must never evict the
+# pod serving the API endpoint, and its requests are hand-set in that template.
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
 metadata:
@@ -303,14 +278,9 @@ spec:
         maxAllowed: {cpu: 200m, memory: 192Mi}
         controlledResources: [cpu, memory]
 ---
-# metrics-server (k3s AddOn) is the single source of pod/node resource metrics
-# that the whole autoscaling stack depends on — every HPA's CPU/memory target
-# and the VPA recommender both read from it. Recommend-only (updateMode: Off) so
-# the updater never evicts the cluster's only metrics provider (an eviction gap
-# would blind every HPA and the VPA recommender at once); it just records a
-# right-sizing signal so a request bump is data-driven. Adding limits/replicas
-# is a deferred follow-up. Inspect with
-# `kubectl describe vpa metrics-server -n kube-system`.
+# metrics-server (k3s AddOn) feeds every HPA target and the VPA recommender, so
+# this stays recommend-only: an eviction gap would blind the whole autoscaling
+# stack at once. The recommendation just makes a future request bump data-driven.
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
 metadata:
@@ -340,9 +310,8 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: reloader-reloader
-  # Auto: reloader is a single-replica, off-data-path ConfigMap watcher — a brief
-  # gap during an eviction only delays (never drops) a reload, so it tolerates the
-  # updater right-sizing its hand-set 64Mi/128Mi request/limit.
+  # Auto: an off-data-path ConfigMap watcher — an eviction delays a reload,
+  # never drops one.
   updatePolicy:
     updateMode: Auto
   resourcePolicy:
@@ -362,11 +331,9 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: operator
-  # Initial (not Auto): the operator is a single replica that serves a tailnet
-  # admission webhook (and reconciles the proxy StatefulSets), so an updater
-  # eviction would briefly fail-closed admitting its CRs — the cert-manager-webhook
-  # rationale. Static requests are set in the HelmRelease (was BestEffort); this
-  # right-sizes them on the next natural restart, never by eviction.
+  # Initial (not Auto): a single-replica reconciler for the proxy StatefulSets —
+  # an updater eviction would stall tailnet device reconciliation. Right-size on
+  # the next natural restart instead, never by eviction.
   updatePolicy:
     updateMode: Initial
   resourcePolicy:

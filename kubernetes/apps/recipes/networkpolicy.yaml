@@ -114,8 +114,8 @@ spec:
           port: 7700
 
 ---
-# Mealie Postgres: the mealie pod and the mealie-pg-dump CronJob can connect
-# on 5432.
+# Mealie Postgres: the mealie pod and the mealie-pg-dump CronJob can connect on
+# 5432; observability scrapes the postgres_exporter sidecar on 9187.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -138,6 +138,16 @@ spec:
       ports:
         - protocol: TCP
           port: 5432
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 9187
 
 ---
 # Egress for the mealie-pg-dump CronJob: kube-dns (resolve the postgres Service)
@@ -233,16 +243,12 @@ spec:
 # completes the flow at auth.ericsweiss.com, so the server-side issuer MUST
 # match that host or token validation fails.
 #
-# Since !164 (dns.yml auth.ericsweiss.com -> 192.168.0.101) that host is
-# split-horizoned to the INTERNAL Traefik VIP, so the server-side discovery/JWKS
-# and code->token fetches never take the public path: they leave the pod aimed at
-# .101, which kube-proxy DNATs to a Traefik POD IP *before* NetworkPolicy
-# evaluation. The load-bearing peer is therefore the traefik namespaceSelector
-# below — the .101 ipBlock can never match post-DNAT (proven cluster-wide, see
-# hermes/networkpolicy.yaml), and the broad 0.0.0.0/0 rule excludes both
-# 192.168/16 and the 10.42/16 pod CIDR. It is kept belt-and-braces (mirroring
-# homarr/registry-cache) so a CNI change that stops DNATing cannot silently
-# break login. Both apps disable password login, so a blocked fetch means NO
+# That host is split-horizoned to the INTERNAL Traefik VIP, so server-side
+# discovery/JWKS and code->token fetches never take the public path: kube-proxy
+# DNATs .101 to a Traefik pod IP BEFORE NetworkPolicy evaluation, which makes
+# the traefik namespaceSelector below the load-bearing peer (a .101 ipBlock can
+# never match post-DNAT). The ipBlock is kept belt-and-braces against a CNI that
+# stops DNATing. Both apps disable password login, so a blocked fetch means no
 # login path at all for food.* and bar.*.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

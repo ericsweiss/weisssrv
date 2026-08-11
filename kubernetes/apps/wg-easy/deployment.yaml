@@ -149,30 +149,16 @@ spec:
               containerPort: 51821
               protocol: TCP
           securityContext:
-            # Root + NET_ADMIN/NET_RAW: drop the container runtime's default
-            # capability set (CHOWN, DAC_OVERRIDE, SETUID, MKNOD, …) and add back
-            # only the two capabilities wg-quick needs — NET_ADMIN to drive wg0
-            # and NET_RAW for the PostUp iptables NAT hooks (see below). Without
-            # `drop: [ALL]` the pod would silently keep the full default set on
-            # top of these, contradicting the documented least-privilege posture
-            # and widening blast radius if the UI/container is compromised.
-            #   - NOT SYS_MODULE: the wireguard kernel module is already loaded on
-            #     every k3s node (flannel wireguard-native backend,
-            #     group_vars/k3s.yml), so wg-easy attaches to it rather than
-            #     insmod-ing — verified `lsmod | grep wireguard` on the agents.
-            #   - NET_RAW is required: wg-quick's PostUp hooks in the v15 image
-            #     run iptables v1.8.11 in LEGACY mode, which opens a raw socket to
-            #     initialize the `nat` table. Without NET_RAW that call fails
-            #     ("can't initialize iptables table 'nat': Permission denied") and
-            #     wg-quick tears wg0 back down, so the interface never comes up
-            #     (WireGuard's own UDP/netlink path needs only NET_ADMIN, but the
-            #     image's iptables-legacy NAT setup does not).
-            #   - NOT DAC_OVERRIDE: root's NFS writes to /etc/wireguard still work
-            #     without it — the appdata export is all_squash,anonuid=1000,
-            #     anongid=2000 (host_vars/pve-nas-01.yml: "Maps ALL clients
-            #     including root to 1000:2000"), so NFSv4.2 sec=sys authorization
-            #     is delegated to the server's ACCESS RPC, which squashes every
-            #     request to uid 1000 — the owner of the files — and grants it;
+            # drop: [ALL] first, then add back only what wg-quick needs, or the
+            # container silently keeps the runtime's whole default set.
+            #   - NET_ADMIN drives wg0; NET_RAW is required because the image's
+            #     PostUp hooks run iptables in LEGACY mode, which opens a raw
+            #     socket to initialize the nat table (without it wg-quick tears
+            #     wg0 back down).
+            #   - NOT SYS_MODULE: the wireguard module is already loaded on every
+            #     node (flannel wireguard-native), so wg-easy just attaches.
+            #   - NOT DAC_OVERRIDE: the appdata export squashes every client to
+            #     uid 1000, so the server's ACCESS RPC grants root's writes and
             #     the client-side DAC_OVERRIDE path is never reached.
             # root is required because wg-easy's entrypoint runs as uid 0.
             runAsUser: 0

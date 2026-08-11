@@ -1,6 +1,0 @@
-# {{ ansible_managed }}
-# Virtual alias maps
-
-{% for alias in postfix_virtual_aliases | default([]) %}
-{{ alias.from }} {{ alias.to }}
-{% endfor %}

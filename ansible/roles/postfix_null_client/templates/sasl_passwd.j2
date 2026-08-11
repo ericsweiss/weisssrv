@@ -1,5 +1,0 @@
-# {{ ansible_managed }}
-# SASL credentials for SMTP relay
-# WARNING: This file contains secrets - permissions should be 0600
-
-{{ postfix_config.relayhost }}    {{ postfix_sasl_user }}:{{ postfix_sasl_password }}

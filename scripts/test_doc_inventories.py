@@ -1,15 +1,12 @@
 """Gates for the doc inventories that keep silently drifting from the code.
 
-1. The **Ansible Roles table in README.md** is declared the source of truth for
-   the role list (CLAUDE.md, .cursorrules, the agent skill all defer to it), and
-   it had fallen two roles behind `ansible/roles/`.
-2. **`--tags` invocations in the docs.** Ansible exits 0 with every task skipped
+1. **`--tags` invocations in the docs.** Ansible exits 0 with every task skipped
    when a tag matches nothing, so a runbook that names a tag the playbook does
    not declare is a silent no-op — the failure mode that made a documented SMTP
    credential rotation deploy nothing. Every `ansible-playbook <playbook>
    --tags/--skip-tags <tag>` in the docs must name a tag that playbook really
    reaches.
-3. **Namespaced `task ns:name` references** in the docs and the agent-facing
+2. **Namespaced `task ns:name` references** in the docs and the agent-facing
    files (which no gate covered — `lint:taskfile-smoke` checks the reverse
    direction, Taskfile → scripts). A renamed task leaves every runbook that
    named it pointing at nothing.
@@ -19,14 +16,23 @@ the CI `python-tests` job).
 """
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
+import pytest
 import yaml
 
 REPO = Path(__file__).resolve().parent.parent
-ROLES_DIR = REPO / "ansible" / "roles"
 PLAYBOOK_DIR = REPO / "ansible" / "playbooks"
+
+# Roles ship from the weisssrv.infra collection, so their task-level tags are
+# only readable where the collection is installed.
+_ROLE_DIR_CANDIDATES = (
+    os.environ.get("WEISSSRV_INFRA_ROLES"),
+    REPO / ".tmp/collections/ansible_collections/weisssrv/infra/roles",
+    Path.home() / ".ansible/collections/ansible_collections/weisssrv/infra/roles",
+)
 
 # Markdown files whose `ansible-playbook ... --tags` examples are operator-facing.
 _DOC_GLOBS = ("docs/*.md", "README.md", "CLAUDE.md", "ansible/README.md")
@@ -39,36 +45,14 @@ _TAGS_RE = re.compile(r"--(?:skip-)?tags[= ]+(?P<tags>[A-Za-z0-9_,.<>-]+)")
 _PLAYBOOK_RE = re.compile(r"(?P<path>[\w./-]*ansible/playbooks/[\w./-]+\.yml|[\w./-]+\.yml)")
 
 
-def _readme_role_rows() -> list[str]:
-    """Role names from the `## Ansible Roles` table in README.md."""
-    text = (REPO / "README.md").read_text(encoding="utf-8")
-    start = text.index("## Ansible Roles")
-    end = text.index("\n## ", start + 1)
-    rows = []
-    for line in text[start:end].splitlines():
-        m = re.match(r"\|\s*([a-z0-9_]+)\s*\|", line)
-        if m:
-            rows.append(m.group(1))
-    return rows
+def _roles_dir() -> Path | None:
+    for candidate in _ROLE_DIR_CANDIDATES:
+        if candidate and Path(candidate).is_dir():
+            return Path(candidate)
+    return None
 
 
-def test_readme_roles_table_matches_disk():
-    documented = _readme_role_rows()
-    actual = sorted(p.name for p in ROLES_DIR.iterdir() if p.is_dir())
-    assert sorted(documented) == actual, (
-        "README.md § Ansible Roles is out of sync with ansible/roles/. "
-        f"Missing rows: {sorted(set(actual) - set(documented))}; "
-        f"rows with no role: {sorted(set(documented) - set(actual))}"
-    )
-
-
-def test_readme_roles_table_has_no_duplicate_rows():
-    documented = _readme_role_rows()
-    dupes = sorted({r for r in documented if documented.count(r) > 1})
-    assert not dupes, f"duplicate rows in the README roles table: {dupes}"
-
-
-def _tags_reachable_from(playbook: Path) -> set[str]:
+def _tags_reachable_from(playbook: Path, roles_dir: Path) -> set[str]:
     """Every tag a `--tags` selection could match in this playbook.
 
     Play-level `tags:`, role-entry `tags:`, and task-level `tags:` anywhere in
@@ -102,7 +86,7 @@ def _tags_reachable_from(playbook: Path) -> set[str]:
                 roles.add(entry)
 
     for role in roles:
-        role_dir = ROLES_DIR / role
+        role_dir = roles_dir / role.rsplit(".", 1)[-1]
         if not role_dir.is_dir():
             continue
         for task_file in role_dir.rglob("tasks/*.yml"):
@@ -136,6 +120,13 @@ def _doc_tag_invocations() -> list[tuple[Path, str, str]]:
 
 
 def test_documented_tags_exist_in_their_playbook():
+    roles_dir = _roles_dir()
+    if roles_dir is None:
+        pytest.skip(
+            "weisssrv.infra roles are not installed, so role task tags cannot be "
+            "resolved; run `ansible-galaxy collection install -r "
+            "ansible/requirements.yml -p .tmp/collections` first"
+        )
     problems = []
     for doc, playbook_ref, tag in _doc_tag_invocations():
         playbook = REPO / playbook_ref
@@ -144,7 +135,7 @@ def test_documented_tags_exist_in_their_playbook():
         if not playbook.is_file():
             problems.append(f"{doc.relative_to(REPO)}: unknown playbook {playbook_ref}")
             continue
-        reachable = _tags_reachable_from(playbook)
+        reachable = _tags_reachable_from(playbook, roles_dir)
         if tag not in reachable and tag not in {"all", "always", "never", "tagged", "untagged"}:
             problems.append(
                 f"{doc.relative_to(REPO)}: `{playbook_ref} --tags {tag}` matches no tag "

@@ -20,12 +20,9 @@ spec:
         namespace: flux-system
       interval: 12h
   install:
-    # RetryOnFailure, NOT the default RemediateOnFailure: install remediation has
-    # no strategy field, so it ALWAYS remediates by uninstalling — between each
-    # retry. An uninstall here deletes the Helm-owned metallb.io CRDs, which
-    # cascade-deletes the IPAddressPools + L2Advertisement and flips .99/.100/.101
-    # to <pending> — the exact outage recorded in the crds comment below, this
-    # time reached from the install path. Retrying in place cannot do that.
+    # RetryOnFailure, not the default RemediateOnFailure: install remediation
+    # always remediates by uninstalling, which would delete the Helm-owned CRDs
+    # and flip .99/.100/.101 to <pending>. Retrying in place cannot.
     strategy:
       name: RetryOnFailure
       retryInterval: 5m
@@ -34,29 +31,18 @@ spec:
       retries: 3
       remediateLastFailure: true
   values:
-    # Chart pinned to 0.15.3 in versions ConfigMap to dodge a 0.16.x
-    # apiserver-flooding regression (metallb#3063). `crds.enabled: true`
-    # so the chart manages CRDs — when we previously had it false the
-    # 0.16 -> 0.15 chart switch *deleted* the existing CRDs entirely
-    # (the 0.15 chart's CRD templates render as deletions when their
-    # source-of-truth diverges), and that took every IPAddressPool +
-    # L2Advertisement + ServiceL2Status down with them. Net effect was
-    # all LoadBalancer EXTERNAL-IPs flipped to <pending>. Letting the
-    # 0.15 chart own the CRDs means the v1beta1/v1beta2 group is the
-    # 0.15 shape (matches the 0.15.3 controller+speaker), and a future
-    # roll-forward to 0.16 will be handled by the chart's CRD upgrade
-    # template rather than ad-hoc apply.
+    # Held at 0.15.x (metallb#3063 apiserver-flood regression in 0.16).
+    # The chart must own the CRDs: with crds.enabled false, a chart-version
+    # switch renders the CRD templates as deletions and takes every
+    # IPAddressPool/L2Advertisement — and so every VIP — with them.
     crds:
       enabled: true
     prometheus:
       serviceMonitor:
         enabled: true
-      # 0.15.3 + 0.16.x both serve the metrics endpoint via kube-rbac-proxy
-      # when `rbacPrometheus: true` (chart default). The chart generates a
-      # (Cluster)Role+Binding that authorises ONE specific (ServiceAccount,
-      # namespace) to scrape — those two values must point at the
-      # *Prometheus* SA, not metallb's own SA. Point them at our
-      # kube-prometheus-stack Prometheus instance.
+      # Metrics go through kube-rbac-proxy (chart default rbacPrometheus), and
+      # the chart authorises exactly one (ServiceAccount, namespace) to scrape.
+      # These must name the Prometheus SA, not metallb's own.
       serviceAccount: kube-prometheus-stack-prometheus
       namespace: observability
     speaker:
@@ -87,13 +73,11 @@ spec:
           memory: 64Mi
         limits:
           memory: 256Mi
-  # `crds.enabled: true` above makes the chart OWN the metallb.io CRDs, which
-  # means a helm uninstall deletes them (and cascade-deletes every IPAddressPool
-  # + L2Advertisement with them). Chart 0.15.3 exposes no crds.annotations hook,
-  # so stamp helm.sh/resource-policy: keep onto the rendered CRDs instead — the
-  # same post-render mechanism onepassword-connect uses. The name regex covers
-  # all 9 CRDs the chart ships; they all render with an annotations map already,
-  # so `op: add` on the sub-path is safe.
+  # The chart owns the metallb.io CRDs (crds.enabled above), so a helm uninstall
+  # would delete them and cascade-delete every IPAddressPool + L2Advertisement.
+  # The chart exposes no crds.annotations hook, so stamp the keep policy on the
+  # rendered CRDs here. Strategic merge, not a JSON patch: it creates
+  # metadata.annotations when a chart bump renders a CRD without one.
   postRenderers:
     - kustomize:
         patches:
@@ -102,6 +86,9 @@ spec:
               kind: CustomResourceDefinition
               name: ".*\\.metallb\\.io"
             patch: |
-              - op: add
-                path: /metadata/annotations/helm.sh~1resource-policy
-                value: keep
+              apiVersion: apiextensions.k8s.io/v1
+              kind: CustomResourceDefinition
+              metadata:
+                name: placeholder
+                annotations:
+                  helm.sh/resource-policy: keep

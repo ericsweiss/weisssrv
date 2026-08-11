@@ -1,10 +1,30 @@
 #!/usr/bin/env python3
-"""CI wrapper for check-versions.py — runs version check, posts MR comment if updates available."""
+"""CI wrapper for check-versions.py — runs the check, posts an MR comment when
+updates are available, and writes the JSON report artifact.
+
+  version-check-ci.py                    # writes ./version-report.json
+  version-check-ci.py --output PATH      # writes the report elsewhere
+
+Environment:
+  CHECK_VERSIONS_CMD      command to run (default ./scripts/check-versions.py)
+  CHECK_VERSIONS_LOCAL    command named in the MR comment footer
+                          (default: the same command)
+  VERSION_CHECK_TIMEOUT   seconds before the subprocess is killed (default 600)
+  GITLAB_API_TOKEN        PRIVATE-TOKEN used to post the MR note
+"""
+import argparse
 import json
 import os
+import shlex
 import subprocess
 import sys
 from urllib.request import Request, urlopen
+
+CHECK_CMD = os.environ.get("CHECK_VERSIONS_CMD", "./scripts/check-versions.py")
+LOCAL_CMD = os.environ.get("CHECK_VERSIONS_LOCAL", CHECK_CMD)
+# CWD-relative default: the `artifacts:` path CI collects. Keep it stable —
+# a consumer's .gitlab-ci.yml names it.
+DEFAULT_OUTPUT = "version-report.json"
 
 
 def post_mr_comment(body: str) -> None:
@@ -55,7 +75,37 @@ def _services(data: dict) -> list:
     return [svc for svc in services if isinstance(svc, dict)]
 
 
-def main():
+def _write_report(path: str, text: str) -> None:
+    """Write the report artifact, creating a --output parent dir if needed.
+
+    The default lands in the CWD, but a consumer redirecting into an artifacts
+    subdir (`--output reports/version-report.json`) would otherwise get a
+    FileNotFoundError on the very first run.
+    """
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    with open(path, "w") as f:
+        f.write(text)
+
+
+def _parse_args(argv):
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--output",
+        default=DEFAULT_OUTPUT,
+        metavar="PATH",
+        help=f"where to write the JSON report artifact (default: {DEFAULT_OUTPUT})",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    args = _parse_args(argv)
+
     # Run version check once with --json. check-versions checks ~50 services
     # sequentially, each with its own request timeout + bounded retries, so a few
     # slow/unreachable endpoints under a partial outage can take minutes. Give
@@ -71,7 +121,7 @@ def main():
         timeout = 600
     try:
         result = subprocess.run(
-            ["./scripts/check-versions.py", "--json"],
+            [*shlex.split(CHECK_CMD), "--json"],
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -100,8 +150,7 @@ def main():
                 f"version-check output is not a JSON object (got {type(data).__name__})"
             )
         # Persist the validated JSON as the artifact.
-        with open("version-report.json", "w") as f:
-            f.write(result.stdout)
+        _write_report(args.output, result.stdout)
         summary = data.get("summary")
         if not isinstance(summary, dict):
             # A null/non-dict summary from a skewed producer would otherwise
@@ -149,16 +198,14 @@ def main():
         data = {}
         # Write a self-describing stub so the artifact isn't a 0-byte or
         # raw-text file that reads like a successful empty report.
-        with open("version-report.json", "w") as f:
-            json.dump(
-                {
-                    "error": f"version-check output not parseable: {type(e).__name__}: {e}",
-                    "stdout": result.stdout,
-                    "stderr": result.stderr,
-                },
-                f,
-                indent=2,
-            )
+        _write_report(args.output, json.dumps(
+            {
+                "error": f"version-check output not parseable: {type(e).__name__}: {e}",
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+            },
+            indent=2,
+        ))
 
     # Post MR comment when there are actionable updates and/or errors.
     # Report BOTH together — a transient single-service error must not
@@ -203,7 +250,7 @@ def main():
             body = (
                 "## Version Check\n\n"
                 + "\n\n".join(sections)
-                + "\n\nRun `task maintenance:check-versions` locally for details."
+                + f"\n\nRun `{LOCAL_CMD}` locally for details."
             )
             post_mr_comment(body)
 

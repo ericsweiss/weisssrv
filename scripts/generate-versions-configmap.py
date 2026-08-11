@@ -1,34 +1,36 @@
 #!/usr/bin/env python3
-"""Generate kubernetes/infrastructure/sources/versions-configmap.yaml from all.yml.
+"""Generate a Flux `cluster-versions` ConfigMap from an Ansible vars file.
 
-Reads version-related keys from ansible/inventories/prod/group_vars/all.yml and
-emits a ConfigMap consumed by Flux Kustomizations via postBuild.substituteFrom.
-
-The ConfigMap lives in sources/ (not configs/) so it reconciles before
-infrastructure-controllers, which depends on it for ${helm_chart_versions_*}
-substitution into HelmReleases.
+Reads version-related keys from a vars file (conventionally
+`ansible/inventories/prod/group_vars/all.yml`) and emits a ConfigMap consumed by
+Flux Kustomizations via postBuild.substituteFrom.
 
 Keys are flattened:
-  - Top-level keys ending in _version pass through (e.g., authentik_version)
-  - Nested keys under helm_chart_versions.* become helm_chart_versions_<name>
-    (e.g., helm_chart_versions.traefik -> helm_chart_versions_traefik)
+  - Top-level keys ending in `_version` pass through (e.g. authentik_version)
+  - Nested keys under each --nested-key become <parent>_<child>
+    (e.g. helm_chart_versions.traefik -> helm_chart_versions_traefik)
 
-Every *_version key is included, host-only pins (tailscale_version, plex_version)
-among them. That is intentional: the ConfigMap is a harmless superset — a key no
-manifest references is simply never substituted. Filtering by which manifests use
-a key would risk dropping a needed substitution (a silent broken deploy), so the
-simpler superset wins.
+Every *_version key is included, host-only pins among them. That is intentional:
+the ConfigMap is a harmless superset — a key no manifest references is simply
+never substituted. Filtering by which manifests use a key would risk dropping a
+needed substitution (a silent broken deploy), so the simpler superset wins.
 
 Produced keys MUST match the Flux postBuild identifier grammar
   [A-Za-z_][A-Za-z0-9_]*
-or kustomize-controller skips the substitution (older releases failed
-silently; current releases log the rejected variable).
+or kustomize-controller skips the substitution (older releases failed silently;
+current releases log the rejected variable).
 
-Idempotent. Run via `task flux:sync-versions`. CI fails if the committed
-output differs from what this script produces.
+Idempotent — pair it with a CI job that regenerates and diffs the committed
+output.
+
+  generate-versions-configmap.py --vars-file <in.yml> --output <out.yaml>
+                                 [--name cluster-versions] [--namespace flux-system]
+                                 [--nested-key helm_chart_versions ...]
+                                 [--regen-command "<how to regenerate>"]
 """
 from __future__ import annotations
 
+import argparse
 import re
 import sys
 from pathlib import Path
@@ -38,12 +40,10 @@ try:
 except ImportError:
     sys.exit("PyYAML required: pip install pyyaml (or brew install python && pip3 install pyyaml)")
 
-REPO = Path(__file__).resolve().parent.parent
-ALL_YML = REPO / "ansible" / "inventories" / "prod" / "group_vars" / "all.yml"
-OUT = REPO / "kubernetes" / "infrastructure" / "sources" / "versions-configmap.yaml"
-
 VERSION_SUFFIX = "_version"
-NESTED_KEYS = ("helm_chart_versions",)
+DEFAULT_NESTED_KEYS = ("helm_chart_versions",)
+DEFAULT_NAME = "cluster-versions"
+DEFAULT_NAMESPACE = "flux-system"
 # Flux postBuild variable names: Go envsubst identifier rules (isLetter|isDigit|_).
 FLUX_VAR_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -56,17 +56,17 @@ def _scalar_str(key: str, value: object) -> str:
     but hard to debug. Rejects float for the same reason: an unquoted version
     like `1.20` parses to the float 1.2 and would ship as "1.2", silently losing
     the trailing zero. Also rejects anything non-scalar (lists, dicts) that
-    could sneak through a refactor of all.yml.
+    could sneak through a refactor of the vars file.
     """
     if isinstance(value, bool):
         raise ValueError(
-            f"key {key!r} has bool value {value!r} — quote the value in all.yml "
-            "(YAML's unquoted 'true'/'yes' parse to bool)"
+            f"key {key!r} has bool value {value!r} — quote the value in the vars "
+            "file (YAML's unquoted 'true'/'yes' parse to bool)"
         )
     if isinstance(value, float):
         raise ValueError(
-            f"key {key!r} has float value {value!r} — quote the value in all.yml "
-            "(an unquoted version like 1.20 parses to a float and loses precision)"
+            f"key {key!r} has float value {value!r} — quote the value in the vars "
+            "file (an unquoted version like 1.20 parses to a float and loses precision)"
         )
     if not isinstance(value, (str, int)):
         raise ValueError(
@@ -76,21 +76,19 @@ def _scalar_str(key: str, value: object) -> str:
     return str(value)
 
 
-def flatten(data: dict) -> dict[str, str]:
+def flatten(data: dict, nested_keys: tuple[str, ...] = DEFAULT_NESTED_KEYS) -> dict[str, str]:
     out: dict[str, str] = {}
     for k, v in data.items():
-        if k.endswith(VERSION_SUFFIX) and not isinstance(v, bool):
+        if k.endswith(VERSION_SUFFIX):
             if not FLUX_VAR_RE.match(k):
                 raise ValueError(
                     f"top-level key {k!r} is not a valid Flux postBuild variable name"
                 )
-            if isinstance(v, (str, int, float)):
-                out[k] = _scalar_str(k, v)
-            else:
-                print(f"WARNING: {k!r} has non-scalar value (type {type(v).__name__}) — skipped", file=sys.stderr)
-        elif k.endswith(VERSION_SUFFIX) and isinstance(v, bool):
-            print(f"WARNING: {k!r} is bool ({v!r}) — probably an unquoted YAML value; skipped", file=sys.stderr)
-        elif k in NESTED_KEYS and isinstance(v, dict):
+            # Fail closed, exactly like the nested branch: a dropped key is not
+            # a warning, it is an unresolved ${...} at reconcile time. The
+            # "every key dropped" guard below only catches the total case.
+            out[k] = _scalar_str(k, v)
+        elif k in nested_keys and isinstance(v, dict):
             for sub_k, sub_v in v.items():
                 flat_key = f"{k}_{sub_k}"
                 if not FLUX_VAR_RE.match(flat_key):
@@ -103,56 +101,99 @@ def flatten(data: dict) -> dict[str, str]:
     return out
 
 
-def main() -> int:
-    if not ALL_YML.exists():
-        print(f"ERROR: {ALL_YML} not found", file=sys.stderr)
+def header(vars_file: Path, regen_command: str) -> str:
+    return (
+        "---\n"
+        f"# AUTO-GENERATED by generate-versions-configmap.py from\n"
+        f"# {vars_file}. Do NOT edit by hand.\n"
+        f"# Run `{regen_command}` to regenerate. CI fails if out of sync.\n"
+    )
+
+
+def render(
+    flat: dict[str, str],
+    vars_file: Path,
+    *,
+    name: str = DEFAULT_NAME,
+    namespace: str = DEFAULT_NAMESPACE,
+    regen_command: str = "generate-versions-configmap.py",
+) -> str:
+    """Return the full ConfigMap document text (header + YAML)."""
+    cm = {
+        "apiVersion": "v1",
+        "kind": "ConfigMap",
+        "metadata": {"name": name, "namespace": namespace},
+        "data": flat,
+    }
+    return header(vars_file, regen_command) + yaml.safe_dump(
+        cm, default_flow_style=False, sort_keys=True
+    )
+
+
+def _parse_args(argv: list[str] | None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Generate a Flux versions ConfigMap.")
+    parser.add_argument("--vars-file", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--name", default=DEFAULT_NAME)
+    parser.add_argument("--namespace", default=DEFAULT_NAMESPACE)
+    parser.add_argument(
+        "--nested-key", action="append", dest="nested_keys", default=None,
+        help=f"repeatable; default: {DEFAULT_NESTED_KEYS[0]}",
+    )
+    parser.add_argument(
+        "--regen-command", default="generate-versions-configmap.py",
+        help="command named in the generated header (e.g. a task wrapper)",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv)
+    nested_keys = tuple(args.nested_keys) if args.nested_keys else DEFAULT_NESTED_KEYS
+
+    if not args.vars_file.exists():
+        print(f"ERROR: {args.vars_file} not found", file=sys.stderr)
         return 1
     try:
-        with ALL_YML.open() as f:
+        with args.vars_file.open() as f:
             data = yaml.safe_load(f)
     except yaml.YAMLError as e:
-        print(f"ERROR: failed to parse {ALL_YML.relative_to(REPO)}: {e}", file=sys.stderr)
+        print(f"ERROR: failed to parse {args.vars_file}: {e}", file=sys.stderr)
         return 1
     if data is None:
-        print(f"ERROR: {ALL_YML.relative_to(REPO)} is empty", file=sys.stderr)
+        print(f"ERROR: {args.vars_file} is empty", file=sys.stderr)
         return 1
     if not isinstance(data, dict):
         print(
-            f"ERROR: {ALL_YML.relative_to(REPO)} top-level is not a mapping "
+            f"ERROR: {args.vars_file} top-level is not a mapping "
             f"(got {type(data).__name__})",
             file=sys.stderr,
         )
         return 1
 
     try:
-        flat = flatten(data)
+        flat = flatten(data, nested_keys)
     except ValueError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return 1
-
     if not flat:
-        print("ERROR: no version keys extracted; check all.yml structure", file=sys.stderr)
+        print("ERROR: no version keys extracted; check the vars file structure", file=sys.stderr)
         return 1
 
-    cm = {
-        "apiVersion": "v1",
-        "kind": "ConfigMap",
-        "metadata": {"name": "cluster-versions", "namespace": "flux-system"},
-        "data": flat,
-    }
-    header = (
-        "---\n"
-        "# AUTO-GENERATED by scripts/generate-versions-configmap.py from\n"
-        "# ansible/inventories/prod/group_vars/all.yml. Do NOT edit by hand.\n"
-        "# Run `task flux:sync-versions` to regenerate. CI fails if out of sync.\n"
+    text = render(
+        flat,
+        args.vars_file,
+        name=args.name,
+        namespace=args.namespace,
+        regen_command=args.regen_command,
     )
     try:
-        OUT.parent.mkdir(parents=True, exist_ok=True)
-        OUT.write_text(header + yaml.safe_dump(cm, default_flow_style=False, sort_keys=True))
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(text)
     except OSError as e:
-        print(f"ERROR: failed to write {OUT}: {e}", file=sys.stderr)
+        print(f"ERROR: failed to write {args.output}: {e}", file=sys.stderr)
         return 1
-    print(f"Wrote {len(flat)} keys to {OUT.relative_to(REPO)}")
+    print(f"Wrote {len(flat)} keys to {args.output}")
     return 0
 
 

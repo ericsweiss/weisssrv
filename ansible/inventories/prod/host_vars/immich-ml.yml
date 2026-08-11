@@ -9,18 +9,18 @@ proxmox_host: pve-nas-01
 proxmox_resource_pool: apps-private
 
 # LXC container configuration
-lxc_cores: 4
-lxc_memory: 8192
-lxc_swap: 2048
+proxmox_lxc_cores: 4
+proxmox_lxc_memory: 8192
+proxmox_lxc_swap: 2048
 # 64G rootfs: the OpenVINO model cache is multi-GB and lives in the rootfs
 # (named docker volume) — it is re-downloadable cache, not state.
-lxc_disk_size: 64G
-lxc_storage: local-lvm
+proxmox_lxc_disk_size: 64G
+proxmox_lxc_storage: local-lvm
 
 # Docker runs inside the container (compose stack). keyctl is required
 # alongside nesting for Docker in an unprivileged LXC.
-lxc_nesting: true
-lxc_keyctl: true
+proxmox_lxc_nesting: true
+proxmox_lxc_keyctl: true
 
 # Container startup configuration
 # Boot order strategy: DNS (10) -> SMTP (20) -> k3s servers (30) -> k3s agents (40) -> apps (50+)
@@ -32,18 +32,16 @@ lxc_keyctl: true
 # pve-start-encrypted-guests because its /config bind mount lives on the
 # encrypted ssd pool — see host_vars/plex.yml and docs/32-zfs-encryption.md.)
 # Order 57 places it after the other apps (nextcloud 55, immich 56).
-proxmox_autostart_enabled: true
-proxmox_startup_order: 57
-proxmox_startup_delay: 10
+proxmox_lxc_onboot: true
+proxmox_lxc_startup_order: 57
+proxmox_lxc_startup_delay: 10
 
-# NO lxc_bind_mounts: the model cache lives in the LXC rootfs via a named
+# NO proxmox_lxc_bind_mounts: the model cache lives in the LXC rootfs via a named
 # docker volume — there is no host state to bind in. (proxmox_lxc applies the
-# GPU lxc.idmap whenever lxc_gpu_passthrough is set, bind mounts or not.)
+# GPU lxc.idmap whenever proxmox_lxc_gpu_passthrough is set, bind mounts or not.)
 
 # GPU passthrough for Intel Arc B580 OpenVINO ML inference.
 # /dev/dri is SHARED with the plex LXC (vmid 152): LXC passthrough bind-mounts
 # the host device nodes non-exclusively, so the kernel (xe driver) arbitrates
 # between consumers — Plex transcode and ML inference coexist on the one card.
-lxc_gpu_passthrough: true
-lxc_gpu_devices:
-  - /dev/dri
+proxmox_lxc_gpu_passthrough: true

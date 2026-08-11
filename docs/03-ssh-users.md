@@ -166,7 +166,7 @@ assembles the full merged config there, and runs `sshd -t` against it
 restart. After install, an `sshd -T` assert confirms the key directives
 (password auth, root login, exactly one `Port`) are effective in the merged
 config regardless of what other drop-ins exist. Settings can be customized
-via variables in `ansible/roles/base/defaults/main.yml`.
+via variables in weisssrv-lib `ansible_collections/weisssrv/infra/roles/base/defaults/main.yml`.
 
 ### Sudo Configuration
 
@@ -256,9 +256,9 @@ Fail2ban is deployed via the `base` Ansible role with the following settings:
 
 **Recidive Jail** (repeat offenders):
 The recidive jail monitors fail2ban's own log for IPs that get banned repeatedly. If an IP is banned multiple times within 24 hours, the recidive jail issues a much longer ban:
-- **Ban time**: 1 week (`fail2ban_recidive_bantime: 1w`)
-- **Find time**: 1 day (`fail2ban_recidive_findtime: 1d`)
-- **Max retries**: 3 bans before recidive ban (`fail2ban_recidive_maxretry: 3`)
+- **Ban time**: 1 week (`base_fail2ban_recidive_bantime: 1w`)
+- **Find time**: 1 day (`base_fail2ban_recidive_findtime: 1d`)
+- **Max retries**: 3 bans before recidive ban (`base_fail2ban_recidive_maxretry: 3`)
 
 This provides escalating protection: occasional failed logins result in a 1-hour ban, but persistent attackers get banned for a week after just 3 short bans.
 

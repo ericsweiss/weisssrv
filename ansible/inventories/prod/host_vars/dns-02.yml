@@ -8,9 +8,9 @@ proxmox_resource_pool: infra-core
 # Container startup configuration
 # Boot order strategy: DNS (10) -> SMTP (20) -> k3s servers (30) -> k3s agents (40) -> apps (50)
 # Both DNS servers use order 10 with identical delays (no interdependency)
-proxmox_autostart_enabled: true
-proxmox_startup_order: 10
-proxmox_startup_delay: 10
+proxmox_lxc_onboot: true
+proxmox_lxc_startup_order: 10
+proxmox_lxc_startup_delay: 10
 
 # AdGuard Home Sync does not run on dns-02 (it's the replica);
 # the adguard_sync role gates on inventory_hostname == 'dns-01'.

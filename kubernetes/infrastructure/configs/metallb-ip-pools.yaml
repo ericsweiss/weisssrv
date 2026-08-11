@@ -26,18 +26,11 @@ spec:
   addresses:
     - 192.168.0.101/32
 ---
-# VPN pool: 192.168.0.99 — the wg-easy WireGuard UDP endpoint (kubernetes/apps/
-# wg-easy). A discrete /32 pool kept separate from the .100/.101 Traefik VIPs so
-# the public/internal ingress semantics stay clean; the wg-easy LoadBalancer
-# Service claims it explicitly via metallb.io/loadBalancerIPs. autoAssign:false —
-# same rationale as the others (never hand this pinned VIP to another Service).
-# NOTE: .99 sits in the documented DHCP/workstation range (.1-99), unlike the
-# .100/.101 Traefik VIPs and the .161 API VIP which live in reserved bands. It
-# must be excluded from the router's DHCP pool (operator step, see docs/38) — a
-# manual, uncoded, unmonitored prerequisite: if a router reset ever drops the
-# exclusion, a workstation lease could collide with this internet-facing VPN
-# endpoint. EndpointDown (vpn.esweiss.com blackbox probe) is the closest
-# after-the-fact signal of such a collision.
+# VPN pool: 192.168.0.99 — the wg-easy WireGuard UDP endpoint, kept in its own
+# /32 pool so the public/internal ingress semantics stay clean.
+# .99 sits inside the router's DHCP range and must stay excluded from it
+# (uncoded operator step, docs/38): a dropped exclusion lets a workstation lease
+# collide with this internet-facing endpoint, visible only as EndpointDown.
 apiVersion: metallb.io/v1beta1
 kind: IPAddressPool
 metadata:
@@ -48,9 +41,8 @@ spec:
   addresses:
     - 192.168.0.99/32
 ---
-# L2Advertisement — Announce IPs via ARP on the local network.
-# No interface restrictions: MetalLB auto-filters CNI/virtual interfaces; explicit
-# lists would break announcement on nodes with non-eth0/ens18 NIC names (enp*, eno*, bond*).
+# ARP announcement. No interface restrictions: MetalLB auto-filters CNI/virtual
+# interfaces, and an explicit list would break nodes whose NIC is not ens18.
 apiVersion: metallb.io/v1beta1
 kind: L2Advertisement
 metadata:

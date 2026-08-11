@@ -110,7 +110,7 @@ IN ACCEPT -source +dc/pve_hosts -p udp -dport 5405 -log nolog      # Corosync
 #### Service-Specific Security Groups
 
 > The blocks below are reproduced from
-> `ansible/roles/proxmox_firewall/templates/cluster.fw.j2`, which is the
+> weisssrv-lib `ansible_collections/weisssrv/infra/roles/proxmox_firewall/templates/cluster.fw.j2`, which is the
 > authoritative source; if they ever diverge, trust the template.
 
 **sg-dns** - DNS service ports only (no SSH):
@@ -184,7 +184,7 @@ IN ACCEPT -source +dc/smb_clients -p tcp -dport 445 -log nolog
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 2379:2380 -log nolog  # etcd
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 2381 -log nolog       # etcd metrics (kubeEtcd scrape)
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 10250 -log nolog      # kubelet
-IN ACCEPT -source +dc/k3s_nodes -p udp -dport 51820 -log nolog      # Flannel WireGuard (active CNI backend; VXLAN/8472 retired 2026-06-11)
+IN ACCEPT -source +dc/k3s_nodes -p udp -dport 51820 -log nolog      # Flannel WireGuard (the CNI backend; VXLAN/8472 is not used)
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 7946 -log nolog       # MetalLB memberlist
 IN ACCEPT -source +dc/k3s_nodes -p udp -dport 7946 -log nolog       # MetalLB memberlist
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 9345 -log nolog       # k3s supervisor
@@ -242,7 +242,7 @@ log_level_in: nolog
 log_level_out: nolog
 ```
 
-Host-level inbound drop logging is tunable via `pve_firewall_log_level_in`
+Host-level inbound drop logging is tunable via `proxmox_firewall_log_level_in`
 (role default `nolog`; rendered into each `host.fw`). Flip it to `info` — per
 host_vars or globally — to make dropped-inbound packets visible in the kernel
 log for triage; pve-firewall rate-limits its own logging, so `info` is safe
@@ -364,7 +364,7 @@ duplication is **intentional and is kept as-is**:
 
 ## Ansible Role
 
-Deploy with: `ansible/roles/proxmox_firewall`
+Deploy with: the `weisssrv.infra.proxmox_firewall` role (`ansible/playbooks/site.yml --tags proxmox_firewall`)
 
 The role manages:
 - `/etc/pve/firewall/cluster.fw` - Cluster-wide IPSets and Security Groups
@@ -468,7 +468,18 @@ k3s_agents:
 | `sg-haos` | Home Assistant Web UI + mDNS | Home Assistant VM |
 | `sg-windows` | Windows RDP | Windows VMs |
 | `sg-metrics` | Prometheus exporter scrape ports from k3s_nodes (9100/9101/9134/9167/8123/32400/3000/7472/7473) + Loki NodePort 31100 from core-cluster | **All hosts and guests** |
-| `sg-host-egress` | Host-originated egress allowlist (paired with trailing `OUT DROP` in host.fw) | Proxmox hosts (via `proxmox_firewall_egress_filtering`) |
+
+Five more groups are rendered by `cluster.fw.j2` but are **host-only**: they
+attach to Proxmox hosts via `host.fw`, never to a guest's
+`guest_security_groups`.
+
+| Security group | Purpose |
+|---|---|
+| `sg-host-admin` | SSH + ICMP + Proxmox UI 8006 from the admin sources |
+| `sg-pve-cluster` | corosync + Proxmox cluster traffic between `pve_hosts` |
+| `sg-nfs-server` | NFS/RPC from `nfs_clients` (pve-nas-01) |
+| `sg-smb-server` | SMB from `smb_clients` (pve-nas-01) |
+| `sg-host-egress` | Host-originated egress allowlist, paired with the trailing `OUT DROP` in `host.fw` (via `proxmox_firewall_egress_filtering`) |
 
 To enforce a guest egress allowlist, set `guest_firewall_policy_out: "DROP"`
 on the guest's inventory entry — its security groups' OUT ACCEPT rules then
@@ -547,3 +558,12 @@ pvesh set /cluster/firewall/options --enable 0
 nano /etc/pve/firewall/cluster.fw
 # Set enable: 0
 ```
+
+---
+
+## Related documentation
+
+- [docs/01-overview.md](01-overview.md) — network topology and IP allocation
+- [docs/05-tailscale.md](05-tailscale.md) — the tailnet ACL, the other access layer
+- [docs/13-ci-cd.md](13-ci-cd.md) — runner network boundaries
+- [docs/12-runbooks.md](12-runbooks.md) — connectivity troubleshooting

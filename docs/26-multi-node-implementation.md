@@ -17,6 +17,7 @@
 6. [Validation and Testing](#validation-and-testing)
 7. [Rollback Procedures](#rollback-procedures)
 8. [Answers to Design Questions](#answers-to-design-questions)
+9. [Related documentation](#related-documentation)
 
 ---
 
@@ -358,7 +359,7 @@ The full k3s node definitions are **not reproduced here** — they live in
 `ansible/inventories/prod/hosts.yml`, which is the machine-readable source of
 truth (and from which `scripts/hosts.env` is generated). Uncomment/edit the
 `k3s_servers` and `k3s_agents` groups there; per-node `k3s_labels`, `k3s_taints`,
-`vm_memory`, `vm_cores`, `proxmox_storage`, and `guest_security_groups` all live
+`vm_memory`, `proxmox_vm_cores`, `proxmox_storage`, and `guest_security_groups` all live
 inline in that file. Current label/taint placement is summarised in
 [docs/25-multi-node-expansion.md](25-multi-node-expansion.md).
 
@@ -485,9 +486,9 @@ HA configuration is managed by Ansible via the `proxmox_ha` role. This automates
 ### Step 4.1: Deploy HA Configuration via Ansible
 
 The HA configuration is defined in `ansible/inventories/prod/group_vars/all.yml`:
-- `ha_rules`: Per-service node-affinity rules (`affinity-*`) — each service gets a home node (priority 2) plus fallbacks; pve-nas-01 is never listed (avoid I/O contention with NAS workloads)
-- `ha_resources`: VMs/CTs to be managed by HA (dns-01, dns-02, smtp-relay, home-assistant)
-- `storage_replication_jobs`: Multi-target replication (each service replicates to all 4 other nodes)
+- `proxmox_ha_rules`: Per-service node-affinity rules (`affinity-*`) — each service gets a home node (priority 2) plus fallbacks; pve-nas-01 is never listed (avoid I/O contention with NAS workloads)
+- `proxmox_ha_resources`: VMs/CTs to be managed by HA (dns-01, dns-02, smtp-relay, home-assistant)
+- `proxmox_ha_replication_jobs`: Multi-target replication (each service replicates to all 4 other nodes)
 
 ```bash
 # Deploy HA configuration (check mode first)
@@ -503,7 +504,7 @@ task proxmox:ha-status
 ### Step 4.2: What Gets Configured
 
 **Node-Affinity Rules** (per-service `affinity-*` rules — see
-`docs/25-multi-node-expansion.md` and `ha_rules` in `group_vars/all.yml`):
+`docs/25-multi-node-expansion.md` and `proxmox_ha_rules` in `group_vars/all.yml`):
 - One rule per service: a home node at priority 2 (fails back when available)
   plus the other local-ssd nodes at priority 1
 - pve-nas-01 is never listed; `strict: false` allows it only if ALL listed
@@ -686,7 +687,7 @@ sudo ha-manager remove vm:154
 # Remove HA rules (Proxmox 9+ with node-affinity rules)
 # List current rules first to see what exists
 sudo ha-manager rules list
-# Remove rules by name (check ha_rules in group_vars/all.yml for current rule names)
+# Remove rules by name (check proxmox_ha_rules in group_vars/all.yml for current rule names)
 for r in affinity-dns-01 affinity-smtp-relay affinity-dns-02 affinity-home-assistant; do
   sudo ha-manager rules remove "$r" || true
 done
@@ -775,7 +776,7 @@ Plex (CT 152) should stay on pve-nas-01 only due to bind mounts.
 
 ---
 
-## Related Documentation
+## Related documentation
 
 - `docs/00-hardware-setup.md` - Initial Proxmox installation
 - `docs/18-bootstrap-new-systems.md` - LXC/VM bootstrap procedures

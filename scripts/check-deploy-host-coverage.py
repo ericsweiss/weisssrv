@@ -7,7 +7,7 @@ That is a weaker question than it looks: a job can be credited for a role while
 running it on a fraction of the hosts the inventory says need it. Two real
 incidents came out of exactly that gap:
 
-  * encrypted_swap sat in deploy-ansible-base's `changes:` but not in its
+  * encrypted_swap was credited to deploy-ansible-base but missing from its
     `--tags` list, so the job went green on every role change while the role
     never executed anywhere (found only when a NAS reboot activated nothing).
   * nfs_tls is enabled on all six Proxmox hosts (group_vars/proxmox.yml) and is
@@ -19,15 +19,17 @@ So this gate computes, per role:
 
     declared = every host of every play that includes the role, across the
                playbooks CI actually deploys
-    covered  = the hosts reached by deploy-stage invocations that (a) select the
-               role's tag (or run untagged), and (b) list the role's path in
-               `changes:` so the job fires when the role is edited
+    covered  = the hosts reached by deploy-stage invocations that select the
+               role's tag (or run untagged)
 
 and fails on a non-empty `declared - covered`.
 
-Both halves matter. A job that runs the role but never triggers on it is the
-encrypted_swap shape; a job that triggers but --limit/--tags away most of the
-hosts is the nfs_tls shape.
+Roles ship from the weisssrv.infra collection, so a role edit is a
+`ansible/requirements.yml` bump rather than a path under this repo — the
+"does the job trigger on the role's path" half moved to
+check-deploy-coverage.sh's view of that file, and what remains here is the
+host-reachability half (the nfs_tls shape: a job that triggers but --limit or
+--tags away most of the hosts).
 
 Deliberately static: it parses hosts.yml, the playbooks, and .gitlab-ci.yml. No
 inventory plugin, no ansible, no cluster.
@@ -251,7 +253,7 @@ def main() -> int:
     covered: dict[str, set[str]] = {}
     untriggered: dict[str, set[str]] = {}
 
-    for name, plays in parsed.items():
+    for plays in parsed.values():
         for play in plays:
             play_hosts = expand(play["hosts"], groups)
             for role in play["roles"]:
@@ -268,9 +270,6 @@ def main() -> int:
             for role, tags in play["roles"].items():
                 if inv["tags"] is not None and not (inv["tags"] & tags):
                     continue
-                if f"ansible/roles/{role}/**/*" not in inv["changes"]:
-                    untriggered.setdefault(role, set()).add(inv["job"])
-                    continue
                 covered.setdefault(role, set())
                 covered[role] |= reached
 
@@ -284,22 +283,15 @@ def main() -> int:
 
     if failures:
         print("ERROR: roles that CI deploys to only part of the host set they are declared for:\n", file=sys.stderr)
-        for role, gap, jobs in failures:
-            print(f"  ansible/roles/{role}/ — unreached hosts: {', '.join(sorted(gap))}", file=sys.stderr)
-            if jobs:
-                print(
-                    f"      (a deploy job DOES run it — {', '.join(jobs)} — but does not list"
-                    f" ansible/roles/{role}/**/* in its changes:, so a role edit never triggers it)",
-                    file=sys.stderr,
-                )
-            else:
-                print(
-                    "      (no deploy-stage invocation selects it for those hosts —"
-                    " check the job's --limit and --tags)",
-                    file=sys.stderr,
-                )
+        for role, gap, _jobs in failures:
+            print(f"  {role} — unreached hosts: {', '.join(sorted(gap))}", file=sys.stderr)
+            print(
+                "      (no deploy-stage invocation selects it for those hosts —"
+                " check the job's --limit and --tags)",
+                file=sys.stderr,
+            )
         print(
-            "\nResolution: extend the relevant deploy job's --tags/--limit and its changes: list,"
+            "\nResolution: extend the relevant deploy job's --tags/--limit,"
             "\nor add the role to ACKNOWLEDGED_GAPS in scripts/check-deploy-host-coverage.py with"
             "\na rationale naming what deploys it instead.",
             file=sys.stderr,

@@ -4,17 +4,14 @@
 # The onepassword (Connect) provider (used by our ClusterSecretStore) is part of the
 # core ESO image in 2.x; no extra feature flag needed.
 #
-# Scheduling:
-# - nodeSelector esweiss.com/cpu: modern — the Go binary uses CPU extensions
-#   (POPCNT/SSE4.2) not available on the Core 2 Quad opt nodes (pve-opt-01, pve-opt-02, pve-opt-03); it SIGILLs on
-#   those hosts (observed 2026-04-16).
-# - tolerations for PreferNoSchedule taints on nas/compute — otherwise all ESO
-#   replicas crowd onto one node; soft taints are fine to ignore.
-# - podAntiAffinity (preferred) spreads the 2 replicas across modern-CPU nodes
-#   so a single-node drain doesn't take secret-sync offline.
-#
-# Only the main controller, webhook, and certController are pinned this way.
-# crds-operator (if ever enabled) has the same constraint.
+# Scheduling (controller, webhook and certController alike; crds-operator would
+# need the same if ever enabled):
+# - nodeSelector esweiss.com/cpu: modern — the Go binary SIGILLs on the Core 2
+#   Quad opt nodes (needs POPCNT/SSE4.2).
+# - tolerations for the soft nas/compute taints, so replicas are not all pushed
+#   onto one node.
+# - topologySpreadConstraints hard-spread each pair across the three modern-CPU
+#   hosts, so no single node drain can take a component fully offline.
 #
 # CRDs: ESO ships CRDs as chart templates gated by values.installCRDs (NOT a
 # crds/ directory), so Flux's install/upgrade crds policy has no effect here —
@@ -68,17 +65,15 @@ spec:
       - key: esweiss.com/compute
         operator: Exists
         effect: PreferNoSchedule
-    affinity:
-      podAntiAffinity:
-        preferredDuringSchedulingIgnoredDuringExecution:
-          - weight: 100
-            podAffinityTerm:
-              labelSelector:
-                matchExpressions:
-                  - key: app.kubernetes.io/name
-                    operator: In
-                    values: [external-secrets]
-              topologyKey: kubernetes.io/hostname
+    topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: DoNotSchedule
+        matchLabelKeys:
+          - pod-template-hash
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: external-secrets
     webhook:
       replicaCount: 2
       resources:
@@ -96,17 +91,15 @@ spec:
         - key: esweiss.com/compute
           operator: Exists
           effect: PreferNoSchedule
-      affinity:
-        podAntiAffinity:
-          preferredDuringSchedulingIgnoredDuringExecution:
-            - weight: 100
-              podAffinityTerm:
-                labelSelector:
-                  matchExpressions:
-                    - key: app.kubernetes.io/name
-                      operator: In
-                      values: [external-secrets-webhook]
-                topologyKey: kubernetes.io/hostname
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          matchLabelKeys:
+            - pod-template-hash
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: external-secrets-webhook
     certController:
       replicaCount: 2
       resources:
@@ -124,17 +117,15 @@ spec:
         - key: esweiss.com/compute
           operator: Exists
           effect: PreferNoSchedule
-      affinity:
-        podAntiAffinity:
-          preferredDuringSchedulingIgnoredDuringExecution:
-            - weight: 100
-              podAffinityTerm:
-                labelSelector:
-                  matchExpressions:
-                    - key: app.kubernetes.io/name
-                      operator: In
-                      values: [external-secrets-cert-controller]
-                topologyKey: kubernetes.io/hostname
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          matchLabelKeys:
+            - pod-template-hash
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: external-secrets-cert-controller
     resources:
       requests:
         cpu: 50m

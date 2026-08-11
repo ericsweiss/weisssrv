@@ -1,0 +1,80 @@
+---
+# promtool unit tests for the fast silent-failure alerts: the cert-renewal
+# pipeline and Flux reconciliation. Each pair asserts both that the rule fires
+# on the failure it names AND that the healthy series does not — a threshold or
+# label-selector typo breaks exactly one of the two.
+# The multi-day staleness family lives in backup-staleness.test.yaml (it needs a
+# 1h evaluation interval). rule_files is resolved relative to this file's
+# runtime location; the lint script copies the tests next to rules.yaml.
+rule_files:
+  - rules.yaml
+evaluation_interval: 1m
+tests:
+  # CertRenewalFailed (for 1h) and CertRenewalFailedProlonged (for 72h) share
+  # one metric, so the escalation is purely the `for:` duration.
+  - interval: 1m
+    input_series:
+      - series: 'cert_renewal_last_run_success{instance="192.168.0.150:9101"}'
+        values: '0+0x70'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: CertRenewalFailed
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: '192.168.0.150:9101'
+      - eval_time: 65m
+        alertname: CertRenewalFailedProlonged
+        exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      - series: 'cert_renewal_last_run_success{instance="192.168.0.150:9101"}'
+        values: '1+0x70'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: CertRenewalFailed
+        exp_alerts: []
+
+  # FluxReconciliationFailure keys on the error RATE, so a counter that stopped
+  # advancing must stop firing — otherwise one historic error alerts forever.
+  - interval: 1m
+    input_series:
+      - series: 'controller_runtime_reconcile_errors_total{job="observability/flux-system", controller="kustomization"}'
+        values: '0+1x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: FluxReconciliationFailure
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              controller: kustomization
+
+  - interval: 1m
+    input_series:
+      - series: 'controller_runtime_reconcile_errors_total{job="observability/flux-system", controller="kustomization"}'
+        values: '5+0x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: FluxReconciliationFailure
+        exp_alerts: []
+
+  # FluxResourceNotReady must ignore SUSPENDED resources: a suspended
+  # Kustomization keeps reporting its last state and would page indefinitely.
+  - interval: 1m
+    input_series:
+      - series: 'gotk_resource_info{ready="False", suspended="false", name="apps", namespace="flux-system", kind="Kustomization"}'
+        values: '1+0x40'
+      - series: 'gotk_resource_info{ready="False", suspended="true", name="paused", namespace="flux-system", kind="Kustomization"}'
+        values: '1+0x40'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: FluxResourceNotReady
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              ready: 'False'
+              suspended: 'false'
+              name: apps
+              namespace: flux-system
+              kind: Kustomization

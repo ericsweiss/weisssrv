@@ -6,6 +6,11 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: prometheus-operator-crds
+  annotations:
+    # Same opt-out as the HelmRelease (release.yaml): pruning this Namespace
+    # would cascade-delete the namespaced HelmRelease and trigger a
+    # `helm uninstall` of every monitoring CRD.
+    kustomize.toolkit.fluxcd.io/prune: disabled
   labels:
     app.kubernetes.io/name: prometheus-operator-crds
     app.kubernetes.io/part-of: kube-prometheus-stack

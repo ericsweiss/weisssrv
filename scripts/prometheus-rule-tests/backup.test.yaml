@@ -95,11 +95,11 @@ tests:
               severity: warning
               dataset: 'tank/proxmox'
 
-  # VzdumpBackupStale fires per-node when the last vzdump is older than 26h.
+  # VzdumpBackupStale fires per-node when the last vzdump is older than 36h.
   - interval: 1m
     input_series:
       - series: 'vzdump_backup_last_success_timestamp_seconds{instance="192.168.0.102:9101"}'
-        values: '-100000+0x70'
+        values: '-140000+0x70'
     alert_rule_test:
       - eval_time: 65m
         alertname: VzdumpBackupStale
@@ -404,9 +404,300 @@ tests:
               instance: 192.168.0.102:9101
               metric: pve_cluster_backup_last_size_bytes
 
-  # ResticOffsiteVerifyStale: last successful `restic check` older than 8d fires;
-  # a fresh verify does not; a failed verify (success==0) fires. NO absent() arm,
-  # so an empty series set (verify never run) must NOT fire.
+  # BackupArtifactZeroBytes — the NAS-side counterpart to BackupArtifactEmpty,
+  # and the only size arm covering authentik/mealie/home-assistant (no VM-side
+  # wrapper emits a size metric for them). A truncated dump lands with a FRESH
+  # mtime, so BackupArtifactStale stays green: that is the case pinned here.
+  - interval: 1m
+    input_series:
+      - series: 'backup_artifact_last_size_bytes{app="authentik"}'
+        values: '0+0x70'
+      - series: 'backup_artifact_last_mtime_seconds{app="authentik"}'
+        values: '0+60x70'
+      - series: 'backup_artifact_last_size_bytes{app="mealie"}'
+        values: '4194304+0x70'
+      - series: 'backup_artifact_last_mtime_seconds{app="mealie"}'
+        values: '0+60x70'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: BackupArtifactZeroBytes
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              app: authentik
+      # The fresh mtime is exactly why the staleness alert cannot cover this.
+      - eval_time: 65m
+        alertname: BackupArtifactStaleCritical
+        exp_alerts: []
+
+  # An ancient mtime with size 0 = "no file matching the glob at all" (the
+  # collector emits literal 0 for both; the harness clock starts at 0, so the
+  # ancient case is written as a negative mtime here — neither is `> 0`).
+  # BackupArtifactStale owns that case; the mtime guard keeps this alert from
+  # double-paging on it.
+  - interval: 1m
+    input_series:
+      - series: 'backup_artifact_last_size_bytes{app="authentik"}'
+        values: '0+0x70'
+      - series: 'backup_artifact_last_mtime_seconds{app="authentik"}'
+        values: '-400000+0x70'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: BackupArtifactZeroBytes
+        exp_alerts: []
+      - eval_time: 65m
+        alertname: BackupArtifactStaleCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              app: authentik
+
+  # The literal shape the collector writes for a missing file: mtime 0, size 0.
+  # The `> 0` guard must keep BackupArtifactZeroBytes silent on it.
+  - interval: 1m
+    input_series:
+      - series: 'backup_artifact_last_size_bytes{app="authentik"}'
+        values: '0+0x70'
+      - series: 'backup_artifact_last_mtime_seconds{app="authentik"}'
+        values: '0+0x70'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: BackupArtifactZeroBytes
+        exp_alerts: []
+
+  # BackupArtifactCompanionMissing — a companion absent from the landing zone
+  # emits present=0 AND size=0. `or` matches on the label set minus __name__, so
+  # the two arms must collapse to ONE alert per (app, file), not two.
+  - interval: 1m
+    input_series:
+      - series: 'backup_artifact_companion_present{app="gitlab", file="gitlab-secrets.json"}'
+        values: '0+0x70'
+      - series: 'backup_artifact_companion_size_bytes{app="gitlab", file="gitlab-secrets.json"}'
+        values: '0+0x70'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: BackupArtifactCompanionMissing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              app: gitlab
+              file: gitlab-secrets.json
+
+  # Truncated companion: the file IS there (present=1) but is 0 bytes. The
+  # size arm is what catches it — present alone would report healthy.
+  - interval: 1m
+    input_series:
+      - series: 'backup_artifact_companion_present{app="gitlab", file="gitlab-secrets.json"}'
+        values: '1+0x70'
+      - series: 'backup_artifact_companion_size_bytes{app="gitlab", file="gitlab-secrets.json"}'
+        values: '0+0x70'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: BackupArtifactCompanionMissing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              app: gitlab
+              file: gitlab-secrets.json
+
+  # Healthy companion: no alert. No absent() arm either — companions are opt-in
+  # per app in the inventory, so an empty family must stay silent.
+  - interval: 1m
+    input_series:
+      - series: 'backup_artifact_companion_present{app="gitlab", file="gitlab-secrets.json"}'
+        values: '1+0x70'
+      - series: 'backup_artifact_companion_size_bytes{app="gitlab", file="gitlab-secrets.json"}'
+        values: '5170+0x70'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: BackupArtifactCompanionMissing
+        exp_alerts: []
+  - interval: 1m
+    input_series: []
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: BackupArtifactCompanionMissing
+        exp_alerts: []
+
+  # GitLabBackupSecretsMissing — the DR-critical one: gitlab-secrets.json is
+  # excluded from the tarball AND from the artefact glob, so a full-size,
+  # perfectly fresh tarball is unrestorable without it and every other backup
+  # alert stays green. Absent (present=0, size=0) fires exactly once.
+  - interval: 1m
+    input_series:
+      - series: 'gitlab_backup_secrets_present{instance="192.168.0.153:9101"}'
+        values: '0+0x70'
+      - series: 'gitlab_backup_secrets_size_bytes{instance="192.168.0.153:9101"}'
+        values: '0+0x70'
+      - series: 'gitlab_backup_last_run_success{instance="192.168.0.153:9101"}'
+        values: '1+0x70'
+      - series: 'gitlab_backup_last_size_bytes{instance="192.168.0.153:9101"}'
+        values: '41922560+0x70'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: GitLabBackupSecretsMissing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              instance: 192.168.0.153:9101
+      # The tarball itself is healthy, which is the whole point.
+      - eval_time: 65m
+        alertname: BackupArtifactEmpty
+        exp_alerts: []
+      - eval_time: 65m
+        alertname: GitLabBackupFailed
+        exp_alerts: []
+
+  # present=1 with size 0 is reachable: the wrapper stats whatever it copied, so
+  # a truncated copy reports present. The size arm catches it.
+  - interval: 1m
+    input_series:
+      - series: 'gitlab_backup_secrets_present{instance="192.168.0.153:9101"}'
+        values: '1+0x70'
+      - series: 'gitlab_backup_secrets_size_bytes{instance="192.168.0.153:9101"}'
+        values: '0+0x70'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: GitLabBackupSecretsMissing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              instance: 192.168.0.153:9101
+
+  # Healthy, and no absent() arm — the metric appears only after the first
+  # post-deploy backup run, so absent() would page on merge day.
+  - interval: 1m
+    input_series:
+      - series: 'gitlab_backup_secrets_present{instance="192.168.0.153:9101"}'
+        values: '1+0x70'
+      - series: 'gitlab_backup_secrets_size_bytes{instance="192.168.0.153:9101"}'
+        values: '5170+0x70'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: GitLabBackupSecretsMissing
+        exp_alerts: []
+  - interval: 1m
+    input_series: []
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: GitLabBackupSecretsMissing
+        exp_alerts: []
+
+  # BackupRestoreDrillStale: integrity (`restic check`) is not restorability.
+  # Fires when the quarterly drill has not PASSED in 100 days — or has not been
+  # ATTEMPTED in 100 days, which is the only arm that can see a drill that has
+  # never passed at all (no _last_success_seconds series exists in that state).
+  # There is deliberately NO absent() arm; see BackupRestoreDrillNeverRan below.
+  - interval: 5m
+    input_series:
+      - series: 'backup_restore_drill_last_success_seconds{instance="192.168.0.102:9101"}'
+        values: '-8700000+0x40'
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: BackupRestoreDrillStale
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              instance: 192.168.0.102:9101
+  # Never passed, but the timer stopped attempting 100 days ago: the run arm is
+  # the whole coverage here, because the success series does not exist.
+  - interval: 5m
+    input_series:
+      - series: 'backup_restore_drill_last_run_seconds{instance="192.168.0.102:9101"}'
+        values: '-8700000+0x40'
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: BackupRestoreDrillStale
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              instance: 192.168.0.102:9101
+  # Both clocks stale. `or` matches on the label set minus __name__ and both
+  # series carry the same instance, so the two arms must collapse to ONE alert.
+  - interval: 5m
+    input_series:
+      - series: 'backup_restore_drill_last_success_seconds{instance="192.168.0.102:9101"}'
+        values: '-8700000+0x40'
+      - series: 'backup_restore_drill_last_run_seconds{instance="192.168.0.102:9101"}'
+        values: '-8700000+0x40'
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: BackupRestoreDrillStale
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              instance: 192.168.0.102:9101
+  - interval: 5m
+    input_series:
+      - series: 'backup_restore_drill_last_success_seconds{instance="192.168.0.102:9101"}'
+        values: '0+300x40'
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: BackupRestoreDrillStale
+        exp_alerts: []
+  # MERGE-DAY REGRESSION TEST. Before the split this group expected a critical:
+  # the rule carried `or absent(backup_restore_drill_last_success_seconds)` at
+  # severity critical / for 1h, and the metric does not exist until a drill has
+  # actually run — so it paged continuously from deploy until the first
+  # quarterly elapse. The critical tier must now stay silent on an empty corpus.
+  - interval: 5m
+    input_series: []
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: BackupRestoreDrillStale
+        exp_alerts: []
+
+  # BackupRestoreDrillNeverRan: the absence case, at WARNING behind a 26h
+  # `for:`. The role seeds a drill when the units are newly installed, so the
+  # metric normally appears within a textfile-collector cycle of the deploy;
+  # 26h absorbs a deploy at any hour plus that pickup, and what survives it is
+  # a seed that never ran or never passed.
+  - interval: 30m
+    input_series: []
+    alert_rule_test:
+      # Merge day: no seed metric yet, and nothing fires at either tier.
+      - eval_time: 2h
+        alertname: BackupRestoreDrillNeverRan
+        exp_alerts: []
+      # Still inside the deploy + pickup window.
+      - eval_time: 25h
+        alertname: BackupRestoreDrillNeverRan
+        exp_alerts: []
+      # Past 26h the seed demonstrably produced no passing drill.
+      - eval_time: 27h
+        alertname: BackupRestoreDrillNeverRan
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+  # A drill that RAN but never PASSED — a failed seed. NeverRan is what surfaces
+  # it (the success series is absent), and the 100-day critical stays quiet.
+  - interval: 30m
+    input_series:
+      - series: 'backup_restore_drill_last_run_seconds{instance="192.168.0.102:9101"}'
+        values: '0+0x60'
+    alert_rule_test:
+      - eval_time: 27h
+        alertname: BackupRestoreDrillNeverRan
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+      - eval_time: 27h
+        alertname: BackupRestoreDrillStale
+        exp_alerts: []
+  # Once any drill has passed, the absence alert must go quiet for good.
+  - interval: 30m
+    input_series:
+      - series: 'backup_restore_drill_last_success_seconds{instance="192.168.0.102:9101"}'
+        values: '0+0x60'
+    alert_rule_test:
+      - eval_time: 27h
+        alertname: BackupRestoreDrillNeverRan
+        exp_alerts: []
+
+  # ResticOffsiteVerifyStale: last successful `restic check` older than 8d.
+  # A FAILED verify is a separate alert (ResticOffsiteVerifyFailed) so the two
+  # can carry different severities. NO absent() arm on either, so an empty
+  # series set (verify never run) must NOT fire.
   - interval: 1m
     input_series:
       - series: 'restic_offsite_last_verify_timestamp_seconds'
@@ -429,7 +720,8 @@ tests:
       - eval_time: 65m
         alertname: ResticOffsiteVerifyStale
         exp_alerts: []
-  # Failed verify (success==0) fires even with a recent timestamp.
+  # A failed verify pages via ResticOffsiteVerifyFailed even when the timestamp
+  # is recent — and must NOT also raise the staleness alert.
   - interval: 1m
     input_series:
       - series: 'restic_offsite_last_verify_timestamp_seconds'
@@ -438,10 +730,13 @@ tests:
         values: '0+0x70'
     alert_rule_test:
       - eval_time: 65m
-        alertname: ResticOffsiteVerifyStale
+        alertname: ResticOffsiteVerifyFailed
         exp_alerts:
           - exp_labels:
-              severity: warning
+              severity: critical
+      - eval_time: 65m
+        alertname: ResticOffsiteVerifyStale
+        exp_alerts: []
   # No verify metrics at all (never run) — no absent() arm, so nothing fires.
   - interval: 1m
     input_series: []

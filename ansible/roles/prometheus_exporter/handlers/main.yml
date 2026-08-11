@@ -1,9 +1,0 @@
----
-# Handlers for prometheus_exporter role. Available to the wrapper role's
-# tasks once the wrapper has run include_role on this role.
-
-- name: Restart prometheus exporter
-  ansible.builtin.systemd:
-    name: "{{ prometheus_exporter_service_name }}"
-    state: restarted
-    daemon_reload: true

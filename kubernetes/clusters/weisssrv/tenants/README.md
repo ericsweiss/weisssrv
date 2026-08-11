@@ -218,6 +218,11 @@ kind: ClusterSecretStore
 metadata:
   name: gitlab-friend-project
 spec:
+  # Same cluster-scoped exposure as the 1P store above: without conditions any
+  # namespace can name this store and read the friend's CI/CD variables.
+  conditions:
+    - namespaces:
+        - friend-project
   provider:
     gitlab:
       url: https://git.ericsweiss.com

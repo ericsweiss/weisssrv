@@ -1,18 +1,15 @@
 #!/usr/bin/env bash
 # One-time / disaster-recovery state bootstrap for terraform/authentik.
 #
-# Runs `terraform import` for every managed resource (the same address<->id
-# map as imports.tf), skipping anything already in state, so it is idempotent
-# and safe to re-run. `terraform import` only READS the authentik API and
-# writes Terraform state — it never modifies authentik objects and never
-# applies configuration.
+# Runs `terraform import` for every ADOPTED resource (the same address<->id map
+# as imports.tf), skipping anything already in state, so it is idempotent and
+# safe to re-run. `terraform import` only READS the authentik API and writes
+# Terraform state — it never modifies authentik objects, never applies config.
+# Terraform-authored objects are deliberately absent; see the README for the
+# extra DR steps they need.
 #
-# Order mirrors the dependency graph: providers, then groups, then
-# applications. `terraform import` validates the whole configuration on every
-# invocation and local.applications references the provider resources, so
-# importing in dependency order keeps every evaluation fully known. The reverse
-# order still succeeds (an unresolved provider evaluates as unknown), so this is
-# a legibility choice, not a correctness one.
+# Order (providers, groups, applications) is a legibility choice: it keeps every
+# evaluation fully known during the whole-config validation terraform import runs.
 #
 # Invoke via `task terraform:authentik-import` (wraps this in `op run` with
 # the TF_VAR_* credentials and TF_HTTP_* state backend env).
@@ -68,19 +65,18 @@ authentik_application.app["qbittorrent"]|qbittorrent
 authentik_application.app["tv"]|tv
 '
 
-# The application slugs above are a hand-maintained copy of local.applications'
-# keys. A new app added to applications.tf without a line here would be silently
-# left out of the DR bootstrap — and only noticed when the post-import plan
-# proposes CREATING an application that already exists. Fail loudly instead.
-# (Only local.applications is checkable this way: the Terraform-AUTHORED
-# objects deliberately have no import entry — see the imports.tf header.)
-declared_apps="$(awk '/^  applications = \{/,/^  \}$/' applications.tf \
-  | grep -oE '^    [a-zA-Z0-9_-]+ = \{' | awk '{print $1}' | sort)"
+# The application slugs above are a hand-maintained copy of imports.tf's
+# local.imported_application_slugs (the ADOPTED set — not local.applications,
+# which also holds Terraform-authored apps that have nothing to import). A slug
+# in one list and not the other would silently skip or misname a DR import, so
+# fail loudly.
+declared_apps="$(awk '/imported_application_slugs = toset\(\[/,/^  \]\)$/' imports.tf \
+  | grep -oE '"[a-zA-Z0-9_-]+"' | tr -d '"' | sort)"
 listed_apps="$(printf '%s\n' "${IMPORTS}" \
   | sed -n 's/^authentik_application\.app\["\([^"]*\)"\].*/\1/p' | sort)"
 if [ "${declared_apps}" != "${listed_apps}" ]; then
-  echo "ERROR: import.sh's application list is out of sync with local.applications." >&2
-  echo "Only in applications.tf:" >&2
+  echo "ERROR: import.sh's application list is out of sync with imports.tf." >&2
+  echo "Only in imports.tf:" >&2
   comm -23 <(printf '%s\n' "${declared_apps}") <(printf '%s\n' "${listed_apps}") >&2
   echo "Only in import.sh:" >&2
   comm -13 <(printf '%s\n' "${declared_apps}") <(printf '%s\n' "${listed_apps}") >&2

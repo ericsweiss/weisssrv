@@ -10,19 +10,19 @@
     # set true in host_vars/pve-nas-01 (or group_vars). Runs BEFORE nas_storage
     # so tlshd is installed + verified before nas_storage (re)publishes any
     # xprtsec=tls export (avoids a TLS-required export with no handshake daemon).
-    - nfs_tls
-    - nas_storage
+    - weisssrv.infra.nfs_tls
+    - weisssrv.infra.nas_storage
     # Nightly offsite B2 backup (restic + rclone). Runs after nas_storage so the
     # archsync snapshots + the tank/backups/apps landing zone exist; chains
     # OnSuccess= after archive-backup.service. No-op while restic_offsite_enabled
     # is false.
-    - restic_offsite
+    - weisssrv.infra.restic_offsite
     # Declarative storage.cfg + vzdump jobs (tank-proxmox target). Cluster-wide
     # config, so it runs from this single node; no-op while its lists are empty.
-    - proxmox_backup
-    - zfs_exporter
+    - weisssrv.infra.proxmox_backup
+    - weisssrv.infra.zfs_exporter
     # site.yml deploys node_exporter_host (to pve-nas-01 via proxmox) and
     # alloy_host (via base_managed) in dedicated plays; include them here so a
     # standalone `task storage:deploy` keeps host metrics + log shipping in sync.
-    - node_exporter_host
-    - alloy_host
+    - weisssrv.infra.node_exporter_host
+    - weisssrv.infra.alloy_host

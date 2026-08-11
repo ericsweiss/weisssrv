@@ -1,20 +1,13 @@
 # NetworkPolicies for external-secrets. This namespace holds the 1Password
-# Connect bootstrap credentials (op-credentials, onepassword-connect-token) and
-# every ESO-synced Secret, so a compromised co-tenant pod should face a
-# pod-network barrier, not an open path. Parity with cert-manager/external-dns,
-# which guard the Cloudflare API token the same way.
-#
-# default-deny-ingress is provided by the shared components/netpol-baseline
-# component (wired in kustomization.yaml). NetworkPolicies are additive, so it
-# does not override the onepassword-connect ingress allow (8080/8081) in
-# onepassword-connect/networkpolicy.yaml.
+# Connect bootstrap credentials and every ESO-synced Secret, so a compromised
+# co-tenant pod must face a pod-network barrier. default-deny-ingress comes from
+# the netpol-baseline component; policies are additive, so it does not override
+# the Connect ingress allow in onepassword-connect/networkpolicy.yaml.
 
 ---
-# Allow ingress to the ESO webhook (validating/conversion webhook called by the
-# kube-apiserver, which arrives post-DNAT from a server node IP) and metrics
-# scrapes from observability. The apiserver source is not pinned by IP because
-# the webhook call originates from whichever server is active; allow the webhook
-# port from anywhere and rely on ESO's own TLS/authz for the webhook.
+# Webhook ingress + metrics scrapes from observability. The webhook port is
+# open from anywhere because the apiserver call arrives post-DNAT from whichever
+# server is active; ESO's own TLS/authz is the gate there.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -39,10 +32,8 @@ spec:
           port: 8080
 
 ---
-# Default-deny egress. The scoped allows below cover the two pod classes that
-# exist here (ESO controllers and 1Password Connect); any future pod in this
-# namespace starts with no egress until it gets its own allow — fail-closed in
-# the namespace holding every ESO-synced Secret.
+# Default-deny egress: the two allows below cover the pod classes that exist
+# here, and anything new starts with no egress until it gets its own.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -94,10 +85,8 @@ spec:
       ports:
         - protocol: TCP
           port: 6443
-    # 1Password Connect API (cluster-secret-store.yaml points at the
-    # same-namespace ClusterIP; DNAT to the pod happens before policy
-    # evaluation, so match the Connect pods directly). 8081 is the sync
-    # sidecar, mirrored from the ingress allow.
+    # 1Password Connect API. Matched by pod, not ClusterIP: kube-proxy DNATs
+    # before policy evaluation. 8081 is the sync sidecar.
     - to:
         - podSelector:
             matchLabels:
@@ -139,10 +128,10 @@ spec:
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0
-            # Public-unicast only. EXCEPT every non-public / reserved IPv4 block
-            # so a compromised pod cannot reach the LAN, loopback,
-            # cloud-metadata, or other reserved space. Kept identical to the
-            # cloudflare-ddns, cert-manager and external-dns egress policies.
+            # Public unicast only: every non-public / reserved IPv4 block is
+            # excepted so a compromised pod cannot reach the LAN, loopback,
+            # cloud-metadata or other reserved space. This is the "reserved-full"
+            # set — scripts/check-netpol-except-parity.py fails if any copy drifts.
             except:
               # RFC1918 private LAN.
               - 10.0.0.0/8

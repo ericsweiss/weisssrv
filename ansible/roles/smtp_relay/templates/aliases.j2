@@ -1,6 +1,0 @@
-# {{ ansible_managed }}
-# Mail aliases - see aliases(5) for format
-
-{% for alias, target in mail_aliases.items() %}
-{{ alias }}: {{ target }}
-{% endfor %}

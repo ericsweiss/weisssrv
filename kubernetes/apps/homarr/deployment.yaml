@@ -15,6 +15,10 @@ metadata:
   labels:
     app.kubernetes.io/name: homarr
     app.kubernetes.io/part-of: homarr
+  annotations:
+    # NODE_EXTRA_CA_CERTS is read once at Node.js start, so a pve-root-ca
+    # ConfigMap rotation only reaches the app via a pod restart.
+    reloader.stakater.com/auto: "true"
 spec:
   replicas: 1
   strategy:
@@ -28,11 +32,9 @@ spec:
         app.kubernetes.io/name: homarr
         app.kubernetes.io/part-of: homarr
     spec:
-      # NAS-avoid: this is a stateless-scheduling general workload (its state
-      # lives on NFS, not a node-local zvol), so steer it OFF the NAS node
-      # (soft preference reinforced by the NAS node's PreferNoSchedule taint,
-      # which this pod does NOT tolerate). modern CPU: keep the Node/Next.js
-      # image off the Core2-era legacy nodes. Mirrors hermes.
+      # NAS-avoid: state lives on NFS, not a node-local zvol, so nothing ties
+      # this pod to the NAS agent. modern CPU keeps the Node/Next.js image off
+      # the Core2-era legacy nodes.
       affinity:
         nodeAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
@@ -46,15 +48,10 @@ spec:
         esweiss.com/cpu: "modern"
       # No in-cluster API access.
       automountServiceAccountToken: false
-      # Homarr v1.x is an NGINX-FRONTED image: run.sh templates
-      # /etc/nginx/nginx.conf at boot and nginx (:7575) fronts Next.js (:3000)
-      # + the websocket (:3001). Forcing runAsUser 1000 broke that boot-time
-      # templating (permission denied on /etc/nginx) — Next.js came up but
-      # nothing listened on 7575, so the tcp probes SIGTERM-looped the pod
-      # (observed on first deploy). The image expects its own root entrypoint
-      # (namespace PSS is baseline, which admits it); the NFS export's
-      # all_squash anonuid=1000/anongid=2000 still maps every DATA write to
-      # 1000:2000 regardless of the in-container UID.
+      # Homarr v1.x is nginx-fronted: run.sh templates /etc/nginx/nginx.conf at
+      # boot, so the image needs its own root entrypoint — pinning runAsUser
+      # breaks that templating and nothing ever listens on :7575. Data writes
+      # still land 1000:2000 via the export's all_squash mapping.
       securityContext:
         fsGroup: 2000
         seccompProfile:

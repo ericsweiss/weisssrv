@@ -147,10 +147,10 @@ Create VPN credential items in your Homelab vault:
 ### 2. NFS Storage Preparation
 
 The NFS exports and per-app appdata directories are provisioned by the
-`nas_storage` role: the `nas_appdata_dirs` list in the role defaults creates
+`nas_storage` role: the `nas_storage_appdata_dirs` list in the role defaults creates
 `/mnt/ssd/appdata/<app>` (owned `1000:2000`) for every app that persists
 config on the appdata export. No manual `mkdir` is needed — add the app name
-to `nas_appdata_dirs` and run `task storage:deploy`. Verify:
+to `nas_storage_appdata_dirs` and run `task storage:deploy`. Verify:
 
 ```bash
 ssh pve-nas-01 "ls -la /mnt/ssd/appdata/"
@@ -574,7 +574,15 @@ Configure *arr apps to use:
 
 ### Pulsarr
 
-> **AVX Requirement**: Pulsarr uses the Bun JavaScript runtime (v0.10.0+) which requires AVX CPU instructions. The three Core 2 Quad opt agents do NOT support AVX and crash it with "Illegal instruction". The precise gate for that is the `esweiss.com/cpu=modern` label (docs/33), carried today by k3s-agt-nas-01, k3s-agt-laptop-01 and k3s-agt-prec-01. Pulsarr's `nodeSelector` predates that label taxonomy and still pins it to the NAS node (`esweiss.com/nas: "true"`) — a strict subset of the modern-CPU nodes, so it is safe but narrower than necessary. If you reschedule it, `esweiss.com/cpu: modern` is the constraint that actually matters.
+> **AVX Requirement**: Pulsarr uses the Bun JavaScript runtime (v0.10.0+) which
+> requires AVX CPU instructions. The three Core 2 Quad opt agents do NOT support
+> AVX and crash it with "Illegal instruction". The precise gate for that is the
+> `esweiss.com/cpu=modern` label (docs/33), carried today by k3s-agt-nas-01,
+> k3s-agt-laptop-01 and k3s-agt-prec-01. Pulsarr's `nodeSelector` predates that
+> label taxonomy and still pins it to the NAS node (`esweiss.com/nas: "true"`) —
+> a strict subset of the modern-CPU nodes, so it is safe but narrower than
+> necessary. If you reschedule it, `esweiss.com/cpu: modern` is the constraint
+> that actually matters.
 
 1. Access: https://pulsarr.esweiss.com
 2. Configure:
@@ -816,12 +824,17 @@ task flux:status
 
 ### Backup
 
-App configs are stored on NFS (`/mnt/ssd/appdata`). Include in your regular NAS backup strategy.
+App configs live on NFS under `/mnt/ssd/appdata` and are **already captured** by
+the automated chain — no manual step is needed:
 
-Critical files to backup:
-- `*.db` - Application databases
-- `config.xml` - App configuration
-- Custom scripts and profiles
+- `ssd/appdata → archive` raw-encrypted ZFS replication (`archive-backupctl`).
+- The nightly restic walk into Backblaze B2, which covers every appdata `/config`
+  directory ([docs/42](42-offsite-backup.md)).
+
+Restore is file-wise from either tier — see
+[docs/17 § Restore Procedures](17-disaster-recovery.md#restore-procedures).
+Do not add an ad-hoc copy job here; a second uncoordinated backup path is how
+retention and freshness monitoring drift apart.
 
 ## Troubleshooting
 
@@ -883,7 +896,7 @@ kubectl exec -n downloads deployment/sonarr -- stat -f /media/library/
 # Device numbers must match for hard links to work
 ```
 
-## Related Documentation
+## Related documentation
 
 - [K3s Deployment Guide](./19-k3s-deployment.md)
 - [Flux Operations](./29-flux-operations.md)

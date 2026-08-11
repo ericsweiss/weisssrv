@@ -25,6 +25,8 @@ gitlab_registry_data_dir: "/mnt/gitlab-repos/registry"
 # gitlab-backup.timer finishes well before the 06:30 archive window. The whole-VM
 # vzdump image stays the local bare-metal DR path.
 gitlab_backup_nfs_enabled: true
+gitlab_backup_nfs_server: "pve-nas-01.{{ internal_domain }}"
+gitlab_backup_nfs_export: "/backups-apps/gitlab"
 gitlab_backup_path: "/mnt/backups-offsite"
 gitlab_backup_nfs_options: "vers=4.2,rw,hard,noatime,_netdev,nofail,xprtsec=tls"
 
@@ -38,9 +40,9 @@ gitlab_saml_required_groups:
 gitlab_saml_admin_groups:
   - "gitlab-admins"
 
-# Postfix null client uses the role default postfix_config (relay via
-# smtp-relay over SASL+TLS, loopback-only). postfix_sasl_user,
-# postfix_sasl_password, and mail_aliases are defined in all.yml.
+# Postfix null client uses the role default postfix_null_client_config (relay via
+# smtp-relay over SASL+TLS, loopback-only); the relay host, credentials and
+# aliases are defined in all.yml.
 
 # Monitoring whitelist: role default (loopback + LAN /24) PLUS the k3s pod
 # CIDR. The deploy-verify / maintenance-verify readiness probes run in runner
@@ -57,3 +59,59 @@ gitlab_monitoring_whitelist:
   - 127.0.0.1
   - 192.168.0.0/24
   - 10.42.0.0/16
+
+# Site values that used to be gitlab role defaults. Every optional feature in
+# the collection role is OFF and every endpoint empty by default, so each one
+# enabled below carries its own inputs.
+gitlab_external_url: "https://git.{{ external_domain }}"
+gitlab_ssh_host: "git.{{ external_domain }}"
+gitlab_timezone: "{{ timezone }}"
+gitlab_root_password: "{{ lookup('ansible.builtin.env', 'GITLAB_ROOT_PASSWORD') }}"
+
+# Container Registry + Pages, both fronted by Traefik.
+gitlab_registry_enabled: true
+gitlab_registry_external_url: "https://registry.git.{{ external_domain }}"
+gitlab_pages_enabled: true
+gitlab_pages_external_url: "https://pages.git.{{ external_domain }}"
+
+# Web IDE extension host: a SEPARATE origin from gitlab_external_url so the
+# browser same-origin policy isolates extension code from the session cookie
+# (CVE-2026-5816). Bare parent hostname, no wildcard.
+gitlab_web_ide_extension_host_domain: "ide.git.{{ external_domain }}"
+gitlab_api_token: "{{ lookup('ansible.builtin.env', 'GITLAB_API_TOKEN') }}"
+
+# Outbound mail via the SMTP relay (same credential as every null client).
+gitlab_smtp_enabled: true
+gitlab_smtp_address: "{{ postfix_null_client_relay_host }}"
+gitlab_smtp_domain: "{{ internal_domain }}"
+gitlab_smtp_user: "{{ postfix_null_client_sasl_user }}"
+gitlab_smtp_password: "{{ postfix_null_client_sasl_password }}"
+gitlab_email_from: "gitlab@{{ internal_domain }}"
+gitlab_email_reply_to: "noreply@{{ internal_domain }}"
+
+# SAML SSO via Authentik. The issuer host is ALWAYS the external one.
+gitlab_saml_enabled: true
+gitlab_saml_label: "Authentik"
+gitlab_saml_icon_url: "https://auth.{{ external_domain }}/static/dist/assets/icons/icon.svg"
+gitlab_saml_idp_cert_fingerprint: "{{ lookup('ansible.builtin.env', 'GITLAB_SAML_CERT_FINGERPRINT') }}"
+gitlab_saml_idp_sso_url: "https://auth.{{ external_domain }}/application/saml/git/sso/binding/redirect/"
+
+# X-Forwarded-For is trusted from the LAN and both cluster CIDRs (Traefik pods
+# proxy the web UI).
+gitlab_nginx_real_ip_trusted_addresses:
+  - 192.168.0.0/24
+  - 10.42.0.0/16
+  - 10.43.0.0/16
+
+# gitlab_ssh_port (2222) is WAN-facing and REDIRECTs to the system sshd, so
+# without this every local account would accept internet pubkey attempts.
+gitlab_ssh_allowusers_enabled: true
+gitlab_ssh_allowed_users:
+  - git
+  - "{{ admin_user }}@192.168.0.0/24"
+  - "{{ admin_user }}@100.64.0.0/10"
+
+# Publish Omnibus's bundled postgres_exporter for the in-cluster Prometheus
+# (Omnibus binds it to localhost by default). Unauthenticated — scoped by
+# sg-gitlab's :9187 rule to k3s_nodes.
+gitlab_postgres_exporter_listen_address: "0.0.0.0:9187"

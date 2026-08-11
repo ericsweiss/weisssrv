@@ -1,35 +1,43 @@
 # terraform/authentik — Authentik SSO state as code
 
 Codifies every **user-authored** object in the authentik deployment
-(auth.esweiss.com, docs/23) — applications, providers, groups, and group
+(auth.esweiss.com, docs/40) — applications, providers, groups, and group
 memberships — mirroring the `terraform/cloudflare` / `terraform/tailscale`
-pattern (GitLab HTTP state backend + 1Password-injected credentials). The live
-objects were **imported, never recreated**: the module was built field-for-field
-against the API and accepted only when `terraform plan` against the imported
-state showed zero changes (bar the one approved exception below). Objects added
-since the import — the Hermes dashboard OIDC provider, the Homarr dashboard
-OIDC provider/application (+ its `homarr-admins` group and binding), the AdGuard
-SSO dashboard providers/applications, the role
-groups (`media-admins`, `dns-admins`, `bar-assistant-users`,
-`home-assistant-users`), and the per-application policy bindings — are
-**Terraform-authored** and created by supervised apply (no import involved).
-The embedded outpost was later **adopted** (imported) so its provider list is
-code too (`outpost.tf`).
+pattern (GitLab HTTP state backend + 1Password-injected credentials). The
+pre-existing objects were **imported, never recreated** (see "Import
+methodology" below); everything added since — the Hermes and Homarr OIDC sets,
+the AdGuard SSO dashboards, the role groups, the policy bindings — is
+**Terraform-authored** and created by supervised apply.
 
-## ⚠️ Apply is a supervised step (and there is no apply task yet)
+## ⚠️ Apply is a supervised step
 
 `terraform apply` here rewrites live SSO objects — a wrong provider field can
-break login for every application at once. There is deliberately **no
-`terraform:authentik-apply` Taskfile task**: until the module has soaked, any
-apply is a supervised manual `op run -- terraform apply` with the plan reviewed
-line by line. CI runs only the read-only `authentik-drift-plan` job
-(`.gitlab-ci.yml`): `terraform plan -detailed-exitcode`, `allow_failure: true`,
-on the schedule and on authentik-module MRs — an Admin-UI hot-fix surfaces as
-drift instead of being silently reverted later.
+break login for every application at once. Apply therefore runs only from an
+operator's terminal, with the plan reviewed line by line:
 
-> Until the Sonarr basic-auth clear below is applied, `authentik-drift-plan`
-> reports a **non-empty plan (yellow / exit 2)** for exactly that one in-place
-> update — that is the *designed* advisory signal, not a failure.
+```bash
+task terraform:authentik-plan     # review
+task terraform:authentik-apply    # confirm at the prompt
+```
+
+`terraform:authentik-apply` **refuses `-auto-approve`** (it exits non-zero
+before invoking terraform if the flag is present), the same hard guard
+`terraform:tailscale-apply` carries, so plan review cannot be bypassed by an
+errant flag. CI never applies: it runs only the read-only `authentik-drift-plan`
+job (`terraform plan -detailed-exitcode`, `allow_failure: true`, on the schedule
+and on authentik-module MRs), so an Admin-UI hot-fix surfaces as drift instead
+of being silently reverted later. A non-empty drift plan is always real — there
+is no expected-yellow exception.
+
+## Guardrails
+
+Every application, group, provider and the embedded outpost carries
+`lifecycle { prevent_destroy = true }`. Renaming a `local.applications` key
+would otherwise plan as destroy+create — and the slug *is* the OIDC issuer path
+(`/application/o/dashboard/`) — while a group rename drops its memberships and
+every binding referencing it. Removing one is a deliberate two-step change:
+delete the `lifecycle` block, then the resource. Policy bindings are exempt
+(all Terraform-created, cheap to recreate).
 
 ## What is managed
 
@@ -42,6 +50,7 @@ drift instead of being silently reverted later.
 | Groups + memberships | 18 | `authentik_group.app[<name>]` + explicit `media_admins` / `dns_admins` / `authentik_admins` | group uuid (`media-admins`, `dns-admins`, `bar-assistant-users`, `home-assistant-users`, `homarr-admins`, `homarr-users` are Terraform-created) |
 | Policy bindings (group → application) | 20 | `authentik_policy_binding.app_group[<slug>]` + explicit `adguard_01` / `adguard_02` / `homarr` / `homarr_users` | — (all Terraform-created) |
 | Embedded outpost (provider list) | 1 | `authentik_outpost.embedded` | outpost uuid (adopted — see `outpost.tf`) |
+| Property mapping (scope) | 1 | `authentik_property_mapping_provider_scope.email_verified` | — (Terraform-created; applied to Mealie only) |
 
 Membership is modelled on the group's `users` list (the provider's model);
 the users themselves are `data` sources only. Every application carries exactly
@@ -52,12 +61,15 @@ injection attributes (`groups.tf`) consumed by the providers with
 
 ## What is deliberately UNMANAGED (and why)
 
-- **Flows, stages, policies, property mappings** — all stock authentik
-  defaults (`default-*` / `managed`-flagged); nothing user-authored exists.
-  Providers reference the two default flows and the default mappings via
-  `data` sources. (Application **group bindings** ARE managed — see
+- **Flows, stages, policies** — all stock authentik defaults (`default-*` /
+  `managed`-flagged); providers reference the two default flows via `data`
+  sources. (Application **group bindings** ARE managed — see
   `policy_bindings.tf`; expression/other policies remain unmanaged because
   none exist.)
+- **Property mappings** — the stock scope mappings are `data` sources, with
+  **one exception that IS authored**: `email_verified` in
+  `providers_oauth2.tf`, given to Mealie only. Losing it breaks Mealie login
+  entirely.
 - **Certificate keypair** — the install-generated self-signed keypair (data
   source; rotation is an authentik-side operation).
 - **Brand, service connection, RBAC roles** — stock. The embedded outpost's
@@ -89,6 +101,7 @@ Terraform and the app can never disagree:
 | `oauth2_client_secret_nextcloud` | `op://Homelab/Nextcloud SSO/client-secret` |
 | `oauth2_client_secret_immich` | `op://Homelab/Immich SSO/client-secret` |
 | `oauth2_client_secret_hermes_dashboard` | `op://Homelab/Hermes Secrets/hermes-dashboard-oidc-client-secret` |
+| `oauth2_client_secret_homarr` | `op://Homelab/Homarr SSO/client-secret` |
 | `basic_auth_nzbget_username` | `op://Homelab/NZBGet/username` |
 | `basic_auth_nzbget_password` | `op://Homelab/NZBGet/password` |
 | `basic_auth_adguard_username` | `op://Homelab/AdGuard Home/username` |
@@ -113,59 +126,47 @@ TF_HTTP_UNLOCK_METHOD=DELETE     # and unlocks via DELETE (else apply → 405)
 ```bash
 task terraform:authentik-init     # terraform init (GitLab state backend)
 task terraform:authentik-plan     # review the diff vs the live authentik objects
+task terraform:authentik-apply    # SUPERVISED — refuses -auto-approve
 task terraform:authentik-import   # one-time/DR state bootstrap (import.sh; idempotent)
-# NO terraform:authentik-apply — supervised manual step only (see above)
 ```
 
-## Import methodology (zero-diff acceptance)
+## Import methodology and disaster recovery
 
-1. Every live object was enumerated verbatim from the API and the `.tf` files
-   written field-for-field against that dump (nothing invented, nothing
-   omitted).
-2. `imports.tf` declares an import block per resource (applications by slug,
-   providers by pk, groups by uuid). A plan over empty state validated every
-   ID and every field: `44 to import, 0 to add, 1 to change` — the one change
-   being the approved Sonarr clear.
-3. `import.sh` (idempotent, state-aware, **providers → groups → applications**
-   order — see its header for why order matters to the legacy import command)
-   then imported all 44 objects into the GitLab backend state. `terraform
-   import` only reads the API; nothing was applied.
-4. Final acceptance: `terraform plan` → `Plan: 0 to add, 1 to change, 0 to
-   destroy` (the Sonarr exception below). Import blocks over populated state
-   are a silent no-op, so `imports.tf` stays committed as the permanent
-   address↔object map.
+Adoption was zero-diff: every live object was enumerated from the API and the
+`.tf` files written field-for-field against that dump, `imports.tf` declared an
+import block per resource, and a plan over empty state validated every ID and
+field before `import.sh` wrote the 44 objects into the GitLab backend state.
+`terraform import` only reads the API; nothing was applied. Import blocks over
+populated state are a silent no-op, so `imports.tf` stays committed as the
+permanent address↔object map.
 
 `imports.tf` covers the **44 adopted objects only**. Everything this module has
-authored since (3 applications, 4 providers, 6 groups, all 20 policy bindings)
-has no import block, because authentik assigns their pks/uuids at create time.
-A state-loss rebuild is therefore *not* a one-command re-import — see the DR
-runbook in the `imports.tf` header for the two extra steps.
+authored since (3 applications, 4 providers, 6 groups, 1 property mapping, all
+20 policy bindings) has no import block, because authentik assigns their
+pks/uuids at create time.
 
-## The Sonarr exception (approved, pending clear)
+**DR runbook (state lost, authentik intact).** A bare `terraform plan` is *not*
+"N to import, 0 to change" — the uncovered objects plan as CREATES against
+objects that already exist, and apply fails part-way (slugs and group names are
+unique, so it errors rather than duplicating):
 
-The live Sonarr proxy provider carries a **leaked literal credential** in
-`basic_auth_password_attribute` (with `basic_auth_username_attribute: eric`)
-even though `basic_auth_enabled` is false — these fields are meant to hold
-*attribute names*, not literals, so a real password ended up stored in
-authentik config. The module pins both fields empty (matching all eight other
-proxy providers). Until the first supervised apply flushes it, every plan
-shows exactly:
+1. `task terraform:authentik-import` — adopts the 44 objects in `imports.tf`.
+2. Enumerate the rest from the API and `terraform import` each one:
+   ```bash
+   curl -sH "Authorization: Bearer $AUTHENTIK_TOKEN" \
+     https://auth.esweiss.com/api/v3/core/applications/ | jq -r '.results[].slug'
+   # …/core/groups/ for uuids, …/providers/all/ for pks,
+   # …/policies/bindings/ for binding uuids
+   ```
+3. `terraform plan` — only now is "0 to add" the expected result.
 
-```
-  # authentik_provider_proxy.sonarr will be updated in-place
-      - basic_auth_password_attribute = (sensitive) -> null
-      - basic_auth_username_attribute = "eric" -> null
-Plan: 0 to add, 1 to change, 0 to destroy.
-```
+Adding the new import blocks to `imports.tf` as you go shortens step 2 next time.
 
-This clear is user-approved. The leaked password itself must also be rotated
-wherever else it is used.
-
-## Provider quirks (goauthentik/authentik 2026.5.0)
+## Provider quirks (goauthentik/authentik)
 
 - **Exact version pin, in lockstep with the server.** The provider is released
-  alongside authentik (2026.5.0 ↔ server 2026.5.x; we run 2026.5.5). Bump it
-  with the server upgrade, never ahead.
+  alongside authentik and its minor must match `authentik_version` in
+  `group_vars/all.yml`. Bump it with the server upgrade, never ahead.
 - **Proxy `property_mappings` is left unconfigured.** authentik auto-assigns
   the five default scope mappings to every proxy provider, and the provider's
   Read only tracks the field once explicitly configured — setting it would
@@ -177,7 +178,8 @@ wherever else it is used.
   to it would be invisible to Terraform.
 - **`allowed_redirect_uris` entries need `redirect_uri_type = "authorization"`**
   — the API returns the key, so omitting it in config diffs forever.
-- **No `lifecycle ignore_changes` anywhere** — none proved necessary.
+- **No `ignore_changes` anywhere** — none proved necessary. (`prevent_destroy`
+  is unrelated and is on everywhere — see Guardrails.)
 
 ## Adding a new application + provider
 
@@ -189,7 +191,9 @@ wherever else it is used.
    `authentik-drift-plan` CI job).
 2. **Application** — one entry in `local.applications`
    (`applications.tf`): slug, name, `group` (`Home`/`Software`/`Downloads`),
-   launch URL, dashboard icon, provider reference.
+   launch URL, dashboard icon, provider reference. Do **not** add it to
+   `imports.tf` — that file's `local.imported_application_slugs` is the frozen
+   adopted set, and a new slug has no live object to import.
 3. **Group + binding** — one name in `local.member_groups` (`groups.tf`) and
    one entry in `local.application_group_bindings` (`policy_bindings.tf`):
    every application gets exactly one group binding. (A group that must carry
@@ -197,9 +201,9 @@ wherever else it is used.
    `media_admins` / `dns_admins`.)
 4. For a **proxy** provider, append it to the embedded outpost's
    `protocol_providers` list (`outpost.tf` — no Admin-UI step) and add the
-   Traefik forward-auth middleware/ingress on the k8s side (docs/23 + the
-   app's own doc; upstreams that expect injected credentials take the
-   `authentik-auth-basic` middleware variant).
+   Traefik forward-auth middleware/ingress on the k8s side
+   (`kubernetes/apps/authentik/README.md` + the app's own doc; upstreams that
+   expect injected credentials take the `authentik-auth-basic` variant).
 5. `task terraform:authentik-plan` → review → supervised apply.
 6. New objects are **created** by Terraform (no import needed); only
    pre-existing UI-created objects ever need `imports.tf` / `import.sh`

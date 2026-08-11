@@ -50,14 +50,9 @@ spec:
       requests:
         cpu: 10m
         memory: 64Mi
-      # Memory only — no CPU limit (docs/33). Do NOT write `cpu: null` here to
-      # "clear" one: Helm only drops a null when it coalesces over a chart
-      # default, and this chart's default is `resources: {}`, so the null
-      # survives into the rendered Deployment as a literal `limits.cpu: null`
-      # (flux:lint's helm-template kubeconform pass rejects it). The 110m CPU
-      # limit the LIVE pods carry comes from neither this file nor the chart:
-      # the retired `helm` field manager from the pre-Flux install still
-      # co-owns the field under SSA, which needs the one-time release in
-      # docs/33 §Live drift.
+      # Memory only — no CPU limit (docs/33). Do NOT write `cpu: null` to
+      # "clear" one: this chart defaults to `resources: {}`, so Helm has
+      # nothing to coalesce over and the null renders literally, which
+      # kubeconform rejects.
       limits:
         memory: 128Mi

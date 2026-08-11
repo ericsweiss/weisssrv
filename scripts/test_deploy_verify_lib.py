@@ -308,6 +308,70 @@ class TestHelmreleasesHardFailed:
         assert "reconciling" not in out
 
 
+# gitlab_health_code: internal-first, external only on a connection-level 000
+# Shared by deploy-verify.sh and post-maintenance-verify.sh, so a regression here
+# would silently change what both scripts call "GitLab healthy".
+
+def _gitlab_code(tmp_path: Path, responses: dict[str, str]) -> tuple[str, list[str]]:
+    """Drive gitlab_health_code with a stub `curl` that maps URL -> status code.
+
+    Returns (printed code, the list of URLs the stub was asked for).
+    """
+    calls = tmp_path / "calls.txt"
+    stub_dir = tmp_path / "bin"
+    stub_dir.mkdir()
+    table = "\n".join(f'  {url!r}) echo "{code}" ;;' for url, code in responses.items())
+    (stub_dir / "curl").write_text(
+        "#!/usr/bin/env bash\n"
+        'url="${@: -1}"\n'
+        f'echo "$url" >> {calls}\n'
+        'case "$url" in\n'
+        f"{table}\n"
+        "  *) echo 000 ;;\n"
+        "esac\n"
+    )
+    (stub_dir / "curl").chmod(0o755)
+    script = (
+        f'export PATH="{stub_dir}:$PATH"\n'
+        "export GITLAB_HEALTH_INTERNAL=http://internal\n"
+        "export GITLAB_HEALTH_EXTERNAL=http://external\n"
+        f". {LIB}\ngitlab_health_code /-/readiness\n"
+    )
+    res = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert res.returncode == 0, res.stderr
+    seen = calls.read_text().split() if calls.exists() else []
+    return res.stdout.strip(), seen
+
+
+class TestGitlabHealthCode:
+    def test_internal_200_short_circuits(self, tmp_path):
+        code, seen = _gitlab_code(tmp_path, {"http://internal/-/readiness": "200"})
+        assert code == "200"
+        assert seen == ["http://internal/-/readiness"]
+
+    def test_real_http_status_is_trusted_not_masked_by_external(self, tmp_path):
+        # A 503 means GitLab answered; falling through to an external 200 would
+        # hide an internal outage.
+        code, seen = _gitlab_code(
+            tmp_path,
+            {"http://internal/-/readiness": "503", "http://external/-/readiness": "200"},
+        )
+        assert code == "503"
+        assert seen == ["http://internal/-/readiness"]
+
+    def test_connection_level_000_falls_back_to_external(self, tmp_path):
+        code, seen = _gitlab_code(
+            tmp_path,
+            {"http://internal/-/readiness": "000", "http://external/-/readiness": "200"},
+        )
+        assert code == "200"
+        assert seen == ["http://internal/-/readiness", "http://external/-/readiness"]
+
+    def test_both_down_reports_000(self, tmp_path):
+        code, _ = _gitlab_code(tmp_path, {})
+        assert code == "000"
+
+
 if __name__ == "__main__":
     import sys
 

@@ -52,7 +52,7 @@
     # the root-run installer is integrity-checkable before it executes.
     - name: Detect k3s version and stage install script
       ansible.builtin.include_role:
-        name: k3s
+        name: weisssrv.infra.k3s
         tasks_from: install-script.yml
 
     - name: Skip if version matches
@@ -102,7 +102,7 @@
 
         - name: Restart k3s service
           ansible.builtin.systemd:
-            name: k3s
+            name: weisssrv.infra.k3s
             state: restarted
             daemon_reload: true
 
@@ -147,7 +147,7 @@
     # Version detection + staged installer download (see server play note).
     - name: Detect k3s version and stage install script
       ansible.builtin.include_role:
-        name: k3s
+        name: weisssrv.infra.k3s
         tasks_from: install-script.yml
 
     - name: Skip if version matches
@@ -207,7 +207,7 @@
 
         - name: Stop and disable k3s.service if present (wrong service for agent)
           ansible.builtin.systemd:
-            name: k3s
+            name: weisssrv.infra.k3s
             state: stopped
             enabled: false
             daemon_reload: true

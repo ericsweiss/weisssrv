@@ -1,0 +1,564 @@
+---
+# Platform-service availability, Flux/ESO health, Loki self-monitoring, cert
+# expiry and VPA sizing alerts. Runbooks: docs/12-runbooks.md.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: homelab-infrastructure
+  namespace: observability
+spec:
+  groups:
+    - name: homelab.infrastructure
+      rules:
+        # gluetun_vpn_status (downloads/qbittorrent.yaml sidecar): 1 = running,
+        # anything else unhealthy. Only qbittorrent carries the exporter, and the
+        # namespace scope keeps a future series elsewhere out. 15m exceeds a
+        # Recreate rollout + OpenVPN reconnect.
+        - alert: VPNDown
+          expr: gluetun_vpn_status{namespace="downloads"} != 1
+          for: 15m
+          labels:
+            severity: critical
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            summary: 'Gluetun VPN unhealthy on {{ $labels.pod }}'
+            description: >-
+              gluetun_vpn_status is {{ $value }} (1 = running) on
+              {{ $labels.pod }} for 15m. The download client is
+              killswitched — no egress until the VPN reconnects.
+
+        # Metric absent -> VPN state unknown. Warning, not critical: the
+        # killswitch still blocks egress, so this is "blind", not "leaking".
+        - alert: VPNExporterDown
+          expr: absent(gluetun_vpn_status{namespace="downloads"})
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            summary: 'Gluetun VPN-health metric missing for qbittorrent'
+            description: >-
+              No gluetun_vpn_status series for 15m — the qbittorrent pod
+              or its gluetun-exporter sidecar may be down. VPN state is
+              unknown, but the killswitch still blocks egress while the
+              tunnel is down; investigate when convenient.
+
+        # wg-easy internet-exit VPN (docs/38). Keyed on deployment availability
+        # rather than the app's own scrape so it is true from first reconcile;
+        # the absent() arm keeps it covering the outage if the series vanishes.
+        - alert: WgEasyDown
+          expr: >-
+            kube_deployment_status_replicas_available{namespace="wg-easy", deployment="wg-easy"} == 0
+            or absent(kube_deployment_status_replicas_available{namespace="wg-easy", deployment="wg-easy"})
+          for: 15m
+          labels:
+            severity: critical
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/38-wireguard-vpn.md'
+            summary: 'wg-easy VPN has no available replica'
+            description: >-
+              The wg-easy Deployment has 0 available replicas for 15m — the
+              WireGuard internet-exit VPN endpoint is down and no client can
+              connect. See docs/38-wireguard-vpn.md.
+
+        # Hermes' memory backend (docs/37 §Memory backend). Cluster-internal, so
+        # no blackbox probe: same deployment-availability shape as WgEasyDown.
+        # Warning — Hermes' built-in memory keeps running, so this is degraded
+        # recall, not an outage.
+        - alert: HindsightDown
+          expr: >-
+            kube_deployment_status_replicas_available{namespace="hindsight", deployment="hindsight"} == 0
+            or absent(kube_deployment_status_replicas_available{namespace="hindsight", deployment="hindsight"})
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/37-hermes.md'
+            summary: 'Hindsight (Hermes memory backend) has no available replica'
+            description: >-
+              The hindsight Deployment has 0 available replicas for 15m —
+              Hermes memory retain/recall against the Hindsight backend is
+              failing (built-in memory still runs). See docs/37-hermes.md
+              §Memory backend.
+
+        # CI registry pull-through cache (docs/27). Warning — a cache outage
+        # only makes molecule jobs cold-pull from the GitLab registry, so it is
+        # slower CI, not broken CI.
+        - alert: RegistryCacheDown
+          expr: >-
+            kube_deployment_status_replicas_available{namespace="registry-cache", deployment="registry-cache"} == 0
+            or absent(kube_deployment_status_replicas_available{namespace="registry-cache", deployment="registry-cache"})
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/27-gitlab-deployment.md'
+            summary: 'CI registry pull-through cache has no available replica'
+            description: >-
+              The registry-cache Deployment has 0 available replicas for
+              15m — CI molecule jobs cold-pull the molecule-test image
+              direct from the GitLab registry (slower pipelines, not
+              broken). See docs/27-gitlab-deployment.md § Registry
+              pull-through cache.
+
+        # The WireGuard endpoint friends and family actually dial is the
+        # MetalLB VIP, not the pod: a lost LoadBalancer ingress IP leaves every
+        # external client unable to connect while WgEasyDown stays green
+        # (docs/38). The IP is asserted, not just presence, so a VIP that moves
+        # pool is caught too.
+        - alert: WgEasyEndpointVipMissing
+          expr: >-
+            absent(kube_service_status_load_balancer_ingress{namespace="wg-easy",
+            service="wg-easy", ip="192.168.0.99"})
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/38-wireguard-vpn.md'
+            summary: 'wg-easy WAN endpoint VIP 192.168.0.99 is not assigned'
+            description: >-
+              The wg-easy LoadBalancer Service no longer carries 192.168.0.99 —
+              the WAN WireGuard endpoint (vpn.ericsweiss.com:51820/udp) is
+              unreachable for every external client. Check MetalLB's
+              IPAddressPool/L2Advertisement and the Service in
+              kubernetes/apps/wg-easy.
+
+        # The peer gauges are the only in-cluster view of the WireGuard datapath.
+        # They vanish if the app's Prometheus toggle or Bearer token is reset,
+        # which silently blinds the VPN's own telemetry.
+        - alert: WgEasyMetricsMissing
+          expr: absent(wireguard_configured_peers)
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/38-wireguard-vpn.md'
+            summary: 'wg-easy is exporting no WireGuard peer metrics'
+            description: >-
+              No wireguard_configured_peers series for 30m. Re-check the
+              Prometheus toggle and Bearer password in the wg-easy Admin Panel
+              against the wg-easy-metrics-token secret (docs/38).
+
+        # Tailscale is the out-of-band access path used when the LAN or ingress
+        # is broken, so it needs a named alert rather than the generic
+        # Kube*ReplicasMismatch warnings (which the node-outage inhibit
+        # suppresses). The proxy StatefulSets carry operator-generated name
+        # suffixes, so the rule is namespace-scoped, not name-scoped.
+        - alert: TailscaleOperatorDown
+          expr: >-
+            kube_deployment_status_replicas_available{namespace="tailscale", deployment="operator"} == 0
+            or absent(kube_deployment_status_replicas_available{namespace="tailscale", deployment="operator"})
+          for: 15m
+          labels:
+            severity: critical
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/19-k3s-deployment.md'
+            summary: 'Tailscale operator has no available replica'
+            description: >-
+              The tailscale operator has had 0 available replicas for 15m — the
+              tailnet proxies are unmanaged and remote access to the cluster may
+              be degraded.
+
+        - alert: TailscaleProxyDown
+          expr: kube_statefulset_status_replicas_ready{namespace="tailscale"} == 0
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/19-k3s-deployment.md'
+            summary: 'Tailscale proxy {{ $labels.statefulset }} has no ready replica'
+            description: >-
+              Tailnet proxy {{ $labels.statefulset }} has had 0 ready replicas
+              for 15m — the tailnet route it fronts (Traefik ingress or the DNS
+              resolver) is not reachable over Tailscale.
+
+        # Degradation is graceful (Flux falls back to its ~1m git poll), so
+        # warning at 30m: the symptom to name is "push reconcile is off", not
+        # unexplained CI failures. Deployment name carries a version suffix, so
+        # the rule is namespace-scoped.
+        - alert: GitLabAgentDown
+          expr: >-
+            kube_deployment_status_replicas_available{namespace="gitlab-agent"} == 0
+            or absent(kube_deployment_status_replicas_available{namespace="gitlab-agent"})
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/29-flux-operations.md'
+            summary: 'GitLab agent has no available replica'
+            description: >-
+              The GitLab agent Deployment has had 0 available replicas for 30m.
+              Flux push-reconcile and the k8s CI integration are off; Flux still
+              reconciles on its ~1-minute git poll.
+
+        # The worker runs blueprint application, outpost sync, scheduled tasks
+        # and outbound email. A wedged worker leaves authentik-server serving
+        # stale configuration with no other signal.
+        - alert: AuthentikWorkerDown
+          expr: >-
+            kube_deployment_status_replicas_available{namespace="authentik", deployment="authentik-worker"} == 0
+            or absent(kube_deployment_status_replicas_available{namespace="authentik", deployment="authentik-worker"})
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/40-authentik-terraform.md'
+            summary: 'authentik-worker has no available replica'
+            description: >-
+              The authentik-worker Deployment has had 0 available replicas for
+              15m — blueprints, outpost synchronisation, scheduled tasks and
+              outbound email have stopped while the server keeps serving stale
+              configuration.
+
+        # postgres_exporter coverage for the five production databases
+        # (authentik + mealie in-cluster sidecars, nextcloud/immich/gitlab as
+        # static VM targets — see service-monitors/postgres.yaml). pg_up flips to
+        # 0 when the exporter cannot reach its database; a dead exporter is
+        # TargetDown. Deliberately no absent() arm: the exporters ship on the
+        # apps/Ansible lifecycles, so an enumerated absent() would page until
+        # every one of them has landed.
+        - alert: PostgresDown
+          expr: pg_up == 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            summary: 'PostgreSQL unreachable for exporter {{ $labels.instance }}'
+            description: >-
+              postgres_exporter on {{ $labels.instance }} reports pg_up == 0 for
+              10 minutes — the database is down, refusing connections, or the
+              exporter credentials are wrong.
+
+        - alert: PostgresConnectionsHigh
+          expr: >-
+            sum by (instance, job, namespace) (pg_stat_activity_count)
+            / on (instance, job, namespace) group_left ()
+            max by (instance, job, namespace) (pg_settings_max_connections)
+            > 0.8
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            summary: 'PostgreSQL on {{ $labels.instance }} above 80% of max_connections'
+            description: >-
+              {{ $labels.instance }} is holding
+              {{ $value | humanizePercentage }} of max_connections for 15
+              minutes. New connections start failing at 100% — check for a
+              connection leak or raise max_connections.
+
+        # Loki is single-replica RF=1 pinned to the NAS (accepted SPOF) and
+        # senders do not buffer, so silent ingestion breakage loses logs. This
+        # catches a sustained 5xx rate on Loki's HTTP API (push/query).
+        - alert: LokiRequestFailures
+          expr: >-
+            sum(rate(loki_request_duration_seconds_count{status_code=~"5..",
+            job="observability/loki"}[5m]))
+            /
+            sum(rate(loki_request_duration_seconds_count{job="observability/loki"}[5m]))
+            > 0.05
+            and sum(rate(loki_request_duration_seconds_count{job="observability/loki"}[5m])) > 0
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            summary: 'Loki is returning 5xx on more than 5% of requests'
+            # $value is a 0-1 ratio; humanizePercentage emits the % sign.
+            description: >-
+              Loki is serving HTTP 5xx on
+              {{ $value | humanizePercentage }} of requests over the last
+              5 minutes (push/query). Log ingestion may be silently
+              failing — senders do not buffer.
+
+        # Discards are unrecoverable (RF=1, senders do not retry a 4xx) and
+        # arrive in short, large bursts, so both rules pair a burst-rate arm
+        # (for:5m) with an hourly-volume arm that a bursty day cannot ride out.
+        # Split by reason class because the remedies differ: a rate limit is a
+        # limits_config cap, an out-of-order reject is the accept window.
+        - alert: LokiDiscardsRateLimited
+          expr: >-
+            sum by (reason) (rate(loki_discarded_samples_total{job="observability/loki",
+            reason=~"rate_limited|per_stream_rate_limit"}[5m])) > 0
+            or
+            sum by (reason) (increase(loki_discarded_samples_total{job="observability/loki",
+            reason=~"rate_limited|per_stream_rate_limit"}[1h])) > 10000
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/31-observability.md'
+            summary: 'Loki is rate-limiting ingestion ({{ $labels.reason }})'
+            description: >-
+              Loki is rejecting pushes against its limits_config caps
+              (reason: {{ $labels.reason }}, {{ $value | printf "%.0f" }}).
+              Those lines are lost — raise ingestion_rate_mb /
+              per_stream_rate_limit in loki/release.yaml, or find the sender
+              that started shouting.
+
+        - alert: LokiDiscardsOutOfOrder
+          expr: >-
+            sum by (reason) (rate(loki_discarded_samples_total{job="observability/loki",
+            reason=~"too_far_behind|greater_than_max_sample_age"}[5m])) > 0
+            or
+            sum by (reason) (increase(loki_discarded_samples_total{job="observability/loki",
+            reason=~"too_far_behind|greater_than_max_sample_age"}[1h])) > 10000
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/31-observability.md'
+            summary: 'Loki is rejecting out-of-order or too-old lines ({{ $labels.reason }})'
+            description: >-
+              Loki rejected {{ $value | printf "%.0f" }} lines
+              (reason: {{ $labels.reason }}). `too_far_behind` means a sender
+              replayed past the out-of-order window (ingester.max_chunk_age/2,
+              paired with alloy_host_journal_max_age);
+              `greater_than_max_sample_age` means past
+              reject_old_samples_max_age. Typically a sender WAL replay after
+              an outage — widen the window or shorten the replay horizon.
+
+        # Meta-monitoring for the OTHER alerting path: the HostLogShippingStale
+        # rules (loki/host-log-staleness.yaml) run in Loki's in-process ruler and
+        # push straight to Alertmanager, so no Prometheus rule sees them fail.
+        #
+        # The `< 23` threshold is the rule count in
+        # loki/host-log-staleness.yaml; scripts/test_host_log_staleness.py
+        # asserts the two stay equal, so adding a host cannot leave a
+        # stale threshold that under-detects.
+        - alert: LokiRulerRulesMissing
+          expr: >-
+            sum(loki_prometheus_rule_group_rules{job="observability/loki"}) < 23
+            or absent(loki_prometheus_rule_group_rules{job="observability/loki"})
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/31-observability.md'
+            summary: 'Loki ruler has fewer rules loaded than git ships'
+            description: >-
+              Loki's ruler is evaluating fewer than the 23
+              HostLogShippingStale rules in git (or reports none at all).
+              The per-host "journald shipping stopped" alerts are
+              partially or fully disarmed. Check the loki-sc-rules sidecar
+              log and that the loki-rules-* ConfigMap still carries the
+              loki_rule label + k8s-sidecar-target-directory annotation
+              (loki/kustomization.yaml).
+
+        - alert: LokiRulerEvaluationFailures
+          expr: >-
+            sum(rate(loki_prometheus_rule_evaluation_failures_total{job="observability/loki"}[15m])) > 0
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/31-observability.md'
+            summary: 'Loki ruler is failing to evaluate its rules'
+            description: >-
+              Loki's ruler has been erroring on rule evaluation for 15
+              minutes — the HostLogShippingStale alerts are not being
+              computed. Check the Loki pod log for ruler errors (a bad
+              LogQL expression in host-log-staleness.yaml, or the query
+              path failing).
+
+        - alert: LokiRulerNotificationFailures
+          expr: >-
+            sum(rate(loki_prometheus_notifications_errors_total{job="observability/loki"}[15m])) > 0
+            or max(loki_prometheus_notifications_alertmanagers_discovered{job="observability/loki"}) == 0
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/31-observability.md'
+            summary: 'Loki ruler cannot deliver alerts to Alertmanager'
+            description: >-
+              Loki's ruler is erroring on its Alertmanager push, or has
+              discovered no Alertmanager at all. Rules may be firing with
+              nobody notified. Check rulerConfig.alertmanager_url in
+              loki/release.yaml and that the Alertmanager Service is
+              reachable from the loki pod.
+
+        - alert: FluxReconciliationFailure
+          expr: sum by (controller) (rate(controller_runtime_reconcile_errors_total{job="observability/flux-system"}[5m])) > 0
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            summary: 'Flux controller {{ $labels.controller }} has reconciliation errors'
+            description: >-
+              Flux controller {{ $labels.controller }}
+              has been producing reconciliation errors
+              at {{ $value | printf "%.2f" }} errors/s for 15 minutes.
+
+        # Durable Ready=False on a HelmRelease/Kustomization, regardless of error
+        # rate (FluxReconciliationFailure covers the error-rate side).
+        # gotk_resource_info comes from kube-state-metrics customResourceState.
+        - alert: FluxResourceNotReady
+          expr: gotk_resource_info{ready="False", suspended!="true"} == 1
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            summary: >-
+              Flux resource {{ $labels.customresource_kind }}/{{ $labels.exported_namespace }}/{{ $labels.name }}
+              not Ready
+            description: >-
+              Flux resource {{ $labels.customresource_kind }}
+              {{ $labels.exported_namespace }}/{{ $labels.name }}
+              has had Ready=False for 15 minutes. Run
+              `flux get all -A | grep -v True` and
+              `kubectl describe {{ $labels.customresource_kind }} {{ $labels.name }}
+              -n {{ $labels.exported_namespace }}` to investigate.
+
+        - alert: OnePasswordConnectDown
+          expr: >-
+            kube_deployment_status_replicas_available{namespace="external-secrets", deployment="onepassword-connect"} == 0
+            or absent(kube_deployment_status_replicas_available{namespace="external-secrets", deployment="onepassword-connect"})
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            summary: '1Password Connect has no available replicas'
+            description: >-
+              1Password Connect deployment in external-secrets namespace
+              has had 0 available replicas for 5 minutes (or the metric
+              is absent, indicating kube-state-metrics is also down).
+              Connect is the secrets backend for all ExternalSecrets in the cluster —
+              no new secrets can be created or rotated until it recovers.
+
+        - alert: ExternalSecretSyncFailure
+          expr: externalsecret_status_condition{condition="Ready", status="False"} == 1
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            summary: 'ExternalSecret {{ $labels.name }} sync failing'
+            description: 'ExternalSecret {{ $labels.name }} in {{ $labels.namespace }} has not synced for 15 minutes.'
+
+        # Successful cloudflare-ddns runs (every 5m) stopped advancing — a
+        # revoked token or a stuck schedule. Does NOT detect an IP that drifted
+        # while a run "succeeded".
+        - alert: DDNSStale
+          expr: >-
+            (time() - kube_cronjob_status_last_successful_time{namespace="cloudflare-ddns", cronjob="cloudflare-ddns"} > 3600)
+            or absent(kube_cronjob_status_last_successful_time{namespace="cloudflare-ddns", cronjob="cloudflare-ddns"})
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#updating-dns-records'
+            summary: 'Cloudflare DDNS has not had a successful run in over 1 hour'
+            description: >-
+              The cloudflare-ddns CronJob (every 5m) has had no successful
+              completion for more than an hour, or the metric is absent.
+              Public-IP A records (ericsweiss.com, direct/git) may go stale
+              on the next WAN IP change.
+
+        - alert: CertExpiringWarning
+          expr: certmanager_certificate_expiration_timestamp_seconds - time() < 86400 * 14
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#certificate-renewal-issues'
+            summary: 'Certificate {{ $labels.name }} expiring in less than 14 days'
+            description: >-
+              Certificate {{ $labels.name }}
+              in {{ $labels.namespace }}
+              expires in {{ $value | humanizeDuration }}.
+
+        - alert: CertExpiringCritical
+          expr: certmanager_certificate_expiration_timestamp_seconds - time() < 86400 * 3
+          for: 1h
+          labels:
+            severity: critical
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#certificate-renewal-issues'
+            summary: 'Certificate {{ $labels.name }} expiring in less than 3 days'
+            description: >-
+              Certificate {{ $labels.name }}
+              in {{ $labels.namespace }}
+              expires in {{ $value | humanizeDuration }}.
+
+        - alert: TraefikHighErrorRate
+          expr: >-
+            sum(rate(traefik_service_requests_total{code=~"5.."}[5m]))
+            /
+            sum(rate(traefik_service_requests_total[5m]))
+            > 0.05
+            and sum(rate(traefik_service_requests_total[5m])) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            summary: 'Traefik 5xx error rate above 5%'
+            # $value is a 0-1 ratio; humanizePercentage emits the % sign.
+            description: 'Traefik is returning 5xx errors at {{ $value | humanizePercentage }} over the last 5 minutes.'
+
+        # uncappedTarget above target means the recommendation is clamped at
+        # maxAllowed — the workload outgrew its ceiling. 24h hold because
+        # recommendations swing with daily load. Fed by the kube-state-metrics
+        # customResourceState VPA config in kube-prometheus-stack/release.yaml.
+        - alert: VPARecommendationCapped
+          expr: vpa_recommendation_uncappedtarget > vpa_recommendation_target
+          for: 24h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            summary: >-
+              VPA {{ $labels.exported_namespace }}/{{ $labels.verticalpodautoscaler }}
+              recommendation capped at maxAllowed
+            description: >-
+              The VPA recommendation for container {{ $labels.container }}
+              ({{ $labels.resource }}) in
+              {{ $labels.exported_namespace }}/{{ $labels.verticalpodautoscaler }}
+              has been clamped by maxAllowed for 24 hours — it wants
+              {{ $value }} {{ $labels.unit }} uncapped. Raise the cap in
+              infrastructure/configs/vpa/ or investigate the growth.
+
+        # The recommendation outgrew the manifest's memory limit — the only
+        # automated signal that a hand-applied size fell behind (docs/33
+        # §Applying an Off-tier recommendation). Scoped to the shapes where
+        # nothing re-scales the limit on its own: update_mode Off or Initial, or
+        # controlledValues RequestsOnly. An Auto VPA on RequestsAndLimits
+        # self-heals at the next eviction and would page for hours.
+        #
+        # label_replace rewrites the KSM series' namespace label with the VPA's
+        # target namespace so the join lands and the alert routes on the
+        # workload. Containers with no memory limit are skipped by design.
+        - alert: VPARecommendationExceedsLimit
+          expr: >-
+            max by (namespace, verticalpodautoscaler, container) (
+              label_replace(
+                vpa_recommendation_target{resource="memory", update_mode=~"Off|Initial"}
+                or
+                vpa_recommendation_target{resource="memory", controlled_values="RequestsOnly"},
+                "namespace", "$1", "exported_namespace", "(.*)")
+            )
+            > on (namespace, container) group_left ()
+            max by (namespace, container) (
+              kube_pod_container_resource_limits{resource="memory"}
+            )
+          for: 6h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/33-autoscaling.md'
+            summary: >-
+              VPA {{ $labels.namespace }}/{{ $labels.verticalpodautoscaler }}
+              recommends more memory than container
+              {{ $labels.container }} is allowed
+            description: >-
+              The VPA memory target for container {{ $labels.container }}
+              in {{ $labels.namespace }} is {{ $value | humanize1024 }}B,
+              above the container's configured memory limit — the workload
+              is sized below its own measured need and will OOMKill on the
+              next burst. Apply the recommendation in git (docs/33
+              "Applying an Off-tier recommendation").

@@ -50,24 +50,12 @@ classify_not_ready_nodes() {
 }
 
 # list_unhealthy_pods: read `kubectl get pods -A --no-headers` on stdin, print
-# the rows for pods that are genuinely unhealthy. Terminal BATCH outcomes are
-# skipped — Completed/Succeeded, AND Error/Failed: those statuses only occur for
-# Job/CronJob pods (restartPolicy Never/OnFailure) that exited; a flaky CronJob
-# leaving failed-attempt pods (e.g. cloudflare-ddns retrying a transient egress
-# blip before the run succeeds) is not a maintenance regression and must not
-# false-alarm the verify. A PERSISTENTLY-broken CronJob (e.g. cloudflare-ddns with
-# an expired token) is intentionally NOT this check's job — the DDNSStale
-# Prometheus alert (no successful run in >1h) is its backstop, independent of the
-# maintenance verify. Caveat: a restartPolicy:Always pod CAN momentarily
-# render as STATUS=Error (the last-terminated container reason) before the
-# kubelet flips it to CrashLoopBackOff, so this filter is not a complete health
-# view on its own — but a genuinely-broken app is still caught by the verify's
-# 25s grace re-check (it reads as CrashLoopBackOff/Pending by then, which ARE
-# flagged) and by the critical-Deployment replica check. The skip assumes bare
-# Error/Failed only originate from Job/CronJob-managed pods (true for this
-# cluster); the verify's failed-Job check backstops one-shot Jobs, but a future
-# naked restartPolicy:Never Pod that exits non-zero would not be re-flagged here.
-# A pod is unhealthy if its STATUS ($4) is not "Running" OR READY ($3, "a/b") a != b.
+# the rows for genuinely-unhealthy pods — STATUS ($4) not "Running", or READY
+# ($3, "a/b") with a != b. Terminal batch outcomes (Completed/Succeeded and
+# Error/Failed) are skipped: on this cluster they come from exited Job/CronJob
+# pods, and a flaky retry there is not a maintenance regression. The verify's
+# grace re-check, its failed-Job check and the Prometheus alerts backstop what
+# this filter deliberately drops.
 list_unhealthy_pods() {
   awk '
     $4 == "Completed" || $4 == "Succeeded" || $4 == "Error" || $4 == "Failed" { next }
@@ -108,16 +96,12 @@ rearm_marker_host() {
 }
 
 # rearm_remote_command <prompt_delay_secs>: print the remote shell snippet that
-# re-arms the prompt self-reboot. ORDER MATTERS for the safety guarantee: arm a
-# SEPARATE prompt unit (maintenance-self-reboot-prompt) FIRST, and only AFTER
-# systemd-run succeeds (the && gate) tear down the long fallback timer
-# (maintenance-self-reboot, armed during the run). If the prompt arm fails, the
-# && short-circuits so the fallback is left INTACT — the host still reboots on
-# it, just later. (An earlier design reused the fallback's own --unit name and
-# stopped it BEFORE arming; a systemd-run failure after that stop left NO timer
-# at all, silently stranding the host despite the "still reboots" log.) The
-# leading reset-failed/stop targets the PROMPT unit only (clearing any stale
-# prompt from a prior after_script), never the fallback.
+# re-arms the prompt self-reboot. ORDER IS THE SAFETY GUARANTEE: arm the
+# SEPARATE maintenance-self-reboot-prompt unit first, and only after systemd-run
+# succeeds (the && gate) tear down the long maintenance-self-reboot fallback. A
+# failed arm short-circuits, leaving the fallback intact so the host still
+# reboots, just later. The leading reset-failed/stop targets the PROMPT unit
+# only, never the fallback.
 rearm_remote_command() {
   local delay="${1:-60}"
   printf '%s' "systemctl reset-failed maintenance-self-reboot-prompt.timer maintenance-self-reboot-prompt.service 2>/dev/null || true; systemctl stop maintenance-self-reboot-prompt.timer maintenance-self-reboot-prompt.service 2>/dev/null || true; systemd-run --no-block --collect --on-active=${delay}s --unit=maintenance-self-reboot-prompt systemctl reboot && { systemctl reset-failed maintenance-self-reboot.timer maintenance-self-reboot.service 2>/dev/null || true; systemctl stop maintenance-self-reboot.timer maintenance-self-reboot.service 2>/dev/null || true; }"
@@ -126,12 +110,9 @@ rearm_remote_command() {
 # maintenance-ha-restart.sh parsers
 
 # ha_reset_verdict: read the captured `ansible ... -m shell` output on stdin and
-# print one of: err / ok / notfound. Checks err BEFORE ok and anchors both
-# markers to line start (column 0, after Ansible's `>>`) so:
-#   - a split-brain that emitted both tokens fails closed (err wins),
-#   - an echoed command source (e.g. a failed task dumping the cmd) cannot
-#     match, since the real tokens are runtime-assembled and only ever printed
-#     at column 0.
+# print err / ok / notfound. err is checked first (a split-brain emitting both
+# tokens fails closed) and both markers are anchored to column 0, so an echoed
+# command source cannot match.
 ha_reset_verdict() {
   local out
   out=$(cat)

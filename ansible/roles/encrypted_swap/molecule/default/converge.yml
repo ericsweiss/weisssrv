@@ -1,8 +1,0 @@
----
-- name: Converge
-  hosts: all
-  become: true
-  tasks:
-    - name: Apply the encrypted_swap role
-      ansible.builtin.include_role:
-        name: encrypted_swap

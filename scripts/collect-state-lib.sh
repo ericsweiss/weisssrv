@@ -1,20 +1,14 @@
 #!/usr/bin/env bash
-# Pure-logic helpers shared by collect-state.sh, extracted so the secret
-# redaction and the tri-state health classification that gate CLUSTER_STATUS.txt
-# can be unit-tested without a live cluster (scripts/test_collect_state_lib.py,
-# same pattern as maintenance-lib.sh).
-#
-# This file defines patterns and functions only (no top-level side effects) so
-# it is safe to `source` from both collect-state.sh and the pytest harness.
-# None of the functions call ssh/kubectl/curl themselves.
+# Pure-logic helpers for collect-state.sh: secret redaction, the tri-state
+# health classifiers, and the section emitters. Functions/patterns only (no
+# top-level side effects) so both collect-state.sh and the pytest harness
+# (scripts/test_collect_state_lib.py) can source it. Nothing here calls
+# ssh/kubectl/curl.
 
 # secret redaction
 
-# Redaction patterns using POSIX-compatible character classes
-# Note: Use [[:space:]] instead of \s and [^[:space:]] instead of \S for portability
-# across BSD sed (macOS) and GNU sed (Linux)
-# SECURITY: Patterns use (^|[^[:alnum:]]) to match at line start OR after non-alphanumeric
-# This ensures patterns like "token: secret123" match even at the start of a line
+# POSIX classes ([[:space:]], not \s) keep these portable across BSD and GNU
+# sed. The (^|[^[:alnum:]]) prefix matches at line start OR after a separator.
 # shellcheck disable=SC2016 # All patterns are sed-quoted regexes; $-escapes are intentional literals
 REDACT_PATTERNS=(
     's/password[[:space:]]*[:=][[:space:]]*[^[:space:]]+/password: <REDACTED>/gi'
@@ -59,13 +53,9 @@ redact_file() {
     for pattern in "${REDACT_PATTERNS[@]}"; do
         sed_args+=(-e "$pattern")
     done
-    # Defensive multi-line redaction for PEM private-key blocks. No current
-    # collector cats key material, so this is fail-safe insurance: if a future
-    # probe ever emits a `-----BEGIN ... PRIVATE KEY-----` block, the whole
-    # block (which the single-line s/// patterns above can't catch) is collapsed
-    # to a marker. Done as a separate awk pass so the range logic stays portable
-    # across BSD (macOS) and GNU sed/awk (Linux) — `sed` range-change syntax
-    # differs between the two, awk does not.
+    # Second pass collapses whole PEM private-key blocks, which the single-line
+    # s/// patterns cannot catch. awk, not sed: range-change syntax differs
+    # between BSD and GNU sed, awk's does not.
     sed -E "${sed_args[@]}" "$infile" \
         | awk '
             /-----BEGIN [A-Z ]*PRIVATE KEY-----/ { print "<PRIVATE_KEY_REDACTED>"; inkey=1; next }
@@ -76,23 +66,22 @@ redact_file() {
 }
 
 # remote section emitters
-# collect-state.sh's remote bodies used to write `producer | head -N || echo
-# "none"`. Both halves of that are broken: a pipeline exits with head's status
-# so the `|| echo` fallback is dead (a failed probe renders as an EMPTY section,
-# indistinguishable from "nothing to report"), and the cap is applied silently
-# so a clipped section is indistinguishable from a complete one. These two
-# helpers replace the idiom; collect-state.sh injects them into every remote
-# body via `declare -f` so the same unit-tested code runs on the host.
+# collect-state.sh injects these into every remote body via `declare -f`, so the
+# same unit-tested code renders each section host-side. They replace the
+# `producer | head -N || echo "none"` idiom, whose fallback is dead (the
+# pipeline exits with head's status) and whose cap is silent.
+# NOTE: <fallback> must describe the EMPTY case only. A failed producer is
+# detected by the caller (capture-and-test its exit status), never by wording
+# the fallback as a failure.
 #
-# cs_capped <cap> <fallback> — read a producer's output on stdin, print at most
-# <cap> lines (cap 0 = uncapped), print <fallback> when the producer emitted
-# nothing, and append an explicit truncation marker when the cap clipped output.
-# The whole stream is consumed (rather than closing the pipe like `head`) so the
-# marker can report the real total and the producer never takes SIGPIPE.
+# cs_capped <cap> <fallback> — print at most <cap> stdin lines (0 = uncapped),
+# <fallback> when stdin was empty, and a truncation marker when the cap clipped.
+# The whole stream is consumed so the marker reports the real total and the
+# producer never takes SIGPIPE.
 cs_capped() {
     local cap=$1 fallback=$2 n=0 line
     # `|| [ -n "$line" ]` keeps a final unterminated line (kubectl -o jsonpath
-    # emits one) from being silently dropped by read's non-zero exit.
+    # emits one) from being dropped by read's non-zero exit.
     while IFS= read -r line || [ -n "$line" ]; do
         n=$((n + 1))
         if [ "$cap" -eq 0 ] || [ "$n" -le "$cap" ]; then
@@ -113,32 +102,22 @@ cs_emit() {
 }
 
 # tri-state health classification
-# Both collect-state modes feed these classifiers from the shared probes
-# (see the SH-3 block in collect-state.sh). The regular/--json differences
-# (host-coverage floor, all-collected-hosts strictness) are deliberate and
-# documented in the collect-state.sh header; when adding a signal to one
-# classifier, mirror it in the other.
+# Both collect-state modes feed these classifiers from the same probes. The
+# regular/--json differences (host-coverage floor, all-collected-hosts
+# strictness, section + alert gates) are documented in collect-state.sh's
+# header; when adding a signal to one classifier, mirror it in the other.
 
 # classify_regular <pve_reachable> <k3s_api_ok true|false> <k3s_ready> <k3s_total> \
 #                  <hosts_ok> <hosts_total> <coverage_pct> <coverage_floor> \
 #                  <flux_not_ready> <zfs_degraded> <gitlab_ok 0|1> \
 #                  <sections_ok> <sections_total> <alerts_firing>
 # Prints the regular-mode verdict:
-#   FAILED  (red)    catastrophic — no Proxmox host reachable, OR K3s API
-#                    reachable but zero nodes Ready, OR coverage below floor.
-#   OK      (green)  full host coverage, every specialised collector section
-#                    collected, all k3s nodes Ready, zero Flux not-ready, zero
-#                    non-ONLINE ZFS pools, GitLab healthy, no firing alerts.
+#   FAILED  (red)    no Proxmox host reachable, OR K3s API reachable with zero
+#                    nodes Ready, OR host coverage below the floor.
+#   OK      (green)  every predicate in regular_failing_predicates holds.
 #   PARTIAL (yellow) anything else with core infra still up.
-# The K3s catastrophic check is gated on k3s_api_ok so a missing/misconfigured
-# local kubeconfig produces PARTIAL (visibly degraded) rather than a false
-# FAILED that hides the per-host SSH collection.
-# sections_ok/sections_total are regular-only (the --json branch runs no
-# specialised collectors): a Proxmox/DNS/k3s/GitLab/compose block that failed
-# its own SSH used to leave "Failed (rc=N)" in the artifact while the header
-# still read OK, because only collect_host fed the host counters.
-# alerts_firing counts non-Watchdog Alertmanager alerts; it degrades but never
-# fails a run (the artifact is still worth keeping when the cluster is noisy).
+# The K3s FAILED check is gated on k3s_api_ok so a misconfigured local
+# kubeconfig degrades to PARTIAL instead of masking the per-host SSH collection.
 classify_regular() {
     local pve_reachable="$1" k3s_api_ok="$2" k3s_ready="$3" k3s_total="$4"
     local hosts_ok="$5" hosts_total="$6" coverage_pct="$7" coverage_floor="$8"
@@ -161,6 +140,32 @@ classify_regular() {
     else
         echo "PARTIAL"
     fi
+}
+
+# regular_failing_predicates — same 14 args as classify_regular. Prints the
+# space-separated names (with values) of the OK predicates that do NOT hold, so
+# a PARTIAL/FAILED verdict names its cause on the console summary line instead
+# of leaving the operator to diff the nine header rows. Empty output == all-OK.
+regular_failing_predicates() {
+    local pve_reachable="$1" k3s_api_ok="$2" k3s_ready="$3" k3s_total="$4"
+    local hosts_ok="$5" hosts_total="$6" coverage_pct="$7" coverage_floor="$8"
+    local flux_not_ready="$9" zfs_degraded="${10}" gitlab_ok="${11}"
+    local sections_ok="${12}" sections_total="${13}" alerts_firing="${14}"
+    local out=""
+    _rfp_add() { out="${out:+$out }$1"; }
+    [ "$pve_reachable" -gt 0 ] || _rfp_add "pve_reachable=0"
+    [ "$coverage_pct" -ge "$coverage_floor" ] || _rfp_add "coverage=${coverage_pct}%<${coverage_floor}%"
+    [ "$hosts_ok" -eq "$hosts_total" ] || _rfp_add "hosts=${hosts_ok}/${hosts_total}"
+    [ "$sections_ok" -eq "$sections_total" ] || _rfp_add "sections=${sections_ok}/${sections_total}"
+    [ "$k3s_api_ok" = true ] || _rfp_add "k3s_api=unreachable"
+    { [ "$k3s_total" -gt 0 ] && [ "$k3s_ready" -eq "$k3s_total" ]; } \
+        || _rfp_add "k3s_nodes=${k3s_ready}/${k3s_total}"
+    [ "$flux_not_ready" -eq 0 ] || _rfp_add "flux_not_ready=${flux_not_ready}"
+    [ "$zfs_degraded" -eq 0 ] || _rfp_add "zfs_degraded=${zfs_degraded}"
+    [ "$gitlab_ok" -eq 1 ] || _rfp_add "gitlab=unhealthy"
+    [ "$alerts_firing" -eq 0 ] || _rfp_add "alerts_firing=${alerts_firing}"
+    unset -f _rfp_add
+    echo "$out"
 }
 
 # classify_json <pve_up> <pve_total> <k3s_api_ok true|false> <k3s_ready> <k3s_total> \
@@ -192,18 +197,11 @@ classify_json() {
 }
 
 # collect_compose_app section dispatch
-# collect-state.sh's NAS-pinned docker-compose app block (Nextcloud/Immich/
-# Immich-ML) renders optional sections only for the apps that have them; a "-"
-# argument means "this app lacks that section". Pulling the sentinel→sections
-# decision out here lets it be unit-tested without an ssh and keeps the rule in
-# one place — collect_compose_app calls this locally and passes the result to the
-# remote body as a comma-joined membership list.
-#
 # compose_active_sections <health_url> <nginx_cert> <backup_timer> <backup_prom>
-# Echoes the comma-joined optional sections that render, in output order:
-#   health,nginx,backup,metrics
-# `metrics` is nested under `backup` (it renders only when the backup section
-# does). Any "-" arg drops its section; all "-" prints an empty string.
+# The NAS-pinned compose apps (Nextcloud/Immich/Immich-ML) render optional
+# sections only where they have them; a "-" argument drops that section. Echoes
+# the comma-joined active sections in output order (health,nginx,backup,metrics);
+# `metrics` renders only when `backup` does.
 compose_active_sections() {
     local health_url=$1 nginx_cert=$2 backup_timer=$3 backup_prom=$4
     local out=""
@@ -217,13 +215,9 @@ compose_active_sections() {
 }
 
 # firewall guest .fw enumeration
-# The Proxmox host report enumerates every per-guest firewall config
-# (/etc/pve/firewall/<vmid>.fw) rather than a hand-maintained VMID list that
-# silently dropped new guests. This is the pure filter behind it: read candidate
-# *.fw paths on stdin (from `find … -name '*.fw'`), drop the cluster-wide
-# cluster.fw (dumped separately as IP sets), and emit the per-guest paths sorted.
-# collect-state.sh injects it into the remote host body via `declare -f` so the
-# same tested code runs on the Proxmox host.
+# Read candidate /etc/pve/firewall/*.fw paths on stdin, drop the cluster-wide
+# cluster.fw (dumped separately as IP sets) and emit the per-guest paths sorted.
+# Injected into the remote Proxmox body via `declare -f`.
 firewall_guest_fw_list() {
     grep -v -E '(^|/)cluster\.fw$' | sort
 }

@@ -1,7 +1,0 @@
----
-# Converge playbook for zvol_mount role testing
-- name: Converge
-  hosts: all
-  become: true
-  roles:
-    - role: zvol_mount

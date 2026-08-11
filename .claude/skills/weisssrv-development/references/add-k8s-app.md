@@ -53,7 +53,7 @@ gotchas that bite. Copy an existing app rather than inventing a shape.
    user-facing endpoints where no exporter covers reachability. Grafana dashboard
    only if a good upstream one exists (ConfigMap sidecar via `configMapGenerator`
    in `observability/dashboards/`).
-10. **DNS**: internal = `adguard_rewrites` entry in `group_vars/dns.yml` (answer
+10. **DNS**: internal = `adguard_home_rewrites` entry in `group_vars/dns.yml` (answer
     `192.168.0.101` for Traefik-fronted). External = the external-dns annotation
     above (no Terraform edit) unless it needs a nested subdomain / DNS-only
     record (then `terraform/cloudflare/dns.tf`).
@@ -67,8 +67,8 @@ gotchas that bite. Copy an existing app rather than inventing a shape.
 - **zvol-backed PVs**: `storageClassName: ""` (static binding, no provisioner).
   The zvol itself is created host-side via `vm_additional_disks` — see
   `references/add-vm-app.md` and `docs/06-zfs.md`. `ssd/appdata/*` children are
-  auto-enrolled in archive backups; a NEW top-level dataset needs an `SRC_LIST`
-  edit in `ansible/roles/nas_storage/templates/archive-backupctl.sh.j2`.
+  auto-enrolled in archive backups; a NEW top-level dataset has to be added to
+  `nas_storage_archive_backup_sources` in `host_vars/pve-nas-01.yml`.
 
 ## Scheduling
 

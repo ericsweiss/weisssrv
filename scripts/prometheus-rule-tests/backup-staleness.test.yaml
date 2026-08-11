@@ -1,0 +1,149 @@
+---
+# promtool unit tests for the multi-day staleness family: the off-node etcd
+# snapshot and the CRITICAL escalation arm of each backup chain
+# (backup.test.yaml covers the warning/failed arms). These are the alerts that
+# stand between a silently-dead backup and a restore that cannot happen.
+# The input interval matches evaluation_interval so every evaluation lands on a
+# fresh sample — a sparser input goes stale past the 5m lookback and resets the
+# `for:` window mid-test.
+# rule_files is resolved relative to this file's runtime location; the lint
+# script copies the tests next to the extracted rules.yaml before running them.
+rule_files:
+  - rules.yaml
+evaluation_interval: 1h
+tests:
+  # EtcdSnapshotStale: no copy in 36h. The series value is the last-copy epoch,
+  # so a fixed 0 makes eval time the age.
+  - interval: 1h
+    input_series:
+      - series: 'etcd_snapshot_last_copy_timestamp_seconds{instance="192.168.0.102:9101"}'
+        values: '0+0x60'
+    alert_rule_test:
+      - eval_time: 24h
+        alertname: EtcdSnapshotStale
+        exp_alerts: []
+      - eval_time: 38h
+        alertname: EtcdSnapshotStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: '192.168.0.102:9101'
+
+  # A copy timer keeping pace with wall clock must not fire.
+  - interval: 1h
+    input_series:
+      - series: 'etcd_snapshot_last_copy_timestamp_seconds{instance="192.168.0.102:9101"}'
+        values: '0+3600x60'
+    alert_rule_test:
+      - eval_time: 38h
+        alertname: EtcdSnapshotStale
+        exp_alerts: []
+
+  # The absent() arm: a copy timer that never ran once looks exactly like a
+  # healthy cluster without it. Fires with no instance label (absent()
+  # synthesises the vector), so a different metric is used to drive the clock.
+  - interval: 1h
+    input_series:
+      - series: 'up{job="unrelated"}'
+        values: '1+0x60'
+    alert_rule_test:
+      - eval_time: 38h
+        alertname: EtcdSnapshotStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+
+  # ArchiveBackup: 2-day warning, 4-day critical off the same metric.
+  - interval: 1h
+    input_series:
+      - series: 'archive_backup_last_success_timestamp_seconds{instance="192.168.0.102:9101"}'
+        values: '0+0x130'
+    alert_rule_test:
+      - eval_time: 72h
+        alertname: ArchiveBackupStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: '192.168.0.102:9101'
+      - eval_time: 72h
+        alertname: ArchiveBackupStaleCritical
+        exp_alerts: []
+      - eval_time: 121h
+        alertname: ArchiveBackupStaleCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              instance: '192.168.0.102:9101'
+
+  # restic -> B2 is the only offsite copy, so its 4-day arm is critical.
+  - interval: 1h
+    input_series:
+      - series: 'restic_offsite_last_success_timestamp_seconds{instance="192.168.0.102:9101"}'
+        values: '0+0x130'
+    alert_rule_test:
+      - eval_time: 72h
+        alertname: ResticOffsiteStaleCritical
+        exp_alerts: []
+      - eval_time: 121h
+        alertname: ResticOffsiteStaleCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              instance: '192.168.0.102:9101'
+
+  # Per-app dump landing zone: the label set must survive to the alert, or the
+  # page cannot name which app stopped dumping.
+  - interval: 1h
+    input_series:
+      - series: 'backup_artifact_last_mtime_seconds{app="authentik", instance="192.168.0.102:9101"}'
+        values: '0+0x130'
+    alert_rule_test:
+      - eval_time: 121h
+        alertname: BackupArtifactStaleCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              app: authentik
+              instance: '192.168.0.102:9101'
+
+  # vzdump escalates a day earlier (3 days) than the other chains.
+  - interval: 1h
+    input_series:
+      - series: 'vzdump_backup_last_success_timestamp_seconds{instance="192.168.0.102:9101"}'
+        values: '0+0x130'
+    alert_rule_test:
+      - eval_time: 48h
+        alertname: VzdumpBackupStaleCritical
+        exp_alerts: []
+      - eval_time: 97h
+        alertname: VzdumpBackupStaleCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              instance: '192.168.0.102:9101'
+
+  # Every chain succeeding on schedule (timestamp tracking wall clock) must
+  # leave all four critical arms silent — the false-positive guard.
+  - interval: 1h
+    input_series:
+      - series: 'archive_backup_last_success_timestamp_seconds{instance="192.168.0.102:9101"}'
+        values: '0+3600x130'
+      - series: 'restic_offsite_last_success_timestamp_seconds{instance="192.168.0.102:9101"}'
+        values: '0+3600x130'
+      - series: 'vzdump_backup_last_success_timestamp_seconds{instance="192.168.0.102:9101"}'
+        values: '0+3600x130'
+      - series: 'backup_artifact_last_mtime_seconds{app="authentik", instance="192.168.0.102:9101"}'
+        values: '0+3600x130'
+    alert_rule_test:
+      - eval_time: 121h
+        alertname: ArchiveBackupStaleCritical
+        exp_alerts: []
+      - eval_time: 121h
+        alertname: ResticOffsiteStaleCritical
+        exp_alerts: []
+      - eval_time: 121h
+        alertname: VzdumpBackupStaleCritical
+        exp_alerts: []
+      - eval_time: 121h
+        alertname: BackupArtifactStaleCritical
+        exp_alerts: []

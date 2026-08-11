@@ -57,14 +57,19 @@ spec:
   volumeName: recipes-appdata-mealie
 
 ---
-# Mealie PostgreSQL Storage (persistent zvol on k3s-agt-nas-01)
-# Uses dedicated ZFS zvol mounted at /mnt/mealie-postgres-data
-# Data survives pod/VM recreation
+# Mealie PostgreSQL: dedicated ZFS zvol mounted at /mnt/mealie-postgres-data on
+# k3s-agt-nas-01, so the data survives pod and VM recreation.
 apiVersion: v1
 kind: PersistentVolume
 metadata:
   name: mealie-postgres-data
+  labels:
+    type: local
+    app: mealie
 spec:
+  claimRef:
+    namespace: recipes
+    name: mealie-postgres
   capacity:
     storage: 32Gi
   accessModes:
@@ -149,21 +154,12 @@ spec:
   volumeName: recipes-appdata-bar-assistant
 
 ---
-# Mealie pg_dump backup target
-# NFS-backed target for the mealie-pg-dump CronJob's logical backups. The mealie
-# postgres zvol above is only a crash-consistent snapshot; these dumps add a
-# restorable logical backup. Landing zone is tank/backups/apps/mealie (the
-# encrypted, FILE-WALKABLE consolidated dump dataset): tank/backups rides the
-# nightly archive raw-ZFS replication AND, being file-walkable, is picked up by
-# the restic offsite B2 walk — so the dump lands offsite where a zvol never
-# could (docs/06, docs/41 B2 plan).
+# mealie-pg-dump landing zone: tank/backups/apps/mealie, the encrypted
+# file-walkable dump dataset that rides both the nightly archive replication and
+# the restic offsite B2 walk — where a zvol snapshot never could (docs/42).
 #
-# DEPLOY-ORDER DEPENDENCY: the nas_storage role (ansible) creates + owns the
-# tank/backups/apps/mealie subdir (1000:2000, 02775) as the bind_source of its
-# own per-app export /export/backups-apps/mealie (TLS required, scoped to the
-# k3s client CIDRs only) — one nfs_exports entry per app in
-# host_vars/pve-nas-01.yml. Run the ansible storage deploy before this PV
-# reconciles so the export + subdir exist when the CronJob first mounts.
+# DEPLOY-ORDER DEPENDENCY: the nas_storage role creates the subdir and its
+# per-app export, so run the ansible storage deploy before this PV reconciles.
 apiVersion: v1
 kind: PersistentVolume
 metadata:

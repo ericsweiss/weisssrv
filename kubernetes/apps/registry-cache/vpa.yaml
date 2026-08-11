@@ -8,7 +8,6 @@ apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
 metadata:
   name: registry-cache
-  namespace: registry-cache
 spec:
   targetRef: {apiVersion: apps/v1, kind: Deployment, name: registry-cache}
   updatePolicy: {updateMode: Initial}

@@ -11,12 +11,14 @@ proxmox_resource_pool: infra-core
 # Container startup configuration (smtp-relay is the only mail host, so boot
 # order lives here rather than group_vars/mail.yml)
 # Boot order strategy: DNS (10) -> SMTP (20) -> k3s servers (30) -> k3s agents (40) -> apps (50)
-proxmox_autostart_enabled: true
-proxmox_startup_order: 20
-proxmox_startup_delay: 10
+proxmox_lxc_onboot: true
+proxmox_lxc_startup_order: 20
+proxmox_lxc_startup_delay: 10
 
-# SMTP relay variables (from 1Password at runtime via `op run`)
-# No defaults - deployment MUST fail if secrets are missing rather than
-# silently deploying invalid credentials that are hard to diagnose
-smtp_gmail_user: "{{ lookup('ansible.builtin.env', 'SMTP_GMAIL_USER') or undef(hint='SMTP_GMAIL_USER env var must be set (run via op run)') }}"
-smtp_gmail_password: "{{ lookup('ansible.builtin.env', 'SMTP_GMAIL_PASSWORD') or undef(hint='SMTP_GMAIL_PASSWORD env var must be set (run via op run)') }}"
+# Credentials for the upstream smarthost (Gmail), from 1Password at runtime via
+# `op run`. No defaults — deployment MUST fail if a secret is missing rather
+# than silently deploying an invalid credential that is hard to diagnose.
+smtp_relay_upstream_user: "{{ lookup('ansible.builtin.env', 'SMTP_GMAIL_USER') or undef(hint='SMTP_GMAIL_USER env var must be set (run via op run)') }}"
+smtp_relay_upstream_password: >-
+  {{ lookup('ansible.builtin.env', 'SMTP_GMAIL_PASSWORD')
+  or undef(hint='SMTP_GMAIL_PASSWORD env var must be set (run via op run)') }}

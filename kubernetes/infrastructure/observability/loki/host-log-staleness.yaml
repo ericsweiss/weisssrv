@@ -1,27 +1,15 @@
-# Host journald-shipping staleness alerts. One alert per alloy_host host
-# (ansible/playbooks/site.yml: base_managed + plex/gitlab/nextcloud/immich/
-# immich-ml + k3s servers/agents = 23 hosts). Fires when NO journald line has
-# reached Loki from a host in 45m — i.e. its host-side Alloy (alloy_host) stopped
-# shipping (Alloy dead, host down, or the Loki-push path is broken past the WAL
-# buffer). alloy_host labels its stream {job="journal", host="<inventory_hostname>"}
-# (config.alloy.j2); job="journal" distinguishes host-side alloy_host (journald)
-# from the in-cluster Alloy DaemonSet (container logs).
+# Host journald-shipping staleness, one alert per alloy_host host. Fires when no
+# journald line has reached Loki from a host in 45m — its host-side Alloy is
+# dead, the host is down, or the push path is broken past the on-disk WAL.
+# {job="journal"} is what distinguishes these host streams from the in-cluster
+# Alloy DaemonSet's container logs. for:15m on top of the [45m] window is ~1h of
+# silence before paging, because alloy_host WAL-backfills brief Loki outages.
 #
-# severity: warning -> Alertmanager routes to the discord-default receiver.
-# instance:<host> groups the alert per-host under the existing route
-# group_by:[alertname,namespace,instance]. for:15m on top of the [45m] window is
-# ~1h of silence before paging (deliberately conservative: alloy_host WAL
-# backfills brief Loki outages, so a real "shipping stopped" is sustained). A
-# fully-down host also raises KubeNodeNotReady/node-down alerts; this Discord-only
-# warning is corroborating, not the primary page.
-#
-# Keep this host list in sync with the alloy_host play in
-# ansible/playbooks/site.yml (home/HAOS and windows are excluded — they cannot
-# run Ansible/alloy_host). scripts/test_host_log_staleness.py enforces that,
-# the runbook_url/description convention every other alert in this repo
-# follows, and the rule COUNT that LokiRulerRulesMissing
-# (kube-prometheus-stack/release.yaml) compares the live ruler against — this
-# path bypasses Prometheus, so that alert is the only thing watching it.
+# These rules are evaluated by LOKI's ruler and pushed straight to Alertmanager,
+# so nothing in Prometheus sees them fail — LokiRulerRulesMissing compares the
+# live ruler's rule COUNT against this file. Keep the host list in sync with the
+# alloy_host play in ansible/playbooks/site.yml (home/HAOS and windows cannot run
+# it); scripts/test_host_log_staleness.py enforces both the list and the count.
 groups:
   - name: host-log-staleness
     interval: 1m

@@ -1,13 +1,14 @@
 # terraform/tailscale — tailnet policy as code
 
 Manages the Tailscale **ACL policy** (access rules, Tailscale SSH rules, tag
-owners, and subnet-route **auto-approvers**) for the homelab tailnet, mirroring
-the `terraform/cloudflare` pattern (GitLab HTTP state backend + 1Password-injected
+owners, and subnet-route **auto-approvers**) plus the `esweiss.com` **Split-DNS**
+entry (`split_dns.tf`) for the homelab tailnet, mirroring the
+`terraform/cloudflare` pattern (GitLab HTTP state backend + 1Password-injected
 credentials).
 
-`policy.hujson` is now a **least-privilege lockdown**: it replaces the earlier
-non-breaking baseline (`autogroup:member -> *:*` full mesh + root Tailscale SSH)
-with tag/port-scoped rules, while preserving every path the operator uses today.
+`policy.hujson` is a **least-privilege lockdown**: tag/port-scoped rules, no
+`autogroup:member -> *:*` full mesh and no root Tailscale SSH, while preserving
+every path the operator uses today.
 
 ## ⚠️ Apply is a supervised step
 
@@ -29,14 +30,15 @@ being silently reverted at the next apply.
 > IMPLEMENTED (pending supervised apply).
 >
 > So treat `tailscale-drift-plan` as **expected empty**, and confirm with a
-> supervised `task terraform:tailscale-drift-plan` before deciding what a
+> supervised `task terraform:tailscale-plan` before deciding what a
 > non-empty plan means — real drift (an Admin-console hot-fix) and the
 > not-yet-applied remainder look identical in the job output, and applying
 > either rewrites the tailnet ACL. Do not wave it through unread.
 
 ## What the policy grants (rule by rule)
 
-`policy.hujson` is the source of truth (fully commented). Summary:
+This section is the authoritative rationale; `policy.hujson` carries only a
+one-line note per rule, and `docs/05-tailscale.md` points here.
 
 - **`groups`** — `group:admins = [ericsweiss1@gmail.com]`. Every `acls`/`ssh` rule
   sources from this group, **not** `autogroup:member`. On this single-owner
@@ -80,6 +82,14 @@ being silently reverted at the next apply.
   tagged they are covered by rule 1's `tag:subnet-router`, since `autogroup:self`
   excludes tagged devices — a seamless handoff). Port 22 only; not a broad
   member→member mesh.
+- **ACL rule 4 — admin devices → the operator-exposed proxy devices.**
+  `src group:admins → dst tag:k8s:53,443`. `:443` is the `traefik-tailnet`
+  device (L3 TCP passthrough; TLS terminated in-cluster on the `*.esweiss.com`
+  wildcard) — the mesh path a remote phone uses to browse the internal web apps.
+  `:53` is the `ts-dns` device, the CoreDNS split-horizon resolver that Tailscale
+  Split-DNS forwards `esweiss.com` to (tcp+udp, no `proto` field). Access is
+  governed by the proxy device tag, so no `autoApprovers.services` block is
+  needed (that is HA-ProxyGroup only).
 - **`autoApprovers.routes`** — `192.168.0.0/24` auto-approves for BOTH
   `tag:subnet-router` **and** `ericsweiss1@gmail.com`. The tag approves routes
   once a host is tagged; the owner keeps still-untagged hosts approved — no
@@ -95,6 +105,14 @@ being silently reverted at the next apply.
   connects as `eric` (passwordless sudo on every host). A commented break-glass
   rule (with `root`) is kept in the file for emergency re-add.
 
+## Split-DNS (`split_dns.tf`)
+
+`tailscale_dns_split_nameservers.esweiss` points tailnet `esweiss.com` queries at
+the `ts-dns` device's IPv4 tailnet address, resolved by hostname at apply time so
+a device rebuild self-heals. It carries `prevent_destroy = true`: dropping the
+entry silently breaks `*.esweiss.com` resolution for every tailnet client.
+Managing it is why the OAuth client needs the `dns` scope alongside `acl`.
+
 > This tailnet ACL is a **separate layer** from the Proxmox host firewall
 > (`admin_ts` = the full `100.64.0.0/10` CGNAT range). The firewall governs which
 > ports a source may hit; the tailnet ACL governs which tailnet peer may send
@@ -103,9 +121,10 @@ being silently reverted at the next apply.
 ## One-time setup
 
 1. **OAuth client** — Admin console → Settings → OAuth clients → generate a
-   client with the **`acl`** scope (write). Store id + secret in the 1Password
-   item `Tailscale OAuth` (fields `client id`, `credential`). Already documented
-   in `docs/15-credential-rotation.md`.
+   client with the **`acl` and `dns`** scopes (both write; `dns` is what lets
+   `split_dns.tf` manage the esweiss.com Split-DNS entry every tailnet client
+   depends on). Store id + secret in the 1Password item `Tailscale OAuth`
+   (fields `client id`, `credential`). Rotation: `docs/15-credential-rotation.md`.
 2. **Verify the owner identity** in `policy.hujson` (`tagOwners`,
    `autoApprovers.routes`) matches your tailnet owner (`ericsweiss1@gmail.com`).
 3. **State backend** — a tailscale-specific GitLab state name (already wired into
@@ -183,8 +202,9 @@ this window** — there is no lockout:
   tagging never depends on Tailscale SSH being up.
 
 > **CI ordering note.** On merge, the `deploy-ansible-proxmox` pipeline runs the
-> tailscale role automatically (it triggers on `ansible/roles/tailscale/**`
-> changes) *before* you perform this supervised apply. Its **"Reconcile advertised
+> tailscale role automatically (it triggers on the inventory and the
+> `ansible/requirements.yml` collection pin) *before* you perform this
+> supervised apply. Its **"Reconcile advertised
 > Tailscale ACL tags"** task will benignly report **needs reauth** for every host,
 > because the live ACL has no `tagOwners` entry yet — the task is best-effort by
 > default (`tailscale_tags_require_adoption: false`) and the following debug task

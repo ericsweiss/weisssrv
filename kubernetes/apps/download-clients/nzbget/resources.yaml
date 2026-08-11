@@ -1,23 +1,8 @@
 ---
-# NZBGet - Usenet downloader with optional VPN sidecar
-# URL: nzbget.esweiss.com
-#
-# VPN Mode (vpn_enabled: "true"):
-#   - Gluetun sidecar provides VPN tunnel
-#   - Containers share network namespace for killswitch enforcement
-#   - If VPN dies, NZBGet loses network (by design)
-#
-# Direct Mode (vpn_enabled: "false" - default):
-#   - NZBGet runs without VPN
-#   - Direct internet access
-#
-# The shared Gluetun sidecar (container + check-vpn-config initContainer +
-# tun/vpn-config volumes + pod dnsConfig) is injected by the ../_vpn-sidecar
-# Kustomize Component (see kustomization.yaml). This file carries only the
-# NZBGet-specific pieces.
-#
-# Switch modes: edit the nzbget-vpn-config ConfigMap below (vpn_enabled and
-# vpn_provider); see README.md § Per-App VPN Control.
+# NZBGet (nzbget.esweiss.com). The shared Gluetun sidecar, its initContainer,
+# volumes and pod dnsConfig come from the ../_vpn-sidecar component; this file
+# carries only the NZBGet-specific pieces. VPN and Direct mode, and how to
+# switch them, are in README.md § Per-App VPN Control.
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -28,17 +13,10 @@ metadata:
     app.kubernetes.io/name: nzbget
     app.kubernetes.io/component: config
   annotations:
-    # CREATE-ONLY under Flux (create-only server-side apply): Flux creates this
-    # ConfigMap on a fresh cluster from the committed default below, then never
-    # reconciles/reverts it. This is what makes the live VPN toggle tasks work —
-    # `task downloads:vpn -- APP=nzbget STATE=on` kubectl-patches vpn_enabled and
-    # the change STICKS instead of being drift-reverted on the next reconcile
-    # (Reloader rolls the pod on the patch). TRADE-OFF: the committed values here
-    # are only the BOOTSTRAP default; once the object exists, editing them in git
-    # does NOT propagate. Live state is the source of truth. To force git back on
-    # top (resync): `kubectl delete configmap nzbget-vpn-config -n downloads`
-    # then `task flux:reconcile` recreates it from this file. The object is still
-    # tracked/prunable (unlike reconcile:disabled). See README § Live VPN Toggles.
+    # CREATE-ONLY apply: Flux creates this ConfigMap on a fresh cluster and then
+    # never reverts it, so `task downloads:vpn` patches stick. The values below
+    # are therefore only the bootstrap default — git edits do not propagate
+    # until the object is deleted and reconciled. README § Live VPN Toggles.
     kustomize.toolkit.fluxcd.io/ssa: IfNotPresent
 data:
   vpn_enabled: "false"
@@ -48,8 +26,6 @@ data:
   server_countries: "Netherlands"
 
 ---
-# Deployment. The Gluetun VPN sidecar (killswitch semantics: see file header /
-# README.md) is added by the ../_vpn-sidecar component.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -60,16 +36,11 @@ metadata:
     app.kubernetes.io/component: download-client
     app.kubernetes.io/part-of: media-stack
   annotations:
-    # Human-readable marker only (not scraped): this pod runs the Gluetun VPN
-    # sidecar. Unlike qbittorrent, nzbget carries no gluetun-exporter, so it
-    # has no VPN metrics.
+    # Human-readable marker only (not scraped). nzbget carries no
+    # gluetun-exporter, so it has no VPN metrics.
     esweiss.com/vpn-mode: "sidecar"
-    # stakater/Reloader auto-restarts this Deployment when a ConfigMap it
-    # references changes (it auto-detects the nzbget-vpn-config ConfigMap mounted
-    # by the Gluetun sidecar). So editing vpn_enabled/vpn_provider + commit/push
-    # is enough — Flux reconciles the ConfigMap and Reloader rolls the pod; no
-    # manual `kubectl rollout restart` needed. Reloader runs in the `reloader`
-    # namespace (kubernetes/infrastructure/controllers/reloader/).
+    # Reloader rolls this Deployment when the nzbget-vpn-config ConfigMap
+    # changes, so a vpn_enabled/vpn_provider edit needs no manual restart.
     reloader.stakater.com/auto: "true"
 spec:
   replicas: 1
@@ -92,20 +63,16 @@ spec:
           value: "true"
           effect: PreferNoSchedule
 
-      # Pod hardening: no container here talks to the kube-API. Only the
-      # universally-safe subset is applied at pod level — the gluetun sidecar
-      # needs NET_ADMIN (preserved in the component) and nzbget is a
-      # LinuxServer.io image (s6 + PUID/PGID) that starts as root to drop
-      # privileges, so per-container runAsNonRoot / drop-ALL / aPE:false are
-      # deliberately NOT set.
+      # No container here talks to the kube-API. Only the pod-level safe subset
+      # is applied: the gluetun sidecar carries its own securityContext, and the
+      # LinuxServer.io image starts as root to drop privileges via s6.
       automountServiceAccountToken: false
       securityContext:
         seccompProfile:
           type: RuntimeDefault
 
       containers:
-        # NZBGet - main application container
-        # LinuxServer.io uses version-vX.Y tag format
+        # LinuxServer.io uses the version-vX.Y tag format.
         - name: nzbget
           image: lscr.io/linuxserver/nzbget:version-v${nzbget_version}
           imagePullPolicy: IfNotPresent
@@ -118,18 +85,12 @@ spec:
               value: America/Los_Angeles
             - name: UMASK
               value: "002"
-          # Note: Ports are defined on gluetun sidecar (which owns the network namespace)
-          # NFS-ESTALE self-heal: after a NAS/NFS reboot the established mounts
-          # (/config + /media/downloads, both NFS from pve-nas-01) return stale
-          # file handles that NZBGet does not recover from on its own — the pod
-          # had to be manually deleted to remount. stat-ing both NFS mounts
-          # surfaces ESTALE (immediate error) or a hung hard-mount (probe
-          # timeout); either fails the probe so kubelet restarts the pod and it
-          # remounts. The tcpSocket port check is retained as the readinessProbe
-          # below (still de-rotates an unresponsive UI from the Service).
-          # Conservative timing so a brief NFS blip can't flap-restart. Runs as
-          # root (LSIO s6 pre-drop); stat needs only search perm on the mount
-          # parents.
+          # Ports live on the gluetun sidecar, which owns the network namespace.
+          # NFS-ESTALE self-heal: after a NAS reboot the established mounts
+          # return stale handles NZBGet never recovers from, so liveness stats
+          # both NFS mounts — ESTALE or a hung hard-mount fails the probe and
+          # kubelet remounts on restart. Timing is conservative so a brief NFS
+          # blip cannot flap-restart the pod.
           livenessProbe:
             exec:
               command:

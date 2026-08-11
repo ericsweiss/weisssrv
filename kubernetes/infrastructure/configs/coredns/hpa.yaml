@@ -1,21 +1,8 @@
 ---
-# Pins k3s's built-in CoreDNS at 2 replicas for HA. k3s manages the CoreDNS
-# Deployment as a wrangler AddOn (NOT a HelmChart), so it resets replicas on
-# every server restart/upgrade; this HPA scales it back within seconds. The
-# previous HelmChartConfig was a silent no-op for the same reason.
-#
-# TOPOLOGY SPREAD (no hard guarantee — accepted limitation): the AddOn owns the
-# Deployment pod template, so injecting topologySpreadConstraints/podAntiAffinity
-# via a Flux overlay or SSA patch would be reverted on the next AddOn reconcile
-# (same mechanism that resets replicas above — that is WHY this is an HPA and not
-# a replicas patch). Spread therefore relies on the k3s default scheduler's soft
-# DefaultPodTopologySpread (kubernetes.io/hostname, ScheduleAnyway), which permits
-# co-location under pressure. PDB minAvailable:1 (pdb.yaml) guards voluntary
-# drains but cannot prevent loss of all cluster DNS if both replicas happen to
-# share a host and that node dies. To make spread durable, disable the bundled
-# coredns AddOn (add `coredns` to k3s_disable in group_vars/k3s.yml) and ship a
-# custom CoreDNS manifest with the spread constraints via the k3s server-side
-# manifests dir — an Ansible change, out of scope for this in-cluster overlay.
+# Pins k3s's built-in CoreDNS at 2 replicas for HA. k3s owns the CoreDNS
+# Deployment as a wrangler AddOn and resets replicas on every server
+# restart/upgrade, so this must be an HPA, not a replicas patch — the same
+# ownership makes hard pod-spread unachievable from here (docs/33-autoscaling.md).
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
@@ -28,13 +15,9 @@ spec:
     name: coredns
   minReplicas: 2
   maxReplicas: 2
-  # NOTE: with minReplicas == maxReplicas this HPA is a pure replica pin, not an
-  # autoscaler — the metrics block below can never trigger a scale event. It is
-  # kept only to satisfy the HPA schema (a v2 HPA requires a metric). The VPA in
-  # configs/vpa/platform.yaml (updateMode: Off) records the right-sizing signal.
-  # If CoreDNS load grows, raise maxReplicas to make this actually horizontal
-  # and tune the threshold then; until then the averageUtilization value is
-  # inert and should not be read as an active target.
+  # min == max makes this a pure replica pin: the metric below can never fire and
+  # exists only because a v2 HPA requires one. Raise maxReplicas first if CoreDNS
+  # ever needs to scale.
   metrics:
     - type: Resource
       resource:

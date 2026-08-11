@@ -60,10 +60,10 @@ reference, and NFS export path — are unchanged by encryption.
     (docs/17). Created encrypted at activation (the copies are full cluster
     state, so they must not land plaintext on the NAS).
 
-  GitLab's backup tarball lives on the VM's root disk
-  (`/var/opt/gitlab/backups`) and is out of scope for ZFS encryption;
-  Proxmox VM snapshots of the GitLab VM land in `tank/proxmox` (covered
-  above).
+  GitLab's backup tarball lands on the NFS mount `/mnt/backups-offsite`
+  (= `tank/backups/apps/gitlab`), which is an encryption root, so it is
+  encrypted at rest and offsite-eligible (docs/17, docs/42). Proxmox VM
+  snapshots of the GitLab VM land in `tank/proxmox` (covered above).
 
 ### Not encrypted (by design)
 
@@ -127,7 +127,7 @@ reference, and NFS export path — are unchanged by encryption.
 
 ## Architecture
 
-Key-load is OFF the early-boot critical path (reworked 2026-06). The box
+Key-load is deliberately OFF the early-boot critical path. The box
 always boots to ssh/Tailscale on plaintext alone; encrypted data, nfsd's
 encrypted exports, and encrypted-storage guests converge LATE and async.
 
@@ -466,6 +466,26 @@ ss -ltn 'sport = :2049'                              # nfsd listening
 qm status 153; qm status 202; pct status 152         # running
 ```
 
+### Leftover `zfs-mount.service.requires/` symlinks (one-time check)
+
+The `RequiredBy=zfs-mount.service` design left `zfs-load-key@<pool>.service`
+symlinks in `/etc/systemd/system/zfs-mount.service.requires/`. **The role no
+longer sweeps that directory** — it stopped creating the dependency, but it does
+not remove symlinks a previous revision installed, and a surviving one restores
+the ordering cycle this whole design exists to break (`zfs-mount.service` fails
+at boot, and with it the guest starts that depend on the mounts).
+
+Verified clean on all six Proxmox hosts on **2026-08-10**; the one leftover
+(an empty directory on pve-nas-01) was removed. It is not self-healing, so
+re-check after rebuilding or re-imaging a host, or after restoring an older
+`/etc`:
+
+```bash
+ansible proxmox -m shell -a \
+  'ls -1 /etc/systemd/system/zfs-mount.service.requires/ 2>/dev/null || echo CLEAN'
+# Anything listed: rm the symlink, then `systemctl daemon-reload`.
+```
+
 ## Threat model recap
 
 | Threat | Protected? |
@@ -487,13 +507,13 @@ hosts run dm-crypt plain-mode AES-256-XTS swap with a random key regenerated on
 every boot (`encrypted_swap` role → `/dev/mapper/cryptswap`), which needs no
 1Password key material and no unlock step. Details and the activation-reboot
 caveat: `docs/42-offsite-backup.md` § Encrypted swap and
-`ansible/roles/encrypted_swap/README.md`; the at-rest posture table in
+weisssrv-lib `ansible_collections/weisssrv/infra/roles/encrypted_swap/README.md`; the at-rest posture table in
 `docs/06-zfs.md` carries the summary row.
 
-## References
+## Related documentation
 
 - ZFS native encryption: <https://openzfs.github.io/openzfs-docs/man/master/8/zfs-load-key.8.html>
 - 1Password Connect API: <https://developer.1password.com/docs/connect/connect-api-reference>
-- `ansible/roles/zfs_encryption/README.md`
+- weisssrv-lib `ansible_collections/weisssrv/infra/roles/zfs_encryption/README.md`
 - `kubernetes/infrastructure/controllers/onepassword-connect/{networkpolicy,pdb}.yaml`
 - `kubernetes/infrastructure/configs/onepassword-connect-{certificate,ingress}.yaml`

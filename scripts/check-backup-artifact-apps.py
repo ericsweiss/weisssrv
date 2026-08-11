@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Assert the backup-artifact app list and its alert arms stay paired.
 
-The COLLECTOR's app list lives in Ansible role defaults
-(`nas_backup_artifact_apps` in ansible/roles/nas_storage/defaults/main.yml); the
-matching `absent(backup_artifact_last_mtime_seconds{app="..."})` arms are
+The COLLECTOR's app list is site data
+(`nas_storage_backup_artifact_apps` in the NAS host_vars; the collection role
+defaults it to `[]`); the matching `absent(backup_artifact_last_mtime_seconds{app="..."})` arms are
 hand-enumerated in the BackupArtifactStale rule in
 kubernetes/infrastructure/observability/kube-prometheus-stack/release.yaml. The
 two live in different lifecycles (Ansible deploy vs Flux reconcile) and nothing
@@ -17,6 +17,15 @@ tied them together:
 
 Both directions are silent today. This check makes them a lint failure.
 
+The same split owns `companions:` — the files an artefact cannot be restored
+WITHOUT, which live outside its `pattern:` and are alerted on by
+BackupArtifactCompanionMissing. That rule keys on
+`backup_artifact_companion_{present,size_bytes}`, and the collector emits those
+only inside `{% for companion in app.companions | default([]) %}`. A rule
+shipped while no app declares a companion has zero series to match: it reads as
+active DR coverage and can never fire. Both directions of that pairing are
+checked too.
+
 Exit 0 when the two sets match, 1 otherwise.
 """
 
@@ -29,17 +38,41 @@ from pathlib import Path
 import yaml
 
 REPO = Path(__file__).resolve().parent.parent
-DEFAULTS = REPO / "ansible/roles/nas_storage/defaults/main.yml"
-RULES = REPO / "kubernetes/infrastructure/observability/kube-prometheus-stack/release.yaml"
+HOST_VARS = REPO / "ansible/inventories/prod/host_vars/pve-nas-01.yml"
+RULES = REPO / "kubernetes/infrastructure/observability/rules/scripts.yaml"
 ALERT = "BackupArtifactStale"
+COMPANION_ALERT = "BackupArtifactCompanionMissing"
 ARM_RE = re.compile(r'absent\(\s*backup_artifact_last_mtime_seconds\{app="([^"]+)"\}\s*\)')
 
 
-def collector_apps(defaults_text: str) -> set[str]:
+def collector_apps(host_vars_text: str) -> set[str]:
     """The app names the NAS-side mtime collector is rendered with."""
-    data = yaml.safe_load(defaults_text) or {}
-    apps = data.get("nas_backup_artifact_apps") or []
+    data = yaml.safe_load(host_vars_text) or {}
+    apps = data.get("nas_storage_backup_artifact_apps") or []
     return {a["name"] for a in apps if isinstance(a, dict) and a.get("name")}
+
+
+def collector_companions(host_vars_text: str) -> dict[str, list[str]]:
+    """{app: [companion glob, ...]} for every app that declares one.
+
+    Apps with no `companions:` key are omitted entirely — they are the claim
+    "this dump is self-contained", not a companion set of size zero.
+    """
+    data = yaml.safe_load(host_vars_text) or {}
+    apps = data.get("nas_storage_backup_artifact_apps") or []
+    out: dict[str, list[str]] = {}
+    for app in apps:
+        if not isinstance(app, dict) or not app.get("name"):
+            continue
+        companions = app.get("companions") or []
+        if companions:
+            out[app["name"]] = list(companions)
+    return out
+
+
+def alert_exists(rules_text: str, alert: str) -> bool:
+    """Whether the rules corpus defines `alert: <name>`."""
+    return any(f"alert: {alert}" in ln for ln in rules_text.splitlines())
 
 
 def alert_arm_apps(rules_text: str) -> set[str]:
@@ -54,7 +87,7 @@ def alert_arm_apps(rules_text: str) -> set[str]:
     try:
         start = next(i for i, ln in enumerate(lines) if f"alert: {ALERT}" in ln)
     except StopIteration:
-        raise SystemExit(f"ERROR: no `alert: {ALERT}` rule found in {RULES}")
+        raise SystemExit(f"ERROR: no `alert: {ALERT}` rule found in {RULES}") from None
     # The expr block ends at the alert's `for:` key, at the same indentation as
     # the `expr:` that opened it.
     body: list[str] = []
@@ -65,18 +98,60 @@ def alert_arm_apps(rules_text: str) -> set[str]:
     return set(ARM_RE.findall("\n".join(body)))
 
 
-def main() -> int:
-    collector = collector_apps(DEFAULTS.read_text())
-    arms = alert_arm_apps(RULES.read_text())
+def check_companions(host_vars_text: str, rules_text: str) -> list[str]:
+    """Problems in the companions <-> BackupArtifactCompanionMissing pairing."""
+    declared = collector_companions(host_vars_text)
+    have_alert = alert_exists(rules_text, COMPANION_ALERT)
+    problems: list[str] = []
+    if have_alert and not declared:
+        problems.append(
+            f"{COMPANION_ALERT} is defined but no app in "
+            f"nas_storage_backup_artifact_apps declares `companions:`. The "
+            f"collector emits backup_artifact_companion_* only per declared "
+            f"companion, so the rule has zero series to match and can NEVER "
+            f"fire — it reads as active restore-dependency coverage and is "
+            f"not.\n"
+            f"    Fix: declare the companion(s) in {HOST_VARS.relative_to(REPO)} "
+            f"(e.g. gitlab-secrets.json on the gitlab entry), or delete the "
+            f"rule from {RULES.relative_to(REPO)}."
+        )
+    if declared and not have_alert:
+        named = ", ".join(f"{a} ({', '.join(g)})" for a, g in sorted(declared.items()))
+        problems.append(
+            f"apps declare `companions:` but {COMPANION_ALERT} does not exist: "
+            f"{named}. The collector emits the series and nothing alerts on "
+            f"them, so a missing restore dependency is silent.\n"
+            f"    Fix: restore the rule in {RULES.relative_to(REPO)}, or drop "
+            f"the `companions:` keys."
+        )
+    return problems
 
-    if collector == arms:
+
+def main() -> int:
+    host_vars_text = HOST_VARS.read_text()
+    rules_text = RULES.read_text()
+    collector = collector_apps(host_vars_text)
+    arms = alert_arm_apps(rules_text)
+    companion_problems = check_companions(host_vars_text, rules_text)
+
+    if collector == arms and not companion_problems:
+        declared = collector_companions(host_vars_text)
         print(
             f"backup-artifact apps in sync: {len(collector)} app(s) "
-            f"({', '.join(sorted(collector))})"
+            f"({', '.join(sorted(collector))}); "
+            f"{sum(len(v) for v in declared.values())} companion(s) declared "
+            f"across {len(declared)} app(s)"
         )
         return 0
 
-    print(f"ERROR: nas_backup_artifact_apps and {ALERT}'s absent() arms disagree.")
+    if companion_problems:
+        print(f"ERROR: {COMPANION_ALERT} and the declared companions disagree.")
+        for problem in companion_problems:
+            print(f"  - {problem}")
+    if collector == arms:
+        return 1
+
+    print(f"ERROR: nas_storage_backup_artifact_apps and {ALERT}'s absent() arms disagree.")
     missing_arm = sorted(collector - arms)
     orphan_arm = sorted(arms - collector)
     if missing_arm:
@@ -94,8 +169,8 @@ def main() -> int:
             "it fires forever): " + ", ".join(orphan_arm)
         )
         print(
-            f"    Fix: drop that arm, or re-add the app to nas_backup_artifact_apps in\n"
-            f"    {DEFAULTS.relative_to(REPO)}"
+            f"    Fix: drop that arm, or re-add the app to nas_storage_backup_artifact_apps in\n"
+            f"    {HOST_VARS.relative_to(REPO)}"
         )
     return 1
 

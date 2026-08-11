@@ -116,42 +116,29 @@ Tailscale SSH rules, tag owners, and subnet-route auto-approvers — as
 `policy.hujson`, mirroring the `terraform/cloudflare` pattern (GitLab HTTP state
 backend, 1Password-injected credentials).
 
-**Least-privilege lockdown.** The policy is tag/port-scoped, replacing the
-earlier non-breaking baseline (`autogroup:member -> *:*` full mesh + root SSH):
+**Least-privilege lockdown — codified, not yet applied.** `policy.hujson`
+carries the tag/port-scoped policy below, which replaces the earlier
+non-breaking baseline (`autogroup:member -> *:*` full mesh + root SSH). The
+supervised apply and the host tagging that goes with it have not landed: no
+Proxmox host reports `tag:subnet-router` yet (`tailscale status --json` shows
+`Self.Tags: null`). Until they do, the live tailnet still runs the permissive
+baseline, and everything in this section describes intended state. See
+`terraform/tailscale/README.md` for the apply procedure and docs/16 for status.
 
-- **`group:admins`** (`= [ericsweiss1@gmail.com]`) is the `src` of every rule
-  below, **not** `autogroup:member`. On this single-owner tailnet the two are
-  equivalent today, but scoping to the group is the least-privilege posture: a
-  non-owner device that ever joins the tailnet inherits **zero** access until it
-  is deliberately added to the group.
-- **`tag:subnet-router`** is owned by `ericsweiss1@gmail.com` (`tagOwners`) and
-  advertised by all six Proxmox hosts (`tailscale_advertise_tags` in
-  `group_vars/proxmox.yml`).
-- **Rule 1** — admin devices reach a subnet-router host's own services (SSH 22,
-  Proxmox UI 8006; 80/443/6443 defensive) on its tailnet IP.
-- **Rule 2** — admin devices reach the LAN via subnet routing
-  (`192.168.0.0/24`) on the honest union of user-facing service ports (SSH, DNS
-  53/853, HTTP/HTTPS, SMB 445, NFS 2049, GitLab SSH 2222, AdGuard 3000, RDP
-  3389, kube-API 6443, Proxmox 8006, HAOS 8123/22222, Plex 32400/32469). Ports
-  are proto-agnostic (tcp+udp); ICMP is auto-allowed for matched pairs.
-- **Rule 3** — admin devices reach the owner's own devices on SSH
-  (`group:admins -> autogroup:self:22`). This is the network-access gate that
-  backs the Tailscale SSH rule (Tailscale needs *both* a network `acls` rule and
-  an `ssh` rule); it covers inter-device SSH between the owner's own client
-  devices and SSH to the hosts while they are still untagged during migration
-  (tagged hosts are covered by rule 1, since `autogroup:self` excludes tagged
-  devices). Port 22 only.
-- **`autoApprovers.routes`** — `192.168.0.0/24` auto-approves for BOTH
-  `tag:subnet-router` and (during migration) the owner, so failover across all
-  six hosts stays real with no approval gap while they are tagged one by one.
-- **SSH** — `action check`, `dst [autogroup:self, tag:subnet-router]`, users
-  `autogroup:nonroot` (**root dropped**; break-glass rule kept commented).
+In outline: `group:admins` (not `autogroup:member`) is the `src` of every rule;
+`tag:subnet-router` is the Proxmox hosts' tag; three rules cover the hosts' own
+services, LAN access via subnet routing on the union of user-facing service
+ports, and an SSH network gate; `autoApprovers.routes` keeps subnet-router
+failover approval-free; and Tailscale SSH runs `action check` with root dropped.
 
-Details, per-port justification, and the staged apply runbook are in
-`terraform/tailscale/README.md`.
+**[`terraform/tailscale/README.md`](../terraform/tailscale/README.md) is the
+authoritative rule-by-rule reference** — per-port justification, the staged apply
+runbook, and the break-glass procedure all live there, and `policy.hujson` is the
+source of truth for the policy itself.
 
 - **Credentials**: the `Tailscale OAuth` 1Password item (fields `client id`
-  and `credential`) holds an OAuth client scoped to `acl` (write). See
+  and `credential`) holds an OAuth client scoped to `acl` **and `dns`** (both
+  write — the module also manages the `esweiss.com` split-DNS nameservers). See
   `docs/15-credential-rotation.md` for the item inventory.
 - **Apply is supervised**: a wrong policy can sever tailnet connectivity and
   Tailscale SSH, so `terraform apply` here is a deliberate operator step (a
@@ -190,7 +177,7 @@ directly on the tailnet instead of routing to it.
   the tailnet device `ts-dns`. It answers Traefik-fronted `*.esweiss.com` with a
   CNAME to `traefik-tailnet.<tailnet>.ts.net` and **forwards the direct/admin +
   infra names to AdGuard** (`.150/.160`) so those keep resolving to their real
-  LAN IPs. The forward list mirrors the non-`.101` `adguard_rewrites` in
+  LAN IPs. The forward list mirrors the non-`.101` `adguard_home_rewrites` in
   `group_vars/dns.yml` — keep it in sync when a new bypass-Traefik name is added.
 - **Split-DNS** (`terraform/tailscale/split_dns.tf`) — points the tailnet's
   `esweiss.com` Split-DNS nameserver at the `ts-dns` device's 100.x, so a remote
@@ -291,19 +278,20 @@ If DNS resolution doesn't work over Tailscale:
 - **Auth Keys**: Use ephemeral or reusable auth keys from Tailscale admin console
 - **SSH Access**: Tailscale SSH provides an additional security layer; SSH
   authorization is governed by the tailnet ACL, versioned in
-  `terraform/tailscale/policy.hujson`. The least-privilege policy drops the
-  `root` user (connect as `eric` + sudo) and scopes SSH to `autogroup:self` +
+  `terraform/tailscale/policy.hujson`. The codified least-privilege policy drops
+  the `root` user (connect as `eric` + sudo) and scopes SSH to `autogroup:self` +
   `tag:subnet-router`. This is separate from host `sshd` (LAN/corosync
   root logins for migration/replication are unaffected)
 - **Operator User**: Only `eric` user can manage Tailscale on each host
 - **No Exit Node**: Hosts do not route internet traffic through the homelab
-- **Least privilege**: the tailnet ACL is tag/port-scoped (no `*:*` full mesh),
-  so a single compromised tailnet device no longer has flat lateral reach —
-  see `terraform/tailscale/README.md`
+- **Least privilege**: the codified tailnet ACL is tag/port-scoped (no `*:*`
+  full mesh), so a single compromised tailnet device has no flat lateral reach
+  once it is applied — see `terraform/tailscale/README.md` and the
+  not-yet-applied note above
 - **ACL changes**: review `policy.hujson` against the live Admin-console ACL
   before any supervised apply (see `terraform/tailscale/README.md`)
 
-## References
+## Related documentation
 
 - [Tailscale Documentation](https://tailscale.com/kb/)
 - [Tailscale on Debian](https://tailscale.com/kb/1039/install-debian-trixie/)

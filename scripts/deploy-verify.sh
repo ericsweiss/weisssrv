@@ -116,17 +116,11 @@ print(doc.get('spec',{}).get('path','') or '')
     [ -z "$SRCPATH" ] && continue
     SRCPATH=${SRCPATH#./}
     echo "  dry-run: $SRCPATH"
-    # IMPORTANT: use `printf '%s\n'` (NOT `echo`) when piping captured
-    # YAML through commands. `echo` interprets backslash escapes by
-    # default in bash; the rendered manifests contain Grafana dashboard
-    # JSON with thousands of `\n` literals inside `|` block scalars,
-    # and echo turns those into actual newlines — corrupting line
-    # numbering and breaking the YAML parser ("did not find expected
-    # comment or line break" mid-stream). printf '%s' preserves bytes.
-    # Split kustomize stderr into a tmpfile so warnings/deprecation
-    # notices on stderr don't contaminate the YAML stream that goes
-    # to envsubst/kubectl. (`2>&1` would mix them in and create
-    # spurious YAML parse errors downstream.)
+    # `printf '%s\n'`, NEVER `echo`, when piping captured YAML: bash's echo
+    # expands the thousands of `\n` literals inside the Grafana dashboard block
+    # scalars into real newlines and breaks the parser mid-stream.
+    # kustomize stderr goes to a tmpfile so deprecation notices cannot
+    # contaminate the YAML stream feeding envsubst/kubectl.
     KS_ERR=$(mktemp)
     if ! RAW=$(kustomize build "$SRCPATH" 2>"$KS_ERR"); then
       echo "    FAIL: kustomize build failed for $SRCPATH"
@@ -137,17 +131,12 @@ print(doc.get('spec',{}).get('path','') or '')
     fi
     rm -f "$KS_ERR"
     RENDERED=$(printf '%s\n' "$RAW" | envsubst "$FLUX_ENVSUBST_VARS")
-    # Use server-side apply (SSA) for dry-run validation. Plain
-    # `apply --dry-run=server` requires the legacy
-    # `kubectl.kubernetes.io/last-applied-configuration` annotation
-    # (resources Flux owns don't have it) and computes a strategic
-    # merge patch in the kubectl client. SSA sends the manifest to
-    # the API server which computes the diff itself, no client-side
-    # patch construction. --force-conflicts makes the dry-run win
-    # field-ownership disputes with kustomize-controller; nothing is
-    # persisted (it's still --dry-run=server).
-    # Wrap the assignment in `if` so a non-zero kubectl exit doesn't
-    # abort the script via `set -e` before we check DRYRUN_RC.
+    # SSA, not plain `apply --dry-run=server`: the latter needs the legacy
+    # last-applied-configuration annotation, which Flux-owned resources lack.
+    # --force-conflicts lets the dry-run win field-ownership disputes with
+    # kustomize-controller; nothing is persisted.
+    # The `if` wrapper keeps a non-zero kubectl exit from aborting under set -e
+    # before DRYRUN_RC is checked.
     if DRYRUN_ERR=$(printf '%s\n' "$RENDERED" | kubectl apply \
       --server-side --dry-run=server --force-conflicts \
       --field-manager=ci-deploy-verify -f - 2>&1); then
@@ -249,18 +238,14 @@ else
 fi
 
 # Fail if any Flux resource (Kustomization, HelmRelease, GitRepository,
-# HelmRepository, etc.) is not Ready.
-#
-# Query the CRDs directly via kubectl -o json because `flux get all`
-# only produces tabular output (json output was requested in fluxcd/flux2
-# discussions #1904 / #3535 but hasn't been implemented). An earlier
-# text-based implementation merged stderr into stdout and counted
-# warnings as outages — we use structured jq against the API instead.
+# HelmRepository, ...) is not Ready. Queried as CRDs via kubectl -o json
+# because `flux get all` emits only tabular output (fluxcd/flux2 #1904/#3535),
+# and text parsing counted stderr warnings as outages.
 echo ""
 echo "Checking for non-Ready Flux resources..."
 FLUX_KINDS="kustomizations.kustomize.toolkit.fluxcd.io,helmreleases.helm.toolkit.fluxcd.io,gitrepositories.source.toolkit.fluxcd.io,helmrepositories.source.toolkit.fluxcd.io,ocirepositories.source.toolkit.fluxcd.io"
 check_flux_resources_ready() {
-  FLUX_ALL=$(kubectl get $FLUX_KINDS -A -o json 2>/dev/null) || return 1
+  FLUX_ALL=$(kubectl get "$FLUX_KINDS" -A -o json 2>/dev/null) || return 1
   NOT_READY=$(echo "$FLUX_ALL" | count_not_ready)
   [ "$NOT_READY" -eq 0 ]
 }
@@ -268,7 +253,7 @@ check_flux_resources_ready() {
 # take 2-4 min to reconcile through HelmRelease + child CRD updates +
 # rollout, and verify runs immediately after `git push` of those bumps.
 if ! wait_for "Flux resources ready" 300 10 check_flux_resources_ready; then
-  FLUX_ALL=$(kubectl get $FLUX_KINDS -A -o json 2>/dev/null || echo '{"items":[]}')
+  FLUX_ALL=$(kubectl get "$FLUX_KINDS" -A -o json 2>/dev/null || echo '{"items":[]}')
   NOT_READY_COUNT=$(echo "$FLUX_ALL" | count_not_ready)
   echo "ERROR: $NOT_READY_COUNT Flux resource(s) not Ready:"
   echo "$FLUX_ALL" | jq -r ".items[] | $JQ_NOT_READY | \"  \(.kind)/\(.metadata.namespace)/\(.metadata.name): \((.status.conditions // []) | map(select(.type == \"Ready\")) | .[0].message // \"no Ready condition\")\""
@@ -413,8 +398,10 @@ kubectl get svc -A | grep LoadBalancer || true
 
 echo ""
 echo "Checking GitLab health..."
+# Shared internal-first/external-fallback probe (deploy-verify-lib.sh), the same
+# one post-maintenance-verify.sh uses; only the retry budget differs.
 check_gitlab_ready() {
-  curl -sf --max-time 5 https://git.ericsweiss.com/-/readiness
+  [ "$(gitlab_health_code /-/readiness)" = "200" ]
 }
 if wait_for "GitLab readiness" 60 3 check_gitlab_ready; then
   echo "GitLab API: OK"

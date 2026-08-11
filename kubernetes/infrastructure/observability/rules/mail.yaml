@@ -1,0 +1,64 @@
+---
+# Postfix relay health from the postfix-queue textfile collector (smtp_relay
+# role, scraped from 192.168.0.151:9101). All alert email egress flows through
+# this one relay. Runbooks: docs/12-runbooks.md § SMTP relay.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: homelab-mail
+  namespace: observability
+spec:
+  groups:
+    - name: homelab.mail
+      rules:
+        # A wedged Gmail hop (expired app password, rate limit) queues mail
+        # silently: the LXC stays up and postfix stays active, so only the
+        # growing deferred queue reveals the break.
+        - alert: PostfixQueueBacklog
+          expr: postfix_queue_depth > 5
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#smtp-relay-postfix-alerts'
+            summary: 'Postfix queue backing up on {{ $labels.instance }}'
+            description: >-
+              The Postfix relay has held more than 5 messages queued for
+              30 minutes ({{ $value | printf "%.0f" }} now). The Gmail hop
+              is likely wedged (expired app password, rate-limit) — alert
+              email egress may be delayed or stuck.
+
+        # Not absent-armed: a wholly-dark smtp-relay is covered by
+        # HAInfraGuestDown (lxc/151) and PostfixQueueCollectorStale below.
+        - alert: PostfixDown
+          expr: postfix_up == 0
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#smtp-relay-postfix-alerts'
+            summary: 'Postfix service is not active on {{ $labels.instance }}'
+            description: >-
+              postfix_up has been 0 for 10 minutes — the SMTP relay's
+              postfix service is not active. All alert email egress
+              (Alertmanager, host cron, backup notifications) is down
+              until it recovers.
+
+        # Collector meta-failure. The absent() arm makes an undeployed collector
+        # loud so the two rules above are not silently serving stale inputs.
+        - alert: PostfixQueueCollectorStale
+          expr: >-
+            (time() - postfix_queue_collector_last_success_seconds > 900)
+            or absent(postfix_queue_collector_last_success_seconds)
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#smtp-relay-postfix-alerts'
+            summary: 'postfix-queue collector is degraded or missing on smtp-relay'
+            description: >-
+              postfix_queue_collector_last_success_seconds is stale (>15m)
+              or entirely absent — the Postfix queue/health alerts are
+              serving stale or no inputs. Check
+              `journalctl -u postfix-queue-collector.service` and its
+              timer on smtp-relay.

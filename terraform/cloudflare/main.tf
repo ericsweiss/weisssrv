@@ -44,4 +44,10 @@ resource "cloudflare_zone_settings_override" "external" {
       # list is a hard-to-reverse commitment we don't want for this domain.
     }
   }
+
+  lifecycle {
+    # Same policy as every record in dns.tf: this module auto-applies, and
+    # destroying this resource reverts ssl/HSTS/min_tls_version zone-wide.
+    prevent_destroy = true
+  }
 }

@@ -191,21 +191,15 @@ def _ref_key_lines(text: str, project: str) -> set[int]:
         )
     include_key, include_node = include_pairs[0]
 
-    # An ALIAS resolves to its anchored node, so a `ref` reached through
-    # `include: *shared` carries source marks pointing at the ANCHOR — which may
-    # sit anywhere in the file. Rewriting there would edit shared configuration,
-    # and the re-parse would still agree, because the alias makes the include
-    # read back correctly. So targets are bounded to the include block's own
-    # textual span; anything outside it is left for check() to report.
+    # Invariant: rewrite targets are bounded to the include node's own textual
+    # span. An alias resolves to its anchor, whose marks may sit anywhere in the
+    # file, so an unbounded rewrite could edit shared configuration.
     include_start = include_key.start_mark.index
-    # The node's own end mark is the exact span. Deriving it from the NEXT
-    # top-level key instead can overshoot when that key is reached through an
-    # alias, whose mark points back at the anchor — which would pull unrelated
-    # jobs into the span and refuse a fix that was safe. That errs in the safe
-    # direction, but the precise bound is also the simpler one.
+    # The node's own end mark is the exact span; deriving it from the next
+    # top-level key can overshoot when that key is reached through an alias.
     include_end = include_node.end_mark.index
     if include_end <= include_start:
-        # The include value is ITSELF an alias, so its composed node carries the
+        # The include value is itself an alias, so its node carries the
         # anchor's marks and the span reads as empty. Fall back to the
         # conservative bound, which keeps the alias inside it and refused.
         include_end = min(
@@ -217,13 +211,9 @@ def _ref_key_lines(text: str, project: str) -> set[int]:
             default=len(text),
         )
 
-    # Bounding to the span is not enough on its own: an alias whose ANCHOR also
-    # lives inside `include:` — under another entry's `inputs:`, say — passes the
-    # bound while still redirecting the rewrite at shared nested configuration.
-    # Composing resolves aliases away, so they are detected on the event stream.
-    # Refusing is the conservative answer: fix() reports the drift unrepaired
-    # rather than editing a line that belongs to something else. Scoped to the
-    # span, so an alias elsewhere in the file does not disable --fix.
+    # Invariant: an alias inside the span refuses --fix. Composing resolves
+    # aliases away, so they are detected on the event stream instead. fix()
+    # then reports the drift unrepaired rather than editing a shared line.
     for event in yaml.parse(text, Loader=_RefTolerantLoader):
         if not include_start <= event.start_mark.index < include_end:
             continue
@@ -318,14 +308,9 @@ def fix(path: Path, project: str = LIB_PROJECT, ref_var: str = REF_VAR) -> int:
         )
     if changed:
         updated = "".join(lines)
-        # Verify by OUTCOME rather than enumerating the ways a textual rewrite
-        # can go wrong. A `ref: >-` block scalar leaves its body behind; a value
-        # YAML would retype (`on`, `null`, a date) lands as the wrong type; an
-        # aliased include can carry marks from elsewhere. Each has its own
-        # special case, and the list is open-ended — so instead: re-parse, and
-        # require every library pin to have landed as the exact string intended.
-        # Anything else keeps the original file. Nothing is written until this
-        # passes, so a refusal is never a half-edited file.
+        # Invariant: re-parse and require every library pin to have landed as
+        # the exact string intended. Nothing is written until that passes, so a
+        # refusal is never a half-edited file.
         try:
             reparsed = yaml.load(updated, Loader=_RefTolerantLoader) or {}
         except yaml.YAMLError as exc:
@@ -365,16 +350,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = ap.parse_args(argv)
 
-    # An unreadable or malformed input is an OPERATOR error (wrong path, bad
-    # permissions, broken YAML), not a pin finding — exit 2 so CI can tell the
-    # two apart, and print one line rather than a traceback. Same contract as
-    # check-kubectl-version-pin.py.
-    #
-    # This wraps the REAL calls rather than a preflight read: a preflight only
-    # proves the file was readable a moment ago, and the work re-reads it
-    # afterwards, outside the guard. SystemExit from fix() passes through
-    # untouched — it inherits BaseException, and those refusals are already
-    # worded for the caller.
+    # Unreadable or malformed input is an operator error, not a pin finding:
+    # exit 2 so CI can tell the two apart. Wrapping the real calls (not a
+    # preflight read) is what keeps the guard around every read. SystemExit
+    # from fix() passes through — those refusals are already worded.
     try:
         return _run(args)
     except (OSError, UnicodeDecodeError) as exc:

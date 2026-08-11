@@ -14,7 +14,7 @@
 #
 # Prerequisites (see docs/39-windows-vm.md):
 #   - Windows 11 ISO downloaded from Microsoft to the tank-proxmox ISO store,
-#     named to match vm_install_iso in hosts.yml.
+#     named to match proxmox_vm_install_iso in hosts.yml.
 #   - VirtIO driver ISO is fetched + checksum-verified automatically by the role.
 #
 # Usage:
@@ -27,10 +27,10 @@
   hosts: windows_vms
   gather_facts: false
   roles:
-    - proxmox_vm
+    - weisssrv.infra.proxmox_vm
 
 - name: Deploy Windows guest firewall rules
   hosts: windows_vms
   gather_facts: false
   roles:
-    - proxmox_firewall
+    - weisssrv.infra.proxmox_firewall

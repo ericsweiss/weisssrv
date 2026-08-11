@@ -1,19 +1,41 @@
 ---
 # Nextcloud servers configuration
 #
-# App configuration and all image/version pins live in the nextcloud role
-# defaults and group_vars/all.yml respectively. This file is the home for any
-# Nextcloud-group-wide overrides.
+# Image/version pins live in group_vars/all.yml; paths, ports, PHP limits and
+# the compose network are role defaults. This file carries the site values only.
+# The relay host, SASL credentials and aliases are defined in all.yml.
 #
-# Postfix null client uses the role default postfix_config (relay via
-# smtp-relay over SASL+TLS, loopback-only). postfix_sasl_user,
-# postfix_sasl_password, and mail_aliases are defined in all.yml.
-
 # Nextcloud state rides ZFS zvol passthrough disks only (no NFS); the VM is
 # pinned to pve-nas-01. See hosts.yml (vm_additional_disks) and docs/35.
+
+# Derived from external_domain/internal_domain by the role (cloud.<domain>);
+# the k3s node addresses are derived from the inventory groups rather than
+# pasted, so adding or renumbering a node tracks automatically.
+nextcloud_nginx_real_ip_trusted_addresses: >-
+  {{ (groups['k3s_servers'] + groups['k3s_agents'])
+     | map('extract', hostvars, 'ansible_host') | select('defined') | list }}
+
+# SSO (Authentik OIDC), sole login method. The issuer host is ALWAYS external.
+nextcloud_oidc_enabled: true
+nextcloud_oidc_discovery_uri: >-
+  https://auth.{{ external_domain }}/application/o/cloud/.well-known/openid-configuration
+
+# Outgoing mail via the relay, plaintext on port 25 (LAN hop).
+nextcloud_smtp_host: "{{ postfix_null_client_relay_host }}"
+nextcloud_smtp_port: "25"
+nextcloud_smtp_secure: ""
+nextcloud_mail_from_address: nextcloud
+nextcloud_mail_domain: "{{ external_domain }}"
+
+# postgres_exporter sidecar for the in-cluster Prometheus. Unauthenticated —
+# scoped by sg-nextcloud's :9187 rule to k3s_nodes.
+nextcloud_postgres_exporter_enabled: true
+nextcloud_postgres_exporter_version: "{{ postgres_exporter_version }}"
 
 # Offsite-eligible backup landing (mirrors gitlab_servers.yml): pg_dump artifacts
 # relocate onto the per-app tank/backups/apps NFS export so they ride the
 # archsync file walk into restic B2 (docs/42). Mounted over TLS (xprtsec=tls;
 # tlshd via the nfs_tls role, gated on this flag); the dataset is aes-256-gcm.
 nextcloud_backup_nfs_enabled: true
+nextcloud_backup_nfs_server: "pve-nas-01.{{ internal_domain }}"
+nextcloud_backup_nfs_export: /backups-apps/nextcloud

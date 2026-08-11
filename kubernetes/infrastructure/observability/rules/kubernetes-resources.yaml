@@ -1,0 +1,64 @@
+---
+# Homelab replacements for upstream kube-state rules that do not fit this
+# cluster. Companions to the `defaultRules.disabled` list in
+# kube-prometheus-stack/release.yaml.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: homelab-kubernetes-resources
+  namespace: observability
+spec:
+  groups:
+    - name: homelab.kubernetes-resources
+      rules:
+        # Upstream KubeCPUOvercommit's shape (requests must fit after removing
+        # the largest node) minus the gitlab-runner* namespaces, which
+        # deliberately over-request CPU for burst CI against a correctly-sized
+        # ResourceQuota and flapped the upstream rule for 15-30m per burst.
+        - alert: KubeCPUOvercommit
+          expr: >-
+            sum(namespace_cpu:kube_pod_container_resource_requests:sum{namespace!~"gitlab-runner.*"})
+            - (sum(kube_node_status_allocatable{resource="cpu"})
+               - max(kube_node_status_allocatable{resource="cpu"})) > 0
+            and
+            (sum(kube_node_status_allocatable{resource="cpu"})
+             - max(kube_node_status_allocatable{resource="cpu"})) > 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://runbooks.prometheus-operator.dev/runbooks/kubernetes/kubecpuovercommit/'
+            summary: 'Cluster has overcommitted CPU resource requests (CI namespaces excluded).'
+            description: >-
+              Non-CI CPU requests exceed the allocatable capacity that
+              would remain after the largest node fails, so the cluster
+              cannot tolerate a single node loss. The gitlab-runner*
+              namespaces are excluded because their ResourceQuota
+              deliberately over-requests for burst CI.
+
+        # A container that OOMKills and restarts cleanly is invisible upstream:
+        # KubePodCrashLooping needs a restart RATE and KubeContainerWaiting needs
+        # the container to stay down. Edge-triggered on the restart counter and
+        # qualified by the last-terminated reason, so it reports the event rather
+        # than the surviving state and self-resolves after the 1h window.
+        - alert: ContainerOOMKilled
+          expr: >-
+            increase(kube_pod_container_status_restarts_total[1h]) > 0
+            and on (namespace, pod, container)
+            kube_pod_container_status_last_terminated_reason{reason="OOMKilled"} == 1
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/33-autoscaling.md'
+            summary: >-
+              Container {{ $labels.namespace }}/{{ $labels.pod }}/{{ $labels.container }}
+              was OOMKilled
+            description: >-
+              Container {{ $labels.container }} in pod
+              {{ $labels.namespace }}/{{ $labels.pod }} hit its memory
+              limit and was killed by the kernel. Compare the container's
+              limit against its VPA recommendation
+              (`kubectl describe vpa -n {{ $labels.namespace }}`) and
+              raise the size in git — the limit is a hand-set number, not
+              something the VPA maintains for an Off-tier workload.

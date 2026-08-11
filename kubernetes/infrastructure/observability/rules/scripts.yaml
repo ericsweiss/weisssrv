@@ -1,0 +1,895 @@
+---
+# Freshness and success alerts for the host-side scripts and backup producers
+# that write node_exporter textfile metrics, plus the in-cluster pg-dump
+# CronJobs. Runbooks: docs/12-runbooks.md § Backup and recovery.
+#
+# Escalation shape: each tier's total-loss case has a critical sibling
+# (*Prolonged / *StaleCritical) so a multi-day failure reaches the email
+# receiver instead of a twice-daily Discord line. Alertmanager pairs each
+# warning with its critical on the alertname so they never double-page.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: homelab-scripts
+  namespace: observability
+spec:
+  groups:
+    - name: homelab.scripts
+      rules:
+        # 0 only on a genuine zfs send/receive error; a vzdump-quiesce deferral
+        # surfaces per-dataset via ArchiveBackupDatasetStale /
+        # ArchiveBackupChronicallyDeferred instead.
+        - alert: ArchiveBackupFailed
+          expr: archive_backup_last_run_success == 0
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            summary: 'Archive backup hit a replication error'
+            description: >-
+              The nightly archive backup exited with a zfs send/receive
+              error (not a vzdump-quiesce deferral, which is tracked
+              per-dataset). Durability may be at risk — check
+              `journalctl -u archive-backup.service` on pve-nas-01.
+
+        # Local DR tier down for a full day: critical, so it emails.
+        - alert: ArchiveBackupFailedProlonged
+          expr: archive_backup_last_run_success == 0
+          for: 24h
+          labels:
+            severity: critical
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            summary: 'Archive backup has been failing for a full day'
+            description: >-
+              The nightly archive replication has exited with a zfs
+              send/receive error on every attempt for 24 hours. The local DR
+              tier is down and the offsite chain runs off it — check
+              `journalctl -u archive-backup.service` on pve-nas-01.
+
+        - alert: ArchiveBackupStale
+          expr: (time() - archive_backup_last_success_timestamp_seconds > 86400 * 2) or absent(archive_backup_last_success_timestamp_seconds)
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            summary: 'Archive backup has not run in over 2 days'
+            description: 'No successful archive backup has been recorded for more than 48 hours, or the metric is missing.'
+
+        # Critical escalation at 4 days: two more failed nightly cycles past the
+        # warning, with no local DR copy in between. No absent() arm — metric
+        # absence stays warning-tier via ArchiveBackupStale.
+        - alert: ArchiveBackupStaleCritical
+          expr: time() - archive_backup_last_success_timestamp_seconds > 86400 * 4
+          for: 1h
+          labels:
+            severity: critical
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            summary: 'Archive backup has not succeeded in over 4 days'
+            description: >-
+              No successful archive replication for more than 4 days. The local
+              DR tier is stale and the offsite restic chain runs off it, so both
+              copies are ageing together.
+
+        # Per-dataset durability: a vzdump-quiesce deferral preserves the
+        # previous per-dataset success timestamp (re-emitted, not zeroed),
+        # so a chronically deferred dataset still goes stale here without
+        # zeroing the whole-run success metric.
+        - alert: ArchiveBackupDatasetStale
+          expr: time() - archive_backup_dataset_last_success_timestamp_seconds > 86400 * 2
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            summary: 'Archive dataset {{ $labels.dataset }} has not replicated in over 2 days'
+            description: >-
+              Dataset {{ $labels.dataset }} has had no successful archive
+              replication for more than 48 hours (last success
+              {{ $value | humanizeDuration }} ago). If it is repeatedly
+              deferred, the 03:30 vzdump is overrunning the 06:30 archive
+              window — see the runbook.
+
+        # First-run edge: a dataset deferred from its first run has no
+        # last-success timestamp, so ArchiveBackupDatasetStale cannot fire.
+        - alert: ArchiveBackupChronicallyDeferred
+          expr: archive_backup_dataset_deferred_runs >= 3
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            summary: 'Archive dataset {{ $labels.dataset }} deferred {{ $value | printf "%.0f" }} runs in a row'
+            description: >-
+              Dataset {{ $labels.dataset }} has been deferred (vzdump not
+              quiesced within the archive window) for
+              {{ $value | printf "%.0f" }} consecutive runs — the 03:30
+              vzdump is overrunning the 06:30 archive-backup timer. See the
+              runbook.
+
+        - alert: MediaMoverFailed
+          expr: media_mover_last_run_success == 0
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            summary: 'Media mover failed'
+            description: 'The media mover script has not completed successfully.'
+
+        - alert: MediaMoverStale
+          expr: (time() - media_mover_last_success_timestamp_seconds > 86400 * 2) or absent(media_mover_last_success_timestamp_seconds)
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            summary: 'Media mover has not run in over 2 days'
+            description: 'No successful media mover run has been recorded for more than 48 hours, or the metric is missing.'
+
+        # adguardhome-sync replicates dns-01's AdGuard config to dns-02 every
+        # 5 minutes, so for:15m only fires on 3 consecutive failures.
+        - alert: AdGuardSyncFailed
+          expr: adguardhome_sync_last_run_success == 0
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#network-connectivity-issues'
+            summary: 'AdGuard Home sync (dns-01 -> dns-02) is failing'
+            description: >-
+              adguardhome-sync on dns-01 has recorded failed runs for 15
+              minutes (3 consecutive 5-minute cycles). dns-02's AdGuard config
+              will drift from dns-01 — check `journalctl -u adguardhome-sync`
+              on dns-01.
+
+        # 30m = 6 missed 5-minute cycles. The absent() arm makes an undeployed
+        # or removed collector loud.
+        - alert: AdGuardSyncStale
+          expr: (time() - adguardhome_sync_last_success_timestamp_seconds > 1800) or absent(adguardhome_sync_last_success_timestamp_seconds)
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#network-connectivity-issues'
+            summary: 'AdGuard Home sync has not succeeded in over 30 minutes'
+            description: >-
+              No successful adguardhome-sync run (dns-01 -> dns-02) in over 30
+              minutes (6 missed 5-minute cycles), or the metric is absent
+              (timer not run, or node_exporter on dns-01 unreachable). dns-02's
+              AdGuard config is drifting from dns-01.
+
+        - alert: CertRenewalFailed
+          expr: cert_renewal_last_run_success == 0
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#certificate-renewal-issues'
+            summary: 'Certificate renewal failed'
+            description: 'The certificate renewal and distribution script has not completed successfully.'
+
+        # A renewal pipeline broken for three days is an incident, not a nudge:
+        # CertExpiringSoon* is only the expiry backstop, and a renewal that has
+        # been failing for weeks burns the whole ~60d acme.sh cycle of margin.
+        - alert: CertRenewalFailedProlonged
+          expr: cert_renewal_last_run_success == 0
+          for: 72h
+          labels:
+            severity: critical
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#certificate-renewal-issues'
+            summary: 'Certificate renewal has been failing for over 3 days'
+            description: >-
+              acme.sh renewal/distribution on {{ $labels.instance }} has failed
+              continuously for 3 days. The wildcard cert still has margin, but
+              nothing is renewing it — fix the pipeline before CertExpiringSoon
+              is the only thing left.
+
+        - alert: CertExpiringSoon
+          expr: (cert_local_expiry_timestamp_seconds - time() < 86400 * 14) or absent(cert_local_expiry_timestamp_seconds)
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#certificate-renewal-issues'
+            summary: 'Host-distributed wildcard cert expires in under 14 days'
+            description: >-
+              The acme.sh-distributed *.esweiss.com cert is within 14 days
+              of its notAfter (so acme.sh renewal/distribution has stopped
+              working), or the metric is missing (host off inventory).
+              Tracks real expiry, not time-since-renewal — acme.sh renews
+              ~60d apart, so a renewal-timestamp staleness proxy false-fires
+              for most of each cycle. cert-manager's CertExpiring alerts
+              cover in-cluster certs but not these host-distributed certs.
+
+        # This cert terminates NFS-over-TLS on pve-nas-01, AdGuard TLS and the
+        # Loki ingest ingress, so expiry breaks storage and logging, not just web
+        # UIs. No absent() arm — metric absence stays warning-tier above.
+        - alert: CertExpiringSoonCritical
+          expr: cert_local_expiry_timestamp_seconds - time() < 86400 * 3
+          for: 1h
+          labels:
+            severity: critical
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#certificate-renewal-issues'
+            summary: 'Host-distributed wildcard cert expires in under 3 days'
+            description: >-
+              The acme.sh-distributed *.esweiss.com cert on
+              {{ $labels.instance }} expires in
+              {{ $value | humanizeDuration }}. NFS-over-TLS (k3s PV
+              mounts), AdGuard TLS, and the Loki ingress all break at
+              expiry — fix renewal and redistribute now.
+
+        - alert: GitLabBackupFailed
+          expr: gitlab_backup_last_run_success == 0
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            summary: 'GitLab backup failed'
+            description: 'The nightly gitlab-backup run did not complete successfully.'
+
+        # "The run succeeded" and "a restorable artefact exists" are different
+        # claims: a wrapper whose landing path no longer matches reports success
+        # while sizing nothing. Name-regex rather than one rule per app, so a
+        # future producer inherits the gate for free — every wrapper emits
+        # <app>_backup_last_size_bytes, where 0 means "no artefact found".
+        # label_replace copies __name__ into a `metric` label because Prometheus
+        # strips __name__ from alert labels.
+        - alert: BackupArtifactEmpty
+          expr: >-
+            label_replace(
+              {__name__=~".+_backup_last_size_bytes"} == 0,
+              "metric", "$1", "__name__", "(.*)")
+          for: 1h
+          labels:
+            severity: critical
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            summary: '{{ $labels.metric }} is 0 on {{ $labels.instance }} — the backup run reported success but produced no artefact'
+            description: >-
+              A backup wrapper reported success while its most recent artefact
+              measured 0 bytes, i.e. the wrapper found no file to size. The
+              usual cause is a landing-path change that never reached the
+              application (config written but the reconfigure/restart never
+              ran), or a backup written somewhere other than where the wrapper
+              looks. Check the wrapper's BACKUP_PATH against the application's
+              EFFECTIVE configuration on the host — not just its config file.
+
+        - alert: GitLabBackupStale
+          expr: (time() - gitlab_backup_last_success_timestamp_seconds > 86400 * 2) or absent(gitlab_backup_last_success_timestamp_seconds)
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            summary: 'GitLab backup has not succeeded in over 2 days'
+            description: >-
+              No successful GitLab backup has been recorded for more than
+              48 hours, or the metric is missing (backup wrapper not run,
+              node_exporter on the GitLab VM unreachable, or VM off
+              inventory). GitLab data lives on a zvol; Proxmox VM
+              snapshots are the only other DR path.
+
+        # Four days is two more failed nightly cycles past the warning. No
+        # absent() arm — metric absence stays warning-tier above.
+        - alert: GitLabBackupStaleCritical
+          expr: time() - gitlab_backup_last_success_timestamp_seconds > 86400 * 4
+          for: 1h
+          labels:
+            severity: critical
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            summary: 'GitLab backup has not succeeded in over 4 days'
+            description: >-
+              No successful GitLab backup for more than 4 days. GitLab
+              data lives on a zvol; Proxmox VM snapshots are the only
+              other DR path. Investigate the backup wrapper on the
+              GitLab VM now.
+
+        # gitlab-backup deliberately EXCLUDES gitlab-secrets.json from the
+        # tarball, and the artefact glob (*_gitlab_backup.tar) does not match it
+        # either — so a tarball with a fresh mtime and a healthy size can still
+        # be unrestorable. The wrapper copies it separately and sizes it into
+        # its own metric file. Both arms: absent emits present=0 + size=0, a
+        # truncated copy emits present=1 + size=0.
+        - alert: GitLabBackupSecretsMissing
+          expr: >-
+            gitlab_backup_secrets_present == 0
+            or gitlab_backup_secrets_size_bytes == 0
+          for: 1h
+          labels:
+            severity: critical
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            summary: 'gitlab-secrets.json is missing or empty in the GitLab backup landing zone'
+            description: >-
+              gitlab-secrets.json is absent from, or 0 bytes in, the GitLab
+              backup landing zone on {{ $labels.instance }}. Without it a
+              restored database cannot decrypt CI variables, 2FA secrets or
+              runner tokens — the tarball alone is not a restore. Check the
+              `cp` stage of gitlab-backup-run.sh and the landing-zone mount.
+
+        # Nightly PostgreSQL logical dump (nextcloud-backup.timer on the VM).
+        # The dump rides the app zvol -> archive + vzdump; file data lives on
+        # tank/nextcloud-data.
+        - alert: NextcloudBackupFailed
+          expr: nextcloud_backup_last_run_success == 0
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/35-nextcloud.md'
+            summary: 'Nextcloud database backup failed'
+            description: >-
+              The nightly Nextcloud pg_dump did not complete successfully.
+              Check `journalctl -u nextcloud-backup.service` on the
+              Nextcloud VM (192.168.0.156).
+
+        - alert: NextcloudBackupStale
+          expr: (time() - nextcloud_backup_last_success_timestamp_seconds > 86400 * 2) or absent(nextcloud_backup_last_success_timestamp_seconds)
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/35-nextcloud.md'
+            summary: 'Nextcloud database backup has not succeeded in over 2 days'
+            description: >-
+              No successful Nextcloud pg_dump has been recorded for more
+              than 48 hours, or the metric is missing (timer not run,
+              node_exporter on the VM unreachable, or VM off inventory).
+
+        # Nightly pg_dumpall onto the app zvol (rides ssd/appdata -> archive,
+        # raw-encrypted). 48h window like GitLab (nightly + grace).
+        - alert: ImmichBackupFailed
+          expr: immich_backup_last_run_success == 0
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            summary: 'Immich database backup failed'
+            description: 'The nightly Immich pg_dumpall did not complete successfully.'
+
+        - alert: ImmichBackupStale
+          expr: (time() - immich_backup_last_success_timestamp_seconds > 86400 * 2) or absent(immich_backup_last_success_timestamp_seconds)
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            summary: 'Immich database backup has not succeeded in over 2 days'
+            description: >-
+              No successful Immich database backup has been recorded for
+              more than 48 hours, or the metric is missing (backup timer not
+              run, node_exporter on the Immich VM unreachable, or VM off
+              inventory). The photo library and DB live on encrypted zvols;
+              the pg_dumpall is the point-in-time DB recovery path.
+
+        # In-cluster CronJob, so freshness comes from
+        # kube_cronjob_status_last_successful_time. 26h = one nightly cycle +
+        # grace; the absent() arm fires if the CronJob is missing or has never
+        # succeeded. Authentik's Postgres is the SSO recovery path.
+        - alert: AuthentikBackupStale
+          expr: >-
+            (time() - kube_cronjob_status_last_successful_time{namespace="authentik", cronjob="authentik-pg-dump"} > 93600)
+            or absent(kube_cronjob_status_last_successful_time{namespace="authentik", cronjob="authentik-pg-dump"})
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            summary: 'Authentik database backup has not succeeded in over 26 hours'
+            description: >-
+              The nightly authentik-pg-dump CronJob has had no successful
+              completion for more than 26 hours (one nightly cycle + grace),
+              or the metric is absent (CronJob missing / never succeeded /
+              kube-state-metrics down). Authentik's Postgres lives on a zvol;
+              losing it loses every SSO app's identity provider.
+
+        # Same shape as AuthentikBackupStale (26h window, absent() arm).
+        - alert: MealieBackupStale
+          expr: >-
+            (time() - kube_cronjob_status_last_successful_time{namespace="recipes", cronjob="mealie-pg-dump"} > 93600)
+            or absent(kube_cronjob_status_last_successful_time{namespace="recipes", cronjob="mealie-pg-dump"})
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            summary: 'Mealie database backup has not succeeded in over 26 hours'
+            description: >-
+              The nightly mealie-pg-dump CronJob (recipes namespace) has had
+              no successful completion for more than 26 hours, or the metric
+              is absent (CronJob missing / never succeeded / kube-state-metrics
+              down). Mealie's Postgres lives on a dedicated zvol.
+
+        # Off-node etcd snapshot copy (k3s servers -> pve-nas-01, docs/17). k3s
+        # snapshots every 12h; 36h is three missed copy cycles, wide enough that
+        # one deferred run during planned node maintenance does not page while
+        # still detecting a genuinely stopped copy inside two nights.
+        - alert: EtcdSnapshotStale
+          expr: (time() - etcd_snapshot_last_copy_timestamp_seconds > 129600) or absent(etcd_snapshot_last_copy_timestamp_seconds)
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            summary: 'etcd snapshot off-node copy is stale'
+            description: >-
+              The newest etcd snapshot copied to pve-nas-01 is more than
+              36 hours old (three 12h snapshot cycles), or the copy metric
+              is missing. Losing all three server nodes without an
+              off-node snapshot loses etcd — check the copy timer on the
+              k3s server nodes.
+
+        # Nightly guest-image backup to tank-proxmox; the per-host vzdump
+        # hookscript writes the metrics.
+        - alert: VzdumpBackupFailed
+          expr: vzdump_backup_last_run_success == 0
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            summary: 'Proxmox vzdump backup failed'
+            description: >-
+              The nightly Proxmox vzdump job (guest images -> tank-proxmox)
+              did not complete successfully. Guest VM/LXC images are the DR
+              path for the compute-node guests.
+
+        # /etc/pve carries the cluster CA, node certs, authkey and user.cfg —
+        # the first step of total-site recovery. Catches a tar/validate failure
+        # with good archives still on disk, where the producer reports the newest
+        # EXISTING archive's size so BackupArtifactEmpty stays correctly green.
+        # No absent() arm: the producer ships on the Ansible lifecycle, so the
+        # series legitimately does not exist before the first pve-nas-01 deploy.
+        - alert: PveClusterBackupFailed
+          expr: pve_cluster_backup_last_run_success == 0
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            summary: 'Proxmox /etc/pve cluster-config backup failed'
+            description: >-
+              The nightly /etc/pve tar (cluster CA, corosync config and
+              every guest definition) did not complete successfully. This
+              is the DR path for rebuilding the cluster itself, not the
+              guests — vzdump covers those.
+
+        # The Failed rule above cannot fire if the 02:15 timer simply stops: the
+        # last-written success=1 persists in the textfile forever. 36h matches
+        # the vzdump window (nightly cadence, one deferred run tolerated).
+        - alert: PveClusterBackupStale
+          expr: time() - pve_cluster_backup_last_success_timestamp_seconds > 129600
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            summary: 'Proxmox /etc/pve cluster-config backup has not succeeded in over 36 hours'
+            description: >-
+              No successful /etc/pve tar in more than 36 hours — the
+              pve-cluster-backup timer has probably stopped. /etc/pve holds the
+              cluster CA, node certs, authkey and API tokens; docs/17 makes
+              restoring it the first step of total-site recovery.
+
+        # 36h, not 26h: a single nightly run deferred by planned host
+        # maintenance used to page reliably. Two missed nights still detect.
+        - alert: VzdumpBackupStale
+          expr: (time() - vzdump_backup_last_success_timestamp_seconds > 129600) or absent(vzdump_backup_last_success_timestamp_seconds)
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            summary: 'Proxmox vzdump backup has not succeeded in over 36 hours'
+            description: >-
+              No successful Proxmox vzdump backup has been recorded for more
+              than 36 hours on {{ $labels.instance }}, or the metric is absent
+              on every Proxmox host (hookscript not deployed anywhere). Guest
+              VM/LXC images on tank-proxmox are the DR path for the
+              compute-node guests.
+
+        # Three missed nights: guest images are the only DR path for the
+        # compute-node guests. No absent() arm — absence stays warning-tier.
+        - alert: VzdumpBackupStaleCritical
+          expr: time() - vzdump_backup_last_success_timestamp_seconds > 86400 * 3
+          for: 1h
+          labels:
+            severity: critical
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            summary: 'Proxmox vzdump backup has not succeeded in over 3 days'
+            description: >-
+              No successful vzdump on {{ $labels.instance }} for more than 3
+              days. Guest VM/LXC images on tank-proxmox are the DR path for the
+              compute-node guests.
+
+        # Nightly offsite B2 backup (restic + rclone/B2) on pve-nas-01, chained
+        # OnSuccess of archive-backup.service.
+        #
+        # restic_offsite_last_backup_success is the split-out "the upload landed
+        # in B2" signal; restic_offsite_last_run_success is the older combined
+        # gauge that also went 0 when only retention failed. The `unless` arm
+        # reads the old metric ONLY while the new one is absent, so the alert
+        # keeps working across the collector rollout without conflating the two.
+        - alert: ResticOffsiteFailed
+          expr: >-
+            restic_offsite_last_backup_success == 0
+            or (restic_offsite_last_run_success == 0
+                unless on (instance) restic_offsite_last_backup_success)
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            summary: 'Offsite B2 backup (restic) failed'
+            description: >-
+              The nightly restic-offsite upload to B2 exited unsuccessfully
+              (upload error, or the freshness guard aborted on a stale
+              archsync snapshot). Offsite durability is at risk — check
+              `restic-offsitectl status` / `journalctl -u restic-offsite`
+              on pve-nas-01.
+
+        # B2 is the only offsite copy, so a full day of failed uploads emails.
+        - alert: ResticOffsiteFailedProlonged
+          expr: >-
+            restic_offsite_last_backup_success == 0
+            or (restic_offsite_last_run_success == 0
+                unless on (instance) restic_offsite_last_backup_success)
+          for: 24h
+          labels:
+            severity: critical
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            summary: 'Offsite B2 backup has been failing for a full day'
+            description: >-
+              Every restic-offsite upload has failed for 24 hours. B2 is the
+              only offsite copy of the curated dumps — treat this as an
+              incident, not a nightly retry (docs/42).
+
+        # Retention that cannot run leaves the repo growing without bound and the
+        # WORM restore floor frozen. The ceiling guard is self-latching: once it
+        # refuses, the delete set grows every night until a human raises it.
+        - alert: ResticOffsitePruneBlocked
+          expr: restic_offsite_retention_blocked == 1
+          for: 48h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/42-offsite-backup.md'
+            summary: 'Offsite B2 retention has been refusing to prune for 2 days'
+            description: >-
+              restic-offsitectl has hit its forget-ceiling guard on every run
+              for 2 days, so no snapshot has been expired. The delete set only
+              grows from here. Inspect it with `restic-offsitectl snapshots`,
+              then either accept it once with
+              `restic-offsitectl prune --max-remove N` or raise
+              restic_offsite_forget_max_remove (docs/42).
+
+        # last_prune_success is 0 for BOTH "the prune errored" and "the ceiling
+        # guard refused to prune" (its HELP text says 0=blocked/failed). The
+        # refusal is a deliberate, non-failure state with its own alert and its
+        # own 48h grace above, so it is subtracted here — otherwise the ceiling
+        # guard always announces itself 24h early under the wrong diagnosis and
+        # ResticOffsitePruneBlocked never gets to fire.
+        - alert: ResticOffsitePruneFailed
+          expr: >-
+            restic_offsite_last_prune_success == 0
+            unless on (instance) restic_offsite_retention_blocked == 1
+          for: 24h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/42-offsite-backup.md'
+            summary: 'Offsite B2 prune/forget has been erroring for a day'
+            description: >-
+              The retention stage of restic-offsitectl has errored for 24 hours
+              while uploads continue — a real failure, not the delete-set
+              ceiling guard (that is ResticOffsitePruneBlocked). Usually a stale
+              repository lock: check `restic-offsitectl status` on pve-nas-01
+              and `restic-offsitectl unlock` if a crashed run left one
+              (docs/42).
+
+        # An over-broad forget shows up as the repo suddenly shrinking. B2's
+        # hide-lifecycle window is 30 days, so catching it inside 2 days is the
+        # difference between an undelete and a permanent loss.
+        #
+        # The `> 0` guard is load-bearing, not defensive: the emitter documents
+        # the metric as "0 = unknown" and the EXIT trap writes that 0 on EVERY
+        # aborted run (stale-source guard, clone/mount abort, a failed `restic
+        # stats`). Unguarded, the left side goes hugely negative while the right
+        # side is exactly -0.2*0 = 0, so the comparison is trivially true and
+        # pages CRITICAL for a repo that never shrank — on top of the genuine
+        # ResticOffsiteFailed for the same run. One guard is enough because
+        # delta() uses only the window's FIRST and LAST samples: a sentinel as
+        # the last sample is this guard, a sentinel as the first sample makes
+        # the delta positive, and a sentinel in between does not affect it. A
+        # min_over_time guard would only suppress true positives.
+        - alert: ResticOffsiteRepoShrank
+          expr: >-
+            delta(restic_offsite_repo_size_bytes[2d]) < -0.2 * restic_offsite_repo_size_bytes
+            and restic_offsite_repo_size_bytes > 0
+          for: 1h
+          labels:
+            severity: critical
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/42-offsite-backup.md'
+            summary: 'Offsite B2 repo shrank by more than 20% in 2 days'
+            description: >-
+              restic_offsite_repo_size_bytes dropped
+              {{ $value | humanize1024 }}B over 2 days — more than an expected
+              prune. Stop the next prune and recover from B2's hide lifecycle
+              before its 30-day window closes (docs/42).
+
+        # 50h tolerates one skipped night: B2 chains off archive-backup, which
+        # can defer. absent() fires if the collector is gone.
+        - alert: ResticOffsiteStale
+          expr: (time() - restic_offsite_last_success_timestamp_seconds > 180000) or absent(restic_offsite_last_success_timestamp_seconds)
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            summary: 'Offsite B2 backup has not succeeded in over 50 hours'
+            description: >-
+              No successful restic-offsite run to B2 in more than 50 hours
+              (one skipped night + grace), or the metric is absent (role not
+              deployed, or node_exporter on pve-nas-01 unreachable). B2 is
+              the only offsite copy of the curated logical dumps + legacy
+              machine backups.
+
+        # Four days with no offsite copy at all. No absent() arm — absence stays
+        # warning-tier via ResticOffsiteStale above.
+        - alert: ResticOffsiteStaleCritical
+          expr: time() - restic_offsite_last_success_timestamp_seconds > 86400 * 4
+          for: 1h
+          labels:
+            severity: critical
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/42-offsite-backup.md'
+            summary: 'Offsite B2 backup has not succeeded in over 4 days'
+            description: >-
+              No successful restic-offsite run to B2 for more than 4 days. The
+              only offsite copy is ageing out while the local tiers carry the
+              whole risk (docs/42).
+
+        # Integrity of the offsite repo, distinct from the freshness of the last
+        # upload: restic-offsite-verify.timer runs a rotating 1/12 read-data
+        # `restic check` weekly. Split failed-vs-stale, mirroring the run pair.
+        # No absent() arm on either — the verify metrics appear only after the
+        # first verify, so absent() would fire forever on a fresh deploy.
+        - alert: ResticOffsiteVerifyFailed
+          expr: restic_offsite_last_verify_success == 0
+          for: 1h
+          labels:
+            severity: critical
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/42-offsite-backup.md'
+            summary: 'Offsite B2 repo verify FAILED'
+            description: >-
+              The last `restic check` against the B2 repository failed — the
+              only offsite copy may be corrupt or unrestorable. Run
+              `restic-offsitectl verify` on pve-nas-01 and investigate the
+              reported errors before relying on it for recovery (docs/42).
+
+        - alert: ResticOffsiteVerifyStale
+          expr: time() - restic_offsite_last_verify_timestamp_seconds > 691200
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/42-offsite-backup.md'
+            summary: 'Offsite B2 repo verify is stale (>8d)'
+            description: >-
+              No successful `restic check` against the B2 repository in over 8
+              days (weekly timer + grace). The offsite copy is unproven — run
+              `restic-offsitectl verify` on pve-nas-01 (docs/42).
+
+        # Two missed weekly verifies: the offsite tier is unproven for a fortnight
+        # while restic-offsitectl keeps reporting green uploads.
+        - alert: ResticOffsiteVerifyStaleCritical
+          expr: time() - restic_offsite_last_verify_timestamp_seconds > 86400 * 14
+          for: 1h
+          labels:
+            severity: critical
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/42-offsite-backup.md'
+            summary: 'Offsite B2 repo has not been verified in over 14 days'
+            description: >-
+              No successful `restic check` in more than 14 days. Restore-verify
+              is the only proof the offsite copy is restorable — treat an
+              unverified fortnight as an incident (docs/42).
+
+        # `restic check` proves structure and checksums; it does not prove a
+        # restored file matches its source. backup-restore-drill.timer (quarterly,
+        # Persistent=true, restic_offsite) restores the smallest files of the
+        # newest snapshot and byte-compares them against the ZFS subtree they came
+        # from. 100 days = one quarter plus a month of slack.
+        #
+        # Two STALENESS arms and no absent() arm. _last_success_seconds is the
+        # proof clock (write_drill_metrics preserves it across a failed drill);
+        # _last_run_seconds advances on failure too, so it is the only arm that
+        # can see a drill which is still being attempted but has never PASSED —
+        # that state emits no _last_success_seconds series at all. Both arms
+        # carry the same instance labels, so `or` collapses them to one alert.
+        #
+        # absent() is deliberately NOT here, and this is the opposite of the
+        # comment that used to sit in this spot: the metric only exists once a
+        # drill has actually run, so a bare absent() arm pages critical from
+        # merge day until the first quarterly elapse — the same trap
+        # GitLabBackupSecretsMissing avoids. BackupRestoreDrillNeverRan below
+        # owns the absence case, at warning tier.
+        - alert: BackupRestoreDrillStale
+          expr: >-
+            (time() - backup_restore_drill_last_success_seconds > 86400 * 100)
+            or (time() - backup_restore_drill_last_run_seconds > 86400 * 100)
+          for: 1h
+          labels:
+            severity: critical
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/42-offsite-backup.md'
+            summary: 'Offsite restore drill has not passed in over 100 days'
+            description: >-
+              No restore drill has compared a restored file byte-for-byte
+              against its source in more than 100 days (or no drill has been
+              ATTEMPTED in that long). Integrity is not restorability — run
+              `systemctl start backup-restore-drill.service` on pve-nas-01 and
+              read `journalctl -t backup-restore-drill` (docs/42).
+
+        # The absence case, split out of BackupRestoreDrillStale so it cannot
+        # page critical for the ~8 weeks between merge day and the first
+        # quarterly elapse. restic_offsite seeds one drill when the units are
+        # newly installed, so the metric normally appears within a textfile
+        # collector cycle of the deploy; 26h of `for:` absorbs a deploy at any
+        # hour plus that pickup. What survives 26h is a seed that never ran or
+        # never passed — a real gap, but one to work through on a weekday, not
+        # a page. It becomes critical on its own once the staleness clock above
+        # has something to measure.
+        - alert: BackupRestoreDrillNeverRan
+          expr: absent(backup_restore_drill_last_success_seconds)
+          for: 26h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/42-offsite-backup.md'
+            summary: 'No offsite restore drill has ever passed'
+            description: >-
+              backup_restore_drill_last_success_seconds does not exist anywhere:
+              no restore drill has ever compared a restored file byte-for-byte
+              against its source. Either the role's seed drill never ran, it ran
+              and FAILED (check `backup_restore_drill_last_run_seconds` — it
+              advances on failure), or restic_offsite is not deployed. Run
+              `systemctl start backup-restore-drill.service` on pve-nas-01 and
+              read `journalctl -t backup-restore-drill` (docs/42).
+
+        # NAS-side independent freshness: the VM wrappers write their _last_*
+        # metrics from INSIDE the VM, so those go green even when the file never
+        # reached tank/backups. The absent arm is enumerated PER APP because a
+        # family-level absent() would only fire once every app's series vanished.
+        #
+        # pve-cluster is gated on its producer's success metric: that producer
+        # ships on the Ansible lifecycle, so an unconditional absent() would page
+        # for a backup that has never run. `and on()` matches the empty label
+        # set, so the alert keeps absent()'s app="pve-cluster" label.
+        - alert: BackupArtifactStale
+          expr: >-
+            (time() - backup_artifact_last_mtime_seconds > 180000)
+            or absent(backup_artifact_last_mtime_seconds{app="authentik"})
+            or absent(backup_artifact_last_mtime_seconds{app="mealie"})
+            or absent(backup_artifact_last_mtime_seconds{app="gitlab"})
+            or absent(backup_artifact_last_mtime_seconds{app="immich"})
+            or absent(backup_artifact_last_mtime_seconds{app="nextcloud"})
+            or absent(backup_artifact_last_mtime_seconds{app="home-assistant"})
+            or (
+              absent(backup_artifact_last_mtime_seconds{app="pve-cluster"})
+              and on() (pve_cluster_backup_last_success_timestamp_seconds > 0)
+            )
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            summary: 'Backup artifact for {{ $labels.app }} has not landed on tank/backups in over 50 hours'
+            description: >-
+              The newest dump under tank/backups/apps/{{ $labels.app }} is
+              more than 50 hours old, or its per-app series is absent (the
+              app's landing dir is missing / never created). The dump is not
+              reaching the file-walkable dataset that rides archsync into B2 —
+              check the VM's NFS mount + backup wrapper landing path, and that
+              the tank/backups/apps/{{ $labels.app }} subdir exists.
+
+        # Four days is two more failed nightly cycles past the warning, with the
+        # dump never reaching the dataset that rides into B2. No absent() arm —
+        # the per-app absence cases stay warning-tier above.
+        - alert: BackupArtifactStaleCritical
+          expr: time() - backup_artifact_last_mtime_seconds > 86400 * 4
+          for: 1h
+          labels:
+            severity: critical
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            summary: 'Backup artifact for {{ $labels.app }} has not landed on tank/backups in over 4 days'
+            description: >-
+              The newest dump under tank/backups/apps/{{ $labels.app }} is more
+              than 4 days old, so nothing for that app has entered the offsite
+              chain in four nights.
+
+        # The NAS-side counterpart to BackupArtifactEmpty. That rule keys on the
+        # `<app>_backup_last_size_bytes` family the VM/k8s wrappers emit, which
+        # authentik, mealie and home-assistant have no member of — and a
+        # truncated dump lands with a FRESH mtime, so BackupArtifactStale stays
+        # green too. The mtime guard splits the two 0 meanings the collector
+        # documents: mtime 0 = no matching file at all (staleness owns it),
+        # mtime > 0 with size 0 = a real file that is empty.
+        - alert: BackupArtifactZeroBytes
+          expr: >-
+            backup_artifact_last_size_bytes == 0
+            and backup_artifact_last_mtime_seconds > 0
+          for: 1h
+          labels:
+            severity: critical
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            summary: 'Backup artifact for {{ $labels.app }} landed 0 bytes on tank/backups'
+            description: >-
+              The newest file matching {{ $labels.app }}'s artefact glob under
+              tank/backups/apps/{{ $labels.app }} is 0 bytes, with a recent
+              mtime — the dump ran and wrote nothing (a truncated pg_dump, a
+              full landing zone, or a wrapper piping an error into the file).
+              An empty dump restores nothing; treat it as no backup for that
+              app tonight.
+
+        # Companions are the files an artefact cannot be restored WITHOUT
+        # (gitlab-secrets.json for the GitLab tarball) and are deliberately kept
+        # out of the artefact glob, so no freshness/size arm above sees them.
+        # Both arms are needed: absent emits present=0 + size=0, while a
+        # truncated companion emits present=1 + size=0. `or` matches on the
+        # label set minus __name__, so the two arms collapse to one alert per
+        # (app, file) rather than double-paging.
+        - alert: BackupArtifactCompanionMissing
+          expr: >-
+            backup_artifact_companion_present == 0
+            or backup_artifact_companion_size_bytes == 0
+          for: 1h
+          labels:
+            severity: critical
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/42-offsite-backup.md'
+            summary: '{{ $labels.file }} is missing or empty in tank/backups/apps/{{ $labels.app }}'
+            description: >-
+              A file required to RESTORE {{ $labels.app }}'s backup
+              ({{ $labels.file }}) is absent from, or 0 bytes in,
+              tank/backups/apps/{{ $labels.app }}. The artefact itself may be
+              fresh and full-size and still be unrestorable. Check the app's
+              backup wrapper — the companion copy is a separate step from the
+              dump and fails separately.
+
+        # Collector meta-failure: the oneshot ran but is stuck, or the timer was
+        # never deployed — in which case BackupArtifactStale serves stale inputs.
+        # The timer runs every 10m; 2h is a generous ~12-cycle window so the
+        # nightly archive/restic IO chain cannot flap it.
+        - alert: BackupArtifactCollectorStale
+          expr: >-
+            (time() - backup_artifact_collector_last_success_seconds > 7200)
+            or absent(backup_artifact_collector_last_success_seconds)
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            summary: 'backup-artifact mtime collector is degraded or missing on {{ $labels.instance }}'
+            description: >-
+              backup_artifact_collector_last_success_seconds is stale (>2h) or
+              entirely absent — the per-app backup-artifact freshness alerts
+              are serving stale or no inputs. Check
+              `journalctl -u backup-artifact-mtime-collector.service` and
+              `systemctl status backup-artifact-mtime-collector.timer` on
+              pve-nas-01.

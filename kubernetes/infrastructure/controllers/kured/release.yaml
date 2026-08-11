@@ -4,13 +4,9 @@
 # playbooks after a kernel update), one node at a time, with cordon -> drain ->
 # reboot -> uncordon handled by kured itself.
 #
-# WHY: maintenance-run-all runs in an in-cluster GitLab runner EXECUTOR pod. When
-# its rolling play reached the k3s node hosting that executor and ran `kubectl
-# drain`, it evicted the pod running the playbook -> the job deadlocked. kured is
-# a DaemonSet (one pod per node) coordinated by a cluster-wide lock, so each node
-# reboots ITSELF and no single orchestrator ever has to drain its own node. The
-# maintenance playbooks now just flag the sentinel and let kured do the reboots,
-# decoupled from (and surviving the end of) the CI job.
+# The maintenance playbooks only set the sentinel: each node reboots ITSELF
+# under kured's cluster-wide lock, so no orchestrator ever has to drain the node
+# it is running on, and reboots outlive the CI job that flagged them.
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -32,12 +28,9 @@ spec:
         name: kured
         namespace: flux-system
       interval: 12h
-  # disableWait: kured is a DaemonSet — its pods are best-effort per-node. The
-  # infrastructure-controllers Flux Kustomization is wait:true, so if Helm waited
-  # for the DS to be fully Ready, a single NotReady node (e.g. one mid-reboot
-  # during maintenance) would block this HelmRelease and stall the whole stage.
-  # The HelmRelease is Ready once Helm applies the manifests; per-node kured pod
-  # health is surfaced by normal pod/DaemonSet monitoring instead.
+  # disableWait: a single NotReady node (one mid-reboot) must not hold this
+  # DaemonSet NotReady and stall the wait:true controllers stage. Per-node kured
+  # health is covered by normal pod/DaemonSet monitoring.
   install:
     disableWait: true
     remediation:
@@ -51,110 +44,47 @@ spec:
     configuration:
       # Pick up a maintenance-flagged reboot promptly (chart default is 1h).
       period: "5m"
-      # NO Prometheus alert-pause (prometheusUrl/alertFiringOnly/alertFilterRegexp).
-      # It was considered as out-of-band defence-in-depth (don't reboot a 2nd node
-      # while one is already NotReady) but DELIBERATELY left off:
-      #  - It is REDUNDANT: the only writer of /var/run/reboot-required on the k3s
-      #    VMs is the maintenance playbook (unattended-upgrades is not configured),
-      #    and during a maintenance run etcd-quorum is already enforced by the
-      #    playbook guards (_wait-no-kured-server-reboot + the etcd-rejoin wait) plus
-      #    kured concurrency:1. There is no out-of-band sentinel writer for it to
-      #    guard against.
-      #  - It is a NET RELIABILITY LOSS: kured fails CLOSED on a Prometheus query
-      #    error, Prometheus is single-replica behind the observability namespace's
-      #    default-deny-ingress NetworkPolicy (which does NOT allow kube-system), and
-      #    is pinned to k3s-agt-nas-01 — so wiring it would have BLOCKED ALL kured
-      #    reboots outright (NetworkPolicy denial) and otherwise coupled reboots to
-      #    Prometheus being up. Removing it keeps the reboot path dependency-free.
-      # One node reboots at a time — kured's cluster-wide lock enforces this across
-      # every DaemonSet pod, preserving availability AND keeping the 3-node etcd
-      # quorum safe (servers on pve-nas-01/laptop-01/prec-01 are never rebooted
-      # 2-at-once BY kured). The OTHER reboot paths are serialized against kured by
-      # CONSTRUCTION, not by timing: update-packages play 1 (synchronous host
-      # reboots, serial:1) waits for each rebooted server's node to be Ready before
-      # advancing; update-k3s-nodes' server play waits until no server carries the
-      # kured-reboot-in-progress annotation before restarting k3s; and the detached
-      # self-host reboot only ever targets an opt-* host (NO etcd member), so it
-      # cannot take a member down out-of-band. With single-fault etcd tolerance, no
-      # path puts 2 of 3 members down at once.
+      # Deliberately NO Prometheus alert-pause: kured fails CLOSED on a query
+      # error and Prometheus is single-replica behind the observability
+      # default-deny-ingress, so wiring it would block every reboot.
+      # One node at a time, enforced by kured's cluster-wide lock — this is what
+      # keeps the 3-node etcd quorum safe. The maintenance playbooks serialize
+      # their own host reboots against it by construction (docs/12).
       concurrency: 1
-      # NON-EXPIRING lock (lockTtl: 0). kured's TTL is a PURE time-based steal: once
-      # a held lock ages past lockTtl the next poller OVERWRITES it with NO health
-      # check on the prior holder (kured 1.22.1 ttlExpired() = ttl>0 && since>=ttl;
-      # the takeover path inspects nothing else, and this release removed the
-      # Prometheus alert-pause so no health gate remains). With a finite TTL, an
-      # etcd-SERVER reboot that wedges past it would let kured reboot a SECOND server
-      # while the first is still down — the 2-of-3-members-down outcome concurrency:1
-      # exists to prevent (and during op-1 the _wait-no-kured-server-reboot guard does
-      # NOT gate kured's autonomous reboots). TTL=0 means the lock is released ONLY by
-      # its holder (the rebooted node's kured pod uncordons + Release()s on restart).
-      # Trade-off — a kured pod that truly dies holding the lock blocks OTHER reboots
-      # until cleared manually (`kubectl -n kube-system annotate ds/kured
-      # weave.works/kured-node-lock-`); benign here because kured only acts during an
-      # operator-attended maintenance window (the playbook is the sole sentinel
-      # writer) and a server wedged that long is a dead-server incident anyway
-      # (KubeNodeNotReady at 15m, NodeStuckCordoned at 30m).
+      # NON-EXPIRING lock. kured's TTL is a pure time-based steal with no health
+      # check on the holder, so a finite TTL would let it reboot a second etcd
+      # server while the first is still down. At 0 the lock is released only by
+      # its holder; a kured pod that dies holding it blocks reboots until an
+      # operator clears the annotation (docs/12-runbooks.md).
       lockTtl: "0"
-      # Bound the pre-reboot drain. Do NOT force-reboot on drain failure: leave
-      # the sentinel set and retry next period rather than hard-killing pods
-      # (e.g. a heavily-loaded node whose eviction is slow).
-      # k3s-agt-nas-01 is the slowest reboot: it drains single-replica RWO pods
-      # pinned there (prometheus, loki, authentik/mealie postgres on encrypted-ssd
-      # zvols, grafana). That is SAFE — kured reboots the VM's guest OS via
-      # systemctl reboot (the QEMU process and attached zvols stay up on the host),
-      # so those pods reschedule back onto the node once it returns; the verify
-      # excuses their brief unavailability (node-scoped). They are down only for
-      # that node's reboot window, never relocated. If their eviction is ever
-      # observed to exceed 5m, raise drainTimeout (keep forceReboot:false).
-      # Other un-drainable case: a PDB blocking the LAST evictable replica — e.g.
-      # both CoreDNS replicas co-located on one node (soft anti-affinity usually
-      # spreads them; minAvailable:1 then blocks draining that node). kured aborts
-      # + uncordons + retries, so the node simply does not reboot until the
-      # co-location clears. Rare; surfaced by NodeStuckCordoned only if the abort
-      # leaves it cordoned. Not auto-mitigated (k3s AddOn ownership blocks hard
-      # CoreDNS anti-affinity); a stuck kured reboot here is an operator follow-up.
+      # Bound the pre-reboot drain; never force-reboot on drain failure — leave
+      # the sentinel set and retry next period instead of hard-killing pods. An
+      # undrainable node (slow eviction of the NAS-pinned single-replica pods, or
+      # a PDB blocking the last replica) simply does not reboot; NodeStuckCordoned
+      # surfaces it if the abort leaves the node cordoned.
       drainTimeout: "5m"
       forceReboot: false
-      # The maintenance playbooks `touch` this on a k3s node when a kernel update
-      # requires a reboot; kured watches for it. The sentinel AUTO-CLEARS on reboot
-      # because /var/run is a symlink to /run (a tmpfs) on these systemd Debian VMs
-      # — so kured does not loop-reboot. This depends on /var/run being tmpfs; it is
-      # on all current VMs, but a future non-tmpfs /var/run would need the sentinel
-      # cleared explicitly.
+      # Touched by the maintenance playbooks when a kernel update needs a reboot.
+      # It auto-clears because /var/run is a tmpfs symlink to /run on these VMs;
+      # a non-tmpfs /var/run would loop-reboot unless the sentinel is cleared.
       rebootSentinel: "/var/run/reboot-required"
       rebootCommand: "/bin/systemctl reboot"
       # Record reboot progress as node annotations for visibility.
       annotateNodes: true
-      # Never reboot a node while it runs an infrastructure CI runner JOB
-      # (executor) pod — maintenance-run-all is one such pod. kured defers that
-      # node until the job finishes (executor gone), then reboots it on a later
-      # cycle. Without this, op-1 flags the executor's own node's sentinel and
-      # kured would drain+reboot it mid-run, aborting the remaining ops.
-      # Scope note: the label is on EVERY infrastructure-class job pod (lint,
-      # deploy, etc.), not only maintenance — intentional: kured should not reboot
-      # a node running ANY infra CI job out from under it. The brief deferral that
-      # causes is fine (kured retries next cycle).
-      # The runner MANAGER pod does NOT carry this label (verified: only job pods
-      # get it via pod_labels in gitlab-runner-privileged/release.yaml), so its
-      # node is never permanently blocked. If kured reboots the manager's node, the
-      # manager (a single-replica Deployment) is evicted and reschedules in ~1 min;
-      # in-flight jobs run independently in their executor pods and are unaffected,
-      # so this is left unblocked deliberately (blocking it would wedge that node's
-      # reboots forever).
+      # Defer a node while it runs any infrastructure-class CI JOB pod, so kured
+      # cannot drain a running pipeline (including maintenance-run-all) out from
+      # under itself; it retries next cycle. Only job pods carry the label
+      # (pod_labels in apps/gitlab-runner-privileged), so the runner manager's
+      # node is never permanently blocked.
       blockingPodSelector:
         - esweiss.com/runner-class=infrastructure
-    # Scrape kured's reboot-orchestration metrics (kured_reboot_required,
-    # kured_reboot_blocked_reboot_locked, the lock-held gauges) so a stuck/aborted
-    # reboot cycle is alertable directly (KuredRebootStuck), not just via the
-    # indirect node-condition alerts. service.create exposes the metrics port;
-    # metrics.create is the paired ServiceMonitor (Prometheus discovers it
-    # cluster-wide — serviceMonitorSelectorNilUsesHelmValues: false).
+    # Metrics Service + ServiceMonitor, so a stuck or aborted reboot cycle is
+    # alertable directly (KuredRebootStuck) rather than only via node conditions.
     service:
       create: true
     metrics:
       create: true
-    # kured is a per-node agent: it MUST run on EVERY node (servers + agents +
-    # taint-bearing compute), so tolerate all taints.
+    # Per-node agent: must run on every node, so tolerate all taints.
     tolerations:
       - operator: Exists
     # Node-critical so it isn't evicted under pressure and schedules everywhere.

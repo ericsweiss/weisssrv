@@ -56,6 +56,9 @@ terraform.rc
 ansible/inventories/*/host_vars/*/vault.yml
 ansible/inventories/*/group_vars/*/vault.yml
 .ansible/
+# ANSIBLE_HOME for the CI ansible-lint job and `task ansible:lint` — the
+# weisssrv.infra collection installs under .ansible-home/collections.
+.ansible-home/
 
 # Python
 __pycache__/

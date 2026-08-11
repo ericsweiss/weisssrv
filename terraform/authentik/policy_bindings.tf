@@ -1,13 +1,8 @@
-# Application access-policy group bindings. Every application carries exactly
-# ONE group binding (order 0, enabled) — with policy_engine_mode "any",
-# membership of the bound group is required to pass authorization. This is the
-# ENFORCEMENT structure for per-app access: the sole human user is a member of
-# every bound group (groups.tf), so effective access today is unchanged;
-# future users are scoped per-app purely by group membership.
-#
-# All bindings here are Terraform-CREATED (nothing to import): before this
-# file no application had a binding, i.e. every app was open to all
-# authenticated users.
+# Application access-policy group bindings — the enforcement structure for
+# per-app access. Every application carries exactly one group binding (order 0);
+# with policy_engine_mode "any", membership of the bound group is required to
+# pass authorization. Homarr is the one two-tier exception (below). All bindings
+# are Terraform-created; none is imported.
 
 locals {
   # App slug -> the group gating it. The seven Downloads (media-client) apps
@@ -15,13 +10,13 @@ locals {
   application_group_bindings = {
     # Home
     bar    = authentik_group.app["bar-assistant-users"].id
+    cloud  = authentik_group.app["nextcloud-users"].id
     food   = authentik_group.app["mealie-users"].id
     home   = authentik_group.app["home-assistant-users"].id
     photos = authentik_group.app["immich-users"].id
 
     # Software
     agent   = authentik_group.app["hermes-users"].id
-    cloud   = authentik_group.app["nextcloud-users"].id
     git     = authentik_group.app["gitlab-users"].id
     grafana = authentik_group.app["grafana-users"].id
     vpn     = authentik_group.app["vpn-admins"].id

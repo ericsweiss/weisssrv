@@ -1,41 +1,41 @@
 # Import blocks binding the ADOPTED resources to their live API objects
-# (applications by slug, providers by numeric pk, groups by uuid). These are
-# idempotent: once a resource is present in state the block is a no-op, so
-# the file is kept as the permanent record of the state<->API identity map.
+# (applications by slug, providers by numeric pk, groups by uuid). Idempotent:
+# once a resource is in state the block is a no-op, so this file is the permanent
+# state<->API identity map.
 #
-# The one-time state bootstrap was performed with `terraform import` (see
-# README "Import methodology") — no apply was involved.
-#
-# SCOPE — this file covers the 44 objects that existed in the Admin UI at
-# adoption time. It does NOT cover the objects this module AUTHORED since:
-# 3 applications (adguard_01, adguard_02, homarr), 4 providers (proxy
-# adguard_01/adguard_02, oauth2 hermes_dashboard/homarr), 6 groups
-# (bar-assistant-users, home-assistant-users, homarr-admins, homarr-users,
-# media_admins, dns_admins) and all 20 policy bindings. Their live pks/uuids
-# are assigned by authentik at create time and are not knowable from source,
-# so they are deliberately absent rather than guessed.
-#
-# What that means for DISASTER RECOVERY (state lost, authentik intact): a bare
-# `terraform plan` is NOT "N to import, 0 to change" — the 33 uncovered objects
-# would plan as CREATES against objects that already exist, and apply fails
-# part-way (application slugs and group names are both unique in authentik, so
-# it errors rather than silently duplicating). The runbook is:
-#   1. `task terraform:authentik-import`  — adopts the 44 objects here.
-#   2. Enumerate the rest from the API and `terraform import` each one, e.g.
-#      curl -sH "Authorization: Bearer $AUTHENTIK_TOKEN" \
-#        https://auth.esweiss.com/api/v3/core/applications/ | jq -r '.results[].slug'
-#      (…/core/groups/ for uuids, …/providers/all/ for pks,
-#       …/policies/bindings/ for binding uuids).
-#   3. `terraform plan` — only then is "0 to add" the expected result.
-# Adding the new import blocks here as you go is the way to shorten step 2 for
-# the next time.
+# SCOPE — the 44 objects that existed in the Admin UI at adoption time only.
+# Objects this module has AUTHORED since have no import block (authentik assigns
+# their pks/uuids at create time), which is why a state-loss rebuild is not a
+# one-command re-import — see README "Import methodology / disaster recovery".
 
-# Applications (id = slug)
+# Applications (id = slug). Static list, NOT local.applications: a newly
+# authored app has no live object to import, and a for_each over the map would
+# fail its plan. import.sh reads this list.
+locals {
+  imported_application_slugs = toset([
+    "agent",
+    "bar",
+    "cloud",
+    "food",
+    "git",
+    "grafana",
+    "home",
+    "movies",
+    "music",
+    "nzbget",
+    "photos",
+    "prowlarr",
+    "pulsarr",
+    "qbittorrent",
+    "tv",
+    "vpn",
+  ])
+}
 
 import {
-  for_each = local.applications
-  to       = authentik_application.app[each.key]
-  id       = each.key
+  for_each = local.imported_application_slugs
+  to       = authentik_application.app[each.value]
+  id       = each.value
 }
 
 # Proxy providers (id = provider pk)
@@ -144,10 +144,9 @@ import {
   id = "b3dbbcbb-2207-41fb-bf2b-dacd7aeec37c"
 }
 
-# Embedded outpost (id = outpost uuid)
-# Adopted after the original 44-object import (see outpost.tf for why). The
-# import is what makes the auth-passthrough plan an in-place provider-list
-# append instead of an (impossible) create of authentik's own outpost.
+# Embedded outpost (id = outpost uuid). The import is what makes a provider-list
+# change an in-place append instead of an (impossible) create of authentik's own
+# outpost.
 
 import {
   to = authentik_outpost.embedded

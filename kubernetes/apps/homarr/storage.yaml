@@ -1,25 +1,17 @@
 ---
-# NFS-backed persistent state for Homarr — the SQLite DB (default
-# /appdata/db/db.sqlite), board config, uploaded icons and the encrypted
-# integration credentials, all under a single writable mount at /appdata.
-# Lives on the encrypted ssd/appdata dataset via the appdata NFS export;
-# captured by the nightly ssd/appdata -> archive raw-ZFS replication (child of
-# an existing backup root — no SRC_LIST edit needed). The export uses
-# all_squash,anonuid=1000,anongid=2000, so every container write maps to
-# 1000:2000 on the NAS regardless of the in-container UID; the /appdata/homarr
-# subdir is created + owned 1000:2000 by the nas_storage role (nas_appdata_dirs).
+# NFS-backed persistent state for Homarr — the SQLite DB, board config, icons
+# and the encrypted integration credentials, all under one writable /appdata
+# mount. Lives on the encrypted ssd/appdata dataset, so the nightly
+# ssd/appdata -> archive replication captures it; the export's all_squash maps
+# every write to 1000:2000 and the nas_storage role owns the subdir.
 #
-# SQLite-on-NFS note (deliberate — same pattern hindsight already runs on this
-# export): SQLite tolerates exactly ONE writer. replicas: 1 + strategy Recreate
-# (deployment.yaml) guarantee no two pods ever dual-mount this RWO PV, which is
-# what makes SQLite-over-NFS safe here. The volume is hard-mounted NFSv4.2. If
-# WAL/locking ever bites, the follow-up is a dedicated ext4-on-zvol PV
-# (NAS-pinned, like the Postgres apps) — documented in docs/41, not now.
+# SQLite-on-NFS is deliberate: SQLite tolerates exactly one writer, and
+# replicas: 1 + Recreate (deployment.yaml) guarantee no two pods dual-mount this
+# RWO PV. docs/41 records the ext4-on-zvol fallback if WAL/locking ever bites.
 #
-# server: is an immutable PV field; the kustomize force annotation lets Flux
-# delete+recreate it if server/mountOptions ever change (Retain -> data safe).
-# Hostname (not IP) is required so xprtsec=tls verifies against the
-# *.esweiss.com cert SAN — an IP mount fails the TLS handshake. See docs/07.
+# server: is immutable, so the force annotation lets Flux delete+recreate the PV
+# (Retain -> data safe). It must be the hostname: xprtsec=tls verifies against
+# the *.esweiss.com cert SAN and an IP mount fails the handshake (docs/07).
 apiVersion: v1
 kind: PersistentVolume
 metadata:

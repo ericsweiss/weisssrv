@@ -1,16 +1,9 @@
 ---
-# Shared GitLab Runner HelmRelease config — a Kustomize Component carrying the
-# fields that were byte-identical in both runner releases (gitlab-runner and
-# gitlab-runner-privileged) and previously kept in sync only by a hand-mirrored
-# "mirror edits there" comment. Both runner kustomizations list this component;
-# it merges these values into each HelmRelease at build time, so the rendered
-# CRs are unchanged while the shared surface lives here exactly once.
-#
-# Each per-runner release.yaml keeps only its genuine deltas: metadata.name /
-# namespace, releaseName, secret, tags, runUntagged/protected, concurrent, the
-# executor `config` TOML, image/privileged, serviceAccount name, and per-runner
-# job resources. The two runners are the shared-vs-privileged trust boundary, so
-# a fix applied here can no longer be forgotten in one file.
+# Shared GitLab Runner HelmRelease config, merged into both runner releases
+# (gitlab-runner, gitlab-runner-privileged) at build time. Anything identical in
+# both belongs here; each release.yaml keeps only its own deltas — name,
+# releaseName, secret, tags, runUntagged/protected, concurrent, the executor
+# TOML, image/privileged, serviceAccount and job resources.
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 patches:
@@ -63,7 +56,6 @@ patches:
           # deployment silently at 0.
           replicas: 1
 
-          # Check interval (seconds)
           checkInterval: 30
 
           # RBAC — bound only to the manager SA; job pods run as an unprivileged
@@ -87,14 +79,12 @@ patches:
               cpu: 150m
               memory: 128Mi
             limits:
-              # No CPU limit: the runner manager is a trusted control-loop poller
-              # that bursts when spawning/reaping CI job pods; CFS throttling at 1
-              # core was a chronic CPUThrottlingHigh source. The CPU request still
-              # grants a scheduling share; memory limit kept (OOM is a real
-              # failure mode).
+              # No CPU limit: the manager bursts when spawning/reaping job pods
+              # and CFS throttling made that a chronic CPUThrottlingHigh source.
+              # The request still grants a scheduling share.
               memory: 512Mi
 
-          # Node affinity — prefer non-NAS nodes for runner pods.
+          # Prefer non-NAS nodes for runner pods.
           affinity:
             nodeAffinity:
               preferredDuringSchedulingIgnoredDuringExecution:
@@ -104,7 +94,6 @@ patches:
                       - key: esweiss.com/nas
                         operator: DoesNotExist
 
-          # Tolerations for workload nodes.
           tolerations:
             - key: esweiss.com/ingress
               operator: Equal

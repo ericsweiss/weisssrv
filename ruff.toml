@@ -1,0 +1,18 @@
+# Shared ruff config for weisssrv-family Python (stdlib helper scripts, their
+# tests, and the packaging CLI). ci/lint/python-lint.yml points at it via the
+# `config` input; this library self-applies it in place (`--config
+# lint/ruff.toml`), a consumer either does the same after vendoring or drops it
+# at its repo root as `ruff.toml`.
+#
+# `target-version` must not exceed the lowest Python a consumer supports —
+# cli/pyproject.toml declares requires-python >=3.9, and the CI images run 3.11
+# (templates) / 3.13 (this repo).
+target-version = "py39"
+
+[lint]
+# Correctness-first selection: pyflakes (F), the pycodestyle subsets that flag
+# real errors rather than layout (E4 imports, E7 statements, E9 syntax/IO), W
+# (invalid escapes, trailing whitespace), and bugbear (B). Formatting-only rules
+# (line length, quote style, import order) are deliberately OUT — the family has
+# no formatter and churning them would bury the findings that matter.
+select = ["E4", "E7", "E9", "F", "W", "B"]

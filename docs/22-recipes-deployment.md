@@ -78,7 +78,7 @@ This guide covers deploying the recipe management stack including Mealie (food r
 
 The NFS exports and per-app appdata directories are provisioned by the
 `nas_storage` role: `mealie` and `bar-assistant` are in the role's
-`nas_appdata_dirs` list, so `/mnt/ssd/appdata/{mealie,bar-assistant}` are
+`nas_storage_appdata_dirs` list, so `/mnt/ssd/appdata/{mealie,bar-assistant}` are
 created (owned `1000:2000`) by `task storage:deploy` — no manual `mkdir`
 needed (Meilisearch uses a `subPath` within the Bar Assistant mount). Verify:
 
@@ -174,6 +174,7 @@ kubernetes/apps/recipes/
 ├── bar-assistant.yaml      # Deployment + Service (Bar Assistant, Redis, Meilisearch, Salt Rim)
 ├── certificate.yaml        # cert-manager Certificates (recipes-esweiss-tls, recipes-ericsweiss-tls)
 ├── ingress-routes.yaml     # Traefik IngressRoutes for food/bar domains
+├── pg-dump.yaml            # nightly mealie-pg-dump CronJob -> tank/backups/apps/mealie
 ├── hpa.yaml                # salt-rim standalone HPA (see docs/33-autoscaling.md)
 ├── networkpolicy.yaml      # default-deny + per-app allowlist
 ├── vpa.yaml                # VerticalPodAutoscalers (per-container sizing)
@@ -359,22 +360,19 @@ git push
 
 ### Backup
 
-App data is stored on NFS (`/mnt/ssd/appdata`). Include in your regular NAS backup strategy.
+Everything here is covered by the automated chain; there is no manual step.
 
-**NFS-backed data (automatically included in NAS backups):**
-- `/mnt/ssd/appdata/mealie/` - Mealie data and uploads
-- `/mnt/ssd/appdata/bar-assistant/` - Bar Assistant data and SQLite database
-- `/mnt/ssd/appdata/bar-assistant/meilisearch/` - Meilisearch index data
+| Data | Path | Backup path |
+|---|---|---|
+| Mealie PostgreSQL | zvol `ssd/appdata/mealie/postgres` | nightly `mealie-pg-dump` CronJob → `tank/backups/apps/mealie` → archive + restic B2; the zvol itself also rides `ssd/appdata → archive` (crash-consistent) |
+| Mealie data/uploads | `/mnt/ssd/appdata/mealie/` | `ssd/appdata → archive` + restic B2 |
+| Bar Assistant SQLite | `/mnt/ssd/appdata/bar-assistant/` | `ssd/appdata → archive` + restic B2 |
+| Meilisearch index | `/mnt/ssd/appdata/bar-assistant/meilisearch/` | same, though the index is regenerable from the SQLite DB |
 
-**ZFS zvol storage (backed by SSD pool):**
-- Mealie PostgreSQL data is stored on a ZFS zvol (`ssd/appdata/mealie/postgres`) attached to k3s-agt-nas-01
-- Mounted at `/mnt/mealie-postgres-data` inside the VM, exposed as a hostPath PV
-- The zvol inherits ZFS pool-level snapshots and replication capabilities
-- **Recommended**: Use Mealie's built-in backup feature (Admin > Backups) which exports the full database
-
-For application-level backups:
-- **Mealie**: Use the built-in backup feature in Admin > Backups
-- **Bar Assistant**: Export data via Settings > Data
+Prefer the logical `pg_dump` for a Mealie restore. Freshness is watched by
+`MealieBackupStale`; the restore recipes are in
+[docs/17 § Other backup types](17-disaster-recovery.md#other-backup-types) and
+the offsite tier in [docs/42](42-offsite-backup.md).
 
 ## Troubleshooting
 
@@ -434,16 +432,7 @@ kubectl exec -n recipes deployment/bar-assistant-meilisearch -- wget -qO- http:/
 # Access Bar Assistant > Settings > Server > Rebuild search index
 ```
 
-## Future Enhancements
-
-### High Availability
-
-For production HA:
-1. Deploy PostgreSQL with replication (consider CloudNativePG operator)
-2. Scale app replicas to 2+
-3. Consider external PostgreSQL service
-
-## Related Documentation
+## Related documentation
 
 - [K3s Deployment Guide](./19-k3s-deployment.md)
 - [Flux Operations](./29-flux-operations.md)

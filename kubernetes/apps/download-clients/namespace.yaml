@@ -7,10 +7,10 @@ metadata:
     app.kubernetes.io/name: downloads
     app.kubernetes.io/part-of: media-stack
     app.kubernetes.io/managed-by: flux
-    # Pod Security Standards - privileged required for Gluetun VPN sidecar
-    # (NET_ADMIN capability + sysctl modifications for VPN tunnel)
-    # PSA is namespace-scoped; cannot isolate to VPN pods only.
-    # Accepted trade-off: all download pods share privileged namespace.
+    # enforce: privileged is required namespace-wide for the Gluetun sidecar's
+    # NET_ADMIN + hostPath TUN device; PSA cannot scope that to one pod.
+    # warn/audit stay at baseline so a new over-privileged pod is still
+    # surfaced instead of silently blessed (the gluetun pods themselves warn).
     pod-security.kubernetes.io/enforce: privileged
-    pod-security.kubernetes.io/audit: privileged
-    pod-security.kubernetes.io/warn: privileged
+    pod-security.kubernetes.io/audit: baseline
+    pod-security.kubernetes.io/warn: baseline

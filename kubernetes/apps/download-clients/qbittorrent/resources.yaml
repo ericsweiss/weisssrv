@@ -1,24 +1,8 @@
 ---
-# qBittorrent - BitTorrent client with optional VPN sidecar
-# URL: qbittorrent.esweiss.com
-#
-# VPN Mode (vpn_enabled: "true"):
-#   - Gluetun sidecar provides VPN tunnel
-#   - Containers share network namespace for killswitch enforcement
-#   - If VPN dies, qBittorrent loses network (by design)
-#
-# Direct Mode (vpn_enabled: "false"):
-#   - qBittorrent runs without VPN
-#   - Direct internet access
-#
-# The shared Gluetun sidecar (container + check-vpn-config initContainer +
-# tun/vpn-config volumes + pod dnsConfig) is injected by the ../_vpn-sidecar
-# Kustomize Component (see kustomization.yaml). This file carries only the
-# qBittorrent-specific pieces (the clean-stale-locks initContainer, the
-# gluetun-exporter sidecar, the app container, and the PodMonitor).
-#
-# Switch modes: edit the qbittorrent-vpn-config ConfigMap below (vpn_enabled
-# and vpn_provider); see README.md § Per-App VPN Control.
+# qBittorrent (qbittorrent.esweiss.com). The shared Gluetun sidecar, its
+# initContainer, volumes and pod dnsConfig come from the ../_vpn-sidecar
+# component; this file carries only the qBittorrent-specific pieces. VPN and
+# Direct mode, and how to switch them, are in README.md § Per-App VPN Control.
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -29,21 +13,10 @@ metadata:
     app.kubernetes.io/name: qbittorrent
     app.kubernetes.io/component: config
   annotations:
-    # CREATE-ONLY under Flux (create-only server-side apply): Flux creates this
-    # ConfigMap on a fresh cluster from the committed default below, then never
-    # reconciles/reverts it — so `task downloads:vpn -- APP=qbittorrent STATE=off`
-    # (and vpn-provider) kubectl-patch it live and the change STICKS (Reloader
-    # rolls the pod). TRADE-OFF: the values here are only the BOOTSTRAP default;
-    # once the object exists, git edits do NOT propagate — live state wins. To
-    # resync git on top: `kubectl delete configmap qbittorrent-vpn-config -n
-    # downloads` then `task flux:reconcile`. Still tracked/prunable (unlike
-    # reconcile:disabled). See README § Live VPN Toggles.
-    #
-    # NOTE: turning the VPN OFF here via the live task does NOT remove the
-    # gluetun-exporter/PodMonitor (they are Flux-managed, not toggled), so the
-    # exporter will report gluetun_vpn_status=0 and VPNDown will fire after 15m.
-    # The live toggle is for short-lived ops; for a durable VPN-off qbittorrent,
-    # also drop the exporter + PodMonitor in git (see README § Per-App VPN Control).
+    # CREATE-ONLY apply: Flux creates this ConfigMap on a fresh cluster and then
+    # never reverts it, so `task downloads:vpn` patches stick. The values below
+    # are therefore only the bootstrap default — git edits do not propagate
+    # until the object is deleted and reconciled. README § Live VPN Toggles.
     kustomize.toolkit.fluxcd.io/ssa: IfNotPresent
 data:
   # COUPLED: vpn_enabled + the gluetun-exporter container + the
@@ -56,8 +29,6 @@ data:
   server_countries: "Netherlands"
 
 ---
-# Deployment. The Gluetun VPN sidecar (killswitch semantics: see file header /
-# README.md) is added by the ../_vpn-sidecar component.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -71,12 +42,8 @@ metadata:
     # Human-readable marker only (not scraped): this pod runs the Gluetun VPN
     # sidecar. Actual VPN metrics come from the gluetun-exporter sidecar below.
     esweiss.com/vpn-mode: "sidecar"
-    # stakater/Reloader auto-restarts this Deployment when a ConfigMap it
-    # references changes (it auto-detects the qbittorrent-vpn-config ConfigMap
-    # mounted by the Gluetun sidecar). So editing vpn_enabled/vpn_provider +
-    # commit/push is enough — Flux reconciles the ConfigMap and Reloader rolls
-    # the pod; no manual `kubectl rollout restart` needed. Reloader runs in the
-    # `reloader` namespace (kubernetes/infrastructure/controllers/reloader/).
+    # Reloader rolls this Deployment when the qbittorrent-vpn-config ConfigMap
+    # changes, so a vpn_enabled/vpn_provider edit needs no manual restart.
     reloader.stakater.com/auto: "true"
 spec:
   replicas: 1
@@ -102,80 +69,45 @@ spec:
       # corrupted resume data on slow NFS. 60s gives a clean exit margin.
       terminationGracePeriodSeconds: 60
 
-      # Pod hardening: no container here talks to the kube-API. Only the
-      # universally-safe subset is applied at pod level — the gluetun sidecar
-      # needs NET_ADMIN (preserved in the component), the gluetun-exporter keeps
-      # its own tighter securityContext, and qbittorrent is a LinuxServer.io
-      # image (s6 + PUID/PGID) that starts as root to drop privileges, so
-      # per-container runAsNonRoot / drop-ALL / aPE:false are deliberately NOT
-      # set on it.
+      # No container here talks to the kube-API. Only the pod-level safe subset
+      # is applied: the gluetun sidecar and gluetun-exporter carry their own
+      # securityContexts, and the LinuxServer.io image starts as root to drop
+      # privileges via s6, so drop-ALL is not set on it.
       automountServiceAccountToken: false
       securityContext:
         seccompProfile:
           type: RuntimeDefault
 
-      # Init container verifies VPN prerequisites when VPN is enabled
       initContainers:
-        # qBittorrent leaves a lockfile + IPC socket in /config/qBittorrent/
-        # when it shuts down ungracefully (SIGKILL from kubelet on probe
-        # timeout, node reboot, OOM, etc.). On the next start, qbittorrent
-        # detects the stale IPC socket as a "running" instance, gracefully
-        # terminates immediately, and the pod enters CrashLoopBackOff with
-        # the cycle "qBittorrent <version> started ... qBittorrent
-        # termination initiated" repeating every ~1s.
-        #
-        # Removing the stale files on every start is safe because the
-        # Deployment is single-replica with `Recreate` strategy, so no other
-        # qbittorrent pod is running when this initContainer executes. (The
-        # config PVC is `ReadWriteOnce`, but NFS-backed RWO is enforced
-        # per-node, not per-pod — don't rely on it as a lock.) If replicas>1,
-        # RollingUpdate, or an RWX PVC is ever introduced, this initContainer
-        # must be revisited because a live peer's lock could be deleted. The
-        # files are recreated on successful start.
-        #
-        # `rm -f` already silently ignores missing files (exit 0); we do
-        # NOT swallow other failures (e.g. EPERM from a bad subPath mount)
-        # so the initContainer fails loudly and the pod surfaces the real
-        # problem instead of looping into the same CrashLoopBackOff.
-        #
-        # Incident 2026-06-10: this stale-lock cycle blocked qbittorrent
-        # for 2 days until the lock was manually removed inside the pod;
-        # this initContainer keeps it from recurring after the next crash.
+        # An ungraceful shutdown leaves a lockfile + IPC socket that qBittorrent
+        # reads as a live instance on the next start, crash-looping the pod.
+        # Clearing them is safe only because this Deployment is single-replica
+        # with Recreate — revisit if replicas>1, RollingUpdate or an RWX PVC is
+        # ever introduced, since a live peer's lock could be deleted.
         - name: clean-stale-locks
           image: busybox:${busybox_version}
           command:
             - sh
             - -ec
             - rm -fv /config/qBittorrent/lockfile /config/qBittorrent/ipc-socket
+          resources:
+            requests:
+              cpu: 5m
+              memory: 8Mi
+            limits:
+              memory: 16Mi
           volumeMounts:
             - name: config
               mountPath: /config
 
-        # Single sign-on: qBittorrent's WebUI sits behind Traefik + Authentik
-        # forward-auth (the shared authentik-auth middleware, ../_ingressroute),
-        # so its OWN login is a redundant second prompt. Unlike NZBGet — which
-        # speaks HTTP Basic and takes Authentik's injected credentials via the
-        # authentik-auth-basic middleware — qBittorrent's WebUI is form/cookie
-        # based, so header injection can't work. Its only bypass is
-        # WebUI\AuthSubnetWhitelist, and that lives in qBittorrent.conf on the
-        # config PVC (runtime state qBittorrent rewrites), not in git.
-        #
-        # This init-container makes the bypass declarative: on every start it
-        # ensures the whitelist contains the k3s pod CIDR (10.42.0.0/16) — the
-        # source IP qBittorrent sees for a Traefik-forwarded request (confirmed:
-        # the pre-existing 192.168/100.64 entries never matched, which is why the
-        # second prompt appeared). Only Traefik can reach :8080 (downloads is
-        # default-deny ingress — see networkpolicy.yaml) and Traefik enforces
-        # Authentik SSO, so every request that arrives is already authenticated;
-        # the pod-CIDR bypass is safe and yields single sign-on. The 192.168/
-        # 100.64 entries are kept for any direct LAN/Tailscale access.
-        #
-        # Idempotent (verified against the live conf in busybox awk): index() is
-        # a literal match, backslash-safe for the WebUI\ keys; existing keys are
-        # rewritten to the canonical value, and on a fresh install missing keys
-        # are inserted under [Preferences] (or appended via END if it is the last
-        # section). A conf that does not exist yet is a no-op — qBittorrent
-        # creates it on first boot and the whitelist applies on the next start.
+        # Single sign-on: qBittorrent's form/cookie WebUI cannot take Authentik's
+        # injected headers, so its own login is bypassed via
+        # WebUI\AuthSubnetWhitelist — runtime state on the config PVC, not git.
+        # This container keeps the k3s pod CIDR (the source IP of a
+        # Traefik-forwarded request) in that whitelist on every start. Safe
+        # because only Traefik reaches :8080 and it enforces Authentik SSO.
+        # Idempotent: existing keys are rewritten, missing ones inserted under
+        # [Preferences], and a not-yet-created conf is a no-op.
         - name: seed-webui-bypass
           image: busybox:${busybox_version}
           command:
@@ -217,28 +149,23 @@ spec:
                 echo "[seed-webui-bypass] whitelist already current; no change"
               fi
               rm -f "$tmp"
+          resources:
+            requests:
+              cpu: 5m
+              memory: 8Mi
+            limits:
+              memory: 16Mi
           volumeMounts:
             - name: config
               mountPath: /config
 
       containers:
-        # Gluetun VPN-health exporter. Polls the gluetun control server on
-        # loopback (shares the pod network namespace) and serves a Prometheus
-        # gluetun_vpn_status gauge on :8002 (1 = running, 0 = stopped/unreachable,
-        # -1 = error, -2 = unknown). Scraped by the PodMonitor at the end of this
-        # file and alerted on by VPNDown (kube-prometheus-stack release.yaml).
-        #
-        # COUPLED: vpn_enabled in the ConfigMap above + this sidecar + the
-        # gluetun-qbittorrent PodMonitor below must change together — see the
-        # download-clients README § Per-App VPN Control.
-        #
-        # No first-party gluetun exporter exists; thecfu/gluetun-exporter is a
-        # small MIT Go binary that only reads the control API over loopback.
-        # Pinned by immutable @sha256 digest (the 0.1.1-standalone tag) — same
-        # convention as plex-exporter — so an upstream tag move can't silently
-        # change the running image. Re-resolve the digest when bumping the tag.
-        # readOnlyRootFilesystem + drop ALL + no mounts + no extra egress keep
-        # the blast radius minimal for a low-profile third-party image.
+        # Gluetun VPN-health exporter: polls the control server on loopback and
+        # serves gluetun_vpn_status on :8002, scraped by the PodMonitor below
+        # and alerted on by VPNDown. Third-party image, so it is pinned by
+        # immutable digest (re-resolve when bumping the tag) and runs read-only
+        # with no mounts. COUPLED: vpn_enabled + this sidecar + that PodMonitor
+        # change together — README § Per-App VPN Control.
         - name: gluetun-exporter
           image: ghcr.io/thecfu/gluetun-exporter:0.1.1-standalone@sha256:bafeabb2a9638bf6b0800c2d3d47d49c6236d879bd01eec8caea45dfca2b50c5
           imagePullPolicy: IfNotPresent
@@ -254,22 +181,12 @@ spec:
             # standalone build has no netlink throughput collection
             - name: EXPORTER_BUNDLED
               value: "false"
-            # Authenticate to the now role-protected gluetun control server. The
-            # exporter (v0.1.1+) sends this as the X-API-Key header on its three
-            # status GETs (/v1/vpn/status, /v1/publicip/ip,
-            # /v1/openvpn/portforwarded). Same key that config.toml grants the
-            # "exporter" role — both sourced from the gluetun-control-auth Secret,
-            # so they can never drift. Reloader ignores Secret changes, so an
-            # apikey rotation is a manual pod restart (README § Control-Server
-            # Auth / docs/21; docs/15 lists the field).
-            #
-            # optional: mirrors the optional gluetun-auth volume in
-            # _vpn-sidecar/vpn-sidecar.yaml. A missing gluetun-control-apikey
-            # field must not wedge qbittorrent in CreateContainerConfigError
-            # (VPN-on client DOWN) — a required ref would fail the whole Secret
-            # sync. With optional, the env is simply unset → the exporter sends
-            # no X-API-Key → the (also-unauthenticated) control server still
-            # answers, so the scrape succeeds and the pod stays up.
+            # X-API-Key for the role-protected control server — the same key
+            # config.toml grants the "exporter" role, from one Secret so the two
+            # cannot drift. Reloader ignores Secrets, so rotation is a manual pod
+            # restart (README § Control-Server Auth). optional mirrors the
+            # gluetun-auth volume: a missing key leaves both sides
+            # unauthenticated and scraping rather than wedging the pod.
             - name: GLUETUN_APIKEY
               valueFrom:
                 secretKeyRef:
@@ -329,19 +246,13 @@ spec:
             # forwards this env var to qbittorrent-nox.
             - name: QBT_LEGAL_NOTICE
               value: "confirm"
-          # Note: Ports are defined on gluetun sidecar (which owns the network namespace)
-          # NFS-ESTALE self-heal: after a NAS/NFS reboot the established mounts
-          # (/config + /media/downloads, both NFS from pve-nas-01) return stale
-          # file handles that qBittorrent does not recover from on its own — the
-          # WebUI keeps answering on :8080 (an httpGet liveness would stay green)
-          # while every disk op fails, and the pod had to be manually deleted to
-          # remount. stat-ing both NFS mounts surfaces ESTALE (immediate error)
-          # or a hung hard-mount (probe timeout); either fails the probe so
-          # kubelet restarts the pod and it remounts. The httpGet UI check is
-          # retained as the readinessProbe below (still de-rotates an unresponsive
-          # UI from the Service). Conservative timing so a brief NFS blip can't
-          # flap-restart. Runs as root (LSIO s6 pre-drop); stat needs only search
-          # perm on the mount parents.
+          # Ports live on the gluetun sidecar, which owns the network namespace.
+          # NFS-ESTALE self-heal: after a NAS reboot the established mounts
+          # return stale handles that qBittorrent never recovers from while the
+          # WebUI keeps answering, so liveness stats both NFS mounts — ESTALE or
+          # a hung hard-mount fails the probe and kubelet remounts on restart.
+          # readiness keeps the UI check. Timing is conservative so a brief NFS
+          # blip cannot flap-restart the pod.
           livenessProbe:
             exec:
               command:
@@ -399,14 +310,9 @@ spec:
   type: ClusterIP
 
 ---
-# Scrape the gluetun-exporter sidecar directly (PodMonitor, not ServiceMonitor):
-# the exporter port is pod-local and the app Service only fronts the UI. The
-# kube-prometheus-stack discovers PodMonitors cluster-wide. Prometheus reaching
-# :8002 requires the allow-observability-vpn-scrape NetworkPolicy in
-# networkpolicy.yaml (downloads is default-deny ingress).
-#
-# COUPLED: vpn_enabled + the gluetun-exporter sidecar above + this PodMonitor
-# must change together — see the download-clients README § Per-App VPN Control.
+# PodMonitor, not ServiceMonitor: the exporter port is pod-local and the app
+# Service only fronts the UI. The scrape also needs the
+# allow-observability-vpn-scrape rule in networkpolicy.yaml.
 apiVersion: monitoring.coreos.com/v1
 kind: PodMonitor
 metadata:

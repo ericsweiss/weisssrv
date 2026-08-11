@@ -143,15 +143,17 @@ def test_role_missing_from_tags_fails(tmp_path):
     repo = build_repo(tmp_path, ci_yml("qol", ["ansible/roles/nfs_tls/**/*"]))
     result = run(repo)
     assert result.returncode == 1
-    assert "ansible/roles/nfs_tls/" in result.stderr
+    assert "nfs_tls — unreached hosts" in result.stderr
     assert "pve-a" in result.stderr and "pve-b" in result.stderr
 
 
-def test_role_missing_from_changes_fails(tmp_path):
+def test_changes_list_no_longer_gates_coverage(tmp_path):
+    """Roles ship from the collection, so a job that RUNS the role covers it
+    whatever its `changes:` list says — that half is check-deploy-coverage.sh's
+    view of ansible/requirements.yml now."""
     repo = build_repo(tmp_path, ci_yml("qol,nfs_tls", ["ansible/roles/qol/**/*"]))
     result = run(repo)
-    assert result.returncode == 1
-    assert "does not list ansible/roles/nfs_tls/**/* in its changes:" in result.stderr
+    assert result.returncode == 0, result.stderr
 
 
 def test_limit_narrows_coverage(tmp_path):
@@ -163,7 +165,7 @@ def test_limit_narrows_coverage(tmp_path):
     repo = build_repo(tmp_path, ci)
     result = run(repo)
     assert result.returncode == 1
-    assert "ansible/roles/base/" in result.stderr
+    assert "base — unreached hosts" in result.stderr
     assert "dns-01" in result.stderr
 
 
@@ -200,7 +202,7 @@ def test_ledger_exclusion_does_not_shrink_the_declared_set(tmp_path):
     repo = build_repo(tmp_path, ci, site=site)
     result = run(repo)
     assert result.returncode == 1
-    assert "ansible/roles/base/" in result.stderr
+    assert "base — unreached hosts" in result.stderr
     assert "dns-01" in result.stderr
 
 

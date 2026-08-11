@@ -26,19 +26,16 @@ spec:
         app.kubernetes.io/name: mealie-postgres
         app.kubernetes.io/component: database
     spec:
-      # Pod hardening: this DB does not talk to the kube-API, so drop the SA
-      # token mount and run under the runtime's default seccomp profile.
+      # This DB does not talk to the kube-API, so the SA token is dropped.
       automountServiceAccountToken: false
       securityContext:
         seccompProfile:
           type: RuntimeDefault
-        # NOTE: runAsNonRoot / runAsUser / fsGroup deliberately NOT pinned. The
-        # running image starts as root and drops to the postgres user itself
-        # (live PGDATA is owned by uid 70, not 999), and the entrypoint needs
-        # CAP_CHOWN/CAP_SETUID to do so — forcing a non-root UID or dropping caps
-        # breaks startup on the populated PVC. Deeper hardening needs per-image
-        # testing in a throwaway namespace first.
-      # Pin to NAS agent for local storage performance
+        # runAsNonRoot / runAsUser / fsGroup deliberately NOT pinned: the image
+        # starts as root and drops to the postgres user itself, which needs
+        # CAP_CHOWN/CAP_SETUID. Pinning either breaks startup on the populated
+        # PVC.
+      # Pinned to the NAS agent: its PV is a zvol hostPath there.
       affinity:
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -48,7 +45,6 @@ spec:
                     operator: In
                     values:
                       - k3s-agt-nas-01
-      # Tolerate NAS taint to run on k3s-agt-nas-01
       tolerations:
         - key: esweiss.com/nas
           operator: Equal
@@ -58,10 +54,6 @@ spec:
         - name: postgres
           image: postgres:${mealie_postgresql_version}
           imagePullPolicy: IfNotPresent
-          # No drop:[ALL]/allowPrivilegeEscalation:false: the image starts as root
-          # and uses gosu to drop to postgres, which needs CAP_SETUID/CAP_CHOWN;
-          # dropping caps breaks startup. Pod-level seccomp + automount:false above
-          # are the safe hardening.
           env:
             - name: POSTGRES_USER
               value: mealie
@@ -107,6 +99,48 @@ spec:
           volumeMounts:
             - name: postgres-data
               mountPath: /var/lib/postgresql/data
+        # postgres_exporter over pod-localhost — connection saturation, xact age
+        # and per-database size for the one DB that has no other signal. Pinned
+        # by tag + immutable digest (same convention as gluetun-exporter); the
+        # observability -> :9187 allow is in networkpolicy.yaml.
+        - name: postgres-exporter
+          image: quay.io/prometheuscommunity/postgres-exporter:v0.20.1@sha256:ac5ec343104fae0e2d84a27bb8d69b38430a11910c5382cad85d478d2bab713e
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: DATA_SOURCE_URI
+              value: "127.0.0.1:5432/mealie?sslmode=disable"
+            - name: DATA_SOURCE_USER
+              value: mealie
+            - name: DATA_SOURCE_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: recipes-secrets
+                  key: mealie-postgres-password
+          ports:
+            - name: metrics
+              containerPort: 9187
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /
+              port: metrics
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
       volumes:
         - name: postgres-data
           persistentVolumeClaim:
@@ -127,6 +161,10 @@ spec:
     - name: postgres
       port: 5432
       targetPort: postgres
+    # postgres_exporter sidecar; the ServiceMonitor scrapes this port.
+    - name: metrics
+      port: 9187
+      targetPort: metrics
   type: ClusterIP
 
 ---
@@ -153,7 +191,6 @@ spec:
         app.kubernetes.io/name: mealie
         app.kubernetes.io/component: app
     spec:
-      # General workloads - prefer non-NAS nodes
       affinity:
         nodeAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
@@ -165,10 +202,9 @@ spec:
       nodeSelector:
         esweiss.com/general: "true"
         esweiss.com/cpu: "modern"
-      # Pod hardening: Mealie does not use the kube-API. Only the universally-safe
-      # subset is applied — the image starts as root under s6 and drops to
-      # PUID/PGID itself, so runAsNonRoot / drop-ALL / aPE:false are deliberately
-      # NOT set here (they would break s6 init / the privilege drop).
+      # Mealie does not use the kube-API, so the SA token is dropped. drop-ALL /
+      # runAsNonRoot are not set: the image starts as root under s6 and drops to
+      # PUID/PGID itself.
       automountServiceAccountToken: false
       securityContext:
         seccompProfile:
@@ -190,31 +226,11 @@ spec:
               value: "1000"
             - name: PGID
               value: "2000"
-            # BASE_URL is deliberately NOT set, which is what makes login work on
-            # BOTH hostnames. Mealie builds the OIDC redirect_uri like this
-            # (routes/auth/auth.py, unchanged across v3.20.1..v3.22.0):
-            #
-            #   if not settings.is_default_base_url:
-            #       base = settings.BASE_URL or request.base_url
-            #   else:
-            #       base = request.base_url
-            #
-            # so ANY value here pins the callback to that one host. With it set to
-            # the external host, starting a login on food.esweiss.com bounced the
-            # callback to food.ericsweiss.com — a different origin, so the session
-            # cookie holding the OAuth state was not sent and authlib raised
-            # MismatchingStateError ("Something Went Wrong!", 500 on
-            # /api/auth/oauth/callback). Left at the default, each host gets its own
-            # callback and both work; authentik already registers both /login URIs.
-            #
-            # Safe because uvicorn runs with forwarded_allow_ips="*" (app.py), so
-            # request.base_url resolves from Traefik's X-Forwarded-* headers and
-            # yields https://<host-you-came-in-on>/ — an http:// scheme here would
-            # fail the provider's strict redirect-URI match.
-            #
-            # Trade-off: links generated with no request context (e.g. from a
-            # background task) fall back to the default rather than the external
-            # host. Login working on both hostnames is worth more.
+            # BASE_URL is deliberately unset so Mealie derives redirect_uri per
+            # request and login works on BOTH hostnames; any value pins the OIDC
+            # callback to one origin. Trade-off: links built without a request
+            # context fall back to the default. See docs/22.
+
             # Database configuration
             - name: DB_ENGINE
               value: postgres

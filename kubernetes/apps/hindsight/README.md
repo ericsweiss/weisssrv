@@ -5,7 +5,8 @@ long-term agent memory (knowledge graph, entity resolution, observation
 consolidation) serving as **Hermes' memory backend** (docs/37 §Memory backend).
 
 - **Workload**: one Deployment, two containers, mirroring upstream's
-  `docker/docker-compose/local-llm/` example:
+  `docker/docker-compose/local-llm/` example (path in the
+  `vectorize-io/hindsight` repo, not this one):
   - `hindsight` — the published standalone image (API `:8888`), embedded pg0
     PostgreSQL on the NFS volume.
   - `llama` — the official llama.cpp server image as an OpenAI-compatible
@@ -17,9 +18,12 @@ consolidation) serving as **Hermes' memory backend** (docs/37 §Memory backend).
 - **Consumers**: only the `hermes` namespace (ClusterIP
   `hindsight.hindsight.svc.cluster.local:8888`) + the Prometheus scraper.
   No ingress route, no cert, no external DNS — this is cluster-internal.
-- **Scheduling**: modern-CPU general nodes, NAS-avoid preferred. The llama
-  container's 4Gi memory request means it lands on `k3s-agt-prec-01` in
-  practice (the only non-NAS modern agent with the headroom).
+- **Scheduling**: hard-pinned to `k3s-agt-prec-01` — `nodeAffinity` on that
+  hostname plus `esweiss.com/gpu=nvidia`, `runtimeClassName: nvidia` and the
+  llama container's `nvidia.com/gpu: 1` request, which only the passed-through
+  GTX 1660 Ti satisfies (docs/43). That makes prec-01 a hard availability
+  dependency: if it is down Hindsight is down and Hermes falls back to its
+  built-in memory. Sizing: `hindsight` 1536Mi/3Gi, `llama` 2Gi/4Gi.
 - **Storage**: NFS `/appdata/hindsight` (encrypted `ssd/appdata`,
   archive-backed) — `pg0/` (PostgreSQL data) + `models/` (GGUF cache).
   Postgres-on-NFS is a deliberate, documented deviation from the zvol

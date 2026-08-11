@@ -9,26 +9,22 @@ apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
 metadata:
   name: hindsight
-  namespace: hindsight
 spec:
   targetRef: {apiVersion: apps/v1, kind: Deployment, name: hindsight}
   updatePolicy: {updateMode: "Off"}
   resourcePolicy:
     containerPolicies:
-      # llama is EXCLUDED (mode Off) rather than merely capped. Its working set
-      # is dominated by the mmap'd GGUF's file-backed pages (2.7Gi working set
-      # against ~560Mi RSS), which grow to fill whatever cgroup limit the
-      # container has and are reclaimed under pressure rather than OOMKilling
-      # it. A percentile estimate over that signal just tracks the limit — the
-      # recorded target had already climbed past the 3Gi limit — so it is noise,
-      # not a right-sizing signal. Its hand-sized request/limit live in
-      # deployment.yaml and are retuned from measured RSS (docs/43).
+      # llama is EXCLUDED (mode Off), not merely capped: its working set is
+      # dominated by the mmap'd GGUF's file-backed pages, which grow to fill the
+      # cgroup limit and are reclaimed under pressure, so a percentile estimate
+      # just tracks the limit. Hand-sized in deployment.yaml, retuned from
+      # measured RSS (docs/43); memory headroom is covered by the
+      # near-limit alert in observability instead (docs/31).
       - containerName: llama
         mode: "Off"
       # Caps for the recorded recommendation (docs/33: every policy carries
-      # minAllowed/maxAllowed). maxAllowed.memory matches the container's 3Gi
-      # limit so the recommendation can record growth right up to it without
-      # tripping VPARecommendationCapped below the ceiling that actually binds.
+      # minAllowed/maxAllowed). maxAllowed.memory matches the hindsight
+      # container's 3Gi limit so growth is recorded up to the binding ceiling.
       - containerName: "*"
         minAllowed: {cpu: 25m, memory: 256Mi}
         maxAllowed: {cpu: 2, memory: 3Gi}

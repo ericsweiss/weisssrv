@@ -1,9 +1,7 @@
 ---
-# Allow ingress to the cert-manager webhook (called by the kube-apiserver, which
-# arrives post-DNAT from a server node IP) and metrics scrapes from
-# observability. The apiserver source is not pinned by IP because the webhook
-# call originates from whichever server is active; allow the webhook port from
-# anywhere and rely on cert-manager's own TLS/authz for the webhook.
+# Webhook ingress + metrics scrapes from observability. The webhook port is
+# open from anywhere because the apiserver call arrives post-DNAT from whichever
+# server is active; cert-manager's own TLS/authz is the gate there.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -64,20 +62,16 @@ spec:
       ports:
         - protocol: TCP
           port: 6443
-    # Public HTTPS: ACME directory + Cloudflare API.
-    # Public DNS (53): the DNS-01 solver's self-check resolves the challenge
-    # TXT record against the zone's authoritative nameservers directly (the
-    # controller has no --dns01-recursive-nameservers-only override), so it
-    # needs UDP/TCP 53 to the public internet — without it, challenges stall
-    # and certificate renewal silently fails.
+    # Public HTTPS (ACME directory + Cloudflare API) and public DNS: the DNS-01
+    # solver's self-check queries the zone's authoritative nameservers directly,
+    # so without 53 outbound every challenge stalls and renewal fails silently.
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0
-            # Public-unicast only. EXCEPT every non-public / reserved IPv4 block
-            # so a compromised pod cannot reach the LAN, loopback,
-            # cloud-metadata, or other reserved space. Kept identical to the
-            # cloudflare-ddns and external-dns egress policies (same
-            # Cloudflare-API egress intent).
+            # Public unicast only: every non-public / reserved IPv4 block is
+            # excepted so a compromised pod cannot reach the LAN, loopback,
+            # cloud-metadata or other reserved space. This is the "reserved-full"
+            # set — scripts/check-netpol-except-parity.py fails if any copy drifts.
             except:
               # RFC1918 private LAN.
               - 10.0.0.0/8

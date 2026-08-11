@@ -1,7 +1,8 @@
 ---
-# Apps top-level Kustomization.
-# Each app lives in its own folder containing its complete set of resources
-# (HelmRelease + ExternalSecret + Namespace + IngressRoutes + PVCs as relevant).
+# Apps top-level Kustomization. Each app lives in its own folder holding its
+# complete resource set. Every folder carries a README except the four
+# gitlab-* ones, which are documented by docs/13-ci-cd.md (runners, agent) and
+# docs/27-gitlab-deployment.md (the GitLab instance itself).
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:

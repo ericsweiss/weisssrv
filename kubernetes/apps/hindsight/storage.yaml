@@ -1,30 +1,18 @@
 ---
-# NFS-backed persistent state for Hindsight (Hermes' memory backend):
-#   * pg0/    -> /home/hindsight/.pg0 — the embedded PostgreSQL data dir
-#     (pg0-embedded: a real PostgreSQL server managed in-process by the
-#     hindsight image; this is the actual memory store).
-#   * models/ -> /root/.cache/huggingface (llama container) — the ~3.5 GB
-#     Gemma GGUF the llama.cpp sidecar auto-downloads on first start; cached
-#     here so a pod recreate does not re-download it.
-# Lives on the encrypted ssd/appdata dataset via the appdata NFS export;
-# captured by the nightly ssd/appdata -> archive raw-ZFS replication (child of
-# an existing backup root — no SRC_LIST edit needed). The /appdata/hindsight
-# subdir is created + owned 1000:2000 by the nas_storage role
-# (nas_appdata_dirs).
+# NFS-backed persistent state for Hindsight: `pg0/` (the embedded PostgreSQL
+# data dir, i.e. the memory store) and `models/` (the GGUF the llama sidecar
+# downloads once). Lives on the encrypted ssd/appdata dataset, so the nightly
+# ssd/appdata -> archive replication captures it; the subdir is created by the
+# nas_storage role.
 #
-# PostgreSQL-on-NFS note (deliberate deviation from the zvol convention every
-# other Postgres here follows): this is a single-client (RWO + claimRef +
-# strategy Recreate), hard-mounted NFSv4.2 volume — the configuration upstream
-# PostgreSQL documents as supported. The dataset is tiny (one user's agent
-# memories), so the zvol's performance rationale doesn't apply, and NFS buys
-# automatic archive backup + independence from any one k3s VM. If write
-# latency or locking ever bites, the follow-up is a zvol on the VM of a
-# modern-CPU agent + nodeAffinity pin (see kubernetes/apps/hindsight/README.md).
+# PostgreSQL-on-NFS is a deliberate deviation from the zvol convention: a
+# single-client hard NFSv4.2 mount (RWO + claimRef + Recreate) is a supported
+# configuration, the dataset is tiny, and NFS buys automatic backup. README.md
+# records the zvol fallback if latency or locking ever bites.
 #
-# server: is an immutable PV field; the kustomize force annotation lets Flux
-# delete+recreate it if server/mountOptions ever change (Retain -> data safe).
-# Hostname (not IP) is required so xprtsec=tls verifies against the
-# *.esweiss.com cert SAN — an IP mount fails the TLS handshake. See docs/07.
+# server: is immutable, so the force annotation lets Flux delete+recreate the PV
+# (Retain -> data safe). It must be the hostname: xprtsec=tls verifies against
+# the *.esweiss.com cert SAN and an IP mount fails the handshake (docs/07).
 apiVersion: v1
 kind: PersistentVolume
 metadata:

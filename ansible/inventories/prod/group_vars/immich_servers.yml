@@ -1,12 +1,36 @@
 ---
 # Immich servers configuration
 #
-# App configuration and image/version pins live in the immich role defaults and
-# group_vars/all.yml respectively. This file is the home for any
-# Immich-group-wide overrides.
+# Image/version pins live in group_vars/all.yml; paths, ports, container
+# identities and the compose network are role defaults. This file carries the
+# site values only — the collection role ships nothing weisssrv-specific.
+
+immich_external_url: "https://photos.{{ external_domain }}"
+
+# ML endpoint order IS the failover contract: the GPU OpenVINO LXC (.158) first,
+# the in-VM CPU container second.
+immich_ml_urls:
+  - "http://192.168.0.158:3003"
+  - "http://immich-machine-learning:3003"
+
+# SSO (Authentik OIDC). The issuer host is ALWAYS the external one.
+immich_oauth_issuer_url: "https://auth.{{ external_domain }}/application/o/photos/"
+immich_oauth_button_text: "Sign in with Authentik"
+
+# Placeholder cert identity, used only until acme_certs pushes the real
+# wildcard (host_vars/dns-01.yml acme_certs_distribution_targets).
+immich_nginx_self_signed_subj: "/CN=photos.{{ internal_domain }}"
+immich_nginx_self_signed_san: "DNS:*.{{ internal_domain }}"
+
+# postgres_exporter sidecar for the in-cluster Prometheus. Unauthenticated —
+# scoped by sg-immich's :9187 rule to k3s_nodes.
+immich_postgres_exporter_enabled: true
+immich_postgres_exporter_version: "{{ postgres_exporter_version }}"
 
 # Offsite-eligible backup landing (mirrors gitlab_servers.yml): pg_dump artifacts
 # relocate onto the per-app tank/backups/apps NFS export so they ride the
 # archsync file walk into restic B2 (docs/42). Mounted over TLS (xprtsec=tls;
 # tlshd via the nfs_tls role, gated on this flag); the dataset is aes-256-gcm.
 immich_backup_nfs_enabled: true
+immich_backup_nfs_server: "pve-nas-01.{{ internal_domain }}"
+immich_backup_nfs_export: /backups-apps/immich

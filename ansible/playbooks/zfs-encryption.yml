@@ -15,4 +15,4 @@
     zfs_encryption_connect_token: >-
       {{ lookup('ansible.builtin.env', 'ZFS_ENCRYPTION_CONNECT_TOKEN', default='') }}
   roles:
-    - role: zfs_encryption
+    - role: weisssrv.infra.zfs_encryption

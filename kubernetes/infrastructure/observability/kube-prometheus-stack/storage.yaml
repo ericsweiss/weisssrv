@@ -1,10 +1,8 @@
 ---
-# Prometheus TSDB persistent storage
-# Uses hostPath pointing to /mnt/prometheus-data on k3s-agt-nas-01.
-# This directory is an ext4 filesystem on a ZFS zvol (ssd/appdata/prometheus/data).
-# The zvol is attached to the VM as a SCSI disk and mounted at /mnt/prometheus-data.
-# Data survives pod and VM recreation since the zvol persists on the Proxmox host's ZFS pool.
-# Managed by proxmox_vm role via vm_additional_disks in hosts.yml.
+# Prometheus TSDB storage: a hostPath on k3s-agt-nas-01 backed by an ext4
+# filesystem on the ssd/appdata/prometheus/data zvol, attached to the VM by the
+# proxmox_vm role (vm_additional_disks in hosts.yml). Data survives pod and VM
+# recreation because the zvol lives on the Proxmox host's pool.
 apiVersion: v1
 kind: PersistentVolume
 metadata:

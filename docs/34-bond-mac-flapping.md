@@ -62,8 +62,15 @@ needs.
 
 ### Confirming the diagnosis
 
-On the guest's host, watch the guest MAC flap in the bridge FDB while pinging
-its gateway from the guest:
+Start with the fleet sweep — it reports bond `all_slaves_active`, ARP/FDB state
+for the HA guest IPs and VIPs, corosync, kube-vip and MetalLB in one pass:
+
+```bash
+task diagnose:network
+```
+
+Then, on the guest's host, watch the guest MAC flap in the bridge FDB while
+pinging its gateway from the guest:
 
 ```bash
 # <MAC> = the guest's hwaddr (pct config <vmid> | grep net0), <vmid> the CTID
@@ -144,8 +151,10 @@ ansible-playbook ansible/playbooks/site.yml --tags network --limit 'pve-opt-*'
 
 ## e1000e TX Hardware Unit Hang (whole host goes dark)
 
-A **separate** fault on the same three OptiPlex hosts (`pve-opt-01` .104,
-`pve-opt-02` .105, `pve-opt-03` .106), fixed in `!199`.
+A **separate** fault, first seen on the three OptiPlex hosts (`pve-opt-01` .104,
+`pve-opt-02` .105, `pve-opt-03` .106). `pve-prec-01` (.107) carries the same
+driver — an I219-LM `e1000e` at PCI `00:1f.6` rather than `00:19.0` — and is
+covered by the same fix.
 
 ### Symptom
 
@@ -190,7 +199,8 @@ a different controller and was never implicated.
 
 `tso`/`gso`/`gro` **off** on `nic0` — the standard e1000e cure for the TX-hang
 class. Codified per host in
-`ansible/inventories/prod/host_vars/pve-opt-0{1,2,3}.yml`:
+`ansible/inventories/prod/host_vars/pve-opt-0{1,2,3}.yml` and
+`host_vars/pve-prec-01.yml`:
 
 ```yaml
 nic_tuning_overrides:
@@ -209,7 +219,8 @@ and persists it through an ifup drop-in, so it survives reboots. Deploy the
 same way as the bond fix:
 
 ```bash
-ansible-playbook ansible/playbooks/site.yml --tags network --limit 'pve-opt-*'
+ansible-playbook ansible/playbooks/site.yml --tags network \
+  --limit 'pve-opt-*,pve-prec-01'
 ```
 
 Verify on the host: `ethtool -k nic0 | grep -E 'tcp-segmentation|generic-(segmentation|receive)'`
@@ -217,8 +228,10 @@ Verify on the host: `ethtool -k nic0 | grep -E 'tcp-segmentation|generic-(segmen
 
 ### Notes
 
-- The offloads are disabled only on the three opt nodes. `.102` / `.103` /
-  `.107` use different NICs and keep their offloads (`nic_tuning` is override-
-  driven, so an empty `nic_tuning_overrides` is a no-op).
+- The offloads are disabled on the four `e1000e` hosts (.104/.105/.106/.107).
+  `.102` / `.103` use different NICs and keep their offloads (`nic_tuning` is
+  override-driven, so an empty `nic_tuning_overrides` is a no-op). On .107 the
+  offloads were already off live but nothing persisted them, so the host_vars
+  entry is what makes the setting survive a reboot.
 - Turning off segmentation offload costs some CPU per gigabit; on these hosts
   that is irrelevant next to an unattended power-cycle.

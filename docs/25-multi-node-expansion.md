@@ -7,11 +7,11 @@ This document covers the architecture and procedures for the 6-node Proxmox HA c
 1. [Current State](#current-state)
 2. [IP and VMID Allocation Scheme](#ip-and-vmid-allocation-scheme)
 3. [Node Labels and Taints](#node-labels-and-taints)
-4. [Section 1: Adding local-ssd to pve-opt-03](#section-1-adding-local-ssd-to-pve-opt-03)
-5. [Section 2: Setting Up New Proxmox Hosts](#section-2-setting-up-new-proxmox-hosts)
-6. [Section 3: Enabling Proxmox HA](#section-3-enabling-proxmox-ha)
+4. [Section 1: Adding local-ssd ZFS Pool (Reference)](#section-1-adding-local-ssd-zfs-pool-reference)
+5. [Section 2: Setting Up Proxmox Hosts (Reference)](#section-2-setting-up-proxmox-hosts-reference)
+6. [Section 3: Proxmox HA Configuration (Reference)](#section-3-proxmox-ha-configuration-reference)
 7. [Network Diagram](#network-diagram)
-8. [Related Documentation](#related-documentation)
+8. [Related documentation](#related-documentation)
 
 ---
 
@@ -24,7 +24,7 @@ topology (IPs, VMIDs, placement, roles) lives in `docs/01-overview.md`;
 
 **Infrastructure Services (HA-managed)**:
 
-Each service has a **home node** (node-affinity priority 2 — it fails back there when the home is available) and fallback nodes (priority 1); see the per-service `ha_rules` in `group_vars/all.yml` for the current homes. To check actual runtime locations, run `task proxmox:ha-status` or `ha-manager status` on any cluster node.
+Each service has a **home node** (node-affinity priority 2 — it fails back there when the home is available) and fallback nodes (priority 1); see the per-service `proxmox_ha_rules` in `group_vars/all.yml` for the current homes. To check actual runtime locations, run `task proxmox:ha-status` or `ha-manager status` on any cluster node.
 
 | Service | VMID | Type | HA State | Eligible Hosts (have replicated data) |
 |---------|------|------|----------|---------------------------------------|
@@ -33,17 +33,24 @@ Each service has a **home node** (node-affinity priority 2 — it fails back the
 | dns-02 | 160 | LXC | started | pve-laptop-01, pve-opt-01, pve-opt-02, pve-opt-03, pve-prec-01 |
 | home-assistant | 154 | VM | started | pve-laptop-01, pve-opt-01, pve-opt-02, pve-opt-03, pve-prec-01 |
 
-**Non-HA Services (NAS-bound)**:
+**Non-HA Services (NAS-bound)** — these cannot fail over, so they set the blast
+radius of a pve-nas-01 outage. `docs/01-overview.md` is canonical for topology.
 
-| Service | VMID | Type | Host | Notes |
-|---------|------|------|------|-------|
-| plex | 152 | LXC | pve-nas-01 | Requires NAS bind mounts |
-| k3s-agt-nas-01 | 202 | VM | pve-nas-01 | Requires local NFS access |
+| Service | VMID | Type | Why it is pinned |
+|---------|------|------|------------------|
+| plex | 152 | LXC | NAS bind mounts (docs/20) |
+| gitlab | 153 | VM | repos zvol on `ssd` (docs/27) |
+| windows | 155 | VM | disks on `ssd` (docs/39) |
+| nextcloud | 156 | VM | app/DB zvols + `tank/nextcloud-data` (docs/35) |
+| immich | 157 | VM | app/DB zvols + `tank/immich-data` (docs/36) |
+| immich-ml | 158 | LXC | Arc B580 passthrough, serves the Immich VM (docs/36) |
+| k3s-agt-nas-01 | 202 | VM | local NFS access + the observability zvols |
+| k3s-srv-nas-01 | 222 | VM | etcd member on this host |
 
 **HA Configuration**:
 - Per-service node-affinity rules (`affinity-dns-01`, `affinity-smtp-relay`,
   `affinity-dns-02`, `affinity-home-assistant` in `group_vars/all.yml`
-  `ha_rules`) give each service a home node (priority 2, fails back when
+  `proxmox_ha_rules`) give each service a home node (priority 2, fails back when
   available) plus fallback nodes (priority 1); pve-nas-01 is never listed
 - Multi-target ZFS replication (every 15 minutes) to 4 nodes per service
 - Services can failover to any node with replicated data
@@ -176,7 +183,7 @@ This section documents the setup of a 1TB SSD with a `local-ssd` ZFS pool, which
 | `nas` (pve-nas-01) | `ssd` | 3x 4TB Samsung SSDs (raidz1) - App data and databases |
 | `compute` / `general` (all others) | `local-ssd` | 1TB Samsung 870 EVO per host - VM/container workloads |
 
-Storage can be overridden per-VM/container by setting `proxmox_storage` or `lxc_storage` in the inventory.
+Storage can be overridden per-VM/container by setting `proxmox_storage` or `proxmox_lxc_storage` in the inventory.
 
 **Why local-ssd for compute nodes?**
 1. **Proxmox HA**: ZFS pools required on all nodes for replication and failover
@@ -540,7 +547,7 @@ Services are distributed across 5 nodes with `local-ssd` storage (excluding pve-
 
 [†] dns-01's primary moved off pve-laptop-01 (memtest-confirmed dead RAM cell);
 pve-laptop-01 is a replication target and priority-1 HA fallback only until the
-DIMM is replaced. `storage_replication_jobs` / `ha_rules` in
+DIMM is replaced. `proxmox_ha_replication_jobs` / `proxmox_ha_rules` in
 `ansible/inventories/prod/group_vars/all.yml` are the source of truth.
 
 Each service replicates every 15 minutes to ALL 4 other nodes. When any node fails, HA can restart the service on ANY surviving node that has replicated data.
@@ -610,14 +617,14 @@ Node-affinity rules provide flexible control over which nodes can run specific r
 We use one node-affinity rule **per service** — each gives the service a home
 node at priority 2 (HA fails the service back there when the home is
 available) and the remaining compute nodes at priority 1 as fallbacks;
-pve-nas-01 is never listed. The `ha_rules` list in
+pve-nas-01 is never listed. The `proxmox_ha_rules` list in
 `ansible/inventories/prod/group_vars/all.yml` is the source of truth (rule
 names `affinity-dns-01`, `affinity-smtp-relay`, `affinity-dns-02`,
 `affinity-home-assistant`). Representative shape:
 
 ```yaml
 # From ansible/inventories/prod/group_vars/all.yml (one rule per service)
-ha_rules:
+proxmox_ha_rules:
   - name: affinity-smtp-relay
     type: node-affinity
     resources:
@@ -637,7 +644,7 @@ ha_rules:
 ```
 
 **Why per-service homes (and never pve-nas-01)**:
-- Homes match the `storage_replication_jobs` primary layout, so a failback
+- Homes match the `proxmox_ha_replication_jobs` primary layout, so a failback
   lands where replication is freshest
 - Distributes the services across the compute nodes instead of piling onto one
 - Excluding pve-nas-01 avoids I/O contention with NAS workloads; `strict:
@@ -669,7 +676,7 @@ Configure each VM/CT as an HA-managed resource. When using node-affinity rules (
 
 ```yaml
 # From ansible/inventories/prod/group_vars/all.yml
-ha_resources:
+proxmox_ha_resources:
   - type: ct
     vmid: 150
     state: started
@@ -902,14 +909,13 @@ Internet
 
 ---
 
-## Related Documentation
+## Related documentation
 
 - `docs/00-hardware-setup.md` -- Bare metal to Proxmox ready for Ansible
 - `docs/01-overview.md` -- Architecture and network topology
 - `docs/06-zfs.md` -- ZFS pool creation commands and properties
 - `docs/08-dns.md` -- DNS records for all nodes
 - `docs/11-firewall.md` -- Firewall IPSets and security groups
-- `docs/14-post-base-plan.md` -- K3s platform roadmap and scheduling model
 - `docs/17-disaster-recovery.md` -- Storage bootstrap and disaster recovery
 - `docs/18-bootstrap-new-systems.md` -- Bootstrapping new LXC/VM systems
 - `docs/19-k3s-deployment.md` -- K3s cluster deployment workflow

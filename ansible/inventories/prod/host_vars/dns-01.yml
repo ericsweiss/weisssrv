@@ -8,15 +8,26 @@ proxmox_resource_pool: infra-core
 # Container startup configuration
 # Boot order strategy: DNS (10) -> SMTP (20) -> k3s servers (30) -> k3s agents (40) -> apps (50)
 # Both DNS servers use order 10 with identical delays (no interdependency)
-proxmox_autostart_enabled: true
-proxmox_startup_order: 10
-proxmox_startup_delay: 10
+proxmox_lxc_onboot: true
+proxmox_lxc_startup_order: 10
+proxmox_lxc_startup_delay: 10
 
-# This host runs acme.sh for certificate generation
-# (the acme_certs role gates on inventory_hostname == 'dns-01')
-# The issued names are not configurable: the role issues
-# "{{ internal_domain }}" + "*.{{ internal_domain }}" directly.
-acme_email: "{{ admin_email }}"
+# This host runs acme.sh for certificate generation; the role issues
+# acme_certs_domain + its wildcard.
+acme_certs_enabled: true
+acme_certs_domain: "{{ internal_domain }}"
+acme_certs_email: "{{ admin_email }}"
+# Pin the distribution key to this resolver in every target's authorized_keys
+# (`from="..."`). Without it the root-equivalent key is usable from any source.
+acme_certs_key_from: "{{ ansible_host }}"
+# The distribution key belongs to the admin user (not root), so it lives in
+# /home/eric/.ssh and each target's forced-command entry is on that user.
+acme_certs_ssh_user: "{{ admin_user }}"
+# The wildcard PEMs land in AdGuard's cert dir, and AdGuardHome is restarted
+# locally after each renewal.
+acme_certs_local_cert_dir: /opt/AdGuardHome/certs
+acme_certs_local_cert_group: adguard
+acme_certs_local_reload_command: "systemctl restart AdGuardHome"
 
 # Certificate distribution targets.
 #
@@ -24,13 +35,13 @@ acme_email: "{{ admin_email }}"
 # fullchain.pem + privkey.pem to each target over SSH and runs its reload.
 # Adding a target here is enough for it to auto-rotate on every renewal.
 #
-# Full per-field schema: ansible/roles/acme_certs/README.md § Configuration.
+# Full per-field schema: the acme_certs role README in weisssrv-lib.
 # The two constraints that bite:
 #   * host_key is REQUIRED and pinned (StrictHostKeyChecking=yes) — capture it
 #     with `task certs:show-host-keys` and re-capture after a target rebuild.
 #   * restart_command must carry its OWN `sudo`; the reload script does not
 #     prepend it (compound shell constructs reject `sudo if`).
-cert_distribution_targets:
+acme_certs_distribution_targets:
   - host: dns-02
     ip: 192.168.0.160
     host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEWbN0fb8eOTlPeHMQ/sZ+vkEgtSPAnZ7OiZjYsAcAyu"
@@ -126,7 +137,7 @@ cert_distribution_targets:
       fi
   # Plex: the plex role's cert-reload hook builds a PKCS#12 bundle from
   # the renewed PEM pair, atomically swaps it into place, and restarts
-  # plexmediaserver. See ansible/roles/plex/templates/plex-cert-reload.sh.j2.
+  # plexmediaserver.
   - host: plex
     ip: 192.168.0.152
     host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIO41P4DvFdeHkZW7Np3w71NH7WV2gGr2BQISIyjyeozB"
@@ -156,10 +167,8 @@ cert_distribution_targets:
     key_mode: "0600"
     restart_command: "ha core restart"
 
-# Local certificate store on dns-01 (AdGuard Home's cert dir; the acme_certs
-# role installs the issued PEMs here and the reload script reads them from here).
-local_cert_dir: /opt/AdGuardHome/certs
-
-# AdGuard Home Sync runs from dns-01
-# (the adguard_sync role gates on inventory_hostname == 'dns-01')
-adguardhome_sync_schedule: "*:0/5"  # Every 5 minutes
+# This resolver is the primary: it owns the rewrite/filtering API pass and is
+# the sync origin.
+adguard_home_is_primary: true
+adguard_sync_enabled: true
+adguard_sync_schedule: "*:0/5"  # Every 5 minutes

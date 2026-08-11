@@ -18,24 +18,17 @@
     # Vars come from molecule.yml inventory and all.yml vars_files
     - name: Apply base role
       ansible.builtin.include_role:
-        name: base
+        name: weisssrv.infra.base
 
     # 2. QoL role - Developer tools (zsh, neovim, fzf, ripgrep)
     # Vars come from molecule.yml inventory and all.yml vars_files
     - name: Apply qol role
       ansible.builtin.include_role:
-        name: qol
+        name: weisssrv.infra.qol
       when: "'qol_enabled' in group_names"
-      vars:
-        # Override defaults for container testing
-        install_fzf: true
-        install_ripgrep: true
 
     # 3. Tailscale role - VPN connectivity
     # Vars come from molecule.yml inventory and all.yml vars_files
     - name: Apply tailscale role
       ansible.builtin.include_role:
-        name: tailscale
-      vars:
-        # Override defaults for container testing
-        skip_tailscale_up: true
+        name: weisssrv.infra.tailscale

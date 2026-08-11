@@ -111,17 +111,35 @@ tests:
           - exp_labels:
               severity: warning
 
-  # LokiIngestionRateLimited must catch a SHORT burst: the real too_far_behind
-  # spikes lasted well under the old 15m hold and never fired. 6 minutes of
-  # discards has to page.
+  # Discards are split by reason class because the remedies differ. Both arms
+  # must catch a SHORT burst — real spikes last well under 15m — and neither may
+  # answer for the other's reasons, or the page names the wrong fix.
   - interval: 1m
     input_series:
       - series: 'loki_discarded_samples_total{job="observability/loki", reason="too_far_behind", tenant="fake"}'
         values: '0+1000x8 8000+0x20'
     alert_rule_test:
       - eval_time: 8m
-        alertname: LokiIngestionRateLimited
+        alertname: LokiDiscardsOutOfOrder
         exp_alerts:
           - exp_labels:
               severity: warning
               reason: too_far_behind
+      - eval_time: 8m
+        alertname: LokiDiscardsRateLimited
+        exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      - series: 'loki_discarded_samples_total{job="observability/loki", reason="rate_limited", tenant="fake"}'
+        values: '0+1000x8 8000+0x20'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: LokiDiscardsRateLimited
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              reason: rate_limited
+      - eval_time: 8m
+        alertname: LokiDiscardsOutOfOrder
+        exp_alerts: []

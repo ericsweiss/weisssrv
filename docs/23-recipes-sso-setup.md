@@ -60,136 +60,49 @@ Create the following items in your **Homelab** vault:
 
 ---
 
-## Part 2: Create Authentik User Groups
+## Part 2: Authentik objects (Terraform)
 
-1. Log into Authentik at https://auth.ericsweiss.com
-2. Navigate to **Directory → Groups**
-3. Click **Create**
+The groups, OAuth2 providers and applications for both apps are declared in
+`terraform/authentik/` and applied under supervision — see
+[docs/40](40-authentik-terraform.md). Nothing here is created in the Authentik
+UI. The values Terraform sets, and that the apps' env vars must agree with:
 
-### Create `mealie-users` group
-- **Name**: `mealie-users`
-- **Parent**: (leave blank)
-- Click **Create**
-- Click **Add existing user** and add users who should have access to Mealie
+### Groups (`groups.tf`)
 
-### Create `mealie-admins` group
-- **Name**: `mealie-admins`
-- **Parent**: (leave blank)
-- Click **Create**
-- Click **Add existing user** and add users who should be Mealie administrators
+| Group | Purpose |
+|---|---|
+| `mealie-users` | Standard Mealie access |
+| `mealie-admins` | Mealie administrators (full admin rights inside Mealie) |
 
-**Note**: Users in `mealie-admins` will have full administrative access to Mealie. Regular users should only be in `mealie-users`.
+Bar Assistant has no group gate — application access is open to authenticated
+users.
 
----
+### OAuth2 providers (`providers_oauth2.tf`)
 
-## Part 3: Configure Mealie OAuth2 Provider
+| Setting | Mealie | Bar Assistant |
+|---|---|---|
+| Provider / application name | `Mealie` | `Bar Assistant` |
+| Application slug | `food` | `bar-assistant` |
+| Client type | Confidential | Confidential |
+| Authorization flow | `default-authorization-flow` (implicit consent) | same |
+| Scopes | `openid`, `email`, `profile` | `openid`, `email`, `profile` |
+| Launch URL | `https://food.esweiss.com` | `https://bar.esweiss.com` |
+| Redirect URI regex | `https://food\.esweiss\.com/login(\?direct=1)?$`<br>`https://food\.ericsweiss\.com/login(\?direct=1)?$` | `https://bar\.(es\|ericsweiss)\.com/oauth/callback$` |
+| 1Password item | `Mealie SSO` (`oidc-client-id`, `oidc-client-secret`) | `Bar Assistant SSO` (`authentik-client-id`, `authentik-client-secret`) |
 
-1. Navigate to **Applications → Providers**
-2. Click **Create**
-3. Select **OAuth2/OpenID Provider**
-4. Configure the provider:
+> **Both apps pin a single callback origin.** Mealie's is unpinnable only by
+> leaving `BASE_URL` unset; Bar Assistant's is fixed. Changing hostnames means
+> changing the regex and the app env together.
 
-| Field | Value |
-|-------|-------|
-| **Name** | `Mealie` |
-| **Authorization flow** | `default-authorization-flow` (implicit-consent) |
-| **Protocol settings** | |
-| **Client type** | `Confidential` |
-| **Client ID** | (auto-generated - **COPY THIS**) |
-| **Client Secret** | (auto-generated - **COPY THIS**) |
-| **Redirect URIs/Origins (Regex)** | See below |
-| **Signing Key** | Select any available certificate |
-| **Advanced protocol settings** | |
-| **Scopes** | `openid`, `email`, `profile` |
-
-**Redirect URIs/Origins (Regex)**:
-```
-https://food\.esweiss\.com/login(\?direct=1)?$
-https://food\.ericsweiss\.com/login(\?direct=1)?$
-```
-
-5. Click **Finish**
-6. **IMPORTANT**: Copy the Client ID and Client Secret to 1Password:
-   - Open `Mealie SSO` item in 1Password
-   - Paste Client ID into `oidc-client-id` field
-   - Paste Client Secret into `oidc-client-secret` field
-   - Save the item
+The client secret lives in 1Password and is read by **both** ESO and
+`terraform/authentik`, so the two cannot disagree. Rotating it is a 1Password
+edit plus a supervised apply plus an ExternalSecret refresh — see
+[Rotating OAuth2 client secrets](#rotating-oauth2-client-secrets).
 
 ---
 
-## Part 4: Create Mealie Application
 
-1. Navigate to **Applications → Applications**
-2. Click **Create**
-3. Configure the application:
-
-| Field | Value |
-|-------|-------|
-| **Name** | `Mealie` |
-| **Slug** | `food` |
-| **Group** | (leave blank or select if using groups) |
-| **Provider** | `Mealie` (select the provider created above) |
-| **Launch URL** | `https://food.esweiss.com` |
-| **Icon** | (optional - upload Mealie logo) |
-
-4. Click **Create**
-
----
-
-## Part 5: Configure Bar Assistant OAuth2 Provider
-
-1. Navigate to **Applications → Providers**
-2. Click **Create**
-3. Select **OAuth2/OpenID Provider**
-4. Configure the provider:
-
-| Field | Value |
-|-------|-------|
-| **Name** | `Bar Assistant` |
-| **Authorization flow** | `default-authorization-flow` (implicit-consent) |
-| **Protocol settings** | |
-| **Client type** | `Confidential` |
-| **Client ID** | (auto-generated - **COPY THIS**) |
-| **Client Secret** | (auto-generated - **COPY THIS**) |
-| **Redirect URIs/Origins (Regex)** | See below |
-| **Signing Key** | Select any available certificate |
-| **Advanced protocol settings** | |
-| **Scopes** | `openid`, `email`, `profile` |
-
-**Redirect URIs/Origins (Regex)**:
-```
-https://bar\.(es|ericsweiss)\.com/oauth/callback$
-```
-
-5. Click **Finish**
-6. **IMPORTANT**: Copy the Client ID and Client Secret to 1Password:
-   - Open `Bar Assistant SSO` item in 1Password
-   - Paste Client ID into `authentik-client-id` field
-   - Paste Client Secret into `authentik-client-secret` field
-   - Save the item
-
----
-
-## Part 6: Create Bar Assistant Application
-
-1. Navigate to **Applications → Applications**
-2. Click **Create**
-3. Configure the application:
-
-| Field | Value |
-|-------|-------|
-| **Name** | `Bar Assistant` |
-| **Slug** | `bar-assistant` |
-| **Group** | (leave blank or select if using groups) |
-| **Provider** | `Bar Assistant` (select the provider created above) |
-| **Launch URL** | `https://bar.esweiss.com` |
-| **Icon** | (optional - upload Bar Assistant logo) |
-
-4. Click **Create**
-
----
-
-## Part 7: Trigger ExternalSecret Refresh
+## Part 3: Trigger ExternalSecret Refresh
 
 Recipe secrets live in the single ExternalSecret in
 `kubernetes/apps/recipes/`:
@@ -233,7 +146,7 @@ task flux:reconcile
 
 ---
 
-## Part 8: Testing
+## Part 4: Testing
 
 ### Test Mealie SSO
 
@@ -447,33 +360,12 @@ If you need to rotate the OpenAI API key:
 
 ---
 
-## References
+## Related documentation
 
-- **Mealie OIDC Documentation**: https://docs.mealie.io/documentation/getting-started/authentication/oidc/
-- **Mealie OpenAI Documentation**: https://docs.mealie.io/documentation/getting-started/installation/open-ai/
-- **Bar Assistant SSO Documentation**: https://docs.barassistant.app/setup/sso/
-- **Authentik Mealie Integration**: https://integrations.goauthentik.io/documentation/mealie/
-- **OpenAI Platform**: https://platform.openai.com/
-
----
-
-## Next Steps
-
-Once SSO is working:
-
-1. **Password login is already disabled**:
-   - Both Mealie and Bar Assistant have password-based login disabled by default
-   - Mealie: `ALLOW_PASSWORD_LOGIN: "false"` in `mealie.yaml`
-   - Bar Assistant: `ENABLE_PASSWORD_LOGIN: "false"` in `bar-assistant.yaml`
-   - All users must authenticate through Authentik SSO
-
-2. **Configure other Authentik integrations**:
-   - Consider adding Sonarr, Radarr, Prowlarr, etc. to Authentik
-
-3. **Monitor usage**:
-   - Check Mealie usage of OpenAI at https://platform.openai.com/usage
-   - Review Authentik audit logs for SSO logins
-
-4. **Backup**:
-   - Ensure 1Password vault is backed up (automatic with 1Password)
-   - Export Authentik configuration periodically
+- [docs/40-authentik-terraform.md](40-authentik-terraform.md) — Authentik objects as code
+- [docs/22-recipes-deployment.md](22-recipes-deployment.md) — the recipes stack itself
+- [docs/15-credential-rotation.md](15-credential-rotation.md) — the 1Password items above
+- [Mealie OIDC](https://docs.mealie.io/documentation/getting-started/authentication/oidc/) ·
+  [Mealie OpenAI](https://docs.mealie.io/documentation/getting-started/installation/open-ai/) ·
+  [Bar Assistant SSO](https://docs.barassistant.app/setup/sso/) ·
+  [Authentik Mealie integration](https://integrations.goauthentik.io/documentation/mealie/)

@@ -48,16 +48,31 @@ tests:
         alertname: VPARecommendationExceedsLimit
         exp_alerts: []
 
-  # An Initial/Auto VPA on the default controlledValues (RequestsAndLimits)
-  # rewrites the limit with the request at the next admission, so the same
-  # over-limit recommendation is self-healing and must NOT page: the unscoped
-  # expression fired downloads/pulsarr for 57 straight hours on exactly this
-  # shape, and it resolved with no operator action.
+  # An Initial VPA only sets resources at admission, so a limit it never revisits
+  # can sit below the recommendation indefinitely — in scope, must fire.
   - interval: 1m
     input_series:
       - series: 'vpa_recommendation_target{exported_namespace="downloads", namespace="observability", verticalpodautoscaler="pulsarr", container="pulsarr", resource="memory", unit="byte", update_mode="Initial"}'
         values: '1073741824+0x480'
       - series: 'kube_pod_container_resource_limits{namespace="downloads", pod="pulsarr-0", container="pulsarr", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
+        values: '953155584+0x480'
+    alert_rule_test:
+      - eval_time: 7h
+        alertname: VPARecommendationExceedsLimit
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: downloads
+              verticalpodautoscaler: pulsarr
+              container: pulsarr
+
+  # An Auto VPA on the default controlledValues (RequestsAndLimits) rewrites the
+  # limit alongside the request, so the same shape self-heals and must NOT page.
+  - interval: 1m
+    input_series:
+      - series: 'vpa_recommendation_target{exported_namespace="downloads", namespace="observability", verticalpodautoscaler="sonarr", container="sonarr", resource="memory", unit="byte", update_mode="Auto"}'
+        values: '1073741824+0x480'
+      - series: 'kube_pod_container_resource_limits{namespace="downloads", pod="sonarr-0", container="sonarr", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
         values: '953155584+0x480'
     alert_rule_test:
       - eval_time: 7h

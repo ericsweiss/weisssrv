@@ -1,14 +1,9 @@
-# Tailnet policy (ACLs, SSH rules, route auto-approvers) as code.
+# Tailnet policy (ACLs, SSH rules, route auto-approvers) as code. autoApprovers
+# is what makes subnet-route failover across the six Proxmox hosts real, and the
+# ssh rules are the remote-access authorization posture.
 #
-# Why this exists: the six Proxmox hosts advertise 192.168.0.0/24 and enable
-# Tailscale SSH, but a route is only ACTIVE once approved, and SSH access is
-# governed by tailnet ACLs — none of which was versioned. Codifying it here
-# (a) makes subnet-route HA real via autoApprovers (any owner-advertised
-# 192.168.0.0/24 route auto-approves, so failover across the 6 hosts works) and
-# (b) brings the remote-access/SSH authorization posture under GitOps review.
-#
-# APPLY IS SUPERVISED — see README.md. policy.hujson must be reviewed against the
-# live tailnet ACL before the first apply (a bad ACL can sever tailnet/SSH access).
+# APPLY IS SUPERVISED — see README.md. Review the plan against the live tailnet
+# ACL; a bad ACL severs tailnet/SSH access.
 resource "tailscale_acl" "policy" {
   acl = file("${path.module}/policy.hujson")
 

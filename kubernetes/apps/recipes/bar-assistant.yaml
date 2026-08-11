@@ -372,7 +372,9 @@ spec:
                   key: bar-assistant-authentik-client-secret
             - name: AUTHENTIK_REDIRECT_URI
               value: https://bar.ericsweiss.com/oauth/callback
-            # Allow registration for SSO auto-linking/creation
+            # Required so Authentik logins can auto-create/link an account.
+            # Who may sign in is gated by the authentik binding on the `bar`
+            # application (terraform/authentik/policy_bindings.tf), not here.
             - name: ALLOW_REGISTRATION
               value: "true"
             # Disable password login (SSO only)
@@ -463,6 +465,11 @@ metadata:
     app.kubernetes.io/name: salt-rim
     app.kubernetes.io/component: frontend
     app.kubernetes.io/part-of: bar-assistant
+  annotations:
+    # config.js is a subPath ConfigMap mount, which the kubelet never updates in
+    # place — without this a git edit reconciles the ConfigMap and never reaches
+    # the pod.
+    reloader.stakater.com/auto: "true"
 spec:
   # No static replicas: the salt-rim HPA (hpa.yaml) owns the count. Setting it
   # here would make Flux server-side apply fight the HPA on every reconcile.
@@ -498,11 +505,9 @@ spec:
                 topologyKey: kubernetes.io/hostname
       nodeSelector:
         esweiss.com/general: "true"
-      # Pod hardening: salt-rim is a static nginx frontend that does not talk to
-      # the kube-API. It already runs non-root as www-data (uid 33, verified live)
-      # and listens on :8080 (no privileged port), so drop-ALL caps + aPE:false
-      # are safe. runAsNonRoot/runAsUser are not pinned (the image sets uid 33
-      # itself; pinning a wrong UID against any future PVC would risk writes).
+      # Static nginx frontend: no kube-API use, already non-root on :8080, so
+      # drop-ALL + aPE:false are safe. runAsUser is not pinned — the image sets
+      # uid 33 itself.
       automountServiceAccountToken: false
       securityContext:
         seccompProfile:

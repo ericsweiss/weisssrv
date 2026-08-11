@@ -7,7 +7,7 @@ nginx that terminates the wildcard TLS. SSO-only via Authentik OIDC.
 - **Web**: `https://photos.esweiss.com` (internal) / `https://photos.ericsweiss.com` (external)
 - **VM**: `immich`, `192.168.0.157`, vmid 157 on `pve-nas-01`
 - **GPU ML LXC**: `immich-ml`, `192.168.0.158`, vmid 158 on `pve-nas-01` (Intel Arc B580, OpenVINO)
-- **Ansible**: roles `ansible/roles/immich/` + `ansible/roles/immich_ml/`, playbooks `ansible/playbooks/{immich,immich-ml}.yml`, `task immich:*` / `task immich-ml:*`
+- **Ansible**: roles `weisssrv.infra.immich` + `weisssrv.infra.immich_ml` (weisssrv-lib), playbooks `ansible/playbooks/{immich,immich-ml}.yml`, `task immich:*` / `task immich-ml:*`
 - **Ingress**: `kubernetes/apps/vm-ingress/{services-immich,immich}.yaml`
 
 ## Architecture
@@ -87,7 +87,7 @@ way to open the 0660 device nodes.
 
 ### Version lockstep
 
-`immich_ml_image` derives from the **same `immich_version` pin**
+`immich_machine_learning_image` derives from the **same `immich_version` pin**
 (`group_vars/all.yml`) as the VM's containers, so any version-bump MR
 redeploys both sides with matching tags (`deploy-immich` + `deploy-immich-ml`
 both trigger on `all.yml`). Never pin the ML LXC independently.
@@ -224,39 +224,46 @@ disabled and the web login page auto-redirects to Authentik. System config
 (`/mnt/immich-app/config/immich-config.json`, rendered by the role); when a
 config file is present, the Immich admin UI settings become read-only.
 
-### Authentik provider + application (create manually in the admin UI)
+### Authentik objects (Terraform)
 
-1. **Providers → Create → OAuth2/OpenID Provider**
-   - Name: `Immich`
-   - Authorization flow: `default-provider-authorization-implicit-consent`
-     (or explicit-consent)
-   - Client type: **Confidential**
-   - Client ID / Client Secret: generated — store them in 1Password **Immich SSO**
-     (`client-id`, `client-secret`).
-   - Redirect URIs (Strict), one per line:
-     - `https://photos.ericsweiss.com/auth/login`
-     - `https://photos.ericsweiss.com/user-settings`
-     - `https://photos.esweiss.com/auth/login`
-     - `https://photos.esweiss.com/user-settings`
-     - `app.immich:///oauth-callback` (the mobile app deep link)
-   - Signing Key: your Authentik signing certificate (RS256).
-   - Scopes: `openid`, `email`, `profile`.
-2. **Applications → Create**
-   - Name: `Immich`, Slug: **`photos`** (this drives the issuer URL
-     `https://auth.ericsweiss.com/application/o/photos/`).
-   - Provider: `Immich`.
-   - Launch URL: `https://photos.ericsweiss.com`.
-3. **Group-gated access**: create/choose an Authentik group `immich-users`, then
-   bind a **policy** on the Immich application that permits only that group
-   (Application → *Policy / Group / User Bindings* → bind the group). Non-members
-   never reach Immich's OAuth callback, so `oauth.autoRegister` is safe.
-4. (Optional) Storage quota / role via claims: the config maps
-   `storageQuotaClaim: immich_quota` and `storageLabelClaim: preferred_username`
-   — add a scope mapping in Authentik if you want per-user quotas.
+The Immich OAuth2 provider, application and the `immich-users` group are declared
+in `terraform/authentik/` and applied under supervision
+([docs/40](40-authentik-terraform.md)) — **not** in the Authentik admin UI, where
+an edit becomes drift the next apply reverts. The values Terraform sets:
 
-The role renders the OIDC config from these values (client id/secret injected via
-`op run`, `no_log`). `issuerUrl` is always the **external** host
-(`auth.ericsweiss.com`).
+| Setting | Value |
+|---|---|
+| Provider / application name | `Immich` |
+| Application slug | `photos` — drives the issuer `https://auth.ericsweiss.com/application/o/photos/` |
+| Client type | Confidential |
+| Authorization flow | `default-provider-authorization-implicit-consent` |
+| Launch URL | `https://photos.ericsweiss.com` |
+| Signing key | Authentik signing certificate (RS256) |
+| Scopes | `openid`, `email`, `profile` |
+| Access gate | `immich-users` group binding |
+
+Redirect URIs (Strict), one per line:
+
+```
+https://photos.ericsweiss.com/auth/login
+https://photos.ericsweiss.com/user-settings
+https://photos.esweiss.com/auth/login
+https://photos.esweiss.com/user-settings
+app.immich:///oauth-callback
+```
+
+The last entry is the mobile app's deep link. Because access is group-gated,
+non-members never reach Immich's OAuth callback, which is what makes
+`oauth.autoRegister` safe.
+
+Client id/secret live on the **Immich SSO** 1Password item (`client-id`,
+`client-secret`); the role renders the OIDC config from them via `op run`
+(`no_log`). `issuerUrl` is always the **external** host (`auth.ericsweiss.com`).
+
+Per-user storage quotas are optional: the config maps
+`storageQuotaClaim: immich_quota` and `storageLabelClaim: preferred_username`,
+which needs a matching scope mapping declared in Terraform.
+
 
 ### One-time admin bootstrap
 
@@ -346,7 +353,7 @@ release's own `docker/docker-compose.yml`** — never bump the DB independently.
    `immich_version` pin (lockstep; in CI both `deploy-immich` and
    `deploy-immich-ml` fire on the `all.yml` bump).
 
-Docker Engine itself is pinned (`docker_ce_version` etc. in `all.yml`) and held
+Docker Engine itself is pinned (`docker_engine_ce_version` etc. in `all.yml`) and held
 (`apt-mark hold`), so the maintenance apt-upgrade won't bump it. The role's
 install task carries `allow_change_held_packages: true`, so bumping a Docker pin
 in `all.yml` and re-deploying reconciles through the hold in place (then re-holds

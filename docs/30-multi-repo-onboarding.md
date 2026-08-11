@@ -225,6 +225,12 @@ kind: ClusterSecretStore
 metadata:
   name: onepassword-<repo-slug>
 spec:
+  # A ClusterSecretStore is cluster-scoped: without `conditions`, ANY namespace
+  # can reference it by name and read this store's vault. Scope every tenant
+  # store to its own namespace.
+  conditions:
+    - namespaces:
+        - <repo-slug>
   provider:
     onepassword:
       connectHost: http://onepassword-connect.external-secrets.svc.cluster.local:8080
@@ -250,6 +256,14 @@ spec:
   # For private repos, attach a deploy token:
   # secretRef:
   #   name: <repo-slug>-git-creds
+  #
+  # A tenant hosted on GitHub works the same way — point `url` at
+  # https://github.com/<owner>/<repo> and, for a private repo, create the
+  # secretRef with a fine-grained PAT:
+  #   kubectl -n flux-system create secret generic <repo-slug>-git-creds \
+  #     --from-literal=username=git --from-literal=password=<token>
+  # Flux's source-controller treats both hosts identically; nothing else in this
+  # wiring changes.
 ---
 # Tenant reconciliation runs under a namespace-scoped ServiceAccount —
 # without serviceAccountName, kustomize-controller applies tenant manifests
@@ -426,6 +440,12 @@ kind: ClusterSecretStore
 metadata:
   name: gitlab-<repo-slug>
 spec:
+  # A ClusterSecretStore is cluster-scoped: without `conditions`, ANY namespace
+  # can reference it by name and read this store's vault. Scope every tenant
+  # store to its own namespace.
+  conditions:
+    - namespaces:
+        - <repo-slug>
   provider:
     gitlab:
       url: https://git.ericsweiss.com
@@ -558,7 +578,18 @@ Tenants **must not** create or modify resources in:
 
 Why: Flux's server-side apply with `prune: true` will fight any resources that appear in a namespace that isn't part of the tenant's Kustomization. The result is reconcile loops and random deletions.
 
-**Enforcement**: the Flux apply path is RBAC-scoped — each tenant Kustomization sets `serviceAccountName`, and the SA's RoleBindings grant `admin` **and** `tenant-crd-editor` only in the tenant's namespace, so a tenant manifest targeting another namespace fails to apply. (`tenant-crd-editor` is a shared ClusterRole covering the CRD groups `admin` misses — traefik.io / monitoring.coreos.com / autoscaling.k8s.io — but each RoleBinding is namespace-scoped, so it grants nothing cluster-wide.) What remains cooperative is everything outside that path (e.g. which ClusterSecretStore a namespace references, cross-namespace Traefik refs — see the Pre-Onboarding Checklist). A future admission controller (Kyverno or OPA Gatekeeper) could close those. Tracked in `docs/16-next-steps.md`.
+**Enforcement**: the Flux apply path is RBAC-scoped. Each tenant Kustomization
+sets `serviceAccountName`, and the SA's RoleBindings grant `admin` **and**
+`tenant-crd-editor` only in the tenant's namespace, so a tenant manifest
+targeting another namespace fails to apply. (`tenant-crd-editor` is a shared
+ClusterRole covering the CRD groups `admin` misses — `traefik.io`,
+`monitoring.coreos.com`, `autoscaling.k8s.io` — but each RoleBinding is
+namespace-scoped, so it grants nothing cluster-wide.)
+
+What remains cooperative is everything outside that path: which
+ClusterSecretStore a namespace references, cross-namespace Traefik refs — see the
+Pre-Onboarding Checklist. An admission controller (Kyverno or OPA Gatekeeper)
+would close those; tracked in `docs/16-next-steps.md`.
 
 If a tenant needs to consume a platform service (Traefik ingress, cert-manager certificate, Authentik OIDC), they do so via CRs in *their own* namespace — an IngressRoute in the tenant namespace, a Certificate in the tenant namespace, etc. The platform controllers act on those CRs without the tenant needing to touch platform namespaces.
 
@@ -638,35 +669,34 @@ PVCs have `pvc-protection` finalizers and aren't deleted during tenant removal u
 ## weisssrv-app-template Repo
 
 The tenant-side scaffold lives in its own repo:
-`https://git.ericsweiss.com/eric/weisssrv-app-template`. New tenant repos fork
-it. It is pre-wired with:
+`https://git.ericsweiss.com/eric/weisssrv-app-template`. New tenant repos are
+generated from it.
 
-- `.gitlab-ci.yml` with lint + kubeconform + secret-scan CI (tag-less so jobs
-  land on the shared runner). It does **not** deploy — deploys happen
-  cluster-side via Flux, not CI.
-- `kubernetes/flux/` skeleton with a full example manifest set (Deployment,
-  Service, IngressRoute, Certificate, ExternalSecret, NetworkPolicy,
-  ServiceMonitor, PrometheusRule, VPA, PodDisruptionBudget — plus opt-in HPA).
-- `README.md` plus `docs/{ARCHITECTURE,CONSUMING,ONBOARDING}.md` walking through
-  onboarding from the tenant side, a `Dockerfile` scaffold, a
-  `project-development` agent skill (+ `CLAUDE.md` / `AGENTS.md` / `.cursorrules`),
-  `CODEOWNERS`, and `scripts/rename.sh` — a wrapper over the shared library's
-  `weisssrv-new-project rename` CLI that substitutes the `changeme-*`
-  placeholders.
-- A `Taskfile.yml` with `lint`, `yaml-lint`, `flux-lint`, `render`, `build`,
-  `flux:status`, `flux:reconcile`, `secrets:check`.
-- CI `include:`d from `eric/weisssrv-lib` at a pinned tag (the same shared
-  library weisssrv consumes — docs/13 § Shared CI library). There is **no**
-  Renovate anywhere in the family; image tags are bumped by hand.
+**The template's own README and `docs/` are the canonical description of its
+contents** — this page deliberately does not restate the file list, because that
+duplication is what goes stale. Read the template's `README.md`,
+`docs/ARCHITECTURE.md`, `docs/CI-SHAPES.md` and `docs/VERSIONING.md` for what it
+ships and how to configure it.
+
+Two facts that matter from the cluster side:
+
+- The template's CI is `include:`d from `eric/weisssrv-lib` at a **pinned tag**,
+  the same shared library this repo consumes (docs/13 § Shared CI library). A
+  library tag bump fans out across the family — the library's `docs/VERSIONING.md`
+  enumerates every pin site.
+- The template **does not deploy**. Its CI lints and (optionally) builds an
+  image; the deploy happens cluster-side via Flux from the wiring file this
+  document's paths create. A tenant that builds a container image must push it to
+  a registry this cluster can pull from, and its namespace needs an
+  `imagePullSecret` — that is a tenant-side step, covered by the template docs.
+- There is **no** Renovate anywhere in the family; image tags are bumped by hand.
 
 Onboarding is therefore:
 
-1. Tenant forks the template.
+1. Tenant generates their repo from the template.
 2. Tenant fills in their workloads.
-3. Operator (me) adds the wiring file to this repo.
+3. Operator adds the wiring file to this repo (paths above).
 4. Push — running.
-
-This section is the canonical description of the template's contents.
 
 ---
 
@@ -723,6 +753,12 @@ kind: ClusterSecretStore
 metadata:
   name: onepassword-example-app
 spec:
+  # A ClusterSecretStore is cluster-scoped: without `conditions`, ANY namespace
+  # can reference it by name and read this store's vault. Scope every tenant
+  # store to its own namespace.
+  conditions:
+    - namespaces:
+        - example-app
   provider:
     onepassword:
       connectHost: http://onepassword-connect.external-secrets.svc.cluster.local:8080
@@ -949,3 +985,12 @@ Then in 1Password:
 - Delete or archive the `example-app: *` prefixed items in the `Homelab` vault.
 
 The tenant is fully gone.
+
+---
+
+## Related documentation
+
+- [docs/29-flux-operations.md](29-flux-operations.md) — Flux day-2 operations
+- [docs/15-credential-rotation.md](15-credential-rotation.md) — the 1Password model
+- [`kubernetes/clusters/weisssrv/tenants/README.md`](../kubernetes/clusters/weisssrv/tenants/README.md) — the canonical wiring templates
+- [docs/13-ci-cd.md](13-ci-cd.md) — the shared CI library tenants consume

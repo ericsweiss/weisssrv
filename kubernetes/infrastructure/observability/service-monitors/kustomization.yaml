@@ -1,7 +1,12 @@
 ---
+# ServiceMonitors/PodMonitors for targets that are not part of an app's own
+# manifests: off-cluster VMs and LXCs, and in-cluster workloads whose chart ships
+# no monitor. A monitor here also needs its target namespace to admit
+# observability (scripts/check-scrape-netpol.py enforces that in CI).
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
+  - authentik-worker.yaml
   - dcgm.yaml
   - flux-system.yaml
   - gitlab.yaml
@@ -10,5 +15,6 @@ resources:
   - immich.yaml
   - meilisearch.yaml
   - nextcloud.yaml
+  - postgres.yaml
   - registry-cache.yaml
   - wg-easy.yaml

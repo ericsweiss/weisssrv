@@ -1,26 +1,14 @@
 ---
 # Flux Kustomization: observability stack (Prometheus, Grafana, Loki, Alloy,
-# exporters, dashboards). Sits between infrastructure-configs and apps in
-# the reconciliation chain so that:
-#   1. CRDs (ServiceMonitor, PodMonitor, PrometheusRule) are installed before
-#      steady-state app changes add monitoring CRs (on a truly-fresh bootstrap
-#      the apps stage no longer waits here — see apps.yaml — so its monitoring
-#      consumers, the qbittorrent PodMonitor and the authentik chart's
-#      ServiceMonitor, retry until these CRDs land).
-#   2. ExternalSecrets work (ClusterSecretStore from configs is already up).
-#   3. A failed observability deploy does NOT block the core infrastructure
-#      chain (cert-manager, traefik, MetalLB) or the apps stage (which gates
-#      on infrastructure-configs) — it only blocks this stage.
-#   4. Controller HelmReleases enable serviceMonitor.enabled, and on a FRESH
-#      bootstrap the monitoring.coreos.com CRDs must exist before the
-#      controllers stage: Traefik's chart hard-fails its template render
-#      ("You have to deploy monitoring.coreos.com/v1 first") when that API is
-#      absent, stalling the wait:true controllers Kustomization. See docs/29
-#      "Fresh bootstrap / disaster recovery" for the one-time CRD pre-apply;
-#      the durable CRDs-only early stage is tracked as k8s-infra-06 in docs/16.
+# exporters, dashboards).
 #
-# optional: false — same rationale as other stages: the ConfigMap is guaranteed
-# to exist at this point. A missing ConfigMap here means a real bug.
+# dependsOn infrastructure-configs, in parallel with apps: the monitoring CRDs
+# come from the crds stage and the ClusterSecretStore from configs, so both are
+# in place here. Keeping it off the apps chain means a failed observability
+# upgrade blocks only this stage.
+#
+# optional: false — same rationale as the other stages: a missing
+# cluster-versions ConfigMap here is a real fault, not a reason to render empty.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -29,7 +17,9 @@ metadata:
 spec:
   interval: 10m
   retryInterval: 1m
-  timeout: 15m
+  # Headroom over the slowest release this stage waits on
+  # (kube-prometheus-stack, 15m).
+  timeout: 25m
   dependsOn:
     - name: infrastructure-configs
   sourceRef:

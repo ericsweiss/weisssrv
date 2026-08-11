@@ -1,11 +1,9 @@
 ---
-# Plex Exporter — Prometheus metrics for Plex Media Server.
-# Uses jsclayton/prometheus-plex-exporter because exportarr does not support Plex.
-# NOTE: upstream publishes no versioned tags on GHCR, so we pin the immutable
-# @sha256 digest of what was `latest` instead (reproducible; an upstream tag
-# move can no longer silently change the running image). Re-resolve the digest
-# from `latest` when intentionally updating. imagePullPolicy: IfNotPresent
-# because the digest is immutable — no need to re-pull on every restart.
+# Plex metrics (exportarr has no Plex support). Upstream publishes no versioned
+# tags on GHCR, so the image is pinned to the immutable @sha256 digest of
+# `latest` — deliberately outside the all.yml version workflow, so
+# `task maintenance:check-versions` cannot see it. Re-resolve the digest by hand
+# when updating. imagePullPolicy: IfNotPresent is safe on an immutable digest.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

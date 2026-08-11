@@ -1,10 +1,11 @@
 ---
+# Custom Grafana dashboards, one ConfigMap per JSON file, discovered by the
+# Grafana sidecar via the grafana_dashboard label and filed by the grafana_folder
+# annotation.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-# Pin the namespace explicitly (the parent observability kustomization also sets
-# it — belt-and-suspenders): the generated dashboard ConfigMaps must land in
-# observability for the Grafana sidecar to discover them, and this keeps the
-# directory rendering correctly even when built standalone.
+# Pinned so the directory still renders into observability when built standalone;
+# the parent kustomization sets the same namespace.
 namespace: observability
 # ConfigMap names must stay STABLE (no content-hash suffix) so the Grafana
 # sidecar keeps discovering them and no orphans accumulate.
@@ -126,6 +127,14 @@ configMapGenerator:
   - name: grafana-dashboard-infrastructure
     files:
       - infrastructure.json
+    options:
+      labels:
+        grafana_dashboard: "1"
+      annotations:
+        grafana_folder: "Infrastructure"
+  - name: grafana-dashboard-loki-self
+    files:
+      - loki-self.json
     options:
       labels:
         grafana_dashboard: "1"

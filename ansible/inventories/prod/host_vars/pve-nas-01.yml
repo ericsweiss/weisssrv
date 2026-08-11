@@ -48,12 +48,14 @@ zfs_encryption_pools:
 #
 #         NOTE the mechanism, which is why membership of THIS list — not
 #         onboot — is what makes a guest start at boot: every guest here stays
-#         onboot=0 in hosts.yml, because pve-guests runs before
+#         onboot=0 (VMs in hosts.yml, the plex LXC in host_vars/plex.yml as
+#         proxmox_lxc_onboot), because pve-guests runs before
 #         zfs-mount-encrypted has unlocked the ssd pool. onboot=1 would fail
 #         against a locked pool; this list is the working equivalent, applied
 #         after the unlock. See docs/32, 39.
 #   152 = plex LXC (mp0 /config on ssd)
-# Order mirrors proxmox_startup_order: the k3s agent (202, order 40) before the
+# Order mirrors the per-guest startup order (proxmox_startup_order on VMs,
+# proxmox_lxc_startup_order on the LXC): the k3s agent (202, order 40) before the
 # gitlab app (153, order 50), nextcloud (156, order 55), immich (157, order 56)
 # and windows (155, order 60); pve-start-encrypted-guests.sh starts VMs in this
 # list order, then CTs. 157 (immich) has disks on both the ssd pool and
@@ -69,13 +71,13 @@ zfs_encryption_guest_ctids: [152]
 # binds capture the real (unlocked) datasets, never an empty mountpoint. All
 # four ZFS-backed exports (appdata, share, tank/proxmox, k3s-etcd) are encrypted;
 # /mnt/media (mergerfs, plaintext) is not ZFS-backed and keeps a plain bind.
-nas_encrypted_bind_sources:
+nas_storage_encrypted_bind_sources:
   - /mnt/ssd/appdata
   - /mnt/tank/share
   - /mnt/tank/proxmox
   - /mnt/ssd/k3s-etcd  # off-node k3s etcd snapshot copies (encrypted, ssd pool)
   # Offsite-eligible logical-dump landing zone, now split into per-app exports
-  # (see nfs_exports below). Each is a SUBDIR of tank/backups (aes-256-gcm): the
+  # (see nas_storage_exports below). Each is a SUBDIR of tank/backups (aes-256-gcm): the
   # exports set bind_source_check: /mnt/tank/backups so the mounted-dataset guard
   # checks the parent dataset, and these entries anchor each bind on the late
   # zfs-mount-encrypted.service.
@@ -87,7 +89,7 @@ nas_encrypted_bind_sources:
   - /mnt/tank/backups/apps/home-assistant
 
 # ZFS pool configuration
-zfs_pools:
+nas_storage_zfs_pools:
   - name: tank
     datasets:
       - name: tank/media
@@ -120,9 +122,9 @@ zfs_pools:
           com.sun:auto-snapshot: "false"
       # Nextcloud bulk user data. Pre-existing encryption root (created manually
       # like ssd/k3s-etcd — nas_storage does not create datasets), already in the
-      # archive SRC_LIST (raw-encrypted recursive send). The 2T sparse data zvol
-      # tank/nextcloud-data/disk (created by proxmox_vm for VM 156) is a CHILD
-      # and inherits this encryption. The properties below are declared to MATCH
+      # nas_storage_archive_backup_sources (raw-encrypted recursive send). The 2T
+      # sparse data zvol tank/nextcloud-data/disk (created by proxmox_vm for VM 156)
+      # is a CHILD and inherits it. The properties below are declared to MATCH
       # the live dataset exactly (mountpoint/compression/encryption verified on
       # the NAS) so nas_storage never mutates it — the encryption property is a
       # guard: `zfs set encryption` errors loudly if the dataset were ever
@@ -201,8 +203,84 @@ zfs_pools:
     datasets: []
 
 # ZFS scrub timer
-zfs_scrub_enabled: true
-zfs_scrub_schedule: "monthly"
+nas_storage_zfs_scrub_enabled: true
+nas_storage_zfs_scrub_schedule: "monthly"
+
+# Per-app /config directories created under ssd/appdata (1000:2000, 0775) for
+# the NFS-backed PVs and the LXC bind mounts.
+nas_storage_appdata_dirs:
+  - grafana
+  - sonarr
+  - radarr
+  - lidarr
+  - prowlarr
+  - qbittorrent
+  - nzbget
+  - pulsarr
+  - mealie
+  - bar-assistant
+  - wg-easy
+  - hermes
+  - hindsight
+  - homarr
+
+# Logical dumps whose freshness/size is tracked as node_exporter textfile
+# metrics (BackupArtifact* alerts). name = the tank/backups/apps subdir.
+#
+# `companions:` are the files an artefact cannot be RESTORED without but which
+# are deliberately outside its `pattern:` — no freshness/size arm sees them, so
+# they get their own BackupArtifactCompanionMissing arm. Each entry is a glob
+# matched at depth 1 inside the app's landing dir. Declaring none is a claim
+# that the app's dump is self-contained; check-backup-artifact-apps.py fails if
+# the alert exists while nothing in this list declares a companion, so the rule
+# can never be shipped inert.
+nas_storage_backup_artifact_apps:
+  - name: authentik
+    pattern: "authentik-*.sql.gz"
+  - name: mealie
+    pattern: "mealie-*.sql.gz"
+  - name: gitlab
+    pattern: "*_gitlab_backup.tar"
+    # gitlab-backup EXCLUDES both of these, and without them the tarball
+    # restores to an instance that cannot decrypt its own CI variables, 2FA
+    # secrets or runner tokens. gitlab-backup-run.sh copies them next to the
+    # tarball on success (`cp /etc/gitlab/gitlab-secrets.json /etc/gitlab/gitlab.rb
+    # "${BACKUP_PATH}/"`), and BACKUP_PATH is /mnt/backups-offsite on .153 —
+    # the NFS mount of pve-nas-01:/backups-apps/gitlab, i.e. this very dir.
+    # This is the NAS-side witness for what GitLabBackupSecretsMissing asserts
+    # from inside the VM: that alert believes the VM's own metrics, this one
+    # believes the landing zone.
+    companions:
+      - "gitlab-secrets.json"
+      - "gitlab.rb"
+  - name: immich
+    pattern: "immich-*.sql.gz"
+  - name: nextcloud
+    pattern: "nextcloud-db-*.sql.gz"
+  - name: home-assistant
+    pattern: "*.tar"
+  - name: pve-cluster
+    pattern: "etc-pve-*.tar.gz"
+
+# Nightly raw-encrypted replication of the sensitive datasets to the archive
+# pool (docs/42). Every source is replicated RECURSIVELY, so children ride
+# along; each lands at archive/<basename>, which must therefore be unique.
+# ssd/pve (the GitLab VM disks) is deliberately absent — those are already in
+# the nightly vzdump this list replicates via tank/proxmox. ssd/k3s-etcd IS
+# here so the etcd DR chain closes (local snapshots + NAS off-node + archive +
+# B2). Each root must be a filesystem; a top-level zvol is rejected on receive.
+nas_storage_archive_backup_enabled: true
+nas_storage_archive_backup_pool: archive
+nas_storage_archive_backup_vzdump_target: tank/proxmox
+nas_storage_archive_backup_sources:
+  - tank/share
+  - tank/backups
+  - tank/nextcloud-data
+  - tank/proxmox
+  - tank/immich-data
+  - ssd/appdata
+  - ssd/databases
+  - ssd/k3s-etcd
 
 # ZFS ARC cap (bytes) = 16 GiB.
 #
@@ -219,7 +297,7 @@ zfs_scrub_schedule: "monthly"
 #
 # Rendered into /etc/modprobe.d/zfs.conf by nas_storage (with an update-initramfs
 # handler so it applies at early boot).
-zfs_arc_max_bytes: 17179869184
+nas_storage_zfs_arc_max_bytes: 17179869184
 
 # Nightly /etc/pve archive into the offsite-eligible landing zone. pmxcfs is
 # cluster-shared, so archiving it from this one node covers the whole cluster —
@@ -227,7 +305,7 @@ zfs_arc_max_bytes: 17179869184
 # it, user.cfg (users/ACLs/API tokens), corosync.conf and priv/ (cluster CA +
 # node certs + authkey) have no backup at ANY tier: vzdump captures guests, not
 # the cluster filesystem. docs/17.
-nas_pve_cluster_backup_enabled: true
+nas_storage_pve_cluster_backup_enabled: true
 
 # Daily swap reset. Paired with vm.swappiness=1 (nic_tuning) + the ARC cap above:
 # those keep steady-state swap ~0, but a real peak (deploys/backups/ML) can still
@@ -238,11 +316,11 @@ nas_pve_cluster_backup_enabled: true
 # It is a backstop: on a normal night it finds ~0 swap and does nothing, which
 # costs nothing. Retire it only if the guest-shutdown escalation below goes
 # unused across a few months of real peaks.
-nas_swap_clean_enabled: true
+nas_storage_swap_clean_enabled: true
 # 07:00 — deliberately AFTER the NAS's own overnight jobs (media-mover 06:00,
 # archive-backup 06:30) so it reclaims the swap THEY caused rather than running
 # before/during them. If those ever run long, push this later.
-nas_swap_clean_schedule: "*-*-* 07:00:00"
+nas_storage_swap_clean_schedule: "*-*-* 07:00:00"
 # Recovery escalation: when the ARC-shrink headroom alone can't cover the swap,
 # the reset gracefully shuts these guests down (in order, only as many as needed
 # to reach the required headroom), does the swapoff, then restarts every guest it
@@ -253,20 +331,15 @@ nas_swap_clean_schedule: "*-*-* 07:00:00"
 # timeout aborts the reclaim rather than being force-killed (Postgres-safe). With
 # the right-sized k3s VMs (hosts.yml) the no-downtime ARC-shrink path covers the
 # common case, so a guest stop is the rare-overflow exception, not a nightly event.
-nas_swap_clean_stop_guests:
+nas_storage_swap_clean_stop_guests:
   - "157:immich:120"
   - "153:gitlab:300"
   - "156:nextcloud:120"
 
-# NVMe fast storage
-nvme_storage:
-  data: /mnt/nvme/media
-  appdata: /mnt/ssd/appdata
-
 # MergerFS configuration
 # Merges NVMe (hot tier) + tank (cold tier) media into unified /mnt/media
 # Only downloads/ and library/ are visible - tank's other directories are NOT exposed
-mergerfs_mounts:
+nas_storage_mergerfs_mounts:
   - name: media
     sources:
       - /mnt/nvme/media          # Hot tier
@@ -307,7 +380,7 @@ nfs_tls_enabled: true
 nfs_tls_is_server: true
 
 # NFS exports
-nfs_exports:
+nas_storage_exports:
   # NFSv4 pseudo-root (fsid=0): traversal-only, so read-only. NFSv4 clients
   # cross from here into whichever child exports below are explicitly listed
   # for them — no crossmnt needed for that. crossmnt is deliberately ABSENT:
@@ -571,7 +644,7 @@ nfs_exports:
 
 # Samba shares
 # Use "nas" user with "media" group (GID 2000) for shared access
-samba_shares:
+nas_storage_samba_shares:
   - name: share
     path: /mnt/tank/share
     comment: General file share
@@ -596,18 +669,18 @@ samba_shares:
 
 # Media mover configuration
 # Moves old files from NVMe (hot tier) to tank (cold tier) to free up fast storage
-media_mover_enabled: true
-media_mover_src: /mnt/nvme/media/library    # Hot tier library
-media_mover_dst: /mnt/tank/media/library    # Cold tier library
+nas_storage_media_mover_enabled: true
+nas_storage_media_mover_src: /mnt/nvme/media/library    # Hot tier library
+nas_storage_media_mover_dst: /mnt/tank/media/library    # Cold tier library
 # 06:00: after the cluster-wide vzdump window, before the 06:30 archive
-# replication. vzdump (pve_vzdump_jobs below, 03:30 daily) writes into
+# replication. vzdump (proxmox_backup_vzdump_jobs below, 03:30 daily) writes into
 # tank/proxmox until ~05:45 now that bwlimit throttles it (measured
 # 2026-07-14; unthrottled it ended ~03:48), and 02:00 carries smartd's daily
 # short tests — stacking the nvme->tank rsync on either thrashed the NAS
 # every night. The mover normally finishes in minutes, so it clears before
 # the archive snapshot; even when it overruns, they touch disjoint datasets
 # (tank/media is not replicated to archive) and both are I/O-deprioritized.
-media_mover_schedule: "*-*-* 06:00:00"
+nas_storage_media_mover_schedule: "*-*-* 06:00:00"
 
 # Proxmox storage configuration — reconciled by the proxmox_backup role
 # (storage.yml / site.yml NAS play). Mounted by HOSTNAME with xprtsec=tls
@@ -617,7 +690,7 @@ media_mover_schedule: "*-*-* 06:00:00"
 # are create-fixed in Proxmox — the role fails loud on drift there.
 # Prerequisite: tlshd on every PVE host (nfs_tls_enabled in
 # group_vars/proxmox.yml).
-pve_storage:
+proxmox_backup_storage:
   - id: tank-proxmox
     type: nfs
     server: pve-nas-01.esweiss.com
@@ -642,7 +715,7 @@ pve_storage:
 # alerts consume). The hookscript is deployed to every Proxmox host by
 # node_exporter_host — this is a cluster-wide `all` job, so it runs (and invokes
 # the hook) on each node for that node's local guests, not just here.
-pve_vzdump_jobs:
+proxmox_backup_vzdump_jobs:
   - id: backup-10f33360-a177
     storage: tank-proxmox
     schedule: "03:30"
@@ -706,8 +779,8 @@ pve_vzdump_jobs:
     script: /usr/local/bin/vzdump-metrics-hook.sh
 
 # SMART monitoring
-smartd_enabled: true
-smartd_tank_disks:
+nas_storage_smartd_enabled: true
+nas_storage_smartd_tank_disks:
   - /dev/disk/by-id/ata-ST22000NM000C-3WC103_ZXA18WD1
   - /dev/disk/by-id/ata-ST22000NM000C-3WC103_ZXA0RDDB
   - /dev/disk/by-id/ata-ST22000NM000C-3WC103_ZXA0EJDZ
@@ -715,18 +788,18 @@ smartd_tank_disks:
   - /dev/disk/by-id/ata-ST22000NM000C-3WC103_ZXA0HR34
   - /dev/disk/by-id/ata-ST22000NM000C-3WC103_ZXA0FEGJ
 
-smartd_ssd_disks:
+nas_storage_smartd_ssd_disks:
   - /dev/disk/by-id/ata-Samsung_SSD_870_EVO_4TB_S757NL0Y902062Z
   - /dev/disk/by-id/ata-Samsung_SSD_870_EVO_4TB_S757NL0Y902052X
   - /dev/disk/by-id/ata-Samsung_SSD_870_EVO_4TB_S757NL0Y901976N
 
-smartd_nvme_disks:
+nas_storage_smartd_nvme_disks:
   - /dev/disk/by-id/nvme-Samsung_SSD_990_PRO_4TB_S7KGNU0YA04137V
   - /dev/disk/by-id/nvme-CT2000P5PSSD8_2334429F310B
   - /dev/disk/by-id/nvme-CT2000P5PSSD8_2334429F32EE
   - /dev/disk/by-id/nvme-Samsung_SSD_990_PRO_with_Heatsink_4TB_S7DSNJ0Y608388N
 
-smartd_archive_disks:
+nas_storage_smartd_archive_disks:
   - /dev/disk/by-id/ata-SEAGATE_ST6000NM0024_Z4D2BDD2
   - /dev/disk/by-id/ata-ST6000NM0024-1HT17Z_Z4D1JCL6
   - /dev/disk/by-id/ata-ST6000NM0024-1HT17Z_Z4D1RQSM
@@ -762,6 +835,49 @@ nic_tuning_vm_swappiness: 1
 # unaffected, Tailscale + SSH-jump access preserved (with opt-01/opt-02 as
 # fallback jumps), and zero legitimate OUT-DROP log entries.
 
+# Nightly offsite backup to Backblaze B2 (docs/42). The bind sources are the
+# archsync-quiesced datasets; the two zvol sources are clone-mounted read-only
+# so the Immich/Nextcloud bulk data (which lives INSIDE a guest filesystem, not
+# on a ZFS dataset the walk can see) is covered too.
+restic_offsite_repo: "rclone:b2:weisssrv-backup/restic"
+# Documented exception to the role's not-replicated cache rule: the archive job
+# raw-sends ssd/appdata recursively and every encrypted root is replicated, so
+# the only cost of this placement is churn of regenerable data (role README).
+restic_offsite_cache_dir: /mnt/ssd/appdata/.restic-cache
+restic_offsite_sources:
+  - name: backups     # tank/backups: legacy machine backups + apps/ logical dumps
+    mountpoint: /mnt/tank/backups
+  - name: share       # tank/share
+    mountpoint: /mnt/tank/share
+  - name: appdata     # ssd/appdata: app /config dirs (zvol children empty in the walk)
+    mountpoint: /mnt/ssd/appdata
+  - name: databases   # ssd/databases
+    mountpoint: /mnt/ssd/databases
+  - name: k3s-etcd    # ssd/k3s-etcd: off-node etcd snapshot copies (DR chain)
+    mountpoint: /mnt/ssd/k3s-etcd
+restic_offsite_zvol_sources:
+  - name: immich-data
+    zvol: tank/immich-data/disk
+    fstype: ext4
+    mount_opts: ro,noload
+  - name: nextcloud-data
+    zvol: tank/nextcloud-data/disk
+    fstype: ext4
+    mount_opts: ro,noload
+# Churn and cache paths: the databases are covered by their own logical dumps
+# under tank/backups/apps, and Prometheus/Loki/Plex caches are re-derivable.
+restic_offsite_excludes:
+  - /mnt/restic-src/appdata/prometheus/**
+  - /mnt/restic-src/appdata/loki/**
+  - /mnt/restic-src/appdata/authentik/postgres/**
+  - /mnt/restic-src/appdata/mealie/postgres/**
+  - /mnt/restic-src/appdata/gitlab/**
+  - /mnt/restic-src/appdata/immich/**
+  - /mnt/restic-src/appdata/nextcloud/**
+  - "/mnt/restic-src/appdata/plex/Library/Application Support/Plex Media Server/Cache/**"
+  - "/mnt/restic-src/appdata/plex/Library/Application Support/Plex Media Server/Metadata/**"
+  - "/mnt/restic-src/appdata/plex/Library/Application Support/Plex Media Server/Media/**"
+
 # restic_offsite secrets (B2 offsite backup, docs/42)
 # Env -> var mapping for the secrets the storage deploy job (and the Taskfile
 # storage tasks) inject via `op run` from the "B2 Archive Backup" item — the
@@ -775,6 +891,10 @@ nic_tuning_vm_swappiness: 1
 # scripts/b2-bucket-drift.py (`task b2:drift` / `b2:apply`) — same names, opposite
 # capability. Read the op:// field, not the var name (capability split
 # rationale: docs/42 Step 0).
-b2_key_id: "{{ lookup('ansible.builtin.env', 'B2_KEY_ID') or undef(hint='B2_KEY_ID env var must be set (run via op run)') }}"
-b2_application_key: "{{ lookup('ansible.builtin.env', 'B2_APPLICATION_KEY') or undef(hint='B2_APPLICATION_KEY env var must be set (run via op run)') }}"
-restic_repo_password: "{{ lookup('ansible.builtin.env', 'RESTIC_REPO_PASSWORD') or undef(hint='RESTIC_REPO_PASSWORD env var must be set (run via op run)') }}"
+restic_offsite_b2_key_id: "{{ lookup('ansible.builtin.env', 'B2_KEY_ID') or undef(hint='B2_KEY_ID env var must be set (run via op run)') }}"
+restic_offsite_b2_application_key: >-
+  {{ lookup('ansible.builtin.env', 'B2_APPLICATION_KEY')
+  or undef(hint='B2_APPLICATION_KEY env var must be set (run via op run)') }}
+restic_offsite_repo_password: >-
+  {{ lookup('ansible.builtin.env', 'RESTIC_REPO_PASSWORD')
+  or undef(hint='RESTIC_REPO_PASSWORD env var must be set (run via op run)') }}

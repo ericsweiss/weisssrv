@@ -31,10 +31,10 @@ spec:
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0
-            # Egress is public-unicast HTTPS only (api.cloudflare.com + the public
-            # IPv4-detection providers, all in ordinary public ranges). EXCEPT every
-            # non-public / reserved IPv4 block so a compromised pod cannot reach the
-            # LAN, loopback, cloud-metadata, or other reserved space over 443.
+            # Public unicast HTTPS only (api.cloudflare.com + the IPv4-detection
+            # providers). Every non-public / reserved IPv4 block is excepted, so a
+            # compromised pod cannot reach the LAN, loopback or cloud-metadata.
+            # "reserved-full" set — scripts/check-netpol-except-parity.py guards it.
             except:
               # RFC1918 private LAN.
               - 10.0.0.0/8

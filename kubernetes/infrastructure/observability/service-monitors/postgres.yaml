@@ -1,0 +1,159 @@
+---
+# postgres_exporter coverage for the five production databases. Three shapes:
+#
+#   * authentik — the bundled postgresql subchart renders its own metrics
+#     Service + ServiceMonitor (`postgresql.metrics.serviceMonitor.enabled: true`
+#     in apps/authentik/release.yaml), and prometheusSpec's
+#     serviceMonitorSelectorNilUsesHelmValues:false + empty namespaceSelector
+#     pick it up. NO PodMonitor here: it would scrape the identical podIP:9187
+#     target a second time, duplicating every pg_* series under a different
+#     `job` and firing PostgresDown/PostgresConnectionsHigh twice per incident.
+#   * mealie — hand-rolled sidecar with no chart ServiceMonitor, so it needs the
+#     PodMonitor below (portNumber 9187, so no Service port has to be named).
+#   * the three VM databases — static targets like the other off-cluster
+#     exporters.
+#
+# PostgresDown / PostgresConnectionsHigh (rules/infrastructure.yaml) key on
+# `pg_up` / `pg_stat_activity_count` with no job matcher, so they cover all
+# three shapes unchanged.
+#
+# Each in-cluster target needs an ingress allow from observability on 9187 in its
+# own namespace's NetworkPolicy (both namespaces are default-deny-ingress), and
+# each VM target needs 9187 opened to k3s_nodes by its Proxmox security group.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: mealie-postgres
+  namespace: observability
+spec:
+  namespaceSelector:
+    matchNames:
+      - recipes
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mealie-postgres
+  podMetricsEndpoints:
+    - portNumber: 9187
+      interval: 60s
+      path: /metrics
+
+---
+# Nextcloud VM (192.168.0.156), Immich VM (192.168.0.157) and the GitLab omnibus
+# VM (192.168.0.153). One selectorless headless Service per host so each keeps a
+# distinct `job` label, which is what the alert descriptions name.
+apiVersion: v1
+kind: Service
+metadata:
+  name: nextcloud-postgres
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: postgres-exporter
+    app.kubernetes.io/instance: nextcloud
+spec:
+  clusterIP: None
+  ports:
+    - name: metrics
+      port: 9187
+      targetPort: 9187
+
+---
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: nextcloud-postgres
+  namespace: observability
+  labels:
+    kubernetes.io/service-name: nextcloud-postgres
+addressType: IPv4
+ports:
+  - name: metrics
+    port: 9187
+    protocol: TCP
+endpoints:
+  - addresses: ["192.168.0.156"]
+    conditions: {ready: true}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: immich-postgres
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: postgres-exporter
+    app.kubernetes.io/instance: immich
+spec:
+  clusterIP: None
+  ports:
+    - name: metrics
+      port: 9187
+      targetPort: 9187
+
+---
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: immich-postgres
+  namespace: observability
+  labels:
+    kubernetes.io/service-name: immich-postgres
+addressType: IPv4
+ports:
+  - name: metrics
+    port: 9187
+    protocol: TCP
+endpoints:
+  - addresses: ["192.168.0.157"]
+    conditions: {ready: true}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gitlab-postgres
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: postgres-exporter
+    app.kubernetes.io/instance: gitlab
+spec:
+  clusterIP: None
+  ports:
+    - name: metrics
+      port: 9187
+      targetPort: 9187
+
+---
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: gitlab-postgres
+  namespace: observability
+  labels:
+    kubernetes.io/service-name: gitlab-postgres
+addressType: IPv4
+ports:
+  - name: metrics
+    port: 9187
+    protocol: TCP
+endpoints:
+  - addresses: ["192.168.0.153"]
+    conditions: {ready: true}
+
+---
+# jobLabel from app.kubernetes.io/instance, so the three VM targets land as
+# job=nextcloud / immich / gitlab rather than all sharing one Service name.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: postgres-exporter-vms
+  namespace: observability
+spec:
+  jobLabel: app.kubernetes.io/instance
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres-exporter
+  endpoints:
+    - port: metrics
+      interval: 60s
+      path: /metrics
+      scheme: http

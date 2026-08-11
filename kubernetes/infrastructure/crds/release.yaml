@@ -14,13 +14,7 @@
 #
 # Ownership: this chart ships the CRDs as Helm-owned templates (charts/crds/
 # templates/crd-*.yaml, each gated on .Values.<crd>.enabled), unlike kps which
-# ships them via a crds/ directory (install-only, no Helm ownership). The pinned
-# version's appVersion byte-matches the operator kube-prometheus-stack deploys
-# (see the lockstep note below), so steady-state reconciles are a no-op. A
-# one-time metadata adoption (label/annotate the existing unowned CRDs into this
-# release) is required on the live cluster during the migration deploy window —
-# see docs/29 (Fresh bootstrap / disaster recovery). On a truly fresh cluster
-# nothing manual is needed.
+# ships them via a crds/ directory (install-only, no Helm ownership).
 #
 # Keep the prometheus_operator_crds pin in all.yml in lockstep with
 # kube_prometheus_stack so the CRD set stays version-matched to the operator.
@@ -38,6 +32,10 @@ metadata:
 spec:
   interval: 30m
   releaseName: prometheus-operator-crds
+  # Revert out-of-band CRD edits (see traefik/release.yaml for the repo rule).
+  # Safe: this release is CRDs only, with no webhook and no workload.
+  driftDetection:
+    mode: enabled
   timeout: 10m
   chart:
     spec:

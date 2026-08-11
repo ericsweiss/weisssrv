@@ -1,10 +1,16 @@
 ---
-# VPA policies for the observability stack.
+# VPA policies for the observability stack (tiers: docs/33-autoscaling.md).
 #   Auto    — exporters and stack components that tolerate eviction.
 #   Initial — Grafana (single replica; resize on natural restarts).
 #   Off     — Prometheus / Alertmanager / Loki (operator- or chart-managed
 #             stateful sets with hand-tuned requests in their HelmReleases;
 #             VPA records recommendations without acting).
+#
+# containerPolicies are matched first-exact-name, then "*", so a pod whose main
+# container needs a large minAllowed lists that container by name and gives the
+# sidecars a small catch-all — a single wildcard sized for the main container
+# publishes ~10x-inflated sidecar recommendations that the Off-tier
+# apply-by-hand workflow would then act on.
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
 metadata:
@@ -209,23 +215,11 @@ spec:
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
 metadata:
-  # GPU-telemetry DaemonSet (one pod, GPU node only). Auto to match the other
-  # exporter/DaemonSet VPAs.
-  #
-  # maxAllowed.memory is 768Mi, above the container's real ~518Mi working set
-  # (DCGM's hostengine + the NVML driver libs) and below its 1Gi limit in
-  # exporters/dcgm-exporter.yaml. The previous 384Mi cap clamped a 600Mi
-  # uncapped target, so the applied request sat permanently ~25% under the
-  # steady-state working set and VPARecommendationCapped fired continuously —
-  # a true positive, not a noisy alert. (The old comment justified 384Mi as
-  # "above the pod's 256Mi limit": 256Mi is the manifest's REQUEST; the limit
-  # is 1Gi, and 256Mi as a limit is what OOMKilled this exporter.)
-  #
-  # RequestsOnly: with the default RequestsAndLimits the VPA scales the limit by
-  # the manifest's 4:1 limit:request ratio, which had already stretched the 1Gi
-  # limit to 1.5Gi live and would reach ~3Gi at the new cap — on the one node
-  # that also carries Hindsight, the GPU stack and Traefik. The 1Gi limit is the
-  # hand-set OOM ceiling; only the request should move.
+  # GPU-telemetry DaemonSet (one pod, on the GPU node only). maxAllowed.memory
+  # sits above DCGM's real working set (hostengine + NVML driver libs) and below
+  # the 1Gi limit in exporters/dcgm-exporter.yaml. RequestsOnly: with the default
+  # RequestsAndLimits the VPA scales the limit by the manifest's 4:1 ratio, and
+  # the 1Gi limit is the hand-set OOM ceiling — only the request should move.
   name: dcgm-exporter
 spec:
   targetRef: {apiVersion: apps/v1, kind: DaemonSet, name: dcgm-exporter}
@@ -263,33 +257,22 @@ spec:
   # recommendations recorded.
   targetRef: {apiVersion: monitoring.coreos.com/v1, kind: Prometheus, name: kube-prometheus-stack-prometheus}
   updatePolicy: {updateMode: "Off"}
-  # maxAllowed.memory is 6Gi, above the pod's hand-tuned 4Gi limit
-  # (release.yaml): this VPA is recording-only (Off) so it never mutates the pod,
-  # and the 7d working-set peak already sits ~88-90% of 4Gi. Capping the
-  # RECOMMENDATION at 4Gi would clamp it exactly when Prometheus outgrows its
-  # limit (and trip VPARecommendationCapped), hiding the true need; 6Gi lets the
-  # recommendation record how much headroom a real bump would need. Actually
-  # raising the pod's request/limit is a deferred operator step — it needs
-  # confirmed host headroom on the memory-tight NAS (docs/06 §NAS memory).
-  #
-  # Deferral re-checked 2026-07 and still deferred, with the numbers to act on:
-  # 7d working-set peak 3.52Gi (88% of the 4Gi limit), recorded target 2.49Gi
-  # (down from 3.41Gi a week earlier — it decays, so re-read it before sizing).
-  # The blocking condition is NOT satisfied. k3s-agt-nas-01 measured 75.1% of
-  # allocatable memory in requests with pve-laptop-01 out of the fold (2.41GiB
-  # free of 9.72GiB) — but read that as the PRE-MERGE figure: this branch adds
-  # 384Mi to authentik-postgresql's request on this same NAS-pinned node, so it
-  # ships at ~79% with ~2.04GiB free, and the target bump (requests 3Gi / limits
-  # 5Gi) needs more than that. Sequence when laptop-01 is back: re-measure
-  # `kubectl describe node k3s-agt-nas-01` (do not trust these numbers — they
-  # move with every NAS-pinned request), grow vm_memory in hosts.yml if needed,
-  # THEN bump both here and in kube-prometheus-stack/release.yaml.
-  # VPARecommendationExceedsLimit now watches the gap in the meantime.
+  # maxAllowed.memory matches the pod's 6Gi limit in release.yaml, so the
+  # recording-only recommendation is never clamped and
+  # VPARecommendationExceedsLimit stays the honest signal that Prometheus has
+  # outgrown its hand-set size. Re-read the recorded target before acting on it;
+  # it decays (docs/33 §Applying an Off-tier recommendation).
   resourcePolicy:
     containerPolicies:
-      - containerName: "*"
+      - containerName: prometheus
         minAllowed: {cpu: 100m, memory: 512Mi}
         maxAllowed: {cpu: 2, memory: 6Gi}
+        controlledResources: [cpu, memory]
+      # config-reloader and any future sidecar: a 25-30Mi process must not
+      # inherit the main container's floor.
+      - containerName: "*"
+        minAllowed: {cpu: 10m, memory: 32Mi}
+        maxAllowed: {cpu: 200m, memory: 256Mi}
         controlledResources: [cpu, memory]
 ---
 apiVersion: autoscaling.k8s.io/v1
@@ -316,7 +299,12 @@ spec:
   updatePolicy: {updateMode: "Off"}
   resourcePolicy:
     containerPolicies:
-      - containerName: "*"
+      - containerName: loki
         minAllowed: {cpu: 50m, memory: 128Mi}
         maxAllowed: {cpu: 1, memory: 2Gi}
+        controlledResources: [cpu, memory]
+      # loki-sc-rules (the rules sidecar) and anything else in the pod.
+      - containerName: "*"
+        minAllowed: {cpu: 10m, memory: 32Mi}
+        maxAllowed: {cpu: 200m, memory: 256Mi}
         controlledResources: [cpu, memory]

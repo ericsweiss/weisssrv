@@ -35,7 +35,7 @@
       ansible.builtin.command: sudo -n true
       become: false
       changed_when: false
-      when: admin_user != 'root'
+      when: base_admin_user | default(admin_user) != 'root'
 
 - name: Verify Proxmox host services
   hosts: proxmox
@@ -83,7 +83,7 @@
 
     - name: Test AdGuard Home API (401 is OK - means it's running)
       ansible.builtin.uri:
-        url: "http://127.0.0.1:{{ adguard_http_port }}/control/status"
+        url: "http://127.0.0.1:{{ adguard_home_http_port }}/control/status"
         method: GET
         status_code: [200, 401]
         validate_certs: false
@@ -123,13 +123,13 @@
     # and `echo success` is the correct assertion.
     - name: Test SSH to each certificate distribution target
       ansible.builtin.command: >-
-        ssh -n -i /home/eric/.ssh/id_ed25519_certs
+        ssh -n -i /home/{{ acme_certs_ssh_user }}/.ssh/id_ed25519_certs
         -o BatchMode=yes
         -o StrictHostKeyChecking=yes
         -o UserKnownHostsFile=/root/.ssh/known_hosts
         -o ConnectTimeout=5
         -p {{ item.ssh_port | default(22) }}
-        {{ item.ssh_user | default('eric') }}@{{ item.ip }} 'echo success'
+        {{ item.ssh_user | default(acme_certs_ssh_user) }}@{{ item.ip }} 'echo success'
       changed_when: false
       # infra:verify is routinely run with --check; without this the command is
       # skipped, cert_target_ssh has no rc/stdout, and failed_when explodes.
@@ -140,7 +140,7 @@
         | ternary('success' not in cert_target_ssh.stdout,
                   cert_target_ssh.rc != 3
                   or 'FAIL: empty bundle' not in cert_target_ssh.stderr)
-      loop: "{{ cert_distribution_targets }}"
+      loop: "{{ acme_certs_distribution_targets }}"
       loop_control:
         label: "{{ item.host }} ({{ item.ip }})"
 
@@ -267,10 +267,9 @@
     - name: Verify MergerFS mounts
       ansible.builtin.command: findmnt -t fuse.mergerfs -o TARGET,SOURCE
       changed_when: false
-      # NOT `mergerfs_mounts`: a registered var is a host fact for the rest of
-      # the run and outranks host_vars, so registering that name would shadow
-      # pve-nas-01's real mergerfs_mounts table (host_vars/pve-nas-01.yml) with
-      # a command result for every later play on the host.
+      # NOT `nas_storage_mergerfs_mounts`: a registered var is a host fact for
+      # the rest of the run and outranks host_vars, so registering that name
+      # would shadow pve-nas-01's real mergerfs table with a command result.
       register: postflight_mergerfs_check
       failed_when: postflight_mergerfs_check.rc != 0
 
@@ -292,43 +291,43 @@
       changed_when: false
       register: smart_health
       failed_when: "'PASSED' not in smart_health.stdout"
-      loop: "{{ smartd_tank_disks }}"
+      loop: "{{ nas_storage_smartd_tank_disks }}"
       loop_control:
         label: "{{ item | basename }}"
-      when: smartd_enabled | default(true)
+      when: nas_storage_smartd_enabled | default(true)
 
     - name: Check SMART health for SSD disks
       ansible.builtin.command: "smartctl -H {{ item }}"
       changed_when: false
       register: smart_ssd_health
       failed_when: "'PASSED' not in smart_ssd_health.stdout"
-      loop: "{{ smartd_ssd_disks }}"
+      loop: "{{ nas_storage_smartd_ssd_disks }}"
       loop_control:
         label: "{{ item | basename }}"
-      when: smartd_enabled | default(true)
+      when: nas_storage_smartd_enabled | default(true)
 
     - name: Check SMART health for NVMe disks
       ansible.builtin.command: "smartctl -H {{ item }}"
       changed_when: false
       register: smart_nvme_health
       failed_when: "'PASSED' not in smart_nvme_health.stdout"
-      loop: "{{ smartd_nvme_disks }}"
+      loop: "{{ nas_storage_smartd_nvme_disks }}"
       loop_control:
         label: "{{ item | basename }}"
-      when: smartd_enabled | default(true)
+      when: nas_storage_smartd_enabled | default(true)
 
     - name: Check SMART health for archive pool disks
       ansible.builtin.command: "smartctl -H {{ item }}"
       changed_when: false
       register: smart_archive_health
       failed_when: "'PASSED' not in smart_archive_health.stdout"
-      loop: "{{ smartd_archive_disks | default([]) }}"
+      loop: "{{ nas_storage_smartd_archive_disks | default([]) }}"
       loop_control:
         label: "{{ item | basename }}"
       when:
-        - smartd_enabled | default(true)
-        - smartd_archive_disks is defined
-        - smartd_archive_disks | length > 0
+        - nas_storage_smartd_enabled | default(true)
+        - nas_storage_smartd_archive_disks is defined
+        - nas_storage_smartd_archive_disks | length > 0
 
     - name: Verify smartd service is running
       ansible.builtin.service:
@@ -337,7 +336,7 @@
       check_mode: true
       register: postflight_service_check
       failed_when: postflight_service_check is changed
-      when: smartd_enabled | default(true)
+      when: nas_storage_smartd_enabled | default(true)
 
     - name: Check Proxmox backup job status
       ansible.builtin.command: pvesh get /cluster/backup --output-format=json
@@ -373,7 +372,7 @@
       ansible.builtin.command: showmount -e localhost
       changed_when: false
       # Renamed for the same reason as postflight_mergerfs_check above: plain
-      # `nfs_exports` is pve-nas-01's 12-entry export table in host_vars.
+      # `nas_storage_exports` is pve-nas-01's export table in host_vars.
       register: postflight_nfs_exports_check
       failed_when: "'/export' not in postflight_nfs_exports_check.stdout"
 
@@ -401,19 +400,19 @@
       check_mode: true
       register: postflight_service_check
       failed_when: postflight_service_check is changed
-      when: media_mover_enabled | default(false)
+      when: nas_storage_media_mover_enabled | default(false)
 
     - name: Check last media-mover run status
       ansible.builtin.command: systemctl status media-mover.service
       changed_when: false
       register: mover_status
       failed_when: false
-      when: media_mover_enabled | default(false)
+      when: nas_storage_media_mover_enabled | default(false)
 
     - name: Display media-mover last run
       ansible.builtin.debug:
         msg: "{{ mover_status.stdout_lines | select('search', 'Active|Main PID|Status') | list }}"
-      when: media_mover_enabled | default(false) and mover_status.rc == 0
+      when: nas_storage_media_mover_enabled | default(false) and mover_status.rc == 0
 
 # gitlab_servers included: the gitlab VM carries the gitlab-repos zvol via the
 # same vm_additional_disks mechanism as the k3s agents. nextcloud_servers and

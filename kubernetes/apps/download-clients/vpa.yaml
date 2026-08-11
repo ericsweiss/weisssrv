@@ -20,13 +20,14 @@ spec:
         maxAllowed: {cpu: 200m, memory: 256Mi}
         controlledResources: [cpu, memory]
         controlledValues: RequestsOnly
-      # maxAllowed caps the memory request at the nzbget container's 4Gi limit
-      # and cpu at 2 cores (the container deliberately has no cpu limit);
-      # RequestsOnly leaves the limit at the manifest value so it can't balloon
-      # past the cap (RequestsAndLimits would scale it by the 1:8 req:limit ratio).
+      # memory maxAllowed 1Gi, well under the container's 4Gi limit: nzbget's
+      # working set is dominated by reclaimable page cache from download writes,
+      # so an uncapped recommendation reserves GiBs the process never needs.
+      # Expect VPARecommendationCapped here — that is the accepted case
+      # (docs/33). RequestsOnly leaves the 4Gi OOM ceiling untouched.
       - containerName: "*"
         minAllowed: {cpu: 25m, memory: 64Mi}
-        maxAllowed: {cpu: 2, memory: 4Gi}
+        maxAllowed: {cpu: 2, memory: 1Gi}
         controlledResources: [cpu, memory]
         controlledValues: RequestsOnly
 ---
@@ -132,9 +133,8 @@ spec:
   updatePolicy: {updateMode: Initial}
   resourcePolicy:
     containerPolicies:
-      # maxAllowed.memory raised to 1.5Gi: pulsarr's padded historical-peak
-      # recommendation crept past the old 1Gi ceiling (VPARecommendationCapped),
-      # so the request stayed clamped below the working set.
+      # 1.5Gi clears pulsarr's padded historical-peak recommendation, which a
+      # 1Gi ceiling clamped below the working set.
       - containerName: "*"
         minAllowed: {cpu: 25m, memory: 64Mi}
         maxAllowed: {cpu: 1, memory: 1536Mi}

@@ -21,11 +21,11 @@ proxmox_startup_delay: 10
 
 # VM hardware configuration (for reference - VM created manually)
 # These values document the actual configuration but are not used for provisioning
-vm_cores: 4
-vm_memory: 8192
-vm_disk_size: 64G
+proxmox_vm_cores: 4
+proxmox_vm_memory: 8192
+proxmox_vm_disk_size: 64G
 # local-ssd ZFS pool: required for the ZFS-to-ZFS HA replication of vmid 154
-vm_storage: local-ssd
+proxmox_storage: local-ssd
 
 # Home Assistant OS details
 haos_version: "17.0"  # Installed version (update manually via UI)
@@ -80,6 +80,24 @@ haos_type: "qcow2"    # Image format
 # Standard hostnames with high-priority IngressRoutes matching HA's IP (192.168.0.154)
 # See: kubernetes/apps/download-clients/ingress-routes-ha-bypass.yaml
 # See: docs/24-home-assistant-deployment.md Phase 4
+
+# SSH/SCP target for the config push (the HAOS add-on listens on 22222 as root).
+# The play runs on localhost and loads this file via vars_files, so ansible_host
+# would resolve to the controller — pull the address from the home inventory host.
+home_assistant_host: "{{ hostvars['home']['ansible_host'] }}"
+
+# Sources whose X-Forwarded-For HA trusts: the LAN (which is where every Traefik
+# ingress node sits) and both k3s CIDRs.
+home_assistant_trusted_proxies:
+  - "192.168.0.0/24"
+  - "10.42.0.0/16"
+  - "10.43.0.0/16"
+
+# OIDC discovery URL. The issuer host is ALWAYS the external one — HA's
+# hass-openid integration fetches it server-side, and the split-horizon
+# rewrite for auth.ericsweiss.com keeps that fetch off the WAN hairpin.
+home_assistant_oidc_configure_url: >-
+  https://auth.{{ external_domain }}/application/o/home/.well-known/openid-configuration
 
 # TLS on HAOS backend (Traefik -> HAOS hop encrypted).
 # Override the role default (false) once acme_certs has pushed

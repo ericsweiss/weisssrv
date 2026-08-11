@@ -1,0 +1,65 @@
+---
+# Export map for scripts/generate-hosts-env.py: which inventory group becomes
+# which variable in scripts/hosts.env. Regenerate with `task hosts:sync`.
+output: scripts/hosts.env
+exports:
+  # PVE_HOSTS is hostnames (Tailscale/LAN resolvable); every other list is IPs.
+  - key: PVE_HOSTS
+    group: proxmox
+    value: names
+  - key: PVE_IPS
+    group: proxmox
+    value: ips
+  - key: DNS_IPS
+    group: dns
+    value: ips
+  - key: MAIL_IPS
+    group: mail
+    value: ips
+  - key: PLEX_IP
+    group: plex_servers
+    value: ips
+  - key: GITLAB_IP
+    group: gitlab_servers
+    value: ips
+  - key: NEXTCLOUD_IP
+    group: nextcloud_servers
+    value: ips
+  - key: IMMICH_IP
+    group: immich_servers
+    value: ips
+  - key: IMMICH_ML_IP
+    group: immich_ml_servers
+    value: ips
+  - key: HOME_ASSISTANT_IP
+    group: services
+    host: home
+    value: ip
+  # The Windows guest runs no sshd we manage: optional here and deliberately
+  # absent from ALL_SSH_IPS below.
+  - key: WINDOWS_IP
+    group: windows_vms
+    host: windows
+    value: ip
+    required: false
+  - key: K3S_SERVERS
+    group: k3s_servers
+    value: ips
+  - key: K3S_AGENTS
+    group: k3s_agents
+    value: ips
+  # ssh-keyscan / general SSH reachability set: every host CI or an operator
+  # SSHes into.
+  - key: ALL_SSH_IPS
+    combine:
+      - PVE_IPS
+      - DNS_IPS
+      - MAIL_IPS
+      - PLEX_IP
+      - GITLAB_IP
+      - NEXTCLOUD_IP
+      - IMMICH_IP
+      - IMMICH_ML_IP
+      - HOME_ASSISTANT_IP
+      - K3S_SERVERS
+      - K3S_AGENTS

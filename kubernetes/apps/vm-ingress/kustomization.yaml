@@ -21,3 +21,18 @@ resources:
   - gitlab.yaml
   - nextcloud.yaml
   - immich.yaml
+
+components:
+  - ../../components/netpol-baseline
+patches:
+  # No top-level namespace transformer here (resources span three namespaces),
+  # so namespace the shared default-deny-ingress explicitly. `gitlab` is the one
+  # namespace this kustomization creates; `default` and `traefik` carry their
+  # own policies.
+  - target:
+      kind: NetworkPolicy
+      name: default-deny-ingress
+    patch: |
+      - op: add
+        path: /metadata/namespace
+        value: gitlab

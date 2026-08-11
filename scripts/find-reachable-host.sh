@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 # Print the first reachable SSH target from the arguments (each optionally
-# user@-prefixed), or exit 1 if none respond. Shared by the Taskfile tasks that
-# need a cluster entry point: k3s:kubeconfig / k3s:backup (eric@<ip> targets)
-# and proxmox:ha-status (bare Tailscale hostnames, ssh-config resolves the user).
+# user@-prefixed), or exit 1 if none respond. For task wrappers that need any
+# one cluster entry point — pass the candidates in preference order.
 #
-# Usage: scripts/find-reachable-host.sh <ssh-target> [<ssh-target> ...]
-#   scripts/find-reachable-host.sh eric@192.168.0.222 eric@192.168.0.223
-#   scripts/find-reachable-host.sh pve-nas-01 pve-opt-01
+# Usage: find-reachable-host.sh <ssh-target> [<ssh-target> ...]
+#   find-reachable-host.sh user@10.0.0.10 user@10.0.0.11
+#   find-reachable-host.sh host-a host-b     # ssh-config resolves the user
 set -euo pipefail
 
 _SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

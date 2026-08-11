@@ -9,7 +9,10 @@ metadata:
   name: tailnet-dns
   namespace: tailnet-dns
   labels:
+    # `app` is the immutable selector label; app.kubernetes.io/name carries the
+    # repo convention so cross-namespace podSelectors written against it match.
     app: tailnet-dns
+    app.kubernetes.io/name: tailnet-dns
   annotations:
     reloader.stakater.com/auto: "true"
 spec:
@@ -21,8 +24,11 @@ spec:
     metadata:
       labels:
         app: tailnet-dns
+        app.kubernetes.io/name: tailnet-dns
     spec:
       priorityClassName: system-cluster-critical
+      # This Corefile makes no kube-API calls (forward/template/cache only).
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532

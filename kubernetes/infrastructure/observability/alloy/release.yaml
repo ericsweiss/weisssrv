@@ -1,9 +1,11 @@
 ---
-# Grafana Alloy — log collector DaemonSet (successor to Promtail).
-# Streams container logs from every node via the Kubernetes API
-# (loki.source.kubernetes) and ships them to Loki.
-# Tolerates all taints to run on every node including NAS, ingress, compute,
-# and control-plane nodes.
+# Grafana Alloy — container-log collector DaemonSet. Streams pod logs from every
+# node via loki.source.kubernetes and ships them to Loki; tolerates all taints so
+# it covers NAS, ingress, compute and control-plane nodes. Host journald is a
+# separate path (the alloy_host Ansible role), not this DaemonSet.
+#
+# The chart pins its own config-reloader sidecar digest, independently of the
+# kube-prometheus-stack chart's — a minor-version skew between them is expected.
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:

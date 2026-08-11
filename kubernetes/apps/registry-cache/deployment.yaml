@@ -53,7 +53,7 @@ spec:
       automountServiceAccountToken: false
       # Pin the upstream registry's EXTERNAL hostname to the internal Traefik VIP
       # at POD scope — the same rationale as the node-level k3s_registry_host_pins
-      # (ansible/roles/k3s/defaults/main.yml): registry.git.ericsweiss.com has no
+      # (the weisssrv.infra.k3s role's defaults): registry.git.ericsweiss.com has no
       # AdGuard rewrite (dns.yml intentionally leaves ericsweiss.com internal
       # names unresolved, sole exception auth.ericsweiss.com), so a POD would
       # otherwise resolve it via the Cloudflare/public path and hairpin over the

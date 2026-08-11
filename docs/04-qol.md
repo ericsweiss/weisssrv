@@ -33,7 +33,7 @@ Provides a clean, informative prompt with git status integration.
 The following Oh My Zsh plugins are configured:
 
 ```yaml
-omz_plugins:
+qol_omz_plugins:
   - 1password          # 1Password CLI completions
   - ansible            # Ansible completions
   - command-not-found  # Suggests package for missing commands
@@ -93,13 +93,13 @@ alias kn='kubectl config set-context --current --namespace'
 ### Installation
 
 Neovim is installed with the Vundle plugin manager (bootstrapped by the role
-itself, not listed as a plugin) and these `nvim_plugins` defaults:
+itself, not listed as a plugin) and these `qol_nvim_plugins` defaults:
 
 ```yaml
-nvim_plugins:
+qol_nvim_plugins:
   - tpope/vim-fugitive           # Git integration
   - sheerun/vim-polyglot         # Language pack
-  - joshdick/onedark.vim         # Color scheme (nvim_colorscheme: onedark)
+  - joshdick/onedark.vim         # Color scheme (qol_nvim_colorscheme: onedark)
 ```
 
 ### Configuration
@@ -113,7 +113,7 @@ filetype off
 set rtp+=~/.vim/bundle/Vundle.vim
 call vundle#begin()
 Plugin 'VundleVim/Vundle.vim'
-" ... plugins from nvim_plugins ...
+" ... plugins from qol_nvim_plugins ...
 call vundle#end()
 filetype plugin indent on
 
@@ -146,20 +146,20 @@ The `qol` role installs its own `qol_packages` on top of the base set, so
 ```yaml
 qol_packages:
   - zsh
-  - neovim          # also in base common_packages
+  - neovim          # also in base base_common_packages
   - fzf
   - ripgrep
   - fd-find
 ```
 
-Oh My Zsh is installed at a pinned commit (`omz_commit` in
-`ansible/roles/qol/defaults/main.yml`) rather than tracking `master` — bump it
+Oh My Zsh is installed at a pinned commit (`qol_omz_commit` in
+weisssrv-lib `ansible_collections/weisssrv/infra/roles/qol/defaults/main.yml`) rather than tracking `master` — bump it
 deliberately like any other version pin.
 
 Common development tools installed by the `base` role:
 
 ```yaml
-common_packages:
+base_common_packages:
   - curl
   - wget
   - neovim

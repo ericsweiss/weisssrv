@@ -46,26 +46,11 @@ spec:
   renewBefore: 720h
 
 ---
-# GitLab Pages - pages.git.ericsweiss.com and *.pages.git.ericsweiss.com
-
-# GitLab Pages wildcard - external domain
+# GitLab Pages: pages.git.ericsweiss.com + the single-label wildcard.
 #
-# LIMITATION: Wildcard certs only cover single-label subdomains.
-# The cert *.pages.git.ericsweiss.com covers:
-#   - user.pages.git.ericsweiss.com      (YES - single label before pages)
-#   - project.pages.git.ericsweiss.com   (YES - single label before pages)
-#
-# It does NOT cover nested subdomains (groups with subgroups):
-#   - group.subgroup.pages.git.ericsweiss.com  (NO - two labels before pages)
-#
-# GitLab Pages URLs are: <namespace>.pages.git.ericsweiss.com/<project>
-# So nested GitLab groups (group/subgroup) would need group-subgroup (hyphenated)
-# as the namespace, not group.subgroup.
-#
-# If you have GitLab groups with subgroups that need Pages, either:
-# 1. Use hyphenated group names (group-subgroup) instead of nested groups
-# 2. Configure GitLab to generate Pages URLs with hyphens instead of dots
-# 3. Request individual certificates for specific nested subdomains
+# A wildcard covers one label only, so nested groups
+# (group.subgroup.pages.git...) are NOT covered. Use hyphenated group names, or
+# configure GitLab to build Pages URLs with hyphens, if that is ever needed.
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:

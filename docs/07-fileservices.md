@@ -41,14 +41,14 @@ Fast NVMe storage is merged with slower HDD storage:
 ### Media Mover
 
 A systemd timer (`media-mover.timer`, daily at 06:00 —
-`media_mover_schedule` in `host_vars/pve-nas-01.yml` is the source of truth;
+`nas_storage_media_mover_schedule` in `host_vars/pve-nas-01.yml` is the source of truth;
 role default 06:00)
 runs `/usr/local/sbin/media-mover.sh`, which moves files older than 12 hours
 (`media_mover_min_age`) from `/mnt/nvme/media/library` to
 `/mnt/tank/media/library`. The service is load-shaped so a large overnight
 move cannot starve Plex or backups: `Nice`/`ionice` plus cgroup-v2
 `CPUWeight`/`IOWeight` (defaults 20), with an optional hard rsync cap via
-`media_mover_bwlimit`.
+`nas_storage_media_mover_bwlimit`.
 
 ## Permission Model
 
@@ -241,7 +241,7 @@ The k3s NFS PVs already use `server: pve-nas-01.esweiss.com` for this reason
   The fsid=0 `/export` root carries no `xprtsec` (HAOS and Proxmox traverse
   it). `xprtsec` is applied per client line, so the require-TLS k3s lines and a
   plaintext-only client (.154) share one export. See
-  `ansible/roles/nfs_tls/README.md` and docs/06's in-transit matrix.
+  weisssrv-lib `ansible_collections/weisssrv/infra/roles/nfs_tls/README.md` and docs/06's in-transit matrix.
 
 ## Samba Shares
 
@@ -344,3 +344,12 @@ mount -a -t fuse.mergerfs
 # Check pool distribution
 du -sh /mnt/nvme/media /mnt/tank/media
 ```
+
+---
+
+## Related documentation
+
+- [docs/06-zfs.md](06-zfs.md) — pool and dataset layout
+- [docs/32-zfs-encryption.md](32-zfs-encryption.md) — encryption roots and boot-time unlock
+- [docs/44-storage-bootstrap.md](44-storage-bootstrap.md) — building the export tree from bare pools
+- [docs/17-disaster-recovery.md](17-disaster-recovery.md) — restore procedures

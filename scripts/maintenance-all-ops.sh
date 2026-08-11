@@ -8,22 +8,14 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR/../ansible"
 
 echo "=== 1/6 OS package updates ==="
-# self_reboot_delay: the executor pod can land on ANY agent (.maintenance-base
-# pins no node selector) — either an opt-* host (no etcd member -> DETACHED path:
-# update-packages arms a reboot that survives the job instead of a synchronous one
-# that would kill it) OR an etcd-server host (pve-nas/laptop/prec -> DEFER path,
-# operator-driven). _reboot-if-needed.yml routes both correctly, so the etcd-defer
-# branch there is REQUIRED, not belt-and-suspenders. self_reboot_delay only applies
-# to the DETACHED (opt-*) case below. The .maintenance-base after_script
-# (maintenance-rearm-self-reboot.sh) RE-ARMS that reboot to +60s at job END and
-# disarms this long timer, so the reboot is anchored to the real job end, not this
-# fixed delay — 5400s is only the FALLBACK if the after_script never runs (runner
-# crash). Sized to outlast ops 2-6 + verify (~30-45 min historically); a late
-# fallback reboot is harmless, an early one is not — so raise it, never lower it.
-# NOTE: a DETACHED reboot fires AFTER the in-script verify, so the executor's own
-# opt-* host reboot is NOT validated by this run — the NEXT run's verify covers it
-# (and its agent VM briefly going down, possibly alongside a kured agent reboot, is
-# at most a transient 2-agent dip with no etcd/quorum impact).
+# self_reboot_delay applies only when the executor lands on an opt-* host (no
+# etcd member), where _reboot-if-needed.yml arms a DETACHED reboot that survives
+# the job; on an etcd-server host it defers to the operator instead.
+# maintenance-rearm-self-reboot.sh (the after_script) re-arms that reboot to +60s
+# at job end, so 5400s is only the fallback for a runner crash — sized to outlast
+# ops 2-6 plus verify. Raise it, never lower it: a late fallback reboot is
+# harmless, an early one kills the executor. The detached reboot fires after this
+# run's verify, so the NEXT run validates that host.
 op run -- ansible-playbook -i inventories/prod playbooks/maintenance/update-packages.yml \
   -e auto_reboot=true -e self_reboot_delay=5400
 echo ""

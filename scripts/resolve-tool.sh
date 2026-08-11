@@ -1,15 +1,12 @@
 #!/usr/bin/env bash
 # Resolve how to invoke a Python-based dev tool, printing the invocation to
 # stdout (may be multi-word, e.g. "python3 -m molecule", or an absolute pyenv
-# path) or exiting 1 if it can't be found. Consolidates the command-v /
-# python3 -m / validated-pyenv-glob chain the Taskfile hand-maintained.
+# path) or exiting 1 if it can't be found. One place for the command-v /
+# python3 -m / validated-pyenv-glob chain callers would otherwise each repeat.
 #
-# ansible/test-all-roles.sh sources/calls this script to resolve molecule
-# (no duplicated chain); the resolution order lives here alone.
-#
-# Usage: scripts/resolve-tool.sh <tool> [python-module]
-#   scripts/resolve-tool.sh molecule molecule   -> may print "python3 -m molecule"
-#   scripts/resolve-tool.sh ansible-lint         -> command-v or pyenv only
+# Usage: resolve-tool.sh <tool> [python-module]
+#   resolve-tool.sh molecule molecule    -> may print "python3 -m molecule"
+#   resolve-tool.sh ansible-lint         -> command-v or pyenv only
 #
 # Callers invoke the result UNQUOTED so a multi-word form word-splits:
 #   MOL=$(scripts/resolve-tool.sh molecule molecule) || exit 1

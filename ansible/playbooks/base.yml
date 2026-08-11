@@ -25,9 +25,9 @@
   # out for hardware work before site.yml is ever reached.
   ignore_unreachable: true
   roles:
-    - role: base
+    - role: weisssrv.infra.base
       tags: [base]
-    - role: nic_tuning
+    - role: weisssrv.infra.nic_tuning
       tags: [nic_tuning, network]
 
 - name: Gate on the reachability ledger

@@ -1,11 +1,8 @@
 ---
-# *arr NFS PV/PVC skeleton — a Kustomize Component that extends the base
-# ../_nfs-pv component with the two things the sonarr/radarr/lidarr config
-# volumes share but nzbget/qbittorrent/prowlarr/pulsarr do not: a 10Gi capacity
-# and the NFS attribute-caching mountOptions (actimeo=3 + lookupcache=positive,
-# inserted ahead of the xprtsec=tls option that _nfs-pv defines exactly once).
-# Each *arr storage overlay (../storage/<app>) lists this component and patches
-# only the per-app identifiers (PV name/label/path, PVC name/volumeName).
+# *arr NFS PV/PVC skeleton — extends ../_nfs-pv with what the sonarr/radarr/
+# lidarr config volumes add over the other clients: 10Gi capacity and the NFS
+# attribute-caching mountOptions. Each *arr storage overlay (../storage/<app>)
+# lists this component and patches only the per-app identifiers.
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 components:
@@ -18,8 +15,12 @@ patches:
       - op: replace
         path: /spec/capacity/storage
         value: 10Gi
-      # *arr apps add NFS attribute caching ahead of xprtsec=tls (inserted at
-      # indices 3/4 so the shared xprtsec option stays defined once in _nfs-pv).
+      # *arr apps add NFS attribute caching ahead of xprtsec=tls. The test
+      # turns a reordered base list into a loud build failure instead of a
+      # silent insert at the wrong index.
+      - op: test
+        path: /spec/mountOptions/3
+        value: xprtsec=tls
       - op: add
         path: /spec/mountOptions/3
         value: actimeo=3

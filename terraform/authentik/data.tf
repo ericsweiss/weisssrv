@@ -2,7 +2,7 @@
 # created and owned by authentik itself (default flows, the self-signed
 # signing keypair, the `managed`-flagged default property mappings, built-in
 # users) — Terraform reads them by stable identifier and NEVER manages them.
-# See README.md "Managed vs unmanaged".
+# See README.md "What is deliberately UNMANAGED".
 
 # Flows
 # Every provider uses the default implicit-consent authorization flow and the
@@ -17,8 +17,8 @@ data "authentik_flow" "provider_invalidation" {
 }
 
 # Signing keypair
-# The install-generated self-signed keypair signs OIDC tokens (all six OAuth2
-# providers) and the GitLab SAML assertions.
+# The install-generated self-signed keypair signs every OAuth2 provider's OIDC
+# tokens and the GitLab SAML assertions.
 
 data "authentik_certificate_key_pair" "self_signed" {
   name = "authentik Self-signed Certificate"

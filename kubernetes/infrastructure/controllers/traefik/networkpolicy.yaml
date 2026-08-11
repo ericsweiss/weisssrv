@@ -1,4 +1,8 @@
 ---
+# Traefik NetworkPolicies. Ingress only: egress is deliberately unrestricted
+# because Traefik proxies to backend Services in every namespace, so a
+# default-deny-egress would mean enumerating the whole cluster service surface.
+#
 # Edge data plane: web (80) + websecure (443) reachable from anywhere
 # (LoadBalancer client traffic). release.yaml overrides the web/websecure
 # entrypoint container ports to 80/443 (ports.web.port / ports.websecure.port),
@@ -43,7 +47,3 @@ spec:
       ports:
         - protocol: TCP
           port: 9100
-
-# Egress is intentionally unrestricted: Traefik proxies to backend Services in
-# every namespace, so a default-deny-egress would require enumerating the entire
-# cluster service surface.

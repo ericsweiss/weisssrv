@@ -13,13 +13,11 @@ terraform {
   required_providers {
     authentik = {
       source = "goauthentik/authentik"
-      # EXACT pin: the provider is released in lockstep with the authentik
-      # server (2026.5.0 targets server 2026.5.x — our deployment runs
-      # 2026.5.5). A provider bump must ride the server upgrade, never float
-      # ahead of it: a newer provider can carry schema for API fields the
-      # older server does not serve. Bump this alongside authentik_version in
-      # group_vars/all.yml. The committed .terraform.lock.hcl pins the exact
-      # hashes for reproducible init.
+      # EXACT pin, in lockstep with the server: the provider's minor must match
+      # the authentik_version minor in group_vars/all.yml, and a bump rides the
+      # server upgrade — a newer provider can carry schema for API fields the
+      # older server does not serve. The committed .terraform.lock.hcl pins the
+      # exact hashes for reproducible init.
       version = "2026.5.0"
     }
   }

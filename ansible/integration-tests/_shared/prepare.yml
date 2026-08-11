@@ -1,7 +1,7 @@
 ---
-# Shared prepare playbook for the integration-test scenarios. Single source of
-# truth: re-imports the role-scenario prepare (ansible/molecule/prepare-common.yml)
-# so the systemd/apt/temp-dir setup lives in exactly one place. Wired via
-# provisioner.playbooks.prepare (path relative to each scenario dir); scenarios
-# with extra prep (dns-stack) import this playbook and append their own play.
-- import_playbook: ../../molecule/prepare-common.yml
+# Shared prepare playbook for the integration-test scenarios. The systemd/apt/
+# temp-dir setup itself lives once, in ansible/molecule/prepare-common.yml.
+# Wired via provisioner.playbooks.prepare (path relative to each scenario dir);
+# a scenario with extra prep (dns-stack) imports this and appends its own play.
+- name: Prepare the integration-test containers
+  ansible.builtin.import_playbook: ../../molecule/prepare-common.yml

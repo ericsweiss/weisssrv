@@ -6,7 +6,7 @@
 # child of an existing backup root). The export uses all_squash,anonuid=1000,
 # anongid=2000, so every container write maps to 1000:2000 on the NAS
 # regardless of the in-container UID; the /appdata/hermes subdir is created +
-# owned 1000:2000 by the nas_storage role (nas_appdata_dirs).
+# owned 1000:2000 by the nas_storage role (nas_storage_appdata_dirs).
 #
 # server: is an immutable PV field; the kustomize force annotation lets Flux
 # delete+recreate it if server/mountOptions ever change (Retain -> data safe).

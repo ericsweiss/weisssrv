@@ -1,0 +1,216 @@
+---
+# hwmon thermals from job="node-exporter-host". EVERY rule here is scoped to the
+# six bare-metal Proxmox hosts (192.168.0.102-107:9101): the unprivileged LXCs
+# (dns-01/dns-02/smtp-relay) run the same exporter and read their HOST's
+# /sys/class/hwmon, so an unscoped rule pages twice for one physical sensor and
+# names a container that has no CPU.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: homelab-temperature
+  namespace: observability
+spec:
+  groups:
+    - name: homelab.temperature
+      rules:
+        # Sized for the archive-pool ST6000NM0024 HDDs (55C spec ceiling), which
+        # live only on pve-nas-01 — hence the tighter .102 scope. The other hosts'
+        # local-ssd 870 EVOs report under the same drivetemp chip name but spec
+        # 70-85C and routinely run 55-60C, so a fleet-wide rule would page on a
+        # healthy SSD. Extend the filter if HDDs are added elsewhere.
+        - alert: SATADriveTempWarning
+          expr: >-
+            max by (instance, chip) (
+              node_hwmon_temp_celsius{job="node-exporter-host", instance=~"192\\.168\\.0\\.102:.*"}
+              * on (instance, chip) group_left(chip_name)
+              node_hwmon_chip_names{job="node-exporter-host", chip_name=~"drivetemp.*"}
+            ) >= 50
+          for: 15m
+          labels:
+            severity: warning
+            component: storage
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            summary: >-
+              SATA drive on {{ $labels.instance }}
+              ({{ $labels.chip }}) at
+              {{ $value | printf "%.0f" }}C
+            description: >-
+              SATA drive {{ $labels.chip }} on {{ $labels.instance }}
+              has been at {{ $value | printf "%.0f" }}C for 15 minutes
+              (warn threshold 50C). Check airflow for that drive bay.
+
+        - alert: SATADriveTempCritical
+          expr: >-
+            max by (instance, chip) (
+              node_hwmon_temp_celsius{job="node-exporter-host", instance=~"192\\.168\\.0\\.102:.*"}
+              * on (instance, chip) group_left(chip_name)
+              node_hwmon_chip_names{job="node-exporter-host", chip_name=~"drivetemp.*"}
+            ) >= 55
+          for: 5m
+          labels:
+            severity: critical
+            component: storage
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            summary: >-
+              SATA drive on {{ $labels.instance }}
+              ({{ $labels.chip }}) at
+              {{ $value | printf "%.0f" }}C
+            description: >-
+              SATA drive {{ $labels.chip }} on {{ $labels.instance }}
+              is at {{ $value | printf "%.0f" }}C — at or above the
+              archive-pool drives' spec ceiling. Sustained over-temp is the strongest
+              accelerant for HDD failure.
+
+        # NVMe via the in-tree nvme hwmon driver. Warning sits below the typical
+        # 80-82C composite warning; critical just below the throttle point.
+        - alert: NVMeDriveTempWarning
+          expr: >-
+            max by (instance, chip) (
+              node_hwmon_temp_celsius{job="node-exporter-host", instance=~"192\\.168\\.0\\.10[2-7]:9101"}
+              * on (instance, chip) group_left(chip_name)
+              node_hwmon_chip_names{job="node-exporter-host", chip_name="nvme"}
+            ) >= 65
+          for: 10m
+          labels:
+            severity: warning
+            component: storage
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            summary: >-
+              NVMe drive on {{ $labels.instance }}
+              ({{ $labels.chip }}) at
+              {{ $value | printf "%.0f" }}C
+            description: >-
+              NVMe drive {{ $labels.chip }} on {{ $labels.instance }}
+              has been at {{ $value | printf "%.0f" }}C for 10 minutes.
+              NVMe drives throttle around 80C and warn around 82C; investigate before
+              that happens.
+
+        - alert: NVMeDriveTempCritical
+          expr: >-
+            max by (instance, chip) (
+              node_hwmon_temp_celsius{job="node-exporter-host", instance=~"192\\.168\\.0\\.10[2-7]:9101"}
+              * on (instance, chip) group_left(chip_name)
+              node_hwmon_chip_names{job="node-exporter-host", chip_name="nvme"}
+            ) >= 75
+          for: 2m
+          labels:
+            severity: critical
+            component: storage
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            summary: >-
+              NVMe drive on {{ $labels.instance }}
+              ({{ $labels.chip }}) at
+              {{ $value | printf "%.0f" }}C
+            description: >-
+              NVMe drive {{ $labels.chip }} on {{ $labels.instance }}
+              is at {{ $value | printf "%.0f" }}C — within a few degrees of
+              thermal throttle.
+
+        # CPU package + per-core temps via coretemp. 80C is the typical "high"
+        # warning level, well under a consumer TJunction of ~100C.
+        - alert: CPUTempWarning
+          expr: >-
+            max by (instance) (
+              node_hwmon_temp_celsius{job="node-exporter-host", instance=~"192\\.168\\.0\\.10[2-7]:9101"}
+              * on (instance, chip) group_left(chip_name)
+              node_hwmon_chip_names{job="node-exporter-host", chip_name="coretemp"}
+            ) >= 80
+          for: 10m
+          labels:
+            severity: warning
+            component: cpu
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            summary: 'CPU on {{ $labels.instance }} sustained {{ $value | printf "%.0f" }}C'
+            description: >-
+              CPU on {{ $labels.instance }} has been at or above
+              80C for 10 minutes. Check load and fan health.
+
+        - alert: CPUTempCritical
+          expr: >-
+            max by (instance) (
+              node_hwmon_temp_celsius{job="node-exporter-host", instance=~"192\\.168\\.0\\.10[2-7]:9101"}
+              * on (instance, chip) group_left(chip_name)
+              node_hwmon_chip_names{job="node-exporter-host", chip_name="coretemp"}
+            ) >= 90
+          for: 2m
+          labels:
+            severity: critical
+            component: cpu
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            summary: 'CPU on {{ $labels.instance }} at {{ $value | printf "%.0f" }}C'
+            description: >-
+              CPU on {{ $labels.instance }} hit
+              {{ $value | printf "%.0f" }}C — close to TJunction.
+              Thermal throttle is imminent if not already underway.
+
+        # Host-side hwmon GPU temps: Intel xe (Plex transcoding on pve-nas-01),
+        # nouveau (pve-prec-01/pve-laptop-01), amdgpu if added. The pve-prec-01
+        # 1660 Ti's own telemetry is DCGM's GpuTemp* pair in homelab.gpu.
+        - alert: HostGpuTempWarning
+          expr: >-
+            max by (instance, chip_name) (
+              node_hwmon_temp_celsius{job="node-exporter-host", instance=~"192\\.168\\.0\\.10[2-7]:9101"}
+              * on (instance, chip) group_left(chip_name)
+              node_hwmon_chip_names{job="node-exporter-host", chip_name=~"xe|nouveau|nvidia|amdgpu|radeon"}
+            ) >= 85
+          for: 5m
+          labels:
+            severity: warning
+            component: gpu
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            summary: >-
+              GPU ({{ $labels.chip_name }}) on
+              {{ $labels.instance }} at
+              {{ $value | printf "%.0f" }}C
+            description: >-
+              GPU ({{ $labels.chip_name }}) on {{ $labels.instance }}
+              has been at or above 85C for 5 minutes.
+
+        - alert: HostGpuTempCritical
+          expr: >-
+            max by (instance, chip_name) (
+              node_hwmon_temp_celsius{job="node-exporter-host", instance=~"192\\.168\\.0\\.10[2-7]:9101"}
+              * on (instance, chip) group_left(chip_name)
+              node_hwmon_chip_names{job="node-exporter-host", chip_name=~"xe|nouveau|nvidia|amdgpu|radeon"}
+            ) >= 95
+          for: 1m
+          labels:
+            severity: critical
+            component: gpu
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            summary: >-
+              GPU ({{ $labels.chip_name }}) on
+              {{ $labels.instance }} at
+              {{ $value | printf "%.0f" }}C
+            description: >-
+              GPU ({{ $labels.chip_name }}) on {{ $labels.instance }}
+              is at {{ $value | printf "%.0f" }}C — at or beyond the
+              typical thermal-shutdown threshold for consumer GPUs.
+
+        # Only fires where node_exporter publishes a nic chip (pve-nas-01 AQC113).
+        - alert: NICTempWarning
+          expr: >-
+            max by (instance, chip_name) (
+              node_hwmon_temp_celsius{job="node-exporter-host", instance=~"192\\.168\\.0\\.10[2-7]:9101"}
+              * on (instance, chip) group_left(chip_name)
+              node_hwmon_chip_names{job="node-exporter-host", chip_name=~"nic.*"}
+            ) >= 90
+          for: 10m
+          labels:
+            severity: warning
+            component: network
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            summary: 'NIC on {{ $labels.instance }} at {{ $value | printf "%.0f" }}C'
+            description: >-
+              NIC {{ $labels.chip_name }} on {{ $labels.instance }}
+              has been at or above 90C for 10 minutes — high NIC temps correlate with
+              link instability on the AQC113.

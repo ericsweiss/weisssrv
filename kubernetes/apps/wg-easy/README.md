@@ -30,7 +30,8 @@ model, and the client-onboarding runbook are in
 Metrics are scraped by a **ServiceMonitor** in the `observability` namespace
 (`kubernetes/infrastructure/observability/service-monitors/wg-easy.yaml`), using
 a Bearer token from `observability-exporter-secrets` — the repo convention for
-scrape auth. It requires a one-time UI enable (see Notes).
+scrape auth. Prometheus export is a per-install UI setting, so a rebuilt or
+wiped state directory needs the enable step again (see Notes).
 
 ## No-LAN enforcement (two layers)
 
@@ -56,10 +57,10 @@ client out of the LAN (that is the two layers above). See
 ## Ops
 
 ```bash
-task vpn:status     # pods, services (VIP .99), PVC, ingress
-task vpn:peers      # live WireGuard handshakes (wg show)
-task vpn:logs       # tail wg-easy logs
-task vpn:restart    # pod delete (Flux-managed, Recreate)
+task wg-easy:status     # pods, services (VIP .99), PVC, ingress
+task wg-easy:peers      # live WireGuard handshakes (wg show)
+task wg-easy:logs       # tail wg-easy logs
+task wg-easy:restart    # pod delete (Flux-managed, Recreate)
 ```
 
 ## Notes
@@ -67,9 +68,10 @@ task vpn:restart    # pod delete (Flux-managed, Recreate)
 - **Versions**: `wg_easy_version` in `all.yml` (container tag has no leading
   `v`). WireGuard kernel module is provided by the nodes (flannel
   wireguard-native) — wg-easy needs **no** SYS_MODULE.
-- **Metrics** require a one-time UI step (Admin Panel > General → enable
-  Prometheus + set the Bearer password to the `metrics-token` value from
-  1Password "WireGuard VPN"). `WgEasyDown` keys off Deployment availability so it
-  does not depend on that step.
+- **Metrics** live in the wg-easy database, not in git: Admin Panel > General →
+  enable Prometheus and set the Bearer password to the `metrics-token` value
+  from 1Password "WireGuard VPN". Redo this after any state wipe; confirm with
+  `wg_easy_up` in Prometheus. `WgEasyDown` keys off Deployment availability, so
+  it stays valid either way.
 - **Bootstrap** (`INIT_*`) applies on first boot only; later changes are UI
   actions. See docs/38.

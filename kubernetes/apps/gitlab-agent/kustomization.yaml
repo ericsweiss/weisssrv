@@ -8,33 +8,16 @@ resources:
   - release.yaml
   - vpa.yaml
 
-# Egress NetworkPolicy intentionally absent (only the shared default-deny
-# ingress below applies).
+# No egress NetworkPolicy, deliberately: kube-router installs the per-pod egress
+# chain after the pod is scheduled, and agentk bails fatally on its startup /api
+# GET in that gap, crashlooping every fresh pod. The agent only egresses to
+# cluster-internal endpoints and holds cluster-admin-equivalent creds anyway, so
+# an allowlist adds little.
 #
-# The allow-egress-gitlab-and-kube policy used to restrict the agent's
-# outbound traffic to kube-dns + 10.43.0.1 + Traefik VIP. Because kube-router
-# builds the per-pod egress chain asynchronously after the pod is scheduled,
-# agentk's startup-time GET on /api was getting RST'd in the gap between
-# pod-create and chain-install. agentk v18 retried indefinitely so the race
-# was invisible; v19's new remote_development module bails fatally on the
-# first error, which crashlooped every fresh pod and trapped us on the
-# previous chart version.
-#
-# We don't need this NP for security in practice: the agent only egresses to
-# internal-only services (kube-dns, kube-apiserver, Traefik internal VIP) —
-# all already reachable only from inside the cluster — and a compromised
-# agentk has cluster-admin-equivalent kube creds anyway, so a /16 egress
-# allowlist is not a meaningful additional control.
-#
-# ACCEPTED RISK (single-operator today) — REVIEW BEFORE MULTI-TENANT:
-# this pairs with the cluster-admin RBAC note in release.yaml. Once the
-# agent RBAC is scoped below cluster-admin for tenant onboarding (docs/30),
-# the "compromised agentk already has full kube creds" justification no
-# longer holds, so restore a scoped egress allowlist then. Re-add it only
-# after confirming the agentk startup race above is fixed (e.g. an agentk
-# version that retries the initial /api GET instead of bailing fatally, or
-# a readiness gate that defers the GET until the kube-router egress chain
-# is installed) so re-adding the policy doesn't crashloop fresh pods again.
+# ACCEPTED RISK — REVIEW BEFORE MULTI-TENANT (pairs with the RBAC note in
+# release.yaml): once the agent RBAC is scoped below cluster-admin for tenant
+# onboarding (docs/30), restore a scoped egress allowlist, but only once agentk
+# tolerates that startup gap.
 
 components:
   - ../../components/netpol-baseline

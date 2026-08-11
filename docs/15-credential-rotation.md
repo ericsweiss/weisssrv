@@ -37,6 +37,14 @@ CLAUDE.md, `ansible/README.md`, `docs/29-flux-operations.md`) point here.
    `OP_SERVICE_ACCOUNT_TOKEN` (a service-account token, not Connect) to inject
    secrets into jobs at run time.
 
+**The `weisssrv.infra` collection adds no fourth consumer.** The roles ship no
+credentials and no `op://` references of their own — every secret still arrives
+as an inventory variable resolved by consumer 1 above. The collection only
+*widened* that surface: several roles that used to carry a site default now
+declare the value as a required input (`weisssrv.infra`'s `MIGRATING.md`
+§ "Externalized defaults"), so the reference must exist in this repo's
+inventory. The item inventory below is unchanged by the migration.
+
 ## Required 1Password Items
 
 This is the canonical, authoritative inventory of every item the deployment
@@ -45,68 +53,318 @@ expects in the **Homelab** vault. CLAUDE.md, `docs/02-install.md`,
 `docs/28-gitlab-migration.md` all point here; update this list (not those files)
 when an item is added or its fields change.
 
-- **Cloudflare DNS Token** - API token (credential, scoped DNS:Edit + Zone:Read only) + account ID (username field); consumed by the in-cluster ESO trio (cert-manager, external-dns, cloudflare-ddns) and acme_certs
-- **Cloudflare Terraform Token** - API token (credential, scoped Zone:Read + DNS:Edit + **Zone Settings:Edit** — Terraform manages `cloudflare_zone_settings_override`) + account ID (username field); Terraform via Taskfile + the terraform-plan/deploy-terraform CI jobs only
-- **SMTP Relay Gmail** - username + app password
-- **SMTP Relay Auth** - username + password (for null client auth to smtp-relay)
-- **Email Config** - root_alias (ericsweiss1@gmail.com)
-- **AdGuard Home** - admin username + password (the `adguard_home` role generates the bcrypt hash in `AdGuardHome.yaml` from this plaintext password at deploy time; no `password_hash` field is injected or consumed). Also consumed by `terraform/authentik` (`TF_VAR_basic_auth_adguard_*`) as the injected credentials on the AdGuard SSO dashboard proxy providers (docs/08) — single source, so the injection can never drift from the deployed admin login. Rotation therefore needs BOTH `task dns:deploy` and a supervised terraform apply (docs/40)
-- **Tailscale Auth Key** - auth key
-- **Tailscale OAuth** - client id + credential (OAuth client scoped `acl` **and `dns`** write; used by `terraform/tailscale` to manage the tailnet ACL policy AND the `esweiss.com` Split-DNS nameservers — see that module's README)
-- **Tailscale Operator OAuth** - `client-id` + `client-secret` (OAuth client scoped **write** on Devices/Core, Keys/Auth Keys, and Services, associated with tag `tag:k8s-operator`; consumed in-cluster by ESO → Secret `operator-oauth` for the Tailscale Kubernetes operator that exposes the internal Traefik ingress + `ts-dns` resolver to the tailnet — see docs/05). Distinct from the two items above.
-- **SSH Key** - public + private key
-- **Samba NAS User** - nas user password
-- **DNS-01 SSH Key** - private + public key (for cert distribution)
-- **K3s Cluster Token** - cluster join token (credential)
-- **K3s Agent Token** - lower-privilege worker-join token (credential). Optional: when absent the role falls back to the cluster token. See docs/19 "Agent token".
-- **Authentik Secrets** - secret-key, postgresql-password, postgresql-admin-password
-- **Authentik Terraform Token** - credential (admin API token for the authentik API; used by `terraform/authentik` to manage applications/providers/groups — see that module's README and docs/40). Rotate by minting a new token in authentik (Directory > Tokens), updating this field, then deleting the old token
-- **NZBGet** - username, password (MUST match nzbget.conf's `ControlUsername`/`ControlPassword` — NZBGet validates HTTP Basic against them). Consumed by `terraform/authentik` (`TF_VAR_basic_auth_nzbget_*`) as the injected credentials on the NZBGet proxy provider (docs/21 §Authentik SSO Integration). Rotating the pair = change it in NZBGet (Settings > Security) AND here, then a supervised terraform apply (docs/40)
-- **PrivadoVPN Credentials** - openvpn-user, openvpn-password (default Gluetun VPN provider; user/pass auth)
-- **VPN Unlimited Credentials** - alternate Gluetun provider (KeepSolid). Gluetun needs **all four** of openvpn-user, openvpn-password, openvpn-clientcrt and openvpn-clientkey: its generated OpenVPN config is cert/key-based (auth-user-pass off) but its settings validation still requires a non-empty user + password for the provider. To enable `task downloads:vpn-provider -- PROVIDER=vpnunlimited`, generate a Manual/OpenVPN config for one device in the VPN Unlimited portal, then add fields **openvpn-user**, **openvpn-password**, **openvpn-clientcrt** (full PEM `<cert>` block) and **openvpn-clientkey** (full PEM `<key>` block), and uncomment the `vpnunlimited-*` entries in `kubernetes/apps/download-clients/externalsecret.yaml` (docs/21)
-- **WireGuard VPN** - init-username, init-password (wg-easy admin, bootstrapped on first boot; later rotation is a UI action), metrics-token (Bearer password for the `/metrics/prometheus` endpoint — must be pasted into Admin Panel > General to enable metrics). See docs/38-wireguard-vpn.md
-- **Mealie Secrets** - postgres-password
-- **Mealie SSO** - oidc-client-id, oidc-client-secret (Authentik OIDC, REQUIRED - password login disabled)
-- **Bar Assistant Secrets** - meilisearch-master-key
-- **Bar Assistant SSO** - authentik-client-id, authentik-client-secret (Authentik OIDC, REQUIRED - password login disabled)
-- **OpenAI API Key** - api-key (for Mealie recipe parsing, optional). No longer ESO-synced into the cluster — the key is entered in Mealie's UI (Settings > AI), so rotation is a manual in-app update there
-- **Hermes Secrets** - api-server-key, claude-code-oauth-token, discord-bot-token, hermes-dashboard-oidc-client-secret, hass-token (five ESO-consumed fields — a missing one fails the whole `hermes-secrets` sync). api-server-key is the gateway API server's mandatory bearer key (>=32-byte random, `openssl rand -hex 32`); claude-code-oauth-token is the Claude Code delegate's Max-subscription `claude setup-token` (sk-ant-oat01-*, docs/37 §Coding delegates); discord-bot-token + hass-token are upserted into `/opt/data/.env` by the init container (docs/37 §Gateway platform config); hermes-dashboard-oidc-client-secret is the dashboard's Authentik OIDC client secret, read by BOTH ESO and terraform/authentik (docs/40) so they can never disagree. The item ALSO holds dashboard-username/dashboard-password/dashboard-session-secret as UNSYNCED emergency-revert values for the retired `basic` password provider (dashboard auth is OIDC-only — docs/37 §SSO). No LLM-provider API key here: Hermes' LLM turns use ChatGPT-subscription OAuth in Hermes' own store (`hermes auth add openai-codex`), and the codex CLI keeps its separate `codex login` token in CODEX_HOME — neither in 1Password (docs/37 §LLM engine)
-- **Hermes Agent 1P Service Account** - credential (a 1Password service-account token, consumed as `OP_SERVICE_ACCOUNT_TOKEN`). A DEDICATED item, separate from **Hermes Secrets**, so the service account's blast radius and rotation stay isolated. ESO syncs it into the `hermes-secrets` Secret as `op-service-account-token`; the Deployment sets it as gateway container env (so the baked-in `op` CLI, run via the terminal tool, authenticates) and the init container also upserts it into `/opt/data/.env`. It backs Hermes' first-party 1Password skill (docs/37 §1Password). IMPORTANT: a service account authenticates to the 1Password CLOUD API (`my.1password.com` / `*.1password.com`, public :443) — NOT the in-cluster Connect that backs ESO — so scope it in the 1Password service-accounts console to ONLY the isolated Agent vault (read+write), never Homelab. Rotate by minting a replacement token in the service-accounts console, updating this field, then revoking the old token
-- **Home Assistant SSO** - authentik-client-id, authentik-client-secret (Authentik OIDC via hass-openid)
-- **Home Assistant API Token** - token (long-lived access token for Prometheus /api/prometheus endpoint); `backup_encryption_key` = HA's backup encryption key (automatic backups are `protected: true` — **without this key the offsite HA tars in B2 are undecryptable**; from Settings → System → Backups → emergency kit. Re-save here if HA ever regenerates it)
-- **GitLab** - root-password (initial GitLab root user password)
-- **GitLab API Token** - credential (admin personal access token, `api` scope; used by PR-Agent AI code review and hard-asserted by `task gitlab:deploy` for the Web IDE Application Settings block)
-- **GitLab Version Bump Bot Token** - credential (personal or project access token, scopes **`api` + `write_repository`**, Developer or better on `eric/weisssrv`). The item of record for the **masked, protected** `VERSION_BUMP_BOT_TOKEN` CI/CD variable, which is what the `version-bump-bot` job actually reads — the job cannot use `CI_JOB_TOKEN` (it cannot push, and the Merge requests API is read-only for job tokens) and cannot `op read` it either, since the value is consumed as a CI variable. Deliberately NOT the admin **GitLab API Token** above: this one is scoped to what a bot needs (push a branch, open/refresh/close one MR — never merge) and can be revoked without taking PR-Agent or `task gitlab:deploy` down with it. Rotate = mint a replacement (Settings > Access Tokens), update this field AND the CI variable, then revoke the old token; verify by playing `version-bump-bot` from a web pipeline on `main` (docs/13 § Version bump bot)
-- **GitLab SSO** - saml-cert-fingerprint (Authentik SAML)
-- **GitLab Runner** - runner-token (glrt-* format, tags: k8s-deploy, run untagged: yes, shared multi-project runner)
-- **GitLab Runner Privileged** - runner-token (glrt-* format, tags: infrastructure, run untagged: no, weisssrv infrastructure runner)
-- **GitLab Agent Token** - credential (agent token for GitLab Kubernetes Agent, registered via Operate > Kubernetes clusters)
-- **GitLab Registry Cache Deploy Token** - username + token. A GitLab **deploy token** (NOT a personal/runner token) scoped `read_registry` on the `eric/weisssrv` project, minted at deploy time (Project > Settings > Repository > Deploy tokens; or Admin). Consumed in-cluster by the `registry-cache-secrets` ExternalSecret → `REGISTRY_PROXY_USERNAME`/`REGISTRY_PROXY_PASSWORD` of the CI pull-through registry cache (`kubernetes/apps/registry-cache`, docs/27 § Registry pull-through cache). `read_registry` is least privilege — the cache only pulls upstream blobs. Rotate = create a new deploy token, update both fields here, then `task flux:rotate-secret -- registry-cache`
-- **Nextcloud Secrets** - admin-password (break-glass local admin, reachable at `/login?direct=1`), postgres-password (nextcloud DB role), serverinfo-token (random ≥32 chars; the token the nextcloud-exporter authenticates to Nextcloud's serverinfo API with — the role sets it via `occ config:app:set serverinfo token`)
-- **Nextcloud SSO** - client-id, client-secret (Authentik OIDC via the `user_oidc` app, REQUIRED — SSO-only, local login form hidden)
-- **Immich Secrets** - postgres-password (compose DB_PASSWORD); admin-bootstrap-password (operator-only — the password you set on the one-time Immich admin-registration page during SSO bootstrap; NOT injected by Ansible)
-- **Immich SSO** - client-id, client-secret (Authentik OIDC, REQUIRED - password login disabled after bootstrap)
-- **Homarr SSO** - client-id (literal `homarr`), client-secret, secret-encryption-key, admin-username, admin-password. `client-secret` is read by BOTH ESO (the `homarr-secrets` ExternalSecret → `oidc-client-secret`) AND terraform/authentik (`TF_VAR_oauth2_client_secret_homarr`, docs/40) so they can never disagree. `secret-encryption-key` (`openssl rand -hex 32`) is ESO-synced too and encrypts the SQLite-stored integration credentials — **do not lose it** (losing it makes stored integration creds unreadable). `admin-username`/`admin-password` are operator-set (NOT ESO-injected — the `homarr-secrets` ExternalSecret pulls only `client-secret` + `secret-encryption-key`; like Immich `admin-bootstrap-password`). They are a **historical record** of the onboarding bootstrap admin, which is deleted at the SSO-only cutover (there is no standing local admin — the credentials break-glass was retired in !193), so no current auth path consumes them — the break-glass DR mints its own username + one-time password via `homarr-cli recreate-admin` (see docs/41 §SSO)
-- **Homarr Proxmox Token** - token-id (e.g. `homarr@pve!homarr`), token-secret (a read-only `PVEAuditor` Proxmox API token minted via `pveum`, docs/41). Entered into Homarr's Proxmox integration via the UI (NOT ESO-consumed). Rotate = mint a new token in Proxmox + update here + re-enter in the Homarr UI
-- **Homarr Integrations** - DR-convenience record (NOT ESO-consumed) of the per-integration credentials entered in the Homarr UI so they survive a rebuild: sonarr-api-key, radarr-api-key, lidarr-api-key, prowlarr-api-key, immich-api-key, nextcloud-app-password. (The AdGuard/NZBGet/qBittorrent/Plex/Home-Assistant integrations reuse their existing items above)
-- **GitHub Token** - credential (personal access token for version checker API rate limits; consumed by `task maintenance:check-versions` / `maintenance:update-all-versions` locally AND by the `version-bump-bot` CI job, which runs that same task under `op run`)
-- **GitLab Terraform State Token** - credential (project access token for Terraform HTTP state backend, local use)
-- **K3s Kubeconfig** - kubeconfig file content (used by .k3s-deploy-base CI template as fallback; agent is preferred)
-- **Service Account Auth Token weisssrv** - 1Password Service Account token used by CI (`OP_SERVICE_ACCOUNT_TOKEN` in `.gitlab-ci.yml`)
-- **Flux GitLab PAT** - personal access token used by Flux to read `kubernetes/` from the GitLab repo
-- **Flux Webhook Token** - auto-generated hex token shared between GitLab webhook config and a Flux `Receiver` (reserved for the optional Receiver-based webhook path; day-to-day push-triggered reconciliation comes from the GitLab agent's Flux integration — see docs/29)
-- **Plex Token** - token (X-Plex-Token for Plex exporter metrics)
-- **Download Client API Keys** - sonarr-api-key, radarr-api-key, lidarr-api-key, prowlarr-api-key (from each app's Settings > General); **gluetun-control-apikey** (auth key for the Gluetun control server; generate with `openssl rand -hex 32`) — rendered into the `gluetun-control-auth` Secret's `config.toml` and consumed by the gluetun-exporter as `GLUETUN_APIKEY`. Rotating this field requires re-syncing the `gluetun-control-auth` ExternalSecret from 1Password **and then** restarting the pods: ESO only re-fetches on its 24h `refreshInterval` and Reloader ignores Secret changes (`ignoreSecrets: true`), so a bare pod restart would just re-read the stale apikey and the rotation would be a silent no-op. Use `task flux:rotate-secret -- downloads` (force-syncs both `gluetun-control-auth` and `vpn-credentials`, then restarts nzbget/qbittorrent), or manually `task flux:refresh-secret -- downloads/gluetun-control-auth && kubectl rollout restart deployment/qbittorrent -n downloads`. See docs/21 § Control-Server Auth
-- **Grafana SSO** - oidc-client-id, oidc-client-secret (Authentik OIDC for Grafana)
-- **Loki Push Auth** - htpasswd (bcrypt users file for the Loki push IngressRoute basicAuth middleware)
-- **Proxmox API Token** - user, token-name, token-secret (PVEAuditor role, for Proxmox exporter)
-- **Discord Alert Webhook** - url (Discord channel webhook for Alertmanager notifications)
-- **Healthchecks Watchdog** - ping url (healthchecks.io check pinged by Alertmanager's always-firing Watchdog dead-man's switch; consumed by the alertmanager-config ExternalSecret)
-- **ZFS Encryption Connect Token** - credential (Connect access token used by Proxmox hosts to fetch ZFS pool passphrases at boot; created via `op connect token create weisssrv-zfs --server <id> --vaults Homelab`)
-- **ZFS Pool tank Passphrase** - passphrase (random ≥32 chars; consumed by zfs-load-key@tank.service on pve-nas-01)
-- **ZFS Pool ssd Passphrase** - passphrase (zfs-load-key@ssd.service on pve-nas-01)
-- **Plex Custom Certificate** - password (PFX bundle passphrase used by `/usr/local/sbin/plex-cert-reload.sh` when converting the renewed PEM cert into the PKCS#12 form Plex requires; matching value must be configured under Plex Settings -> Network -> "Custom certificate encryption key")
-- **B2 Archive Backup** - TWO key pairs (capability split, docs/42 Step 0) + the repo password: `b2_key_id`/`b2_application_key` = the FULL bucket-settings key (all bucket read/write capabilities incl. `readBucketRetentions` — the terraform provider's phantom-drift lesson), consumed ONLY by `scripts/b2-bucket-drift.py` (the `b2-drift-plan` CI job + supervised `task b2:apply`); `restic_key_id`/`restic_application_key` = the RESTRICTED key (`listBuckets,listFiles,readFiles,writeFiles,readBucketEncryption` — no `deleteFiles`; rclone deletes-by-hiding and the B2 lifecycle expires hidden versions), consumed by the `restic_offsite` Ansible role on pve-nas-01 (nightly offsite restic-to-B2 backup, docs/12/42) via the storage deploy job + Taskfile; `restic_repo_password` = the restic repo password (`RESTIC_PASSWORD`) — **losing it means losing the entire restic repo** (the offsite copy becomes undecryptable), so keep an OFFLINE copy outside this vault. Rotate: bucket-settings key = mint in the Backblaze console (bucket-scoped, ALL read+write bucket capabilities), update `b2_key_id`/`b2_application_key`; restricted = `b2 key create --bucket weisssrv-backup ...` (docs/42), update `restic_*` fields, re-run `deploy-ansible-storage` (restic keeps working — no real delete is ever issued); `restic_repo_password` must NEVER change once the repo exists
+The **Inventory** table below is the complete list. Items whose handling needs
+more than a table cell have a subsection under
+[Item detail](#item-detail); everything else is fully described by its row.
+
+Unless a row says otherwise, "rotate" means: update the field in 1Password, then
+re-run the consuming deploy (`task <area>:deploy`) for `op run` consumers, or
+`task flux:rotate-secret -- <app>` for in-cluster ESO consumers.
+
+### Inventory
+
+#### DNS, TLS and network
+
+| Item | Fields | Consumed by |
+|---|---|---|
+| Cloudflare DNS Token | `credential` (DNS:Edit + Zone:Read), `username` (account ID) | ESO → cert-manager, external-dns, cloudflare-ddns; `acme_certs` role |
+| Cloudflare Terraform Token | `credential` (Zone:Read + DNS:Edit + Zone Settings:Edit), `username` (account ID) | `terraform/cloudflare` via Taskfile and the terraform-plan / deploy-terraform CI jobs |
+| AdGuard Home | admin username + password | `adguard_home` role; `terraform/authentik` basic-auth injection — see [detail](#adguard-home) |
+| Tailscale Auth Key | auth key | `tailscale` role |
+| Tailscale OAuth | `client id`, `credential` (scopes `acl` + `dns`, write) | `terraform/tailscale` — tailnet ACL policy and the `esweiss.com` split-DNS nameservers |
+| Tailscale Operator OAuth | `client-id`, `client-secret` | ESO → `operator-oauth` for the Tailscale Kubernetes operator — see [detail](#tailscale-operator-oauth) |
+| DNS-01 SSH Key | private + public key | cert distribution to the DNS LXCs |
+| Plex Custom Certificate | password | `plex-cert-reload.sh` PKCS#12 passphrase — see [detail](#plex-custom-certificate) |
+
+#### Mail
+
+| Item | Fields | Consumed by |
+|---|---|---|
+| SMTP Relay Gmail | username + app password | `smtp_relay` role (upstream auth) |
+| SMTP Relay Auth | username + password | null-client auth to smtp-relay |
+| Email Config | `root_alias` | root mail aliasing on every host |
+
+#### Hosts and storage
+
+| Item | Fields | Consumed by |
+|---|---|---|
+| SSH Key | public + private key | `base` role (operator key distribution) |
+| Samba NAS User | nas user password | `nas_storage` role (Samba) |
+| Proxmox API Token | `user`, `token-name`, `token-secret` (PVEAuditor) | Proxmox exporter |
+| ZFS Encryption Connect Token | `credential` | `zfs_encryption` role — boot-time pool passphrase fetch. Create with `op connect token create weisssrv-zfs --server <id> --vaults Homelab` |
+| ZFS Pool tank Passphrase | `passphrase` (≥32 random chars) | `zfs-load-key@tank.service` on pve-nas-01 |
+| ZFS Pool ssd Passphrase | `passphrase` | `zfs-load-key@ssd.service` on pve-nas-01 |
+
+#### k3s platform
+
+| Item | Fields | Consumed by |
+|---|---|---|
+| K3s Cluster Token | `credential` | server join |
+| K3s Agent Token | `credential` | agent (worker) join — the lower-privilege token; see docs/19 |
+| K3s Kubeconfig | kubeconfig file content | `.k3s-deploy-base` CI template fallback (the GitLab agent is preferred) |
+| Flux GitLab PAT | personal access token | Flux `GitRepository` read access |
+| Flux Webhook Token | hex token | optional Flux `Receiver` path; day-to-day reconcile comes from the GitLab agent (docs/29) |
+| Service Account Auth Token weisssrv | service-account token | `OP_SERVICE_ACCOUNT_TOKEN` in CI |
+| GitHub Token | `credential` | version-checker API rate limits (`task maintenance:check-versions`, the `version-bump-bot` CI job) |
+
+#### GitLab
+
+| Item | Fields | Consumed by |
+|---|---|---|
+| GitLab | `root-password` | initial GitLab root user |
+| GitLab API Token | `credential` (admin PAT, `api` scope) | PR-Agent review; hard-asserted by `task gitlab:deploy` for the Web IDE settings block |
+| GitLab Version Bump Bot Token | `credential` (`api` + `write_repository`, Developer+) | the `VERSION_BUMP_BOT_TOKEN` CI variable — see [detail](#gitlab-version-bump-bot-token) |
+| GitLab SSO | `saml-cert-fingerprint` | Authentik SAML |
+| GitLab Runner | `runner-token` (`glrt-*`) | shared multi-project runner, tags `k8s-deploy`, untagged yes |
+| GitLab Runner Privileged | `runner-token` (`glrt-*`) | infrastructure runner, tags `infrastructure`, untagged no |
+| GitLab Agent Token | `credential` | GitLab Kubernetes Agent registration |
+| GitLab Registry Cache Deploy Token | `username` + `token` (deploy token, `read_registry`) | `registry-cache-secrets` ExternalSecret — see [detail](#gitlab-registry-cache-deploy-token) |
+| GitLab Terraform State Token | `credential` | Terraform HTTP state backend (local use) |
+
+#### Authentik and SSO
+
+| Item | Fields | Consumed by |
+|---|---|---|
+| Authentik Secrets | `secret-key`, `postgresql-password`, `postgresql-admin-password` | Authentik server/worker |
+| Authentik Terraform Token | `credential` (admin API token) | `terraform/authentik` — see [detail](#authentik-terraform-token) |
+| Mealie SSO | `oidc-client-id`, `oidc-client-secret` | Mealie (password login disabled) |
+| Bar Assistant SSO | `authentik-client-id`, `authentik-client-secret` | Bar Assistant (password login disabled) |
+| Home Assistant SSO | `authentik-client-id`, `authentik-client-secret` | hass-openid |
+| Nextcloud SSO | `client-id`, `client-secret` | `user_oidc` app (SSO-only, local form hidden) |
+| Immich SSO | `client-id`, `client-secret` | Immich (password login disabled after bootstrap) |
+| Homarr SSO | `client-id`, `client-secret`, `secret-encryption-key`, `admin-username`, `admin-password` | ESO + `terraform/authentik` — see [detail](#homarr-sso) |
+| Grafana SSO | `oidc-client-id`, `oidc-client-secret` | Grafana OIDC |
+
+#### Applications
+
+| Item | Fields | Consumed by |
+|---|---|---|
+| NZBGet | `username`, `password` | NZBGet HTTP Basic **and** the Authentik proxy provider — see [detail](#nzbget) |
+| PrivadoVPN Credentials | `openvpn-user`, `openvpn-password` | Gluetun (default provider) |
+| VPN Unlimited Credentials | four openvpn-* fields | alternate Gluetun provider — see [detail](#vpn-unlimited-credentials) |
+| Download Client API Keys | `sonarr-api-key`, `radarr-api-key`, `lidarr-api-key`, `prowlarr-api-key`, `gluetun-control-apikey` | the \*arr apps and the gluetun-exporter — see [detail](#download-client-api-keys) |
+| WireGuard VPN | `init-username`, `init-password`, `metrics-token` | wg-easy first-boot admin + `/metrics/prometheus` bearer (docs/38) |
+| Mealie Secrets | `postgres-password` | Mealie Postgres |
+| Bar Assistant Secrets | `meilisearch-master-key` | Meilisearch |
+| OpenAI API Key | `api-key` | Mealie recipe parsing — entered in Mealie's UI, not ESO-synced |
+| Hermes Secrets | five synced fields + three reserve fields | Hermes gateway/dashboard — see [detail](#hermes-secrets) |
+| Hermes Agent 1P Service Account | `credential` | Hermes' 1Password skill — see [detail](#hermes-agent-1p-service-account) |
+| Hermes Registry Pull | `token` (GitLab deploy token, `read_registry` on `eric/weisssrv`) | `hermes-registry-pull` ExternalSecret — see [detail](#hermes-registry-pull) |
+| Home Assistant API Token | `token`, `backup_encryption_key` | HA Prometheus endpoint + offsite backup decryption — see [detail](#home-assistant-api-token) |
+| Nextcloud Secrets | `admin-password`, `postgres-password`, `serverinfo-token` | Nextcloud break-glass admin, DB role, exporter — see [detail](#nextcloud-secrets) |
+| Immich Secrets | `postgres-password`, `admin-bootstrap-password` | Immich compose DB; the bootstrap password is operator-only |
+| Homarr Proxmox Token | `token-id`, `token-secret` (PVEAuditor) | entered in the Homarr UI, not ESO-consumed (docs/41) |
+| Homarr Integrations | per-integration API keys | DR-convenience record of UI-entered credentials, not ESO-consumed |
+| Plex Token | `token` | Plex exporter metrics |
+
+#### Observability and backups
+
+| Item | Fields | Consumed by |
+|---|---|---|
+| Loki Push Auth | `htpasswd` (bcrypt) | Loki push IngressRoute basicAuth middleware |
+| Discord Alert Webhook | `url` | Alertmanager notifications |
+| Healthchecks Watchdog | ping url | Alertmanager Watchdog dead-man's switch |
+| B2 Archive Backup | two key pairs + `restic_repo_password` | offsite restic/B2 chain — see [detail](#b2-archive-backup) |
+
+### Item detail
+
+#### AdGuard Home
+
+The `adguard_home` role generates the bcrypt hash in `AdGuardHome.yaml` from the
+plaintext password at deploy time; no `password_hash` field is injected or
+consumed. `terraform/authentik` reads the same item
+(`TF_VAR_basic_auth_adguard_*`) as the injected credentials on the AdGuard SSO
+dashboard proxy providers (docs/08), so the injection can never drift from the
+deployed admin login. Rotation needs **both** `task dns:deploy` and a supervised
+terraform apply (docs/40).
+
+#### Tailscale Operator OAuth
+
+An OAuth client scoped **write** on Devices/Core, Keys/Auth Keys and Services,
+associated with tag `tag:k8s-operator`. ESO syncs it to the `operator-oauth`
+Secret for the Tailscale Kubernetes operator, which exposes the internal Traefik
+ingress and the `ts-dns` resolver to the tailnet (docs/05). Distinct from
+**Tailscale OAuth** and **Tailscale Auth Key**.
+
+#### Plex Custom Certificate
+
+The PFX bundle passphrase `/usr/local/sbin/plex-cert-reload.sh` uses when
+converting the renewed PEM cert into the PKCS#12 form Plex requires. The same
+value must be configured under Plex Settings → Network → "Custom certificate
+encryption key".
+
+#### Authentik Terraform Token
+
+An admin API token for the Authentik API, used by `terraform/authentik` to
+manage applications, providers and groups (docs/40). Rotate by minting a new
+token in Authentik (Directory → Tokens), updating this field, then deleting the
+old token.
+
+#### GitLab Version Bump Bot Token
+
+The item of record for the **masked, protected** `VERSION_BUMP_BOT_TOKEN` CI/CD
+variable, which is what the `version-bump-bot` job reads. The job cannot use
+`CI_JOB_TOKEN` (it cannot push, and the merge-requests API is read-only for job
+tokens) and cannot `op read` the value either, since it is consumed as a CI
+variable. Deliberately not the admin **GitLab API Token**: this one is scoped to
+what a bot needs (push a branch, open/refresh/close one MR — never merge) and can
+be revoked without taking PR-Agent or `task gitlab:deploy` down with it.
+
+Rotate: mint a replacement (Settings → Access Tokens), update this field **and**
+the CI variable, revoke the old token, then verify by playing `version-bump-bot`
+from a web pipeline on `main` (docs/13 § Version bump bot).
+
+#### GitLab Registry Cache Deploy Token
+
+A GitLab **deploy token** (not a personal or runner token) scoped
+`read_registry` on the `eric/weisssrv` project, minted at deploy time under
+Project → Settings → Repository → Deploy tokens. ESO maps it to
+`REGISTRY_PROXY_USERNAME` / `REGISTRY_PROXY_PASSWORD` for the CI pull-through
+registry cache (`kubernetes/apps/registry-cache`, docs/27). `read_registry` is
+least privilege — the cache only pulls upstream blobs. Rotate: create a new
+deploy token, update both fields, then `task flux:rotate-secret -- registry-cache`.
+
+#### Homarr SSO
+
+`client-secret` is read by **both** ESO (the `homarr-secrets` ExternalSecret →
+`oidc-client-secret`) and `terraform/authentik`
+(`TF_VAR_oauth2_client_secret_homarr`, docs/40), so the two can never disagree.
+`secret-encryption-key` (`openssl rand -hex 32`) is ESO-synced and encrypts the
+SQLite-stored integration credentials — **do not lose it**, or those stored
+credentials become unreadable.
+
+`admin-username` / `admin-password` are operator-set, not ESO-injected, and are a
+record of the onboarding bootstrap admin that was deleted at the SSO-only
+cutover. No current auth path consumes them; break-glass DR mints its own
+username and one-time password via `homarr-cli recreate-admin` (docs/41 § SSO).
+
+#### NZBGet
+
+The pair MUST match `nzbget.conf`'s `ControlUsername` / `ControlPassword` —
+NZBGet validates HTTP Basic against them. `terraform/authentik` consumes the same
+item (`TF_VAR_basic_auth_nzbget_*`) as the injected credentials on the NZBGet
+proxy provider (docs/21 § Authentik SSO Integration). Rotating the pair means
+changing it in NZBGet (Settings → Security) **and** here, then a supervised
+terraform apply (docs/40).
+
+#### VPN Unlimited Credentials
+
+Gluetun needs **all four** of `openvpn-user`, `openvpn-password`,
+`openvpn-clientcrt` and `openvpn-clientkey`: its generated OpenVPN config is
+cert/key-based (auth-user-pass off), but its settings validation still requires a
+non-empty user and password for the provider.
+
+To enable `task downloads:vpn-provider -- PROVIDER=vpnunlimited`, generate a
+Manual/OpenVPN config for one device in the VPN Unlimited portal, add the four
+fields (the two PEM fields take the full `<cert>` / `<key>` blocks), then
+uncomment the `vpnunlimited-*` entries in
+`kubernetes/apps/download-clients/externalsecret.yaml` (docs/21).
+
+#### Download Client API Keys
+
+The four \*arr keys come from each app's Settings → General.
+`gluetun-control-apikey` is the auth key for the Gluetun control server
+(`openssl rand -hex 32`); it is rendered into the `gluetun-control-auth` Secret's
+`config.toml` and consumed by the gluetun-exporter as `GLUETUN_APIKEY`.
+
+Rotating `gluetun-control-apikey` requires re-syncing the `gluetun-control-auth`
+ExternalSecret **and then** restarting the pods: ESO only re-fetches on its 24h
+`refreshInterval`, and Reloader ignores Secret changes (`ignoreSecrets: true`), so
+a bare pod restart would re-read the stale key and the rotation would silently
+no-op. Use `task flux:rotate-secret -- downloads` (force-syncs both
+`gluetun-control-auth` and `vpn-credentials`, then restarts nzbget/qbittorrent).
+See docs/21 § Control-Server Auth.
+
+#### Hermes Secrets
+
+Five ESO-consumed fields — `api-server-key`, `claude-code-oauth-token`,
+`discord-bot-token`, `hermes-dashboard-oidc-client-secret`, `hass-token`. A
+missing one fails the whole `hermes-secrets` sync.
+
+- `api-server-key` — the gateway API server's mandatory bearer key (≥32 random
+  bytes, `openssl rand -hex 32`).
+- `claude-code-oauth-token` — the Claude Code delegate's Max-subscription
+  `claude setup-token` value (docs/37 § Coding delegates).
+- `discord-bot-token` and `hass-token` are upserted into `/opt/data/.env` by the
+  init container (docs/37 § Gateway platform config).
+- `hermes-dashboard-oidc-client-secret` is read by both ESO and
+  `terraform/authentik` (docs/40) so they cannot disagree.
+
+The item also holds `dashboard-username` / `dashboard-password` /
+`dashboard-session-secret` as **unsynced** emergency-revert values for the
+retired `basic` password provider; dashboard auth is OIDC-only (docs/37 § SSO).
+
+There is no LLM-provider API key here: Hermes' LLM turns use ChatGPT-subscription
+OAuth in Hermes' own store, and the codex CLI keeps its token in `CODEX_HOME`
+(docs/37 § LLM engine).
+
+#### Hermes Agent 1P Service Account
+
+A 1Password service-account token consumed as `OP_SERVICE_ACCOUNT_TOKEN`. It is a
+**dedicated** item, separate from **Hermes Secrets**, so the service account's
+blast radius and rotation stay isolated. ESO syncs it into the `hermes-secrets`
+Secret as `op-service-account-token`; the Deployment sets it as gateway container
+env (so the baked-in `op` CLI authenticates), and the init container also upserts
+it into `/opt/data/.env`. It backs Hermes' first-party 1Password skill (docs/37 §
+1Password).
+
+A service account authenticates to the 1Password **cloud** API
+(`*.1password.com`), not the in-cluster Connect that backs ESO — so scope it in
+the service-accounts console to **only** the isolated Agent vault (read+write),
+never Homelab. Rotate by minting a replacement token, updating this field, then
+revoking the old one.
+
+#### Hermes Registry Pull
+
+A GitLab **deploy token** named `hermes`, scoped `read_registry` on
+`eric/weisssrv`. ESO builds a `kubernetes.io/dockerconfigjson` Secret
+(`hermes-registry-pull`) for `registry.git.esweiss.com` from the `token` field,
+used by the Hermes pod's `imagePullSecrets` (docs/37). Only `token` is synced —
+the username is a stable literal in the ExternalSecret template, because the
+Connect provider does not resolve a LOGIN item's primary username field.
+
+Rotate: create a replacement deploy token with the same name and scope, update
+`token`, then `task flux:refresh-secret -- hermes/hermes-registry-pull` and
+revoke the old token.
+
+#### Home Assistant API Token
+
+`token` is a long-lived access token for HA's `/api/prometheus` endpoint.
+`backup_encryption_key` is HA's backup encryption key — automatic backups are
+`protected: true`, so **without this key the offsite HA tars in B2 are
+undecryptable**. Take it from Settings → System → Backups → emergency kit, and
+re-save it here if HA ever regenerates it.
+
+#### Nextcloud Secrets
+
+- `admin-password` — break-glass local admin, reachable at `/login?direct=1`.
+- `postgres-password` — the `nextcloud` DB role.
+- `serverinfo-token` — random ≥32 chars; the token the nextcloud-exporter
+  authenticates to Nextcloud's serverinfo API with. The role sets it via
+  `occ config:app:set serverinfo token`.
+
+#### B2 Archive Backup
+
+Two key pairs (a deliberate capability split, docs/42) plus the repo password:
+
+- `b2_key_id` / `b2_application_key` — the **full bucket-settings key** (all
+  bucket read/write capabilities including `readBucketRetentions`, which the
+  Terraform provider needs to avoid phantom drift). Consumed only by
+  `scripts/b2-bucket-drift.py` (the `b2-drift-plan` CI job and supervised
+  `task b2:apply`).
+- `restic_key_id` / `restic_application_key` — the **restricted key**
+  (`listBuckets,listFiles,readFiles,writeFiles,readBucketEncryption`, no
+  `deleteFiles`; rclone deletes by hiding and the B2 lifecycle expires hidden
+  versions). Consumed by the `restic_offsite` role on pve-nas-01.
+- `restic_repo_password` — `RESTIC_PASSWORD`. **Losing it loses the entire restic
+  repo**; keep an offline copy outside this vault, and never change it once the
+  repo exists.
+
+Rotate the bucket-settings key in the Backblaze console (bucket-scoped, all
+read+write bucket capabilities); rotate the restricted key with
+`b2 key create --bucket weisssrv-backup ...` (docs/42), update the `restic_*`
+fields, and re-run `deploy-ansible-storage`. Restic keeps working throughout — it
+never issues a real delete.
 
 ## Kubernetes workloads (External Secrets Operator)
 
@@ -744,7 +1002,7 @@ If `hdparm`, `dd`, and `nvme sanitize` all fail:
 
 ---
 
-## Related Documentation
+## Related documentation
 
 - [02-install.md](02-install.md) - Initial 1Password setup
 - [03-ssh-users.md](03-ssh-users.md) - SSH key management

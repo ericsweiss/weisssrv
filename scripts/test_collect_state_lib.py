@@ -277,6 +277,68 @@ class TestClassifierParity:
         )
 
 
+# regular_failing_predicates: the PARTIAL/FAILED verdict must name its cause
+# Same 14 args as classify_regular; empty output means every OK predicate holds.
+
+def _failing(pve, api, ready, total, hosts_ok, hosts_total, pct, floor,
+             flux, zfs, gitlab, sections_ok=1, sections_total=1,
+             alerts=0) -> str:
+    res = _run(
+        f"regular_failing_predicates {pve} {api} {ready} {total} {hosts_ok} "
+        f"{hosts_total} {pct} {floor} {flux} {zfs} {gitlab} "
+        f"{sections_ok} {sections_total} {alerts}"
+    )
+    assert res.returncode == 0, res.stderr
+    return res.stdout.strip()
+
+
+class TestRegularFailingPredicates:
+    ALL_GREEN = dict(pve=6, api="true", ready=9, total=9, hosts_ok=19,
+                     hosts_total=19, pct=100, floor=50, flux=0, zfs=0, gitlab=1,
+                     sections_ok=5, sections_total=5, alerts=0)
+
+    def test_all_green_names_nothing(self):
+        assert _failing(**self.ALL_GREEN) == ""
+
+    @pytest.mark.parametrize(
+        "override,expected",
+        [
+            ({"alerts": 4}, "alerts_firing=4"),
+            ({"flux": 2}, "flux_not_ready=2"),
+            ({"zfs": 1}, "zfs_degraded=1"),
+            ({"gitlab": 0}, "gitlab=unhealthy"),
+            ({"hosts_ok": 18}, "hosts=18/19"),
+            ({"sections_ok": 3}, "sections=3/5"),
+            ({"ready": 8}, "k3s_nodes=8/9"),
+            ({"api": "false"}, "k3s_api=unreachable"),
+            ({"pve": 0}, "pve_reachable=0"),
+            ({"pct": 15}, "coverage=15%<50%"),
+        ],
+    )
+    def test_each_signal_names_itself(self, override, expected):
+        args = {**self.ALL_GREEN, **override}
+        assert _failing(**args) == expected
+
+    def test_every_failing_signal_is_listed(self):
+        out = _failing(pve=0, api="false", ready=0, total=0, hosts_ok=3,
+                       hosts_total=19, pct=15, floor=50, flux=2, zfs=1,
+                       gitlab=0, sections_ok=3, sections_total=5, alerts=4)
+        for token in ("pve_reachable=0", "coverage=15%<50%", "hosts=3/19",
+                      "sections=3/5", "k3s_api=unreachable", "k3s_nodes=0/0",
+                      "flux_not_ready=2", "zfs_degraded=1", "gitlab=unhealthy",
+                      "alerts_firing=4"):
+            assert token in out, f"{token} missing from {out!r}"
+
+    def test_agrees_with_classify_regular(self):
+        # Empty output must mean OK, and non-empty must mean not-OK — otherwise
+        # the console line would contradict the verdict it annotates.
+        for override in ({}, {"alerts": 1}, {"flux": 1}, {"hosts_ok": 18}):
+            args = {**self.ALL_GREEN, **override}
+            verdict = _regular(**args)
+            failing = _failing(**args)
+            assert (verdict == "OK") == (failing == ""), (verdict, failing)
+
+
 # compose_active_sections: sentinel section-dispatch
 # compose_active_sections <health_url> <nginx_cert> <backup_timer> <backup_prom>
 # echoes the comma-joined optional sections that render ("-" drops a section;

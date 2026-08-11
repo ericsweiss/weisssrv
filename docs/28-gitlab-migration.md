@@ -1,6 +1,19 @@
-# GitLab Migration Guide
+# GitLab Migration Guide (Completed — historical)
 
-Complete migration instructions for moving from GitHub to self-hosted GitLab with CI/CD and optional AI code review integration.
+> **Status: completed — retained for rebuild reference.** The migration from
+> GitHub to self-hosted GitLab shipped: `git.ericsweiss.com` is canonical and
+> GitHub is a read-only push mirror. **Do not follow the steps below on the live
+> project** — they would recreate an existing project, and Part 8 (Rollback)
+> would restore GitHub Actions this repo has since retired.
+>
+> Current state lives in [docs/13-ci-cd.md](13-ci-cd.md) (pipeline structure,
+> the shared CI library, runners, mirroring) and
+> [docs/27-gitlab-deployment.md](27-gitlab-deployment.md) (the GitLab instance
+> itself). The procedures here remain useful when standing up a replacement
+> GitLab from scratch.
+
+Migration instructions for moving from GitHub to self-hosted GitLab with CI/CD
+and AI code review integration.
 
 ## Overview
 
@@ -665,7 +678,7 @@ If others access the repository:
    kubectl logs -n gitlab-runner -l app=gitlab-runner
    ```
 
-## References
+## Related documentation
 
 - [GitLab CI/CD Documentation](https://docs.gitlab.com/ee/ci/)
 - [GitLab Push Mirroring](https://docs.gitlab.com/ee/user/project/repository/mirror/push.html)

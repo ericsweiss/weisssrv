@@ -1,9 +1,0 @@
----
-- name: Prepare
-  hosts: all
-  gather_facts: false
-  tasks:
-    # No apt install in this scenario, so import the shared prepare-base
-    # (systemd-wait + temp-dir) WITHOUT prepare-apt-disable.
-    - name: Apply the shared systemd-wait + temp-dir prep
-      ansible.builtin.import_tasks: ../../../../molecule/tasks/prepare-base.yml

@@ -1,69 +1,45 @@
-# DNS Records managed by Terraform
-# Note: Service CNAME records (auth, bar, food, plex, home) are managed by external-dns in k3s
-
-# Root domain A record - IP managed by DDNS, config managed by Terraform
-# name = var.external_domain (FQDN apex form). The CAA records and the apex SPF
-# TXT below use the "@" apex shorthand (the DMARC TXT lives at _dmarc); both the
-# FQDN and "@" forms resolve to the zone apex in the v4 provider. The FQDN form
-# is kept here because it doubles as inline documentation of which zone this
-# record lives in.
-
-# DDNS placeholder IP: seeds the A-records at creation time only; the
-# cloudflare-ddns CronJob owns the live value thereafter (each record's
-# lifecycle.ignore_changes = [content]). Hoisted so a placeholder change is a
-# one-line edit.
+# Service CNAMEs (auth, bar, food, plex, home, …) are NOT here — external-dns
+# owns those from the k3s IngressRoutes. This file holds the records external-dns
+# cannot express: the apex, the DDNS-tracked A records, CAA, SPF/DMARC, and the
+# nested wildcards. Contract, token scopes and removal procedure: README.md.
+#
+# PREVENT_DESTROY POLICY (every resource below carries it)
+# This module auto-applies on main (`terraform apply -auto-approve`, and the MR
+# widget shows only change COUNTS), so deleting or renaming a resource block or
+# a for_each key would take a record out of DNS unreviewed. prevent_destroy makes
+# removal a deliberate two-step change: drop the lifecycle block, then the
+# resource. In-place updates and `moved` blocks are unaffected.
+#
+# DDNS OWNERSHIP (every record with ignore_changes = [content])
+# The cloudflare-ddns CronJob owns the live IP; the placeholder below only seeds
+# record creation. The CronJob PUTs a full body but preserves the record's
+# existing `proxied`/`ttl`, so those stay Terraform-owned.
 locals {
   ddns_placeholder_ip = "104.156.98.15"
 }
 
-# PREVENT_DESTROY POLICY (referenced by every record below)
-#
-# This is the ONE Terraform module that auto-applies to production: on a main
-# push touching terraform/cloudflare/**, deploy-terraform runs
-# `terraform apply -auto-approve tfplan` (.gitlab-ci.yml), and the MR widget
-# shows only create/update/delete COUNTS — not which records. Deleting or
-# renaming a resource block (or a for_each key) therefore takes the record out
-# of DNS with no confirmation step: the apex, GitLab web+SSH, the `direct`
-# target every nested-wildcard CNAME points at, the WireGuard endpoint, the
-# Immich upload path, or the CAA allow-list that gates cert issuance.
-#
-# `prevent_destroy = true` turns that into a hard plan-time error, so removing a
-# record is a deliberate two-step change: delete the lifecycle block in one
-# commit, then the resource. Same reasoning as the tailnet ACL in
-# terraform/tailscale/main.tf. It does NOT block in-place updates, and `moved`
-# blocks (state renames) are unaffected.
-
+# Apex A record. name is the FQDN apex form; the CAA/SPF records below use the
+# "@" shorthand (DMARC lives at _dmarc) — both resolve to the apex in the v4
+# provider.
 resource "cloudflare_record" "root" {
   zone_id = data.cloudflare_zone.external.id
-  name    = var.external_domain # ericsweiss.com
+  name    = var.external_domain
   type    = "A"
-  content = local.ddns_placeholder_ip # placeholder; DDNS owns the live value
-  proxied = true                      # Cloudflare proxy (orange cloud) enabled
-  ttl     = 1                         # 1 = "Auto" (Cloudflare-managed); required for proxied
+  content = local.ddns_placeholder_ip
+  proxied = true # Cloudflare proxy (orange cloud) enabled
+  ttl     = 1    # 1 = "Auto"; required for proxied
   comment = "Managed by Terraform - IP updated by cloudflare-ddns CronJob in k3s"
 
   lifecycle {
-    # Allow DDNS to update the IP without Terraform reverting it.
-    # Only `content` (the IP) is DDNS-owned; `proxied`/`ttl` stay Terraform-owned.
-    # The cloudflare-ddns CronJob PUTs a full body but preserves the record's
-    # existing `proxied` and `ttl` on update (kubernetes/.../cloudflare-ddns/
-    # cronjob.yaml); its per-record literal only seeds record creation
-    # (Cloudflare defaults a fresh record to proxied=false), so there's no
-    # divergence risk with the values above.
-    ignore_changes = [content]
-
-    # See the PREVENT_DESTROY POLICY note at the top of this file.
+    ignore_changes  = [content] # DDNS-owned; see the header notes
     prevent_destroy = true
   }
 }
 
-# CAA records — restrict TLS cert issuance to the CAs we actually use:
-# Let's Encrypt (cert-manager DNS-01 in-cluster + acme.sh on dns-01) plus the
-# Cloudflare Universal SSL partner CAs (Google Trust Services, SSL.com) so edge-
-# cert renewal isn't blocked. Cloudflare ALSO auto-injects CAA records for its
-# other Universal SSL partner CAs (currently digicert.com, comodoca.com) that it
-# manages outside this config — they are intentionally not represented here. The
-# iodef entry publishes a violation-reporting address per RFC 8659.
+# CAA — issuance is restricted to Let's Encrypt (cert-manager + acme.sh) plus the
+# Cloudflare Universal SSL partner CAs, so edge-cert renewal isn't blocked.
+# Cloudflare auto-injects CAA records for its other partner CAs outside this
+# config; they are intentionally absent here.
 locals {
   caa_records = {
     issue_letsencrypt     = { tag = "issue", value = "letsencrypt.org", comment = "Restrict cert issuance to Let's Encrypt" }
@@ -73,10 +49,8 @@ locals {
     issue_ssl_com         = { tag = "issue", value = "ssl.com", comment = "Allow Cloudflare Universal SSL partner CA (SSL.com)" }
     issuewild_ssl_com     = { tag = "issuewild", value = "ssl.com", comment = "Allow Cloudflare Universal SSL partner CA wildcard (SSL.com)" }
 
-    # iodef: published in public DNS so CAs can report issuance-policy
-    # violations. PII exposure is by design — RFC 8659 §4.1.3 requires an
-    # operator-reachable channel, and no role inbox (security@, certmaster@)
-    # currently exists.
+    # iodef is published in public DNS by design: RFC 8659 §4.1.3 wants an
+    # operator-reachable channel and no role inbox exists.
     iodef = { tag = "iodef", value = "mailto:ericsweiss1@gmail.com", comment = "CAA violation reports go here" }
   }
 }
@@ -98,53 +72,17 @@ resource "cloudflare_record" "caa" {
   comment = each.value.comment
 
   lifecycle {
-    # See the PREVENT_DESTROY POLICY note at the top of this file. On this
-    # for_each that also guards a KEY rename, which Terraform plans as
-    # destroy+create — dropping a CA from the allow-list mid-apply would fail
-    # in-flight cert issuance.
+    # A for_each KEY rename plans as destroy+create — dropping a CA from the
+    # allow-list mid-apply would fail in-flight cert issuance.
     prevent_destroy = true
   }
 }
 
-# Migrate the previously hand-written per-record CAA blocks into the for_each
-# above so apply moves state in place instead of destroy/recreate.
-moved {
-  from = cloudflare_record.caa_issue
-  to   = cloudflare_record.caa["issue_letsencrypt"]
-}
-moved {
-  from = cloudflare_record.caa_issuewild
-  to   = cloudflare_record.caa["issuewild_letsencrypt"]
-}
-moved {
-  from = cloudflare_record.caa_issue_pki_goog
-  to   = cloudflare_record.caa["issue_pki_goog"]
-}
-moved {
-  from = cloudflare_record.caa_issuewild_pki_goog
-  to   = cloudflare_record.caa["issuewild_pki_goog"]
-}
-moved {
-  from = cloudflare_record.caa_issue_ssl_com
-  to   = cloudflare_record.caa["issue_ssl_com"]
-}
-moved {
-  from = cloudflare_record.caa_issuewild_ssl_com
-  to   = cloudflare_record.caa["issuewild_ssl_com"]
-}
-moved {
-  from = cloudflare_record.caa_iodef
-  to   = cloudflare_record.caa["iodef"]
-}
-
-# Anti-spoofing records, deployed in monitoring-first mode. SPF starts as
-# softfail (~all) and DMARC as p=none so legitimate senders (if any mail is ever
-# sent as @ericsweiss.com, e.g. via the Gmail relay) are flagged, not dropped.
-# Note: the rua target is a consumer Gmail address on a different org domain, so
-# DMARC aggregate reports likely WON'T be delivered (cross-domain rua needs an
-# authorization record that gmail.com doesn't publish for consumer accounts) —
-# the value here is the published policy itself. Tighten SPF to -all and DMARC to
-# p=reject once confident no legitimate senders exist.
+# Anti-spoofing, monitoring-first: SPF softfail (~all) and DMARC p=none so any
+# legitimate sender is flagged rather than dropped. Tighten to -all / p=reject
+# once confident none exists. The rua target is a consumer Gmail address on
+# another org domain, so aggregate reports likely aren't delivered — the value
+# here is the published policy.
 resource "cloudflare_record" "spf" {
   zone_id = data.cloudflare_zone.external.id
   name    = "@"
@@ -154,7 +92,6 @@ resource "cloudflare_record" "spf" {
   comment = "SPF - softfail (monitoring); tighten to -all after DMARC reports"
 
   lifecycle {
-    # See the PREVENT_DESTROY POLICY note at the top of this file.
     prevent_destroy = true
   }
 }
@@ -168,124 +105,74 @@ resource "cloudflare_record" "dmarc" {
   comment = "DMARC - monitoring policy (p=none); rua best-effort (cross-domain to consumer Gmail)"
 
   lifecycle {
-    # See the PREVENT_DESTROY POLICY note at the top of this file.
     prevent_destroy = true
   }
 }
 
-# Records present in the Cloudflare zone but intentionally managed outside this
-# config (not service CNAMEs, so external-dns does not own them either):
-#   - null MX (0 .)                            — disables inbound mail
-#   - google-site-verification=... (apex TXT)  — Google Search Console ownership
-# Both are set-once dashboard records that never change (and both values are
-# world-readable DNS data, so secrecy is not a factor); codifying them here
-# would require `terraform import` of the existing records just to manage two
-# static one-offs — not worth the state overhead. `terraform plan` will not
-# touch them.
+# Two zone records are deliberately dashboard-managed, not codified: the null MX
+# (0 .) that disables inbound mail, and the google-site-verification apex TXT.
+# Both are set-once and world-readable; `terraform plan` never touches them.
 
-# GitLab DNS Records
-# These are managed by Terraform (not external-dns) because:
-# - Subdomains like registry.git require explicit management
-# - Wildcard domains (*.pages.git) aren't supported by external-dns annotations
-
-# GitLab Web UI + SSH - git.ericsweiss.com
-# DNS-only mode allows both HTTPS (via Traefik) and SSH access on the same hostname
-# Note: Origin IP is already exposed via direct.ericsweiss.com, so no additional security impact
-# Fresh applies briefly resolve to the placeholder IP until the DDNS CronJob's
-# next */5 run; trigger one immediately with:
-#   kubectl -n cloudflare-ddns create job --from=cronjob/cloudflare-ddns manual-$(date +%s)
+# GitLab web UI + SSH on one hostname: DNS-only so SSH works alongside HTTPS via
+# Traefik. Origin IP is exposed here and on `direct` by design (see below).
+# A fresh apply resolves to the placeholder until the DDNS CronJob's next */5 run;
+# force one with `kubectl -n cloudflare-ddns create job --from=cronjob/cloudflare-ddns …`.
 resource "cloudflare_record" "git" {
   zone_id = data.cloudflare_zone.external.id
   name    = "git"
   type    = "A"
-  content = local.ddns_placeholder_ip # placeholder; DDNS owns the live value
-  proxied = false                     # DNS-only to allow SSH traffic
-  ttl     = 60                        # short TTL since DDNS updates this record
+  content = local.ddns_placeholder_ip
+  proxied = false # DNS-only to allow SSH traffic
+  ttl     = 60    # short TTL since DDNS updates this record
   comment = "GitLab Web + SSH - DNS only, TLS via Traefik, IP updated by DDNS"
 
   lifecycle {
-    # Allow DDNS to update the IP without Terraform reverting it.
-    # The cloudflare-ddns CronJob preserves the record's existing `proxied` on
-    # update; its per-record literal only seeds record creation, so `proxied`
-    # below stays Terraform-owned.
-    ignore_changes = [content]
-
-    # See the PREVENT_DESTROY POLICY note at the top of this file.
+    ignore_changes  = [content] # DDNS-owned; see the header notes
     prevent_destroy = true
   }
 }
 
-# Direct A record (DNS-only) for services that can't use Cloudflare proxy
-# Used by GitLab Pages wildcard and Container Registry which require nested wildcard certificates
-#
-# SECURITY NOTE: This record intentionally exposes the origin IP (DNS-only mode).
-# This is required for:
-# - GitLab Pages wildcard TLS (Cloudflare can't proxy nested wildcards)
-# - Container Registry access (requires direct TLS termination)
-#
-# Note: GitLab SSH now uses git.ericsweiss.com (also DNS-only) for a unified URL.
-#
-# Protection is provided by:
-# - Proxmox firewall restricts access (sg-gitlab on the GitLab VM, sg-k3s-ingress-pub on the Traefik ingress path)
-# - Only specific ports are open (443, 2222, 5050)
-# - Services require authentication (GitLab, Container Registry)
+# Origin-IP record for what the Cloudflare proxy cannot front: GitLab Pages
+# nested wildcards and the Container Registry (direct TLS termination). Exposure
+# is intentional and gated by the Proxmox firewall (sg-gitlab, sg-k3s-ingress-pub),
+# a small open-port set (443, 2222, 5050) and per-service authentication.
 resource "cloudflare_record" "direct" {
   zone_id = data.cloudflare_zone.external.id
   name    = "direct"
   type    = "A"
-  content = local.ddns_placeholder_ip # placeholder; DDNS owns the live value
-  proxied = false                     # DNS-only mode (grey cloud) - intentionally exposes origin IP
-  ttl     = 60                        # short TTL since DDNS updates this record
+  content = local.ddns_placeholder_ip
+  proxied = false # DNS-only (grey cloud) - intentionally exposes origin IP
+  ttl     = 60    # short TTL since DDNS updates this record
   comment = "Direct access (no proxy) - IP updated by DDNS"
 
   lifecycle {
-    # Allow DDNS to update the IP without Terraform reverting it.
-    # The cloudflare-ddns CronJob preserves the record's existing `proxied` on
-    # update; its per-record literal only seeds record creation, so `proxied`
-    # below stays Terraform-owned.
-    ignore_changes = [content]
-
-    # See the PREVENT_DESTROY POLICY note at the top of this file.
+    ignore_changes  = [content] # DDNS-owned; see the header notes
     prevent_destroy = true
   }
 }
 
-# WireGuard VPN endpoint - vpn.ericsweiss.com (wg-easy, kubernetes/apps/wg-easy)
-# DNS-only (grey cloud): WireGuard is UDP and Cloudflare's proxy can't front it,
-# so this must resolve to the origin IP directly. Exposes the home public IP —
-# same posture as git/direct — but WireGuard silently drops any packet without a
-# valid peer key, so an exposed :51820/udp endpoint is safe by design (docs/38
-# threat model). The physical router forwards WAN :51820/udp -> MetalLB VIP .99.
-# IP is DDNS-owned (cloudflare-ddns CronJob); config is Terraform-owned.
+# wg-easy endpoint (kubernetes/apps/wg-easy). DNS-only: WireGuard is UDP and
+# cannot be proxied, so this resolves to the origin, where the router forwards
+# WAN :51820/udp -> MetalLB VIP .99. An exposed endpoint is safe by design —
+# WireGuard drops any packet without a valid peer key (docs/38 threat model).
 resource "cloudflare_record" "vpn" {
   zone_id = data.cloudflare_zone.external.id
   name    = "vpn"
   type    = "A"
-  content = local.ddns_placeholder_ip # placeholder; DDNS owns the live value
-  proxied = false                     # DNS-only — WireGuard/UDP can't be proxied
-  ttl     = 60                        # short TTL since DDNS updates this record
+  content = local.ddns_placeholder_ip
+  proxied = false # DNS-only — WireGuard/UDP can't be proxied
+  ttl     = 60    # short TTL since DDNS updates this record
   comment = "wg-easy WireGuard VPN endpoint - DNS only (UDP), IP updated by DDNS"
 
   lifecycle {
-    # Allow DDNS to update the IP without Terraform reverting it.
-    # The cloudflare-ddns CronJob preserves the record's existing `proxied` on
-    # update; its per-record literal only seeds record creation, so `proxied`
-    # below stays Terraform-owned.
-    ignore_changes = [content]
-
-    # See the PREVENT_DESTROY POLICY note at the top of this file.
+    ignore_changes  = [content] # DDNS-owned; see the header notes
     prevent_destroy = true
   }
 }
 
-# Immich (photos.${var.external_domain}) — CNAME to direct.${var.external_domain}
-# so it BYPASSES the Cloudflare proxy (grey cloud). The proxy imposes a 100 MB
-# request-body cap, which mobile video uploads routinely exceed; DNS-only sends
-# uploads straight to the origin :443 (router forward -> MetalLB .100 -> Traefik
-# -> the photos.${var.external_domain} IngressRoute -> the Immich VM). This is
-# why the IngressRoute carries NO external-dns annotation — the record is managed
-# here, not derived from the route. Protected by sg-immich on the VM and
-# sg-k3s-ingress-pub on the Traefik path, plus Authentik SSO.
+# Immich: CNAME to `direct` so it bypasses the Cloudflare proxy, whose 100 MB
+# request-body cap mobile video uploads routinely exceed. This is why the Immich
+# IngressRoute carries no external-dns annotation — the record lives here.
 resource "cloudflare_record" "photos" {
   zone_id = data.cloudflare_zone.external.id
   name    = "photos"
@@ -296,22 +183,14 @@ resource "cloudflare_record" "photos" {
   comment = "Immich - DNS only (proxy bypass for large uploads), TLS via Traefik"
 
   lifecycle {
-    # See the PREVENT_DESTROY POLICY note at the top of this file.
     prevent_destroy = true
   }
 }
 
-# Nested-subdomain records pointing at direct.${var.external_domain} (DNS-only,
-# TLS via Traefik). Nested subdomains and nested wildcards aren't covered by
-# Cloudflare Universal SSL (first-level wildcards only — nested would need
-# Advanced Certificate Manager, $10/mo), and wildcards can't be expressed via
-# external-dns annotations, so they're managed here.
-#
-# The ide.git / *.ide.git pair is the Web IDE extension host: each VS Code
-# extension iframe loads from <ext-id>.ide.git.ericsweiss.com so the browser
-# same-origin policy keeps extension JS away from the GitLab session cookie
-# (CVE-2026-5816 mitigation; see docs/27-gitlab-deployment.md "Web IDE extension
-# host").
+# Nested subdomains/wildcards pointing at `direct` (DNS-only, TLS via Traefik):
+# Cloudflare Universal SSL covers first-level wildcards only, and external-dns
+# annotations cannot express wildcards. The ide.git pair is the Web IDE extension
+# host (CVE-2026-5816 isolation; docs/27 § Web IDE extension host).
 locals {
   gitlab_direct_cnames = {
     "registry.git" = "GitLab Container Registry - DNS only, TLS via Traefik"
@@ -334,31 +213,7 @@ resource "cloudflare_record" "gitlab_direct" {
   comment = each.value
 
   lifecycle {
-    # See the PREVENT_DESTROY POLICY note at the top of this file. Renaming a
-    # key here destroys the record: registry/pages/ide all resolve through it.
+    # A key rename destroys the record: registry/pages/ide all resolve through it.
     prevent_destroy = true
   }
-}
-
-# Migrate the previously hand-written per-record CNAME blocks into the for_each
-# above so apply moves state in place instead of destroy/recreate.
-moved {
-  from = cloudflare_record.registry_git
-  to   = cloudflare_record.gitlab_direct["registry.git"]
-}
-moved {
-  from = cloudflare_record.pages_git
-  to   = cloudflare_record.gitlab_direct["pages.git"]
-}
-moved {
-  from = cloudflare_record.pages_git_wildcard
-  to   = cloudflare_record.gitlab_direct["*.pages.git"]
-}
-moved {
-  from = cloudflare_record.ide_git
-  to   = cloudflare_record.gitlab_direct["ide.git"]
-}
-moved {
-  from = cloudflare_record.ide_git_wildcard
-  to   = cloudflare_record.gitlab_direct["*.ide.git"]
 }

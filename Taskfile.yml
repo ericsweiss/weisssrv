@@ -42,33 +42,98 @@ tasks:
       - ansible -i {{.INVENTORY}} all -m ping -e "ansible_become=false"
 
   ansible:lint:
-    desc: Lint Ansible playbooks and roles
-    dir: "{{.ANSIBLE_DIR}}"
+    desc: Lint ansible/ (roles are linted in weisssrv-lib) — mirrors the CI ansible-lint job
     cmds:
       - |
+        set -e
+        # Same shape as the CI ansible-lint job: cwd = repo root, target
+        # `ansible/`, config discovered at ./.ansible-lint, and the collection
+        # installed under .ansible-home/collections (which .ansible-lint
+        # excludes, so the library's own files are not reported here).
+        #
         # Resolve ansible-lint via the shared helper (PATH, then validated
         # pyenv glob; no `python3 -m` step — its module is `ansiblelint`).
         LINT=$({{.ROOT_DIR}}/scripts/resolve-tool.sh ansible-lint) \
           || { echo "ERROR: ansible-lint not found (pip install ansible-lint)"; exit 1; }
+        DEP_PATH="{{.ROOT_DIR}}/.ansible-home/collections"
+        # Singular ONLY — ansible-compat hard-errors on the legacy plural.
+        unset ANSIBLE_COLLECTIONS_PATHS
+        # Exported BEFORE the install so galaxy's already-installed check reads
+        # this path — otherwise a copy elsewhere on the machine satisfies (and
+        # silently skips) a dependency that lint then fails to resolve.
+        export ANSIBLE_COLLECTIONS_PATH="{{.ROOT_DIR}}:$DEP_PATH"
+        if [ -n "${WEISSSRV_COLLECTION_PATH:-}" ]; then
+          # Coordinated weisssrv-lib bump: lint against a LOCAL library checkout
+          # instead of the tag in ansible/requirements.yml, e.g.
+          #   WEISSSRV_COLLECTION_PATH=../weisssrv-lib task ansible:lint
+          # Point it at the repo root (the directory holding
+          # ansible_collections/). It is installed rather than resolved in place
+          # so the copy sits inside the excluded path.
+          echo "ansible:lint: using local collection from $WEISSSRV_COLLECTION_PATH"
+          # The galaxy deps still come from the pin file, minus the git entry —
+          # during a coordinated bump requirements.yml already names a tag that
+          # has not been cut, so installing it would fail.
+          REQ=$(mktemp)
+          python3 -c "import sys, yaml; d = yaml.safe_load(open('ansible/requirements.yml')); \
+            d['collections'] = [c for c in d['collections'] if not str(c.get('name', '')).startswith('git+')]; \
+            yaml.safe_dump(d, open(sys.argv[1], 'w'))" "$REQ"
+          ansible-galaxy collection install -r "$REQ" -p "$DEP_PATH"
+          rm -f "$REQ"
+          ansible-galaxy collection install --force \
+            "$WEISSSRV_COLLECTION_PATH/ansible_collections/weisssrv/infra" -p "$DEP_PATH"
+          # Invalidate the pin stamp: the tree now holds a local checkout, not
+          # the pinned tag, so the next plain `task ansible:lint` must reinstall
+          # rather than read a matching stamp and lint the checkout by accident.
+          rm -f "$DEP_PATH/.requirements-sha256"
+        else
+          # The install is cached, keyed on the CONTENT of requirements.yml
+          # rather than on the directory merely existing. Keying on existence
+          # meant a bumped pin was never picked up: the old collection stayed
+          # installed forever and `task ansible:lint` silently kept linting
+          # against the previous library revision.
+          #
+          # `task ansible:install-collections` does NOT refresh this cache — it
+          # runs ansible-galaxy with no `-p`, so it writes to the user-global
+          # collections path, not .ansible-home/. Blowing away .ansible-home/
+          # works; so does editing requirements.yml, which is the case that
+          # actually matters.
+          STAMP="$DEP_PATH/.requirements-sha256"
+          WANT=$(shasum -a 256 ansible/requirements.yml 2>/dev/null \
+                 || sha256sum ansible/requirements.yml)
+          WANT=${WANT%% *}
+          HAVE=$(cat "$STAMP" 2>/dev/null || true)
+          if [ ! -d "$DEP_PATH/ansible_collections/weisssrv/infra" ] || [ "$WANT" != "$HAVE" ]; then
+            if [ -n "$HAVE" ] && [ "$WANT" != "$HAVE" ]; then
+              echo "ansible:lint: ansible/requirements.yml changed — reinstalling the collection"
+            fi
+            # --force: a same-version reinstall over an existing tree is a
+            # no-op to galaxy otherwise, which is the very case a moved branch
+            # ref produces.
+            if ! ansible-galaxy collection install --force \
+                 -r ansible/requirements.yml -p "$DEP_PATH"; then
+              echo "ERROR: could not install the collection pinned in ansible/requirements.yml." >&2
+              echo "       During a coordinated weisssrv-lib bump that tag does not exist yet —" >&2
+              echo "       lint against the library checkout instead:" >&2
+              echo "         WEISSSRV_COLLECTION_PATH=../weisssrv-lib task ansible:lint" >&2
+              exit 1
+            fi
+            # Stamped only after a SUCCESSFUL install, so a failed one retries.
+            printf '%s\n' "$WANT" > "$STAMP"
+          fi
+        fi
         # Unquoted: $LINT may be a bare command or a pyenv path (single word here).
-        $LINT playbooks/ roles/
-
-  ansible:test:
-    desc: Run Molecule tests for Ansible roles (all or specific)
-    dir: "{{.ANSIBLE_DIR}}"
-    preconditions:
-      # Resolve molecule via the shared helper (PATH -> python3 -m molecule ->
-      # validated pyenv glob), same chain ansible/test-all-roles.sh uses.
-      - sh: "{{.ROOT_DIR}}/scripts/resolve-tool.sh molecule molecule >/dev/null"
-        msg: "molecule not installed. Run: pip install molecule molecule-docker (or install via pyenv)"
-      - sh: docker info 2>/dev/null
-        msg: "Docker is not running. Start Docker Desktop first."
-    cmds:
-      - ./test-all-roles.sh {{.CLI_ARGS}}
+        $LINT ansible/
 
   # === Integration Tests ===
+  # Per-ROLE molecule scenarios live in weisssrv-lib with the roles; what runs
+  # here is the multi-role stacks this cluster composes from them.
+  ansible:test:
+    desc: Alias for ansible:test-integration (per-role scenarios run in weisssrv-lib)
+    cmds:
+      - task: ansible:test-integration
+
   ansible:test-integration:
-    desc: Run all integration tests (multi-role scenarios)
+    desc: Run every integration test (multi-role stacks)
     dir: "{{.ANSIBLE_DIR}}"
     preconditions:
       - sh: "{{.ROOT_DIR}}/scripts/resolve-tool.sh molecule molecule >/dev/null"
@@ -131,19 +196,11 @@ tasks:
         vars: {MOLECULE_DIR: "{{.ANSIBLE_DIR}}/integration-tests/cert-distribution"}
 
   # === Kubernetes Validation Tasks ===
-  # Both tasks below are aliases for task: flux:lint — which builds each Flux
-  # Kustomization (infrastructure/ and apps/) and runs kubeconform on the
-  # rendered output. That single command replaces the old per-folder find
-  # walk and the per-chart `helm template` validation. HelmReleases are
-  # validated as Flux CRDs by kubeconform (chart templates are rendered
-  # server-side by helm-controller, not during local lint).
+  # flux:lint builds every Flux Kustomization and runs kubeconform on the
+  # output; HelmReleases are validated as Flux CRDs (chart templates render
+  # server-side in helm-controller, not during local lint).
   kubernetes:lint:
     desc: "Validate all Flux-managed Kubernetes manifests (alias for flux:lint)"
-    cmds:
-      - task: flux:lint
-
-  kubernetes:validate-helm:
-    desc: "DEPRECATED: HelmReleases are validated by task flux:lint. This alias is kept for discoverability."
     cmds:
       - task: flux:lint
 
@@ -229,7 +286,7 @@ tasks:
     dir: "{{.ANSIBLE_DIR}}"
     env:
       # postfix_null_client only: the relay credential pair plus admin_email,
-      # which mail_aliases.root resolves from.
+      # which postfix_null_client_aliases.root resolves from.
       ROOT_EMAIL_ALIAS: op://Homelab/Email Config/root_alias
       SMTP_RELAY_USER: op://Homelab/SMTP Relay Auth/username
       SMTP_RELAY_PASSWORD: op://Homelab/SMTP Relay Auth/password
@@ -292,7 +349,7 @@ tasks:
 
   # === Certificate distribution tasks ===
   certs:show-host-keys:
-    desc: Capture SSH host keys for cert_distribution_targets (paste into host_vars/dns-01.yml)
+    desc: Capture SSH host keys for acme_certs_distribution_targets (paste into host_vars/dns-01.yml)
     dir: "{{.ANSIBLE_DIR}}"
     cmds:
       - ansible-playbook -i {{.INVENTORY}} playbooks/show-cert-host-keys.yml {{.CLI_ARGS}}
@@ -457,6 +514,67 @@ tasks:
       - echo "Open the printed URL in your browser, sign in to ChatGPT, and enter the code."
       - kubectl exec -it -n hermes deploy/hermes -c gateway -- codex login --device-auth
 
+  # ── Hindsight (Hermes long-term memory; cluster-internal, no ingress) ──
+  hindsight:status:
+    desc: Show Hindsight status (pods, service, PVC, VPA)
+    cmds:
+      - echo "=== Hindsight Namespace ==="
+      - kubectl get pods -n hindsight -o wide
+      - echo ""
+      - echo "=== Service ==="
+      - kubectl get svc -n hindsight
+      - echo ""
+      - echo "=== PVC ==="
+      - kubectl get pvc -n hindsight
+      - echo ""
+      - echo "=== VPA ==="
+      - kubectl get vpa -n hindsight
+
+  hindsight:logs:
+    desc: "Tail Hindsight logs (task hindsight:logs [COMPONENT=hindsight|llama])"
+    vars:
+      COMPONENT: '{{.COMPONENT | default "hindsight"}}'
+    cmds:
+      - kubectl logs -n hindsight deploy/hindsight -c "{{.COMPONENT}}" --tail=100 -f
+
+  hindsight:restart:
+    desc: Restart Hindsight (pod delete; Flux-managed, replicas:1 + Recreate)
+    cmds:
+      # Pod delete, NOT `kubectl rollout restart`: the Deployment is
+      # Flux-kustomize-managed, so restartedAt is drift the controller reverts.
+      - kubectl delete pod -n hindsight -l app.kubernetes.io/name=hindsight
+      - kubectl wait --namespace hindsight --for=condition=ready pod -l app.kubernetes.io/name=hindsight --timeout=300s
+
+  # ── Homarr (homelab dashboard) ────────────────────────────────────────
+  homarr:status:
+    desc: Show Homarr status (pods, service, PVC, ingress, ExternalSecrets)
+    cmds:
+      - echo "=== Homarr Namespace ==="
+      - kubectl get pods -n homarr -o wide
+      - echo ""
+      - echo "=== Service ==="
+      - kubectl get svc -n homarr
+      - echo ""
+      - echo "=== PVC ==="
+      - kubectl get pvc -n homarr
+      - echo ""
+      - echo "=== IngressRoutes ==="
+      - kubectl get ingressroute -n homarr
+      - echo ""
+      - echo "=== ExternalSecrets ==="
+      - kubectl get externalsecrets -n homarr
+
+  homarr:logs:
+    desc: Tail Homarr logs
+    cmds:
+      - kubectl logs -n homarr deploy/homarr --tail=100 -f
+
+  homarr:restart:
+    desc: Restart Homarr (pod delete; Flux-managed, replicas:1 + Recreate)
+    cmds:
+      - kubectl delete pod -n homarr -l app.kubernetes.io/name=homarr
+      - kubectl wait --namespace homarr --for=condition=ready pod -l app.kubernetes.io/name=homarr --timeout=300s
+
   # ── Observability ────────────────────────────────────────────────────
   observability:status:
     desc: Show observability namespace health
@@ -490,7 +608,8 @@ tasks:
     cmds:
       - |
         RESP=$(mktemp)
-        cleanup() { kill $PF_PID 2>/dev/null; rm -f "$RESP"; }
+        PF_PID=""
+        cleanup() { [ -n "$PF_PID" ] && kill "$PF_PID" 2>/dev/null; rm -f "$RESP"; }
         trap cleanup EXIT
         # Portable end-time: BSD date (macOS) first, GNU date (Linux/CI) as the
         # fallback — same two-arm pattern collect-state.sh uses. The task used to
@@ -511,7 +630,7 @@ tasks:
         PF_PID=$!
         for _i in 1 2 3 4 5; do
           if curl -s -o /dev/null http://localhost:9093/ 2>/dev/null; then break; fi
-          if ! kill -0 $PF_PID 2>/dev/null; then
+          if ! kill -0 "$PF_PID" 2>/dev/null; then
             echo "ERROR: port-forward process died — is Alertmanager running?"
             exit 1
           fi
@@ -764,17 +883,11 @@ tasks:
     desc: Run the live-state policy checks (CPU limits + secret ownership) and WARN — never abort flux:verify
     preconditions: *flux_preconditions
     cmds:
-      # Two independent tracks each appended a live check to flux:verify.
-      # go-task stops at the first failing command, so stacking them meant only
-      # ever ONE of the two reported: an operator who fixed the SSA drift would
-      # discover the secret offenders only on the next run. Run both, aggregate,
-      # and WARN rather than fail — flux:verify is the documented post-deploy /
-      # DR gate (CLAUDE.md, docs/17, docs/19, kubernetes/README.md), and both
-      # checks are red on REAL findings that need one-time operator action the
-      # branch deliberately deferred (docs/33 § CPU limits, docs/29 § secret
-      # ownership). A gate that cannot go green on a healthy cluster teaches
-      # people to ignore it. The standalone tasks below keep their non-zero exit
-      # for scripted/CI use.
+      # Both checks always run and are aggregated: go-task stops at the first
+      # failing command, so stacking them would report only one per run. They
+      # WARN rather than fail because flux:verify is the post-deploy/DR gate and
+      # both findings need one-time operator action. The standalone tasks below
+      # keep their non-zero exit for scripted/CI use.
       - |
         set -u
         rc=0
@@ -949,7 +1062,12 @@ tasks:
       - sh: python3 -c "import yaml" 2>/dev/null
         msg: "PyYAML not installed (pip install pyyaml)"
     cmds:
-      - python3 scripts/generate-versions-configmap.py
+      - |
+        python3 scripts/generate-versions-configmap.py \
+          --vars-file ansible/inventories/prod/group_vars/all.yml \
+          --output kubernetes/infrastructure/sources/versions-configmap.yaml \
+          --nested-key helm_chart_versions \
+          --regen-command "task flux:sync-versions"
 
   hosts:sync:
     desc: Regenerate scripts/hosts.env from ansible/inventories/prod/hosts.yml (host/IP roster)
@@ -957,7 +1075,11 @@ tasks:
       - sh: python3 -c "import yaml" 2>/dev/null
         msg: "PyYAML not installed (pip install pyyaml)"
     cmds:
-      - python3 scripts/generate-hosts-env.py
+      - |
+        python3 scripts/generate-hosts-env.py \
+          --inventory ansible/inventories/prod/hosts.yml \
+          --map scripts/hosts-env-map.yml \
+          --regen-command "task hosts:sync"
 
   flux:dev-apply:
     desc: "Dev helper: kustomize build + envsubst + kubectl apply for a path (Flux will revert if it differs from committed state)"
@@ -1086,7 +1208,8 @@ tasks:
         # chart-native-HPA workloads (Traefik/authentik/Connect, whose HPA lives
         # inside a HelmRelease) each have a memory-only VPA in the rendered corpus.
         echo "=== Checking HPA/VPA invariant ==="
-        if ! python3 scripts/check-hpa-vpa-invariant.py --require-chart-native-vpas < "$RENDER_ALL"; then
+        if ! python3 scripts/check-hpa-vpa-invariant.py --require-chart-native-vpas \
+             --policy-config scripts/autoscaling-policy.yaml < "$RENDER_ALL"; then
           FAILED=1
         fi
 
@@ -1129,7 +1252,9 @@ tasks:
         # Needs network (helm repo add/update). Covers traefik (whose
         # values.schema.json catches key typos), kube-prometheus-stack, authentik.
         echo "=== Schema-validating HelmRelease values blocks (helm template) ==="
-        if ! python3 scripts/validate-helm-values.py --kubeconform; then
+        if ! python3 scripts/validate-helm-values.py --kubeconform \
+             --releases scripts/helm-values-releases.yaml \
+             --policy-config scripts/autoscaling-policy.yaml; then
           FAILED=1
         fi
 
@@ -1175,8 +1300,9 @@ tasks:
   maintenance:update-plex:
     desc: Update Plex Media Server only (apt latest)
     dir: "{{.ANSIBLE_DIR}}"
+    env: *base_app_env
     cmds:
-      - ansible-playbook -i {{.INVENTORY}} playbooks/maintenance/update-applications.yml --limit plex {{.CLI_ARGS}}
+      - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/maintenance/update-applications.yml --limit plex {{.CLI_ARGS}}
 
   # --- K3s Cluster ---
   maintenance:update-k3s-nodes:
@@ -1527,11 +1653,30 @@ tasks:
       - op run -- terraform plan {{.CLI_ARGS}}
 
   terraform:authentik-apply:
-    desc: "Apply authentik SSO changes (applications/providers/groups)"
+    desc: "SUPERVISED: apply authentik SSO changes (applications/providers/groups) — review terraform:authentik-plan first"
     dir: "{{.TERRAFORM_DIR}}/authentik"
     env: *tf_authentik_env
     preconditions: *tf_preconditions
     cmds:
+      # Hard guard: this module owns every SSO application/provider, so an
+      # unreviewed apply can lock the estate out of Authentik. Interactive
+      # confirmation, and never -auto-approve (terraform's own prompt is the
+      # second gate). CI never runs this task — SSO changes are operator-driven.
+      - |
+        set -eu
+        if [ ! -t 0 ]; then
+          echo "ERROR: terraform:authentik-apply is a supervised operator step; run it from a terminal." >&2
+          exit 2
+        fi
+        case " {{.CLI_ARGS}} " in
+          *" -auto-approve "*|*" --auto-approve "*)
+            echo "ERROR: -auto-approve is refused here; approve the plan interactively." >&2
+            exit 2 ;;
+        esac
+        echo "About to apply terraform/authentik — this rewrites live SSO applications, providers and groups."
+        printf 'Type "apply" to continue: '
+        read -r confirm
+        [ "$confirm" = "apply" ] || { echo "Aborted."; exit 1; }
       - op run -- terraform apply {{.CLI_ARGS}}
 
   terraform:authentik-import:
@@ -1566,14 +1711,14 @@ tasks:
       - sh: op account list 2>/dev/null
         msg: "1Password CLI not authenticated. Run: eval $(op signin)"
     cmds:
-      - op run -- python3 scripts/b2-bucket-drift.py
+      - op run -- python3 scripts/b2-bucket-drift.py --config scripts/b2-bucket.json
 
   b2:apply:
     desc: "SUPERVISED: reconcile the B2 bucket to the codified settings — review the drift output first; a bad lifecycle rule can expire backup data"
     env: *b2_env
     preconditions: *b2_preconditions
     cmds:
-      - op run -- python3 scripts/b2-bucket-drift.py --apply
+      - op run -- python3 scripts/b2-bucket-drift.py --config scripts/b2-bucket.json --apply
 
   terraform:validate:
     desc: Validate Terraform configuration (alias for validate-local)
@@ -1621,6 +1766,11 @@ tasks:
     cmds:
       - ./scripts/collect-state.sh {{.CLI_ARGS}}
 
+  diagnose:network:
+    desc: "Network-instability diagnostics across all hosts (cluster/HA/ARP/bond/corosync/kube-vip/MetalLB — docs/34)"
+    cmds:
+      - bash scripts/diagnose-network-issues.sh {{.CLI_ARGS}}
+
   lint:
     desc: Run all linters (no auth required) — mirrors the CI lint stage
     cmds:
@@ -1630,11 +1780,15 @@ tasks:
       - task: flux:lint
       - task: scripts:test
       - task: lint:shellcheck
+      - task: lint:ruff
       - task: lint:yamllint
       - task: lint:coverage-checks
       - task: lint:sync-checks
       - task: lint:flux-version-pin
       - task: lint:kubectl-version-pin
+      - task: lint:busybox-version-pin
+      - task: lint:ci-policy
+      - task: lint:netpol-except-parity
       - task: lint:doc-links
       - task: lint:taskfile-smoke
       # promtool/amtool gate — CI runs it as prometheus-config-lint, so leaving
@@ -1642,47 +1796,27 @@ tasks:
       - task: lint:prometheus-config
 
   lint:shellcheck:
-    desc: ShellCheck scripts/, role *.sh, and neutralized *.sh.j2 templates (mirrors CI shellcheck job)
+    desc: ShellCheck scripts/*.sh and terraform/*/*.sh (mirrors the CI shellcheck job)
     preconditions:
       - sh: command -v shellcheck
         msg: "shellcheck not installed. brew install shellcheck"
     cmds:
+      # Exactly the CI shellcheck job's direct_globs
+      # (`scripts/*.sh terraform/*/*.sh`, find_dir empty). ansible/*.sh is gone —
+      # the roles' shell moved to the weisssrv.infra collection, where the
+      # library's own pipeline shellchecks it along with the *.sh.j2 templates.
       - shellcheck --severity=warning --exclude=SC1091,SC2034 scripts/*.sh
-      # `-exec ... {} +` returns non-zero if shellcheck fails on ANY file
-      # (a `find | while` loop would only surface the last iteration's rc).
-      - |
-        find ansible/roles -name '*.sh' -type f \
-          -exec shellcheck --severity=warning --exclude=SC1091,SC2034 {} +
-      - |
-        # Lint shell-script Jinja templates (*.sh.j2) with Jinja neutralized
-        # first — same sed rules as the CI shellcheck job (see that job for
-        # the raw-wrapped vs plain template rationale and constraints).
-        set -eo pipefail
-        rendered=$(mktemp)
-        tmpl_list=$(mktemp)
-        trap 'rm -f "$rendered" "$tmpl_list"' EXIT
-        rc=0
-        find ansible/roles -name '*.sh.j2' -type f > "$tmpl_list"
-        while read -r tmpl; do
-          echo "Checking: $tmpl"
-          if grep -Eq '^[[:space:]]*\{%-?[[:space:]]*raw[[:space:]]*-?%\}[[:space:]]*$' "$tmpl"; then
-            sed -E \
-              -e '/^[[:space:]]*\{#.*#\}[[:space:]]*$/d' \
-              -e '/\{%.*%\}/d' \
-              -e 's/\{\{"\{"\}\}/{/g' \
-              -e 's/\{\{"\}"\}\}/}/g' \
-              -e 's/\{\{[^}]*\}\}/JINJA/g' "$tmpl" > "$rendered"
-          else
-            sed -E \
-              -e '/\{#/,/#\}/d' \
-              -e '/\{%.*%\}/d' \
-              -e 's/\{\{"\{"\}\}/{/g' \
-              -e 's/\{\{"\}"\}\}/}/g' \
-              -e 's/\{\{[^}]*\}\}/JINJA/g' "$tmpl" > "$rendered"
-          fi
-          shellcheck --severity=warning --exclude=SC1091,SC2034 "$rendered" || rc=1
-        done < "$tmpl_list"
-        [ "$rc" -eq 0 ] || { echo "ShellCheck failed on one or more *.sh.j2 templates"; exit "$rc"; }
+      - shellcheck --severity=warning --exclude=SC1091,SC2034 terraform/*/*.sh
+
+  lint:ruff:
+    desc: Ruff over scripts/ (mirrors the CI python-lint job)
+    preconditions:
+      - sh: command -v ruff
+        msg: "ruff not installed. pip install ruff"
+    cmds:
+      # Same argv as the CI python-lint include (targets `scripts`, config
+      # `--config ruff.toml` — the library's shared profile vendored to the root).
+      - ruff check --config ruff.toml scripts
 
   lint:yamllint:
     desc: Baseline YAML syntax check (mirrors CI yaml-lint job, plus Taskfile.yml)
@@ -1690,25 +1824,27 @@ tasks:
       - sh: command -v yamllint
         msg: "yamllint not installed. pip install yamllint"
     cmds:
+      # Same target set as the CI yaml-lint include (.gitlab/ replaced
+      # .gitlab/ci/ when the molecule child pipeline was removed), plus
+      # Taskfile.yml, which CI does not lint.
       - yamllint -d relaxed ansible/
       - yamllint -d relaxed kubernetes/
       - yamllint -d relaxed .gitlab-ci.yml
-      - yamllint -d relaxed .gitlab/ci/
+      - yamllint -d relaxed .gitlab/
       - yamllint -d relaxed Taskfile.yml
 
   lint:coverage-checks:
-    desc: Deploy-coverage + molecule-matrix-coverage + env-secret-coverage + backup-artifact-app gates (mirror the CI lint stage)
+    desc: Deploy-coverage, integration-matrix and backup-artifact-app gates (mirror the CI lint stage)
     preconditions:
       - sh: python3 -c "import yaml" 2>/dev/null
         msg: "PyYAML not installed (pip install pyyaml)"
     cmds:
       - bash scripts/check-deploy-coverage.sh
       - python3 scripts/check-deploy-host-coverage.py
-      - bash scripts/check-molecule-matrix-coverage.sh
-      - python3 scripts/check-env-secret-coverage.py
-      # The NAS-side collector's app list (Ansible role defaults) and
-      # BackupArtifactStale's per-app absent() arms (Flux-reconciled rule) are
-      # edited on separate lifecycles; nothing else notices when they diverge.
+      - bash scripts/check-integration-matrix-coverage.sh
+      # The NAS-side collector's app list (host_vars) and BackupArtifactStale's
+      # per-app absent() arms (Flux-reconciled rule) are edited on separate
+      # lifecycles; nothing else notices when they diverge.
       - python3 scripts/check-backup-artifact-apps.py
 
   lint:sync-checks:
@@ -1718,23 +1854,18 @@ tasks:
         msg: "PyYAML not installed (pip install pyyaml)"
     cmds:
       # Both generators write in place, so each check saves the committed file,
-      # regenerates, diffs, and restores. The restore runs from an EXIT trap, not
-      # just on the happy path: under `set -eu` a generator that exits non-zero
-      # (bad all.yml, missing dep, partial write) would otherwise abort before
-      # the restore, leaving the TRACKED file regenerated or truncated with the
-      # only good copy in an anonymous temp file. With the trap the workspace
-      # really is left untouched whether the check passes or fails. (EXIT only:
-      # go-task's embedded shell rejects INT/TERM in `trap`.) Same shape as the
-      # CI job.
+      # re-runs its sync task, diffs, and restores from an EXIT trap — without
+      # the trap a generator that exits non-zero leaves the TRACKED file
+      # regenerated or truncated. (EXIT only: go-task's shell rejects INT/TERM.)
       - |
         set -eu
         overall=0
         check_sync() {
-          target="$1"; generator="$2"; fixup="$3"
+          target="$1"; fixup="$2"
           committed=$(mktemp); generated=$(mktemp)
           cp "$target" "$committed"
           trap 'cp "$committed" "$target" 2>/dev/null || true; rm -f "$committed" "$generated"' EXIT
-          python3 "$generator"
+          $fixup
           cp "$target" "$generated"
           cp "$committed" "$target"
           if ! diff -q "$committed" "$generated" >/dev/null 2>&1; then
@@ -1750,9 +1881,8 @@ tasks:
           # a cp from an already-deleted temp on normal shell exit.
           trap - EXIT
         }
-        check_sync scripts/hosts.env scripts/generate-hosts-env.py "task hosts:sync"
-        check_sync kubernetes/infrastructure/sources/versions-configmap.yaml \
-          scripts/generate-versions-configmap.py "task flux:sync-versions"
+        check_sync scripts/hosts.env "task hosts:sync"
+        check_sync kubernetes/infrastructure/sources/versions-configmap.yaml "task flux:sync-versions"
         exit "$overall"
 
   lint:flux-version-pin:
@@ -1774,6 +1904,41 @@ tasks:
     preconditions:
       - sh: command -v python3
         msg: "python3 not installed"
+
+  lint:busybox-version-pin:
+    desc: Check post-maintenance-verify.sh's busybox image against busybox_version in all.yml
+    cmds:
+      - |
+        set -eu
+        # The DNS probe is a plain kubectl run, so it cannot use Flux's
+        # ${busybox_version} substitution — this gate is what keeps it in step.
+        PIN=$(sed -n 's/.*--image=busybox:\([0-9.]*\).*/\1/p' scripts/post-maintenance-verify.sh | head -1)
+        AV=$(sed -n 's/^busybox_version: *"\{0,1\}\([0-9.]*\)"\{0,1\} *$/\1/p' ansible/inventories/prod/group_vars/all.yml | head -1)
+        echo "post-maintenance-verify busybox: ${PIN:-<not found>} / all.yml busybox_version: ${AV:-<not found>}"
+        [ -n "$PIN" ] || { echo "Could not extract the busybox image pin from scripts/post-maintenance-verify.sh"; exit 1; }
+        [ -n "$AV" ] || { echo "Could not extract busybox_version from group_vars/all.yml"; exit 1; }
+        [ "$PIN" = "$AV" ] || { echo "busybox pin (${PIN}) drifted from busybox_version (${AV}) — bump scripts/post-maintenance-verify.sh"; exit 1; }
+
+  lint:ci-policy:
+    desc: "CI-file policy: deploy jobs trigger on the collection pin, and include-input pins match variables: (mirrors the collection-pin-trigger + ci-pin-parity checks in CI repo-policy-checks)"
+    preconditions:
+      - sh: python3 -c "import yaml" 2>/dev/null
+        msg: "PyYAML not installed (pip install pyyaml)"
+    cmds:
+      # Both gates fire only on a .gitlab-ci.yml edit — exactly the change where
+      # a green `task lint` is most likely to be taken as proof the pipeline is
+      # clean. They live in scripts/ so this task and repo-policy-checks run the
+      # same code rather than two copies of it.
+      - python3 scripts/check-collection-pin-trigger.py
+      - bash scripts/check-ci-pin-parity.sh
+
+  lint:netpol-except-parity:
+    desc: Assert every NetworkPolicy RFC1918 except-list matches the substituted source
+    cmds:
+      - python3 scripts/check-netpol-except-parity.py
+    preconditions:
+      - sh: python3 -c "import yaml" 2>/dev/null
+        msg: "PyYAML not installed (pip install pyyaml)"
 
   lint:doc-links:
     desc: Resolve relative Markdown cross-links in docs/ + top-level READMEs (mirrors CI docs-link-check)
@@ -1799,6 +1964,9 @@ tasks:
         msg: "PyYAML not installed (pip install pyyaml)"
     cmds:
       - bash scripts/lint-prometheus-config.sh
+      # Syntax vs behaviour: check-config proves the file parses, this proves
+      # where each alert actually lands and that the inhibit pairs still bind.
+      - python3 scripts/check-alertmanager-behaviour.py
 
   scripts:test:
     desc: Run Python unit tests for scripts/ (pytest)
@@ -2038,18 +2206,11 @@ tasks:
         fi
         CM="$APP-vpn-config"
         VPN_ENABLED=$(kubectl get configmap "$CM" -n downloads -o jsonpath='{.data.vpn_enabled}' 2>/dev/null || echo "")
-        # Pre-flight the target provider against the credentials ACTUALLY WIRED —
-        # not just the alias allowlist above. `vpnunlimited` is a valid alias but
-        # its keys ship commented-out in externalsecret.yaml until the operator
-        # populates 1Password. Switching a VPN-ON app onto a provider with no
-        # creds patches the ConfigMap and Reloader rolls the pod, gluetun's
-        # settings validation then fails on the missing OPENVPN_*_SECRETFILE, and
-        # (the old pod already gone under the Recreate strategy) the default
-        # VPN-on client is fully down until someone switches back — a one-command
-        # outage. Refuse before the patch when the app is ON; when it's OFF let
-        # the selection be staged but warn that turning it on will crash-loop.
-        # Single-source provider->required-keys + Secret lookup (also used by
-        # downloads:vpn) so the two commands' pre-flight can't drift.
+        # Pre-flight the target provider against the credentials ACTUALLY wired,
+        # not just the alias allowlist above: switching a VPN-ON app to a provider
+        # with no creds takes it fully down until someone switches back. Refuse
+        # while the app is ON; when OFF, stage the selection with a warning.
+        # scripts/vpn-credcheck.sh is shared with downloads:vpn (docs/21).
         set +e
         MISSING=$(scripts/vpn-credcheck.sh "$APP" "$GLUE")
         CRED_RC=$?
@@ -2310,14 +2471,16 @@ tasks:
   # === wg-easy WireGuard VPN Tasks ===
   # Internet-exit VPN for the user + friends/family (kubernetes/apps/wg-easy).
   # Admin UI: vpn.esweiss.com (internal, Authentik). Endpoint: vpn.ericsweiss.com:51820/udp.
+  # Namespaced `wg-easy:` after the app; `downloads:vpn*` is the unrelated
+  # Gluetun egress tunnel.
 
-  vpn:status:
+  wg-easy:status:
     desc: Show status of the wg-easy VPN (pods, services, VIP, PVC, ingress)
     cmds:
       - echo "=== wg-easy Namespace ==="
       - kubectl get pods -n wg-easy -o wide
       - echo ""
-      - echo "=== Services (LoadBalancer VIP should be 192.168.0.99) ==="
+      - echo "=== Services (LoadBalancer VIP) ==="
       - kubectl get svc -n wg-easy
       - echo ""
       - echo "=== PVC ==="
@@ -2326,17 +2489,17 @@ tasks:
       - echo "=== IngressRoute ==="
       - kubectl get ingressroute -n wg-easy
 
-  vpn:peers:
+  wg-easy:peers:
     desc: Show live WireGuard peers/handshakes (kubectl exec wg show)
     cmds:
       - kubectl exec -n wg-easy deployment/wg-easy -- wg show 2>/dev/null || echo "wg0 not up yet (no clients configured, or pod not ready)"
 
-  vpn:logs:
+  wg-easy:logs:
     desc: Tail wg-easy logs
     cmds:
       - kubectl logs -n wg-easy deployment/wg-easy --tail=50 -f
 
-  vpn:restart:
+  wg-easy:restart:
     desc: Restart the wg-easy pod (pod delete; Flux-managed, replicas:1 + Recreate)
     cmds:
       # Pod delete, NOT `kubectl rollout restart`: the Deployment is
@@ -2637,9 +2800,7 @@ tasks:
       - echo "Testing connectivity..."
       - task: home-assistant:status
 
-  # =============================================================================
-  # GitLab Deployment Tasks
-  # =============================================================================
+  # === GitLab Deployment Tasks ===
 
   gitlab:deploy:
     desc: Deploy GitLab (provisions VM and installs GitLab)
@@ -2797,16 +2958,11 @@ tasks:
           FAIL=$((FAIL + 1))
         fi
 
-        # Test 8: Web IDE extension host route reachable.
-        # Uses /-/health (nginx-served, no IP allowlist) instead of /-/readiness because
-        # readiness is gated by gitlab_rails['monitoring_whitelist'] = LAN-only, and
-        # *.ide.git.ericsweiss.com resolves through Cloudflare → WAN → hairpin NAT, so
-        # GitLab may see the public IP and 404 the readiness probe.
-        # A green Test 8 proves DNS+Cloudflare+Traefik+IngressRoute+nginx are wired for
-        # the new wildcard host. It does NOT validate the application_settings flip.
-        # To confirm the CVE-2026-5816 mitigation:
-        #   ssh eric@192.168.0.153 "sudo gitlab-rails runner 'puts ApplicationSetting.last.vscode_extension_marketplace_single_origin_fallback_enabled'"
-        # Expected: false
+        # Test 8: Web IDE extension host route reachable. /-/health, not
+        # /-/readiness: readiness is monitoring_whitelist-gated to the LAN, and
+        # *.ide.git.ericsweiss.com hairpins via Cloudflare so GitLab sees the WAN
+        # IP. Proves the wildcard host is wired end to end, NOT the
+        # application_settings flip — verify that per docs/27 § Web IDE.
         echo -n "Web IDE extension host route (probe.ide.git.ericsweiss.com)... "
         if check_http_ok "https://probe.ide.git.ericsweiss.com/-/health"; then
           echo "PASS"
@@ -2850,9 +3006,7 @@ tasks:
     cmds:
       - ssh eric@{{.GITLAB_IP}} "sudo gitlab-ctl reconfigure"
 
-  # =============================================================================
-  # Nextcloud Deployment Tasks
-  # =============================================================================
+  # === Nextcloud Deployment Tasks ===
 
   nextcloud:deploy:
     desc: Deploy Nextcloud (provisions VM and installs the compose stack)
@@ -2986,9 +3140,7 @@ tasks:
     cmds:
       - ssh eric@{{.NEXTCLOUD_IP}} "sudo systemctl restart nextcloud-compose.service"
 
-  # =============================================================================
-  # Immich Deployment Tasks
-  # =============================================================================
+  # === Immich Deployment Tasks ===
 
   immich:deploy:
     desc: Deploy Immich (provisions the VM and installs the compose stack)
@@ -3142,9 +3294,7 @@ tasks:
     cmds:
       - ssh eric@{{.IMMICH_IP}} "sudo systemctl restart immich-compose.service"
 
-  # =============================================================================
-  # Immich ML (GPU LXC) Deployment Tasks
-  # =============================================================================
+  # === Immich ML (GPU LXC) Deployment Tasks ===
 
   immich-ml:deploy:
     desc: Deploy the Immich GPU ML LXC (provisions the container and installs the OpenVINO stack)
@@ -3194,6 +3344,36 @@ tasks:
       # direct probe from the operator's LAN source is firewall-dropped by design.
       - echo "=== ML /ping (127.0.0.1:3003 in the LXC) ==="
       - ssh eric@{{.IMMICH_ML_IP}} "curl -s --max-time 10 http://127.0.0.1:3003/ping" || echo "ML service not responding"
+
+  immich-ml:verify:
+    desc: Smoke-test the Immich ML LXC (compose up, /dev/dri present, /ping answers) — exits non-zero on failure
+    cmds:
+      - |
+        set -eu
+        HOST="{{.IMMICH_ML_IP}}"
+        fail=0
+        echo -n "compose stack running... "
+        if ssh eric@"$HOST" "sudo docker compose --project-directory /opt/immich-ml/compose ps --status running --quiet" 2>/dev/null | grep -q .; then
+          echo "PASS"
+        else
+          echo "FAIL (no running containers)"; fail=1
+        fi
+        echo -n "GPU device /dev/dri present... "
+        if ssh eric@"$HOST" "test -e /dev/dri/renderD128" 2>/dev/null; then
+          echo "PASS"
+        else
+          echo "FAIL (renderD128 missing — LXC device passthrough)"; fail=1
+        fi
+        # Probed on the LXC loopback: sg-immich-ml admits :3003 from the Immich
+        # VM only, so a probe from the operator's LAN source is dropped by design.
+        echo -n "ML /ping answers... "
+        if ssh eric@"$HOST" "curl -sf --max-time 10 http://127.0.0.1:3003/ping" >/dev/null 2>&1; then
+          echo "PASS"
+        else
+          echo "FAIL (ML service not responding)"; fail=1
+        fi
+        [ "$fail" -eq 0 ] || { echo "=== immich-ml verification FAILED ==="; exit 1; }
+        echo "=== immich-ml verification passed ==="
 
   immich-ml:console:
     desc: SSH to the Immich ML LXC

@@ -2,9 +2,14 @@
 # DNS server configuration (dns-01, dns-02)
 
 # LXC container settings
-lxc_nesting: true  # Required for systemd 257+
+proxmox_lxc_nesting: true  # Required for systemd 257+
 
-# Boot order (proxmox_startup_order/delay) is set per host in
+# These hosts ARE the resolvers, so base must not point their /etc/resolv.conf
+# at themselves before AdGuard is up; it uses base_bootstrap_dns_servers until
+# the resolver answers.
+base_is_resolver_host: true
+
+# Boot order (proxmox_lxc_startup_order/delay) is set per host in
 # host_vars/dns-01.yml and host_vars/dns-02.yml (both order 10, delay 10).
 
 # Unbound configuration
@@ -13,53 +18,53 @@ lxc_nesting: true  # Required for systemd 257+
 unbound_port: 5335
 
 # AdGuard Home configuration
-adguard_user: adguard
-adguard_group: adguard
-adguard_install_path: /opt/AdGuardHome
-adguard_http_port: 3000
-adguard_dns_port: 53
-adguard_dot_port: 853
-adguard_https_port: 443
-adguard_admin_user: eric
+adguard_home_user: adguard
+adguard_home_group: adguard
+adguard_home_install_path: /opt/AdGuardHome
+adguard_home_http_port: 3000
+adguard_home_dns_port: 53
+adguard_home_dot_port: 853
+adguard_home_https_port: 443
+adguard_home_admin_user: eric
 # Password from 1Password; bcrypt hash is generated at deploy time by the adguard_home role
-adguard_admin_password: >-
+adguard_home_admin_password: >-
   {{ lookup('ansible.builtin.env', 'ADGUARD_ADMIN_PASSWORD')
      or undef(hint='ADGUARD_ADMIN_PASSWORD env var must be set (run via op run)') }}
 
 # TLS/Encryption configuration
 # TLS enabled for DoT (853) and DoQ (853) - AdGuard Home handles these directly
 # Web UI and DoH accessed via HTTP on port 3000 - Traefik Internal (.101) handles TLS termination
-adguard_tls_enabled: true
-adguard_tls_server_name: "dns.{{ internal_domain }}"
-adguard_cert_path: "{{ adguard_install_path }}/certs"
-adguard_doq_port: 853
+adguard_home_tls_enabled: true
+adguard_home_tls_server_name: "dns.{{ internal_domain }}"
+adguard_home_cert_path: "{{ adguard_home_install_path }}/certs"
+adguard_home_doq_port: 853
 
 # Upstream DNS
-adguard_upstream_dns:
+adguard_home_upstream_dns:
   - "127.0.0.1:{{ unbound_port }}"
 
 # DNS server configuration
-adguard_protection_enabled: true
-adguard_upstream_mode: "load_balance"
-adguard_fallback_dns: []
-adguard_enable_dnssec: true
-adguard_resolve_clients: true
-adguard_use_private_ptr_resolvers: false
-adguard_disable_ipv6: false
+adguard_home_protection_enabled: true
+adguard_home_upstream_mode: "load_balance"
+adguard_home_fallback_dns: []
+adguard_home_enable_dnssec: true
+adguard_home_resolve_clients: true
+adguard_home_use_private_ptr_resolvers: false
+adguard_home_disable_ipv6: false
 
 # Cache configuration
-adguard_cache_enabled: true
-adguard_cache_size: 8388608
-adguard_cache_ttl_min: 0
-adguard_cache_ttl_max: 0
-adguard_cache_optimistic: false
+adguard_home_cache_enabled: true
+adguard_home_cache_size: 8388608
+adguard_home_cache_ttl_min: 0
+adguard_home_cache_ttl_max: 0
+adguard_home_cache_optimistic: false
 
 # Rate limiting
-adguard_ratelimit: 20
-adguard_ratelimit_whitelist: []
+adguard_home_ratelimit: 20
+adguard_home_ratelimit_whitelist: []
 
 # DNS rewrites for internal services
-adguard_rewrites:
+adguard_home_rewrites:
   # DNS web UIs accessed via Traefik Internal for HTTPS and DoH
   - domain: "dns-01.{{ internal_domain }}"
     answer: "192.168.0.101"
@@ -223,7 +228,7 @@ adguard_rewrites:
     answer: "192.168.0.101"
 
 # Custom filtering rules
-adguard_user_rules:
+adguard_home_user_rules:
   # Allowlist
   - '@@||moneroocean.stream^'
   # PTR records for internal infrastructure
@@ -256,17 +261,17 @@ adguard_user_rules:
   - '||101.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;vip-internal.{{ internal_domain }}.'
 
 # DHCP configuration
-adguard_dhcp_enabled: false
+adguard_home_dhcp_enabled: false
 
-# Postfix null client uses the role default postfix_config (relay via
-# smtp-relay over SASL+TLS, loopback-only). postfix_sasl_user,
-# postfix_sasl_password, and mail_aliases are defined in all.yml.
+# Postfix null client uses the role default postfix_null_client_config (relay
+# via smtp-relay over SASL+TLS, loopback-only); the relay host, credentials and
+# aliases are defined in all.yml.
 
 # dns-01 SSH key for certificate delivery to dns-02 and smtp-relay
-dns01_ssh_private_key: >-
+acme_certs_ssh_private_key: >-
   {{ lookup('ansible.builtin.env', 'DNS01_SSH_PRIVATE_KEY')
      or undef(hint='DNS01_SSH_PRIVATE_KEY env var must be set (run via op run)') }}
-dns01_ssh_public_key: >-
+acme_certs_ssh_public_key: >-
   {{ lookup('ansible.builtin.env', 'DNS01_SSH_PUBLIC_KEY')
      or undef(hint='DNS01_SSH_PUBLIC_KEY env var must be set (run via op run)') }}
 
@@ -276,11 +281,14 @@ dns01_ssh_public_key: >-
 # wildcard cert, so the dns-01 -> dns-02 sync hop is now end-to-end
 # encrypted on the wire. The lan-tailscale-only middleware on the
 # IngressRoute ensures only LAN/Tailscale sources reach the API.
-# The adguard_sync role gates on inventory_hostname == 'dns-01', so it
-# runs on the primary only — there is no separate enable/disable toggle.
-adguardhome_sync_origin: "https://dns-01.{{ internal_domain }}"
-adguardhome_sync_replica: "https://dns-02.{{ internal_domain }}"
-adguardhome_sync_features:
+# adguard_sync_enabled is set on dns-01 only (host_vars/dns-01.yml).
+adguard_sync_origin: "https://dns-01.{{ internal_domain }}"
+adguard_sync_replica: "https://dns-02.{{ internal_domain }}"
+# The sync API credentials are its own inputs now — it no longer borrows the
+# adguard_home pair.
+adguard_sync_admin_user: "{{ adguard_home_admin_user }}"
+adguard_sync_admin_password: "{{ adguard_home_admin_password }}"
+adguard_sync_features:
   dns:
     accessLists: true
     serverConfig: true

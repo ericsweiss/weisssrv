@@ -1,13 +1,9 @@
 ---
 # Flux Kustomization: infrastructure sources (HelmRepositories + cluster-versions ConfigMap).
 #
-# Runs first in the infrastructure chain. No dependencies. Provides:
-#   - HelmRepository CRs that helm-controller pulls charts from
-#   - cluster-versions ConfigMap that every later Kustomization reads via
-#     postBuild.substituteFrom for version placeholders
-#
-# NOTE: no postBuild.substituteFrom here — sources/ itself does not contain
-# any ${var} placeholders.
+# Runs first, with no dependencies: the HelmRepository CRs helm-controller pulls
+# charts from, plus the cluster-versions ConfigMap every later stage substitutes
+# from. No postBuild here — sources/ contains no placeholders of its own.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -22,10 +18,7 @@ spec:
     name: flux-system
   path: ./kubernetes/infrastructure/sources
   prune: true
-  # wait:false — this stage only declares HelmRepository CRs + the
-  # cluster-versions ConfigMap, all applied (and substitutable) the moment it
-  # reconciles. Waiting for every repo's index fetch to go Ready would let one
-  # transient registry outage (even an app-only repo) keep sources NotReady and
-  # stall the whole controllers->configs->observability->apps chain;
-  # helm-controller already waits for each chart's own repo before pulling.
+  # wait:false — everything here is usable the moment it is applied. Waiting for
+  # every repo index would let one transient registry outage stall the entire
+  # downstream chain; helm-controller already waits per-chart.
   wait: false

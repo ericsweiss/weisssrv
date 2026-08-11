@@ -1,0 +1,45 @@
+---
+# Releases rendered by scripts/validate-helm-values.py: `kustomize build |
+# kubeconform` never templates a chart, so a HelmRelease's `.spec.values` is
+# otherwise unvalidated. Each entry costs one network round-trip, so the list is
+# the value-heavy releases plus any whose chart defaults need watching.
+releases:
+  - name: traefik
+    manifest: kubernetes/infrastructure/controllers/traefik/release.yaml
+    chart: traefik
+    repo_name: traefik
+    repo_url: https://traefik.github.io/charts
+  - name: kube-prometheus-stack
+    manifest: kubernetes/infrastructure/observability/kube-prometheus-stack/release.yaml
+    chart: kube-prometheus-stack
+    repo_name: prometheus-community
+    repo_url: https://prometheus-community.github.io/helm-charts
+  - name: authentik
+    manifest: kubernetes/apps/authentik/release.yaml
+    chart: authentik
+    repo_name: authentik
+    repo_url: https://charts.goauthentik.io
+  - name: kured
+    manifest: kubernetes/infrastructure/controllers/kured/release.yaml
+    chart: kured
+    repo_name: kured
+    repo_url: https://kubereboot.github.io/charts
+  - name: reloader
+    manifest: kubernetes/infrastructure/controllers/reloader/release.yaml
+    chart: reloader
+    repo_name: stakater
+    repo_url: https://stakater.github.io/stakater-charts
+  - name: tailscale-operator
+    manifest: kubernetes/infrastructure/controllers/tailscale-operator/release.yaml
+    chart: tailscale-operator
+    repo_name: tailscale
+    repo_url: https://pkgs.tailscale.com/helmcharts
+  # Listed for the CPU-limit check: these values set only a memory limit, which
+  # is safe solely because the chart's current default is `resources: {}`. A
+  # chart version adding a default limits.cpu would merge in silently, and only
+  # `helm template` sees it.
+  - name: gitlab-agent
+    manifest: kubernetes/apps/gitlab-agent/release.yaml
+    chart: gitlab-agent
+    repo_name: gitlab
+    repo_url: https://charts.gitlab.io

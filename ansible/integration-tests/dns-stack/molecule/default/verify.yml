@@ -63,7 +63,7 @@
     # regression it names, without adding a dead forwarder that could flake the
     # live-resolution assert below.
     - name: Read rendered unbound config
-      ansible.builtin.command: cat /etc/unbound/unbound.conf.d/weisssrv.conf
+      ansible.builtin.command: cat /etc/unbound/unbound.conf.d/managed.conf
       register: unbound_rendered
       changed_when: false
 
@@ -83,13 +83,13 @@
         name: AdGuardHome
         state: started
       check_mode: true
-      register: adguard_service
+      register: adguard_home_service
       failed_when: false
 
     - name: Assert AdGuard Home is active
       ansible.builtin.assert:
         that:
-          - adguard_service.status.ActiveState == "active"
+          - adguard_home_service.status.ActiveState == "active"
         fail_msg: "AdGuard Home is not active"
         success_msg: "AdGuard Home is running"
 
@@ -110,31 +110,31 @@
 
     - name: Check AdGuard Home web UI is accessible
       ansible.builtin.uri:
-        url: "http://127.0.0.1:{{ adguard_http_port | default(3000) }}/control/status"
+        url: "http://127.0.0.1:{{ adguard_home_http_port | default(3000) }}/control/status"
         method: GET
         status_code: [200, 401, 403]  # May require auth
         timeout: 10
-      register: adguard_ui
+      register: adguard_home_ui
       failed_when: false
 
     - name: Log AdGuard Home UI status
       ansible.builtin.debug:
-        msg: "AdGuard Home UI returned status {{ adguard_ui.status }}"
+        msg: "AdGuard Home UI returned status {{ adguard_home_ui.status }}"
 
     # We verify the service is running and web UI is accessible;
     # DNS resolution is tested via Unbound (which is AdGuard's upstream)
 
     # AdGuard rewrite reconciliation (dns-01 only)
-    # api_config.yml is gated on inventory_hostname == 'dns-01', so the rewrite
+    # The API pass is gated on adguard_home_is_primary, so the rewrite
     # add/reconcile path runs there; dns-02 would receive them via sync (not
-    # exercised here). Proves the codified adguard_rewrites reached the live
+    # exercised here). Proves the codified adguard_home_rewrites reached the live
     # instance through the role's API path.
     - name: Fetch live DNS rewrites from AdGuard (dns-01)
       ansible.builtin.uri:
-        url: "http://127.0.0.1:{{ adguard_http_port | default(3000) }}/control/rewrite/list"
+        url: "http://127.0.0.1:{{ adguard_home_http_port | default(3000) }}/control/rewrite/list"
         method: GET
-        user: "{{ adguard_admin_user }}"
-        password: "{{ adguard_admin_password }}"
+        user: "{{ adguard_home_admin_user }}"
+        password: "{{ adguard_home_admin_password }}"
         force_basic_auth: true
         status_code: 200
       register: live_rewrites
@@ -148,7 +148,7 @@
             selectattr('answer', 'equalto', item.answer) | list | length == 1
         fail_msg: "Codified rewrite {{ item.domain }} -> {{ item.answer }} missing from live AdGuard"
         success_msg: "Rewrite {{ item.domain }} reconciled onto dns-01"
-      loop: "{{ adguard_rewrites }}"
+      loop: "{{ adguard_home_rewrites }}"
       loop_control:
         label: "{{ item.domain }}"
       when: "'dns_primary' in group_names"
@@ -248,7 +248,7 @@
           Host: {{ inventory_hostname }}
           Role: {% if 'dns_primary' in group_names %}Primary (syncs TO replica){% else %}Replica (synced FROM primary){% endif %}
           Unbound: {{ 'RUNNING' if (unbound_service.status.ActiveState | default('unknown')) == 'active' else 'FAILED' }}
-          AdGuard Home: {{ 'RUNNING' if (adguard_service.status.ActiveState | default('unknown')) == 'active' else 'FAILED' }}
+          AdGuard Home: {{ 'RUNNING' if (adguard_home_service.status.ActiveState | default('unknown')) == 'active' else 'FAILED' }}
           {% if 'dns_primary' in group_names %}
           AdGuard Sync: {{ 'CONFIGURED' if (sync_config.stat.exists | default(false)) else 'MISSING' }}
           {% endif %}

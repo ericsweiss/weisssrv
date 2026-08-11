@@ -1,0 +1,336 @@
+---
+# Filesystem, PVC, swap and SMART alerts. Every rule carries a runbook_url
+# pointing at docs/12-runbooks.md.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: homelab-storage
+  namespace: observability
+spec:
+  groups:
+    - name: homelab.storage
+      rules:
+        # efivarfs is the kernel's NVRAM-backed virtual fs at
+        # /sys/firmware/efi/efivars; it commonly sits above 70% (filled
+        # with EFI variables) and isn't a real disk-usage signal.
+        # devtmpfs/iso9660 are also virtual / read-only.
+        - alert: DiskUsageWarning
+          expr: >-
+            (1 - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs|efivarfs|devtmpfs|iso9660"}
+            / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs|efivarfs|devtmpfs|iso9660"})
+            * 100 > 80
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            summary: 'Disk usage above 80% on {{ $labels.instance }}:{{ $labels.mountpoint }}'
+            description: >-
+              Disk usage is {{ $value | printf "%.1f" }}%
+              on {{ $labels.instance }}
+              mount {{ $labels.mountpoint }}.
+
+        - alert: DiskUsageCritical
+          expr: >-
+            (1 - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs|efivarfs|devtmpfs|iso9660"}
+            / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs|efivarfs|devtmpfs|iso9660"})
+            * 100 > 90
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            summary: 'Disk usage above 90% on {{ $labels.instance }}:{{ $labels.mountpoint }}'
+            description: >-
+              Disk usage is {{ $value | printf "%.1f" }}%
+              on {{ $labels.instance }}
+              mount {{ $labels.mountpoint }}.
+
+        - alert: PVCUsageWarning
+          expr: (kubelet_volume_stats_used_bytes / kubelet_volume_stats_capacity_bytes) * 100 > 80
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            summary: 'PVC {{ $labels.persistentvolumeclaim }} in {{ $labels.namespace }} above 80%'
+            description: 'PVC usage is {{ $value | printf "%.1f" }}%.'
+
+        - alert: PVCUsageCritical
+          expr: (kubelet_volume_stats_used_bytes / kubelet_volume_stats_capacity_bytes) * 100 > 90
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            summary: 'PVC {{ $labels.persistentvolumeclaim }} in {{ $labels.namespace }} above 90%'
+            description: 'PVC usage is {{ $value | printf "%.1f" }}%.'
+
+        # Every stateful PV here is a statically-provisioned zvol/NFS PV with
+        # storageClassName "". A local-path PV means a claim fell through to the
+        # cluster-default class (loki/release.yaml carries the storageClass guard).
+        - alert: LocalPathPVExists
+          expr: kube_persistentvolume_info{storageclass="local-path"} > 0
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            summary: 'PersistentVolume {{ $labels.persistentvolume }} is on the local-path StorageClass'
+            description: >-
+              PV {{ $labels.persistentvolume }} uses the local-path
+              StorageClass. Nothing in this cluster may use local-path: it
+              lands on the stateless k3s VM bootdisk and is excluded from all
+              backups. A claim fell through to the cluster-default class —
+              pin its storageClassName to "" and rebind to the intended
+              static zvol/NFS PV (loki/release.yaml, docs/29).
+
+        # Inode exhaustion: byte-usage rules above miss a filesystem that
+        # fills its inode table (many tiny files) while still having free
+        # bytes. The chart's default NodeFilesystemAlmostOutOfFiles only
+        # covers the in-cluster node-exporter; this fires across both that
+        # job and the bare-metal node-exporter-host job (port 9101) so a
+        # Proxmox host root running out of inodes is caught too.
+        - alert: InodeUsageWarning
+          expr: >-
+            (node_filesystem_files_free{fstype!~"tmpfs|overlay|squashfs|efivarfs|devtmpfs|iso9660"}
+            / node_filesystem_files{fstype!~"tmpfs|overlay|squashfs|efivarfs|devtmpfs|iso9660"})
+            * 100 < 10
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            summary: 'Inodes below 10% free on {{ $labels.instance }}:{{ $labels.mountpoint }}'
+            description: >-
+              Only {{ $value | printf "%.1f" }}% of inodes are free
+              on {{ $labels.instance }}
+              mount {{ $labels.mountpoint }}.
+
+        - alert: InodeUsageCritical
+          expr: >-
+            (node_filesystem_files_free{fstype!~"tmpfs|overlay|squashfs|efivarfs|devtmpfs|iso9660"}
+            / node_filesystem_files{fstype!~"tmpfs|overlay|squashfs|efivarfs|devtmpfs|iso9660"})
+            * 100 < 5
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            summary: 'Inodes below 5% free on {{ $labels.instance }}:{{ $labels.mountpoint }}'
+            description: >-
+              Only {{ $value | printf "%.1f" }}% of inodes are free
+              on {{ $labels.instance }}
+              mount {{ $labels.mountpoint }}.
+
+        # min_over_time over 2 days = swap that never once dropped below 2 GiB
+        # across two nightly swap-clean cycles, i.e. the reset keeps aborting.
+        # NAS-only: no other host runs swap-clean (docs/06 §NAS memory).
+        - alert: NASSwapNotClearing
+          expr: >-
+            min_over_time(
+              (node_memory_SwapTotal_bytes{instance="192.168.0.102:9101"}
+              - node_memory_SwapFree_bytes{instance="192.168.0.102:9101"})[2d:30m]
+            ) > 2 * 1024 * 1024 * 1024
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/06-zfs.md'
+            summary: 'NAS swap not clearing — above 2 GiB for 2 days on {{ $labels.instance }}'
+            description: >-
+              pve-nas-01 swap has stayed above 2 GiB for 2 days (min
+              {{ $value | humanize1024 }}B) — the nightly swap-clean.timer is
+              likely aborting for lack of headroom, so swap is accumulating
+              instead of resetting. Check `journalctl -t swap-clean`; the box
+              may need a guest-memory trim or more RAM (docs/06 §NAS memory
+              management).
+
+        # The inverse failure: no swap at all has no usage to accumulate, so
+        # NASSwapNotClearing cannot see it, and a swapless run of this
+        # memory-overcommitted box OOMs under pressure.
+        - alert: NASSwapGone
+          expr: node_memory_SwapTotal_bytes{instance="192.168.0.102:9101"} == 0
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/42-offsite-backup.md'
+            summary: 'NAS has zero swap configured on {{ $labels.instance }}'
+            description: >-
+              pve-nas-01 reports SwapTotal == 0 — the structurally
+              overcommitted NAS is running with no swap safety margin,
+              typically a failed encrypted-swap switch or a swapon that
+              never restored a device. Check `swapon --show`,
+              `systemctl status systemd-cryptsetup@cryptswap` and
+              /etc/fstab on pve-nas-01 (docs/42 §Encrypted swap).
+
+        # 0 = script error, unsafe headroom abort, or a failed guest restart
+        # ("0=failed or aborted-unsafe" in the metric HELP). Daily timer, so a
+        # failure persists to the next run; for:1h matches the other
+        # *_last_run_success alerts.
+        - alert: SwapCleanFailed
+          expr: swap_clean_last_run_success == 0
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/06-zfs.md'
+            summary: 'NAS swap-clean job failed or aborted-unsafe on {{ $labels.instance }}'
+            description: >-
+              The daily swap-clean run on pve-nas-01 recorded a non-clean
+              outcome (swap_clean_last_run_success == 0) — a script error, an
+              unsafe headroom abort (ARC-shrink or a guest that would not stop
+              gracefully), or a failed guest restart. Swap may not be
+              resetting; if it keeps building day after day that also surfaces
+              as NASSwapNotClearing. Check `journalctl -t swap-clean` (docs/06
+              §NAS memory management).
+
+        # A guest swap-clean stopped did not come back on `qm start`: a
+        # production guest is DOWN. The gauge is always emitted (0 on a good
+        # run), so no absent() arm is needed.
+        - alert: SwapCleanGuestRestartFailed
+          expr: swap_clean_guest_restart_failures > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/06-zfs.md'
+            summary: 'NAS swap-clean failed to restart a stopped guest on {{ $labels.instance }}'
+            description: >-
+              swap-clean on pve-nas-01 gracefully stopped a production guest
+              to reclaim swap but could not restart it afterward
+              ({{ $value | printf "%.0f" }} failed restart(s)) — a guest is
+              likely DOWN. Run `qm start <vmid>` on pve-nas-01 and check the
+              app immediately; see `journalctl -t swap-clean` (docs/06 §NAS
+              memory management). ONE-SHOT notice: the gauge is per-run, so
+              the next nightly run rewrites it to 0 and this alert
+              self-resolves even if the guest is still down — the guest's
+              own app-down/blackbox alerts are the persistent signal.
+
+        # Informational: swap-clean stopped (and restarted) production guests to
+        # free RAM. severity:info — InfoInhibitor is scoped by namespace, so a
+        # host-level info alert still reaches discord-default. [6h] rather than
+        # [1d] so one event does not latch the alert on for a full day.
+        - alert: SwapCleanStoppedGuests
+          expr: max_over_time(swap_clean_guests_stopped_count[6h]) > 0
+          for: 5m
+          labels:
+            severity: info
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/06-zfs.md'
+            summary: 'NAS swap-clean stopped production guests to reclaim swap'
+            description: >-
+              swap-clean on pve-nas-01 had to gracefully stop
+              {{ $value | printf "%.0f" }} guest(s) in the last 6 hours to free
+              RAM for the swapoff (they were restarted afterward). ARC-shrink
+              headroom alone no longer covers the swap — the box is running
+              short on RAM (docs/06 §NAS memory management).
+
+        # Per-device SMART health from the smartmon textfile collector
+        # (node_exporter_host, every 5m): the drive-level precursors the ZFS
+        # pool alerts only see after corruption reaches a pool. Every rule reads
+        # through an over_time window because `smartctl -n standby` leaves a
+        # sleeping drive's attribute series absent for that cycle.
+        - alert: SMARTDeviceUnhealthy
+          # min_over_time stays 0 once a drive has reported FAILED, riding
+          # through subsequent standby gaps; a healthy (1) or never-probed
+          # (absent) drive never trips it.
+          expr: min_over_time(smartmon_device_smart_healthy[6h]) == 0
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#handling-disk-failure-zfs'
+            summary: 'SMART overall-health FAILED on {{ $labels.device }} ({{ $labels.instance }})'
+            description: >-
+              smartmon_device_smart_healthy for {{ $labels.device }} on
+              {{ $labels.instance }} has reported FAILED within the last
+              6 hours. The drive's own SMART self-assessment predicts
+              imminent failure — plan replacement and check the ZFS pool
+              it backs.
+
+        # A stable nonzero count from an old event is not actionable; growth is.
+        # max-min over 24h detects an increase while tolerating standby gaps.
+        - alert: SMARTReallocatedSectorsGrowing
+          expr: >-
+            max_over_time(smartmon_reallocated_sector_count[24h])
+            - min_over_time(smartmon_reallocated_sector_count[24h]) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#handling-disk-failure-zfs'
+            summary: 'Reallocated sectors growing on {{ $labels.device }} ({{ $labels.instance }})'
+            description: >-
+              Reallocated_Sector_Ct on {{ $labels.device }} on
+              {{ $labels.instance }} grew by
+              {{ $value | printf "%.0f" }} in the last 24 hours. A drive
+              actively remapping sectors is degrading — watch it closely
+              and plan replacement.
+
+        # Pending / offline-uncorrectable sectors are acute: any nonzero
+        # value is a sector currently unreadable or awaiting reallocation,
+        # not a healed-over historical event. max_over_time bridges standby.
+        - alert: SMARTPendingSectors
+          expr: max_over_time(smartmon_current_pending_sector_count[6h]) > 0
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#handling-disk-failure-zfs'
+            summary: 'Current pending sectors on {{ $labels.device }} ({{ $labels.instance }})'
+            description: >-
+              Current_Pending_Sector on {{ $labels.device }} on
+              {{ $labels.instance }} is {{ $value | printf "%.0f" }} —
+              sectors are unreadable and awaiting reallocation. A scrub
+              of the backing pool will surface any affected data.
+
+        - alert: SMARTOfflineUncorrectable
+          expr: max_over_time(smartmon_offline_uncorrectable_count[6h]) > 0
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#handling-disk-failure-zfs'
+            summary: 'Offline-uncorrectable sectors on {{ $labels.device }} ({{ $labels.instance }})'
+            description: >-
+              Offline_Uncorrectable on {{ $labels.device }} on
+              {{ $labels.instance }} is {{ $value | printf "%.0f" }} —
+              sectors that could not be corrected on read. Strong
+              replace-soon signal.
+
+        # NVMe media & data-integrity errors — the SSD-side equivalent of
+        # reallocated/uncorrectable sectors. Any nonzero is worth a look.
+        - alert: SMARTMediaErrors
+          expr: max_over_time(smartmon_media_errors_count[6h]) > 0
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#handling-disk-failure-zfs'
+            summary: 'NVMe media errors on {{ $labels.device }} ({{ $labels.instance }})'
+            description: >-
+              Media and Data Integrity Errors on {{ $labels.device }} on
+              {{ $labels.instance }} is {{ $value | printf "%.0f" }}. The
+              NVMe controller has logged uncorrectable data errors —
+              investigate and plan replacement.
+
+        # Collector meta-failure. The absent() arm makes an undeployed collector
+        # loud instead of silently blind (mirrors the other *CollectorStale).
+        - alert: SMARTCollectorStale
+          expr: >-
+            (time() - smartmon_collector_last_success_seconds > 900)
+            or absent(smartmon_collector_last_success_seconds)
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#handling-disk-failure-zfs'
+            summary: 'smartmon collector is degraded or missing on {{ $labels.instance }}'
+            description: >-
+              smartmon_collector_last_success_seconds is stale (>15m) or
+              entirely absent — the SMART device alerts on this host are
+              serving stale or no inputs. Check
+              `journalctl -u smartmon-collector.service` and
+              `systemctl status smartmon-collector.timer`.

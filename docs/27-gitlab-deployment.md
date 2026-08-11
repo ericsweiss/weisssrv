@@ -112,7 +112,10 @@ never triggers the move (reconfigure creates the store on the zvol directly).
 
 ## Prerequisites
 
-1. **Authentik SSO** - Configure SAML provider before deployment
+1. **Authentik SSO** - the GitLab SAML provider, application and `gitlab-*`
+   groups are declared in `terraform/authentik/` and applied under supervision
+   ([docs/40](40-authentik-terraform.md)); do not create them in the Authentik
+   UI. They must exist before deployment.
 2. **1Password Items** - Create required items (see below)
 3. **Terraform DNS** - Apply Cloudflare DNS records
 
@@ -512,8 +515,8 @@ vzdump instead (docs/17).
 # Manual backup (also re-seeds the freshness metric)
 task gitlab:backup
 
-# List backups
-ssh gitlab "sudo ls -la /var/opt/gitlab/backups/"
+# List backups (the landing zone is the NFS mount, not the VM root disk)
+ssh gitlab "sudo ls -la /mnt/backups-offsite/"
 
 # Restore from backup (DB + repos + config; NOT registry/artifacts — see above)
 ssh gitlab "sudo gitlab-backup restore BACKUP=<timestamp>"
@@ -804,7 +807,8 @@ Pages are available at:
    - Check status: `sudo fail2ban-client status gitlab-ssh`
    - View banned IPs: `sudo fail2ban-client get gitlab-ssh banned`
    - Test filter: `sudo fail2ban-regex systemd-journal /etc/fail2ban/filter.d/sshd.conf`
-3. **SAML authentication**: Consider disabling password auth after confirming SSO works
+3. **SAML authentication**: password auth stays available as break-glass for the
+   root account; SAML is the normal path
 4. **Firewall + sshd login restriction**: The `sg-gitlab` security group has differentiated access:
    - Port 2222 (Git SSH): Open to WAN for external collaborators
    - Port 22 (Admin SSH + LAN Git): Restricted to admin networks (LAN + Tailscale)
@@ -819,15 +823,16 @@ Pages are available at:
    local account would accept internet pubkey auth attempts via 2222.
 5. **Secrets**: All credentials via 1Password; never committed to git
 
-## Related Documentation
-
-- [Authentik SSO Setup](23-recipes-sso-setup.md) - Similar SSO configuration pattern
-- [K3s Deployment](19-k3s-deployment.md) - Cluster where runners are deployed
-- [Firewall Configuration](11-firewall.md) - Security group details
-
 ## Web IDE Extension Host
 
-GitLab's Web IDE serves the VS Code editor and per-extension iframes from a separate "extension host" subdomain so the browser's same-origin policy isolates extension JavaScript from the GitLab session cookie. CVE-2026-5816 (CVSS 8.0, first fixed upstream in 18.11.1; the release pinned here is well past that — see `gitlab_version` in `ansible/inventories/prod/group_vars/all.yml`) showed that when the configured extension host is unreachable, GitLab falls back to serving those assets from the GitLab origin itself — at which point a malicious extension can hit `/api/v4/...` with the user's session cookie.
+GitLab's Web IDE serves the VS Code editor and per-extension iframes from a
+separate "extension host" subdomain so the browser's same-origin policy isolates
+extension JavaScript from the GitLab session cookie. CVE-2026-5816 (CVSS 8.0,
+first fixed upstream in 18.11.1; the release pinned here is well past that — see
+`gitlab_version` in `ansible/inventories/prod/group_vars/all.yml`) showed that
+when the configured extension host is unreachable, GitLab falls back to serving
+those assets from the GitLab origin itself — at which point a malicious
+extension can hit `/api/v4/...` with the user's session cookie.
 
 ### Architecture
 
@@ -841,7 +846,7 @@ GitLab's Web IDE serves the VS Code editor and per-extension iframes from a sepa
 
 ### GitLab settings (Application Settings API)
 
-Set by the `Web IDE | …` block in `ansible/roles/gitlab/tasks/main.yml`. These have no Omnibus `gitlab.rb` key on the pinned release (see `gitlab_version` in `ansible/inventories/prod/group_vars/all.yml`); they live only in the `application_settings` table.
+Set by the `Web IDE | …` block in weisssrv-lib `ansible_collections/weisssrv/infra/roles/gitlab/tasks/main.yml`. These have no Omnibus `gitlab.rb` key on the pinned release (see `gitlab_version` in `ansible/inventories/prod/group_vars/all.yml`); they live only in the `application_settings` table.
 
 | Field | Value |
 |---|---|
@@ -863,7 +868,7 @@ The first deploy must order infrastructure → settings so Web IDE doesn't break
    ```
 3. **Smoke gate (manual, MUST pass before step 4)** — confirms DNS + TLS + IngressRoute are live:
    ```bash
-   curl -sI https://probe.ide.git.ericsweiss.com/-/readiness | head -1
+   curl -sI https://probe.ide.git.ericsweiss.com/-/health | head -1
    # Expected: HTTP/2 200
    ```
 4. **Apply settings + version bump**:
@@ -880,13 +885,24 @@ If step 3 fails, do **not** run step 4 — the security flip would break Web IDE
 
 ### Verification
 
-```bash
-task gitlab:verify   # Test 8 probes https://probe.ide.git.ericsweiss.com/-/readiness
-ssh gitlab "sudo gitlab-rails runner 'puts ApplicationSetting.last.vscode_extension_marketplace_single_origin_fallback_enabled'"
-# expected: false
-```
+Two independent things to check — routing and the settings flip. `task gitlab:verify`
+covers only the first.
 
-In the browser: open `https://git.ericsweiss.com/<group>/<project>/-/ide/`, edit a file, confirm the editor iframe `src=` points at `*.ide.git.ericsweiss.com` and DevTools shows no SOP violations.
+1. **Route** — Test 8 of `task gitlab:verify` probes
+   `https://probe.ide.git.ericsweiss.com/-/health`. `/-/health` rather than
+   `/-/readiness`: readiness is `monitoring_whitelist`-gated to the LAN and
+   `*.ide.git.ericsweiss.com` hairpins via Cloudflare, so GitLab sees the WAN IP.
+   A PASS proves DNS + cert + IngressRoute are wired end to end; it says nothing
+   about the CVE-2026-5816 mitigation.
+2. **Settings flip** — the mitigation lives in `application_settings`, which has
+   no `gitlab.rb` key, so read it from Rails:
+   ```bash
+   ssh gitlab "sudo gitlab-rails runner 'puts ApplicationSetting.last.vscode_extension_marketplace_single_origin_fallback_enabled'"
+   # expected: false
+   ```
+3. **Browser** — open `https://git.ericsweiss.com/<group>/<project>/-/ide/`, edit
+   a file, confirm the editor iframe `src=` points at `*.ide.git.ericsweiss.com`
+   and DevTools shows no SOP violations.
 
 ### Rollback
 
@@ -900,3 +916,12 @@ curl -X PUT "https://git.ericsweiss.com/api/v4/application/settings" \
 ```
 
 For a persisted rollback, flip `gitlab_web_ide_single_origin_fallback` to `true` in `ansible/inventories/prod/group_vars/all.yml` (or set it as an override) and re-run `task gitlab:deploy`. The DNS records and cert are inert without the route and safe to leave in place.
+
+
+## Related documentation
+
+- [docs/13-ci-cd.md](13-ci-cd.md) - pipeline structure, runners, GitHub mirroring
+- [docs/19-k3s-deployment.md](19-k3s-deployment.md) - cluster where the runners live
+- [docs/11-firewall.md](11-firewall.md) - `sg-gitlab` security group details
+- [docs/40-authentik-terraform.md](40-authentik-terraform.md) - the SAML provider as code
+- [docs/17-disaster-recovery.md](17-disaster-recovery.md) - restore paths

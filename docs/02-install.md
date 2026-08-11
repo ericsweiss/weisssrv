@@ -106,6 +106,10 @@ cd weisssrv
 
 ### 4. Install Ansible Collections
 
+Every role these playbooks address ships in the **`weisssrv.infra`** collection
+(`eric/weisssrv-lib`) — this repo has no `ansible/roles/` directory. Nothing runs
+until the collection is installed.
+
 ```bash
 # Install required Ansible Galaxy collections
 task ansible:install-collections
@@ -115,10 +119,14 @@ ansible-galaxy collection install -r ansible/requirements.yml
 ```
 
 Expected collections:
-- `community.general`
-- `ansible.posix`
-- `community.crypto`
-- `community.docker` (required by Molecule tests)
+- `weisssrv.infra` — the roles, installed from the library repo at the tag
+  pinned in `ansible/requirements.yml`
+- `community.general`, `ansible.posix` — dependencies of `weisssrv.infra`
+- `community.docker` (required by the integration-test Molecule scenarios)
+
+Upgrading the platform is a bump of `version:` in `ansible/requirements.yml`
+followed by a re-run of the install (add `--force` to replace an already
+installed copy).
 
 ### 5. Install Linting Tools
 
@@ -362,7 +370,7 @@ sudo chmod 440 /etc/sudoers.d/eric
 exit
 ```
 
-**Note**: This is only needed for existing hosts. New VMs provisioned via Ansible will have this configured automatically by the `base` role.
+**Note**: This is only needed for existing hosts. New VMs provisioned via Ansible will have this configured automatically by the `weisssrv.infra.base` role.
 
 ### Verify Firewall Allows Ansible SSH
 
@@ -437,7 +445,7 @@ ansible-playbook ansible/playbooks/site.yml --check
 Start with the least risky deployment:
 
 ```bash
-# Deploy base role only (packages, SSH config)
+# Deploy the base + nic_tuning roles only (packages, SSH config, NIC offloads)
 task infra:base
 
 # OR manually:

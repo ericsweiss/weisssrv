@@ -2,22 +2,14 @@
 # Flux Kustomization for application workloads.
 # Reconciles kubernetes/apps/ (one folder per app; see apps/kustomization.yaml).
 #
-# dependsOn infrastructure-configs: apps wait for the platform chain
-# (sources → controllers → configs) but deliberately NOT for observability
-# health — a failed observability chart upgrade must not freeze reconciliation
-# of every business app. Trade-off: on a truly-fresh bootstrap the
-# monitoring.coreos.com consumers under apps/ (the raw qbittorrent PodMonitor,
-# and the authentik chart's ServiceMonitor whose absence fails that HelmRelease
-# install) fail and retry until infrastructure-observability installs the CRDs
-# — transient noise that converges via Flux retries/remediation, and moot in
-# practice because the docs/29 fresh-bootstrap CRD pre-apply (required for the
-# controllers stage anyway) puts the CRDs in place first. The durable
-# CRDs-only early stage is tracked as k8s-infra-06 in docs/16.
+# dependsOn infrastructure-configs (sources → crds → controllers → configs), so
+# the monitoring.coreos.com CRDs are two stages old by the time an app renders a
+# ServiceMonitor/PodMonitor. Deliberately NOT dependent on observability health:
+# a failed observability chart upgrade must not freeze every business app.
 #
-# optional: false — the cluster-versions ConfigMap is applied by
-# infrastructure-sources, which must be Ready before this Kustomization runs.
-# A missing ConfigMap at this point indicates a real problem and should fail
-# loudly rather than silently render empty chart/image versions.
+# optional: false — cluster-versions comes from infrastructure-sources, so a
+# missing ConfigMap here is a real fault and must fail loudly rather than render
+# empty chart/image versions.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -26,7 +18,9 @@ metadata:
 spec:
   interval: 10m
   retryInterval: 1m
-  timeout: 15m
+  # Headroom over the slowest release this stage waits on (authentik, 15m) so a
+  # slow-but-successful install is still seen Ready in one pass.
+  timeout: 25m
   dependsOn:
     - name: infrastructure-configs
   sourceRef:

@@ -2,14 +2,10 @@
 # Flux Kustomization: CRD bootstrap stage — installs the monitoring.coreos.com
 # CRDs (prometheus-operator-crds HelmRelease) before the controllers stage.
 #
-# Fixes the fresh-bootstrap circular dependency: infrastructure-controllers
-# (Traefik) renders a ServiceMonitor and hard-fails if the monitoring CRDs don't
-# exist yet. This stage installs them first; wait:true holds controllers until
-# the CRDs are Established. See docs/29 (Fresh bootstrap / disaster recovery).
-#
-# Depends only on infrastructure-sources: needs the prometheus-community
-# HelmRepository (chart pullable) + the cluster-versions ConfigMap (postBuild
-# substitution of ${helm_chart_versions_prometheus_operator_crds}).
+# Breaks the fresh-bootstrap ordering problem: controllers (Traefik) render
+# ServiceMonitors and hard-fail without the monitoring CRDs, so they are
+# installed here and wait:true holds controllers until they are Established.
+# Depends only on sources (chart repo + the version ConfigMap).
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -18,7 +14,8 @@ metadata:
 spec:
   interval: 10m
   retryInterval: 1m
-  timeout: 10m
+  # Headroom over the prometheus-operator-crds release timeout (10m).
+  timeout: 15m
   dependsOn:
     - name: infrastructure-sources
   sourceRef:

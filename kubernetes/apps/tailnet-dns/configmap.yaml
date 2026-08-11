@@ -9,7 +9,7 @@
 #   Direct/admin + infra names       -> forwarded to AdGuard (.150/.160), which
 #       returns their real LAN IP (reachable via subnet routing, which works for
 #       plain hosts). This override list mirrors the non-.101 entries of
-#       ansible .../group_vars/dns.yml `adguard_rewrites` — keep in sync when a
+#       ansible .../group_vars/dns.yml `adguard_home_rewrites` — keep in sync when a
 #       new direct-IP (bypass-Traefik) name is added there. Every OTHER
 #       *.esweiss.com name is assumed Traefik-fronted and needs no change here
 #       when new web apps are added.

@@ -1,0 +1,313 @@
+---
+# promtool unit tests for the availability alerts added by the observability
+# split: the critical etcd/node pair, the wg-easy WAN endpoint, the *Down
+# deployment/statefulset rules, and PostgresDown. Every one of these is either
+# an `or absent(...)` composition (whose empty-vector arm review cannot check)
+# or a rule the Alertmanager behaviour gate names by hand — EtcdQuorumAtRisk is
+# a ROUTE_CASE in scripts/check-alertmanager-behaviour.py, so a rename here has
+# to break something loudly.
+#
+# That last claim was false when written and is now made true. A ROUTE_CASE
+# pins the severity->receiver mapping, NOT the alertname: amtool resolves a
+# route from labels alone and never asks whether the alert exists, so a renamed
+# EtcdQuorumAtRisk kept resolving `email-and-discord` and the case silently
+# asserted nothing. check_route_case_alertnames() in that script now fails when
+# a ROUTE_CASE names a rule the corpus no longer defines.
+rule_files:
+  - rules.yaml
+# 5m, not the 1m the short-horizon files use: the etcd/node cases run to 6-7h of
+# simulated time, and promtool re-evaluates every rule in the corpus once per
+# interval. 5m is still three evaluations inside the shortest `for:` here (15m).
+evaluation_interval: 5m
+tests:
+  # EtcdQuorumAtRisk — 2 of 3 members up is already "at risk" (one more loss
+  # takes the API server down), so the boundary is <= 2, one member LOOSER than
+  # upstream's etcdInsufficientMembers (see etcd.test.yaml). 6h `for`, so the
+  # evaluation window has to clear it.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="kube-etcd", instance="192.168.0.222:2381"}'
+        values: '1+0x400'
+      - series: 'up{job="kube-etcd", instance="192.168.0.223:2381"}'
+        values: '1+0x400'
+      - series: 'up{job="kube-etcd", instance="192.168.0.227:2381"}'
+        values: '0+0x400'
+    alert_rule_test:
+      - eval_time: 6h5m
+        alertname: EtcdQuorumAtRisk
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+
+  # All three up => count 3 > 2 => silent. Pins the boundary.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="kube-etcd", instance="192.168.0.222:2381"}'
+        values: '1+0x400'
+      - series: 'up{job="kube-etcd", instance="192.168.0.223:2381"}'
+        values: '1+0x400'
+      - series: 'up{job="kube-etcd", instance="192.168.0.227:2381"}'
+        values: '1+0x400'
+    alert_rule_test:
+      - eval_time: 6h5m
+        alertname: EtcdQuorumAtRisk
+        exp_alerts: []
+
+  # The absent() arm is the one that matters and the one review cannot see:
+  # `count(up == 1)` over an empty vector returns NOTHING, not 0, so without
+  # `or absent(up{job="kube-etcd"} == 1)` a total etcd scrape failure — every
+  # member down, or the ServiceMonitor deleted — would be SILENT.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="kube-etcd", instance="192.168.0.222:2381"}'
+        values: '0+0x400'
+      - series: 'up{job="kube-etcd", instance="192.168.0.223:2381"}'
+        values: '0+0x400'
+      - series: 'up{job="kube-etcd", instance="192.168.0.227:2381"}'
+        values: '0+0x400'
+    alert_rule_test:
+      - eval_time: 6h5m
+        alertname: EtcdQuorumAtRisk
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+
+  # No etcd series at all (job gone) — same arm, still fires.
+  - interval: 1m
+    input_series: []
+    alert_rule_test:
+      - eval_time: 6h5m
+        alertname: EtcdQuorumAtRisk
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+
+  # NodeNotReadyProlonged: one node NotReady for 6h fires, labelled by node;
+  # a Ready node does not. kured reboots complete far inside 6h.
+  - interval: 5m
+    input_series:
+      - series: 'kube_node_status_condition{condition="Ready", status="true", node="k3s-agt-01"}'
+        values: '0+0x100'
+      - series: 'kube_node_status_condition{condition="Ready", status="true", node="k3s-srv-01"}'
+        values: '1+0x100'
+    alert_rule_test:
+      - eval_time: 6h30m
+        alertname: NodeNotReadyProlonged
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              condition: Ready
+              status: 'true'
+              node: k3s-agt-01
+
+  # NodeOutageStormControl gates the whole inhibit chain, so its shape is
+  # load-bearing: it fires only for a node that WAS Ready inside the last 6h,
+  # and self-clears after that, so a multi-day outage cannot keep suppressing
+  # every per-pod warning in the cluster.
+  - interval: 5m
+    input_series:
+      # Ready for the first hour (samples at 0..60m), then NotReady out past 8h
+      # so the release case is a real release and not just the series ending.
+      - series: 'kube_node_status_condition{condition="Ready", status="true", node="k3s-agt-01"}'
+        values: '1+0x12 0+0x100'
+    alert_rule_test:
+      # 1h into the outage: the 6h lookback still sees the Ready samples.
+      - eval_time: 2h
+        alertname: NodeOutageStormControl
+        exp_alerts:
+          - exp_labels:
+              severity: none
+              condition: Ready
+              status: 'true'
+              node: k3s-agt-01
+      # Past 6h of continuous NotReady, max_over_time no longer sees a 1, so
+      # storm control releases and the individual warnings come back — while
+      # the series is still being scraped (NodeNotReadyProlonged is firing).
+      - eval_time: 7h30m
+        alertname: NodeOutageStormControl
+        exp_alerts: []
+      - eval_time: 7h30m
+        alertname: NodeNotReadyProlonged
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              condition: Ready
+              status: 'true'
+              node: k3s-agt-01
+
+  # A node that has been NotReady since Prometheus started (no prior Ready
+  # sample) must NOT trip storm control — otherwise a never-joined node would
+  # mute the cluster's workload alerts indefinitely.
+  - interval: 5m
+    input_series:
+      - series: 'kube_node_status_condition{condition="Ready", status="true", node="k3s-agt-01"}'
+        values: '0+0x40'
+    alert_rule_test:
+      - eval_time: 1h
+        alertname: NodeOutageStormControl
+        exp_alerts: []
+
+  # WgEasyDown: 0 available replicas fires critical; a healthy replica does not;
+  # and the absent() arm covers the Deployment being deleted outright.
+  - interval: 1m
+    input_series:
+      - series: 'kube_deployment_status_replicas_available{namespace="wg-easy", deployment="wg-easy"}'
+        values: '0+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: WgEasyDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              namespace: wg-easy
+              deployment: wg-easy
+  - interval: 1m
+    input_series:
+      - series: 'kube_deployment_status_replicas_available{namespace="wg-easy", deployment="wg-easy"}'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: WgEasyDown
+        exp_alerts: []
+  - interval: 1m
+    input_series: []
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: WgEasyDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              namespace: wg-easy
+              deployment: wg-easy
+
+  # WgEasyEndpointVipMissing asserts the VIP VALUE, not just that the Service
+  # has some ingress IP: a VIP that moved pool leaves WgEasyDown green while
+  # every external client fails to connect. A different IP must still fire.
+  - interval: 1m
+    input_series:
+      - series: 'kube_service_status_load_balancer_ingress{namespace="wg-easy", service="wg-easy", ip="192.168.0.99"}'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: WgEasyEndpointVipMissing
+        exp_alerts: []
+  - interval: 1m
+    input_series:
+      - series: 'kube_service_status_load_balancer_ingress{namespace="wg-easy", service="wg-easy", ip="192.168.0.100"}'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: WgEasyEndpointVipMissing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              namespace: wg-easy
+              service: wg-easy
+              ip: 192.168.0.99
+
+  # TailscaleProxyDown is namespace-scoped (the operator generates the
+  # StatefulSet name suffixes), so it must fire per statefulset and only for the
+  # one with no ready replica.
+  - interval: 1m
+    input_series:
+      - series: 'kube_statefulset_status_replicas_ready{namespace="tailscale", statefulset="ts-k3s-api-abc12"}'
+        values: '0+0x30'
+      - series: 'kube_statefulset_status_replicas_ready{namespace="tailscale", statefulset="ts-grafana-def34"}'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: TailscaleProxyDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: tailscale
+              statefulset: ts-k3s-api-abc12
+
+  # GitLabAgentDown: the deployment is named weisssrv-k3s-gitlab-agent-v2, so
+  # the rule is namespace-scoped. absent() arm covers the whole namespace going
+  # away — which is also how a failed HelmRelease presents.
+  - interval: 1m
+    input_series:
+      - series: 'kube_deployment_status_replicas_available{namespace="gitlab-agent", deployment="weisssrv-k3s-gitlab-agent-v2"}'
+        values: '0+0x40'
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: GitLabAgentDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: gitlab-agent
+              deployment: weisssrv-k3s-gitlab-agent-v2
+  - interval: 1m
+    input_series: []
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: GitLabAgentDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: gitlab-agent
+
+  # AuthentikWorkerDown: the worker is what runs outposts, tasks and the
+  # e-mail/expiry pipeline — the server staying up hides it, so this is named
+  # rather than left to the mixin's replicas-mismatch warning.
+  - interval: 1m
+    input_series:
+      - series: 'kube_deployment_status_replicas_available{namespace="authentik", deployment="authentik-worker"}'
+        values: '0+0x30'
+      - series: 'kube_deployment_status_replicas_available{namespace="authentik", deployment="authentik-server"}'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: AuthentikWorkerDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: authentik
+              deployment: authentik-worker
+  - interval: 1m
+    input_series:
+      - series: 'kube_deployment_status_replicas_available{namespace="authentik", deployment="authentik-server"}'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: AuthentikWorkerDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: authentik
+              deployment: authentik-worker
+
+  # PostgresDown covers all five databases through three discovery shapes
+  # (chart ServiceMonitor for authentik, PodMonitor for mealie, static
+  # EndpointSlice targets for the three VMs), so the rule carries NO job
+  # matcher. This pins that: a pg_up==0 from any job fires, one per instance.
+  - interval: 1m
+    input_series:
+      - series: 'pg_up{job="authentik", instance="10.42.3.11:9187"}'
+        values: '0+0x20'
+      - series: 'pg_up{job="gitlab", instance="192.168.0.153:9187"}'
+        values: '0+0x20'
+      - series: 'pg_up{job="nextcloud", instance="192.168.0.156:9187"}'
+        values: '1+0x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: PostgresDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: authentik
+              instance: 10.42.3.11:9187
+          - exp_labels:
+              severity: warning
+              job: gitlab
+              instance: 192.168.0.153:9187
+
+  # No absent() arm on PostgresDown, deliberately: the VM exporters are opt-in
+  # per host and ship on the Ansible lifecycle, so absence is TargetDown's job.
+  - interval: 1m
+    input_series: []
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: PostgresDown
+        exp_alerts: []

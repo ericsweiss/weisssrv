@@ -14,11 +14,9 @@ metadata:
   namespace: external-secrets
 spec:
   interval: 30m
-  # Correct out-of-band edits to chart-rendered objects — see the rationale on
-  # controllers/traefik/release.yaml. No webhooks here, but unlike Traefik this
-  # chart DOES render .spec.replicas (connect.replicas: 2) while its own HPA
-  # scales to 3, so that one path must be ignored or every reconcile would scale
-  # the Deployment back down to the floor.
+  # Revert out-of-band edits (repo rule in traefik/release.yaml). This chart
+  # renders .spec.replicas while its own HPA scales past it, so that one path
+  # must be ignored or every reconcile would scale back to the floor.
   driftDetection:
     mode: enabled
     ignore:
@@ -48,18 +46,13 @@ spec:
       # from the pre-existing op-credentials Secret (default credentialsName).
       credentials_base64: ""
       serviceType: ClusterIP
-      # HA: 2 replicas spread across hosts so a single node drain (or upcoming
-      # ZFS-encryption boot dependency on Connect) never takes the secret
-      # backend offline. Companion PodDisruptionBudget (pdb.yaml, minAvailable:1)
-      # protects against simultaneous voluntary disruption. replicas stays the
-      # HPA floor so the chart's static count never flaps against the HPA.
+      # HA: the ZFS-encryption boot path depends on Connect, so a single node
+      # drain must not take it offline. Keep this equal to the HPA floor below,
+      # or the chart's static count flaps against the HPA.
       replicas: 2
-      # Chart-native HPA: Connect is a stateless API proxy (connect-api +
-      # connect-sync) that fronts every ESO secret fetch and bursts under
-      # fan-out. avgMemoryUtilization: 0 disables the chart's memory metric so
-      # this scales on CPU only — the onepassword-connect VPA
-      # (configs/vpa/platform.yaml) is memory-only and a VPA/HPA pair must not
-      # drive the same resource. max kept at 3 (tight-RAM hosts).
+      # CPU-only autoscaling: avgMemoryUtilization 0 disables the chart's memory
+      # metric, because the paired VPA (configs/vpa/platform.yaml) owns memory
+      # and an HPA/VPA pair must never drive the same resource.
       hpa:
         enabled: true
         minReplicas: 2
@@ -75,13 +68,9 @@ spec:
         - key: esweiss.com/compute
           operator: Exists
           effect: PreferNoSchedule
-      # Anti-affinity is PREFERRED, not required: there are exactly 3
-      # esweiss.com/cpu=modern nodes, so under a hard one-per-host rule the HPA
-      # could never place its 3rd replica (maxReplicas:3), and during a node
-      # drain even a 2nd replica could stay Pending. Preferred keeps replicas on
-      # distinct hosts in steady state but lets them co-locate when a host is
-      # down — trading a momentary loss of spread for schedulability during
-      # maintenance (PDB minAvailable:1 still guards voluntary disruption).
+      # PREFERRED, not required: with only 3 modern-CPU nodes a hard one-per-host
+      # rule would leave the HPA's 3rd replica — and a 2nd during any drain —
+      # Pending. PDB minAvailable:1 still guards voluntary disruption.
       affinity:
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
@@ -107,10 +96,8 @@ spec:
             memory: 256Mi
     operator:
       create: false
-  # Connect (connect-api + connect-sync) never calls the Kubernetes API — it
-  # serves ESO from its local encrypted cache — so it needs no ServiceAccount
-  # token mounted. The connect chart (2.x) exposes no automount value, so patch
-  # the rendered Deployment to drop the projected token.
+  # Connect never calls the Kubernetes API, so it needs no ServiceAccount token.
+  # The chart exposes no automount value, so drop the projected token here.
   postRenderers:
     - kustomize:
         patches:

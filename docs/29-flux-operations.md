@@ -11,9 +11,11 @@ Operator-facing guide for running the Flux GitOps system that reconciles every K
 5. [Suspending and Resuming](#suspending-and-resuming)
 6. [Rollback](#rollback)
 7. [Troubleshooting](#troubleshooting)
-8. [Push-Triggered Reconciliation](#push-triggered-reconciliation)
-9. [Upgrading the Flux Distribution](#upgrading-the-flux-distribution)
-10. [References](#references)
+8. [GitLab outage: pointing Flux at the GitHub mirror](#gitlab-outage-pointing-flux-at-the-github-mirror)
+9. [Push-Triggered Reconciliation](#push-triggered-reconciliation)
+10. [Upgrading the Flux Distribution](#upgrading-the-flux-distribution)
+11. [Appendix: completed one-time migrations](#appendix-completed-one-time-migrations)
+12. [Related documentation](#related-documentation)
 
 ---
 
@@ -69,33 +71,15 @@ so it no longer ships its own copies (which would tug ownership with the CRD sta
 **On a truly fresh cluster nothing manual is needed** — the CRD stage installs
 the CRDs cleanly before controllers.
 
-**One-time live-cluster migration (deploy window).** The pre-existing live CRDs
-were installed by kube-prometheus-stack's `crds/` directory and carry **no** Helm
+**Adopting pre-existing CRDs.** On a cluster whose monitoring CRDs were
+installed by kube-prometheus-stack's `crds/` directory, they carry no Helm
 ownership metadata, so the first reconcile of the `prometheus-operator-crds`
-HelmRelease (whose chart ships the CRDs as Helm-owned *templates*) would hit
-Helm's "invalid ownership metadata … cannot be imported" guard. Resolve with a
-one-time, **metadata-only** adoption (labels/annotations only — the CRD *spec* is
-untouched, so zero impact on existing Prometheus/ServiceMonitor/PrometheusRule/…
-CRs) BEFORE (or immediately after) the stage first reconciles, then reconcile:
+HelmRelease hits Helm's "invalid ownership metadata … cannot be imported" guard.
+The fix is a **metadata-only** adoption (labels/annotations only — the CRD spec is
+untouched, so existing CRs are unaffected). This has been applied here; the recipe
+is in the [historical appendix](#appendix-completed-one-time-migrations) for a
+rebuild that starts from an older cluster.
 
-```bash
-for crd in alertmanagerconfigs alertmanagers podmonitors probes prometheusagents \
-           prometheuses prometheusrules scrapeconfigs servicemonitors thanosrulers; do
-  kubectl label  crd ${crd}.monitoring.coreos.com app.kubernetes.io/managed-by=Helm --overwrite
-  kubectl annotate crd ${crd}.monitoring.coreos.com \
-    meta.helm.sh/release-name=prometheus-operator-crds \
-    meta.helm.sh/release-namespace=prometheus-operator-crds --overwrite
-done
-task flux:reconcile
-```
-
-After adoption, helm-controller applies the identical `v0.92.1` CRD content — a
-steady-state no-op (no CRD spec churn, no Prometheus/Alertmanager restart).
-Verify: `flux get kustomizations infrastructure-crds` Ready; `flux get hr -n
-prometheus-operator-crds prometheus-operator-crds` Ready; `kubectl get crd | grep
-monitoring.coreos.com` shows all 10 with annotation `operator.prometheus.io/version:
-0.92.1`; `flux get hr -n observability kube-prometheus-stack` still Ready with zero
-object churn.
 
 **Keep the CRD pin in lockstep with kube-prometheus-stack** (`prometheus_operator_crds`
 ↔ `kube_prometheus_stack` in `all.yml`) so the CRD set stays version-matched to the
@@ -417,13 +401,13 @@ The canonical app pattern is `kubernetes/apps/authentik/` — copy its structure
      `traefik` namespace).
    - **Observability (mandatory)**: a ServiceMonitor/PodMonitor plus the scrape
      NetworkPolicy above; a down/stale alert rule in the matching `homelab.*`
-     group in
-     `kubernetes/infrastructure/observability/kube-prometheus-stack/release.yaml`
-     (match the neighbouring `for`/`severity`/`runbook` style); and a blackbox
+     group under `kubernetes/infrastructure/observability/rules/` (one
+     PrometheusRule manifest per group — match the neighbouring
+     `for`/`severity`/`runbook_url` style); and a blackbox
      probe for user-facing endpoints where no exporter covers reachability. A
      Grafana dashboard only if a good upstream one exists (ConfigMap sidecar via
      `configMapGenerator` in `observability/dashboards/`).
-   - **DNS**: internal = an `adguard_rewrites` entry in `group_vars/dns.yml`
+   - **DNS**: internal = an `adguard_home_rewrites` entry in `group_vars/dns.yml`
      (answer `192.168.0.101` for anything Traefik-fronted). External = the
      external-dns annotation above — no Terraform edit — unless it needs a
      nested subdomain or a DNS-only record, which goes in
@@ -436,7 +420,7 @@ The canonical app pattern is `kubernetes/apps/authentik/` — copy its structure
      provisioner); the zvol itself is created host-side via
      `vm_additional_disks` (docs/06). A brand-new top-level dataset also needs
      an `SRC_LIST` edit in
-     `ansible/roles/nas_storage/templates/archive-backupctl.sh.j2`.
+     weisssrv-lib `ansible_collections/weisssrv/infra/roles/nas_storage/templates/archive-backupctl.sh.j2`.
    - **Scheduling**: NAS-avoid is the default for stateless workloads
      (preferred `nodeAffinity` `esweiss.com/nas DoesNotExist` weight 100 +
      `nodeSelector esweiss.com/general: "true"`, plus
@@ -779,29 +763,48 @@ deliberate: bumping the GitOps control plane is a bootstrap-tested manual step
 (the sequence above), not an automated pin bump. `check-versions.py --update flux`
 prints the same rationale and refuses to write the new version.
 
-## One-Time Cluster Patches
+## Appendix: completed one-time migrations
 
-**Traefik NodePort de-allocation.** The Traefik Service sets
-`allocateLoadBalancerNodePorts: false` (MetalLB L2 announces the VIP
-directly; the default-allocated NodePorts were unused listeners on every
-node). Flipping that flag does **not** release NodePorts already allocated
-on an existing Service — neither Helm nor Flux SSA owns
-`spec.ports[*].nodePort` — so a one-time patch removing those fields is
-needed on a cluster that predates the flag:
+Both procedures below have been applied to this cluster. They are kept for a
+rebuild that starts from an older cluster state, not as standing operations.
+
+### Monitoring CRD Helm adoption
 
 ```bash
-# One json-patch "remove" per port entry that still has a nodePort:
-kubectl -n traefik patch svc traefik --type json \
-  -p '[{"op":"remove","path":"/spec/ports/0/nodePort"},{"op":"remove","path":"/spec/ports/1/nodePort"}]'
-kubectl -n traefik get svc traefik -o yaml | grep -c nodePort  # expect only healthCheckNodePort
+for crd in alertmanagerconfigs alertmanagers podmonitors probes prometheusagents \
+           prometheuses prometheusrules scrapeconfigs servicemonitors thanosrulers; do
+  kubectl label  crd ${crd}.monitoring.coreos.com app.kubernetes.io/managed-by=Helm --overwrite
+  kubectl annotate crd ${crd}.monitoring.coreos.com \
+    meta.helm.sh/release-name=prometheus-operator-crds \
+    meta.helm.sh/release-namespace=prometheus-operator-crds --overwrite
+done
+task flux:reconcile
 ```
 
-The `healthCheckNodePort` stays — it is required by
-`externalTrafficPolicy: Local`.
+Afterwards helm-controller applies identical CRD content — a steady-state no-op.
+Verify `infrastructure-crds` and the `prometheus-operator-crds` HelmRelease are
+Ready, that all ten `monitoring.coreos.com` CRDs carry an
+`operator.prometheus.io/version` annotation matching the pinned chart's operator
+version, and that `kube-prometheus-stack` is still Ready with no object churn.
+
+### Traefik NodePort de-allocation
+
+The Traefik Service sets `allocateLoadBalancerNodePorts: false` (MetalLB L2
+announces the VIP directly). Flipping that flag does not release NodePorts already
+allocated on an existing Service — neither Helm nor Flux SSA owns
+`spec.ports[*].nodePort` — so a cluster predating the flag needs one json-patch
+`remove` per port entry:
+
+```bash
+kubectl -n traefik patch svc traefik --type json \
+  -p '[{"op":"remove","path":"/spec/ports/0/nodePort"},{"op":"remove","path":"/spec/ports/1/nodePort"}]'
+```
+
+`healthCheckNodePort` stays — `externalTrafficPolicy: Local` requires it.
 
 ---
 
-## References
+## Related documentation
 
 - Flux documentation: https://fluxcd.io/flux/
 - External Secrets Operator: https://external-secrets.io/latest/

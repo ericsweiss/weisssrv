@@ -1,18 +1,13 @@
 ---
-# Baseline NetworkPolicy Kustomize Component. Carries the default-deny-ingress
-# policy that was previously copy-pasted (byte-identical modulo namespace) into
-# 15 per-namespace networkpolicy files. Each namespace's kustomization lists this
-# component; the namespace is supplied by that kustomization's `namespace:`
-# transformer (or a small per-inclusion patch where it deliberately has none).
+# Baseline NetworkPolicy Kustomize Component: the default-deny-ingress policy
+# every namespace must carry. Include it from the namespace's kustomization; the
+# namespace comes from that kustomization's `namespace:` transformer, or from a
+# per-inclusion patch where it deliberately has none.
 #
-# Scope note: this component intentionally carries only the whole-resource
-# default-deny policy. The other shared fragments the review flagged (the
-# kube-apiserver server-IP egress block, the RFC-reserved-CIDR except-list, and
-# the kube-dns egress rule) are sub-rules embedded inside each app's own,
-# per-app egress NetworkPolicy — not standalone resources — so they can't be
-# hoisted into a shared component without splitting policies or introducing
-# substitution placeholders; centralizing those (via postBuild.substituteFrom)
-# is tracked separately.
+# Scope: whole resources only. The recurring egress SUB-rules (kube-apiserver
+# server IPs, the RFC-reserved except-list, kube-dns) live inside each app's own
+# policy and cannot be a component; scripts/check-netpol-except-parity.py is
+# what keeps the except-lists from drifting apart.
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 resources:

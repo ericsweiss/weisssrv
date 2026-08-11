@@ -1,31 +1,35 @@
 #!/usr/bin/env python3
 """Assert the CI kubectl pin stays within +/-1 minor of the cluster's k3s_version.
 
-The CI kubectl pin (.kubectl-setup in .gitlab-ci.yml) has no drift guard, unlike
-the FLUX_VERSION pin. A k3s_version bump merged via all.yml -> versions-configmap
-could push the hardcoded kubectl pin to 2 minors of skew with nothing catching
-it, at which point the kubectl calls in the deploy-verify / maintenance jobs
-could break. This asserts the pin stays within Kubernetes' supported +/-1 minor
-skew of the cluster's k3s_version; on failure, bump the kubectl version + sha256
-in .kubectl-setup (.gitlab-ci.yml).
+A hardcoded kubectl pin in .gitlab-ci.yml has no drift guard: a k3s_version bump
+merged into the cluster-versions ConfigMap can push the pin to 2 minors of skew
+with nothing catching it, at which point the kubectl calls in the deploy /
+maintenance jobs can break. This asserts the pin stays within Kubernetes'
+supported +/-1 minor skew of the cluster's k3s_version.
 
-Extracted from the inline kubectl-version-pin-check CI job so the exact same
-check runs locally (`task lint:kubectl-version-pin`) and is unit-tested
-(scripts/test_check_kubectl_version_pin.py).
+  check-kubectl-version-pin.py                       # repo defaults
+  check-kubectl-version-pin.py <ci_yaml> <configmap> # explicit paths
 
-Run via `pytest scripts/` or directly:
-  scripts/check-kubectl-version-pin.py                       # scan the repo
-  scripts/check-kubectl-version-pin.py <ci_yaml> <configmap> # explicit paths
+The defaults assume the conventional layout (`.gitlab-ci.yml` +
+`kubernetes/infrastructure/sources/versions-configmap.yaml` under the repo root);
+pass both paths when the consumer's layout differs. $CI_FILE (repo-relative or
+absolute, same name as the molecule scripts) retargets the first default, e.g.
+a repo whose kubectl pin lives in a GitHub Actions workflow.
+
+The check itself is forge-neutral: it regexes a `dl.k8s.io` download pin out of
+whatever text it is given.
 """
 from __future__ import annotations
 
+import argparse
+import os
 import sys
 from pathlib import Path
 
 import re
 
 REPO = Path(__file__).resolve().parent.parent
-CI_YAML = REPO / ".gitlab-ci.yml"
+CI_YAML = REPO / (os.environ.get("CI_FILE") or ".gitlab-ci.yml")
 VERSIONS_CM = REPO / "kubernetes/infrastructure/sources/versions-configmap.yaml"
 
 _KUBECTL_RE = re.compile(r"dl\.k8s\.io/release/v(\d+)\.(\d+)\.\d+/bin")
@@ -54,10 +58,35 @@ def check(ci_text: str, cm_text: str) -> tuple[int, str]:
     return 0, prefix + "kubectl pin is within the supported +/-1 minor skew of k3s_version."
 
 
+def _parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog=Path(argv[0]).name,
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "ci_yaml", nargs="?", type=Path, default=CI_YAML,
+        help=f"CI file carrying the kubectl pin (default: {CI_YAML})",
+    )
+    parser.add_argument(
+        "configmap", nargs="?", type=Path, default=VERSIONS_CM,
+        help=f"versions ConfigMap carrying k3s_version (default: {VERSIONS_CM})",
+    )
+    return parser.parse_args(argv[1:])
+
+
 def main(argv: list[str]) -> int:
-    ci_path = Path(argv[1]).resolve() if len(argv) > 1 else CI_YAML
-    cm_path = Path(argv[2]).resolve() if len(argv) > 2 else VERSIONS_CM
-    code, message = check(ci_path.read_text(), cm_path.read_text())
+    args = _parse_args(argv)
+    try:
+        ci_text = args.ci_yaml.read_text()
+        cm_text = args.configmap.read_text()
+    except (OSError, UnicodeDecodeError) as e:
+        # An absent/unreadable input is an operator error (wrong path, bad
+        # permissions), not a skew finding — exit 2 so CI can tell the two
+        # apart, and print one line rather than a traceback.
+        print(f"ERROR: could not read input file: {e}", file=sys.stderr)
+        return 2
+    code, message = check(ci_text, cm_text)
     print(message)
     return code
 

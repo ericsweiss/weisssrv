@@ -3,25 +3,15 @@
 # injected per provider from the SAME 1Password items the applications consume
 # (see variables.tf), so Terraform and the app can never disagree.
 #
-# grant_types is order-sensitive server-side. The import captured whatever the
-# creating UI happened to store — every grant type authentik offers, on all
-# eight providers. Every app here uses the authorization-code flow with refresh,
-# so the rest is unused surface: `implicit`/`hybrid` deliver tokens in the URL
-# fragment, which is precisely what would turn a loose redirect-URI match into
-# token exfiltration (the redirect URIs below are `strict` for the same reason),
-# and `client_credentials`/`password`/`device_code` are token endpoints no client
-# calls. Least privilege: authorization_code + refresh_token only.
+# Two rules hold for every provider here:
+# - grant_types: authorization_code + refresh_token ONLY. If one client truly
+#   needs more, override it on that provider, never widen the shared list.
+# - every allowed_redirect_uris entry is matching_mode "strict". A "regex" mode
+#   full-matches, and an unescaped `.` matches any character — a plain URL as
+#   the pattern also accepts look-alike registrable domains.
 #
-# If a client ever genuinely needs more, override grant_types on that provider
-# alone rather than widening this shared list.
-#
-# Every allowed_redirect_uris entry is matching_mode = "strict" and must stay
-# that way. Mealie, Bar Assistant and Home Assistant were imported as "regex"
-# with a plain URL as the pattern — authentik full-matches those, and in a regex
-# `.` is any character, so https://home.esweiss.com/auth/openid/callback also
-# matched https://home-esweiss.com/... and every other registrable look-alike.
-# Use "regex" only with escaped dots and an anchored pattern, and only when an
-# exact URL genuinely cannot express the callback.
+# Every provider carries prevent_destroy — a rename plans as destroy+create and
+# breaks that app's login (README § Guardrails).
 
 locals {
   oauth2_grant_types = [
@@ -45,27 +35,11 @@ locals {
   ]
 }
 
-# authentik's built-in email scope mapping emits `email_verified: False`:
-#
-#   return {"email": request.user.email, "email_verified": False}
-#
-# Mealie rejects any login whose ID token and userinfo lack a *true*
-# email_verified ("[OIDC] email_verified claim is missing or false; refusing to
-# authenticate" -> 401 on /api/auth/oauth/callback), so with the built-in scope
-# Mealie has no working login path at all. The built-in cannot simply be edited:
-# it is a managed blueprint object (goauthentik.io/providers/oauth2/scope-email)
-# and authentik restores it on upgrade. Hence a separate, unmanaged mapping that
-# only Mealie is given.
-#
-# Asserting true is correct here rather than a fudge: authentik has no email
-# verification flow enabled, and every account is created by the admin in
-# authentik with an address chosen by the admin, so the address is trusted by
-# construction. Nothing self-registers.
-#
-# Deliberately scoped to Mealie. Every other provider keeps the built-in, so if
-# another app grows the same requirement, add it to that provider explicitly
-# rather than widening the shared list — the claim asserts something, and it
-# should be asserted only where it is needed.
+# The ONE user-authored property mapping. authentik's built-in email scope
+# hardcodes `email_verified: False` and is a managed blueprint object (restored
+# on upgrade), while Mealie 401s any login without a true claim — so Mealie gets
+# this replacement and every other provider keeps the built-in. Asserting true is
+# sound here: no self-registration exists, every account is admin-created.
 resource "authentik_property_mapping_provider_scope" "email_verified" {
   name        = "OIDC email (asserted verified)"
   scope_name  = "email"
@@ -113,6 +87,10 @@ resource "authentik_provider_oauth2" "mealie" {
   sub_mode                   = "hashed_user_id"
   issuer_mode                = "per_provider"
   logout_method              = "backchannel"
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "authentik_provider_oauth2" "bar_assistant" {
@@ -151,6 +129,10 @@ resource "authentik_provider_oauth2" "bar_assistant" {
   sub_mode      = "user_email"
   issuer_mode   = "per_provider"
   logout_method = "backchannel"
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "authentik_provider_oauth2" "home_assistant" {
@@ -187,6 +169,10 @@ resource "authentik_provider_oauth2" "home_assistant" {
   sub_mode                   = "hashed_user_id"
   issuer_mode                = "per_provider"
   logout_method              = "backchannel"
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "authentik_provider_oauth2" "grafana" {
@@ -218,6 +204,10 @@ resource "authentik_provider_oauth2" "grafana" {
   sub_mode                   = "hashed_user_id"
   issuer_mode                = "per_provider"
   logout_method              = "backchannel"
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "authentik_provider_oauth2" "nextcloud" {
@@ -254,14 +244,16 @@ resource "authentik_provider_oauth2" "nextcloud" {
   sub_mode                   = "hashed_user_id"
   issuer_mode                = "per_provider"
   logout_method              = "backchannel"
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
-# Hermes dashboard `self_hosted` OIDC provider (docs/37 §SSO) — the first
-# provider AUTHORED in Terraform rather than imported, so the client_id is a
-# chosen human-readable literal instead of an API-generated 40-char one
-# (client_ids are public identifiers either way). Its application is the
-# `agent` tile (slug agent -> issuer path /application/o/agent/) — the sole
-# auth layer for the dashboard; there is no forward-auth perimeter.
+# Hermes dashboard OIDC provider (docs/37 §SSO). Terraform-authored, hence a
+# human-readable client_id. Bound to the `agent` tile (issuer path
+# /application/o/agent/) — the sole auth layer; there is no forward-auth
+# perimeter in front of it.
 resource "authentik_provider_oauth2" "hermes_dashboard" {
   name      = "Hermes Dashboard"
   client_id = "hermes-dashboard"
@@ -299,14 +291,16 @@ resource "authentik_provider_oauth2" "hermes_dashboard" {
   sub_mode                   = "hashed_user_id"
   issuer_mode                = "per_provider"
   logout_method              = "backchannel"
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
-# Homarr dashboard OIDC provider — Terraform-AUTHORED (like hermes_dashboard),
-# so the client_id is a chosen human-readable literal. Its application is the
-# `dashboard` tile (slug dashboard -> issuer path /application/o/dashboard/,
-# which the homarr AUTH_OIDC_ISSUER points at). Homarr syncs a login's `groups`
-# claim to same-named Homarr groups, so the `homarr-admins` group (groups.tf)
-# both gates the app (binding in policy_bindings.tf) and grants Homarr admin.
+# Homarr dashboard OIDC provider (docs/41). Bound to the `dashboard` tile
+# (issuer path /application/o/dashboard/, which homarr's AUTH_OIDC_ISSUER
+# points at). Homarr syncs the `groups` claim to same-named Homarr groups, so
+# `homarr-admins` both gates the app and grants Homarr admin.
 resource "authentik_provider_oauth2" "homarr" {
   name      = "Homarr"
   client_id = "homarr"
@@ -345,6 +339,10 @@ resource "authentik_provider_oauth2" "homarr" {
   sub_mode                   = "hashed_user_id"
   issuer_mode                = "per_provider"
   logout_method              = "backchannel"
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "authentik_provider_oauth2" "immich" {
@@ -388,4 +386,8 @@ resource "authentik_provider_oauth2" "immich" {
   sub_mode                   = "hashed_user_id"
   issuer_mode                = "per_provider"
   logout_method              = "backchannel"
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }

@@ -1,19 +1,16 @@
 ---
-# Node Exporter (host-level) — remote scrape of prometheus-node-exporter running
-# directly on the bare-metal Proxmox hosts, the dns-01/dns-02 LXCs, the
-# smtp-relay LXC, the GitLab + Nextcloud + Immich VMs, and the three k3s server
-# VMs (see the Endpoints list below for the authoritative set). Provides hardware
-# metrics (hwmon thermals, SMART, NIC details, disk I/O) that VMs cannot see; the
-# LXCs and VMs contribute filesystem/textfile metrics only (e.g. the GitLab,
-# Nextcloud, and Immich VMs expose gitlab_backup_* / nextcloud_backup_* /
-# immich_backup_* backup-freshness via their textfile collectors).
-# Runs on port 9101 to avoid conflicting with the k3s DaemonSet on 9100.
+# Host-level node_exporter (:9101), scraped remotely from the six bare-metal
+# Proxmox hosts, the dns-01/dns-02 and smtp-relay LXCs, the GitLab/Nextcloud/
+# Immich VMs and the three k3s server VMs. Port 9101 avoids the k3s DaemonSet on
+# 9100. The bare-metal hosts contribute hardware metrics (hwmon thermals, SMART,
+# NIC detail, disk I/O) that VMs cannot see; the LXCs and VMs contribute
+# filesystem and textfile-collector metrics (backup freshness, etcd snapshot
+# copies).
 #
-# One selectorless headless Service + one manual Endpoints list every host: the
-# ServiceMonitor sets `job=node-exporter-host` (jobLabel from
-# app.kubernetes.io/name) and Prometheus derives a per-host `instance=<ip>:9101`
-# from each Endpoints address, so the thermal/PSI alerts and dashboards keep
-# their stable `job="node-exporter-host", instance=~"<ip>:9101"` selectors.
+# One selectorless headless Service + one hand-written EndpointSlice. The
+# ServiceMonitor sets job=node-exporter-host (jobLabel from
+# app.kubernetes.io/name) and Prometheus derives instance=<ip>:9101 per address,
+# which is what every thermal/PSI/backup alert selector keys on.
 apiVersion: v1
 kind: Service
 metadata:
@@ -29,37 +26,54 @@ spec:
       targetPort: 9101
 
 ---
-apiVersion: v1
-kind: Endpoints
+# discovery.k8s.io/v1, not the deprecated core/v1 Endpoints. The Service is
+# selectorless, so nothing controls this slice but this file; the
+# kubernetes.io/service-name label is what binds it to the Service above, and
+# conditions.ready is set explicitly because a hand-written slice has no
+# controller to fill it in.
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
 metadata:
   name: node-exporter-host
   namespace: observability
-subsets:
-  - addresses:
-      # Bare-metal Proxmox hosts (full hardware metrics: hwmon, SMART, NICs)
-      - ip: 192.168.0.102   # pve-nas-01
-      - ip: 192.168.0.103   # pve-laptop-01
-      - ip: 192.168.0.104   # pve-opt-01
-      - ip: 192.168.0.105   # pve-opt-02
-      - ip: 192.168.0.106   # pve-opt-03
-      - ip: 192.168.0.107   # pve-prec-01
-      # DNS LXCs + HA-managed mail relay (filesystem/textfile metrics only)
-      - ip: 192.168.0.150   # dns-01
-      - ip: 192.168.0.160   # dns-02
-      - ip: 192.168.0.151   # smtp-relay
-      # GitLab VM (192.168.0.153) — textfile gitlab_backup_* freshness metric
-      - ip: 192.168.0.153   # gitlab
-      # Nextcloud VM (192.168.0.156) — textfile nextcloud_backup_* freshness
-      - ip: 192.168.0.156   # nextcloud
-      # Immich VM (192.168.0.157) — textfile immich_backup_* freshness metric
-      - ip: 192.168.0.157   # immich
-      # k3s servers — off-node etcd snapshot textfile metric
-      - ip: 192.168.0.222   # k3s-srv-nas-01
-      - ip: 192.168.0.223   # k3s-srv-laptop-01
-      - ip: 192.168.0.227   # k3s-srv-prec-01
-    ports:
-      - name: metrics
-        port: 9101
+  labels:
+    kubernetes.io/service-name: node-exporter-host
+addressType: IPv4
+ports:
+  - name: metrics
+    port: 9101
+    protocol: TCP
+endpoints:
+  - addresses: ["192.168.0.102"]   # pve-nas-01
+    conditions: {ready: true}
+  - addresses: ["192.168.0.103"]   # pve-laptop-01
+    conditions: {ready: true}
+  - addresses: ["192.168.0.104"]   # pve-opt-01
+    conditions: {ready: true}
+  - addresses: ["192.168.0.105"]   # pve-opt-02
+    conditions: {ready: true}
+  - addresses: ["192.168.0.106"]   # pve-opt-03
+    conditions: {ready: true}
+  - addresses: ["192.168.0.107"]   # pve-prec-01
+    conditions: {ready: true}
+  - addresses: ["192.168.0.150"]   # dns-01
+    conditions: {ready: true}
+  - addresses: ["192.168.0.160"]   # dns-02
+    conditions: {ready: true}
+  - addresses: ["192.168.0.151"]   # smtp-relay
+    conditions: {ready: true}
+  - addresses: ["192.168.0.153"]   # gitlab
+    conditions: {ready: true}
+  - addresses: ["192.168.0.156"]   # nextcloud
+    conditions: {ready: true}
+  - addresses: ["192.168.0.157"]   # immich
+    conditions: {ready: true}
+  - addresses: ["192.168.0.222"]   # k3s-srv-nas-01
+    conditions: {ready: true}
+  - addresses: ["192.168.0.223"]   # k3s-srv-laptop-01
+    conditions: {ready: true}
+  - addresses: ["192.168.0.227"]   # k3s-srv-prec-01
+    conditions: {ready: true}
 
 ---
 apiVersion: monitoring.coreos.com/v1
@@ -68,11 +82,9 @@ metadata:
   name: node-exporter-host
   namespace: observability
 spec:
-  # Set the Prometheus `job` label to the value of `app.kubernetes.io/name`
-  # (= "node-exporter-host") on every scraped metric. Without this, Prometheus
-  # Operator defaults `job` to the Service name (`node-exporter-host`), and the
-  # thermal alerts and thermals dashboard rely on the `job="node-exporter-host"`
-  # selector.
+  # Set the Prometheus `job` label from `app.kubernetes.io/name`. Without it the
+  # operator defaults `job` to the Service name, and every thermal/PSI/SMART/ZFS
+  # alert and the thermals dashboard select on job="node-exporter-host".
   jobLabel: app.kubernetes.io/name
   selector:
     matchLabels:

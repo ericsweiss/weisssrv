@@ -1,8 +1,0 @@
----
-# The compose stack restart + nginx reload handlers now live in the shared
-# compose_app role ("Restart compose stack" / "Reload nginx (compose_app)"),
-# notified by the .env/compose renders and the nginx task flow. This role keeps
-# only its own "Reload systemd" handler for the backup service/timer units.
-- name: Reload systemd
-  ansible.builtin.systemd:
-    daemon_reload: true

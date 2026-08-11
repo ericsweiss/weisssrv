@@ -41,33 +41,15 @@ spec:
           port: 8642
 
 ---
-# Egress for the hermes pod:
-#   * kube-dns (name resolution)
-#   * public HTTPS (:443) for the Codex runtime's OpenAI/ChatGPT backend, the
-#     Claude Code delegate's api.anthropic.com, messaging-platform APIs
-#     (Telegram / Discord / Slack are all 443/WSS), and — deliberately — the
-#     coding delegates' git access: git.ericsweiss.com resolves to the WAN IP
-#     (a public address), so clones/pushes ride this rule via the router
-#     hairpin. An internal-VIP pinhole does NOT work here: from a pod,
-#     kube-proxy DNATs a LoadBalancer VIP (e.g. Traefik .101) to the backend
-#     POD IP before NetworkPolicy evaluation, so an ipBlock rule for the VIP
-#     /32 can never match (verified 2026-07-19 — instant connection failure).
-#   * public HTTP (:80) for the camofox browser sidecar: page loads routinely
-#     enter on a plain-http URL before the https redirect, and blocking :80
-#     would hang those navigations. Same private-range except-list as :443.
-#   * the hindsight namespace on :8888 — the gateway's hindsight memory
-#     plugin (docs/37 §Memory backend). A namespaceSelector (unlike a VIP
-#     ipBlock, see above) matches AFTER kube-proxy's Service DNAT — the
-#     evaluated destination is the hindsight POD IP, which the selector
-#     covers — so the ClusterIP path works.
-#   * the traefik namespace on :443 — HASS_URL=https://home.esweiss.com: the
-#     AdGuard rewrite answers the Traefik VIP .101, kube-proxy DNATs that to
-#     the Traefik POD IP (targetPort websecure = 443), and this post-DNAT
-#     namespaceSelector matches where a .101/32 ipBlock never could.
-# No LAN/RFC1918 egress, no SMTP, and no kube-apiserver
-# (automountServiceAccountToken is false — it uses no in-cluster API). A
-# messaging platform that needs a non-443 port would require an added rule
-# here (documented in docs/37).
+# Egress for the hermes pod: kube-dns; public :443 (Codex/Anthropic backends,
+# messaging-platform APIs, and git.ericsweiss.com, which resolves to the WAN IP);
+# public :80 for camofox page loads that start on plain http; the hindsight
+# namespace on :8888; and the traefik namespace on :443 (HASS_URL).
+#
+# The namespaceSelector peers are load-bearing: kube-proxy DNATs a Service/VIP
+# to the backend POD IP before NetworkPolicy evaluation, so an ipBlock for a VIP
+# /32 can never match. No LAN/RFC1918 egress, no SMTP, no kube-apiserver. A
+# messaging platform needing a non-443 port needs a rule here (docs/37).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -117,25 +99,13 @@ spec:
       ports:
         - protocol: TCP
           port: 8888
-    # Traefik pods on websecure — the dashboard's OIDC backend fetches
-    # (discovery + JWKS) target https://auth.ericsweiss.com, which resolves
-    # internally to the Traefik VIP .101 (split-horizon AdGuard rewrite; the
-    # WAN/Cloudflare path 403s non-browser user agents). From a pod,
-    # kube-proxy DNATs the VIP to the backend POD IP before NetworkPolicy
-    # evaluation, so this rule matches by pod/namespace selector — a VIP
-    # ipBlock could never match (see the removed-pinhole note above). Also the
-    # path for HASS_URL=https://home.esweiss.com (HA toolset) and any internal
-    # vhost the agent legitimately consumes.
+    # Traefik on websecure: the dashboard's OIDC discovery/JWKS fetches and
+    # HASS_URL both resolve to the internal Traefik VIP, and only a
+    # namespaceSelector matches post-DNAT.
     #
-    # Scope note: a namespaceSelector is the only peer shape that can match
-    # post-DNAT, so this necessarily admits reach to EVERY Traefik-fronted
-    # vhost — it cannot be narrowed per-host at L3. The gate is therefore on
-    # the Traefik side, not here: the routes whose only network gate is an IP
-    # allowlist (router.esweiss.com, the dns-01/dns-02 AdGuard raw routes,
-    # connect.esweiss.com) sit behind lan-tailscale-strict, which excludes the
-    # pod CIDR — so this rule cannot reach them. The rest carry either
-    # forward-auth (the *arr/qbit/vpn routes) or their own application login
-    # (plex, home, git, the SSO-only apps).
+    # Scope note: that peer shape cannot be narrowed per-vhost at L3, so the
+    # gate lives on the Traefik side — the routes whose only network gate is an
+    # IP allowlist use lan-tailscale-strict, which excludes the pod CIDR.
     - to:
         - namespaceSelector:
             matchLabels:

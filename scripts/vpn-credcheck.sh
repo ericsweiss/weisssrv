@@ -21,12 +21,9 @@
 # Exit status:
 #   0  check ran (missing keys, if any, on stdout)
 #   1  usage / bad app argument (message on stderr)
-#   2  the provider is empty or not one this script knows (message on stderr)
-#      — callers MUST refuse on this. Returning "nothing missing" for an
-#      unrecognised provider read straight from the live ConfigMap made the
-#      pre-flight pass for exactly the input it exists to catch (a hand-patched,
-#      renamed or blanked vpn_provider), and the pod then rolled into gluetun
-#      settings-validation failure under strategy Recreate — fully down.
+#   2  the provider is empty or unknown to this script — callers MUST refuse,
+#      never treat it as "nothing missing": a hand-patched or blanked
+#      vpn_provider is exactly the input this pre-flight exists to catch.
 set -euo pipefail
 
 UNKNOWN_PROVIDER_RC=2

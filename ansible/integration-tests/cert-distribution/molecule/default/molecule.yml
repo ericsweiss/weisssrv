@@ -7,7 +7,7 @@ driver:
 
 platforms:
   - name: dns-01
-    image: registry.git.ericsweiss.com/eric/weisssrv/molecule-test:latest
+    image: "${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:v0.6.0}"
     pre_build_image: true
     privileged: true
     cgroupns_mode: host
@@ -26,7 +26,7 @@ platforms:
       - cert_servers
 
   - name: cert-client-01
-    image: registry.git.ericsweiss.com/eric/weisssrv/molecule-test:latest
+    image: "${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:v0.6.0}"
     pre_build_image: true
     privileged: true
     cgroupns_mode: host
@@ -45,7 +45,7 @@ platforms:
       - cert_clients
 
   - name: cert-client-02
-    image: registry.git.ericsweiss.com/eric/weisssrv/molecule-test:latest
+    image: "${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:v0.6.0}"
     pre_build_image: true
     privileged: true
     cgroupns_mode: host
@@ -63,10 +63,16 @@ platforms:
       - cert_stack
       - cert_clients
 
+dependency:
+  name: galaxy
+  options:
+    # The single source of truth for the weisssrv.infra pin these
+    # scenarios exercise. Resolved by ansible-galaxy in molecule's CWD,
+    # which is the scenario's stack dir (ansible/integration-tests/<stack>).
+    requirements-file: ../../requirements.yml
 provisioner:
   name: ansible
   env:
-    ANSIBLE_ROLES_PATH: ../../../../roles
     # Required for molecule_docker plugin (upstream broken conditional in destroy.yml)
     ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
     # Provide dummy SSH key for testing (base role expects this via all.yml lookup)
@@ -82,16 +88,20 @@ provisioner:
 
       cert_servers:
         # acme.sh configuration
-        acme_email: test@example.com
+        acme_certs_enabled: true
+        acme_certs_domain: "{{ internal_domain }}"
+        acme_certs_email: test@example.com
+        # The distribution key belongs to the admin user, matching production.
+        acme_certs_ssh_user: eric
         acme_cloudflare_token: test_cloudflare_token_not_real
         # Test-local list driving the mock cert fixtures in converge/verify —
-        # NOT a role knob (acme_certs issues internal_domain + wildcard
-        # directly and reads no domain-list variable).
+        # NOT a role knob (acme_certs issues acme_certs_domain + its wildcard
+        # and reads no domain-list variable).
         mock_cert_domains:
           - domain: "*.esweiss.com"
           - domain: esweiss.com
 
-        # SSH keys (dns01_ssh_private_key, dns01_ssh_public_key) are generated
+        # SSH keys (acme_certs_ssh_private_key/_public_key) are generated
         # at runtime in converge.yml and injected onto dns-01's hostvars via
         # add_host (host facts override inventory group_vars). They're
         # intentionally not defined here — the role's assert surfaces a clear
@@ -103,7 +113,7 @@ provisioner:
         # gets the full structure. We keep a copy of the static fields here
         # so verify.yml (which runs as a separate ansible-playbook invocation,
         # without converge's add_host facts) can still read the list shape.
-        cert_distribution_targets:
+        acme_certs_distribution_targets:
           - host: cert-client-01
             ip: cert-client-01
             cert_dir: /etc/ssl/certs/wildcard

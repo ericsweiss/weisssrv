@@ -1,347 +1,32 @@
 # Next Steps and TODO
 
-This document tracks remaining work and planned improvements for the weisssrv homelab infrastructure.
+This document tracks **remaining** work for the weisssrv homelab: decisions that
+need an owner, supervised steps that have not run yet, accepted risks, and the
+deferred-refactor backlog. Completed work is summarised at the end under
+[Shipped](#shipped-historical) — git history is the real record.
 
-## Completed Phases
+Per-area detail lives in the numbered docs; this page carries only what is not
+done.
 
-### Phase 1: Base Infrastructure (COMPLETE)
+## Contents
 
-- [x] Proxmox cluster configured (6 nodes: pve-nas-01, pve-laptop-01, pve-opt-01, pve-opt-02, pve-opt-03, pve-prec-01)
-- [x] ZFS storage pools configured (tank/ssd/nvme/archive on NAS; local-ssd on compute nodes)
-- [x] DNS stack (AdGuard Home + Unbound with DoT)
-- [x] SMTP relay via Gmail
-- [x] Certificates (acme.sh with Cloudflare DNS-01)
-- [x] Firewall rules (IPSets + Security Groups)
-- [x] Tailscale VPN on Proxmox hosts only (remote access to cluster nodes)
-
-### Phase 2: K3s Platform (COMPLETE)
-
-- [x] K3s cluster deployed (9 nodes: 3 servers + 6 agents)
-- [x] kube-vip for API HA (192.168.0.161)
-- [x] MetalLB for LoadBalancer services (192.168.0.100-101)
-- [x] Traefik ingress controller
-- [x] cert-manager with Let's Encrypt (DNS-01)
-- [x] external-dns for Cloudflare automation
-- [x] Authentik SSO identity provider
-
-### Phase 3: Applications (COMPLETE)
-
-- [x] Plex Media Server (LXC on NAS with bind mounts)
-- [x] Downloads stack deployed:
-  - VPN-protected download clients (Gluetun + NZBGet + qBittorrent)
-  - Media managers (Sonarr, Radarr, Lidarr, Prowlarr)
-  - Plex Watchlist automation (Pulsarr)
-  - All services with Authentik SSO protection
-  - Live VPN ops (GitOps-safe): `task downloads:vpn` / `vpn-provider` toggle
-    per-app VPN on/off and provider via create-only ConfigMaps (Flux
-    `ssa: IfNotPresent`); Gluetun control-server API-key auth kills the
-    "route unprotected" WARN spam; per-provider credential switching (docs/21)
-- [x] Recipe management stack deployed:
-  - Mealie (food.esweiss.com) with PostgreSQL on ZFS zvol
-  - Bar Assistant (bar.esweiss.com) with Meilisearch
-  - Authentik SSO integration for both apps
-  - OpenAI integration for Mealie recipe parsing
-- [x] Home Assistant deployed:
-  - HAOS VM on pve-prec-01 (192.168.0.154, HA-managed with multi-node replication)
-  - Traefik ingress (internal + external domains)
-  - Authentik SSO via hass-openid custom integration
-  - API bypass routes for *arr integrations
-  - NFS media mount for browsing
-- [x] Hermes Agent deployed (NousResearch autonomous AI agent + web dashboard):
-  - `hermes` namespace, gateway + dashboard containers, self-built image via the
-    `build-hermes-agent` CI job (upstream ships no image)
-  - Dashboard at agent.ericsweiss.com / agent.esweiss.com behind the
-    dashboard's own Authentik OIDC login (`hermes-users` group); Traefik-only
-    NetworkPolicy
-  - NFS `/appdata/hermes` on encrypted `ssd/appdata` (archive-backed)
-  - LLM engine is the bundled Codex app-server runtime (ChatGPT-subscription
-    OAuth via a one-time `codex login`, token persisted in `CODEX_HOME` on NFS —
-    subscription billing, no API key)
-  - See docs/37-hermes.md (Codex login + messaging-platform onboarding are user
-    follow-ups)
-- [x] Homarr dashboard deployed (dashboard.esweiss.com / dashboard.ericsweiss.com):
-  homelab launcher with Authentik OIDC (`homarr-admins`), SSO-only (no standing
-  local admin), NFS-backed SQLite on encrypted `ssd/appdata`, direct-URL
-  integrations to the running services — see docs/41-homarr.md (integration
-  wiring is a post-deploy UI checklist there)
-- [x] GPU passthrough (pve-prec-01 GTX 1660 Ti → k3s GPU agent): VFIO host prep,
-  NVIDIA driver + container toolkit, nvidia-device-plugin (time-sliced), DCGM
-  telemetry, and Hindsight llama.cpp GPU offload — all codified; the physical
-  apply (host reboot + `qm set`) is a supervised window. See
-  docs/43-gpu-passthrough.md
+- [Decisions needed](#decisions-needed)
+- [Pending supervised steps](#pending-supervised-steps)
+- [Accepted risks](#accepted-risks)
+- [Planned work](#planned-work)
+- [Deferred refactors and durability work](#deferred-refactors-and-durability-work)
+- [Review backlog](#review-backlog)
+- [Infrastructure Improvements](#infrastructure-improvements)
+- [Shipped (historical)](#shipped-historical)
 
 ---
 
-## Priority 1: High Availability (COMPLETE)
+## Decisions needed
 
-**Status**: Fully implemented across both K3s and Proxmox infrastructure.
+Each item below is a real, documented gap that needs an explicit call — usually
+a hardware spend or a posture change — rather than an implementation task.
 
-### Part 1: K3s Cluster HA (COMPLETE)
-
-**Achieved State**: 9-node cluster (3 servers + 6 agents) with full etcd quorum.
-
-- [x] **pve-prec-01** (192.168.0.107) - Dell Precision 3630
-  - k3s-srv-prec-01 (.227) + k3s-agt-prec-01 (.207) deployed
-- [x] **pve-laptop-01** (192.168.0.103) - MSI GS60 2QD
-  - k3s-srv-laptop-01 (.223) + k3s-agt-laptop-01 (.203) deployed
-- [x] **pve-opt-01/pve-opt-02/pve-opt-03** - Additional agent capacity
-  - k3s-agt-opt-01 (.204), k3s-agt-opt-02 (.205), k3s-agt-opt-03 (.206) deployed
-
-**K3s HA Verified**:
-- 3 server nodes with Ready status
-- etcd quorum healthy (tolerates 1 server failure)
-- kube-vip API VIP (.161) survives server failures
-
-### Part 2: Proxmox HA for Critical Infrastructure (COMPLETE)
-
-**Achieved State**: Full HA with ZFS replication and automatic failover.
-
-| Service | Type | Primary Host | Failover Targets | Status |
-|---------|------|--------------|------------------|--------|
-| dns-01 | LXC | pve-laptop-01 | pve-opt-01, pve-opt-02, pve-opt-03, pve-prec-01 | HA Active |
-| dns-02 | LXC | pve-opt-03 | pve-laptop-01, pve-opt-01, pve-opt-02, pve-prec-01 | HA Active |
-| smtp-relay | LXC | pve-opt-01 | pve-laptop-01, pve-opt-02, pve-opt-03, pve-prec-01 | HA Active |
-| home-assistant | VM | pve-prec-01 | pve-laptop-01, pve-opt-01, pve-opt-02, pve-opt-03 | HA Active |
-
-dns-01's home returned to pve-laptop-01 on 2026-08-08, after its RAM, CPU fan and
-CMOS battery were replaced and memtest86+ passed clean. It had been relocated to
-pve-opt-01 while that host had a memtest-confirmed dead cell.
-Authoritative placement is `ha_rules` (`affinity-dns-01`) in `group_vars/all.yml`;
-the `150-*` `storage_replication_jobs` source_node and dns-01's `proxmox_host` in
-`hosts.yml` must always match it.
-
-- [x] **Proxmox HA configured** via `proxmox_ha` role
-  - Node-affinity rules control placement
-  - Resources managed by HA manager
-- [x] **ZFS replication** configured (15-minute intervals)
-  - All critical services replicate to 2+ target nodes
-- [x] **Failover tested** and documented in `docs/12-runbooks.md`
-
-**Management Commands**:
-```bash
-task proxmox:ha         # Configure HA rules, resources, replication
-task proxmox:ha-status  # Show HA manager, rules, and replication status
-```
-
-See `docs/25-multi-node-expansion.md` and `docs/26-multi-node-implementation.md` for details.
-
----
-
-## Priority 2: Local GitLab Instance (COMPLETE)
-
-**Status**: Fully deployed as VM on pve-nas-01 with Traefik ingress.
-
-### Deployment Summary
-
-GitLab is deployed as a dedicated VM (not k3s) due to its resource requirements and complexity:
-- **VM**: 6 vCPU, 16GB RAM, 100GB root disk on pve-nas-01
-- **Repository storage**: 200GB ZFS zvol (`ssd/appdata/gitlab/repos`)
-- **Access**: `git.esweiss.com` (internal) / `git.ericsweiss.com` (external)
-- **Container Registry**: `registry.git.ericsweiss.com`
-- **GitLab Pages**: `*.pages.git.ericsweiss.com`
-- **Git SSH**: Port 22 (internal), Port 2222 (external via iptables NAT redirect)
-
-### Completed Tasks
-
-- [x] **GitLab EE deployed** (CE features, version managed in all.yml)
-  - Omnibus package on Debian 13 VM
-  - Repository data on separate ZFS zvol for persistence
-  - Traefik IngressRoutes via k3s cluster
-  - fail2ban protection for Git SSH on port 2222
-
-- [x] **Authentik SSO integration**
-  - SAML provider configured in GitLab
-  - Users authenticate via Authentik
-  - Auto-provisioning from Authentik directory
-
-- [x] **Container Registry configured**
-  - Accessible at `registry.git.ericsweiss.com`
-  - TLS via Let's Encrypt (cert-manager)
-  - Storage on local VM disk
-
-- [x] **GitLab Pages enabled**
-  - Wildcard domain: `*.pages.git.ericsweiss.com`
-  - Direct access via `direct.ericsweiss.com` (non-proxied for wildcard TLS)
-
-- [x] **CI/CD Runners on k3s**
-  - GitLab Runner Helm chart deployed
-  - Kubernetes executor for pipeline jobs
-  - Resource limits configured
-
-### Management Commands
-
-```bash
-task gitlab:deploy          # Deploy GitLab (VM + application via Ansible)
-# IngressRoutes + runners + agent are Flux-managed (kubernetes/apps/gitlab-*
-# and kubernetes/apps/vm-ingress/gitlab*.yaml) — edit and git push.
-task gitlab:status          # Show GitLab and runner status
-task gitlab:verify          # Run smoke tests
-task gitlab:backup          # Create GitLab backup
-task gitlab:console         # SSH to GitLab VM
-task gitlab:logs            # View GitLab logs
-task gitlab:reconfigure     # Reconfigure after changes
-```
-
-See `docs/27-gitlab-deployment.md` for complete deployment documentation.
-
----
-
-## Priority 3: GitOps with Flux (COMPLETE)
-
-**Status**: Fully migrated. Flux reconciles every Kubernetes workload from this repo;
-External Secrets Operator (1Password Connect provider) supplies all k8s Secrets.
-
-### Architecture
-
-- **Flux controllers** bootstrapped via `flux bootstrap gitlab` into
-  `kubernetes/clusters/weisssrv/flux-system/`.
-- **Platform** (`kubernetes/infrastructure/`) reconciles in five stages via
-  `dependsOn` ordering: sources (HelmRepositories + versions-configmap — runs
-  first so the ConfigMap exists in-cluster before later stages render their
-  HelmRelease `postBuild` substitutions), crds (prometheus-operator CRDs, so a
-  fresh bootstrap has them before any controller renders a ServiceMonitor),
-  controllers (MetalLB, Traefik, cert-manager, external-dns, external-secrets),
-  configs (ClusterSecretStore, ClusterIssuer, CoreDNS HelmChartConfig, DDNS
-  CronJob), and observability (kube-prometheus-stack, Loki, Alloy, exporters,
-  ServiceMonitors, dashboards). `configs` then fans out to `observability` and
-  `apps` in parallel — apps `dependsOn: infrastructure-configs`, not
-  observability (`clusters/weisssrv/apps.yaml`). docs/29 owns the canonical
-  description.
-- **Apps** (`kubernetes/apps/`): the resource list in
-  `kubernetes/apps/kustomization.yaml` is the source of truth — today
-  `authentik/`, `download-clients/`, `hermes/`, `homarr/`, `hindsight/`,
-  `recipes/`, `gitlab-runner/`, `gitlab-runner-privileged/`,
-  `gitlab-runner-reaper/` (a maintenance CronJob that reaps leaked runner pods,
-  not a runner), `gitlab-agent/`, `registry-cache/`, `tailnet-dns/`,
-  `vm-ingress/` (IngressRoutes for non-k8s services: Plex, Home Assistant,
-  GitLab VM, AdGuard, router, Traefik dashboard), `wg-easy/`.
-- **Version flow**: `all.yml` → `task flux:sync-versions` → `cluster-versions`
-  ConfigMap → Flux `postBuild.substituteFrom` substitutes `${...}` placeholders.
-- **Secrets**: two bootstrap Secrets (`op-credentials` and `onepassword-connect-token`)
-  in `external-secrets` namespace; all other Secrets created by ExternalSecrets
-  referencing 1Password item titles in the `Homelab` vault via the Connect provider.
-
-### Deploy workflow
-
-Any Kubernetes change is a git commit under `kubernetes/`. Reconciliation is
-push-triggered — the GitLab agent's Flux integration notifies Flux within
-seconds of a push, with the ~1-minute GitRepository poll as fallback.
-Helm releases upgrade, Kustomizations re-apply, ExternalSecrets refresh, no manual
-kubectl/helm invocations.
-
-### Reference
-
-- [docs/29-flux-operations.md](./29-flux-operations.md) — operator guide (bootstrap,
-  adopt Helm releases, rotate secrets, add an app, troubleshoot, emergency stop)
-- [docs/30-multi-repo-onboarding.md](./30-multi-repo-onboarding.md) — onboarding
-  external repos that deploy into this cluster via Flux
-- Taskfile: `task flux:*` — status, verify, reconcile, suspend, resume,
-  refresh-secret, rotate-secret, sync-versions, dev-apply, lint
-
----
-
-## Priority 4: Renovate Bot Integration
-
-**Status**: Not yet implemented. `all.yml` remains the single source of truth for
-versions; the `cluster-versions` ConfigMap flows into Flux via substitutions.
-
-### Current Automation (Keep)
-
-The existing version management tasks serve a critical role for **all managed versions**,
-both Ansible-deployed and Flux-deployed:
-
-```bash
-task maintenance:check-versions        # Checks all managed services for updates
-task maintenance:update-version        # Updates single version in all.yml
-task maintenance:update-all-versions   # Updates all outdated versions
-task flux:sync-versions                # Regenerates kubernetes/infrastructure/sources/versions-configmap.yaml
-```
-
-**What these tasks manage**:
-- Base infrastructure versions (AdGuard Home, Tailscale, Plex, k3s)
-- Helm chart versions for platform components (consumed by Flux HelmReleases via substitutions)
-- Container image tags for k8s workloads (consumed by Flux Kustomizations via substitutions)
-- All versions centralized in `ansible/inventories/prod/group_vars/all.yml`
-
-**Why keep them**:
-1. **Ansible-deployed services** (AdGuard, Unbound, Plex, SMTP) are not visible to Renovate
-2. **k3s binary version** requires coordinated rolling upgrades via Ansible
-3. **Centralized version file** (`all.yml`) enables atomic updates and easy rollback
-4. **Offline capability**: Works without external dependencies
-5. **Flux substitution**: workload manifests reference `${var}` placeholders, so a single
-   bump in `all.yml` + `task flux:sync-versions` + commit updates everything atomically.
-
-### Renovate Bot (Future Addition)
-
-Renovate could supplement `check-versions` by creating MRs automatically instead of
-requiring a manual `task maintenance:check-versions` run. If added, it must:
-- Edit `all.yml` (not individual manifests) to keep a single source of truth
-- Run `scripts/generate-versions-configmap.py` as part of each MR so the ConfigMap
-  stays in sync (already enforced by the versions-sync check in the `repo-sync-checks` CI job)
-
-Decision: defer until operational overhead justifies it. `task maintenance:check-versions`
-runs on a weekly schedule and surfaces updates without noise.
-
----
-
-## Priority 5: Observability Stack (DONE -- 2026-04-17)
-
-**Status**: Fully deployed. See [docs/31-observability.md](./31-observability.md) for the complete guide.
-
-### Deployed Components
-
-- [x] **kube-prometheus-stack** -- Prometheus, Grafana, Alertmanager, node-exporter, kube-state-metrics
-- [x] **Loki** -- Log aggregation (single-binary mode, 30-day retention, 75GB ZFS zvol)
-- [x] **Alloy** -- DaemonSet log collector on all nodes (successor to Promtail)
-- [x] **Exporters** -- Proxmox (all 6 hosts), ZFS, AdGuard, Unbound, Blackbox, Plex, Exportarr (all four -- Sonarr/Radarr/Lidarr/Prowlarr -- active at replicas:1 with API keys configured; see docs/31-observability.md)
-- [x] **Service Monitors** -- Flux controllers, GitLab VM (HTTPS :443, `serverName: git.esweiss.com`, whitelist-based auth), Home Assistant VM, Meilisearch (`observability/service-monitors/`)
-- [x] **Alerting** -- Discord webhook + email via smtp-relay, custom alert rules for storage, infrastructure, and backups
-- [x] **Grafana** -- `grafana.esweiss.com` with Authentik OIDC, Loki datasource, dashboard sidecar
-- [x] **Persistent storage** -- Prometheus 150GB zvol, Loki 75GB zvol (both on NAS SSD pool)
-
-### Remaining (Future)
-
-- [ ] **Uptime Kuma** -- External endpoint monitoring and status page at `status.esweiss.com`
-
----
-
-## weisssrv-app-template GitLab template project
-
-The tenant-side scaffold lives in its own repo:
-`https://git.ericsweiss.com/eric/weisssrv-app-template`. New repos deploying to
-this cluster fork/copy it. **`docs/30-multi-repo-onboarding.md` § weisssrv-app-template
-Repo is the single description of its contents** — do not restate the file list
-here; that duplication is exactly what went stale (this section previously
-claimed a `renovate.json`, `maintenance:*` task wrappers and a
-namespace/Kustomization stub, none of which the template ships — the family
-policy is no Renovate anywhere, and the namespace + Kustomization are
-operator-side).
-
-Two facts worth carrying on the roadmap page:
-
-- The template's CI is `include:`d from `eric/weisssrv-lib` at a pinned tag, the
-  same shared library this repo consumes (docs/13 § Shared CI library). A
-  library tag bump therefore fans out to three places: this repo's
-  `.gitlab-ci.yml`, the template's `.gitlab-ci.yml`, and the template's
-  `scripts/rename.sh` pin.
-- The template ships `scripts/rename.sh` (a wrapper over the library's
-  `weisssrv-new-project rename` CLI) — the rename affordance to reuse if the
-  cluster-side scaffold is ever split out as `weisssrv-cluster-template`.
-
-Onboarding flow: fork template → add CI vars → add wiring YAML under
-`kubernetes/clusters/weisssrv/tenants/` in this repo.
-
----
-
-## Outstanding Follow-Ups
-
-### Architectural decisions deferred from the full-repo review (2026-07-14) — need a user decision
-
-The full-repo review surfaced four architectural items that are intentionally
-**not** implemented in that MR because each is a hardware and/or posture change
-that needs an explicit call. Each is a real, documented gap, not a regression.
-
-#### Network segmentation / admin-IPSet tightening
+### Network segmentation / admin-IPSet tightening
 
 - **Current state**: the whole estate is one flat L2 `192.168.0.0/24` (single
   `vmbr0`, `vlan: null`) shared with Home-Assistant-managed IoT and the
@@ -362,21 +47,7 @@ that needs an explicit call. Each is a real, documented gap, not a regression.
 - **Decision needed**: buy/configure a VLAN-capable switch and re-IP into
   segments, or take the interim IPSet tightening now.
 
-#### Offsite / 3-2-1 backup tier (SHIPPED)
-
-- **Shipped**: nightly restic → Backblaze B2 (`restic_offsite` role, docs/42) —
-  client-side encrypted, GFS retention (3d/2w/3mo/1y), chained after the archive
-  replication; covers the file-walkable estate, the relocated logical dumps on
-  `tank/backups/apps` (Authentik/Mealie/GitLab/Immich/Nextcloud/HA), the
-  immich/nextcloud data zvols via snapshot clones, and the `ssd/k3s-etcd`
-  off-node etcd copies. 3-2-1 is met for everything except the intentional
-  exclusions (tank/media, prometheus/loki history, vzdump images, Windows VM).
-  Alerts: `ResticOffsiteFailed`/`ResticOffsiteStale` + per-app
-  `BackupArtifactStale`.
-- **Remaining option (not planned)**: physical `archive`-pool rotation via the
-  existing `plug`/`unplug` chain — superseded by B2 for now.
-
-#### Network-fabric SPOF: second switch + corosync ring
+### Network-fabric SPOF: second switch + corosync ring
 
 - **Current state**: a single unmanaged switch carries both legs of every
   active-backup bond; a single router/gateway (Asus GT-AX11000 at 192.168.0.1)
@@ -392,10 +63,15 @@ that needs an explicit call. Each is a real, documented gap, not a regression.
 - **Decision needed**: hardware spend, and whether the compute nodes have a
   spare NIC for ring1.
 
-#### Tailscale ACL least-privilege lockdown — IMPLEMENTED (pending supervised apply)
+---
 
-- **Status**: the least-privilege policy has **landed in the repo**.
-  `terraform/tailscale/policy.hujson` now defines `group:admins`
+## Pending supervised steps
+
+Codified in the repo, not yet applied to the live estate.
+
+### Tailscale ACL least-privilege lockdown (codified, apply pending)
+
+- **Codified**: `terraform/tailscale/policy.hujson` defines `group:admins`
   (`= [ericsweiss1@gmail.com]`, the `src` of every rule instead of
   `autogroup:member`) and `tag:subnet-router` (tagOwners), scopes access to two
   port-restricted `src group:admins -> dst` rules (rule 1 → the hosts' own
@@ -406,7 +82,8 @@ that needs an explicit call. Each is a real, documented gap, not a regression.
   (nonroot + break-glass rule kept commented). The tailscale role advertises the
   tag via `tailscale_advertise_tags` (`group_vars/proxmox.yml`), adopted through
   its best-effort `tailscale set --advertise-tags` reconcile (strict under
-  `tailscale_tags_require_adoption=true` for the supervised step).
+  `tailscale_tags_require_adoption=true` for the supervised step). No host
+  carries the tag yet — see [docs/05](05-tailscale.md).
 - **Remaining step (supervised)**: the first `terraform apply` + tagging the six
   hosts is a supervised maintenance-window cutover — a botched ACL push can sever
   tailnet/SSH. Follow the staged runbook in
@@ -418,11 +95,131 @@ that needs an explicit call. Each is a real, documented gap, not a regression.
   `autoApprovers.routes` once all six hosts are tagged; revisit the host firewall
   `admin_ts` set now that tag-scoped tailnet ACLs exist.
 
-### Deferred from the 2026 comprehensive review
+### AQC113 firmware update (pve-nas-01)
 
-Items the 2026 comprehensive review intentionally deferred (the review MR fixed
-the bug/security/correctness classes; these are refactors, durability work, and
-supervised live steps that deserve their own change):
+Update the AQC113 NIC firmware from `1.5.38` to `1.5.45` on pve-nas-01. Needs
+the vendor flashing tool on a Windows USB stick and a downtime window. The GRO
+disable that stabilises the NIC in the meantime is codified in the `nic_tuning`
+role, so this is a planned maintenance task rather than an emergency.
+
+### pve-nas-01 stale manual config cleanup
+
+The `/etc/network/interfaces` manual GRO-off stanza on pve-nas-01 is still in
+place and must **not** be removed yet. Remove it only after the `nic_tuning`
+drop-in has been redeployed and verified authoritative across a reboot
+(`ifquery nic1` clean, `ethtool -k nic1` showing
+`generic-receive-offload: off`).
+
+---
+
+## Accepted risks
+
+Deliberate, documented, and **not** planned for change. Listed here so a future
+reviewer does not re-raise them as gaps.
+
+### Bulk media has no backup tier
+
+`tank/media` (~15 TiB) and `nvme/media` (~440 GiB) are covered by same-pool ZFS
+snapshots only — no archive replication, no offsite. The content is replaceable,
+and adding it to `archive` would need a larger archive pool while adding it to
+restic/B2 would dominate the bill. Offsite for media is explicitly declined.
+See [docs/17](17-disaster-recovery.md) § Accepted Risk: NAS-Concentrated State.
+
+### Observability plane is a single-NAS SPOF
+
+Prometheus and Loki run single-replica, pinned to `k3s-agt-nas-01`, because their
+storage is NAS-local by design. A NAS outage takes metrics and logs with it. The
+mitigation is the external dead-man's-switch (`Healthchecks Watchdog`), not HA.
+No node split or replica increase is planned. See
+[docs/17](17-disaster-recovery.md) § Observability plane is a single-NAS SPOF.
+
+### No offsite copy of guest images
+
+`vzdump` writes to `tank/proxmox` and archsync replicates to `archive` — both on
+site. The IaC-managed guests are reprovision-then-restore-data, so images are a
+convenience rather than a dependency. The Windows VM (155) is the one guest whose
+state is not IaC-reproducible; see [docs/17](17-disaster-recovery.md) § What
+vzdump does and does not cover.
+
+### Two residual plaintext Traefik → backend hops
+
+GitLab, HAOS, and Plex now terminate TLS themselves and Traefik
+connects via `scheme: https` + the `vm-tls-wildcard` ServersTransport.
+The remaining plaintext Traefik->VM hops are:
+
+- **AdGuard admin** (port 3000 on dns-01 and dns-02). The IngressRoute
+  is `lan-tailscale-only`. AdGuard's admin web UI doesn't natively
+  support TLS on its own port. Workable approaches:
+    1. Front the admin port with `stunnel` on dns-01 / dns-02 (LAN-only),
+       pointing the IngressRoute at the stunnel listener.
+    2. Set `force_https: true` + `tls_listen_addresses: [:443]` in
+       AdGuard's `encryption` block via the AdGuard UI / sync config
+       (this also affects DoH on :443).
+- **Router** — hardware/firmware-dependent. Configure manually if
+  the router exposes a HTTPS UI; otherwise leave plain HTTP behind
+  Traefik (lan-only).
+
+Both are acceptable residual LAN-trust hops: they sit behind
+`lan-tailscale-only` and the user-facing edge is HTTPS.
+
+---
+
+## Planned work
+
+### Applications
+
+- [ ] **Uptime Kuma** — external endpoint monitoring and status page at
+  `status.esweiss.com`. The only queued application — every other planned app has
+  shipped.
+
+### Nextcloud follow-ups (not blockers)
+
+- [ ] Grafana dashboard: the upstream xperimental exporter dashboard uses a
+  `${DS_LOCAL}` import-input datasource that needs adapting for the sidecar.
+  Metrics are queryable in Explore and covered by alerts in the meantime.
+- [ ] Optional Collabora/OnlyOffice office suite (not deployed).
+
+### CI/CD
+
+- [ ] **Distributed cache backend for the runners.** Every pip/galaxy/toolchain
+  `cache:` block in `.gitlab-ci.yml` is inert because neither runner declares a
+  cache backend. Standing up an in-cluster S3/MinIO target (the `registry-cache`
+  app is the precedent) is the largest safe wall-clock win in the pipeline —
+  see [docs/13](13-ci-cd.md) § Lint Stage.
+
+### Ansible collection migration residue
+
+The Ansible layer now consumes roles from the `weisssrv.infra` collection in
+`eric/weisssrv-lib` rather than in-tree `ansible/roles/*`. Residue to watch:
+
+- [ ] Confirm every deploy job's `changes:` list tracks the collection pin
+  rather than the deleted role paths, and that `check-deploy-coverage` gates on
+  collection-pin semantics.
+- [ ] Re-home any molecule scenario still expecting an in-tree role path.
+- [ ] Re-check role-README links from `docs/` after the move.
+
+### NFS
+
+- [ ] Tighten `/export/tank-proxmox` to **require** TLS (`xprtsec: tls`) the way
+  the k3s export lines do. Every Proxmox host already mounts it with
+  `xprtsec=tls`; the export merely permits plaintext today.
+
+### Storage
+
+- [ ] **Codify the Proxmox storage entries.** `proxmox_backup_storage` in
+  `host_vars/pve-nas-01.yml` declares only `tank-proxmox`. The `ssd`, `nvme` and
+  `local-ssd` storage ids are hand-created in `storage.cfg`, and the at-rest
+  posture of the GitLab / Nextcloud / Immich root disks depends on the `ssd` id
+  pointing at the encrypted `ssd/pve` dataset rather than the plaintext pool root
+  (docs/06 § At Rest). Add them so `proxmox_backup` reconciles them.
+
+---
+
+## Deferred refactors and durability work
+
+Refactors, durability work and supervised live steps that were deliberately kept
+out of the review MRs that fixed the bug/security/correctness classes. Each
+deserves its own focused change.
 
 - **DUP-5 — de-duplicate the wildcard Certificates.** Still deferred. The
   per-namespace `*.esweiss.com` wildcard `Certificate` resources
@@ -462,24 +259,6 @@ supervised live steps that deserve their own change):
   iterating on the live pipeline, and the template/job sections are interleaved.
   Deferred to its own focused MR to avoid risking this MR's pipeline; purely a
   maintainability change.
-- ~~**k8s-infra-04 — one `ClusterExternalSecret` for the Cloudflare token**~~ —
-  DONE: the three byte-identical per-namespace `ExternalSecret`s are replaced
-  by a single `ClusterExternalSecret`
-  (`infrastructure/configs/shared-cloudflare-secrets/cloudflare-api-token.yaml`).
-  Both deferral blockers resolved: the datreeio CRD catalog now carries the
-  v1 schema (so `flux:lint` validates it) and the live CRD confirms
-  `external-secrets.io/v1`.
-- ~~**k8s-infra-06 — install monitoring CRDs in an early Kustomization**~~ —
-  RESOLVED (repo-wide review, 2026-07): added the dedicated `infrastructure-crds`
-  Flux stage (`kubernetes/infrastructure/crds/` — `prometheus-operator-crds`
-  HelmRelease pinned via `helm_chart_versions_prometheus_operator_crds`, chart
-  `30.0.1` = operator `v0.92.1`, version-matched to `kube_prometheus_stack`),
-  wired `sources → crds → controllers` with `wait: true`, and set
-  kube-prometheus-stack `crds.enabled: false` + `install/upgrade.crds: Skip`. A
-  fresh bootstrap now installs the monitoring CRDs before any controller renders a
-  ServiceMonitor — no manual pre-apply. The one-time live-cluster CRD metadata
-  adoption (metadata-only, zero CR impact) is documented in `docs/29` (Fresh
-  bootstrap / disaster recovery).
 - **k8s-apps-10 — image pinning, remaining scope.** The default runner
   executor images are now digest-pinned (`debian:trixie` in
   `gitlab-runner/release.yaml`, `python:3.11` in
@@ -498,10 +277,8 @@ supervised live steps that deserve their own change):
   > rationale are documented in `docs/11-firewall.md` ("Kubernetes NetworkPolicies").
   > DUP-9 (the inline `if schedule: when never` rule on ~16 jobs) is likewise
   > **not** deduped into `.skip-schedule-web`: that anchor also skips `web`, but
-  > those jobs are schedule-only skips and several (molecule-tests, integration-tests)
+  > those jobs are schedule-only skips and some (e.g. `integration-tests`)
   > deliberately *run* on `web` — folding them into the anchor would break that.
-  > DUP-8 (the 21 dashboard ConfigMaps) is **done** — generated via
-  > `configMapGenerator` from per-dashboard `.json` files.
 - **CI render-loop dedup (ci-dup-kustomize-versions, partial)** — the kustomize
   version+sha256 is single-sourced via the `KUSTOMIZE_VERSION` /
   `KUSTOMIZE_SHA256` CI variables, and `scripts/flux-render.sh` now
@@ -510,39 +287,38 @@ supervised live steps that deserve their own change):
   per-Kustomization kustomize-build/kubeconform **loop body** remains
   implemented separately in `flux-lint` and `deploy-verify` — sharing it is
   deferred; the two jobs differ enough (offline kubeconform vs live
-  server-side dry-run) that a `!reference` split is low-value churn. Related
-  extractions since: the `deploy-verify` job body moved to
-  `scripts/deploy-verify.sh`, and a `prometheus-config-lint` job validates
-  rendered Prometheus/Alertmanager config with pinned promtool/amtool.
-  (The molecule base-config DUP-3/4 and collect-state SH-3/DUP-12 dedups
-  from this backlog are now done.)
+  server-side dry-run) that a `!reference` split is low-value churn.
 
-### 2026-06-11 review backlog (deferred findings)
+---
 
-Items surfaced by the full-repo review that were deliberately deferred (the
-review MR fixed the bug/security/correctness classes; these are refactors,
-test debt, and follow-ups that deserve their own changes). Grouped, with the
-owning files:
+## Review backlog
 
-**Live ops** (firewall 7946/8443 deploy, VXLAN→WireGuard migration with
-stale-route cleanup, Loki Push Auth item + alloy credential deploy) were
-all EXECUTED 2026-06-11 — see docs/19 §Status and docs/29. Still pending:
-- Re-deploy roles touched by the review after merge: smtp_relay,
-  nas_storage (smartd, scripts, samba), plex, gitlab (registry/pages TLS —
-  coordinate with the merged vm-ingress 8443 routes),
-  zfs_encryption (unit ordering), exporters, tailscale, base
-  (fail2ban)
-- Off-node copies of the k3s etcd snapshots: the mechanism is IMPLEMENTED,
-  pending activation — an opt-in timer
-  (`k3s_etcd_snapshot_offnode_enabled`, k3s role) copies each server's
-  snapshots to the NAS, with `EtcdSnapshotStale`/quorum alerts watching the
-  pipeline (see docs/17). Enable it in inventory, then keep the periodic
-  restore drill on the backlog
-- Watch agent image-filesystem usage (71-78% on 64G roots seen 2026-06-11);
-  if FreeDiskSpaceFailed events persist outside churn windows, lower the
-  kubelet image-gc thresholds in group_vars/k3s.yml
+Findings from full-repo reviews that were deliberately deferred: refactors, test
+debt, and follow-ups that deserve their own changes. Grouped by the files that
+own them.
+
+**weisssrv-lib (from the !11 review tail — valid, deferred as follow-ups):**
+
+- `nas_storage` mergerfs remount: wrap the unexport/remount sequence in a
+  `block`/`always` that restores the MergerFS targets and bind mounts on a
+  mid-sequence failure (today it fails loud and the runbook covers recovery).
+- `nas_storage` mergerfs idle-check: include exports whose `bind_source` sits
+  *below* a MergerFS target, not only exact matches (no such export exists in
+  this cluster today — generic-consumer correctness).
+- CLI `wire hpa`: preflight-parse `deployment.yaml` and `vpa.yaml` before
+  enabling the kustomization entry, so an unparseable manifest cannot leave the
+  paired edits half-applied.
+- `adguard_home` download: add `until`/`retries`/`delay` to the AdGuard
+  `get_url` (v0.6.1). Neither the in-tree role nor the collection retried it, so
+  a transient GitHub TLS-handshake timeout fails an otherwise-clean deploy or
+  integration run.
+
+**Live ops**:
+- Watch agent image-filesystem usage on the 64G roots; if `FreeDiskSpaceFailed`
+  events persist outside churn windows, lower the kubelet image-gc thresholds in
+  `group_vars/k3s.yml`
 - Optional governance hardening for multi-author/AI velocity: CODEOWNERS on
-  ansible/roles/{proxmox_*,zfs_*}/ + kubernetes/infrastructure/,
+  the guest/storage inventory (hosts.yml, host_vars/pve-*) + kubernetes/infrastructure/,
   and a policy check (conftest) for risky manifest classes
 - Dedicated CI deploy SSH keypair, separate from the operator key: the
   shared key's `from=` now includes the k3s pod CIDR (runner-pod hairpin,
@@ -622,423 +398,98 @@ all EXECUTED 2026-06-11 — see docs/19 §Status and docs/29. Still pending:
   failure ratios during storms (1 failed Discord post in a 5m window) —
   consider routing it warning-severity or raising the threshold
 
-### Complete k3s secrets-encryption (DONE)
-
-Status as of 2026-05-02: encryption enabled cluster-wide, current rotation stage
-`reencrypt_finished`, all server hashes match. Active key
-`aescbckey-2026-04-16T12:29:38-07:00`. Verify periodically via
-`sudo k3s secrets-encrypt status` on k3s-srv-nas-01.
-
-### AQC113 firmware update (pve-nas-01)
-
-Still outstanding: update the AQC113 NIC firmware from `1.5.38` to `1.5.45` on
-pve-nas-01. Requires the Windows flashing tool on a USB stick and a downtime
-window. The GRO disable (interim stability fix) is now codified via the
-`nic_tuning` Ansible role (`/etc/network/interfaces.d/99-nic-nic1-tuning.cfg` +
-`/etc/sysctl.d/99-nic-tuning-ip-forward.conf` — see `ansible/roles/nic_tuning/README.md`
-for exact filenames), so this is no longer an emergency — it
-remains a planned maintenance task.
-
-### pve-nas-01 stale manual config cleanup
-
-Two earlier entries on pve-nas-01, with different dispositions:
-
-- `/etc/sysctl.conf` `net.ipv4.ip_forward=1` — written by the tailscale role
-  (not a manual leftover). The role now persists the value in
-  `/etc/sysctl.d/99-tailscale-ip-forward.conf` and removes the
-  `/etc/sysctl.conf` entry automatically on its next deploy — no manual
-  removal needed.
-- `/etc/network/interfaces` manual GRO-off stanza — do **NOT** remove it yet.
-  The nic_tuning drop-in is only now a valid `iface nic1 inet manual` stanza
-  (the old bare `post-up` form was rejected by ifupdown2 and inert). Remove
-  the manual stanza only after the fixed drop-in is redeployed and verified
-  authoritative across a reboot (`ifquery nic1` clean and
-  `ethtool -k nic1` showing `generic-receive-offload: off`).
-
-### Traefik → AdGuard admin: HTTPS
-
-GitLab, HAOS, and Plex now terminate TLS themselves and Traefik
-connects via `scheme: https` + the `vm-tls-wildcard` ServersTransport.
-The remaining plaintext Traefik->VM hops are:
-
-- **AdGuard admin** (port 3000 on dns-01 and dns-02). The IngressRoute
-  is `lan-tailscale-only`. AdGuard's admin web UI doesn't natively
-  support TLS on its own port. Workable approaches:
-    1. Front the admin port with `stunnel` on dns-01 / dns-02 (LAN-only),
-       pointing the IngressRoute at the stunnel listener.
-    2. Set `force_https: true` + `tls_listen_addresses: [:443]` in
-       AdGuard's `encryption` block via the AdGuard UI / sync config
-       (this also affects DoH on :443).
-- **Router** — hardware/firmware-dependent. Configure manually if
-  the router exposes a HTTPS UI; otherwise leave plain HTTP behind
-  Traefik (lan-only).
-- ~~GitLab Container Registry / Pages backend hops~~ — RESOLVED 2026-06-11:
-  both now terminate TLS on the VM with the distributed wildcard cert
-  (`registry_nginx` on :5050, `pages_nginx` on :8443) and Traefik connects
-  `scheme: https`. Canonical transport table: docs/06-zfs.md §In Transit;
-  implementation: docs/27-gitlab-deployment.md.
-
-The two remaining items (AdGuard admin, router) are acceptable residual
-LAN-trust hops since they sit behind `lan-tailscale-only` and the
-user-facing edge is HTTPS.
-
-### NFSv4 + RPC-with-TLS — k3s require-TLS DONE; one documented plaintext exception
-
-**Status: require-TLS for all k3s clients, cutover complete and validated
-live.** `tlshd` runs on **every k3s agent** and on **all six Proxmox hosts**
-(`nfs_tls_enabled: true` in `group_vars/k3s.yml`, `group_vars/proxmox.yml`,
-and `host_vars/pve-nas-01.yml` — the Proxmox hosts need it for the
-tank-proxmox TLS mount).
-The k3s client lines of `/export/{appdata,share,media}` carry
-`xprtsec=tls` — **require**: a plaintext mount from those CIDRs is rejected.
-All 11 k3s NFS PVs (downloads ×8, recipes ×2, grafana) were recreated with
-`server: pve-nas-01.esweiss.com` + `xprtsec=tls` and every pod is Running over
-TLS (`exportfs -v` shows `xprtsec=tls` on the k3s lines; `cat /proc/mounts`
-confirms on each agent). The exports template
-(`nas_storage/templates/exports.j2`) supports **per-client** `xprtsec`, which
-makes the mixed `/export/media` export possible (k3s clients require TLS, HAOS
-plaintext on the same export). NFS-over-TLS rides the same TCP/2049 — no
-firewall change.
-
-**CRITICAL — TLS clients mount by hostname, never by IP.** The distributed
-cert is the wildcard `*.esweiss.com` (no IP SAN). Mounting
-`192.168.0.102:/...` with `xprtsec=tls` fails the handshake (`tlshd`:
-"Certificate owner unexpected", confirmed live). Mounting
-`pve-nas-01.esweiss.com:/...` (resolves to .102 via AdGuard, matches the
-wildcard) succeeds ("Handshake with pve-nas-01.esweiss.com was successful").
-Every k3s NFS PV with `xprtsec=tls` therefore sets
-`server: pve-nas-01.esweiss.com`, not the IP.
-
-**Require-TLS (`xprtsec: tls`), not permissive:** the k3s client lines reject
-plaintext. The rollout staged via permissive (`none:tls`) first, then tightened
-to `tls` once every k3s client was confirmed mounting over TLS by hostname
-(`exportfs -v`, `cat /proc/mounts` on each agent, `journalctl -u tlshd`). The
-`.154` HAOS line stays plaintext via its own per-client entry — it is not
-locked out, because `xprtsec` is applied per client.
-
-**Why `tlshd` on all six agents, not just `k3s-agt-nas-01`:** the NFS-backed
-PVs (grafana, `*arr`, recipes, downloads data) float across the cluster, so a
-pod can become the tlshd client on any agent — hence `tlshd` runs on every
-agent (`nfs_tls_enabled: true` in `group_vars/k3s.yml`). The agents are **not**
-in `cert_distribution_targets`: under `xprtsec=tls` they are pure TLS clients
-that validate `pve-nas-01`'s server cert against the system CA truststore and
-present no client cert, so they hold neither `fullchain.pem` nor `privkey.pem`
-(see the least-privilege item under Infrastructure Improvements → Security
-Hardening, and `host_vars/dns-01.yml`). k3s **server** nodes (.222/.223/.227)
-don't mount NFS and are intentionally absent. Re-add an agent as a target only
-for a future `xprtsec=mtls` migration (which would also set
-`nfs_tls_client_cert=true`).
-
-**Live cutover (DONE):** `server:` is an immutable PV field, so the
-IP→hostname switch on an already-bound PV could not be applied in place — Flux
-can't patch it. Each of the 11 PVs (downloads-data, the seven downloads-appdata
-PVs, the two recipes NFS PVs, and grafana-data) was cut over by:
-
-1. `kubectl delete pv <name>` — the Retain reclaim policy detached the PV
-   object without touching the NFS data on the NAS (data safe).
-2. Flux recreated the PV from the manifest (`server:
-   pve-nas-01.esweiss.com`, `xprtsec=tls`), and the PVC re-bound.
-3. `kubectl rollout restart` on the consuming workload so the pod remounted
-   against the new server name over TLS.
-
-The 11 PVs now carry the `kustomize.toolkit.fluxcd.io/force: "Enabled"`
-annotation, so a **future** immutable PV-spec change (server, mountOptions) is
-delete+recreated by Flux automatically instead of stalling the Kustomization —
-still data-safe because the reclaim policy is Retain. The manual `kubectl
-delete` dance above is no longer needed for subsequent immutable-field changes.
-
-**Plaintext exception (deliberate, not a gap):**
-
-- **HAOS (.154) on `/export/media`** — Home Assistant's Supervisor hardcodes
-  its NFS mount options (`supervisor/mounts/mount.py` `NFSMount.options`:
-  `softerr,timeo=100,retrans=2` + `ro`/`port=`, no free-form field) and the
-  locked HAOS image ships no `tlshd`, so it can never request `xprtsec`. Its
-  `.154` client line omits `xprtsec`; the server's default policy
-  (`none:tls:mtls`) accepts the plaintext mount. SMB3 migration was
-  considered and rejected — it adds a second protocol + the `nas` credential
-  for one read-only media browse mount of non-sensitive data. See docs/24.
-
-The former second exception — the Proxmox **`tank-proxmox` backup target** —
-is retired: the `proxmox_backup` role manages the `storage.cfg` entry as
-hostname + `vers=4.2,xprtsec=tls`, `tlshd` runs on all six Proxmox hosts
-(`nfs_tls_enabled: true` in `group_vars/proxmox.yml`), and the one-time
-migration off the legacy IP entry is COMPLETE — every host mounts
-`pve-nas-01.esweiss.com:/tank-proxmox` with `xprtsec=tls` (verified
-2026-07-14). Residual gap: the `/export/tank-proxmox` export line does not
-yet REQUIRE TLS (`xprtsec: tls`) the way the k3s exports do, so a plaintext
-client would still be accepted server-side; tighten the export once nothing
-legacy needs it.
-
-### ~~Authentik / Plex bypass routes — internal TLS~~ (DONE)
-
-VM ingresses for HAOS (`kubernetes/apps/vm-ingress/home-assistant.yaml`)
-and Plex (`kubernetes/apps/vm-ingress/plex.yaml`) terminate to the
-backend over `scheme: https` with `serversTransport: vm-tls-wildcard`.
-The earlier ha-bypass IngressRoutes
-(`kubernetes/apps/download-clients/ingress-routes-ha-bypass.yaml`)
-target `*arr` Services inside the cluster, not HAOS or Plex, so the
-plaintext concern that originally lived here no longer applies. Left
-in place as a strikethrough so the diff history makes the resolution
-obvious.
-
----
-
-## Priority 6: Additional Applications
-
-### wg-easy internet-exit VPN (DONE)
-
-WireGuard VPN (`wg-easy` v15) for the user + friends/family, providing
-**internet-only egress** through the home connection. Clients are fenced out of
-the LAN by a two-layer egress no-LAN fence (client full-tunnel config + public
-DNS, and a CNI egress NetworkPolicy killswitch that also blocks internal DNS),
-plus a separate `-dest`-scoped WAN firewall rule that scopes the inbound
-endpoint. Admin UI is
-internal-only behind Authentik (`vpn-admins`); endpoint is
-`vpn.ericsweiss.com:51820/udp` via MetalLB VIP `.99` (`vpn-pool`).
-
-- [x] Deploy `kubernetes/apps/wg-easy/` (namespace, NFS-backed state, MetalLB
-  UDP LoadBalancer, internal IngressRoute, ServiceMonitor, VPA, NetworkPolicies)
-- [x] External DNS (`vpn.ericsweiss.com`, Terraform + DDNS) + internal AdGuard
-  rewrite + `sg-k3s-ingress-pub` WireGuard rule + observability
-- [x] Docs: [docs/38-wireguard-vpn.md](38-wireguard-vpn.md) (architecture,
-  security/threat model, deploy plan, client onboarding, restore)
-
-Remaining operator steps (one-time, in docs/38): create the `WireGuard VPN`
-1Password item, forward WAN `:51820/udp` → `.99` on the router (and exclude `.99`
-from DHCP), enable metrics in the UI, and create the Authentik proxy provider +
-`vpn-admins` group.
-
-### Immich (Photo Management) — IMPLEMENTED
-
-Deployed as a docker-compose stack on a dedicated NAS-pinned Debian VM
-(`immich`, 192.168.0.157, vmid 157 on pve-nas-01), fronted by a host nginx.
-Full architecture, storage, backup, SSO, and runbooks: **[docs/36-immich.md](36-immich.md)**.
-
-Decisions taken:
-- **Exposure**: internal (`photos.esweiss.com`) + external
-  (`photos.ericsweiss.com`). The external record is a DNS-only Cloudflare CNAME
-  (proxy bypass) so large mobile uploads aren't capped by the 100 MB proxied
-  body limit.
-- **Storage**: all data on encrypted passthrough zvols (no NFS). App + Postgres
-  on `ssd/appdata/immich/*`; the photo library on a 2 TB sparse zvol under the
-  pre-existing encrypted `tank/immich-data` dataset (rides the archive tier).
-- **Database**: Immich's release-pinned Postgres image (vectorchord/pgvectors)
-  on a dedicated fast encrypted zvol — not NFS.
-- **ML acceleration**: originally CPU-only; now GPU-primary via the `immich-ml`
-  LXC (Intel Arc B580 OpenVINO, `/dev/dri` shared non-exclusively with Plex —
-  docs/36 "GPU machine learning"). The in-VM CPU ML container stays as the
-  automatic failover, so the 6 vCPU / 12 GB sizing is kept.
-- **SSO**: Authentik OIDC, SSO-only (password login off after the one-time admin
-  bootstrap), access gated by the `immich-users` Authentik group.
-
-### Nextcloud (File Sync) (COMPLETE)
-
-Deployed on a dedicated NAS-pinned Debian VM (`192.168.0.156`, vmid 156) as a
-Docker Compose stack (nextcloud-apache + postgres + redis + cron + exporter).
-Reachable at `cloud.ericsweiss.com` (external + internal) and `cloud.esweiss.com`
-(internal), SSO-only via Authentik OIDC (`user_oidc`, groups
-`nextcloud-admins` / `nextcloud-users`). Storage rides ZFS zvol passthrough
-disks (no NFS): app + postgres on encrypted `ssd/appdata/nextcloud/*`, bulk data
-on a 2T sparse child of the encrypted `tank/nextcloud-data`. Backups: root disk
-via vzdump, app/postgres zvols via `ssd/appdata` -> archive (raw-encrypted), a
-nightly `pg_dump` to `tank/backups/apps/nextcloud` (rides `tank/backups` ->
-archive + restic B2), bulk data via `tank/nextcloud-data` -> archive. Full
-observability (node_exporter, alloy journald->Loki, nextcloud-exporter
-ServiceMonitor, blackbox probe, `NextcloudDown` / `NextcloudBackup*` alerts).
-
-Runbook: **docs/35-nextcloud.md**.
-
-Follow-ups (not blockers):
-- [ ] Grafana dashboard: the upstream xperimental exporter dashboard uses a
-  `${DS_LOCAL}` import-input datasource that needs adapting for the sidecar;
-  skipped for now (metrics are queryable in Explore + covered by alerts).
-- [ ] Optional Collabora/OnlyOffice office suite (not deployed).
-
----
-
 ## Infrastructure Improvements
 
-### Security Hardening
+### Security hardening
 
-- [x] Add fail2ban to Proxmox hosts (deployed)
-- [ ] Network segmentation with VLANs (IoT, guest, management) — detail +
-  interim admin-IPSet option under "Architectural decisions deferred from the
-  full-repo review (2026-07-14)" above
-- [x] Implement Network Policies in k3s (default-deny ingress) -- done across
-  the board: default-deny + scoped policies live in the app namespaces
-  (download-clients, recipes, authentik, gitlab-runner{,-privileged,-reaper},
-  gitlab-agent, cloudflare-ddns, onepassword-connect — per-class runner egress
-  documented in docs/13-ci-cd.md § Runner Network Boundaries), in
-  observability, and in the controller namespaces (cert-manager, external-dns,
-  traefik, reloader, metallb-system and vpa-system with
-  default-deny-ingress + webhook/metrics allows, external-secrets additionally
-  with scoped egress). The built-in `default` namespace is hardened with PSA
-  `restricted` labels + a default-deny-all policy
-  (`infrastructure/configs/default-namespace.yaml`).
-- [x] External Secrets Operator with 1Password Connect provider (deployed -- see docs/29-flux-operations.md)
+- [ ] Network segmentation with VLANs (IoT, guest, management) — detail and the
+  interim admin-IPSet option are under
+  [Network segmentation](#network-segmentation--admin-ipset-tightening) above.
 
 ### GitOps / Flux bootstrap robustness
 
-- [ ] CoreDNS pod topology spread. The HPA pin (`configs/coredns/hpa.yaml`,
-  min==max==2) guarantees two replicas but not that they land on different nodes,
-  so a single node loss can take out both. k3s owns the CoreDNS Deployment (a
-  bundled AddOn) and resets it, so a durable `topologySpreadConstraints` needs
-  `coredns` in `k3s_disable` (group_vars/k3s.yml) plus a self-managed CoreDNS
-  manifest in the k3s server manifests dir. Deferred: self-managing CoreDNS is a
-  live cluster-DNS migration (outage risk + ongoing version-sync with k3s
-  upgrades) and should be its own closely-watched change, not part of this MR.
-- [x] nfs_tls least-privilege (done in !103): the six k3s agents are no longer in
-  `cert_distribution_targets` (host_vars/dns-01.yml). Under `xprtsec=tls` they are
-  TLS clients that validate the server via the system CA truststore and present no
-  client cert, so they need neither `fullchain.pem` nor `privkey.pem`; verified no
-  other on-agent service (alloy_host, postfix_null_client, k3s) consumes them. The
-  nfs_tls role now also scrubs any stale `/etc/ssl/private/{fullchain,privkey}.pem`
-  on client-only hosts. Re-add a target only for an `xprtsec=mtls` migration.
+- [ ] **CoreDNS pod topology spread.** The HPA pin (`configs/coredns/hpa.yaml`,
+  min == max == 2) guarantees two replicas but not that they land on different
+  nodes, so a single node loss can take out both. k3s owns the CoreDNS Deployment
+  (a bundled AddOn) and resets it, so a durable `topologySpreadConstraints` needs
+  `coredns` in `k3s_disable` (`group_vars/k3s.yml`) plus a self-managed CoreDNS
+  manifest in the k3s server manifests dir. Self-managing CoreDNS is a live
+  cluster-DNS migration and should be its own closely-watched change.
 
 ### Terraform / Cloudflare
 
-- [ ] **Cloudflare provider v4 -> v5 migration.** `terraform/cloudflare/versions.tf`
+- [ ] **Cloudflare provider v4 → v5 migration.** `terraform/cloudflare/versions.tf`
   pins `cloudflare/cloudflare` at `~> 4.52.0`; v5 is a breaking rewrite that
-  removed/renamed the resources this config uses — `cloudflare_record` ->
+  removed or renamed every resource this config uses — `cloudflare_record` →
   `cloudflare_dns_record` (different argument schema; CAA `data {}` blocks become
-  a typed `data` object) and `cloudflare_zone_settings_override` -> per-setting
+  a typed `data` object) and `cloudflare_zone_settings_override` → per-setting
   `cloudflare_zone_setting` resources. Migrating means rewriting every resource
-  plus a `terraform state mv` for each, so it is deferred as its own change (do
-  not bump to v5 incidentally).
+  plus a `terraform state mv` for each, so it is its own change — do not bump to
+  v5 incidentally.
 
-### Storage Enhancements
+### Storage
 
-- [ ] ZFS scrub-completion ZED email (per-scrub success/error notification only — scrub *staleness* detection already ships via the `ZFSPoolScrubStale` alert → Alertmanager)
-- [ ] Backup verification testing (quarterly restore drills)
-- [ ] Consider ZFS special devices for metadata acceleration
+- [ ] ZFS scrub-completion ZED email (per-scrub success/error notification;
+  scrub *staleness* already ships via the `ZFSPoolScrubStale` alert).
+- [ ] Consider ZFS special devices for metadata acceleration.
 
 ### Documentation
 
-- [ ] Network topology diagrams (draw.io or Mermaid)
-- [ ] Disaster recovery runbook updates
-- [ ] Troubleshooting flowcharts
-- [x] Document ZFS scrub schedule details (docs/06-zfs.md § ZFS Scrubs)
+- [ ] Network topology diagrams (draw.io or Mermaid).
+- [ ] Troubleshooting flowcharts.
 
-### Observability follow-ups
+### Observability
 
-- [ ] **Recording rule to detect wholly-absent
-  `proxmox_corosync_health_collector_last_success_seconds`.** The
-  `CorosyncHealthCollectorStale` alert (added with the corosync wedge
-  detection) only catches the "metric exists but stuck" case — not the
-  "metric never appeared" case. Bridging it cleanly needs a host-derived
-  label that joins `up{job="observability/node-exporter-host"}` to the
-  textfile metric (their `instance` labels match by construction since
-  both come from the same node_exporter scrape). Add either a recording
-  rule or extend the existing alert once the join is confirmed in prod.
+- [ ] **Detect a wholly-absent
+  `proxmox_corosync_health_collector_last_success_seconds`.**
+  `CorosyncHealthCollectorStale` only catches "metric exists but stuck", not
+  "metric never appeared". Bridging it needs a host-derived label joining
+  `up{job="observability/node-exporter-host"}` to the textfile metric (their
+  `instance` labels match by construction — both come from the same node_exporter
+  scrape). Add a recording rule or extend the existing alert once the join is
+  confirmed in prod.
 
 ---
 
-## Commands Reference
+## Shipped (historical)
 
-```bash
-# Base infrastructure (Ansible)
-task infra:deploy         # Deploy base infrastructure
-task infra:check          # Dry-run
-task infra:verify         # Post-deployment verification
+Everything below is done and covered by a current doc. Kept as a one-line index
+only — the detail belongs to the owning document, and git history holds the
+implementation story.
 
-# K3s cluster (Ansible — cluster infrastructure only)
-task k3s:provision-vms    # Provision k3s VMs on Proxmox
-task k3s:deploy           # Deploy/upgrade k3s (idempotent)
-task k3s:kubeconfig       # Fetch kubeconfig
-task k3s:backup           # Create etcd snapshot
-task k3s:status           # Show cluster status
+| Area | Outcome | Canonical doc |
+|---|---|---|
+| Base infrastructure | 6-node Proxmox cluster, ZFS pools, DNS pair + Unbound, SMTP relay, certs, firewall, Tailscale | [01](01-overview.md), [06](06-zfs.md), [08](08-dns.md), [11](11-firewall.md) |
+| K3s platform | 9 nodes (3 servers + 6 agents), kube-vip API VIP, MetalLB, Traefik, external-dns, ESO | [19](19-k3s-deployment.md) |
+| Proxmox HA | HA groups + storage replication for dns-01/dns-02/smtp-relay/HAOS | [12](12-runbooks.md), [25](25-multi-node-expansion.md) |
+| GitLab | Self-hosted EE on a NAS-pinned VM; registry, Pages, runners, agent, SAML SSO | [27](27-gitlab-deployment.md) |
+| GitOps | Flux CD reconciles all of `kubernetes/`; five infrastructure stages + apps | [29](29-flux-operations.md) |
+| Observability | Prometheus + Grafana + Loki + Alloy, exporters, dashboards, alert routing | [31](31-observability.md) |
+| Autoscaling | VPA tiers, HPAs, CoreDNS pin, lint invariants | [33](33-autoscaling.md) |
+| Applications | Plex, download/media stack, recipes, Home Assistant, Hermes, Homarr, wg-easy, Immich, Nextcloud, Windows VM | per-app docs 20-24, 35-41 |
+| SSO | Authentik as the identity provider; objects codified in `terraform/authentik` | [40](40-authentik-terraform.md) |
+| Storage encryption | Per-dataset ZFS encryption roots, passphrase-from-Connect boot unlock | [32](32-zfs-encryption.md) |
+| Offsite backups | Nightly restic → Backblaze B2, GFS retention, client-side encryption | [42](42-offsite-backup.md) |
+| GPU | GTX 1660 Ti VFIO passthrough to the k3s GPU agent, time-sliced device plugin | [43](43-gpu-passthrough.md) |
+| k3s secrets encryption | Enabled cluster-wide; rotation stage `reencrypt_finished` | [17](17-disaster-recovery.md) |
+| NFS over TLS | Every k3s export line requires `xprtsec=tls`; PVs mount by hostname | [07](07-fileservices.md) |
+| Off-node etcd snapshots | `k3s_etcd_snapshot_offnode_enabled` copies each server's snapshots to the NAS | [17](17-disaster-recovery.md) |
+| Multi-repo tenants | Tenant onboarding via `weisssrv-app-template` + wiring under `kubernetes/clusters/weisssrv/tenants/` | [30](30-multi-repo-onboarding.md) |
 
-# Flux GitOps (all k8s workload deploys happen via git push)
-task flux:status          # Concise health summary
-task flux:verify          # flux check + get all -A
-task flux:reconcile       # Force full reconciliation
-task flux:suspend -- <ns>/<kind>/<name>   # Emergency pause
-task flux:resume -- <ns>/<kind>/<name>    # Resume
-task flux:refresh-secret -- <ns>/<name>   # Force ExternalSecret sync
-task flux:rotate-secret -- <app>          # Refresh secret + restart consumers
-task flux:sync-versions   # Regenerate versions-configmap.yaml from all.yml
-task flux:dev-apply -- <path>   # Local kubectl apply (Flux reverts on next cycle)
-task flux:lint            # kustomize build + envsubst + kubeconform on every Kustomization
-
-# Operational (workload introspection)
-task downloads:status     # Show downloads namespace status
-task downloads:vpn-status # Check VPN connection
-task downloads:vpn -- APP=<nzbget|qbittorrent> STATE=<on|off>          # live VPN toggle (GitOps-safe)
-task downloads:vpn-provider -- APP=<...> PROVIDER=<privadovpn|vpnunlimited> [COUNTRIES=<...>]
-task downloads:restart    # Restart all download/media apps
-task downloads:logs       # View app logs (APP=nzbget [CONTAINER=gluetun])
-task downloads:shell      # Shell into container
-task downloads:delete     # Remove stack (preserves data; Flux will recreate)
-task recipes:status       # Show recipes namespace status
-task recipes:restart      # Restart all recipe apps
-task recipes:logs         # View app logs (APP=mealie)
-task recipes:shell        # Shell into app container
-task recipes:delete       # Remove stack (preserves data; Flux will recreate)
-task authentik:status     # Show Authentik pods/status
-task authentik:logs       # View Authentik logs
-task authentik:restart    # Restart Authentik pods
-
-# Home Assistant (HAOS VM, configuration via Ansible)
-task home-assistant:deploy-config  # Deploy HA configuration via Ansible
-task home-assistant:status         # Show VM status
-task home-assistant:snapshot       # Create Proxmox snapshot
-
-# Plex (LXC on NAS, managed by Ansible)
-task plex:deploy          # Deploy Plex LXC
-
-# GitLab (VM on NAS, managed by Ansible; runners + agent managed by Flux)
-task gitlab:deploy          # Deploy GitLab (VM + application)
-task gitlab:deploy-check    # Dry-run deployment
-task gitlab:status          # Show GitLab and runner status
-task gitlab:verify          # Run smoke tests (HTTP readiness, registry, pages, SSH)
-task gitlab:backup          # Create GitLab backup
-task gitlab:console         # SSH to GitLab VM
-task gitlab:logs            # View GitLab logs
-task gitlab:reconfigure     # Reconfigure after changes
-
-# Maintenance
-task maintenance:check-versions   # Check for updates
-task maintenance:update-full      # Full base infrastructure update
-task maintenance:update-k3s-nodes # Rolling k3s node upgrades
-task collect-state                # Generate cluster snapshot
-```
+**Related repositories.** The family is four repos: this one, the shared CI
+library `eric/weisssrv-lib`, the cluster scaffold `eric/weisssrv-cluster-template`
+that weisssrv was generalized into, and the tenant scaffold
+`eric/weisssrv-app-template`. Generalizable changes belong in the library or a
+template rather than here. [docs/13](13-ci-cd.md) § Shared CI library owns the
+pin/bump flow; [docs/30](30-multi-repo-onboarding.md) owns the app template's
+contents.
 
 ---
 
-## Validation Checklist
+## Related documentation
 
-After deployment, verify:
-
-### Base Infrastructure
-- [x] SSH access works to all hosts
-- [x] DNS resolution works (internal and external)
-- [x] NFS mounts are accessible
-- [x] Samba shares are accessible
-- [x] Mail delivery works
-- [x] TLS certificates are valid
-- [x] Proxmox web UI is accessible
-- [x] AdGuard Home web UI is accessible
-- [x] ZFS pools are healthy
-
-### K3s Platform
-- [x] K3s cluster is healthy
-- [x] All pods running
-- [x] IngressRoutes accessible (internal and external)
-- [x] Authentik SSO working
-
-### Applications
-- [x] VPN connected for download clients
-- [x] Mealie accessible at food.esweiss.com
-- [x] Bar Assistant accessible at bar.esweiss.com
-- [x] Plex accessible at plex.esweiss.com
-- [x] Home Assistant accessible at home.esweiss.com
-
----
-
-## Related Documentation
-
-- `docs/14-post-base-plan.md` - K3s platform architecture and roadmap
-- `docs/19-k3s-deployment.md` - K3s cluster deployment workflow
-- `docs/25-multi-node-expansion.md` - Multi-node HA expansion guide
-- `docs/12-runbooks.md` - Operational procedures
-- `docs/17-disaster-recovery.md` - Disaster recovery procedures
+- [docs/12-runbooks.md](12-runbooks.md) - operational procedures
+- [docs/13-ci-cd.md](13-ci-cd.md) - pipeline structure and the shared CI library
+- [docs/17-disaster-recovery.md](17-disaster-recovery.md) - disaster recovery
+- [docs/19-k3s-deployment.md](19-k3s-deployment.md) - k3s cluster deployment
+- [docs/25-multi-node-expansion.md](25-multi-node-expansion.md) - multi-node HA expansion

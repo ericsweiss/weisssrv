@@ -38,16 +38,21 @@ def _plays(path: Path) -> list[dict]:
 
 
 def _role_entries(play: dict) -> list[dict]:
-    """The play's roles, normalised to `{role: name, tags: [...]}` dicts."""
+    """The play's roles as `{role: short-name, tags: [...]}` dicts.
+
+    Roles ship FQCN'd from the weisssrv.infra collection; the namespace is
+    stripped so the comparisons below stay keyed on the bare role name.
+    """
     entries = []
     for entry in play.get("roles") or []:
         if isinstance(entry, str):
-            entries.append({"role": entry, "tags": []})
+            entries.append({"role": entry.rsplit(".", 1)[-1], "tags": []})
         elif isinstance(entry, dict) and "role" in entry:
             tags = entry.get("tags") or []
-            entries.append(
-                {"role": entry["role"], "tags": [tags] if isinstance(tags, str) else tags}
-            )
+            entries.append({
+                "role": str(entry["role"]).rsplit(".", 1)[-1],
+                "tags": [tags] if isinstance(tags, str) else tags,
+            })
     return entries
 
 

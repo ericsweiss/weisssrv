@@ -1,12 +1,8 @@
 ---
-# Cloudflare DDNS using direct API calls
-# Updates A records with current public IP:
-# - ericsweiss.com (proxied) - main domain through Cloudflare
-# - direct.ericsweiss.com (not proxied) - for services needing direct TLS (GitLab Pages wildcard)
-# - git.ericsweiss.com (not proxied) - GitLab web + SSH (unified URL for both)
-# - vpn.ericsweiss.com (not proxied) - wg-easy WireGuard VPN endpoint (UDP)
-#
-# Runs every 5 minutes to keep records pointing to the current public IP
+# Cloudflare DDNS: every 5 minutes, point the four WAN A records
+# (ericsweiss.com, direct., git., vpn.) at the current public IPv4.
+# The program is cloudflare-ddns.py in this directory, mounted from the
+# configMapGenerator in kustomization.yaml; unit tests in scripts/.
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -49,206 +45,7 @@ spec:
             image: python:3.14-slim@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c5320d762a27986facfc3355c1
             command:
             - python3
-            - -c
-            - |
-              import ipaddress
-              import json
-              import os
-              import sys
-              import time
-              import urllib.request
-              import urllib.error
-
-              CF_API_TOKEN = os.environ.get('CF_API_TOKEN')
-              if not CF_API_TOKEN:
-                  print("ERROR: CF_API_TOKEN not set")
-                  sys.exit(1)
-
-              def api_request(url, method='GET', data=None):
-                  """Make a Cloudflare API request and return parsed JSON."""
-                  headers = {
-                      'Authorization': f'Bearer {CF_API_TOKEN}',
-                      'Content-Type': 'application/json'
-                  }
-                  body = json.dumps(data).encode() if data else None
-                  req = urllib.request.Request(url, data=body, headers=headers, method=method)
-                  try:
-                      with urllib.request.urlopen(req, timeout=30) as resp:
-                          return json.loads(resp.read().decode())
-                  except urllib.error.HTTPError as e:
-                      # Include method + URL so the failure is greppable in logs.
-                      # Cloudflare returns structured JSON errors; capture the body.
-                      try:
-                          body_txt = e.read().decode(errors='replace')
-                      except Exception:
-                          body_txt = '<unreadable>'
-                      print(f"ERROR: HTTP {e.code} {e.reason} on {method} {url}: {body_txt}", file=sys.stderr)
-                      return None
-                  except urllib.error.URLError as e:
-                      print(f"ERROR: network error on {method} {url}: {e.reason}", file=sys.stderr)
-                      return None
-                  except Exception as e:
-                      print(f"ERROR: unexpected {type(e).__name__} on {method} {url}: {e}", file=sys.stderr)
-                      return None
-
-              def get_public_ip():
-                  """Get current public IP, retrying across providers to ride out
-                  both a transient egress blip (e.g. 'No route to host' while a
-                  node/network reconverges during maintenance) AND a single
-                  provider being down, so the pod doesn't fail and leave an Error
-                  pod behind. The egress NetworkPolicy allows public 443 to any
-                  non-RFC1918 host, so the fallbacks are permitted."""
-                  # IPv4-preferred endpoints: we update an A record. Only
-                  # ipv4.icanhazip.com is strictly v4; ipify/amazonaws can be
-                  # dual-stack and could return AAAA over a v6-capable egress — the
-                  # per-reply ipaddress.IPv4Address check below rejects any non-v4
-                  # and falls through to the next provider.
-                  services = (
-                      'https://api.ipify.org',
-                      'https://ipv4.icanhazip.com',
-                      'https://checkip.amazonaws.com',
-                  )
-                  last_err = None
-                  for attempt in range(1, 4):
-                      for url in services:
-                          try:
-                              with urllib.request.urlopen(url, timeout=10) as resp:
-                                  ip = resp.read().decode().strip()
-                                  # Only accept a valid PUBLIC IPv4 — we update an A
-                                  # record, and a dual-stack provider (e.g. ipify)
-                                  # could return an AAAA address over a v6-capable
-                                  # egress path. ipaddress.IPv4Address rejects v6,
-                                  # leading-zero octets, and Unicode digits in one
-                                  # call; .is_global then rejects a private/loopback/
-                                  # link-local/CGNAT/reserved reply (a captive portal
-                                  # or misbehaving provider) that would otherwise
-                                  # publish an unreachable A record -> try the next.
-                                  try:
-                                      if ipaddress.IPv4Address(ip).is_global:
-                                          return ip
-                                      print(f"WARN: {url} returned non-public IPv4 {ip!r}, trying next", file=sys.stderr)
-                                  except ValueError:
-                                      if ip:
-                                          print(f"WARN: {url} returned non-IPv4 {ip!r}, trying next", file=sys.stderr)
-                          except Exception as e:
-                              last_err = e
-                              print(f"WARN: get public IP via {url} (attempt {attempt}) failed: {e}", file=sys.stderr)
-                      if attempt < 3:
-                          time.sleep(5)
-                  # last_err is None if every reply was reachable but non-IPv4/empty
-                  # (no exception raised), so give a meaningful message either way.
-                  print(f"ERROR: Failed to get a valid IPv4 after retries: "
-                        f"{last_err or 'all providers returned non-IPv4 or empty responses'}")
-                  return None
-
-              def update_record(zone_id, record_name, current_ip, proxied):
-                  """Update or create a DNS A record. `proxied` only seeds
-                  record CREATION (Cloudflare would default a fresh record to
-                  proxied=false, exposing the origin IP for the root domain);
-                  on update the record's existing value is preserved —
-                  Terraform owns proxied, same anti-fight rationale as TTL."""
-                  print(f"\n=== Processing {record_name} (create-default proxied={proxied}) ===")
-
-                  # Get existing record
-                  url = f"https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records?type=A&name={record_name}"
-                  data = api_request(url)
-                  if not data or not data.get('success'):
-                      print(f"ERROR: Failed to query existing record")
-                      return False
-
-                  records = data.get('result', [])
-                  existing_record = records[0] if records else None
-                  existing_ip = existing_record.get('content') if existing_record else None
-                  record_id = existing_record.get('id') if existing_record else None
-                  # Preserve the record's existing TTL on update instead of
-                  # hardcoding 1. Terraform sets ttl=60 on `git`/`direct`
-                  # (short, since DDNS rewrites the content); hardcoding 1
-                  # here would flip-flop the TTL on every drift cycle:
-                  # Terraform apply sets 60, DDNS run sets 1, repeat.
-                  # Falling back to 1 ("Auto") preserves the previous
-                  # behavior for any record Terraform doesn't manage.
-                  existing_ttl = existing_record.get('ttl', 1) if existing_record else 1
-                  # Same for proxied: preserve the existing value on update so
-                  # the full-body PUT can't fight a Terraform-side change; the
-                  # per-record literal only applies when creating from scratch.
-                  existing_proxied = existing_record.get('proxied', proxied) if existing_record else proxied
-                  # And the comment: this is a FULL-BODY PUT, so any field left
-                  # out is cleared. Terraform sets a comment on all four DDNS
-                  # records but scopes ignore_changes to [content], so dropping
-                  # it here made every WAN-IP change show up as four comment
-                  # diffs in the next `terraform plan` — drift noise that the
-                  # auto-applying deploy-terraform job then silently reverted.
-                  existing_comment = existing_record.get('comment') if existing_record else None
-
-                  print(f"Existing IP: {existing_ip or 'none'}")
-
-                  if current_ip == existing_ip:
-                      print("IP unchanged, skipping")
-                      return True
-
-                  print("Updating record...")
-                  record_data = {
-                      'type': 'A',
-                      'name': record_name,
-                      'content': current_ip,
-                      'ttl': existing_ttl,
-                      'proxied': existing_proxied
-                  }
-                  if existing_comment:
-                      record_data['comment'] = existing_comment
-
-                  if record_id:
-                      # Update existing record
-                      url = f"https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records/{record_id}"
-                      result = api_request(url, method='PUT', data=record_data)
-                  else:
-                      # Create new record
-                      url = f"https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records"
-                      result = api_request(url, method='POST', data=record_data)
-
-                  if result and result.get('success'):
-                      print("Updated successfully" if record_id else "Created successfully")
-                      return True
-                  else:
-                      print(f"ERROR: {'Update' if record_id else 'Create'} failed")
-                      return False
-
-              # Main execution
-              current_ip = get_public_ip()
-              if not current_ip:
-                  sys.exit(1)
-              try:
-                  ipaddress.IPv4Address(current_ip)
-              except ValueError:
-                  print(f"ERROR: Invalid IPv4 returned: {current_ip!r}")
-                  sys.exit(1)
-              print(f"Current public IP: {current_ip}")
-
-              # Get zone ID for ericsweiss.com
-              zone_data = api_request("https://api.cloudflare.com/client/v4/zones?name=ericsweiss.com")
-              if not zone_data or not zone_data.get('success'):
-                  print("ERROR: Failed to get zone ID")
-                  sys.exit(1)
-
-              zones = zone_data.get('result', [])
-              if not zones:
-                  print("ERROR: Zone not found")
-                  sys.exit(1)
-
-              zone_id = zones[0].get('id')
-              print(f"Zone ID: {zone_id}")
-
-              # Update records
-              success = True
-              success = update_record(zone_id, "ericsweiss.com", current_ip, True) and success
-              success = update_record(zone_id, "direct.ericsweiss.com", current_ip, False) and success
-              success = update_record(zone_id, "git.ericsweiss.com", current_ip, False) and success
-              # wg-easy WireGuard VPN endpoint (DNS-only/UDP). proxied=False on
-              # create only; Terraform owns proxied, DDNS owns the IP.
-              success = update_record(zone_id, "vpn.ericsweiss.com", current_ip, False) and success
-
-              print("\nDDNS update complete")
-              sys.exit(0 if success else 1)
+            - /opt/ddns/cloudflare-ddns.py
             env:
             - name: CF_API_TOKEN
               valueFrom:
@@ -267,3 +64,14 @@ spec:
               capabilities:
                 drop:
                   - ALL
+            volumeMounts:
+            - name: script
+              mountPath: /opt/ddns
+              readOnly: true
+          volumes:
+          - name: script
+            configMap:
+              # kustomize rewrites this to the hashed generator name, so a
+              # script edit rolls a new ConfigMap instead of mutating in place.
+              name: cloudflare-ddns-script
+              defaultMode: 0555

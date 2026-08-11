@@ -1,4 +1,7 @@
 ---
+# Exporters that this cluster runs itself, plus the static Services/EndpointSlices
+# for the exporters that run on the Proxmox hosts, the DNS LXCs and the app VMs.
+# ServiceMonitors for third-party targets live in ../service-monitors.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:

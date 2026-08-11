@@ -44,13 +44,13 @@ ALERT_YML = (
     / "loki"
     / "host-log-staleness.yaml"
 )
-RELEASE_YML = (
+RULES_INFRASTRUCTURE_YML = (
     REPO
     / "kubernetes"
     / "infrastructure"
     / "observability"
-    / "kube-prometheus-stack"
-    / "release.yaml"
+    / "rules"
+    / "infrastructure.yaml"
 )
 
 ALLOY_HOST_ROLE = "alloy_host"
@@ -59,15 +59,16 @@ ALLOY_HOST_ROLE = "alloy_host"
 # Derivation helpers (no hardcoded host / group names)
 
 def _role_names(play: dict) -> list[str]:
-    """Role names referenced by a play's `roles:` list (dict or bare-string form)."""
+    """Short role names in a play's `roles:` list (dict or bare-string form).
+
+    Roles ship FQCN'd from the weisssrv.infra collection, so the namespace is
+    stripped — the alert list is keyed on the bare role name.
+    """
     names: list[str] = []
     for entry in play.get("roles") or []:
-        if isinstance(entry, dict):
-            role = entry.get("role")
-            if role:
-                names.append(role)
-        elif isinstance(entry, str):
-            names.append(entry)
+        role = entry.get("role") if isinstance(entry, dict) else entry
+        if isinstance(role, str) and role:
+            names.append(role.rsplit(".", 1)[-1])
     return names
 
 
@@ -220,31 +221,30 @@ class TestRulerMetaAlertThreshold:
     The Loki ruler pushes these alerts straight to Alertmanager, so Prometheus
     cannot see them fail; the only watchdog is a Prometheus alert comparing the
     ruler's loaded rule count against the number shipped here. That threshold is
-    a literal in kube-prometheus-stack/release.yaml — this test is what keeps it
-    from silently under-detecting when a host is added.
+    a literal in observability/rules/infrastructure.yaml — this test is what
+    keeps it from silently under-detecting when a host is added.
     """
 
     THRESHOLD_ALERT = "LokiRulerRulesMissing"
 
     def _threshold(self) -> int:
-        release = yaml.safe_load(RELEASE_YML.read_text())
-        rules_map = release["spec"]["values"]["additionalPrometheusRulesMap"]
-        for entry in rules_map.values():
-            for group in entry.get("groups", []):
-                for rule in group.get("rules", []):
-                    if rule.get("alert") == self.THRESHOLD_ALERT:
-                        match = re.search(
-                            r"loki_prometheus_rule_group_rules\{[^}]*\}[)\s]*<\s*(\d+)",
-                            rule["expr"],
-                        )
-                        assert match, (
-                            f"{self.THRESHOLD_ALERT} no longer compares "
-                            f"loki_prometheus_rule_group_rules against a literal count"
-                        )
-                        return int(match.group(1))
+        rules_cr = yaml.safe_load(RULES_INFRASTRUCTURE_YML.read_text())
+        for group in rules_cr["spec"]["groups"]:
+            for rule in group.get("rules", []):
+                if rule.get("alert") == self.THRESHOLD_ALERT:
+                    match = re.search(
+                        r"loki_prometheus_rule_group_rules\{[^}]*\}[)\s]*<\s*(\d+)",
+                        rule["expr"],
+                    )
+                    assert match, (
+                        f"{self.THRESHOLD_ALERT} no longer compares "
+                        f"loki_prometheus_rule_group_rules against a literal count"
+                    )
+                    return int(match.group(1))
         raise AssertionError(
-            f"{self.THRESHOLD_ALERT} is missing from {RELEASE_YML.name} — the Loki "
-            f"ruler alert path would have no meta-monitoring at all"
+            f"{self.THRESHOLD_ALERT} is missing from "
+            f"{RULES_INFRASTRUCTURE_YML.name} — the Loki ruler alert path would "
+            f"have no meta-monitoring at all"
         )
 
     def test_threshold_equals_shipped_rule_count(self):
@@ -252,8 +252,8 @@ class TestRulerMetaAlertThreshold:
         assert self._threshold() == shipped, (
             f"{self.THRESHOLD_ALERT} expects {self._threshold()} ruler rules but "
             f"host-log-staleness.yaml ships {shipped}. Update the threshold in "
-            f"kube-prometheus-stack/release.yaml, or the alert under-detects a "
-            f"partially-delivered rules ConfigMap."
+            f"observability/rules/infrastructure.yaml, or the alert under-detects "
+            f"a partially-delivered rules ConfigMap."
         )
 
 

@@ -20,7 +20,7 @@ driver:
 platforms:
   # NAS Server - runs nas_storage role
   - name: nas-server
-    image: registry.git.ericsweiss.com/eric/weisssrv/molecule-test:latest
+    image: "${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:v0.6.0}"
     pre_build_image: true
     privileged: true
     cgroupns_mode: host
@@ -43,7 +43,7 @@ platforms:
   # SMB Client - tests Samba connectivity (listing shares)
   # NFS client removed: mounting NFS shares doesn't work in Docker containers
   - name: smb-client-01
-    image: registry.git.ericsweiss.com/eric/weisssrv/molecule-test:latest
+    image: "${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:v0.6.0}"
     pre_build_image: true
     privileged: true
     cgroupns_mode: host
@@ -61,10 +61,16 @@ platforms:
       - storage
       - smb_clients
 
+dependency:
+  name: galaxy
+  options:
+    # The single source of truth for the weisssrv.infra pin these
+    # scenarios exercise. Resolved by ansible-galaxy in molecule's CWD,
+    # which is the scenario's stack dir (ansible/integration-tests/<stack>).
+    requirements-file: ../../requirements.yml
 provisioner:
   name: ansible
   env:
-    ANSIBLE_ROLES_PATH: ../../../../roles
     # Required for molecule_docker plugin (upstream broken conditional in destroy.yml)
     ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
     # Provide dummy SSH key for testing (base role expects this via all.yml lookup)
@@ -91,16 +97,16 @@ provisioner:
         # Base role configuration (applied by converge). SSH hardening is
         # exercised by the base role's own molecule scenario; skip it here to
         # keep this integration test focused on the NFS/Samba storage path.
-        skip_ssh_config: true
-        skip_dns_config: true  # DNS resolver needs real network
+        base_skip_ssh_config: true
+        base_skip_dns_config: true  # DNS resolver needs real network
 
         # NAS storage configuration - skip operations that don't work in containers
-        skip_zfs_operations: true  # ZFS requires kernel modules (also bypasses the bind-source mountpoint guard)
-        skip_nfs_reload: true      # exportfs -ra fails without NFS kernel support
-        skip_smartd_service: true  # No block devices in container
+        nas_storage_skip_zfs_operations: true  # ZFS requires kernel modules (also bypasses the bind-source mountpoint guard)
+        nas_storage_skip_nfs_reload: true      # exportfs -ra fails without NFS kernel support
+        nas_storage_skip_smartd_service: true  # No block devices in container
 
         # NFS exports configuration (templates will be generated)
-        nfs_exports:
+        nas_storage_exports:
           - path: /tank/media
             clients:
               - spec: "172.16.0.0/12"
@@ -125,7 +131,7 @@ provisioner:
                 options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=11"
 
         # Samba shares configuration (Samba DOES work in containers)
-        samba_shares:
+        nas_storage_samba_shares:
           - name: media
             path: /tank/media
             comment: "Media Library"
@@ -150,7 +156,7 @@ provisioner:
 
         # SMART monitoring (no real devices in container; the smartd_*_disks
         # lists the role consumes default to empty)
-        smartd_enabled: true
+        nas_storage_smartd_enabled: true
 
       smb_clients:
         # Samba client configuration

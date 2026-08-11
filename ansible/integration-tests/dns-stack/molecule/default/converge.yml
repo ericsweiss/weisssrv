@@ -10,8 +10,8 @@
     - ../../../../inventories/prod/group_vars/all.yml
 
   pre_tasks:
-    # Note: adguard_admin_password_hash is now generated automatically by the adguard_home role
-    # from adguard_admin_password using password_hash('bcrypt'). No manual set_fact needed.
+    # Note: adguard_home_admin_password_hash is now generated automatically by the adguard_home role
+    # from adguard_home_admin_password using password_hash('bcrypt'). No manual set_fact needed.
 
     - name: Container warm-up (apt locks, dpkg state, cache, systemd)
       ansible.builtin.include_tasks: ../../../../molecule/tasks/container-warmup.yml
@@ -38,7 +38,7 @@
     # the group-level forwarders render (and the role defaults do not).
     - name: Apply unbound role
       ansible.builtin.include_role:
-        name: unbound
+        name: weisssrv.infra.unbound
 
     # Deploy AdGuard Home on all DNS servers. The role completes the setup
     # wizard (POST /control/install/configure), sets the admin password, then
@@ -46,7 +46,7 @@
     #   - api_base_config.yml (upstream DNS, cache, ratelimit, ...) on both hosts
     #   - api_config.yml (DNS-rewrite + filtering reconciliation) on dns-01 only
     # This exercises the add/reconcile path against a real AdGuard — verify.yml
-    # asserts the codified adguard_rewrites (molecule.yml) actually landed.
+    # asserts the codified adguard_home_rewrites (molecule.yml) actually landed.
     #
     # Still container-limited: AdGuard's own resolution path isn't representative
     # because the resolv.conf switch is skipped (skip_resolv_conf_update: true),
@@ -55,18 +55,18 @@
     # postflight.yml.
     - name: Apply adguard_home role
       ansible.builtin.include_role:
-        name: adguard_home
+        name: weisssrv.infra.adguard_home
       vars:
         # Use local Unbound as upstream
-        adguard_upstream_dns:
+        adguard_home_upstream_dns:
           - "127.0.0.1:5335"
         # Note: rewrites, ports, admin credentials come from molecule.yml inventory
 
     # Deploy AdGuard Sync on primary only (syncs TO replica)
     - name: Apply adguard_sync role
       ansible.builtin.include_role:
-        name: adguard_sync
+        name: weisssrv.infra.adguard_sync
       when:
         - "'dns_primary' in group_names"
-        - adguardhome_sync_enabled | default(false)
+        - adguard_sync_enabled | default(false)
       # Note: All sync configuration comes from molecule.yml inventory

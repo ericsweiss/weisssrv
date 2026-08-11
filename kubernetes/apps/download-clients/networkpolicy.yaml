@@ -324,32 +324,18 @@ spec:
         - { protocol: TCP, port: 563 }   # NNTPS (TLS)
 
 ---
-# qBittorrent direct-mode egress. Only takes effect when
-# qbittorrent-vpn-config.vpn_enabled = "false". The repo ships
-# vpn_enabled: "true" so this policy is dormant under the current
-# config, but the ConfigMap exposes the toggle as a supported choice
-# and the gluetun-VPN policy alone (1194/443/51820) isn't enough
-# for direct-mode tracker + peer traffic — without this rule, flipping
-# the toggle would silently break peer/tracker connectivity.
+# qBittorrent direct-mode egress: only for the unsupported-by-default
+# vpn_enabled: "false" toggle, where the gluetun policy's 1194/443/51820 is not
+# enough for tracker + peer traffic.
 #
-# Gating (preserves the killswitch defense-in-depth): NetworkPolicies
-# cannot key off a ConfigMap, so this rule is gated on an explicit pod
-# label `esweiss.com/vpn: disabled` instead of selecting qbittorrent
-# unconditionally. The shipped (VPN-on) Deployment pod template does
-# NOT carry that label, so this rule is ABSENT under the current config
-# — the broad ephemeral-range egress it opens cannot leak torrent
-# traffic if gluetun's killswitch fails. To run direct mode, set
-# vpn_enabled: "false" AND add `esweiss.com/vpn: disabled` to the
-# qbittorrent pod template labels; doing so deliberately removes the
-# policy-layer killswitch (acceptable for ad-hoc no-VPN operation).
+# NetworkPolicies cannot key off a ConfigMap, so this is gated on the pod label
+# `esweiss.com/vpn: disabled`, which the shipped VPN-on template does not carry
+# — the broad ephemeral-range egress therefore cannot leak if gluetun's
+# killswitch fails. Direct mode needs both the ConfigMap flip and that label,
+# which deliberately drops the policy-layer killswitch.
 #
-# Peer scope: BitTorrent peers advertise arbitrary high ports in their
-# tracker responses, so a working direct-mode policy needs the full
-# ephemeral range (TCP+UDP 1024-65535). We use endPort (NetworkPolicy
-# port range, GA since k8s 1.25) to express this without exploding the
-# rule list. Tracker HTTP/HTTPS on 80/443 are explicitly listed
-# because they're outside the ephemeral range. Public internet only —
-# RFC1918 + link-local excluded.
+# Peers advertise arbitrary high ports, so the range is the full ephemeral one
+# via endPort, plus tracker 80/443. Public internet only.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

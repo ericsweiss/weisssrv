@@ -23,10 +23,11 @@ below are applied consistently. The skill lives at
 
 ```
 weisssrv/
-├── ansible/                    # Configuration management
-│   ├── inventories/prod/       # Production inventory + vars
-│   ├── roles/                  # one role per service — see the README roles table
-│   └── playbooks/              # Deployment playbooks
+├── ansible/                    # Site data only — the roles live in the weisssrv.infra collection
+│   ├── inventories/prod/       # Production inventory + vars (hosts.yml, group_vars, host_vars)
+│   ├── playbooks/              # Deployment playbooks — roles referenced as weisssrv.infra.<role>
+│   ├── integration-tests/      # Multi-role molecule scenarios (per-role scenarios live with the roles)
+│   └── requirements.yml        # Galaxy pins, including weisssrv.infra
 ├── terraform/
 │   ├── cloudflare/             # External DNS management
 │   ├── tailscale/              # Tailnet ACL policy-as-code
@@ -39,13 +40,13 @@ weisssrv/
 │   │   ├── controllers/        # platform HelmReleases (dependsOn crds) — see the dir for the current set
 │   │   ├── configs/            # CRs that require the controllers' CRDs (dependsOn controllers) — see the dir for the current set
 │   │   └── observability/      # kube-prometheus-stack, loki, alloy, exporters, dashboards, ingress (dependsOn configs) — see the dir
-│   ├── components/             # reusable Kustomize components — netpol-baseline (default-deny-ingress, MANDATORY for every app) + gitlab-runner-common
+│   ├── components/             # reusable Kustomize components — netpol-baseline (default-deny-ingress) + gitlab-runner-common
 │   └── apps/                   # one dir per app — either a HelmRelease (release.yaml) or raw Deployments/CRs, plus an externalsecret.yaml where the app needs ESO secrets (dependsOn infrastructure-configs — parallel to observability) — see the dir for the current set
 ├── docs/                       # Documentation
 ├── .gitlab/                    # GitLab agent config (agents/weisssrv-k3s/), the molecule child-pipeline include (ci/), secret-detection ruleset
 ├── scripts/                    # Utility scripts
 ├── docker/                     # Molecule test/CI images + app build images (hermes-agent, camofox-browser)
-├── .gitlab-ci.yml              # CI/CD pipeline (canonical) — but see "Repo family" below: 7 jobs come from weisssrv-lib
+├── .gitlab-ci.yml              # CI/CD pipeline (canonical) — but see "Repo family" below: many jobs come from weisssrv-lib
 └── .github/workflows/          # Single inert stub (ci-disabled.yml) — CI runs on GitLab
 ```
 
@@ -53,38 +54,56 @@ weisssrv/
 
 | Repo | Role |
 |---|---|
-| `eric/weisssrv` | this repo — the cluster instance |
-| `eric/weisssrv-lib` | shared CI library. `.gitlab-ci.yml` `include:`s **seven** templates from it at a pinned `ref:` (yaml-lint, shellcheck, docs-link-check, terraform, secret-detection, python-tests, flux-lint) |
-| `eric/weisssrv-app-template` | tenant scaffold for repos that deploy into this cluster (docs/30) — also consumes weisssrv-lib at a pinned tag |
+| `eric/weisssrv` | this repo — the cluster instance (site data: inventory, manifests, docs) |
+| `eric/weisssrv-lib` | the shared building blocks: CI job templates, the **`weisssrv.infra` Ansible collection** (every role), the `weisssrv` CLI, Terraform modules, and the lint profiles |
+| `eric/weisssrv-cluster-template` | copier template that generates a whole new cluster repo shaped like this one; also consumes weisssrv-lib at a pinned tag |
+| `eric/weisssrv-app-template` | tenant scaffold for repos that deploy *into* this cluster (docs/30); also consumes weisssrv-lib at a pinned tag |
+
+This repo consumes three things from the library, all pinned:
+
+1. **CI templates**, `include:`d at a literal `ref:`. The `include:` block in
+   `.gitlab-ci.yml` is the source of truth for which ones — do not keep a count
+   anywhere. `variables.WEISSSRV_LIB_REF` is the single source for the tag and
+   `scripts/check-lib-pins.py` (`--fix` rewrites) enforces that every entry
+   matches it and is a release tag.
+2. **The `weisssrv.infra` collection**, pinned in `ansible/requirements.yml`.
+   Playbooks reference roles as `weisssrv.infra.<role>`; there is no
+   `ansible/roles/` here any more.
+3. **Vendored scripts** — `scripts/check-lib-pins.py` and
+   `scripts/version-bump-mr.py` are byte-identical copies. Fix them upstream and
+   re-vendor; a local edit is reverted by the next re-vendor.
 
 Consequences an agent must not miss:
 
-- **Do not "fix" one of those seven jobs by editing `.gitlab-ci.yml`.** Their
-  behaviour lives in the library; a same-named local job silently overrides the
-  included one. Change the library, tag it, then bump the `ref:`.
+- **Do not "fix" an included job by editing `.gitlab-ci.yml`.** Its behaviour
+  lives in the library, and a same-named local job silently overrides the
+  included one. Change the library, tag it, then bump the ref.
+- **Do not edit a role here** — there are none. Role changes are lib MRs; see
+  § Ansible roles below for the full bump flow.
 - **Bumping the library is a fan-out**: lib MR → maintainer cuts a tag → bump
-  `ref:` in this repo's `include:` block **and** in the app template
-  (`.gitlab-ci.yml` + `scripts/rename.sh`). Prove pipeline parity before merging
-  — the library serves more than one consumer, so a changed input default
+  the pin in this repo **and** in both templates. Prove pipeline parity before
+  merging: the library serves several consumers, so a changed input default
   silently changes this pipeline.
 - What each include overrides, and what deliberately stays weisssrv-local, is in
   `docs/13-ci-cd.md` § Shared CI library. The library's own
-  `docs/INCLUDE-CONTRACT.md` / `docs/VERSIONING.md` own the input contract.
+  `docs/INCLUDE-CONTRACT.md` / `docs/VERSIONING.md` own the input contract, and
+  its collection README + `MIGRATING.md` own the role-variable API.
 
 ## Architecture
 
 ### Current Infrastructure (Base Parity)
 
-- **6 Proxmox Hosts** (cluster name: weisssrv) — `.102`-`.107` (pve-nas-01 is NAS + storage, the rest are compute); host-by-host list in the README architecture diagram and `docs/01-overview.md`
-- **NAS Storage**: ZFS (tank/ssd/nvme/archive pools), NFS, Samba
-- **DNS**: 2x AdGuard Home + Unbound (DoT) - 192.168.0.150/160
-- **SMTP**: Relay via Gmail - 192.168.0.151
-- **Certs**: acme.sh with Cloudflare DNS-01
-- **VPN**: Tailscale on Proxmox hosts (remote access)
-- **Firewall**: Proxmox firewall with IP Sets + Security Groups
-- **HA**: Proxmox HA for infrastructure services (DNS, SMTP, Home Assistant)
-- **GitOps**: Flux CD reconciles all Kubernetes state from `kubernetes/` on every push
-- **Secrets to k8s**: External Secrets Operator (ESO) with 1Password Connect provider (`ClusterSecretStore` `onepassword-homelab`)
+- **6 Proxmox hosts** (cluster `weisssrv`), `.102`-`.107` — pve-nas-01 is NAS +
+  storage, the rest compute; host-by-host list in `docs/01-overview.md`
+- **NAS storage**: ZFS (tank/ssd/nvme/archive), NFS, Samba
+- **DNS**: 2x AdGuard Home + Unbound (DoT) on .150 / .160
+- **SMTP**: Gmail relay on .151. **Certs**: acme.sh with Cloudflare DNS-01
+- **Remote access**: Tailscale on the Proxmox hosts
+- **Firewall**: Proxmox firewall with IP sets + security groups
+- **HA**: Proxmox HA for the infrastructure guests (DNS, SMTP, Home Assistant)
+- **GitOps**: Flux CD reconciles all Kubernetes state from `kubernetes/`
+- **Secrets to k8s**: External Secrets Operator with the 1Password Connect
+  provider (`ClusterSecretStore` `onepassword-homelab`)
 
 ### K3s Platform
 
@@ -93,43 +112,81 @@ quorum; the six agents carry NAS, ingress, and compute workloads. Node-by-node
 list with IPs and host placement lives in the README architecture diagram and
 `docs/01-overview.md`.
 
-**Deployment Model** (Two-phase approach):
-1. **Ansible** (`task k3s:deploy`): VMs, k3s, kube-vip (API VIP .161). One-off and idempotent.
-2. **Flux GitOps**: Everything in-cluster (platform controllers + apps) is reconciled by Flux from `kubernetes/` on every push to `main`. Local iteration uses `task flux:dev-apply -- <path>` (changes are reverted on next reconcile cycle unless committed).
+**Two lifecycles:**
 
-Ansible tasks remain idempotent - safe to re-run. Flux reconciliation is push-triggered via the GitLab agent's Flux module (the ~1-minute git poll is the fallback); use `task flux:reconcile` to force immediately. See `docs/19-k3s-deployment.md` for the k3s layer and `docs/29-flux-operations.md` for Flux day-2 operations.
+1. **Ansible** (`task k3s:deploy`) builds the VMs, k3s itself, and kube-vip
+   (API VIP .161). Idempotent — safe to re-run.
+2. **Flux** reconciles everything *inside* the cluster from `kubernetes/` on
+   every push to `main`, push-triggered by the GitLab agent's Flux module with
+   the ~1-minute git poll as fallback (`task flux:reconcile` forces it). Local
+   iteration is `task flux:dev-apply -- <path>`, reverted on the next reconcile.
 
-**Features**:
-- kube-vip (API VIP .161), MetalLB (VIPs .100 public / .101 internal / .99 wg-easy)
-- Traefik ingress, external-dns (Cloudflare)
-- 3-node etcd quorum (tolerates 1 server failure)
-- Flux CD (source-controller, kustomize-controller, helm-controller, notification-controller) + External Secrets Operator with 1Password Connect backend
-- Observability stack: Prometheus + Grafana + Loki + Alloy (metrics, logs, dashboards, alerting); k3s-irrelevant components disabled (kubeProxy, kubeScheduler, kubeControllerManager); alertmanager config uses ExternalSecret template for webhook injection
-- Autoscaling: VPA (Auto/Initial/Off tiers per workload class) + CoreDNS HPA pin — see docs/33-autoscaling.md
-- GPU: pve-prec-01 GTX 1660 Ti passed through (VFIO) to the k3s GPU agent (`esweiss.com/gpu=nvidia`); nvidia-open driver + container toolkit, nvidia-device-plugin (time-sliced so multiple workloads share the card), DCGM telemetry — Hindsight's llama.cpp offloads here. Host prep + the supervised apply window are in docs/43-gpu-passthrough.md
-- Node/workload ops: kured (coordinated reboots), Reloader (restarts on ConfigMap changes only — Secrets are intentionally excluded via `ignoreSecrets: true`; a rare credential-Secret rotation is a manual restart) — full controller set in `kubernetes/infrastructure/controllers/kustomization.yaml`
+The k3s layer is `docs/19-k3s-deployment.md`; Flux day-2 ops are
+`docs/29-flux-operations.md`.
 
-**Applications** (deployment details live in the per-app docs):
-- Authentik SSO (auth.esweiss.com internal / auth.ericsweiss.com external — the OIDC issuer host is ALWAYS the external one) — identity provider for OIDC/SAML; PostgreSQL on a dedicated zvol; app README is canonical, Terraform layer in docs/40
-- Plex Media Server (plex.esweiss.com) — LXC container with Traefik ingress (docs/20)
-- Download/media stack, `downloads` namespace (docs/21): Gluetun VPN gateway with killswitch, NZBGet (nzbget.\*), qBittorrent (qbittorrent.\*), Prowlarr (prowlarr.\*), Sonarr (tv.\*), Radarr (movies.\*), Lidarr (music.\*), Pulsarr (pulsarr.\*, NAS-pinned/AVX)
-- Recipes stack, `recipes` namespace (docs/22-23): Mealie (food.\*, PostgreSQL on zvol, OpenAI parsing), Bar Assistant (bar.\*); both behind Authentik OIDC
-- Home Assistant (home.esweiss.com / home.ericsweiss.com, docs/24): HAOS VM (.154, Proxmox-HA-managed), websocket ingress, hass-openid SSO, full-host SSO bypass routes for the \*arr integrations scoped to HA's IP, read-only NFS media mount
-- GitLab (git.esweiss.com / git.ericsweiss.com, docs/27): EE omnibus VM on pve-nas-01 (.153), repos on 200GB zvol, Container Registry, Pages, Web IDE extension host (CVE-2026-5816 SOP isolation), k3s CI runners (infrastructure + shared), SAML SSO, SSH 22/2222
-- Grafana (grafana.esweiss.com, docs/31): community + custom dashboards via `grafana_dashboard` ConfigMap sidecar, Authentik OIDC, Loki datasource
-- wg-easy WireGuard VPN (endpoint vpn.ericsweiss.com:51820/udp via MetalLB VIP .99; admin UI vpn.esweiss.com internal-only behind Authentik, docs/38): internet-exit VPN for the user + friends/family with a two-layer egress no-LAN fence (client full-tunnel + public DNS, CNI egress NetworkPolicy killswitch that also blocks internal DNS via pod dnsPolicy:None) plus a separate `-dest`-scoped WAN firewall rule that scopes the inbound endpoint; NFS-backed state, IPv4-only
-- Nextcloud (cloud.esweiss.com / cloud.ericsweiss.com, docs/35): Docker Compose stack (nextcloud-apache + PostgreSQL + Redis + cron + exporter) on a NAS-pinned VM (.156), all state on ZFS zvol passthrough disks (no NFS), host-nginx TLS, Authentik OIDC SSO-only
-- Immich (photos.esweiss.com / photos.ericsweiss.com, docs/36): photo management on a NAS-pinned Debian VM (.157) running a docker-compose stack (immich-server + CPU ML + release-pinned Postgres/vectorchord + Valkey), host nginx TLS, encrypted zvols (photo library on tank/immich-data), Authentik OIDC SSO-only, nightly pg_dump; external record is a DNS-only Cloudflare CNAME (proxy bypass for large uploads)
-- Hermes Agent (agent.esweiss.com / agent.ericsweiss.com, docs/37): NousResearch AI agent + web dashboard, `hermes` namespace; self-built image (build-hermes-agent CI job — upstream ships none), one pod / three containers (gateway + dashboard + camofox browser), NFS `/opt/data` on encrypted ssd/appdata, SSO via the dashboard's Authentik-OIDC login on both hostnames (`hermes-users` gate; an auth provider is mandatory on its 0.0.0.0 bind; Traefik-only NetworkPolicy; Authentik objects in terraform/authentik, docs/40); its long-term memory is a cluster-internal Hindsight deployment (`hindsight` namespace, no ingress; docs/37 §Memory backend) whose llama.cpp inference sidecar GPU-offloads to the pve-prec-01 GTX 1660 Ti (docs/43-gpu-passthrough.md)
-- Windows 11 VM (.155, vmid 155, docs/39): desktop VM on pve-nas-01, RDP-only
-  (no ingress), start-on-demand — `task windows:*`
-- Immich ML (.158, vmid 158, docs/36): OpenVINO inference LXC serving the Immich
-  VM only (authless API, firewall-scoped by `sg-immich-ml`) — `task immich-ml:*`
-- Homarr (dashboard.esweiss.com / dashboard.ericsweiss.com, docs/41): homelab dashboard/launcher, `homarr` namespace, raw manifests; Authentik OIDC SSO-only (`homarr-admins` group gate; credentials break-glass retired !193, DR via the `homarr recreate-admin` CLI — docs/41 §SSO), NFS-backed SQLite on encrypted ssd/appdata, direct-URL integrations to the *arr/qbit/nzbget/AdGuard/Proxmox/Plex/HA/Nextcloud/Immich services (bypassing the SSO perimeter by design)
+**Platform features:**
 
-**Planned** (not yet created) — roadmap source of truth is `docs/16-next-steps.md`:
-- Apps: Uptime Kuma (`status.esweiss.com`) is the one queued app; every Priority
-  6 app has shipped. Open non-app work lives in docs/16 § Outstanding Follow-Ups.
+- kube-vip (API VIP .161), MetalLB (.100 public / .101 internal / .99 wg-easy),
+  Traefik ingress, external-dns (Cloudflare), cert-manager
+- 3-node etcd quorum — tolerates one server failure
+- Flux CD + External Secrets Operator on the 1Password Connect backend
+- Observability: Prometheus + Grafana + Loki + Alloy, with the k3s-irrelevant
+  kube-prometheus-stack components disabled (kubeProxy, kubeScheduler,
+  kubeControllerManager) and the Alertmanager webhook injected from an
+  ExternalSecret template
+- Autoscaling: VPA (Auto/Initial/Off tiers per workload class) + a CoreDNS HPA
+  pin — docs/33-autoscaling.md
+- GPU: the pve-prec-01 GTX 1660 Ti is VFIO-passed to the GPU agent
+  (`esweiss.com/gpu=nvidia`) with nvidia-open, the container toolkit, a
+  time-sliced device plugin and DCGM telemetry; Hindsight's llama.cpp offloads
+  there — docs/43-gpu-passthrough.md
+- Network policy: an **ingress default-deny is mandatory in every namespace**.
+  The `netpol-baseline` component is the standard mechanism, with two documented
+  exceptions that ship their own equivalent — `download-clients` (its local
+  policy covers ingress *and* egress) and `flux-system` (upstream gotk
+  manifests). Egress allowlists are per-app, and
+  `scripts/check-netpol-except-parity.py` keeps their reserved-CIDR except-lists
+  identical
+- Node/workload ops: kured (coordinated reboots) and Reloader, which watches
+  ConfigMaps only (`ignoreSecrets: true`) — rotating a credential Secret is a
+  manual restart. Current controller set:
+  `kubernetes/infrastructure/controllers/kustomization.yaml`
+
+**Applications** — the per-app doc is canonical for every deployment detail:
+
+| App | Hostnames | Doc |
+|---|---|---|
+| Authentik SSO (IdP for everything below) | auth.esweiss.com / auth.ericsweiss.com | `kubernetes/apps/authentik/README.md`; Terraform layer docs/40 |
+| Plex (LXC .152) | plex.esweiss.com | docs/20 |
+| Download/media stack (`downloads` ns) | nzbget / qbittorrent / prowlarr / tv / movies / music / pulsarr .esweiss.com | docs/21 |
+| Recipes (`recipes` ns) | food.esweiss.com, bar.esweiss.com | docs/22, docs/23 |
+| Home Assistant (HAOS VM .154) | home.esweiss.com / home.ericsweiss.com | docs/24 |
+| GitLab (VM .153) | git.esweiss.com / git.ericsweiss.com (+ registry, pages) | docs/27 |
+| Observability (Grafana) | grafana.esweiss.com | docs/31 |
+| wg-easy VPN | vpn.ericsweiss.com:51820/udp endpoint; vpn.esweiss.com admin UI | docs/38 |
+| Nextcloud (VM .156) | cloud.esweiss.com / cloud.ericsweiss.com | docs/35 |
+| Immich (VM .157) | photos.esweiss.com / photos.ericsweiss.com | docs/36 |
+| Hermes Agent + Hindsight memory (`hermes`, `hindsight` ns) | agent.esweiss.com / agent.ericsweiss.com (Hindsight has no ingress) | docs/37 |
+| Homarr | dashboard.esweiss.com / dashboard.ericsweiss.com | docs/41 |
+| Windows 11 desktop (VM .155) | none — RDP only | docs/39 |
+| Immich ML (LXC .158) | none — LAN API for the Immich VM only | docs/36 |
+
+Cross-cutting facts no single app doc owns:
+
+- Every user-facing app is behind Authentik. The OIDC **issuer host is ALWAYS the
+  external one** (`auth.ericsweiss.com`) even for internal-only apps.
+- Homarr's integrations talk to service URLs directly, bypassing the SSO
+  perimeter by design (docs/41).
+- The VM/LXC guests (plex, gitlab, HAOS, nextcloud, immich, immich-ml, windows)
+  are Ansible-provisioned and fronted by in-cluster Traefik via the `vm-ingress`
+  app — a k3s routing change can break a guest that Ansible never touched.
+- Windows (.155) has `onboot=0` **and** auto-starts: its disks are on the
+  encrypted `ssd` pool, so `pve-start-encrypted-guests` starts it after unlock
+  (last entry in `zfs_encryption_guest_vmids`). Remove it from that list to stop
+  it starting — do not set `onboot=1` (docs/32, docs/39).
+
+**Planned** — roadmap source of truth is `docs/16-next-steps.md` (Uptime Kuma is
+the one queued app; open non-app work is in its Outstanding Follow-Ups).
 
 ## Common Development Commands
 
@@ -161,15 +218,18 @@ Workflow facts an agent must know (not obvious from `task --list`):
   (Version pinning / Substitution Not Applied) for details.
 - **Local Flux iteration**: `task flux:dev-apply -- <path>` previews a change
   in-cluster but is reverted on the next reconcile unless committed.
-- `task lint` mirrors the CI lint stage (Ansible, Terraform, `flux:lint`, Python
-  scripts, shellcheck, yamllint, coverage/sync/version-pin gates, and
-  `lint:prometheus-config` — which needs promtool/amtool on PATH);
-  `task kubernetes:lint` / `kubernetes:validate-helm` are aliases for `flux:lint`.
+- `task lint` mirrors the CI lint stage. The `lint:` task's own command list in
+  `Taskfile.yml` is the source of truth for what it runs (Ansible, Terraform,
+  `flux:lint`, the Python script tests, shellcheck, yamllint, and the
+  coverage/sync/version-pin/policy gates); `lint:prometheus-config` needs
+  promtool + amtool on PATH. `task kubernetes:lint` is an alias for `flux:lint`.
 
 ### Manual Ansible
 
 ```bash
-# Install collections
+# Install collections, including weisssrv.infra at the pinned tag. Re-run after
+# bumping that pin — `ansible-galaxy` will not refresh an already-installed
+# collection without --force.
 ansible-galaxy install -r ansible/requirements.yml
 
 # Ping all hosts
@@ -187,7 +247,10 @@ ansible-playbook ansible/playbooks/base.yml --tags ssh
 
 ### Manual Terraform
 
-> **Prefer `task terraform:*` commands** -- they handle Cloudflare API credentials and GitLab HTTP state backend auth automatically via `op run`. Manual commands require exporting `TF_VAR_cloudflare_api_token`, `TF_VAR_cloudflare_account_id`, and `TF_HTTP_*` env vars.
+> **Prefer the `task terraform:*` commands** — they inject the Cloudflare API
+> credentials and the GitLab HTTP state-backend auth via `op run`. A manual
+> invocation needs `TF_VAR_cloudflare_api_token`,
+> `TF_VAR_cloudflare_account_id`, and the `TF_HTTP_*` variables exported by hand.
 
 ```bash
 cd terraform/cloudflare
@@ -208,7 +271,8 @@ including which Secrets are bootstrap-only and how each path rotates — is
 **`docs/15-credential-rotation.md` § Secrets model**; the ESO reference format is
 in `docs/29-flux-operations.md`.
 
-**NEVER commit secrets to git**. All sensitive values use 1Password references (`op://` for host-side tooling, item titles in ExternalSecrets for in-cluster).
+**NEVER commit secrets to git.** Every sensitive value is a 1Password reference:
+`op://` for host-side tooling, item titles in ExternalSecrets for in-cluster.
 
 ### Required 1Password Items
 
@@ -251,58 +315,57 @@ Quick reference (full host-by-host topology in `docs/01-overview.md`):
 
 Firewall IP sets and security groups (`admin_lan`, `admin_ts`, `core-cluster`,
 `k3s_nodes`, `pve_hosts`, `nfs_clients`, `smb_clients`) are documented in
-`docs/11-firewall.md` and rendered from `ansible/roles/proxmox_firewall/`.
+`docs/11-firewall.md`; the rules are rendered by the collection's
+`proxmox_firewall` role from `hosts.yml` / `group_vars`.
 
-## Ansible Roles
+## Ansible roles
 
-The roles and their one-line purposes are listed in the **Ansible Roles**
-table in `README.md` (source of truth). A few carry editing constraints worth
-knowing up front:
+**There are no roles in this repo.** All of them ship in the `weisssrv.infra`
+collection (weisssrv-lib), pinned in `ansible/requirements.yml`; playbooks
+address them as `weisssrv.infra.<role>`. What lives here is the site data the
+roles consume: `hosts.yml`, `group_vars`, `host_vars`, the playbooks, and the
+Taskfile/CI wiring. Role behaviour, variables, and defaults are documented in
+the collection (its README + each role's README); `MIGRATING.md` there is the
+old→new variable map.
 
-- **alloy_host** ships journald logs to Loki via the internal Traefik
-  IngressRoute (`https://loki.esweiss.com`); it does NOT duplicate the in-cluster
-  DaemonSet (which covers container logs only). NodePort `:31100` is an emergency
-  fallback (`alloy_host_loki_url`).
-- **prometheus_exporter** is the shared download-install pipeline (probe →
-  conditional download → install → enable/start → health) for `tarball` and
-  `deb` artifacts. **zfs_exporter** and **unbound_exporter** are thin wrappers
-  that pass their specifics as `vars` and keep their own `*.service.j2` unit +
-  notify the shared `Restart prometheus exporter` handler. A change to the
-  shared role redeploys both consumers (storage + dns deploy jobs).
-- **node_exporter_host** binds port **9101** to avoid colliding with the k3s
-  node-exporter DaemonSet on 9100. It is deliberately NOT a prometheus_exporter
-  wrapper — it installs from the apt repo and uses a drop-in override plus
-  bespoke textfile collectors (see that role's README).
-- **zfs_encryption** fetches each pool's passphrase from 1Password Connect at
-  boot via `zfs-load-key@<pool>` ordered before `zfs-mount.service`. It is the
-  sole consumer of the shared Connect token at `/etc/onepassword-connect/token`,
-  gated on `zfs_encryption_pools` (no token on compute hosts with empty lists).
-  Runbooks in `docs/32-zfs-encryption.md`.
-- **nfs_tls** (`nfs_tls_enabled`) runs tlshd on all six Proxmox hosts + every k3s
-  agent. The `nas_storage` k3s export lines require TLS (`xprtsec: tls`,
-  plaintext rejected); the k3s NFS PVs *mount* with `xprtsec=tls` — **by
-  hostname** (`server: pve-nas-01.esweiss.com`, since the `*.esweiss.com` cert
-  has no IP SAN; an IP mount fails the handshake). HAOS (.154) is the one
-  documented plaintext exception (docs/24); the Proxmox `tank-proxmox` target
-  now mounts with TLS, though its export does not yet require it (docs/16).
-- **resolv_conf** / **zvol_mount** are shared helper roles (used by base/adguard
-  and k3s/gitlab respectively).
-- **compose_app** / **docker_engine** are the shared scaffolding behind the three
-  docker-compose guests — **immich, immich_ml and nextcloud**. `docker_engine`
-  installs the pinned, `dpkg`-held Docker CE + plugins (`docker_ce_version` and
-  friends in `all.yml`, via `apt_signed_repo`); `compose_app` owns the
-  compose-unit/nginx/backup task flow. A change to either redeploys all three
-  consumers (`deploy-immich`, `deploy-immich-ml`, `deploy-nextcloud` all list
-  both role paths in their `changes:`).
+**Changing role behaviour is a two-repo flow:**
+
+1. Make the change in `weisssrv-lib` (`ansible_collections/weisssrv/infra/roles/<role>/`)
+   with its molecule scenario, MR it, and have a release tag cut.
+2. Here: bump the collection `version:` in `ansible/requirements.yml`, bump
+   `variables.WEISSSRV_LIB_REF` in `.gitlab-ci.yml` and run
+   `scripts/check-lib-pins.py --fix`, re-vendor the byte-identical scripts, then
+   `ansible-galaxy install -r ansible/requirements.yml --force` and re-run the
+   gates.
+3. Land the inventory changes a renamed/emptied variable requires **in the same
+   MR** — the collection's variables are `| default(...)`-guarded, so a missed
+   rename does not fail, it silently takes the role default.
+
+Site-facing constraints worth knowing before touching inventory:
+
+- **nfs_tls** — the `nas_storage` k3s exports require TLS (`xprtsec: tls`,
+  plaintext rejected) and the k3s NFS PVs mount **by hostname**
+  (`pve-nas-01.esweiss.com`): the `*.esweiss.com` cert has no IP SAN, so an IP
+  mount fails the handshake. HAOS (.154) is the one documented plaintext
+  exception (docs/24).
+- **node_exporter_host** binds **9101**, because the k3s node-exporter DaemonSet
+  already owns 9100 on the same LAN.
+- **zfs_encryption** is the sole consumer of the 1Password Connect token at
+  `/etc/onepassword-connect/token`, gated on `zfs_encryption_pools` — compute
+  hosts with an empty list get no token (docs/32).
+- **alloy_host** ships journald to Loki through the internal Traefik
+  IngressRoute; it does not duplicate the in-cluster DaemonSet, which covers
+  container logs only.
 
 ## Code Conventions
 
-The repo's Ansible conventions — FQCN, snake_case role-prefixed vars and var
-precedence, `no_log: true` on every secret-touching task, the handler and service
-patterns, and the `--tags` caveat — live in **`ansible/README.md` § Code
-conventions** (canonical; `AGENTS.md` and `.cursorrules` point at the same
-place). Read that section before writing a task. For anything Kubernetes-side,
-mirror the closest `kubernetes/apps/<neighbour>` rather than inventing a shape.
+The Ansible conventions that govern the playbooks and inventory here — FQCN,
+snake_case role-prefixed vars and var precedence, `no_log: true` on every
+secret-touching task, the handler and service patterns, and the `--tags` caveat —
+live in **`ansible/README.md` § Code conventions** (canonical; `AGENTS.md` and
+`.cursorrules` point at the same place). Role *code* follows the collection's
+conventions in weisssrv-lib. For anything Kubernetes-side, mirror the closest
+`kubernetes/apps/<neighbour>` rather than inventing a shape.
 
 ## User Management
 
@@ -338,7 +401,8 @@ rather than restating it here.
 
 ### Kubernetes workloads (Flux GitOps)
 
-Everything in `kubernetes/` is reconciled by Flux. There is no `kubectl apply` or `helm upgrade` step in the normal workflow — edit YAML, commit, push:
+Everything in `kubernetes/` is reconciled by Flux. There is no `kubectl apply` or
+`helm upgrade` step in the normal workflow — edit YAML, commit, push:
 
 1. **Pre-change**:
    ```bash
@@ -360,7 +424,9 @@ Everything in `kubernetes/` is reconciled by Flux. There is no `kubectl apply` o
    task flux:verify           # `flux check` + all managed resources
    ```
 
-See `docs/29-flux-operations.md` for day-2 operations including secret rotation, suspend/resume, and webhook setup. Multi-repo tenant onboarding is covered in `docs/30-multi-repo-onboarding.md`.
+Day-2 operations (secret rotation, suspend/resume, webhook setup) are in
+`docs/29-flux-operations.md`; multi-repo tenant onboarding is
+`docs/30-multi-repo-onboarding.md`.
 
 ## Version Management
 
@@ -375,51 +441,34 @@ in `docs/12-runbooks.md` (update workflow).
 
 ## Storage Architecture
 
-Full pool topology, creation commands, and design rationale (storage-tier
-selection, lz4-vs-zstd) live in `docs/06-zfs.md`. Quick reference:
+Pool topology, geometry, dataset layout, and the tier-selection rationale are in
+`docs/06-zfs.md`; pool/dataset bootstrap is `docs/44-storage-bootstrap.md`;
+backups and DR are `docs/42-offsite-backup.md` and `docs/17-disaster-recovery.md`.
+Quick reference:
 
-**Backup chain**: local aes-256-gcm datasets → nightly raw-encrypted `archive`
-replication → nightly restic → Backblaze B2 (client-side ciphertext, GFS
-retention; docs/42). Logical dumps land on `tank/backups/apps`; DR paths in
-docs/17.
-
-**Automated Storage Selection**: `proxmox_vm` / `proxmox_lxc` pick storage
-from the host's `proxmox_role` — `nas` → `ssd`, `compute`/`general` →
-`local-ssd` — overridable per-guest via `proxmox_storage` / `lxc_storage`.
-
-### NAS Node (pve-nas-01) - Specialized ZFS Pools
-
-**ZFS Pools**: `tank` (bulk media), `ssd` (app data), `nvme` (hot
-downloads/scratch), `archive` (cold storage/backups). Geometry, capacities,
-and datasets: `docs/06-zfs.md`.
-
-**Persistent Storage (ZFS zvols)**: per-app zvols under `ssd/appdata/*`
-(Authentik/Mealie Postgres, GitLab repos, Prometheus, Loki — illustrative, not
-exhaustive) plus the Nextcloud/Immich app+DB+data zvols and the Grafana
-NFS-backed PV. The full list with sizes, SCSI slots, and mount points is the
-`vm_additional_disks` block in hosts.yml (created and mounted by the
-proxmox_vm/zvol_mount roles) and is documented in `docs/06-zfs.md`. Data
-survives pod and VM recreation (zvols persist on the Proxmox host's ZFS pool).
-
-### Compute Nodes - local-ssd ZFS Pool
-
-All five compute nodes carry a 1TB `local-ssd` pool (lz4, ashift=12,
-atime=off, autotrim=on) for k3s VMs and the HA-managed containers
-(dns-01/02, smtp-relay, home-assistant). Rationale in docs/06.
-
-### Resource Pools and Storage Management
-
-**Resource Pools** (`proxmox_resource_pools` in `all.yml`): infra-core (dns, smtp), apps-public (plex), apps-private (gitlab + internal apps), platform (k3s VMs)
-
-**NEVER create/destroy ZFS pools via Ansible** - pools are created manually (too critical to automate). Ansible only sets properties and mounts. Zvols for persistent storage are managed via `vm_additional_disks` but the parent pools are never touched.
+- **Pools**: NAS (pve-nas-01) carries `tank` (bulk media), `ssd` (app data),
+  `nvme` (hot downloads/scratch), `archive` (cold/backups); each compute host
+  carries a `local-ssd` pool for k3s VMs and the HA-managed containers.
+- **Persistent app storage** is ZFS zvols declared in the `vm_additional_disks`
+  blocks of `hosts.yml` (created by `proxmox_vm`, mounted by `zvol_mount`) —
+  that block is the inventory of record. Zvols outlive the pods and VMs on top
+  of them.
+- **Guest storage is derived**, not hand-placed: `proxmox_role` `nas` → `ssd`,
+  `compute`/`general` → `local-ssd`, overridable per guest with
+  `proxmox_storage` / `proxmox_lxc_storage`.
+- **Backup chain**: encrypted datasets → nightly raw-encrypted `archive`
+  replication → nightly restic → Backblaze B2 (client-side ciphertext, GFS
+  retention). Logical dumps land on `tank/backups/apps`.
+- **NEVER create or destroy ZFS pools from Ansible** — pools are created by hand.
+  Ansible only sets properties, creates zvols, and mounts.
 
 ## Documentation
 
-The full, numbered `docs/` index (grouped Getting Started /
-Infrastructure Services / Operations and Planning) lives in the **Documentation**
-section of `README.md`. Browse `docs/` directly or that table — do not maintain a
-second copy of the index here. Per-area pointers already appear inline in the
-relevant sections above.
+The numbered `docs/` index — grouped Getting Started / Infrastructure Services /
+Platform / Applications / Operations and Planning / Historical, plus the
+component docs outside the numbered set — lives in the **Documentation** section
+of `README.md`, together with the conventions new docs must follow. Do not keep a
+second copy of the index here; per-area pointers appear inline above.
 
 ## Important Context Files
 

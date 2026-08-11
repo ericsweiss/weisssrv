@@ -204,3 +204,119 @@ tests:
               severity: warning
               job: node-exporter-host
               instance: '192.168.0.102:9101'
+
+  # NodeSystemdServiceFailed replaces the mixin's disabled copy. The metric
+  # names and label shapes are node_exporter's systemd collector, enabled on the
+  # host exporter only (node_exporter_host_systemd_collector): unit_state carries
+  # name/state/type and is 1 for the CURRENT state, 0 for the others — so the
+  # rule must select state="failed" AND == 1, not just the series' presence.
+  - interval: 1m
+    input_series:
+      - series: 'node_systemd_unit_state{job="node-exporter-host", instance="192.168.0.104:9101", name="zfs-load-key@ssd.service", state="failed", type="oneshot"}'
+        values: '1+0x30'
+      - series: 'node_systemd_unit_state{job="node-exporter-host", instance="192.168.0.104:9101", name="zfs-load-key@ssd.service", state="active", type="oneshot"}'
+        values: '0+0x30'
+      - series: 'node_systemd_unit_state{job="node-exporter-host", instance="192.168.0.104:9101", name="sshd.service", state="failed", type="notify"}'
+        values: '0+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: NodeSystemdServiceFailed
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: node-exporter-host
+              instance: '192.168.0.104:9101'
+              name: zfs-load-key@ssd.service
+              state: failed
+              type: oneshot
+
+  # The two permanently-failed cosmetic units must stay excluded, or they pin
+  # the alert on forever and mask a real unit failure.
+  - interval: 1m
+    input_series:
+      - series: 'node_systemd_unit_state{job="node-exporter-host", instance="192.168.0.102:9101", name="openrgb-ram-off.service", state="failed", type="oneshot"}'
+        values: '1+0x30'
+      - series: 'node_systemd_unit_state{job="node-exporter-host", instance="192.168.0.153:9101", name="getty@tty1.service", state="failed", type="idle"}'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: NodeSystemdServiceFailed
+        exp_alerts: []
+
+  # job="node-exporter" is the in-cluster DaemonSet, which runs WITHOUT the
+  # systemd collector. Pinned so the rule cannot drift back to a job alternation
+  # that implies coverage the DaemonSet does not provide.
+  - interval: 1m
+    input_series:
+      - series: 'node_systemd_unit_state{job="node-exporter", instance="10.42.1.7:9100", name="kubelet.service", state="failed", type="notify"}'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: NodeSystemdServiceFailed
+        exp_alerts: []
+
+  # NodeSystemdServiceCrashlooping keys on the restart COUNTER, which only
+  # exists with --collector.systemd.enable-restarts-metrics. >2 restarts in 5m,
+  # sustained 15m: 1 restart/min clears it, 0.2/min does not.
+  - interval: 1m
+    input_series:
+      - series: 'node_systemd_service_restart_total{job="node-exporter-host", instance="192.168.0.153:9101", name="gitlab-runsvdir.service"}'
+        values: '0+1x40'
+      - series: 'node_systemd_service_restart_total{job="node-exporter-host", instance="192.168.0.153:9101", name="sshd.service"}'
+        values: '0+0x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: NodeSystemdServiceCrashlooping
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: node-exporter-host
+              instance: '192.168.0.153:9101'
+              name: gitlab-runsvdir.service
+
+  # A slow restart rate (2 in 5m is the boundary, not >2) must not fire.
+  - interval: 1m
+    input_series:
+      - series: 'node_systemd_service_restart_total{job="node-exporter-host", instance="192.168.0.153:9101", name="gitlab-runsvdir.service"}'
+        values: '0+0x5 1+0x5 2+0x30'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: NodeSystemdServiceCrashlooping
+        exp_alerts: []
+
+  # NodeExporterSystemdCollectorFailed watches the collector itself: a failing
+  # systemd collector still scrapes HTTP 200, so the only evidence is
+  # node_scrape_collector_success{collector="systemd"} == 0. One host failing
+  # fires after 30m; its healthy peer and the OTHER collectors on the same host
+  # (which the rule's collector= selector must not catch) stay silent.
+  - interval: 1m
+    input_series:
+      - series: 'node_scrape_collector_success{job="node-exporter-host", instance="192.168.0.104:9101", collector="systemd"}'
+        values: '0+0x40'
+      - series: 'node_scrape_collector_success{job="node-exporter-host", instance="192.168.0.104:9101", collector="zfs"}'
+        values: '0+0x40'
+      - series: 'node_scrape_collector_success{job="node-exporter-host", instance="192.168.0.102:9101", collector="systemd"}'
+        values: '1+0x40'
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: NodeExporterSystemdCollectorFailed
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: node-exporter-host
+              instance: '192.168.0.104:9101'
+              collector: systemd
+
+  # A collector that recovers inside the 30m hold is a scrape blip, not a
+  # coverage loss — and the in-cluster DaemonSet (job="node-exporter", which
+  # runs WITHOUT the systemd collector) must never be selected at all.
+  - interval: 1m
+    input_series:
+      - series: 'node_scrape_collector_success{job="node-exporter-host", instance="192.168.0.104:9101", collector="systemd"}'
+        values: '0+0x20 1+0x40'
+      - series: 'node_scrape_collector_success{job="node-exporter", instance="10.42.1.7:9100", collector="systemd"}'
+        values: '0+0x60'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: NodeExporterSystemdCollectorFailed
+        exp_alerts: []

@@ -16,17 +16,24 @@ spec:
       targetPort: 8123
 
 ---
-apiVersion: v1
-kind: Endpoints
+# discovery.k8s.io/v1, not the deprecated core/v1 Endpoints. The Service is
+# selectorless, so nothing controls this slice but this file; conditions.ready is
+# set explicitly because a hand-written slice has no controller to fill it in.
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
 metadata:
   name: home-assistant-metrics
   namespace: observability
-subsets:
-  - addresses:
-      - ip: 192.168.0.154
-    ports:
-      - name: metrics
-        port: 8123
+  labels:
+    kubernetes.io/service-name: home-assistant-metrics
+addressType: IPv4
+ports:
+  - name: metrics
+    port: 8123
+    protocol: TCP
+endpoints:
+  - addresses: ["192.168.0.154"]
+    conditions: {ready: true}
 
 ---
 apiVersion: monitoring.coreos.com/v1
@@ -47,15 +54,12 @@ spec:
         credentials:
           name: observability-exporter-secrets
           key: ha-api-token
-      # HAOS is HTTPS-only after the SSL config landed (acme_certs distributes
-      # the wildcard cert to /ssl/{fullchain,privkey}.pem and configuration.yaml
-      # sets ssl_certificate/ssl_key under http:). Plain-HTTP scrape now
-      # returns EOF / RST. We scrape the bare-IP Endpoint (192.168.0.154)
-      # because HAOS isn't a CoreDNS/k8s-service target, but `serverName`
-      # rewrites the SNI/host-validation name to `home.esweiss.com` — that's
-      # covered by the wildcard `*.esweiss.com` cert, so cert verification
-      # passes against the system CA bundle (Let's Encrypt R3 chain) without
-      # needing a separate caFile or insecureSkipVerify.
+      # HAOS is HTTPS-only (acme_certs distributes the wildcard cert to
+      # /ssl/, and configuration.yaml sets ssl_certificate under http:), so a
+      # plain-HTTP scrape returns EOF/RST. The target is a bare IP because HAOS
+      # is not a k8s Service, and `serverName` rewrites SNI/host validation to
+      # home.esweiss.com so the wildcard verifies against the system CA bundle
+      # without a caFile or insecureSkipVerify.
       scheme: https
       tlsConfig:
         serverName: home.esweiss.com

@@ -11,6 +11,7 @@ This guide walks you through setting up bare metal hardware to a production-read
 5. [Initial Proxmox Configuration](#initial-proxmox-configuration)
 6. [Storage Pool Setup](#storage-pool-setup)
 7. [Pre-Ansible Checklist](#pre-ansible-checklist)
+8. [Next Steps](#next-steps)
 
 ## Hardware Requirements
 
@@ -55,13 +56,15 @@ This homelab currently consists of:
 - **Hostname**: pve-nas-01
 - **IP Address**: 192.168.0.102
 - **CPU**: Intel i7-12700K (12 cores, 20 threads)
-- **RAM**: 64GB DDR5
+- **RAM**: 128GB DDR5 (~125 GiB usable)
+- **GPU**: Intel Arc B580 — shared by the Plex LXC (hardware transcoding,
+  docs/20) and the Immich ML LXC (OpenVINO inference, docs/36)
 - **Storage**:
   - NVMe pool (fast tier): Downloads and hot media staging
   - SSD pool: Application data and VM images
   - HDD pool (tank): Bulk media storage
   - HDD pool (archive): Long-term archival storage
-- **Network**: Gigabit Ethernet
+- **Network**: Gigabit Ethernet (`nic0`) + Marvell AQC113 10GbE (`nic1`)
 - **Role**: Primary storage server, NFS/Samba exports, ZFS management
 
 ### Compute Nodes: Dell OptiPlex 780 (3 units)
@@ -98,12 +101,14 @@ This homelab currently consists of:
 - **Hostname**: pve-prec-01
 - **IP Address**: 192.168.0.107
 - **CPU**: Intel Core i7-8700K @ 3.70GHz (6 cores / 12 threads, Coffee Lake)
-- **RAM**: 32GB
+- **RAM**: 64GB (~62 GiB usable)
+- **GPU**: NVIDIA GTX 1660 Ti — VFIO-passed through to the k3s GPU agent
+  (docs/43)
 - **Storage**:
   - OS: 512GB Toshiba KXG60ZNV512G NVMe SSD
   - Additional: 1TB Samsung 870 EVO (installed, local-ssd ZFS pool)
 - **Network**: Intel I219-LM Gigabit Ethernet
-- **Role**: General compute, k3s server + agent, Home Assistant host
+- **Role**: General compute, k3s server + agent, Home Assistant host, GPU host
 
 ## UEFI/BIOS Configuration
 

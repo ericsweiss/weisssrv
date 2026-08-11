@@ -6,12 +6,20 @@
 # HAOS (vm 154) is deliberately not covered: it is Proxmox-HA-managed, so HA
 # starts it and onboot is moot.
 
+# The LXC play mirrors proxmox_lxc's own precedence exactly: the neutral
+# proxmox_autostart_* names win when set (the VMs use them), otherwise the
+# per-container proxmox_lxc_* host_vars, otherwise the role defaults
+# (true / 100 / 0). Reading only the neutral names here would reconcile plex to
+# onboot=1 and flatten the DNS -> SMTP -> apps boot order.
 - name: Configure autostart and boot order for LXC containers
   hosts: lxc_containers
   gather_facts: false
   vars:
-    desired_onboot: "onboot: {{ proxmox_autostart_enabled | default(true) | ternary(1, 0) }}"
-    desired_startup: "startup: order={{ proxmox_startup_order | default(100) }},up={{ proxmox_startup_delay | default(0) }}"
+    lxc_onboot: "{{ proxmox_autostart_enabled | default(proxmox_lxc_onboot | default(true)) }}"
+    lxc_startup_order: "{{ proxmox_startup_order | default(proxmox_lxc_startup_order | default(100)) }}"
+    lxc_startup_delay: "{{ proxmox_startup_delay | default(proxmox_lxc_startup_delay | default(0)) }}"
+    desired_onboot: "onboot: {{ lxc_onboot | ternary(1, 0) }}"
+    desired_startup: "startup: order={{ lxc_startup_order }},up={{ lxc_startup_delay }}"
   tasks:
     - name: Determine container ID
       ansible.builtin.set_fact:
@@ -50,8 +58,8 @@
       delegate_to: "{{ container_pve_host }}"
       ansible.builtin.command: >-
         pct set {{ container_id }}
-        --onboot {{ proxmox_autostart_enabled | default(true) | ternary(1, 0) }}
-        --startup order={{ proxmox_startup_order | default(100) }},up={{ proxmox_startup_delay | default(0) }}
+        --onboot {{ lxc_onboot | ternary(1, 0) }}
+        --startup order={{ lxc_startup_order }},up={{ lxc_startup_delay }}
       changed_when: true
       when:
         - container_pve_host is defined
@@ -62,8 +70,8 @@
       ansible.builtin.debug:
         msg: >-
           {{ inventory_hostname }} ({{ container_id }}):
-          {{ 'on ' + container_pve_host + ' - order=' + (proxmox_startup_order | default(100) | string) +
-          ', delay=' + (proxmox_startup_delay | default(0) | string) + 's'
+          {{ 'on ' + container_pve_host + ' - onboot=' + (lxc_onboot | ternary(1, 0) | string) +
+          ', order=' + (lxc_startup_order | string) + ', delay=' + (lxc_startup_delay | string) + 's'
           if container_pve_host is defined else 'not found on any Proxmox host' }}
 
 # All node-pinned app VMs (gitlab/nextcloud/immich/windows) carry

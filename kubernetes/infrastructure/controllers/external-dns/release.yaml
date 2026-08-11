@@ -98,9 +98,11 @@ spec:
     serviceMonitor:
       enabled: true
 
+    # Sized above the observed peak (~127Mi) with headroom; keep in lockstep with
+    # the external-dns VPA maxAllowed in configs/vpa/platform.yaml.
     resources:
       requests:
         cpu: 50m
-        memory: 64Mi
+        memory: 192Mi
       limits:
-        memory: 128Mi
+        memory: 384Mi

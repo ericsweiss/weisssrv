@@ -1,8 +1,0 @@
----
-- name: Converge
-  hosts: all
-  become: true
-  tasks:
-    - name: Apply the zfs_arc_cap role
-      ansible.builtin.include_role:
-        name: zfs_arc_cap

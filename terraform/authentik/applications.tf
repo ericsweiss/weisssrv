@@ -1,13 +1,11 @@
-# Applications (the tiles on the authentik library page + the provider
-# bindings). One map entry per app, keyed by slug; the resource shape is
-# identical across all sixteen. Adding an app = one entry here + its provider
-# (see README "Adding a new application").
+# Applications — the tiles on the authentik library page plus their provider
+# bindings. One map entry per app, keyed by slug (which is also the OIDC issuer
+# path). Adding an app = one entry here + its provider; see README "Adding a new
+# application".
 #
-# Access policy: every application carries exactly one group policy binding
-# (policy_bindings.tf) — with policy_engine_mode "any", membership of the
-# bound group is required for authorization. App-level roles beyond access
-# (admin vs user) still happen in the apps themselves (group claims) — see
-# docs per app.
+# Access is enforced by the group policy bindings in policy_bindings.tf. Roles
+# beyond access (admin vs user) are resolved inside each app from its group
+# claims — see that app's doc.
 
 locals {
   applications = {
@@ -18,6 +16,13 @@ locals {
       provider_id = authentik_provider_oauth2.bar_assistant.id
       launch_url  = "https://bar.ericsweiss.com"
       meta_icon   = "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/bar-assistant.svg"
+    }
+    cloud = {
+      name        = "Nextcloud"
+      group       = "Home"
+      provider_id = authentik_provider_oauth2.nextcloud.id
+      launch_url  = "https://cloud.ericsweiss.com"
+      meta_icon   = "https://cdn.jsdelivr.net/gh/selfhst/icons/svg/nextcloud.svg"
     }
     food = {
       name        = "Mealie"
@@ -48,13 +53,6 @@ locals {
       provider_id = authentik_provider_oauth2.hermes_dashboard.id
       launch_url  = "https://agent.ericsweiss.com"
       meta_icon   = "https://cdn.jsdelivr.net/gh/selfhst/icons/png/hermes-agent.png"
-    }
-    cloud = {
-      name        = "Nextcloud"
-      group       = "Home"
-      provider_id = authentik_provider_oauth2.nextcloud.id
-      launch_url  = "https://cloud.ericsweiss.com"
-      meta_icon   = "https://cdn.jsdelivr.net/gh/selfhst/icons/svg/nextcloud.svg"
     }
     git = {
       name        = "GitLab"
@@ -147,15 +145,18 @@ resource "authentik_application" "app" {
 
   open_in_new_tab    = true
   policy_engine_mode = "any"
+
+  lifecycle {
+    # The slug is the OIDC issuer path, so a map-key rename would plan as
+    # destroy+create and break that app's logins. Removal is a two-step change:
+    # drop this block, then the entry.
+    prevent_destroy = true
+  }
 }
 
 # AdGuard Home SSO dashboards — one application per forward-auth provider
-# (forward_single = one external host each; docs/08). Terraform-authored, so
-# they live OUTSIDE local.applications to keep imports.tf's
-# for_each import blocks away from objects that never existed in the Admin UI.
-# Library group "Software": these are operator dashboards, the same bucket as
-# Grafana / GitLab / the wg-easy admin UI (no dedicated "Infrastructure" group
-# exists, and two tiles don't justify inventing one).
+# (forward_single matches exactly one external host; docs/08). Library group
+# "Software", with the other operator dashboards.
 
 resource "authentik_application" "adguard_01" {
   name              = "AdGuard Home dns-01"
@@ -171,6 +172,10 @@ resource "authentik_application" "adguard_01" {
 
   open_in_new_tab    = true
   policy_engine_mode = "any"
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "authentik_application" "adguard_02" {
@@ -187,14 +192,15 @@ resource "authentik_application" "adguard_02" {
 
   open_in_new_tab    = true
   policy_engine_mode = "any"
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
-# Homarr dashboard — Terraform-AUTHORED (like the AdGuard dashboards and the
-# hermes_dashboard provider), so it lives OUTSIDE local.applications to keep
-# imports.tf's for_each import block away from an object that never existed in
-# the Admin UI. Slug `dashboard` -> issuer path /application/o/dashboard/
-# (matches homarr AUTH_OIDC_ISSUER). Library group "Home" — the operator
-# launcher, same bucket as Grafana / GitLab / the wg-easy admin UI.
+# Homarr dashboard. Slug `dashboard` -> issuer path /application/o/dashboard/
+# (matches homarr AUTH_OIDC_ISSUER). Library group "Home", alongside the other
+# household-facing tiles.
 resource "authentik_application" "homarr" {
   name              = "Homarr"
   slug              = "dashboard"
@@ -209,4 +215,8 @@ resource "authentik_application" "homarr" {
 
   open_in_new_tab    = true
   policy_engine_mode = "any"
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }

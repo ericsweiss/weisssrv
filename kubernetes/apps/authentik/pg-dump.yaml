@@ -38,6 +38,9 @@ spec:
     spec:
       backoffLimit: 2
       activeDeadlineSeconds: 1800
+      # Bounds how long a failed Job object keeps KubeJobFailed firing after the
+      # next run has already succeeded, while leaving a half-day to inspect it.
+      ttlSecondsAfterFinished: 43200
       template:
         metadata:
           labels:

@@ -47,6 +47,7 @@ Internet
     |       +-- k3s-agt-prec-01   (192.168.0.207) - Agent (general + compute + GPU; 30G, 1660 Ti for Hindsight; docs/43)
     |
     +-- Virtual IPs
+        +-- vip-wg-easy   (192.168.0.99)  - MetalLB wg-easy VPN endpoint (UDP)
         +-- vip-public    (192.168.0.100) - MetalLB public ingress
         +-- vip-internal  (192.168.0.101) - MetalLB internal services
         +-- k3s-api       (192.168.0.161) - kube-vip K3s API HA endpoint
@@ -61,8 +62,8 @@ uplink through a **2-NIC active-backup bond** (`nic0`/`nic1`, hand-maintained in
 
 | Range | Purpose | Status |
 |-------|---------|--------|
-| 192.168.0.1-99 | Infrastructure, DHCP, workstations | Active |
-| 192.168.0.100-101 | MetalLB VIPs (public/internal) | Active |
+| 192.168.0.1-98 | Infrastructure, DHCP, workstations | Active |
+| 192.168.0.99-101 | MetalLB VIPs (`vpn-pool` .99 / public .100 / internal .101) | Active |
 | 192.168.0.102-109 | Proxmox hosts | Active (.102-.107) |
 | 192.168.0.150-159 | Infrastructure services (DNS, SMTP, apps) | Active (.150-.158) |
 | 192.168.0.160-169 | Additional infrastructure services | Active (.160 dns-02) |
@@ -155,3 +156,12 @@ Base infrastructure, the 9-node k3s platform, and the application stacks are
 all deployed and production-ready. Status checklists and the roadmap
 (including planned apps) live in [16-next-steps.md](16-next-steps.md) — the
 canonical home for implementation status.
+
+---
+
+## Related documentation
+
+- [docs/00-hardware-setup.md](00-hardware-setup.md) — hardware inventory and Proxmox install
+- [docs/11-firewall.md](11-firewall.md) — firewall IP sets and security groups
+- [docs/19-k3s-deployment.md](19-k3s-deployment.md) — the k3s cluster layer
+- [docs/16-next-steps.md](16-next-steps.md) — remaining work and accepted risks

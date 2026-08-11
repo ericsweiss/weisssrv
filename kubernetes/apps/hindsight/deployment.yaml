@@ -1,19 +1,10 @@
 ---
 # Hindsight (vectorize-io) — long-term agent memory for Hermes (docs/37
-# §Memory backend). One pod, two containers, mirroring upstream's
-# docker/docker-compose/local-llm/ example:
-#   * hindsight — the published standalone image (API :8888 + control-plane UI
-#     :9999) with its embedded pg0 PostgreSQL on the NFS volume. Memory
-#     extraction/synthesis needs an LLM; the published image DELIBERATELY
-#     omits llama-cpp-python (upstream docs: HINDSIGHT_API_LLM_PROVIDER=llamacpp
-#     fails with ModuleNotFoundError on this image), so upstream's recommended
-#     fully-local shape is…
-#   * llama — the official llama.cpp server image as an OpenAI-compatible
-#     sidecar; hindsight points its `openai` provider at it over pod-localhost.
-#     Fully local: no LLM API key, no per-turn spend (auto-retain runs every
-#     conversation turn), and both images are used unmodified.
-# strategy: Recreate — the single RWO NFS volume holds a live PostgreSQL data
-# dir and must never be dual-mounted across a rolling update.
+# §Memory backend). One pod: the hindsight image (API :8888, UI :9999, embedded
+# pg0 PostgreSQL on NFS) + a llama.cpp server sidecar as its OpenAI-compatible
+# LLM, mirroring upstream's docker/docker-compose/local-llm/ example.
+# Recreate strategy: the single RWO NFS volume holds a live PostgreSQL data dir
+# and must never be dual-mounted across a rolling update.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -35,16 +26,10 @@ spec:
         app.kubernetes.io/name: hindsight
         app.kubernetes.io/part-of: hindsight
     spec:
-      # HOME: k3s-agt-prec-01 — hostname-pinned. This is where the GTX 1660 Ti is
-      # passed through (hosts.yml VM 207 vm_hostpci + esweiss.com/gpu=nvidia), so
-      # the llama sidecar's `nvidia.com/gpu: 1` request is only satisfiable here.
-      # GPU offload SHRINKS this pod's host RAM (the model lives in VRAM now — see
-      # the llama resources below); the prec agent's 30G is fleet modern-CPU
-      # headroom, not a Hindsight requirement. A hard pin is honest — a
-      # single-replica RWO/Recreate app lives on exactly one node anyway. If
-      # prec-01 is down, Hindsight is down and Hermes degrades to its built-in
-      # memory (which always runs alongside), an acceptable failure mode for a
-      # memory backend. Rehome = move the GPU + edit this hostname.
+      # Hard pin to k3s-agt-prec-01: the GTX 1660 Ti is passed through there, so
+      # the llama sidecar's nvidia.com/gpu request is satisfiable only on that
+      # node (docs/43). prec-01 down = Hindsight down and Hermes falls back to
+      # its built-in memory. Rehome = move the GPU + edit this hostname.
       affinity:
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -58,12 +43,8 @@ spec:
         esweiss.com/general: "true"
         esweiss.com/cpu: "modern"
         esweiss.com/gpu: "nvidia"
-      # Run under the nvidia containerd runtime (k3s auto-detects it from the
-      # installed container toolkit; RuntimeClass in
-      # infrastructure/controllers/nvidia-device-plugin). The runtime injects the
-      # driver + GPU into the llama container (which requests nvidia.com/gpu); the
-      # hindsight container requests none, so it gets no GPU (NVIDIA_VISIBLE_DEVICES
-      # void) — harmless.
+      # nvidia containerd runtime (RuntimeClass in controllers/nvidia-device-plugin):
+      # injects the driver + card into the container that requests nvidia.com/gpu.
       runtimeClassName: nvidia
       automountServiceAccountToken: false
       securityContext:
@@ -73,25 +54,20 @@ spec:
         options:
           - name: ndots
             value: "1"
-          # Kept in sync with the hermes/mealie/*arr deployments: force a fresh
-          # socket for glibc's parallel A/AAAA queries so the conntrack
-          # DNAT-insert race can't cost a ~5s resolver stall (matters for the
-          # llama container's one-time HuggingFace model download).
+          # Fresh socket per glibc parallel A/AAAA query so the conntrack
+          # DNAT-insert race cannot cost a ~5s resolver stall.
           - name: single-request-reopen
       containers:
         # ── Hindsight API (:8888) + control-plane UI (:9999) ─────────────
         - name: hindsight
-          # (hindsight_version — the bare-semver image tag of release
-          # v<hindsight_version>).
           image: ghcr.io/vectorize-io/hindsight:${hindsight_version}
           imagePullPolicy: IfNotPresent
           env:
             - name: TZ
               value: America/Los_Angeles
-            # llama-server is OpenAI-compatible, so use the `openai` provider
-            # pointed at the sidecar over pod-localhost — upstream's documented
-            # local-llm shape (docker/docker-compose/local-llm/). The API key
-            # is unused by llama-server but the env var must be non-empty.
+            # llama-server is OpenAI-compatible, so the `openai` provider points
+            # at the sidecar over pod-localhost. The key is unused by
+            # llama-server but must be non-empty.
             - name: HINDSIGHT_API_LLM_PROVIDER
               value: openai
             - name: HINDSIGHT_API_LLM_BASE_URL
@@ -100,16 +76,9 @@ spec:
               value: not-needed
             - name: HINDSIGHT_API_LLM_MODEL
               value: gemma-4-e2b-it
-            # CPU-LEGACY (pending GPU re-measurement, docs/43): 300s was sized for
-            # CPU inference (~13 tok/s -> ~80s/extraction + queue-wait routinely
-            # over the 120s default). GPU offload should cut per-op latency ~10x,
-            # so this headroom is now generous — kept unchanged until measured, do
-            # NOT blind-lower (a too-tight timeout under a cold model load or a
-            # queue burst re-introduces the retry storm). Original CPU rationale:
-            # a retain queued behind another waited queue-time + ~80s, timing the
-            # client out and burning all 4 retries producing only heat (observed
-            # 2026-07-20). CONSOLIDATION shares the same serialized server, so it
-            # gets the same headroom.
+            # 300s (default 120s): headroom for a cold model load or queue-wait
+            # on the serialized llama server. Retune from measured per-op
+            # latency, do not blind-lower (docs/43).
             - name: HINDSIGHT_API_LLM_TIMEOUT
               value: "300"
             - name: HINDSIGHT_API_CONSOLIDATION_LLM_TIMEOUT
@@ -118,9 +87,8 @@ spec:
             - name: api
               containerPort: 8888
               protocol: TCP
-          # /health on the API port (verified upstream route). startupProbe
-          # covers the slow first boot: pg0 initdb + schema migrations on NFS
-          # plus loading the baked-in embedding/reranker models into RAM.
+          # startupProbe covers the slow first boot: pg0 initdb + schema
+          # migrations on NFS plus loading the embedding/reranker models.
           startupProbe:
             httpGet:
               path: /health
@@ -142,18 +110,18 @@ spec:
             periodSeconds: 15
             timeoutSeconds: 10
             failureThreshold: 4
-          # Memory: in-process torch + sentence-transformers embeddings +
-          # flashrank reranker + embedded PostgreSQL + the Next.js control
-          # plane. No CPU limit (repo policy — docs/33).
+          # In-process torch/sentence-transformers embeddings + flashrank
+          # reranker + embedded PostgreSQL + the Next.js control plane. Request
+          # tracks the recorded VPA target. No CPU limit (docs/33).
           resources:
             requests:
               cpu: 200m
-              memory: 1Gi
+              memory: 1536Mi
             limits:
               memory: 3Gi
-          # Runs as the image's unprivileged `hindsight` user (UID 1000) —
-          # matching the NFS export's all_squash anonuid=1000 mapping, so pg0's
-          # 0700 data-dir ownership check sees itself as the owner.
+          # Runs as the image's unprivileged `hindsight` user (UID 1000),
+          # matching the NFS export's all_squash anonuid so pg0's 0700 data-dir
+          # ownership check sees itself as the owner.
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -164,68 +132,45 @@ spec:
               mountPath: /home/hindsight/.pg0
         # ── llama.cpp server: local LLM for memory extraction ────────────
         - name: llama
-          # Official llama.cpp server CUDA image; tag pinned as
-          # server-cuda-<bNNNN build> (hindsight_llamacpp_version in all.yml,
-          # category "manual"). The CUDA build (vs the plain server- build) offloads
-          # inference to the passed-through 1660 Ti. NOTE the image is CUDA 12.8 —
-          # see the driver KNOWN-RISK note in the k3s role's tasks/gpu.yml + docs/43.
-          # llama.cpp's GHCR publishes server-<bNNNN> and server-cuda-<bNNNN> from
-          # the SAME build number, so the one hindsight_llamacpp_version pin covers
-          # both — verified server-cuda-b10068 exists on GHCR, so no separate
-          # _cuda version pin is needed.
+          # Official llama.cpp CUDA server image, pinned as server-cuda-<build>
+          # (hindsight_llamacpp_version). GHCR publishes server-<build> and
+          # server-cuda-<build> from the same build number, so one pin covers
+          # both. CUDA 12.8 — see the driver note in the k3s role's gpu.yml.
           image: ghcr.io/ggml-org/llama.cpp:server-cuda-${hindsight_llamacpp_version}
           imagePullPolicy: IfNotPresent
           env:
-            # Bind all interfaces so the kubelet's httpGet probes (which
-            # connect to the pod IP, not loopback) can reach /health. Nothing
-            # else can: :8080 is on no Service and the namespace default-deny
-            # admits only hermes-ns -> :8888 and the Prometheus scraper.
+            # Bind all interfaces so the kubelet's httpGet probes (pod IP, not
+            # loopback) reach /health. :8080 is on no Service and the namespace
+            # default-deny admits only hermes-ns -> :8888 and the scraper.
             - name: LLAMA_ARG_HOST
               value: "0.0.0.0"
             - name: LLAMA_ARG_PORT
               value: "8080"
-            # Offload ALL model layers to the GPU (99 = "every layer"). The
-            # gemma-4-E2B Q4_K_M weights (~2 GB) + the 8192-ctx KV cache fit the
-            # 1660 Ti's 6 GB VRAM comfortably, so full offload is safe and is the
-            # whole point of the CUDA image. If the device plugin has not
-            # advertised the GPU (nvidia.com/gpu unschedulable), the pod stays
-            # Pending rather than silently falling back to CPU.
+            # Offload every layer to the GPU: Q4_K_M weights (~2 GB) + the
+            # 8192-ctx KV cache fit the 1660 Ti's 6 GB VRAM. With no advertised
+            # GPU the pod stays Pending instead of falling back to CPU.
             - name: LLAMA_ARG_N_GPU_LAYERS
               value: "99"
-            # Auto-download the default Gemma GGUF (~3.5 GB) from HuggingFace
-            # on first start — the same model Hindsight's own in-process
-            # llamacpp provider defaults to. Cached on the NFS volume (see the
-            # mount below), so later pod starts skip the download.
+            # Auto-download the default Gemma GGUF on first start; cached on the
+            # NFS volume (mount below) so later starts skip it.
             - name: LLAMA_ARG_HF_REPO
               value: bartowski/google_gemma-4-E2B-it-GGUF
             - name: LLAMA_ARG_HF_FILE
               value: google_gemma-4-E2B-it-Q4_K_M.gguf
             - name: LLAMA_ARG_CTX_SIZE
               value: "8192"
-            # SINGLE slot. The server otherwise ran 4 parallel slots that SPLIT
-            # the 8192 context four ways (2048 each), but Hindsight queries the
-            # model's advertised context (8192) and sizes its fact-extraction
-            # prompts to it — so every retain 500'd with "Context size has been
-            # exceeded", retried 4x, and pinned all cores producing nothing
-            # (observed live 2026-07-20). One slot gives each request the full
-            # 8192 and serializes inference so it can't peg the node. Memory
-            # retention is background + latency-tolerant, so no concurrency is
-            # needed.
+            # ONE slot: Hindsight sizes its extraction prompts to the advertised
+            # 8192 context, so parallel slots split it and every retain fails
+            # "Context size has been exceeded". Retention is background work, so
+            # serialized inference is fine.
             - name: LLAMA_ARG_N_PARALLEL
               value: "1"
-            # CPU-LEGACY (pending GPU re-measurement, docs/43): the thread count
-            # governed CPU inference speed; with -ngl 99 the work runs on the GPU
-            # and CPU threads only feed it, so 4 is now almost certainly more than
-            # needed. Kept unchanged until measured on the GPU — retune with fresh
-            # tok/s, do NOT blind-delete. Original CPU rationale: 4 parallel slots
-            # pegged the node (2026-07-20), a 2-thread cap overshot to 234-295s/op
-            # (2026-07-21) starving the serialized queue; 4 threads (~120-150s/op)
-            # with N_PARALLEL=1 bounded the worst-case burst so the queue drained.
+            # Threads only feed the GPU under -ngl 99, so 4 is generous. Retune
+            # from measured tok/s rather than deleting (docs/43).
             - name: LLAMA_ARG_THREADS
               value: "4"
-          # /health is llama-server's built-in readiness route (503 while the
-          # model loads). The generous startupProbe budget (30s x 60 = 30 min)
-          # covers the FIRST boot's 3.5 GB HuggingFace download; warm starts
+          # /health returns 503 while the model loads. The 30-minute startup
+          # budget covers the first boot's HuggingFace download; warm starts
           # (model cached on NFS) pass in under a minute.
           startupProbe:
             httpGet:
@@ -241,34 +186,22 @@ spec:
             periodSeconds: 30
             timeoutSeconds: 10
             failureThreshold: 5
-          # Memory dropped now that the model + KV cache live in VRAM (offloaded
-          # by -ngl 99): the host side is only the mmap'd GGUF header pages
-          # (reclaimable, file-backed), CUDA host-pinned staging buffers, and the
-          # server runtime — a fraction of the old ~3.5 GB resident model. No CPU
-          # limit (docs/33).
-          #
-          # The request covers ~560Mi RSS plus the active slice of the mmap'd
-          # GGUF's page cache: the measured working set is 2.7Gi, of which ~2.2Gi
-          # is reclaimable file-backed cache, so requesting the full working set
-          # would reserve node memory that evaporates under pressure while 1536Mi
-          # left the container permanently above its own reservation (worst
-          # eviction rank). The 3Gi limit is a reclaim ceiling, not an OOM
-          # ceiling — no OOM event has ever been recorded here.
-          # nvidia.com/gpu is the device-plugin resource that pins the pod to the
-          # GPU node and injects the card; request auto-mirrors the limit (it is
-          # an integer extended resource, so requests==limits is required).
+          # Model + KV cache live in VRAM (-ngl 99); the host side is ~560Mi RSS
+          # plus the active slice of the mmap'd GGUF page cache (reclaimable), so
+          # the request sits under the ~2.7Gi working set on purpose. The limit
+          # is a reclaim ceiling with headroom over the observed peak. No CPU
+          # limit (docs/33); nvidia.com/gpu is an integer extended resource, so
+          # its request auto-mirrors the limit.
           resources:
             requests:
               cpu: 250m
               memory: 2Gi
             limits:
-              memory: 3Gi
+              memory: 4Gi
               nvidia.com/gpu: "1"
           volumeMounts:
-            # llama-server stores HuggingFace downloads under
-            # ~/.cache/huggingface (the image runs as root, so /root) — mount
-            # the models subdir there to persist the GGUF across pod recreates
-            # (upstream's compose does the same with a named volume).
+            # llama-server caches HuggingFace downloads under ~/.cache/huggingface
+            # (the image runs as root); persist the GGUF across pod recreates.
             - name: data
               subPath: models
               mountPath: /root/.cache/huggingface

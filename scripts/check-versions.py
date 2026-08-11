@@ -1,29 +1,37 @@
 #!/usr/bin/env python3
-"""
-check-versions.py - Automated version discovery for weisssrv homelab infrastructure.
+"""check-versions.py - Automated version discovery for a pinned-versions repo.
 
 Checks the latest available versions from official sources and compares them
-against the pinned versions in ansible/inventories/prod/group_vars/all.yml.
+against the versions pinned in a consumer vars file (conventionally
+ansible/inventories/prod/group_vars/all.yml).
 
 Supports:
   - GitHub releases (binary tools, container images with GitHub releases)
   - Docker Hub / ghcr.io / LinuxServer.io container image tags
   - Helm chart versions from OCI/HTTP repositories
-  - APT package versions from live repo indexes (Tailscale, Plex, GitLab EE)
+  - APT package versions from live repo indexes
+
+WHAT to track is consumer data: the service registry, the vars file, and the
+per-service deploy command live in a config file (see load_config), not here.
+Resolution order: --config, then $CHECK_VERSIONS_CONFIG, then
+scripts/version-registry.{py,json} under the repo root.
 
 Usage:
-  ./scripts/check-versions.py                     # Check all services
-  ./scripts/check-versions.py --service gluetun    # Check single service
-  ./scripts/check-versions.py --category helm      # Check category
-  ./scripts/check-versions.py --json               # JSON output
-  ./scripts/check-versions.py --update gluetun     # Update version in all.yml
-  ./scripts/check-versions.py --update-all         # Update all outdated versions
+  ./check-versions.py                     # check all services
+  ./check-versions.py --service gluetun   # check a single service
+  ./check-versions.py --category helm     # check a category
+  ./check-versions.py --json              # JSON output
+  ./check-versions.py --update gluetun    # update the pin in the vars file
+  ./check-versions.py --update-all        # update every outdated pin
+  ./check-versions.py --check-coverage    # every *_version pin has a registry entry
 
 Environment:
-  GITHUB_TOKEN - Optional GitHub personal access token for higher rate limits
+  GITHUB_TOKEN / GH_API_TOKEN - optional token for higher GitHub rate limits
                  (unauthenticated: 60 req/hr, authenticated: 5000 req/hr)
+  CHECK_VERSIONS_CONFIG - config path (overridden by --config)
 """
 
+import argparse
 import functools
 import gzip
 import http.client
@@ -40,13 +48,23 @@ from io import BytesIO
 from pathlib import Path
 from typing import Optional
 
+# ---------------------------------------------------------------------------
 # Configuration
+# ---------------------------------------------------------------------------
 
-VARS_FILE = Path(__file__).resolve().parent.parent / "ansible" / "inventories" / "prod" / "group_vars" / "all.yml"
-# CI-pinned container images (e.g. the pr-agent reviewer) live in .gitlab-ci.yml
-# as digest-locked `image:` pins, not as vars in all.yml.
-CI_FILE = Path(__file__).resolve().parent.parent / ".gitlab-ci.yml"
-CACHE_DIR = Path(__file__).resolve().parent.parent / ".version-cache"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_CONFIG_CANDIDATES = ("scripts/version-registry.py", "scripts/version-registry.json")
+
+# All five are populated by load_config(); see its docstring for the schema.
+SERVICE_REGISTRY: list[dict] = []
+VARS_FILE: Path = REPO_ROOT / "ansible/inventories/prod/group_vars/all.yml"
+# Aliases for `version_file` values that are not repo-relative paths, e.g.
+# {"ci": ".gitlab-ci.yml"} for digest-locked `image:` pins in the CI file.
+VERSION_FILE_ALIASES: dict[str, Path] = {}
+DEFAULT_DEPLOY_COMMAND = ""
+UNTRACKED_ALLOWLIST: set[str] = set()
+
+CACHE_DIR = REPO_ROOT / ".version-cache"
 CACHE_TTL = 3600  # 1 hour cache
 
 # GitHub API rate limit handling
@@ -56,12 +74,8 @@ GITHUB_TOKEN = os.environ.get("GH_API_TOKEN", "") or os.environ.get("GITHUB_TOKE
 # Request timeout in seconds
 REQUEST_TIMEOUT = 15
 
-# Bounded retry for transient network failures. The checker does dozens of
-# sequential external fetches (GitHub, Docker Hub, LSIO, Helm, apt); without a
-# retry a single flaky endpoint (DNS blip, connection reset, upstream 5xx) makes
-# the whole CI version check fail intermittently. We retry only on transient
-# failures (URLError, socket.timeout, HTTP 5xx) — never on 4xx (including a 403
-# rate-limit, which is surfaced as-is so it isn't masked as a transient blip).
+# Bounded retry on transient failures only (URLError, socket.timeout, HTTP 5xx)
+# — never on 4xx, so a 403 rate-limit is surfaced rather than masked as a blip.
 RETRY_ATTEMPTS = 3
 RETRY_BACKOFF = 0.5  # seconds; multiplied by attempt number for linear backoff
 
@@ -77,7 +91,7 @@ class ServiceVersion:
     source_url: str = ""
     release_url: str = ""
     error: Optional[str] = None
-    var_name: str = ""  # Variable name in all.yml
+    var_name: str = ""  # Key in the vars file (or the version_file pin)
     notes: str = ""
     # A held update is reported but not actionable: it doesn't flip the
     # exit code or trigger MR comments (e.g. MetalLB 0.16.x blocked on an
@@ -89,813 +103,127 @@ class ServiceVersion:
     fetched_live: bool = False
 
 
-# Service definitions - maps var_name to lookup configuration
-SERVICE_REGISTRY: list[dict] = [
-    # GitHub releases (binary tools)
-    {
-        "name": "AdGuard Home",
-        "var_name": "adguard_home_version",
-        "category": "github",
-        "github_repo": "AdguardTeam/AdGuardHome",
-        "version_prefix": "v",
-        "strip_prefix": True,
-    },
-    {
-        "name": "adguardhome-sync",
-        "var_name": "adguardhome_sync_version",
-        "category": "github",
-        "github_repo": "bakito/adguardhome-sync",
-        "version_prefix": "v",
-        "strip_prefix": True,
-    },
-    {
-        "name": "k3s",
-        "var_name": "k3s_version",
-        "category": "github",
-        "github_repo": "k3s-io/k3s",
-        "version_prefix": "v",
-        "strip_prefix": False,
-        "tag_filter": r"^v\d+\.\d+\.\d+\+k3s\d+$",
-    },
-    {
-        "name": "kube-vip",
-        "var_name": "kube_vip_version",
-        "category": "github",
-        "github_repo": "kube-vip/kube-vip",
-        "version_prefix": "v",
-        "strip_prefix": False,
-    },
-    {
-        "name": "Pulsarr",
-        "var_name": "pulsarr_version",
-        "category": "github",
-        "github_repo": "jamcalli/Pulsarr",
-        "version_prefix": "v",
-        "strip_prefix": True,
-    },
-    {
-        "name": "wg-easy",
-        "var_name": "wg_easy_version",
-        "category": "github",
-        "github_repo": "wg-easy/wg-easy",
-        "version_prefix": "v",
-        "strip_prefix": True,
-        "tag_filter": r"^v\d+\.\d+\.\d+$",
-    },
-    {
-        # Docker tag is v-prefixed (ghcr.io/homarr-labs/homarr:v1.71.0), so the
-        # pin keeps the "v" (strip_prefix False, like immich).
-        "name": "Homarr",
-        "var_name": "homarr_version",
-        "category": "github",
-        "github_repo": "homarr-labs/homarr",
-        "version_prefix": "v",
-        "strip_prefix": False,
-        "tag_filter": r"^v\d+\.\d+\.\d+$",
-    },
-    {
-        # Immich app (immich-server + immich-machine-learning images share this
-        # tag). The coupled DB/Valkey pins (immich_postgres_version,
-        # immich_valkey_version) are NOT tracked here — they must be taken from
-        # the SAME release's docker-compose.yml (vectorchord/pgvectors coupling),
-        # so they are allow-listed in the check-versions test, not auto-bumped.
-        "name": "Immich",
-        "var_name": "immich_version",
-        "category": "github",
-        "github_repo": "immich-app/immich",
-        "version_prefix": "v",
-        "strip_prefix": False,
-        "tag_filter": r"^v\d+\.\d+\.\d+$",
-    },
-    {
-        # CalVer release tags (vYYYY.M.D[.N]); the pin keeps the leading "v"
-        # because the CI image build checks out the upstream tag verbatim.
-        "name": "Hermes Agent",
-        "var_name": "hermes_version",
-        "category": "github",
-        "github_repo": "NousResearch/hermes-agent",
-        "version_prefix": "v",
-        "strip_prefix": False,
-        "tag_filter": r"^v\d{4}\.\d+\.\d+(\.\d+)?$",
-    },
-    {
-        # OpenAI Codex CLI, baked into the hermes-agent image (npm @openai/codex)
-        # so Hermes' Codex app-server runtime can delegate OpenAI/Codex turns to
-        # it. Upstream tags stable releases `rust-vX.Y.Z`; the pin is the bare npm
-        # version (0.144.5), so strip the "rust-v" prefix. The tag_filter excludes
-        # the per-platform alpha tags (rust-vX.Y.Z-alpha.N). Requires >=0.130.0.
-        "name": "Codex CLI (Hermes)",
-        "var_name": "hermes_codex_version",
-        "category": "github",
-        "github_repo": "openai/codex",
-        "version_prefix": "rust-v",
-        "strip_prefix": True,
-        "tag_filter": r"^rust-v\d+\.\d+\.\d+$",
-    },
-    {
-        # Claude Code CLI, baked into the hermes-agent image alongside Codex
-        # (npm @anthropic-ai/claude-code) so Hermes can delegate coding tasks to
-        # headless `claude -p` runs on the Claude Max subscription. Upstream tags
-        # stable releases `vX.Y.Z`; the pin is the bare npm version, so strip
-        # the "v" prefix.
-        "name": "Claude Code CLI (Hermes)",
-        "var_name": "hermes_claude_version",
-        "category": "github",
-        "github_repo": "anthropics/claude-code",
-        "version_prefix": "v",
-        "strip_prefix": True,
-        "tag_filter": r"^v\d+\.\d+\.\d+$",
-    },
-    {
-        # 1Password CLI (op), baked into the hermes-agent image so Hermes' 1Password
-        # skill can drive `op` against the isolated Agent vault. 1Password ships it
-        # via its own signed apt repo (no GitHub release feed), and the pin is the
-        # full DEB version string — hence manual: check `apt-cache madison
-        # 1password-cli` against the repo (or the CLI2 release history) and bump.
-        "name": "1Password CLI (Hermes)",
-        "var_name": "hermes_op_version",
-        "category": "manual",
-        "source_url": "https://app-updates.agilebits.com/product_history/CLI2",
-        "notes": "op CLI baked into the hermes image (docker/hermes-agent). Full DEB version pin — bump via `apt-cache madison 1password-cli` against 1Password's signed apt repo, sync-versions, commit; CI rebuilds the wrapper.",
-    },
-    {
-        # Camofox anti-detection browser server, built from source by the
-        # build-camofox-browser CI job (upstream publishes no image). The pin is
-        # the bare semver used as the built image tag; upstream tags releases
-        # `vX.Y.Z`, so strip the prefix. hermes_camofox_git_sha (the tag's
-        # commit) moves in lockstep — same supply-chain pattern as
-        # hermes_version/hermes_git_sha.
-        "name": "Camofox browser (Hermes)",
-        "var_name": "hermes_camofox_version",
-        "category": "github",
-        "github_repo": "jo-inc/camofox-browser",
-        "version_prefix": "v",
-        "strip_prefix": True,
-        "tag_filter": r"^v\d+\.\d+\.\d+$",
-        "held": True,
-        "notes": (
-            "1.13.1+ held: upstream's own Dockerfile does not build. 1.13.1 "
-            "moved the transitive better-sqlite3 12.9.0 -> 13.0.1, which has no "
-            "prebuilt binary for node 22, so `npm ci` falls back to `node-gyp "
-            "rebuild` and dies with 'not found: make' — their node:22-slim base "
-            "installs python3-minimal but no compiler. We build their Dockerfile "
-            "UNMODIFIED by design (docker/camofox-browser/README.md), so this is "
-            "not patchable here without forking the supply chain. Re-check when "
-            "upstream adds build-essential or the dep ships a node 22 prebuilt."
-        ),
-    },
-    {
-        # Hindsight agent-memory server (Hermes' memory backend). The pin is the
-        # ghcr.io/vectorize-io/hindsight image tag — bare semver, matching the
-        # GitHub release tag with the "v" stripped (verified: release vX.Y.Z
-        # publishes image tag X.Y.Z).
-        "name": "Hindsight (Hermes memory)",
-        "var_name": "hindsight_version",
-        "category": "github",
-        "github_repo": "vectorize-io/hindsight",
-        "version_prefix": "v",
-        "strip_prefix": True,
-        "tag_filter": r"^v\d+\.\d+\.\d+$",
-    },
-    {
-        # llama.cpp server sidecar for Hindsight's local LLM
-        # (ghcr.io/ggml-org/llama.cpp:server-<pin>). Upstream tags a build
-        # (bNNNN) many times per day and only some builds publish a server
-        # image, so auto-nagging on "latest release" would be pure churn —
-        # bumped opportunistically when touching the hindsight app (verify the
-        # server-bNNNN tag exists on ghcr before pinning), hence manual.
-        "name": "llama.cpp server (Hindsight)",
-        "var_name": "hindsight_llamacpp_version",
-        "category": "manual",
-        "source_url": "https://github.com/ggml-org/llama.cpp/releases",
-        "notes": "Pin bNNNN whose ghcr server-cuda-bNNNN (CUDA) image tag exists; any recent build serves the pinned GGUF.",
-    },
-    {
-        # nvidia-open from NVIDIA's CUDA apt repo (debian13), exact apt version
-        # installed on the GPU k3s agent (k3s role tasks/gpu.yml). Manual: the apt
-        # version string (X.Y.Z-N) tracks the CUDA repo package — bump when it
-        # moves. See docs/43 for why >=570 (CUDA 12.8) is required on GeForce.
-        "name": "NVIDIA driver (nvidia-open, CUDA repo)",
-        "var_name": "nvidia_driver_version",
-        "category": "manual",
-        "source_url": "https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/",
-        "notes": "Exact nvidia-open apt version (X.Y.Z-N) from the NVIDIA CUDA debian13 repo; >=570 required for the CUDA-12.8 llama image on GeForce (docs/43).",
-    },
-    {
-        # nvidia-container-toolkit apt pin (NVIDIA libnvidia-container repo).
-        # Manual: the apt version carries a -N Debian revision the GitHub release
-        # tag lacks, so auto-diffing would churn.
-        "name": "NVIDIA container toolkit",
-        "var_name": "nvidia_container_toolkit_version",
-        "category": "manual",
-        "source_url": "https://github.com/NVIDIA/nvidia-container-toolkit/releases",
-        "notes": "Apt version X.Y.Z-N from nvidia.github.io/libnvidia-container/stable/deb.",
-    },
-    {
-        # cuda-keyring apt package — ships the debian13 CUDA repo signing key +
-        # the matching sources file (k3s role tasks/gpu.yml, SHA256-verified
-        # before install). Manual: NVIDIA versions the .deb; bump it and the
-        # nvidia_cuda_keyring_sha256 pin in all.yml in lockstep.
-        "name": "NVIDIA cuda-keyring",
-        "var_name": "nvidia_cuda_keyring_version",
-        "category": "manual",
-        "source_url": "https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/",
-        "notes": "cuda-keyring_<version>_all.deb; SHA256-pinned in all.yml (nvidia_cuda_keyring_sha256).",
-    },
-    {
-        # DCGM exporter image tag (nvcr.io/nvidia/k8s/dcgm-exporter). Manual: the
-        # tag is a compound <DCGM>-<exporter>-<variant> string, not a plain
-        # semver an auto-tracker can compare.
-        "name": "NVIDIA DCGM exporter",
-        "var_name": "dcgm_exporter_version",
-        "category": "manual",
-        "source_url": "https://github.com/NVIDIA/dcgm-exporter/releases",
-        "notes": "nvcr.io tag <DCGM>-<exporter>-<variant>, e.g. 4.6.0-4.8.3-distroless.",
-    },
-    # Container images
-    {
-        "name": "Gluetun",
-        "var_name": "gluetun_version",
-        "category": "github",
-        "github_repo": "qdm12/gluetun",
-        "version_prefix": "v",
-        "strip_prefix": False,
-        "tag_filter": r"^v\d+\.\d+\.\d+$",
-    },
-    {
-        # Authentik is deployed via the goauthentik Helm chart, so the version
-        # pinned in `authentik_version` is read as a chart tag (e.g.
-        # `version: "{{ authentik_version }}"` in the HelmRelease). The chart
-        # publishes a few days after the matching GitHub release tag, so query
-        # the chart repo directly — pinning a GitHub tag Flux can't yet resolve
-        # fails reconciliation with "no 'authentik' chart with version ... found".
-        "name": "Authentik",
-        "var_name": "authentik_version",
-        "category": "helm",
-        "helm_repo": "https://charts.goauthentik.io",
-        "helm_chart": "authentik",
-        "source_url": "https://github.com/goauthentik/authentik/releases",
-    },
-    {
-        "name": "PostgreSQL (Authentik)",
-        "var_name": "postgresql_version",
-        "category": "dockerhub",
-        "docker_image": "library/postgres",
-        "tag_regex": r"^(\d+(?:\.\d+)?)-trixie$",  # Matches 17-trixie, 17.1-trixie, etc.
-        "notes": "Used by Authentik (bundled PostgreSQL). Only checks updates within current major version.",
-        "pin_major_version": True,  # Only suggest updates within same major version
-    },
-    {
-        "name": "PostgreSQL (Mealie)",
-        "var_name": "mealie_postgresql_version",
-        "category": "dockerhub",
-        "docker_image": "library/postgres",
-        "tag_regex": r"^(\d+(?:\.\d+)?)-alpine$",  # Matches 16-alpine, 16.1-alpine, etc.
-        "notes": "Used by Mealie (standalone deployment). Only checks updates within current major version.",
-        "pin_major_version": True,  # Only suggest updates within same major version
-    },
-    {
-        "name": "Mealie",
-        "var_name": "mealie_version",
-        "category": "github",
-        "github_repo": "mealie-recipes/mealie",
-        "version_prefix": "v",
-        "strip_prefix": False,
-        "tag_filter": r"^v\d+\.\d+\.\d+$",
-    },
-    {
-        "name": "Bar Assistant",
-        "var_name": "bar_assistant_version",
-        "category": "dockerhub",
-        "docker_image": "barassistant/server",
-        "tag_regex": r"^(\d+\.\d+(?:\.\d+)?)$",
-    },
-    {
-        "name": "Salt Rim",
-        "var_name": "salt_rim_version",
-        "category": "dockerhub",
-        "docker_image": "barassistant/salt-rim",
-        "tag_regex": r"^(\d+\.\d+(?:\.\d+)?)$",
-    },
-    {
-        "name": "BusyBox",
-        "var_name": "busybox_version",
-        "category": "dockerhub",
-        "docker_image": "library/busybox",
-        "tag_regex": r"^(\d+\.\d+)$",
-    },
-    {
-        "name": "Meilisearch",
-        "var_name": "meilisearch_version",
-        "category": "dockerhub",
-        "docker_image": "getmeili/meilisearch",
-        "tag_regex": r"^v(\d+\.\d+\.\d+)$",
-        # Bar Assistant requires Meilisearch 1.15.x — the database format is
-        # version-locked and newer majors/minors refuse to open old data.
-        # Only suggest patch updates within the 1.15 series.
-        "version_prefix": "v1.15.",
-    },
-    {
-        "name": "Redis",
-        "var_name": "redis_version",
-        "category": "dockerhub",
-        "docker_image": "library/redis",
-        "tag_regex": r"^(\d+\.\d+\.\d+-alpine)$",
-    },
-    # LinuxServer.io container images
-    # LinuxServer.io tags follow these patterns:
-    #   version-vX.Y.Z (nzbget), version-X.Y.Z-rN (qbittorrent),
-    #   version-X.Y.Z.BUILD (*arr apps - stable branch)
-    # lsio_version_regex is authoritative: it both selects the tag and captures
-    # the bare version (group 1) that gets pinned in all.yml.
-    # Stable tags get buried under daily develop/nightly pushes (3 arch variants
-    # each), so the *arr/NZBGet entries below set lsio_name_filter="version-"
-    # (server-side filter) + lsio_max_pages to page deeper than the default.
-    {
-        "name": "NZBGet",
-        "var_name": "nzbget_version",
-        "category": "lsio",
-        "docker_image": "linuxserver/nzbget",
-        "lsio_version_regex": r"^version-v(\d+\.\d+(?:\.\d+)?)$",
-        "lsio_name_filter": "version-",
-        "lsio_max_pages": 4,
-    },
-    {
-        "name": "qBittorrent",
-        "var_name": "qbittorrent_version",
-        "category": "lsio",
-        "docker_image": "linuxserver/qbittorrent",
-        # qBittorrent uses bare tags without the version- prefix.
-        "lsio_version_regex": r"^(\d+\.\d+\.\d+)$",  # Match bare version tags like "5.1.4"
-    },
-    {
-        "name": "Prowlarr",
-        "var_name": "prowlarr_version",
-        "category": "lsio",
-        "docker_image": "linuxserver/prowlarr",
-        "lsio_version_regex": r"^version-(\d+\.\d+\.\d+\.\d+)$",
-        "lsio_name_filter": "version-",
-        "lsio_max_pages": 4,
-        "notes": "LinuxServer stable branch",
-    },
-    {
-        "name": "Sonarr",
-        "var_name": "sonarr_version",
-        "category": "lsio",
-        "docker_image": "linuxserver/sonarr",
-        "lsio_version_regex": r"^version-(\d+\.\d+\.\d+\.\d+)$",
-        "lsio_name_filter": "version-",
-        "lsio_max_pages": 4,
-        "notes": "LinuxServer stable branch",
-    },
-    {
-        "name": "Radarr",
-        "var_name": "radarr_version",
-        "category": "lsio",
-        "docker_image": "linuxserver/radarr",
-        "lsio_version_regex": r"^version-(\d+\.\d+\.\d+\.\d+)$",
-        "lsio_name_filter": "version-",
-        "lsio_max_pages": 4,
-        "notes": "LinuxServer stable branch",
-    },
-    {
-        "name": "Lidarr",
-        "var_name": "lidarr_version",
-        "category": "lsio",
-        "docker_image": "linuxserver/lidarr",
-        "lsio_version_regex": r"^version-(\d+\.\d+\.\d+\.\d+)$",
-        "lsio_name_filter": "version-",
-        "lsio_max_pages": 4,
-        "notes": "LinuxServer stable branch",
-    },
-    # Helm charts
-    {
-        "name": "MetalLB",
-        "var_name": "helm_chart_versions.metallb",
-        "category": "helm",
-        "helm_repo": "https://metallb.github.io/metallb",
-        "helm_chart": "metallb",
-        "source_url": "https://artifacthub.io/packages/helm/metallb/metallb",
-        "held": True,
-        "notes": (
-            "0.16.x intentionally held back: open apiserver-flooding "
-            "regression (metallb#3063). Rationale in "
-            "kubernetes/infrastructure/controllers/metallb/release.yaml; "
-            "re-evaluate when the issue closes."
-        ),
-    },
-    {
-        "name": "Traefik",
-        "var_name": "helm_chart_versions.traefik",
-        "category": "helm",
-        "helm_repo": "https://traefik.github.io/charts",
-        "helm_chart": "traefik",
-        "source_url": "https://github.com/traefik/traefik-helm-chart/releases",
-    },
-    {
-        "name": "cert-manager",
-        "var_name": "helm_chart_versions.cert_manager",
-        "category": "helm",
-        "helm_repo": "https://charts.jetstack.io",
-        "helm_chart": "cert-manager",
-        "source_url": "https://artifacthub.io/packages/helm/cert-manager/cert-manager",
-    },
-    {
-        "name": "external-dns",
-        "var_name": "helm_chart_versions.external_dns",
-        "category": "helm",
-        "helm_repo": "https://kubernetes-sigs.github.io/external-dns",
-        "helm_chart": "external-dns",
-        "source_url": "https://artifacthub.io/packages/helm/external-dns/external-dns",
-    },
-    {
-        "name": "External Secrets Operator",
-        "var_name": "helm_chart_versions.external_secrets",
-        "category": "helm",
-        "helm_repo": "https://charts.external-secrets.io",
-        "helm_chart": "external-secrets",
-        "source_url": "https://artifacthub.io/packages/helm/external-secrets-operator/external-secrets",
-    },
-    {
-        "name": "NVIDIA device plugin",
-        "var_name": "helm_chart_versions.nvidia_device_plugin",
-        "category": "helm",
-        "helm_repo": "https://nvidia.github.io/k8s-device-plugin",
-        "helm_chart": "nvidia-device-plugin",
-        "source_url": "https://github.com/NVIDIA/k8s-device-plugin/releases",
-    },
-    {
-        "name": "Tailscale",
-        "var_name": "tailscale_version",
-        # Track the Tailscale apt repo instead of GitHub releases — the apt
-        # publish cadence lags GitHub by days/weeks and we install via apt
-        # (base role → tailscale_version pin → `apt install tailscale=...`).
-        # Reporting the GitHub version repeatedly suggests bumps the apt
-        # repo can't satisfy yet.
-        #
-        # The Packages index URL is hardcoded to trixie/amd64 because every
-        # host that gets Tailscale installed is a Debian Trixie / amd64
-        # Proxmox node (CLAUDE.md > "Current Infrastructure"). If we add a
-        # different suite/arch to the fleet, also extend this to a list and
-        # check every relevant index — otherwise we'd advertise a version
-        # the actual `apt install` target can't satisfy (which is exactly
-        # the bug this entry is meant to prevent).
-        "category": "apt_repo",
-        "apt_index_url": "https://pkgs.tailscale.com/stable/debian/dists/trixie/main/binary-amd64/Packages.gz",
-        "apt_package": "tailscale",
-        "source_url": "https://pkgs.tailscale.com/stable/debian/dists/trixie/main/binary-amd64/Packages.gz",
-    },
-    {
-        "name": "Grafana Alloy (host)",
-        "var_name": "alloy_host_version",
-        # Host-side Alloy apt package (alloy_host role: `apt install alloy=...`
-        # from the Grafana repo, then dpkg-hold). Distinct from the in-cluster
-        # helm_chart_versions.alloy chart entry above — that one only tracks the
-        # Helm chart, leaving this fleet-wide agent otherwise unchecked. The repo
-        # is arch-agnostic `stable main` (alloy_host role repo line), so the
-        # binary-amd64 index is the right one for our amd64 fleet.
-        "category": "apt_repo",
-        "apt_index_url": "https://apt.grafana.com/dists/stable/main/binary-amd64/Packages.gz",
-        "apt_package": "alloy",
-        "source_url": "https://apt.grafana.com/dists/stable/main/binary-amd64/Packages.gz",
-    },
-    # GitLab
-    {
-        "name": "GitLab EE",
-        "var_name": "gitlab_version",
-        "category": "gitlab",
-        "source_url": "https://packages.gitlab.com/gitlab/gitlab-ee",
-        "notes": "GitLab EE (CE features). Check packages.gitlab.com for apt versions.",
-    },
-    {
-        "name": "GitLab Runner",
-        "var_name": "gitlab_runner_helm_version",
-        "category": "helm",
-        "helm_repo": "https://charts.gitlab.io",
-        "helm_chart": "gitlab-runner",
-        "source_url": "https://gitlab.com/gitlab-org/charts/gitlab-runner/tags",
-    },
-    {
-        "name": "GitLab Agent (Helm)",
-        "var_name": "gitlab_agent_helm_version",
-        "category": "helm",
-        "helm_repo": "https://charts.gitlab.io",
-        "helm_chart": "gitlab-agent",
-        "source_url": "https://gitlab.com/gitlab-org/charts/gitlab-agent/tags",
-    },
-    {
-        # In-cluster pull-through registry cache for CI (kubernetes/apps/
-        # registry-cache, docs/27). The CNCF distribution image, Docker Hub
-        # `library/registry`. Bare X.Y.Z tags only — the regex excludes the
-        # floating majors/minors (3, 3.1) and pre-releases (3.0.0-rc.4) that
-        # share the repo. Flux-managed image (registry_cache_version pin ->
-        # cluster-versions ConfigMap), so it routes through flux:sync-versions.
-        "name": "Registry Cache (distribution)",
-        "var_name": "registry_cache_version",
-        "category": "dockerhub",
-        "docker_image": "library/registry",
-        "tag_regex": r"^(\d+\.\d+\.\d+)$",
-        "source_url": "https://hub.docker.com/_/registry/tags",
-    },
-    # Observability
-    {
-        "name": "kube-prometheus-stack",
-        "var_name": "helm_chart_versions.kube_prometheus_stack",
-        "category": "helm",
-        "helm_repo": "https://prometheus-community.github.io/helm-charts",
-        "helm_chart": "kube-prometheus-stack",
-        "source_url": "https://artifacthub.io/packages/helm/prometheus-community/kube-prometheus-stack",
-    },
-    {
-        "name": "prometheus-operator-crds",
-        "var_name": "helm_chart_versions.prometheus_operator_crds",
-        "category": "helm",
-        "helm_repo": "https://prometheus-community.github.io/helm-charts",
-        "helm_chart": "prometheus-operator-crds",
-        "source_url": "https://artifacthub.io/packages/helm/prometheus-community/prometheus-operator-crds",
-        "notes": (
-            "CRD stage ahead of the controllers (kubernetes/infrastructure/"
-            "crds/). Bump so its appVersion stays in lockstep with the "
-            "prometheus-operator appVersion of the pinned kube-prometheus-stack "
-            "(kps carries the same CRDs but is configured NOT to manage them — "
-            "the Flux HelmRelease sets crds: Skip on install+upgrade AND "
-            "crds.enabled: false in values, so this stage is their sole owner) "
-            "— check both charts' appVersion before bumping either."
-        ),
-    },
-    {
-        "name": "Loki",
-        "var_name": "helm_chart_versions.loki",
-        "category": "helm",
-        "helm_repo": "https://grafana-community.github.io/helm-charts",
-        "helm_chart": "loki",
-        "source_url": "https://artifacthub.io/packages/helm/grafana-community/loki",
-    },
-    {
-        "name": "Alloy",
-        "var_name": "helm_chart_versions.alloy",
-        "category": "helm",
-        "helm_repo": "https://grafana.github.io/helm-charts",
-        "helm_chart": "alloy",
-        "source_url": "https://artifacthub.io/packages/helm/grafana/alloy",
-    },
-    {
-        "name": "Blackbox Exporter",
-        "var_name": "helm_chart_versions.prometheus_blackbox_exporter",
-        "category": "helm",
-        "helm_repo": "https://prometheus-community.github.io/helm-charts",
-        "helm_chart": "prometheus-blackbox-exporter",
-        "source_url": "https://artifacthub.io/packages/helm/prometheus-community/prometheus-blackbox-exporter",
-    },
-    {
-        "name": "1Password Connect",
-        "var_name": "helm_chart_versions.onepassword_connect",
-        "category": "helm",
-        "helm_repo": "https://1password.github.io/connect-helm-charts",
-        "helm_chart": "connect",
-        "source_url": "https://artifacthub.io/packages/helm/1password/connect",
-    },
-    {
-        "name": "VPA",
-        "var_name": "helm_chart_versions.vpa",
-        "category": "helm",
-        "helm_repo": "https://charts.fairwinds.com/stable",
-        "helm_chart": "vpa",
-        "source_url": "https://artifacthub.io/packages/helm/fairwinds-stable/vpa",
-    },
-    {
-        "name": "kured",
-        "var_name": "helm_chart_versions.kured",
-        "category": "helm",
-        "helm_repo": "https://kubereboot.github.io/charts",
-        "helm_chart": "kured",
-        "source_url": "https://artifacthub.io/packages/helm/kured/kured",
-    },
-    {
-        "name": "Reloader",
-        "var_name": "helm_chart_versions.reloader",
-        "category": "helm",
-        "helm_repo": "https://stakater.github.io/stakater-charts",
-        "helm_chart": "reloader",
-        "source_url": "https://artifacthub.io/packages/helm/stakater/reloader",
-    },
-    {
-        "name": "Tailscale Operator",
-        "var_name": "helm_chart_versions.tailscale_operator",
-        "category": "helm",
-        "helm_repo": "https://pkgs.tailscale.com/helmcharts",
-        "helm_chart": "tailscale-operator",
-        "source_url": "https://github.com/tailscale/tailscale/releases",
-        "notes": (
-            "Tracks the host tailscale_version; exposes the internal Traefik "
-            "ingress + the tailnet-dns resolver to the tailnet (docs/05)."
-        ),
-    },
-    {
-        "name": "CoreDNS (tailnet-dns resolver)",
-        "var_name": "coredns_tailnet_version",
-        "category": "dockerhub",
-        "docker_image": "rancher/mirrored-coredns-coredns",
-        "tag_regex": r"^(\d+\.\d+\.\d+)$",
-        "notes": "CoreDNS image for the tailnet-dns split-horizon resolver (rancher mirror k3s caches).",
-    },
-    {
-        "name": "Flux CLI (CI verify)",
-        "var_name": "flux_version",
-        "category": "github",
-        "github_repo": "fluxcd/flux2",
-        "version_prefix": "v",
-        "strip_prefix": True,
-        "held": True,
-        "notes": (
-            "Held at 2.9.0: this pin is not a plain version bump. It gates the "
-            "CI deploy-verify (flux CLI download + sha256) AND must stay in lock-"
-            "step with kubernetes/clusters/weisssrv/flux-system/gotk-components.yaml, "
-            "which is regenerated by `flux install --export` from a matching CLI "
-            "and only truly validated by a bootstrap. Bumping the GitOps control "
-            "plane blind is the highest-blast-radius change in the repo. "
-            "Re-evaluate as a dedicated, bootstrap-tested Flux upgrade."
-        ),
-    },
-    {
-        "name": "Exportarr",
-        "var_name": "exportarr_version",
-        "category": "github",
-        "github_repo": "onedr0p/exportarr",
-        "version_prefix": "v",
-        "strip_prefix": False,
-    },
-    {
-        "name": "Proxmox VE Exporter",
-        "var_name": "proxmox_exporter_version",
-        "category": "github",
-        "github_repo": "prometheus-pve/prometheus-pve-exporter",
-        "version_prefix": "v",
-        "strip_prefix": True,
-    },
-    {
-        "name": "ZFS Exporter",
-        "var_name": "zfs_exporter_version",
-        "category": "github",
-        "github_repo": "pdf/zfs_exporter",
-        "version_prefix": "v",
-        "strip_prefix": True,
-        "notes": "On bump also update zfs_exporter_checksum in all.yml (sha256 of the release .tar.gz).",
-    },
-    {
-        "name": "AdGuard Exporter",
-        "var_name": "adguard_exporter_version",
-        "category": "github",
-        "github_repo": "henrywhitaker3/adguard-exporter",
-        "version_prefix": "v",
-        "strip_prefix": False,
-    },
-    {
-        "name": "Unbound Exporter",
-        "var_name": "unbound_exporter_version",
-        "category": "github",
-        "github_repo": "letsencrypt/unbound_exporter",
-        "version_prefix": "v",
-        "strip_prefix": True,
-        "notes": "On bump also update unbound_exporter_checksum in all.yml (upstream ships no checksum file).",
-    },
-    {
-        "name": "Redis Exporter",
-        "var_name": "redis_exporter_version",
-        "category": "dockerhub",
-        "docker_image": "oliver006/redis_exporter",
-        "tag_regex": r"^(v\d+\.\d+\.\d+)$",
-    },
-    # Plex (apt repo, auto-checked via fetch_plex_version)
-    {
-        "name": "Plex Media Server",
-        "var_name": "plex_version",
-        "category": "plex",
-        "source_url": "https://www.plex.tv/media-server-downloads/",
-    },
-    # Nextcloud (Docker Compose stack on the NAS-pinned VM)
-    {
-        "name": "Nextcloud",
-        "var_name": "nextcloud_version",
-        "category": "dockerhub",
-        "docker_image": "library/nextcloud",
-        # Bare X.Y.Z tags only (the compose file appends -apache). Only suggest
-        # patches within the current major — Nextcloud must be upgraded one major
-        # at a time, so a jump to N+1 is a deliberate, documented step.
-        "tag_regex": r"^(\d+\.\d+\.\d+)$",
-        "pin_major_version": True,
-        "source_url": "https://github.com/nextcloud/docker/blob/master/versions.json",
-    },
-    {
-        "name": "PostgreSQL (Nextcloud)",
-        "var_name": "nextcloud_postgres_version",
-        "category": "dockerhub",
-        "docker_image": "library/postgres",
-        "tag_regex": r"^(\d+(?:\.\d+)?)-trixie$",
-        "pin_major_version": True,
-        "notes": "Used by Nextcloud (standalone container). Only checks updates within the current major.",
-    },
-    # Nextcloud's Redis reuses the shared `redis_version` pin (the "Redis" entry
-    # above), so it needs no separate registry entry here.
-    {
-        "name": "Nextcloud Exporter",
-        "var_name": "nextcloud_exporter_version",
-        "category": "ghcr",
-        "ghcr_image": "xperimental/nextcloud-exporter",
-        "image_ref": "ghcr.io/xperimental/nextcloud-exporter",
-        "tag_filter": r"^\d+\.\d+\.\d+$",
-        "source_url": "https://github.com/xperimental/nextcloud-exporter/releases",
-    },
-    # CI tooling images (pinned in .gitlab-ci.yml, not all.yml)
-    {
-        # The pr-agent AI reviewer image, pinned by tag+digest in the
-        # pr-agent-review job. Tracked here so `check-versions` flags a stale
-        # reviewer (the kind of version/model drift that prompted adding this).
-        # Its update is a guided manual step — see update_version_in_file: the
-        # @sha256 supply-chain pin is not auto-rewritten.
-        "name": "pr-agent (CI reviewer)",
-        "var_name": "pr_agent_version",
-        "category": "dockerhub",
-        "docker_image": "codiumai/pr-agent",
-        "tag_regex": r"^(\d+\.\d+(?:\.\d+)?)$",
-        "version_file": "ci",
-        "source_url": "https://github.com/qodo-ai/pr-agent/releases",
-    },
-    # Manifest-pinned container images (kubernetes/, not all.yml)
-    # Tag+digest `image:` pins that live directly in kubernetes/ manifests with
-    # no ${...} substitution from all.yml. version_file names the manifest(s)
-    # the current tag is read from; like the CI pins above, updates are manual
-    # tag+digest edits there (update_version_in_file refuses to auto-rewrite).
-    {
-        "name": "gluetun-exporter",
-        "var_name": "gluetun_exporter_version",
-        "category": "ghcr",
-        "ghcr_image": "thecfu/gluetun-exporter",
-        "image_ref": "ghcr.io/thecfu/gluetun-exporter",
-        # Standalone-flavor tags only: the manifest pins X.Y.Z-standalone, and a
-        # bare X.Y.Z would falsely compare as newer than its -standalone twin.
-        "tag_filter": r"^\d+\.\d+\.\d+-standalone$",
-        "version_file": "kubernetes/apps/download-clients/qbittorrent/resources.yaml",
-        "source_url": "https://github.com/TheCfu/gluetun-exporter",
-    },
-    {
-        "name": "python (CronJob base image)",
-        "var_name": "python_cronjob_version",
-        "category": "dockerhub",
-        "docker_image": "library/python",
-        "image_ref": "python",
-        "tag_regex": r"^(3\.\d+)-slim$",
-        # Substring API filter: plain last_updated paging floods with
-        # non-slim variants and misses the current X.Y-slim tags entirely.
-        "dockerhub_name_filter": "-slim",
-        "version_file": [
-            "kubernetes/infrastructure/configs/cloudflare-ddns/cronjob.yaml",
-            "kubernetes/apps/gitlab-runner-reaper/cronjob.yaml",
-        ],
-        "source_url": "https://hub.docker.com/_/python",
-        "notes": "Both CronJobs share one tag+digest pin; bump them together.",
-    },
-    {
-        # Upstream publishes no versioned tags (see the manifest header): the
-        # pin is an immutable @sha256 of `latest`, re-resolved manually when
-        # updating — nothing to compare against, hence category manual.
-        "name": "prometheus-plex-exporter",
-        "var_name": "plex_exporter_version",
-        "category": "manual",
-        "image_ref": "ghcr.io/jsclayton/prometheus-plex-exporter",
-        "version_file": "kubernetes/infrastructure/observability/exporters/plex-exporter.yaml",
-        "source_url": "https://github.com/jsclayton/prometheus-plex-exporter",
-        "notes": "Digest-pinned `latest` (no upstream version tags); re-resolve the digest manually to update.",
-    },
-    {
-        # virtio-win publishes no GitHub releases/tags (the virtio-win-pkg-scripts
-        # repo has neither) — versions are cut only to the Fedora ISO archive, so
-        # this is a manual check. On bump: pick the newest virtio-win-X.Y.NNN at
-        # the source_url, update virtio_win_version in all.yml, and recompute the
-        # ISO sha256 (virtio_win_checksum) since Fedora ships no ISO checksum.
-        # Current tag is read from all.yml (no version_file). See docs/39.
-        "name": "virtio-win",
-        "var_name": "virtio_win_version",
-        "category": "manual",
-        "source_url": "https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/",
-        "notes": "VirtIO driver ISO for the Windows 11 VM; no GitHub releases — check the Fedora stable-virtio dir and recompute virtio_win_checksum on bump.",
-    },
-    {
-        # Debian LXC root template (pveam appliance). Proxmox silently rotates
-        # the point build out of its index (13.1-2 vanished 2026-07 and broke a
-        # cached-template recreate — proxmox_lxc role + !160). No release feed to
-        # poll; check the pveam index on a Proxmox host. Current value read from
-        # all.yml (authoritative pin; mirrored as the proxmox_lxc role default).
-        "name": "Debian LXC template (pveam)",
-        "var_name": "lxc_template",
-        "category": "manual",
-        "source_url": "http://download.proxmox.com/images/system/",
-        "notes": "Debian LXC root template; no release feed — run `pveam update && pveam available --section system | grep debian-13-standard` on a Proxmox host, then bump lxc_template in all.yml + the proxmox_lxc role default together.",
-    },
-]
+# ---------------------------------------------------------------------------
+# Consumer config
+# ---------------------------------------------------------------------------
+
+def resolve_config_path(explicit: Optional[str] = None, repo_root: Path = REPO_ROOT) -> Path:
+    """First of: --config, $CHECK_VERSIONS_CONFIG, the default candidates."""
+    if explicit:
+        return Path(explicit)
+    env = os.environ.get("CHECK_VERSIONS_CONFIG")
+    if env:
+        return Path(env)
+    for candidate in DEFAULT_CONFIG_CANDIDATES:
+        path = repo_root / candidate
+        if path.exists():
+            return path
+    raise SystemExit(
+        "ERROR: no version-registry config found. Pass --config, set "
+        "$CHECK_VERSIONS_CONFIG, or add one of: "
+        + ", ".join(DEFAULT_CONFIG_CANDIDATES)
+    )
 
 
+def _read_config(path: Path) -> dict:
+    """Parse a .json config, or import a .py module exposing CONFIG or SERVICE_REGISTRY.
+
+    The Python form exists so a consumer's registry keeps its inline rationale
+    comments (a JSON registry loses every "why we pin this" note) — it is repo
+    data, loaded with the same trust as this script.
+    """
+    if path.suffix == ".json":
+        with path.open() as f:
+            return json.load(f)
+    if path.suffix == ".py":
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("check_versions_config", path)
+        if not spec or not spec.loader:
+            raise SystemExit(f"ERROR: cannot import config {path}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        cfg = getattr(module, "CONFIG", None)
+        if cfg is None:
+            registry = getattr(module, "SERVICE_REGISTRY", None)
+            if registry is None:
+                raise SystemExit(
+                    f"ERROR: {path} defines neither CONFIG nor SERVICE_REGISTRY"
+                )
+            cfg = {"services": registry}
+        return cfg
+    raise SystemExit(f"ERROR: unsupported config format {path.suffix!r} (use .py or .json)")
+
+
+def load_config(path: Path, repo_root: Optional[Path] = None) -> dict:
+    """Populate the module-level config globals from a consumer config file.
+
+    Schema (JSON object, or a .py module defining CONFIG / SERVICE_REGISTRY):
+
+        {
+          "vars_file": "ansible/inventories/prod/group_vars/all.yml",
+          "cache_dir": ".version-cache",
+          "default_deploy_command": "task infra:deploy",
+          "version_file_aliases": {"ci": ".gitlab-ci.yml"},
+          "untracked_allowlist": ["debian_version"],
+          "services": [
+            {"name": "k3s", "var_name": "k3s_version", "category": "github",
+             "github_repo": "k3s-io/k3s", "version_prefix": "v",
+             "deploy_command": "task maintenance:update-k3s-nodes"}
+          ]
+        }
+
+    Every path is resolved against `repo_root` (default: the script's repo).
+    """
+    global SERVICE_REGISTRY, VARS_FILE, VERSION_FILE_ALIASES, CACHE_DIR
+    global DEFAULT_DEPLOY_COMMAND, UNTRACKED_ALLOWLIST, REPO_ROOT
+
+    cfg = _read_config(Path(path))
+    if not isinstance(cfg, dict):
+        raise SystemExit(f"ERROR: {path}: config must be a mapping")
+    services = cfg.get("services")
+    if not isinstance(services, list) or not services:
+        raise SystemExit(f"ERROR: {path}: `services` must be a non-empty list")
+    for svc in services:
+        if not isinstance(svc, dict) or not svc.get("var_name") or not svc.get("name"):
+            raise SystemExit(f"ERROR: {path}: service entry needs name + var_name: {svc!r}")
+
+    if repo_root is not None:
+        REPO_ROOT = Path(repo_root)
+    elif cfg.get("repo_root"):
+        REPO_ROOT = Path(cfg["repo_root"])
+
+    SERVICE_REGISTRY = services
+    if cfg.get("vars_file"):
+        VARS_FILE = REPO_ROOT / cfg["vars_file"]
+    VERSION_FILE_ALIASES = {
+        alias: REPO_ROOT / rel for alias, rel in (cfg.get("version_file_aliases") or {}).items()
+    }
+    CACHE_DIR = REPO_ROOT / cfg.get("cache_dir", ".version-cache")
+    DEFAULT_DEPLOY_COMMAND = cfg.get("default_deploy_command", "")
+    UNTRACKED_ALLOWLIST = set(cfg.get("untracked_allowlist") or [])
+    return cfg
+
+
+def missing_registry_entries() -> list[str]:
+    """`*_version` pins present in the vars file with no registry entry.
+
+    An untracked pin is silently never reported as outdated, so `--check-coverage`
+    turns that into a CI failure. Pins with no upstream to track go in the
+    config's `untracked_allowlist`.
+    """
+    tracked = {s["var_name"] for s in SERVICE_REGISTRY}
+    return sorted(
+        v for v in read_current_versions()
+        if (v.endswith("_version") or v.startswith("helm_chart_versions."))
+        and v not in tracked
+        and v not in UNTRACKED_ALLOWLIST
+    )
+
+
+# ---------------------------------------------------------------------------
 # HTTP helpers
+# ---------------------------------------------------------------------------
 
 def _urlopen_with_retry_full(req, timeout: int = REQUEST_TIMEOUT) -> tuple[str, bytes]:
     """urlopen with a bounded retry on transient failures; return (content_type, body).
@@ -945,7 +273,7 @@ def _urlopen_with_retry(req, timeout: int = REQUEST_TIMEOUT) -> bytes:
 
 def _make_request(url: str, headers: Optional[dict] = None) -> dict | list | str:
     """Make an HTTP GET request and return parsed JSON or raw text."""
-    req_headers = {"User-Agent": "weisssrv-version-checker/1.0"}
+    req_headers = {"User-Agent": "weisssrv-lib-version-check/1.0"}
     if headers:
         req_headers.update(headers)
 
@@ -996,7 +324,7 @@ def fetch_apt_packages(base_url: str) -> str:
     Raises:
         RuntimeError: If neither Packages nor Packages.gz can be fetched
     """
-    req_headers = {"User-Agent": "weisssrv-version-checker/1.0"}
+    req_headers = {"User-Agent": "weisssrv-lib-version-check/1.0"}
 
     def _is_valid_packages_response(content_type: str, content: str) -> bool:
         """Check if response is a valid Packages file (not an HTML error page)."""
@@ -1051,7 +379,9 @@ def fetch_apt_packages(base_url: str) -> str:
         raise RuntimeError(f"Invalid gzip data from {gz_url}") from e
 
 
+# ---------------------------------------------------------------------------
 # Cache helpers
+# ---------------------------------------------------------------------------
 
 def _cache_key(service_name: str) -> Path:
     """Generate a cache file path for a service."""
@@ -1096,7 +426,9 @@ def _write_cache(service_name: str, version: str) -> None:
         print(f"Warning: failed to write cache for {service_name}: {e}", file=sys.stderr)
 
 
+# ---------------------------------------------------------------------------
 # Version parsing
+# ---------------------------------------------------------------------------
 
 def parse_version_tuple(version_str: str) -> tuple:
     """Parse a version string into a comparable tuple.
@@ -1231,7 +563,9 @@ def version_compare(a: str, b: str) -> int:
     return -1
 
 
+# ---------------------------------------------------------------------------
 # Version fetchers
+# ---------------------------------------------------------------------------
 
 def _debian_version_part_compare(a: str, b: str) -> int:
     """Compare one Debian upstream_version or debian_revision part per
@@ -1298,13 +632,9 @@ def debian_version_compare(a: str, b: str) -> int:
       0.5.0~rc1-1 < 0.5.0-1 (tilde is pre-release)
       0.4.6-1ubuntu1 > 0.4.6-1 (revision tail)
     """
-    # Split epoch. Per debian-policy §5.6.12 the epoch is "a single
-    # (generally small) unsigned integer". Anything else with a `:` in it
-    # is malformed and we raise rather than silently dropping back to
-    # epoch=0 (which would otherwise hide upstream metadata bugs as
-    # "version unchanged" reports). The `:` itself is reserved as the
-    # epoch separator so there's no legitimate non-epoch case to fall
-    # back to.
+    # Split the epoch (debian-policy §5.6.12: an unsigned integer). A
+    # non-integer epoch is malformed and raises — falling back to epoch=0
+    # would report a real change as "version unchanged".
     def split(v: str) -> tuple[int, str, str]:
         if ":" in v:
             ep_s, rest = v.split(":", 1)
@@ -1366,7 +696,8 @@ def fetch_apt_repo_version(svc: dict) -> str:
     GitHub would advertise versions that `apt-get install` can't satisfy.
 
     Required keys in `svc`:
-      apt_index_url: URL to the (typically gzipped) Packages file, e.g.
+      apt_url:       URL to the (typically gzipped) Packages file (alias:
+                     apt_index_url), e.g.
                      https://pkgs.tailscale.com/stable/debian/dists/trixie/main/binary-amd64/Packages.gz
                      Detect gzip from the response payload header rather
                      than the URL suffix — apt mirrors often serve the
@@ -1374,9 +705,11 @@ def fetch_apt_repo_version(svc: dict) -> str:
                      stripped in the final URL.
       apt_package:   Binary package name (e.g. "tailscale").
     """
-    url = svc["apt_index_url"]
+    # `apt_url` is the name the published schema and the shipped example use;
+    # `apt_index_url` is the older spelling this function was written against.
+    url = svc.get("apt_url") or svc["apt_index_url"]
     pkg = svc["apt_package"]
-    req = urllib.request.Request(url, headers={"User-Agent": "weisssrv-version-check/1.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": "weisssrv-lib-version-check/1.0"})
     # Bounded retry on transient failures (see _urlopen_with_retry).
     raw = _urlopen_with_retry(req, timeout=30)
     # gzip magic bytes are 0x1f 0x8b. Sniff the payload rather than the
@@ -1483,7 +816,7 @@ def _dockerhub_best_tag(
     """Highest Docker Hub tag of `image` matching `regex` (group 1 = version).
 
     Shared by fetch_dockerhub_version and fetch_lsio_version. With
-    return_full_tag the original tag name is returned (what all.yml pins store);
+    return_full_tag the original tag name is returned (what the pins store);
     otherwise the captured version group is returned. version_prefix narrows both
     the API query (Docker Hub `name=` filter) and the accepted tags (startswith)
     to a release series; pin_major + current confine results to current's major.
@@ -1501,11 +834,9 @@ def _dockerhub_best_tag(
         url += f"&name={name_filter}"
     elif version_prefix:
         url += f"&name={version_prefix}"
-    # Bounded pagination: high-churn repos (the *arr apps push develop/nightly
-    # tags daily, 3 arch variants each) can bury a monthly stable tag beyond the
-    # first page even with a name filter — observed 2026-07-19 when Prowlarr's
-    # stable scrolled off and the check errored. Callers with that exposure pass
-    # max_pages > 1; the default keeps every other caller at one request.
+    # Bounded pagination: a high-churn repo can bury a stable tag past page one
+    # even with a name filter, so such callers pass max_pages > 1. The default
+    # keeps every other caller at one request.
     results = []
     pages = 0
     while url and pages < max_pages:
@@ -1539,8 +870,10 @@ def _dockerhub_best_tag(
             continue
         # Compare/filter on the CAPTURED version (group 1), not the raw tag: a
         # leading "v" (or a regex prefix before the digits) must not bypass the
-        # major pin or wrongly reject valid same-major tags.
-        extracted = match.group(1)
+        # major pin or wrongly reject valid same-major tags. A tag_regex with
+        # no capture group (the common shape, and what the shipped examples
+        # use) compares the whole tag instead of raising IndexError.
+        extracted = match.group(1) if match.lastindex else match.group(0)
         if major_filter:
             tag_major = re.match(r"^v?(\d+)", extracted)
             if not tag_major or tag_major.group(1) != major_filter:
@@ -1558,9 +891,10 @@ def _dockerhub_best_tag(
 def fetch_dockerhub_version(svc: dict) -> str:
     """Fetch latest version from Docker Hub using tag_regex.
 
-    The tag_regex should have a capture group for the version portion.
+    tag_regex MAY carry a capture group for the version portion (the value is
+    then the captured text); with no group the whole matching tag is used.
     The highest matching version (by version tuple comparison) is returned as
-    the full tag name (that is what all.yml pins store).
+    the full tag name (that is what the pins store).
 
     If pin_major_version is True, only returns versions matching the same major
     version as the current version.
@@ -1729,12 +1063,9 @@ def fetch_helm_version(svc: dict) -> str:
             if entry_key_indent is None and stripped.startswith("- "):
                 entry_key_indent = key_indent
 
-            # Capture the chart's own "version:" — a direct child key of the
-            # entry (at entry_key_indent). Match on the exact key so
-            # "appVersion:" is excluded and arbitrary post-colon whitespace
-            # (YAML permits it) doesn't drop the line. Restricting to the entry
-            # key indent skips deeper "version:" lines under a dependencies:/
-            # maintainers: sub-block, which would otherwise be collected.
+            # The chart's own "version:" is a direct child of the entry, so
+            # match the exact key at entry_key_indent — excluding "appVersion:"
+            # and any deeper "version:" under dependencies:/maintainers:.
             if key == "version" and (entry_key_indent is None or key_indent == entry_key_indent):
                 ver = stripped.split(":", 1)[1].strip().strip('"').strip("'")
                 if not re.search(r"(alpha|beta|rc|dev|snapshot)", ver, re.IGNORECASE):
@@ -1827,27 +1158,28 @@ def fetch_gitlab_version(svc: dict) -> str:
     return best_version
 
 
-# all.yml parser (simple YAML extraction without PyYAML)
+# ---------------------------------------------------------------------------
+# Vars-file parser (simple YAML extraction without PyYAML)
+# ---------------------------------------------------------------------------
 
 def read_pinned_image_versions() -> dict[str, str]:
-    """Current tags of digest-locked `image:` pins that live outside all.yml.
+    """Current tags of digest-locked `image:` pins that live outside the vars file.
 
-    Entries with a version_file are read from that file rather than from vars
-    in all.yml: "ci" means .gitlab-ci.yml (pr-agent); any other value is one or
-    more repo-relative manifest paths (kubernetes/ CronJobs / sidecars).
-    Extract the tag (between ':' and the '@sha256:' digest) for each so
-    check-versions can flag a stale pin. `image_ref` overrides the image name
+    A registry entry with `version_file` is read from that file instead: an alias
+    from the config's `version_file_aliases`, or one or more repo-relative
+    manifest paths. Extract the tag (between ':' and the '@sha256:' digest) for
+    each so a stale pin is still flagged. `image_ref` overrides the image name
     matched in the file when it differs from the API lookup name (a ghcr.io/
     registry prefix, Docker Hub's library/ namespace).
     """
     versions: dict[str, str] = {}
-    repo_root = Path(__file__).resolve().parent.parent
+    repo_root = REPO_ROOT
     for svc in SERVICE_REGISTRY:
         version_file = svc.get("version_file")
         if not version_file:
             continue
-        if version_file == "ci":
-            paths = [CI_FILE]
+        if isinstance(version_file, str) and version_file in VERSION_FILE_ALIASES:
+            paths = [VERSION_FILE_ALIASES[version_file]]
         elif isinstance(version_file, str):
             paths = [repo_root / version_file]
         else:
@@ -1888,7 +1220,7 @@ def read_pinned_image_versions() -> dict[str, str]:
 
 
 def read_current_versions() -> dict[str, str]:
-    """Read current versions from all.yml without a YAML parser.
+    """Read the currently pinned versions from the vars file, without a YAML parser.
 
     Returns a dict mapping var_name to current version string.
     """
@@ -1898,7 +1230,7 @@ def read_current_versions() -> dict[str, str]:
     # Registered pins whose var_name does NOT follow the `*_version` convention
     # (e.g. lxc_template, a Proxmox appliance FILENAME rather than a semver) —
     # read those by exact top-level key match so they still resolve to a current
-    # value instead of showing "unknown". version_file pins live outside all.yml.
+    # value instead of showing "unknown". version_file pins live elsewhere.
     extra_keys = {
         s["var_name"] for s in SERVICE_REGISTRY
         if s.get("var_name") and "_version" not in s["var_name"] and not s.get("version_file")
@@ -1933,8 +1265,11 @@ def read_current_versions() -> dict[str, str]:
                 in_helm = False
                 # Fall through to check this line as a regular entry
 
+        # Only column-0 keys are pins; an indented `*_version:` belongs to some
+        # other mapping and must not be read (or later rewritten) as top level.
+        at_top_level = not line[:1].isspace()
         _key = stripped.split(":")[0].strip()
-        if not in_helm and ":" in stripped and ("_version" in _key or _key in extra_keys):
+        if not in_helm and at_top_level and ":" in stripped and ("_version" in _key or _key in extra_keys):
             key, _, val = stripped.partition(":")
             key = key.strip()
             val = val.strip().strip('"').strip("'")
@@ -1943,19 +1278,18 @@ def read_current_versions() -> dict[str, str]:
                 val = val[:val.index("#")].strip().strip('"').strip("'")
             versions[key] = val
 
-    # Digest-locked image pins (pr-agent in .gitlab-ci.yml, kubernetes/
-    # manifest pins) live outside all.yml.
+    # Digest-locked image pins (version_file entries) live outside the vars file.
     versions.update(read_pinned_image_versions())
     return versions
 
 
 def update_version_in_file(var_name: str, new_version: str) -> bool:
-    """Update a version in all.yml, preserving formatting and comments.
+    """Update a pin in the vars file, preserving formatting and comments.
 
     Returns True if the file was modified.
     """
-    # version_file entries (pr-agent in .gitlab-ci.yml, kubernetes/ manifest
-    # pins) are digest-locked outside all.yml. Flag the update but don't
+    # version_file entries are digest-locked outside the vars file. Flag the
+    # update but don't
     # auto-rewrite the @sha256 pin — bumping a supply-chain pinned image
     # should be a reviewed manual step.
     pinned_svc = next(
@@ -2015,7 +1349,9 @@ def update_version_in_file(var_name: str, new_version: str) -> bool:
                 break
     else:
         for i, line in enumerate(lines):
-            if line.strip().startswith(f"{var_name}:"):
+            # Column-0 anchor: an indented key of the same name belongs to
+            # another mapping and rewriting it would de-nest it.
+            if line.startswith(f"{var_name}:"):
                 # Preserve the comment portion
                 comment = ""
                 if "#" in line:
@@ -2042,7 +1378,8 @@ def update_version_in_file(var_name: str, new_version: str) -> bool:
                 else:
                     new_val = new_version
 
-                prefix = f"{var_name}: {new_val}"
+                indent = len(line) - len(line.lstrip())
+                prefix = " " * indent + f"{var_name}: {new_val}"
                 # Pad to align comment (rough alignment)
                 if comment:
                     lines[i] = f"{prefix}  {comment}"
@@ -2057,7 +1394,9 @@ def update_version_in_file(var_name: str, new_version: str) -> bool:
     return modified
 
 
+# ---------------------------------------------------------------------------
 # Main logic
+# ---------------------------------------------------------------------------
 
 def _annotate_latest_resolution(result: ServiceVersion, current: str) -> None:
     """When a service tracks 'latest', surface the resolved version in the notes
@@ -2183,6 +1522,14 @@ def check_all(
 
     if category_filter:
         services = [s for s in services if s["category"] == category_filter]
+        # An unknown --category (or one that no --service matches) would
+        # otherwise check nothing and report a clean run — a typo must not read
+        # as "everything is up to date".
+        if not services:
+            raise ValueError(
+                f"no services match category {category_filter!r} "
+                "(check the spelling, or the --service filter combined with it)"
+            )
 
     results = []
     for svc_def in services:
@@ -2196,7 +1543,23 @@ def check_all(
     return results
 
 
+# ---------------------------------------------------------------------------
 # Output formatting
+# ---------------------------------------------------------------------------
+
+# The categories check_service() knows how to resolve. Also the --category
+# choices; a registry entry outside this map renders under "Other".
+CATEGORY_LABELS = {
+    "github": "GitHub Releases",
+    "dockerhub": "Container Images (Docker Hub)",
+    "ghcr": "Container Images (GHCR)",
+    "lsio": "Container Images (LinuxServer.io)",
+    "helm": "Helm Charts",
+    "gitlab": "GitLab (packages.gitlab.com)",
+    "plex": "Plex Media Server",
+    "apt_repo": "APT Repositories (upstream)",
+    "manual": "Manual / APT Managed",
+}
 
 # ANSI colors
 GREEN = "\033[32m"
@@ -2229,24 +1592,19 @@ def format_table(results: list[ServiceVersion]) -> str:
     lines.append(c(DIM, f"Checked: {time.strftime('%Y-%m-%d %H:%M:%S')}"))
     lines.append("")
 
-    # Group by category
-    categories = {
-        "github": "GitHub Releases",
-        "dockerhub": "Container Images (Docker Hub)",
-        "ghcr": "Container Images (GHCR)",
-        "lsio": "Container Images (LinuxServer.io)",
-        "helm": "Helm Charts",
-        "gitlab": "GitLab (packages.gitlab.com)",
-        "plex": "Plex Media Server",
-        "apt_repo": "APT Repositories (upstream)",
-        "manual": "Manual / APT Managed",
-    }
+    categories = CATEGORY_LABELS
 
-    updates_available = 0
-    errors = 0
+    # Counted over every result, not only the printed ones, so an unrecognised
+    # category cannot skew the summary.
+    updates_available = sum(1 for r in results if r.update_available and not r.held and not r.error)
+    errors = sum(1 for r in results if r.error)
 
-    for cat_key, cat_name in categories.items():
-        cat_results = [r for r in results if r.category == cat_key]
+    groups = [(k, n, [r for r in results if r.category == k]) for k, n in categories.items()]
+    other = [r for r in results if r.category not in categories]
+    if other:
+        groups.append(("other", "Other (unrecognised category)", other))
+
+    for _cat_key, cat_name, cat_results in groups:
         if not cat_results:
             continue
 
@@ -2269,12 +1627,10 @@ def format_table(results: list[ServiceVersion]) -> str:
             if r.error:
                 status = c(RED, "ERROR")
                 latest_str = "?"
-                errors += 1
             elif r.update_available and r.held:
                 status = c(DIM, "HELD")
             elif r.update_available:
                 status = c(YELLOW, "UPDATE AVAILABLE")
-                updates_available += 1
             elif r.current_version == "latest":
                 status = c(DIM, "tracking latest")
             else:
@@ -2364,166 +1720,213 @@ def format_json(results: list[ServiceVersion]) -> str:
     return json.dumps(data, indent=2)
 
 
+# ---------------------------------------------------------------------------
 # CLI
+# ---------------------------------------------------------------------------
 
 def get_deploy_command(result: ServiceVersion) -> str:
-    """Get the deployment command for a service."""
-    var_name = result.var_name
-    category = result.category
+    """How to roll out a bumped pin — registry data, with two derived fallbacks.
 
-    # version_file pins: no deploy task — bump the tag + re-pin the @sha256
-    # digest where the pin lives ("ci" = .gitlab-ci.yml; otherwise one or more
-    # kubernetes/ manifests) and commit + push.
-    pinned_svc = next(
-        (s for s in SERVICE_REGISTRY
-         if s.get("var_name") == var_name and s.get("version_file")),
+    Per-service `deploy_command` in the config wins. A `version_file` pin has no
+    deploy step by construction (the tag + @sha256 digest are edited in place
+    where the pin lives), so it gets a derived instruction naming those files.
+    Anything else falls back to the config's `default_deploy_command`.
+    """
+    svc = next(
+        (s for s in SERVICE_REGISTRY if s.get("var_name") == result.var_name),
         None,
     )
-    if pinned_svc:
-        vf = pinned_svc["version_file"]
-        if vf == "ci":
+    if svc:
+        if svc.get("deploy_command"):
+            return svc["deploy_command"]
+        version_file = svc.get("version_file")
+        if version_file:
+            if isinstance(version_file, str) and version_file in VERSION_FILE_ALIASES:
+                files = str(VERSION_FILE_ALIASES[version_file])
+            elif isinstance(version_file, str):
+                files = version_file
+            else:
+                files = ", ".join(version_file)
             return (
-                "edit the image: tag + @sha256 digest in .gitlab-ci.yml, "
-                "commit + push (applies on the next pipeline)"
+                f"edit the image tag + @sha256 digest in {files}, then commit + push"
             )
-        files = ", ".join(vf) if isinstance(vf, list) else vf
-        return (
-            f"edit the image tag + @sha256 digest in {files}, "
-            "commit + push (Flux reconciles on push)"
-        )
+    return DEFAULT_DEPLOY_COMMAND
 
-    # Flux-managed workloads: all Helm charts and app container images reach
-    # the cluster via the cluster-versions ConfigMap + git push + Flux.
-    # Helm chart pins (helm_chart_versions.*) are routed by the
-    # startswith("helm_chart") / category == "helm" checks below; only
-    # container-image vars need listing here. Keep this list in sync with
-    # versions tracked by the Flux ConfigMap.
-    flux_managed = (
-        "gluetun_version", "nzbget_version", "qbittorrent_version",
-        "prowlarr_version", "sonarr_version", "radarr_version",
-        "lidarr_version", "pulsarr_version", "wg_easy_version", "homarr_version",
-        "hermes_version",
-        "hermes_codex_version", "hermes_claude_version", "hermes_op_version",
-        "hermes_camofox_version", "hindsight_version",
-        "hindsight_llamacpp_version",
-        "mealie_version", "mealie_postgresql_version",
-        "bar_assistant_version", "salt_rim_version",
-        "meilisearch_version", "redis_version", "busybox_version",
-        "authentik_version", "postgresql_version",
-        "gitlab_runner_helm_version", "gitlab_agent_helm_version",
-        # In-cluster CI registry pull-through cache (kubernetes/apps/registry-cache)
-        "registry_cache_version",
-        # Observability exporter container images
-        "exportarr_version", "proxmox_exporter_version",
-        "zfs_exporter_version", "adguard_exporter_version",
-        "unbound_exporter_version", "redis_exporter_version",
-        # NVIDIA DCGM exporter (raw DaemonSet, Flux-reconciled via cluster-versions)
-        "dcgm_exporter_version",
-        # tailnet-dns CoreDNS resolver image (kubernetes/apps/tailnet-dns)
-        "coredns_tailnet_version",
+
+def build_parser() -> argparse.ArgumentParser:
+    """Build the CLI parser. --category is validated against CATEGORY_LABELS."""
+    parser = argparse.ArgumentParser(
+        prog="check-versions.py",
+        description="Compare pinned versions against their upstream releases.",
+        epilog=(
+            "Environment:\n"
+            "  GITHUB_TOKEN           GitHub token for higher API rate limits\n"
+            "  CHECK_VERSIONS_CONFIG  Consumer config path\n"
+            "  NO_COLOR               Disable coloured output"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    if var_name in flux_managed or var_name.startswith("helm_chart") or category == "helm":
-        return "task flux:sync-versions && git commit -am '...' && git push  # Flux reconciles on push"
-
-    # K3s infrastructure (Ansible-managed, not Flux)
-    if var_name == "k3s_version":
-        return "task maintenance:update-k3s-nodes"
-    if var_name == "kube_vip_version":
-        return "task k3s:deploy  # Re-run k3s deployment to update kube-vip"
-
-    # NVIDIA driver + container toolkit + CUDA repo keyring on the GPU k3s agent
-    # (k3s role gpu.yml, Ansible-managed node op — never CI). docs/43.
-    if var_name in (
-        "nvidia_driver_version",
-        "nvidia_container_toolkit_version",
-        "nvidia_cuda_keyring_version",
-    ):
-        return "task k3s:deploy  # Re-run k3s deployment on the GPU agent (docs/43)"
-
-    # Flux CLI used by CI deploy-verify (pin + sha256 live together)
-    if var_name == "flux_version":
-        return "edit FLUX_VERSION + sha256 in .gitlab-ci.yml deploy-verify, update all.yml, task flux:sync-versions, commit"
-
-    # Plex (LXC, Ansible-managed)
-    if var_name == "plex_version":
-        return "task maintenance:update-plex"
-
-    # Tailscale (apt, Ansible-managed)
-    if var_name == "tailscale_version":
-        return "task maintenance:update-applications"
-
-    # Host-side Alloy (apt, Ansible-managed; dpkg-held so it only moves on a bump)
-    if var_name == "alloy_host_version":
-        return "task maintenance:update-applications"
-
-    # AdGuard Home (LXC, Ansible-managed)
-    if var_name == "adguard_home_version":
-        return "task maintenance:update-applications --limit dns"
-    if var_name == "adguardhome_sync_version":
-        return "task maintenance:update-applications --limit dns-01"
-
-    # GitLab VM (Ansible-managed — not Flux)
-    if var_name == "gitlab_version":
-        return "task gitlab:deploy"
-
-    # Nextcloud VM (Docker Compose, Ansible-managed — not Flux). All the
-    # nextcloud_* pins (app/postgres/redis/exporter images + docker apt) are
-    # applied by re-running the role.
-    if var_name.startswith("nextcloud_"):
-        return "task nextcloud:deploy"
-
-    # Immich VM (docker-compose, Ansible-managed — not Flux)
-    if var_name == "immich_version":
-        return "task immich:deploy"
-
-    if var_name == "virtio_win_version":
-        # The driver ISO download is guarded to fresh-VM-only (get_url runs when
-        # vm_exists.rc != 0), so bumping the pin only fetches + attaches the new
-        # ISO when the VM does not yet exist. On the already-provisioned guest
-        # this is a no-op: it keeps its old drivers until destroy+re-provision
-        # (docs/39).
-        return "task windows:provision  # only downloads the new ISO on a fresh VM; an existing guest keeps its drivers until destroy+re-provision"
-
-    # Debian LXC root template (pveam appliance, Ansible-managed via proxmox_lxc).
-    # Bumping the pin only changes which template a NEWLY created LXC pulls (pveam
-    # downloads it on the next provisioning run); existing containers keep their
-    # rootfs until destroy + recreate, so there is no fleet deploy step. Keep the
-    # proxmox_lxc role default in sync (all.yml is authoritative).
-    if var_name == "lxc_template":
-        return "bump the proxmox_lxc role default to match; new template applies only on the next LXC create (existing containers keep their rootfs)"
-
-    # Fallback when no specific deploy task mapping exists
-    return "task infra:deploy"
+    parser.add_argument("--service", metavar="NAME", type=str.lower,
+                        help="Check services matching NAME only")
+    parser.add_argument("--category", metavar="CAT", type=str.lower,
+                        choices=sorted(CATEGORY_LABELS),
+                        help="Check one category only (%s)"
+                             % ", ".join(sorted(CATEGORY_LABELS)))
+    parser.add_argument("--json", action="store_true", dest="json_output",
+                        help="Output as JSON")
+    parser.add_argument("--no-cache", action="store_true",
+                        help="Skip the cache, force fresh lookups")
+    parser.add_argument("--clear-cache", action="store_true",
+                        help="Clear the version cache and exit")
+    parser.add_argument("--update", metavar="NAME", type=str.lower,
+                        help="Update one service's pin in the vars file")
+    parser.add_argument("--update-all", action="store_true",
+                        help="Update every outdated pin in the vars file")
+    parser.add_argument("--list", action="store_true", dest="list_services",
+                        help="List all tracked services and exit")
+    parser.add_argument("--check-coverage", action="store_true",
+                        help="Fail if a *_version pin has no registry entry")
+    parser.add_argument("--config", metavar="PATH",
+                        help="Consumer config (default: $CHECK_VERSIONS_CONFIG, "
+                             "then scripts/version-registry.{py,json})")
+    parser.add_argument("--repo-root", metavar="DIR",
+                        help="Root every config path resolves against")
+    return parser
 
 
-def print_usage():
-    """Print usage information."""
-    print("""Usage: check-versions.py [OPTIONS]
+def _run_update(service_name: str) -> None:
+    """--update: check one service live and write its pin. Always exits."""
+    matched = [
+        s for s in SERVICE_REGISTRY
+        if s["name"].lower() == service_name
+        or s["var_name"].lower() == service_name
+        or s["var_name"].replace("_version", "").lower() == service_name
+    ]
+    if not matched:
+        print(f"Error: Unknown service '{service_name}'")
+        print("Run with --list to see available services")
+        sys.exit(1)
 
-Options:
-  --help                Show this help message
-  --service NAME        Check a specific service only
-  --category CAT        Check a category only (github, dockerhub, ghcr, lsio, helm, gitlab, plex, apt_repo, manual)
-  --json                Output as JSON
-  --no-cache            Skip cache, force fresh lookups
-  --clear-cache         Clear the version cache
-  --update NAME         Update a specific service to latest version in all.yml
-  --update-all          Update all outdated versions in all.yml
-  --list                List all tracked services
+    svc_def = matched[0]
+    current_versions = read_current_versions()
+    result = check_service(svc_def, current_versions, use_cache=False)
 
-Environment:
-  GITHUB_TOKEN          GitHub personal access token for higher API rate limits
-  NO_COLOR              Disable colored output""")
+    if result.error:
+        print(f"Error checking {result.name}: {result.error}")
+        sys.exit(1)
+
+    if not result.update_available:
+        print(f"{result.name} is already at the latest version ({result.current_version})")
+        sys.exit(0)
+
+    if result.held:
+        print(f"{result.name} is held back: {result.notes or 'documented hold'}")
+        print(f"Not updating (would write {result.latest_version} into {VARS_FILE.name}).")
+        print("Remove the 'held' flag in SERVICE_REGISTRY to override.")
+        sys.exit(0)
+
+    print(f"Updating {result.name}: {result.current_version} -> {result.latest_version}")
+    if update_version_in_file(result.var_name, result.latest_version):
+        print(f"Updated {result.var_name} in {VARS_FILE.name}")
+        print("\nNext steps:")
+        print(f"  1. Review the change: git diff {VARS_FILE}")
+        print(f"  2. Deploy the update: {get_deploy_command(result)}")
+        sys.exit(0)
+
+    # No write means the pin was renamed or the file format changed. Fail
+    # loudly so CI / the Taskfile cannot read it as success.
+    print(f"ERROR: Could not find {result.var_name} in {VARS_FILE.name}", file=sys.stderr)
+    sys.exit(1)
+
+
+def _run_update_all() -> None:
+    """--update-all: write every actionable pin. Always exits."""
+    results = check_all(use_cache=False)
+    updated = []
+    write_failed = []
+    errored = [r for r in results if r.error]
+    held_skipped = [r for r in results if r.update_available and r.held and not r.error]
+    for r in results:
+        if r.update_available and not r.error and not r.held:
+            print(f"Updating {r.name}: {r.current_version} -> {r.latest_version}")
+            if update_version_in_file(r.var_name, r.latest_version):
+                updated.append(r)
+            else:
+                print(f"  ERROR: Could not find {r.var_name} in {VARS_FILE.name}")
+                write_failed.append(r)
+
+    # Failures print before the success list so a long update run cannot bury
+    # them.
+    if write_failed:
+        print(f"\nERROR: {len(write_failed)} service(s) could not be updated in {VARS_FILE.name}:")
+        for r in write_failed:
+            print(f"  - {r.var_name}")
+
+    if errored:
+        print(f"\nWARNING: {len(errored)} service(s) had errors and were NOT checked:")
+        for r in errored:
+            print(f"  - {r.name}: {r.error}")
+
+    if held_skipped:
+        print(f"\nNOTE: {len(held_skipped)} update(s) intentionally held back (not written):")
+        for r in held_skipped:
+            print(f"  - {r.name}: {r.current_version} -> {r.latest_version} "
+                  f"({r.notes or 'documented hold'})")
+
+    if updated:
+        print(f"\nUpdated {len(updated)} services in {VARS_FILE.name}")
+
+        deploy_commands = {}
+        for r in updated:
+            deploy_commands.setdefault(get_deploy_command(r), []).append(r.name)
+
+        print("\nNext steps:")
+        print("  1. Review changes:")
+        print(f"     git diff {VARS_FILE}")
+        print("\n  2. Deploy updates (in this order):")
+        for cmd, services in deploy_commands.items():
+            print(f"     {cmd}")
+            for svc in services:
+                print(f"       # Updates: {svc}")
+
+        print("\n  3. Verify deployments:")
+        print("     task k3s:status")
+        print("     task infra:verify")
+
+        print("\n  4. Commit changes:")
+        print("     git add -A && git commit -m 'Update service versions'")
+    elif not errored:
+        print("\nAll services are up to date!")
+
+    # 2 — something errored or could not be written; 0 — everything succeeded,
+    # whether or not anything was updated.
+    sys.exit(2 if (errored or write_failed) else 0)
 
 
 def main():
-    args = sys.argv[1:]
+    args = build_parser().parse_args()
 
-    if "--help" in args or "-h" in args:
-        print_usage()
+    repo_root = Path(args.repo_root) if args.repo_root else None
+    load_config(
+        resolve_config_path(args.config, repo_root or REPO_ROOT),
+        repo_root,
+    )
+
+    if args.check_coverage:
+        missing = missing_registry_entries()
+        if missing:
+            print(
+                "ERROR: version pins with no registry entry (their updates are "
+                f"never reported): {missing}\n"
+                "Add a registry entry, or list the pin in the config's "
+                "untracked_allowlist if it has no upstream to track.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        print(f"All {len(SERVICE_REGISTRY)} tracked pins have a registry entry.")
         sys.exit(0)
 
-    if "--clear-cache" in args:
+    if args.clear_cache:
         if CACHE_DIR.exists():
             for f in CACHE_DIR.iterdir():
                 f.unlink()
@@ -2532,7 +1935,7 @@ def main():
             print("No cache to clear")
         sys.exit(0)
 
-    if "--list" in args:
+    if args.list_services:
         print("\nTracked services:\n")
         for svc in SERVICE_REGISTRY:
             cat = svc["category"]
@@ -2541,150 +1944,15 @@ def main():
         print()
         sys.exit(0)
 
-    use_cache = "--no-cache" not in args
-    output_json = "--json" in args
-    service_filter = None
-    category_filter = None
+    if args.update:
+        _run_update(args.update)
 
-    # Parse arguments
-    value_flags = ("--service", "--category", "--update")
-    i = 0
-    while i < len(args):
-        if args[i] in value_flags and i + 1 >= len(args):
-            print(f"Error: {args[i]} requires an argument", file=sys.stderr)
-            sys.exit(2)
-        if args[i] == "--service" and i + 1 < len(args):
-            service_filter = args[i + 1].lower()
-            i += 2
-        elif args[i] == "--category" and i + 1 < len(args):
-            category_filter = args[i + 1].lower()
-            i += 2
-        elif args[i] == "--update" and i + 1 < len(args):
-            service_name = args[i + 1].lower()
-            # Find the service
-            matched = [
-                s for s in SERVICE_REGISTRY
-                if s["name"].lower() == service_name
-                or s["var_name"].lower() == service_name
-                or s["var_name"].replace("_version", "").lower() == service_name
-            ]
-            if not matched:
-                print(f"Error: Unknown service '{service_name}'")
-                print("Run with --list to see available services")
-                sys.exit(1)
+    if args.update_all:
+        _run_update_all()
 
-            svc_def = matched[0]
-            current_versions = read_current_versions()
-            result = check_service(svc_def, current_versions, use_cache=False)
-
-            if result.error:
-                print(f"Error checking {result.name}: {result.error}")
-                sys.exit(1)
-
-            if not result.update_available:
-                print(f"{result.name} is already at the latest version ({result.current_version})")
-                sys.exit(0)
-
-            if result.held:
-                print(f"{result.name} is held back: {result.notes or 'documented hold'}")
-                print(f"Not updating (would write {result.latest_version} into {VARS_FILE.name}).")
-                print("Remove the 'held' flag in SERVICE_REGISTRY to override.")
-                sys.exit(0)
-
-            print(f"Updating {result.name}: {result.current_version} -> {result.latest_version}")
-            if update_version_in_file(result.var_name, result.latest_version):
-                print(f"Updated {result.var_name} in {VARS_FILE.name}")
-                print("\nNext steps:")
-                print("  1. Review the change: git diff ansible/inventories/prod/group_vars/all.yml")
-                print(f"  2. Deploy the update: {get_deploy_command(result)}")
-                print("  3. Verify deployment: task k3s:status  # Or appropriate status check")
-                sys.exit(0)
-            else:
-                # The file didn't change — var_name may have been renamed or
-                # the file format changed. Fail loudly so CI / Taskfile can
-                # catch it instead of silently reporting success.
-                print(f"ERROR: Could not find {result.var_name} in {VARS_FILE.name}", file=sys.stderr)
-                sys.exit(1)
-
-        elif args[i] == "--update-all":
-            results = check_all(use_cache=False)
-            updated = []
-            write_failed = []
-            errored = [r for r in results if r.error]
-            held_skipped = [r for r in results if r.update_available and r.held and not r.error]
-            for r in results:
-                if r.update_available and not r.error and not r.held:
-                    print(f"Updating {r.name}: {r.current_version} -> {r.latest_version}")
-                    if update_version_in_file(r.var_name, r.latest_version):
-                        updated.append(r)
-                    else:
-                        print(f"  ERROR: Could not find {r.var_name} in {VARS_FILE.name}")
-                        write_failed.append(r)
-
-            # Surface errors FIRST — an operator looking at a long successful
-            # update list could easily miss that 5 other services failed their
-            # version check.
-            if write_failed:
-                print(f"\nERROR: {len(write_failed)} service(s) could not be updated in {VARS_FILE.name}:")
-                for r in write_failed:
-                    print(f"  - {r.var_name}")
-
-            if errored:
-                print(f"\nWARNING: {len(errored)} service(s) had errors and were NOT checked:")
-                for r in errored:
-                    print(f"  - {r.name}: {r.error}")
-
-            if held_skipped:
-                print(f"\nNOTE: {len(held_skipped)} update(s) intentionally held back (not written):")
-                for r in held_skipped:
-                    print(f"  - {r.name}: {r.current_version} -> {r.latest_version} "
-                          f"({r.notes or 'documented hold'})")
-
-            if updated:
-                print(f"\nUpdated {len(updated)} services in {VARS_FILE.name}")
-
-                # Group updates by deployment command
-                deploy_commands = {}
-                for r in updated:
-                    cmd = get_deploy_command(r)
-                    if cmd not in deploy_commands:
-                        deploy_commands[cmd] = []
-                    deploy_commands[cmd].append(r.name)
-
-                print("\nNext steps:")
-                print("  1. Review changes:")
-                repo_root = Path(__file__).resolve().parent.parent
-                print(f"     git diff {VARS_FILE.relative_to(repo_root)}")
-                print("\n  2. Deploy updates (in this order):")
-
-                # Show deployment commands with the services they update
-                for cmd, services in deploy_commands.items():
-                    print(f"     {cmd}")
-                    for svc in services:
-                        print(f"       # Updates: {svc}")
-
-                print("\n  3. Verify deployments:")
-                print("     task k3s:status")
-                print("     task infra:verify")
-
-                print("\n  4. Commit changes:")
-                print("     git add -A && git commit -m 'Update service versions'")
-            else:
-                if not errored:
-                    print("\nAll services are up to date!")
-            # Exit code convention:
-            #   2 — at least one service errored or couldn't be written
-            #   0 — all checks succeeded (whether or not we updated anything)
-            sys.exit(2 if (errored or write_failed) else 0)
-        elif args[i] in ("--json", "--no-cache"):
-            # Boolean flags already consumed by the `in args` checks above.
-            i += 1
-        else:
-            # Reject unknown flags loudly: a typo'd --category/--service would
-            # otherwise silently run the full unfiltered check.
-            print(f"Error: unknown argument '{args[i]}'", file=sys.stderr)
-            print("Run with --help for usage", file=sys.stderr)
-            sys.exit(2)
+    use_cache = not args.no_cache
+    service_filter = args.service
+    category_filter = args.category
 
     # Filter services
     services = SERVICE_REGISTRY
@@ -2703,7 +1971,7 @@ def main():
     results = check_all(services=services, category_filter=category_filter, use_cache=use_cache)
 
     # Output
-    if output_json:
+    if args.json_output:
         print(format_json(results))
     else:
         print(format_table(results))

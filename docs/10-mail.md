@@ -41,7 +41,7 @@ smtpd_tls_key_file = /etc/postfix/tls/privkey.pem
 ### Incoming Authentication
 
 The relay accepts mail on two paths (`smtp_relay_config` /
-`smtp_submission_config` in `group_vars/mail.yml`):
+`smtp_relay_submission_config` in `group_vars/mail.yml`):
 
 - **Port 25**: `permit_mynetworks` only — SASL AUTH is disabled on this
   port (cleartext would be permitted and the chrooted smtpd breaks it).
@@ -66,7 +66,7 @@ Path: `/etc/postfix/tls/`
 
 ### Ansible Role
 
-Deploy with: `ansible/roles/smtp_relay`
+Deploy with: the `weisssrv.infra.smtp_relay` role (`ansible/playbooks/mail.yml`)
 
 ## Postfix Null Client (Proxmox Hosts)
 
@@ -90,7 +90,7 @@ client deliver/bounce `*@esweiss.com` locally instead of relaying it.
 
 ### Ansible Role
 
-Deploy with: `ansible/roles/postfix_null_client`
+Deploy with: the `weisssrv.infra.postfix_null_client` role (`ansible/playbooks/site.yml`)
 
 ## Mail Aliases
 
@@ -173,3 +173,11 @@ tail -f /var/log/mail.log
 1. Verify app password is correct
 2. Check for security alerts in Gmail
 3. Ensure "Less secure app access" is not blocking (should not be needed with app passwords)
+
+---
+
+## Related documentation
+
+- [docs/12-runbooks.md](12-runbooks.md) — SMTP relay alerts and recovery
+- [docs/15-credential-rotation.md](15-credential-rotation.md) — the SMTP 1Password items
+- [docs/11-firewall.md](11-firewall.md) — `sg-smtp-relay`

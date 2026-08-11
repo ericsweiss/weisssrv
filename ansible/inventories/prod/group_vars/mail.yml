@@ -3,62 +3,30 @@
 
 # LXC container settings
 # Nesting required for systemd 257+ (Debian 13) to function correctly
-lxc_nesting: true
+proxmox_lxc_nesting: true
 
-# Boot order (proxmox_startup_order/delay) is set in host_vars/smtp-relay.yml
+# Boot order (proxmox_lxc_startup_order/delay) is set in host_vars/smtp-relay.yml
 # (the only mail host).
 
-# Postfix relay configuration
+# Smarthost the relay forwards to. myhostname/myorigin derive from
+# internal_domain in the role.
+smtp_relay_upstream: "[smtp.gmail.com]:587"
+
+# Deltas over smtp_relay_default_config only — everything else (TLS levels and
+# protocol lists, both SASL halves, cert paths, mydestination, inet_*) is the
+# role default and is deliberately NOT restated, so a hardening default added
+# upstream actually reaches this relay.
 smtp_relay_config:
-  myhostname: "smtp-relay.{{ internal_domain }}"
+  # /etc/mailname rather than the bare domain: the Debian package keeps the FQDN
+  # there and postfix reads it at start, so the two cannot drift.
   myorigin: "/etc/mailname"
-  mydestination: "$myhostname, localhost.$mydomain, localhost"
-  relayhost: "[smtp.gmail.com]:587"
-  # Loopback + host LAN only. The k3s pod CIDR (10.42.0.0/16) was removed: it
-  # never matched anyway (pods reaching the external smtp-relay LXC are SNAT'd to
-  # their node IP, which is in 192.168.0.0/24), and every in-cluster sender
-  # (Alertmanager, Mealie, Bar Assistant, Authentik) relays via SASL on 587
+  # Loopback + host LAN. The k3s pod CIDR (10.42.0.0/16) is deliberately absent:
+  # it never matched anyway (pods reaching this LXC are SNAT'd to their node IP,
+  # which is in 192.168.0.0/24), and every in-cluster sender (Alertmanager,
+  # Mealie, Bar Assistant, Authentik) relays via SASL on 587
   # (permit_sasl_authenticated), not permit_mynetworks on 25.
   mynetworks: "127.0.0.0/8,192.168.0.0/24"
-  inet_interfaces: "all"
-  inet_protocols: "ipv4"
-  # "secure" = encrypt AND verify Gmail's certificate against CAfile.
-  smtp_tls_security_level: "secure"
-  smtp_tls_CAfile: "/etc/ssl/certs/ca-certificates.crt"
-  smtp_sasl_auth_enable: "yes"
-  smtp_sasl_security_options: "noanonymous"
-  smtp_sasl_tls_security_options: "noanonymous"
-  smtp_sasl_password_maps: "hash:/etc/postfix/sasl_passwd"
-  # permit_sasl_authenticated is required for the SASL path on submission/587
-  # to actually grant relay (otherwise a SASL-authenticated sender outside
-  # mynetworks is rejected by reject_unauth_destination and SASL is decorative).
+  # permit_mynetworks is added back on top of the role's SASL-only default so
+  # LAN hosts can relay on 25; the guest firewall admits :25 from core-cluster
+  # only (sg-smtp-relay).
   smtpd_relay_restrictions: "permit_mynetworks,permit_sasl_authenticated,reject_unauth_destination"
-  smtpd_tls_cert_file: "/etc/postfix/tls/fullchain.pem"
-  smtpd_tls_key_file: "/etc/postfix/tls/privkey.pem"
-  smtpd_tls_security_level: "may"
-  smtpd_tls_loglevel: "1"
-  smtpd_tls_received_header: "yes"
-  smtpd_tls_protocols: "!SSLv2,!SSLv3,!TLSv1,!TLSv1.1"
-  smtp_tls_protocols: "!SSLv2,!SSLv3,!TLSv1,!TLSv1.1"
-  smtpd_tls_mandatory_protocols: "!SSLv2,!SSLv3,!TLSv1,!TLSv1.1"
-  smtpd_sasl_type: "cyrus"
-  smtpd_sasl_path: "smtpd"
-  smtpd_sasl_security_options: "noanonymous"
-  broken_sasl_auth_clients: "yes"
-  # Port-25 AUTH off (cleartext-permitted + broken by chroot); submission
-  # re-enables it per-service behind mandatory TLS.
-  smtpd_sasl_auth_enable: "no"
-  smtpd_tls_auth_only: "yes"
-  smtpd_sasl_local_domain: "$myhostname"
-
-# TLS certificate paths
-smtp_tls_cert_dir: /etc/postfix/tls
-
-# Submission port configuration
-smtp_submission_enabled: true
-smtp_submission_config:
-  syslog_name: "postfix/submission"
-  smtpd_tls_security_level: "encrypt"
-  smtpd_sasl_auth_enable: "yes"
-  smtpd_recipient_restrictions: "permit_sasl_authenticated,reject"
-  milter_macro_daemon_name: "ORIGINATING"

@@ -2,6 +2,12 @@
 
 SSO/OIDC identity provider for the homelab.
 
+> **Ground rule**: applications, providers, groups and policy bindings are
+> **Terraform-managed** in `terraform/authentik` and applied under supervision
+> ([docs/40](../../../docs/40-authentik-terraform.md)). A change made in the
+> Authentik UI is drift and gets reverted on the next apply. This README covers
+> the Kubernetes deployment; docs/40 owns the object layer.
+
 ## Overview
 
 - **URL (External)**: https://auth.ericsweiss.com
@@ -80,6 +86,9 @@ top-level `apps` Kustomization on every push.
 - **Secret**: `externalsecret.yaml` -- ExternalSecret `authentik-secrets` sourcing `secret-key`, `postgresql-password`, `postgresql-admin-password`, `smtp-username`, `smtp-password` from 1Password via ESO
 - **Storage**: `storage.yaml` -- PV + PVC binding the ZFS zvol `ssd/appdata/authentik/postgres` on k3s-agt-nas-01
 - **Ingress**: `ingress-route.yaml` + `middleware.yaml` + `certificate.yaml`
+- **Backup**: `pg-dump.yaml` -- nightly `authentik-pg-dump` CronJob (see Backup and Restore)
+- **Autoscaling**: `vpa.yaml` -- memory-only VPA for the server (the chart owns CPU via its HPA)
+- **Network**: `networkpolicy.yaml` -- default-deny egress plus the scoped ingress/egress allows
 
 Deploy workflow:
 
@@ -168,11 +177,12 @@ spec:
 
 ### Method 2: OAuth2/OIDC Native Integration
 
-For services that support OAuth2/OIDC natively (Grafana, ArgoCD, etc.):
+For services that speak OIDC natively (Grafana, Mealie, Homarr, Nextcloud,
+Immich):
 
-1. Create an OAuth2 Provider in Authentik admin
-2. Create an Application linked to the provider
-3. Configure the service with:
+1. Add the OAuth2 provider + application to `terraform/authentik` and apply it
+   under supervision (docs/40) -- do **not** create them in the UI
+2. Configure the service with:
    - Client ID: (from Authentik provider)
    - Client Secret: (from Authentik provider)
    - Authorization URL: `https://auth.ericsweiss.com/application/o/authorize/`
@@ -184,11 +194,9 @@ This ensures callbacks work correctly for both internal and external clients.
 
 ### Method 3: LDAP Integration
 
-For services that only support LDAP:
-
-1. Create an LDAP Provider in Authentik admin
-2. Deploy an LDAP Outpost (separate deployment)
-3. Configure service to use Authentik LDAP
+For services that only support LDAP: declare the LDAP provider in
+`terraform/authentik` (docs/40), then deploy an LDAP Outpost and point the
+service at it.
 
 ## Verification
 
@@ -271,8 +279,16 @@ kubectl get secret authentik-ericsweiss-tls authentik-esweiss-tls -n authentik
 
 ### Backup
 
+`pg-dump.yaml` runs the `authentik-pg-dump` CronJob nightly at 02:30 local time.
+It writes a gzipped `--clean --if-exists` dump to the NFS export
+`/backups-apps/authentik` (`tank/backups/apps/authentik`), keeps the newest 7,
+and that landing zone rides both the nightly archive replication and the restic
+B2 offsite walk ([docs/42](../../../docs/42-offsite-backup.md)). Staleness is
+alerted by `AuthentikBackupStale`.
+
+Ad-hoc dump, if one is needed outside the schedule:
+
 ```bash
-# Backup PostgreSQL
 kubectl exec -n authentik authentik-postgresql-0 -- \
   pg_dump -U authentik authentik > authentik-backup-$(date +%Y%m%d).sql
 ```

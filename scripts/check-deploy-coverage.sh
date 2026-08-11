@@ -1,119 +1,91 @@
 #!/usr/bin/env bash
-# Verify every changed Ansible role under ansible/roles/, every changed
-# playbook under ansible/playbooks/, and every changed inventory file
-# under ansible/inventories/prod/ matches at least one deploy-* job's
-# `changes:` list in .gitlab-ci.yml. Fires in MR CI; a failure means
-# an Ansible asset was modified but no deploy job will pick the change
-# up — a silent no-op deploy unless the operator either (a) adds the
-# path to the relevant deploy-* rule, or (b) acknowledges the asset is
-# intentionally outside CI deploy by adding it to the appropriate
-# INTENTIONALLY_UNMAPPED_* list below.
+# Verify every changed Ansible role, playbook and inventory file matches at
+# least one deploy-* job's `changes:` list in the CI file. A failure means an
+# Ansible asset was modified but no deploy job will pick it up: either wire the
+# path into a deploy-* rule, or list it (with a rationale) in the coverage
+# config, which is where every consumer-specific path lives.
 #
-# The unmapped gate exists because deploy-trigger mappings in
-# .gitlab-ci.yml can lag the change surface: a role can be refactored,
-# a playbook renamed, or an inventory path added without anyone
-# updating the deploy-* job's `changes:` list, and the rollout would
-# then silently no-op. This script forces an explicit acknowledgment
-# in the same MR — either wire the asset into a deploy job, or list it
-# in the relevant INTENTIONALLY_UNMAPPED_* array if it ships via a
-# manual task wrapper.
-#
-# Implementation note: deploy-path mappings are extracted by parsing
-# .gitlab-ci.yml as YAML (python3 + PyYAML) and walking only jobs whose
-# name starts with "deploy-" AND whose `stage:` is "deploy". This scope
-# is deliberate: a global `grep -oE 'ansible/roles/foo/**' .gitlab-ci.yml`
-# would match the path inside a `lint`/`test`/`yaml-lint` job's rules
-# and report "mapped" even though no deploy job will fire — false
-# confidence. The deploy-stage filter excludes the deploy-coverage-check
-# job itself (stage: lint) and any other lint/test job whose name
-# happens to start with "deploy-".
-#
-# The walker assumes each deploy-* job declares `stage: deploy` LITERALLY
-# on the job (every current one does); a stage inherited only via
-# `extends:` is not resolved and would silently drop that job's paths
-# from coverage credit (a loud false failure on the next matching edit,
-# not a silent pass). `changes:` is accepted in both GitLab forms — the
-# plain list and the `changes: {paths: [...]}` mapping.
-#
-# ## Policy: the intentionally-unmapped lists
-#
-# Some paths are deployed by human-in-the-loop `task` wrappers (k3s,
-# proxmox_ha, zfs_encryption, proxmox_vm/lxc) or affect every deploy globally
-# (hosts.yml — group memberships drive role targeting). Mapping those to one
-# deploy-* job mis-fans-out; fanning them into every job produces redeploys the
-# operator should review host-by-host instead.
-#
-# What that gives up: a change to a listed path does NOT fail this gate, so the
-# operator must re-run the right wrapper (`task plex:deploy`, `task k3s:deploy`,
-# …) by hand. CI will not catch it.
-#
-# Rule for additions: every entry below carries a TRAILING rationale comment
-# naming what deploys it instead. No rationale => wire the path into a deploy-*
-# job's `changes:` list instead of listing it here.
+# Usage:  check-deploy-coverage.sh [BASE_REF]
+# Config: $DEPLOY_COVERAGE_CONFIG (default scripts/deploy-coverage.conf);
+#         format and defaults in examples/deploy-coverage.example.conf,
+#         contract in docs/SCRIPTS.md. Absent config = every list empty.
 
 set -euo pipefail
 
-# Roles not mapped to a CI deploy job (deployment needs human-in-the-loop work).
-INTENTIONALLY_UNMAPPED_ROLES=(
-    k3s             # node lifecycle (rolling cordon/upgrade, kured reboots): task k3s:deploy / maintenance:update-k3s-nodes
-    proxmox_vm      # VM provisioning: task k3s:provision-vms and friends
-    proxmox_lxc     # LXC provisioning: same reasoning as proxmox_vm
-    proxmox_ha      # HA rules / replication, sensitive: task proxmox:ha
-    zfs_encryption  # ZFS passphrase activation, cold-boot sensitive: task zfs:encrypt
-)
+CONFIG="${DEPLOY_COVERAGE_CONFIG:-scripts/deploy-coverage.conf}"
 
-# Playbooks not mapped to a CI deploy job, by path relative to ansible/playbooks/.
-INTENTIONALLY_UNMAPPED_PLAYBOOKS=(
-    site.yml                        # broad fan-out; each deploy-* job lists its own role/inventory triggers
-    k3s.yml                         # node lifecycle: task k3s:deploy, never CI-driven
-    k3s-provision-vms.yml           # VM provisioning: task k3s:provision-vms
-    windows.yml                     # Windows VM shell + guest firewall: task windows:provision, then an interactive install
-    zfs-encryption.yml              # cold-boot passphrase activation: task zfs:encrypt
-    proxmox-ha.yml                  # HA rules / replication: task proxmox:ha
-    proxmox-enable-autostart.yml    # one-shot after cluster expansion, manual
-    postflight.yml                  # operator-run post-deploy verification helper
-    rotate-mail-credential.yml      # credential rotation: task mail:rotate-credential, never CI-driven (docs/15)
-    show-cert-host-keys.yml         # operator helper for host_vars/dns-01.yml host_key fields
-    bootstrap/storage-bootstrap.yml # one-shot ZFS pool bootstrap; pool creation is never automated
-    maintenance/_ensure-nfs-server-healthy.yml  # helper included by the maintenance-* CI jobs
-    maintenance/_reboot-if-needed.yml           # helper included by the maintenance-* CI jobs
-    maintenance/_uncordon-and-wait-ready.yml    # helper included by the maintenance-* CI jobs
-    maintenance/_wait-no-kured-server-reboot.yml # helper included by the maintenance-* CI jobs
-    tasks/_check-mode-reachable.yml # shared guard imported by app playbooks; ships with whichever deploy job runs them
-    _reachability-probe.yml         # import_playbook'd by site.yml + base.yml; never run alone
-    _reachability-gate.yml          # import_playbook'd by site.yml + base.yml; never run alone
-    maintenance/update-applications.yml # run by the manual maintenance-* jobs, which carry their own rules
-    maintenance/update-full.yml         # run by the manual maintenance-* jobs
-    maintenance/update-helm-charts.yml  # run by the manual maintenance-* jobs
-    maintenance/update-k3s-nodes.yml    # run by the manual maintenance-* jobs
-    maintenance/update-packages.yml     # run by the manual maintenance-* jobs
-)
+ROLES_DIR="ansible/roles"
+PLAYBOOKS_DIR="ansible/playbooks"
+INVENTORY_DIR="ansible/inventories/prod"
+CI_FILE=".gitlab-ci.yml"
+JOB_PREFIX="deploy-"
+JOB_STAGE="deploy"
 
-# Inventory paths not mapped to a CI deploy job, by path relative to
-# ansible/inventories/prod/.
-#
-# hosts.yml EXCEPTION, do not undo: per-guest firewall assignments
-# (guest_security_groups / firewall_ipsets) live ONLY in hosts.yml, so
-# deploy-ansible-firewall explicitly watches ansible/inventories/prod/hosts.yml
-# in its rules.changes. That path is the only trigger for an inventory-only
-# firewall edit — removing it silently drops firewall deploys.
-INTENTIONALLY_UNMAPPED_INVENTORY_PATHS=(
-    hosts.yml                # affects every deploy (group membership drives role targeting); operator picks which deploy-* jobs to re-run
-    group_vars/k3s.yml       # k3s cluster vars: task k3s:deploy
-    host_vars/plex.yml       # consumed by plex.yml, which deploy-plex already watches
-    host_vars/smtp-relay.yml # mail role + playbook changes are the deploy-ansible-mail gate
-)
+INTENTIONALLY_UNMAPPED_ROLES=()
+INTENTIONALLY_UNMAPPED_PLAYBOOKS=()
+INTENTIONALLY_UNMAPPED_INVENTORY_PATHS=()
 
-# Resolve the diff base in priority order:
-#   1. MR pipeline: GitLab provides CI_MERGE_REQUEST_DIFF_BASE_SHA (the
-#      target branch tip at MR open).
-#   2. Local invocation: positional $1 wins.
-#   3. Branch pipeline: CI_COMMIT_BEFORE_SHA = parent of the pushed
-#      commit. GitLab sets this to all-zeros on the first push to a
-#      brand-new branch — treat that as "fall through" since diff
-#      against a null SHA is meaningless.
-#   4. Last resort: origin/main. This works locally and in any CI
-#      checkout where `origin` is the git remote.
+if [ -f "$CONFIG" ]; then
+    section=""
+    lineno=0
+    while IFS= read -r raw || [ -n "$raw" ]; do
+        lineno=$((lineno + 1))
+        line="${raw%%$'\r'}"
+        # Trim leading/trailing whitespace.
+        line="${line#"${line%%[![:space:]]*}"}"
+        line="${line%"${line##*[![:space:]]}"}"
+        [ -z "$line" ] && continue
+        [ "${line:0:1}" = "#" ] && continue
+        if [[ "$line" =~ ^\[(.+)\]$ ]]; then
+            section="${BASH_REMATCH[1]}"
+            continue
+        fi
+        value="${line%%#*}"
+        rationale="${line#*#}"
+        value="${value%"${value##*[![:space:]]}"}"
+        if [ "$section" = "settings" ]; then
+            key="${value%%=*}"
+            val="${value#*=}"
+            key="${key%"${key##*[![:space:]]}"}"
+            val="${val#"${val%%[![:space:]]*}"}"
+            case "$key" in
+                roles_dir) ROLES_DIR="$val" ;;
+                playbooks_dir) PLAYBOOKS_DIR="$val" ;;
+                inventory_dir) INVENTORY_DIR="$val" ;;
+                ci_file) CI_FILE="$val" ;;
+                job_prefix) JOB_PREFIX="$val" ;;
+                job_stage) JOB_STAGE="$val" ;;
+                *) echo "ERROR: $CONFIG:$lineno: unknown setting '$key'" >&2; exit 2 ;;
+            esac
+            continue
+        fi
+        # Rationale enforcement: an entry with no trailing comment is rejected.
+        if [ "$rationale" = "$line" ] || [ -z "${rationale//[[:space:]]/}" ]; then
+            echo "ERROR: $CONFIG:$lineno: entry '$value' has no '# rationale' comment" >&2
+            echo "       Every intentionally-unmapped entry must say why it is not" >&2
+            echo "       wired to a deploy job and what deploys it instead." >&2
+            exit 2
+        fi
+        case "$section" in
+            roles) INTENTIONALLY_UNMAPPED_ROLES+=("$value") ;;
+            playbooks) INTENTIONALLY_UNMAPPED_PLAYBOOKS+=("$value") ;;
+            inventory) INTENTIONALLY_UNMAPPED_INVENTORY_PATHS+=("$value") ;;
+            "") echo "ERROR: $CONFIG:$lineno: entry before any [section]" >&2; exit 2 ;;
+            *) echo "ERROR: $CONFIG:$lineno: unknown section '[$section]'" >&2; exit 2 ;;
+        esac
+    done < "$CONFIG"
+fi
+
+# ERE-safe forms of the configured directories (only '.' needs escaping in the
+# path shapes these settings accept).
+ere() { printf '%s' "${1//./\\.}"; }
+ROLES_ERE=$(ere "$ROLES_DIR")
+PLAYBOOKS_ERE=$(ere "$PLAYBOOKS_DIR")
+INVENTORY_ERE=$(ere "$INVENTORY_DIR")
+
+# Diff base, in priority order: CI_MERGE_REQUEST_DIFF_BASE_SHA, then $1, then
+# CI_COMMIT_BEFORE_SHA (all-zeros on a brand-new branch means "no base"), then
+# origin/main.
 BASE_REF="${CI_MERGE_REQUEST_DIFF_BASE_SHA:-}"
 [ -z "$BASE_REF" ] && BASE_REF="${1:-}"
 if [ -z "$BASE_REF" ]; then
@@ -124,10 +96,7 @@ if [ -z "$BASE_REF" ]; then
     fi
 fi
 
-# Hard-fail on a bad ref instead of silently treating "no diff" as
-# "everything covered". An invalid BASE_REF used to swallow into
-# `git diff … 2>/dev/null` returning empty, which made the script
-# exit 0 with "skipped" and gave CI/cron a false-clear signal.
+# An unresolvable BASE_REF is an error, never an empty change set.
 if ! git rev-parse --verify "$BASE_REF" >/dev/null 2>&1; then
     {
         echo "ERROR: BASE_REF '$BASE_REF' is not a valid git ref or commit."
@@ -137,11 +106,8 @@ if ! git rev-parse --verify "$BASE_REF" >/dev/null 2>&1; then
     exit 2
 fi
 
-# Reject unrelated histories. `git diff "$BASE_REF"...HEAD` returns an
-# empty diff if BASE_REF and HEAD share no common ancestor (e.g. a
-# shallow clone that doesn't reach the MR base, or BASE_REF pointing at
-# a sibling repo's tip). Without this guard the script reports "no
-# changes — skipped", giving CI a false-clear signal on every commit.
+# Unrelated histories produce an empty three-dot diff, which would read as
+# "nothing changed"; require a common ancestor instead.
 if ! git merge-base --is-ancestor "$BASE_REF" HEAD 2>/dev/null \
    && ! git merge-base "$BASE_REF" HEAD >/dev/null 2>&1; then
     {
@@ -152,108 +118,92 @@ if ! git merge-base --is-ancestor "$BASE_REF" HEAD 2>/dev/null \
     exit 2
 fi
 
-# Cache the diff once. The `|| true` at the end of each pipe handles the
-# legitimate "nothing changed in this category" case (grep exits 1 on
-# no matches, which under `set -e + pipefail` would otherwise abort).
-# Real git diff failures already short-circuited at the rev-parse check.
-#
-# --diff-filter=d EXCLUDES deletions: a removed role/playbook/inventory file
-# has no deploy-coverage obligation (there's nothing left to roll out), so it
-# must not be flagged as "changed but unmapped" — that would force the operator
-# to re-add a just-deleted asset to an INTENTIONALLY_UNMAPPED_* list. Renames
-# still surface via their added (non-deleted) path.
+# One diff for every extraction below; `|| true` on each pipe covers the
+# "nothing in this category" case. --diff-filter=d drops deletions: a removed
+# asset has nothing left to roll out. Renames surface via their added path.
 DIFF_FILES=$(git diff --name-only --diff-filter=d "$BASE_REF"...HEAD)
 
-# Extract changed roles (path component after ansible/roles/).
+# Extract changed roles (path component after <roles_dir>/).
 CHANGED_ROLES=$(
     printf '%s\n' "$DIFF_FILES" \
-        | grep -oE '^ansible/roles/[A-Za-z0-9_-]+' \
-        | sed 's|^ansible/roles/||' \
+        | grep -oE "^${ROLES_ERE}/[A-Za-z0-9_-]+" \
+        | sed "s|^${ROLES_DIR}/||" \
         | sort -u \
         || true
 )
 
 # Extract changed playbooks. Match anything ending in .yml (or .yaml)
-# under ansible/playbooks/ at any depth. Identifier is the path
-# relative to ansible/playbooks/.
+# under <playbooks_dir>/ at any depth. Identifier is the path relative to it.
 CHANGED_PLAYBOOKS=$(
     printf '%s\n' "$DIFF_FILES" \
-        | grep -E '^ansible/playbooks/.+\.ya?ml$' \
-        | sed 's|^ansible/playbooks/||' \
+        | grep -E "^${PLAYBOOKS_ERE}/.+\.ya?ml$" \
+        | sed "s|^${PLAYBOOKS_DIR}/||" \
         | sort -u \
         || true
 )
 
-# Extract changed inventory paths under ansible/inventories/prod/ at
-# any depth. Covers group_vars/, host_vars/, the top-level hosts.yml,
-# and any other top-level *.yml/*.yaml that may be added (inventory
-# plugin configs, group/host membership files, etc). Identifier is
-# the path relative to ansible/inventories/prod/.
+# Extract changed inventory paths under <inventory_dir>/ at any depth. Covers
+# group_vars/, host_vars/, the top-level hosts.yml, and any other *.yml/*.yaml
+# that may be added (inventory plugin configs, membership files, etc).
 CHANGED_INVENTORY_PATHS=$(
     printf '%s\n' "$DIFF_FILES" \
-        | grep -E '^ansible/inventories/prod/.+\.ya?ml$' \
-        | sed 's|^ansible/inventories/prod/||' \
+        | grep -E "^${INVENTORY_ERE}/.+\.ya?ml$" \
+        | sed "s|^${INVENTORY_DIR}/||" \
         | sort -u \
         || true
 )
+
+# Read into arrays line by line: a path containing whitespace must stay one
+# entry. (A read loop rather than mapfile, which needs bash 4.)
+to_array() {
+    local line
+    ARRAY_OUT=()
+    while IFS= read -r line; do
+        if [ -n "$line" ]; then
+            ARRAY_OUT+=("$line")
+        fi
+    done <<< "$1"
+    return 0
+}
+to_array "$CHANGED_ROLES";           CHANGED_ROLES_LIST=(${ARRAY_OUT[@]+"${ARRAY_OUT[@]}"})
+to_array "$CHANGED_PLAYBOOKS";       CHANGED_PLAYBOOKS_LIST=(${ARRAY_OUT[@]+"${ARRAY_OUT[@]}"})
+to_array "$CHANGED_INVENTORY_PATHS"; CHANGED_INVENTORY_LIST=(${ARRAY_OUT[@]+"${ARRAY_OUT[@]}"})
 
 if [ -z "$CHANGED_ROLES" ] && [ -z "$CHANGED_PLAYBOOKS" ] && [ -z "$CHANGED_INVENTORY_PATHS" ]; then
     echo "No Ansible role/playbook/inventory changes in this diff; deploy coverage check skipped."
     exit 0
 fi
 
-# Extract every path string under `rules: -> changes:` from every
-# .gitlab-ci.yml job whose name starts with "deploy-" AND whose
-# `stage:` is "deploy". This is the deploy-coverage gate's source of
-# truth for "what paths trigger a CI deploy?".
-#
-# Why YAML-parse rather than `grep -oE`?
-#   A raw `grep -oE 'ansible/roles/foo/**' .gitlab-ci.yml` produces
-#   false confidence: if a `lint`, `test`, or `yaml-lint` job mentions
-#   `ansible/roles/foo/**` in its rules, the gate would treat foo as
-#   "mapped" even though no deploy job triggers on it. Walking the
-#   YAML structure and filtering by job name + stage scopes the
-#   mapping to deploy jobs only.
-#
-# `!reference` and other custom YAML tags appear in rules: lists
-# (e.g. `- !reference [deploy-gitlab, rules]`). PyYAML's safe_loader
-# would refuse those by default, so we register a multi-constructor
-# that returns a sentinel value for any tag — the rule entry becomes
-# a non-dict, our walker skips it, and we still collect the original
-# job's `changes:` list independently from its own block. (deploy-verify
-# and deploy-gitlab-verify use !reference to inherit from other
-# deploy-* jobs; their referenced jobs are parsed directly.)
+# Every path string under `rules: -> changes:` of every deploy job. Custom YAML
+# tags (`!reference`) resolve to None so the walker skips that rule entry; the
+# referenced job's own `changes:` block is collected independently.
 DEPLOY_PATHS=$(
-    python3 - .gitlab-ci.yml <<'PYEOF'
+    python3 - "$CI_FILE" "$JOB_PREFIX" "$JOB_STAGE" <<'PYEOF'
 import sys
 import yaml
 
 
-def _tag_passthrough(loader, tag_suffix, node):
-    # Custom tags (e.g. !reference [job, key]) cannot be safely
-    # represented as Python objects without a tag-specific schema;
-    # for the deploy-coverage gate we don't care about their value,
-    # only that they don't crash the parse. Returning None turns the
-    # entry into a non-dict that the walker below cleanly skips.
-    return None
+class _CILoader(yaml.SafeLoader):
+    """SafeLoader that tolerates GitLab's custom tags. Subclassed so the
+    constructor is not registered on the global SafeLoader."""
 
 
-# Register handler for any !-tagged scalar/sequence/mapping. Empty
-# suffix on add_multi_constructor catches every '!<anything>' tag.
-yaml.SafeLoader.add_multi_constructor("!", _tag_passthrough)
+# Empty suffix on add_multi_constructor catches every '!<anything>' tag.
+_CILoader.add_multi_constructor("!", lambda loader, suffix, node: None)
 
-with open(sys.argv[1]) as f:
-    ci = yaml.safe_load(f)
+ci_path, job_prefix, job_stage = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(ci_path) as f:
+    ci = yaml.load(f, Loader=_CILoader)
 
 paths = set()
-for job_name, job in ci.items():
+for job_name, job in (ci or {}).items():
     if not isinstance(job, dict):
         continue
-    if not job_name.startswith("deploy-"):
+    if not job_name.startswith(job_prefix):
         continue
-    if job.get("stage") != "deploy":
-        # Excludes deploy-coverage-check (stage: lint) and any
-        # future lint/test job whose name starts with "deploy-".
+    if job.get("stage") != job_stage:
+        # Excludes the coverage-check job itself and any other lint/test job
+        # whose name happens to start with the deploy prefix.
         continue
     rules = job.get("rules", [])
     if not isinstance(rules, list):
@@ -277,38 +227,35 @@ for p in sorted(paths):
 PYEOF
 )
 
-# Mapped roles: any 'ansible/roles/<name>' prefix inside a deploy-*
-# job's changes: list. Captures both `ansible/roles/<name>/**` and
-# any future literal-file forms.
+# Mapped roles: any '<roles_dir>/<name>' prefix inside a deploy job's changes:
+# list. Captures both `<roles_dir>/<name>/**` and any literal-file forms.
 MAPPED_ROLES=$(
     printf '%s\n' "$DEPLOY_PATHS" \
-        | grep -oE '^ansible/roles/[A-Za-z0-9_-]+' \
-        | sed 's|^ansible/roles/||' \
+        | grep -oE "^${ROLES_ERE}/[A-Za-z0-9_-]+" \
+        | sed "s|^${ROLES_DIR}/||" \
         | sort -u \
         || true
 )
 
-# Mapped playbooks: every 'ansible/playbooks/<path>.yml' that appears
-# verbatim in a deploy-* job's changes: list. We do NOT match
-# wildcards like `ansible/playbooks/**` here — wildcard catches are
-# intentionally not given coverage credit so a single ** doesn't
-# silently mask a missing trigger for a newly added playbook.
+# Mapped playbooks: every '<playbooks_dir>/<path>.yml' that appears verbatim in
+# a deploy job's changes: list. Wildcards like `<playbooks_dir>/**` are
+# intentionally NOT given coverage credit, so a single ** can't silently mask a
+# missing trigger for a newly added playbook.
 MAPPED_PLAYBOOKS=$(
     printf '%s\n' "$DEPLOY_PATHS" \
-        | grep -oE '^ansible/playbooks/[A-Za-z0-9_./-]+\.ya?ml$' \
-        | sed 's|^ansible/playbooks/||' \
+        | grep -oE "^${PLAYBOOKS_ERE}/[A-Za-z0-9_./-]+\.ya?ml$" \
+        | sed "s|^${PLAYBOOKS_DIR}/||" \
         | sort -u \
         || true
 )
 
-# Mapped inventory paths: explicit 'ansible/inventories/prod/<path>.yml'
-# entries in a deploy-* job's changes: list. Same wildcard caveat as
-# playbooks; a `group_vars/**` glob does NOT confer coverage on every
-# group_var file.
+# Mapped inventory paths: explicit '<inventory_dir>/<path>.yml' entries. Same
+# wildcard caveat as playbooks; a `group_vars/**` glob does NOT confer coverage
+# on every group_var file.
 MAPPED_INVENTORY_PATHS=$(
     printf '%s\n' "$DEPLOY_PATHS" \
-        | grep -oE '^ansible/inventories/prod/[A-Za-z0-9_./-]+\.ya?ml$' \
-        | sed 's|^ansible/inventories/prod/||' \
+        | grep -oE "^${INVENTORY_ERE}/[A-Za-z0-9_./-]+\.ya?ml$" \
+        | sed "s|^${INVENTORY_DIR}/||" \
         | sort -u \
         || true
 )
@@ -317,9 +264,16 @@ MAPPED_INVENTORY_PATHS=$(
 # path/role identifiers contain `.`, `/`, and other regex metachars, so
 # a `grep -qx` would silently treat them as regexes and risk false
 # matches on e.g. "k3s-srv" vs "k3s.srv".
+in_list() {
+    local needle="$1"
+    shift
+    [ "$#" -eq 0 ] && return 1
+    printf '%s\n' "$@" | grep -Fxq "$needle"
+}
+
 UNMAPPED_ROLES=()
-for role in $CHANGED_ROLES; do
-    if printf '%s\n' "${INTENTIONALLY_UNMAPPED_ROLES[@]}" | grep -Fxq "$role"; then
+for role in ${CHANGED_ROLES_LIST[@]+"${CHANGED_ROLES_LIST[@]}"}; do
+    if in_list "$role" ${INTENTIONALLY_UNMAPPED_ROLES[@]+"${INTENTIONALLY_UNMAPPED_ROLES[@]}"}; then
         continue
     fi
     if ! printf '%s\n' "$MAPPED_ROLES" | grep -Fxq "$role"; then
@@ -328,8 +282,8 @@ for role in $CHANGED_ROLES; do
 done
 
 UNMAPPED_PLAYBOOKS=()
-for pb in $CHANGED_PLAYBOOKS; do
-    if printf '%s\n' "${INTENTIONALLY_UNMAPPED_PLAYBOOKS[@]}" | grep -Fxq "$pb"; then
+for pb in ${CHANGED_PLAYBOOKS_LIST[@]+"${CHANGED_PLAYBOOKS_LIST[@]}"}; do
+    if in_list "$pb" ${INTENTIONALLY_UNMAPPED_PLAYBOOKS[@]+"${INTENTIONALLY_UNMAPPED_PLAYBOOKS[@]}"}; then
         continue
     fi
     if ! printf '%s\n' "$MAPPED_PLAYBOOKS" | grep -Fxq "$pb"; then
@@ -338,8 +292,8 @@ for pb in $CHANGED_PLAYBOOKS; do
 done
 
 UNMAPPED_INVENTORY_PATHS=()
-for inv in $CHANGED_INVENTORY_PATHS; do
-    if printf '%s\n' "${INTENTIONALLY_UNMAPPED_INVENTORY_PATHS[@]}" | grep -Fxq "$inv"; then
+for inv in ${CHANGED_INVENTORY_LIST[@]+"${CHANGED_INVENTORY_LIST[@]}"}; do
+    if in_list "$inv" ${INTENTIONALLY_UNMAPPED_INVENTORY_PATHS[@]+"${INTENTIONALLY_UNMAPPED_INVENTORY_PATHS[@]}"}; then
         continue
     fi
     if ! printf '%s\n' "$MAPPED_INVENTORY_PATHS" | grep -Fxq "$inv"; then
@@ -354,17 +308,15 @@ if [ "${#UNMAPPED_ROLES[@]}" -gt 0 ]; then
         echo "ERROR: The following changed roles are not mapped to any CI deploy job:"
         echo ""
         for role in "${UNMAPPED_ROLES[@]}"; do
-            echo "  - ansible/roles/$role/"
+            echo "  - $ROLES_DIR/$role/"
         done
         echo ""
         echo "Resolution options:"
-        echo "  1. Add the role to the relevant deploy-* job's changes: list in"
-        echo "     .gitlab-ci.yml so the change triggers a rollout. This is the"
-        echo "     default expectation for any role that does have a CI-driven"
-        echo "     deploy path."
-        echo "  2. Add the role to INTENTIONALLY_UNMAPPED_ROLES at the top of"
-        echo "     scripts/check-deploy-coverage.sh if it is intentionally"
-        echo "     deployed manually via a task wrapper (not unattended CI)."
+        echo "  1. Add the role to the relevant ${JOB_PREFIX}* job's changes: list in"
+        echo "     $CI_FILE so the change triggers a rollout. This is the default"
+        echo "     expectation for any role that has a CI-driven deploy path."
+        echo "  2. Add the role (with a rationale) to the [roles] section of"
+        echo "     $CONFIG if it is intentionally deployed manually."
         echo ""
     } >&2
     FAILED=1
@@ -375,16 +327,14 @@ if [ "${#UNMAPPED_PLAYBOOKS[@]}" -gt 0 ]; then
         echo "ERROR: The following changed playbooks are not mapped to any CI deploy job:"
         echo ""
         for pb in "${UNMAPPED_PLAYBOOKS[@]}"; do
-            echo "  - ansible/playbooks/$pb"
+            echo "  - $PLAYBOOKS_DIR/$pb"
         done
         echo ""
         echo "Resolution options:"
-        echo "  1. Add the playbook path to the relevant deploy-* job's changes:"
-        echo "     list in .gitlab-ci.yml so the change triggers a rollout."
-        echo "  2. Add the playbook (path relative to ansible/playbooks/) to"
-        echo "     INTENTIONALLY_UNMAPPED_PLAYBOOKS at the top of"
-        echo "     scripts/check-deploy-coverage.sh if it is intentionally run"
-        echo "     manually via a task wrapper (not unattended CI)."
+        echo "  1. Add the playbook path to the relevant ${JOB_PREFIX}* job's changes:"
+        echo "     list in $CI_FILE so the change triggers a rollout."
+        echo "  2. Add the playbook (path relative to $PLAYBOOKS_DIR, with a"
+        echo "     rationale) to the [playbooks] section of $CONFIG."
         echo ""
     } >&2
     FAILED=1
@@ -395,16 +345,14 @@ if [ "${#UNMAPPED_INVENTORY_PATHS[@]}" -gt 0 ]; then
         echo "ERROR: The following changed inventory paths are not mapped to any CI deploy job:"
         echo ""
         for inv in "${UNMAPPED_INVENTORY_PATHS[@]}"; do
-            echo "  - ansible/inventories/prod/$inv"
+            echo "  - $INVENTORY_DIR/$inv"
         done
         echo ""
         echo "Resolution options:"
-        echo "  1. Add the inventory path to the relevant deploy-* job's changes:"
-        echo "     list in .gitlab-ci.yml so the change triggers a rollout."
-        echo "  2. Add the path (relative to ansible/inventories/prod/) to"
-        echo "     INTENTIONALLY_UNMAPPED_INVENTORY_PATHS at the top of"
-        echo "     scripts/check-deploy-coverage.sh if vars changes here are"
-        echo "     intentionally deployed manually."
+        echo "  1. Add the inventory path to the relevant ${JOB_PREFIX}* job's changes:"
+        echo "     list in $CI_FILE so the change triggers a rollout."
+        echo "  2. Add the path (relative to $INVENTORY_DIR, with a rationale) to"
+        echo "     the [inventory] section of $CONFIG."
         echo ""
     } >&2
     FAILED=1
@@ -418,7 +366,7 @@ if [ "$FAILED" -eq 1 ]; then
     exit 1
 fi
 
-echo "All changed roles/playbooks/inventory paths are covered by at least one deploy-* job rule."
+echo "All changed roles/playbooks/inventory paths are covered by at least one ${JOB_PREFIX}* job rule."
 [ -n "$CHANGED_ROLES" ] && echo "Changed roles:           $(echo "$CHANGED_ROLES" | tr '\n' ' ')"
 [ -n "$CHANGED_PLAYBOOKS" ] && echo "Changed playbooks:       $(echo "$CHANGED_PLAYBOOKS" | tr '\n' ' ')"
 [ -n "$CHANGED_INVENTORY_PATHS" ] && echo "Changed inventory paths: $(echo "$CHANGED_INVENTORY_PATHS" | tr '\n' ' ')"

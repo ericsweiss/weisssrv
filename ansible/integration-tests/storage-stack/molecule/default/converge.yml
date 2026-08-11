@@ -50,7 +50,7 @@
     # Skip flags are set in molecule.yml group_vars
     - name: Apply nas_storage role
       ansible.builtin.include_role:
-        name: nas_storage
+        name: weisssrv.infra.nas_storage
 
 - name: Converge - Storage Stack (Samba Clients)
   hosts: smb_clients

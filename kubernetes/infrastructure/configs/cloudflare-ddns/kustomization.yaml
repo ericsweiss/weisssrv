@@ -11,3 +11,11 @@ resources:
 
 components:
   - ../../../components/netpol-baseline
+
+# The CronJob's program. It lives beside this kustomization because kustomize
+# refuses generator sources outside the kustomization root; its unit tests are
+# scripts/test_cloudflare_ddns.py.
+configMapGenerator:
+  - name: cloudflare-ddns-script
+    files:
+      - cloudflare-ddns.py

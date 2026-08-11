@@ -5,12 +5,10 @@
 # (MetalLB), the CoreDNS HPA replica pin, VPA policies, cloudflare-ddns
 # CronJob, and shared-cloudflare-secrets ExternalSecrets.
 #
-# Depends on infrastructure-controllers being Ready so all required CRDs
-# exist and controllers are serving webhooks (cert-manager in particular).
+# Depends on infrastructure-controllers so every CRD exists and the webhooks
+# (cert-manager in particular) are serving.
 #
-# optional: false — same rationale as infrastructure-controllers: the
-# ConfigMap is guaranteed to exist at this point (sources → controllers →
-# configs). A missing ConfigMap here means a real bug.
+# optional: false — same rationale as the other stages.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:

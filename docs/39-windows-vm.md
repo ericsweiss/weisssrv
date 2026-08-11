@@ -17,7 +17,7 @@ are manual, one-time, human steps documented below.
 | Property | Value |
 |----------|-------|
 | VMID / IP | 155 / 192.168.0.155 (`windows.esweiss.com`) |
-| Host | pve-nas-01 (NAS-pinned, `vm_cpu_type: host`, no live migration) |
+| Host | pve-nas-01 (NAS-pinned, `proxmox_vm_cpu_type: host`, no live migration) |
 | vCPU / RAM | 8 cores / 16 GiB |
 | Disk | 250 GiB empty zvol on the **encrypted** `ssd` pool |
 | Firmware | OVMF/UEFI, q35, pre-enrolled Secure Boot keys, TPM 2.0 (v2) |
@@ -32,11 +32,11 @@ are manual, one-time, human steps documented below.
 | Concern | File |
 |---------|------|
 | Inventory host + specs | `ansible/inventories/prod/hosts.yml` (`windows_vms` group) |
-| VM build logic | `ansible/roles/proxmox_vm` (`vm_guest_type: windows`) |
-| VirtIO ISO version + sha256 | `ansible/inventories/prod/group_vars/all.yml` (`virtio_win_version` / `virtio_win_checksum`) |
+| VM build logic | `weisssrv.infra.proxmox_vm` (`proxmox_vm_guest_type: windows`) |
+| VirtIO ISO version + sha256 | `ansible/inventories/prod/group_vars/all.yml` (`proxmox_vm_virtio_win_version` / `proxmox_vm_virtio_win_checksum`) |
 | Autostart policy | `ansible/inventories/prod/host_vars/pve-nas-01.yml` (`zfs_encryption_guest_vmids`, includes 155) |
 | Provisioning playbook | `ansible/playbooks/windows.yml` |
-| Firewall group | `ansible/roles/proxmox_firewall/templates/cluster.fw.j2` (`[group sg-windows]`) |
+| Firewall group | weisssrv-lib `ansible_collections/weisssrv/infra/roles/proxmox_firewall/templates/cluster.fw.j2` (`[group sg-windows]`) |
 | Internal DNS + PTR | `ansible/inventories/prod/group_vars/dns.yml` |
 | Tasks | `task windows:{provision,provision-check,status,verify}` |
 | RDP monitoring | `kubernetes/infrastructure/observability/exporters/blackbox-exporter.yaml` (`windows-rdp` target) + `WindowsRdpDown` alert (fires only while the VM is powered on, so a deliberate shutdown stays quiet) |
@@ -48,14 +48,15 @@ Proxmox guest firewall. There are **no** external-dns / Cloudflare records —
 
 ## Encryption & backups
 
-- The root disk + EFI vars + TPM state all live on the **encrypted `ssd`
-  pool**. Encryption is ZFS-native at the *pool* level: the `ssd` key is loaded
-  from 1Password Connect once at NAS boot (`zfs-load-key@ssd` →
-  `zfs-mount-encrypted`, docs/32), unlocking the pool for **all** its guests and
-  the NFS binds. So Windows's disks are already decrypted by the time the host
-  finishes booting — starting the VM (Proxmox UI or `qm start 155`) needs **no**
-  manual unlock, and Windows itself does no in-guest crypto (the ZFS layer is
-  transparent to it).
+- The root disk + EFI vars + TPM state all live under the **encrypted `ssd`
+  pool**. Encryption is ZFS-native and per-dataset: `zfs-load-key@ssd` fetches the
+  passphrase from 1Password Connect once at NAS boot and
+  `zfs-mount-encrypted` mounts the pool's encryption roots (docs/32). The pool
+  *root* itself stays plaintext, so a new dataset added to `ssd` does **not**
+  inherit encryption automatically — it has to sit under an encryption root.
+  Operationally nothing else changes: Windows's disks are decrypted by the time
+  the host finishes booting, starting the VM needs **no** manual unlock, and
+  Windows does no in-guest crypto.
 - VMID 155 is **included** in `zfs_encryption_guest_vmids` ([autostart](#autostart),
   below), so it cold-boots after a NAS reboot along with the other encrypted-storage
   guests — last in that cohort, after the services have claimed their memory.
@@ -66,7 +67,7 @@ Proxmox guest firewall. There are **no** external-dns / Cloudflare records —
   - **Backup-window encroachment.** VM 155 is a *new pve-nas-01 local guest* in
     the `all` job, so its image lengthens **this host's** slice of the shared
     backup window. That window (03:30–~04:45, throttled to 60 MiB/s/node by the
-    `bwlimit` on `pve_vzdump_jobs` — raised from 30 after the 07-20 measurement,
+    `bwlimit` on `proxmox_backup_vzdump_jobs` — raised from 30 after the 07-20 measurement,
     see docs/42) ends ~75 min ahead of the 06:00 media-mover and 06:30
     archive-backup timer. Once Windows is installed and the image fills out
     (VM 155's 38G dump takes ~11 min at the current bwlimit, more as the guest
@@ -75,9 +76,9 @@ Proxmox guest firewall. There are **no** external-dns / Cloudflare records —
     through a full window (this is the post-install check in the provisioning
     runbook). If it slips, exclude VMID 155 (below) or move it to a
     separate, lower-frequency job. History for this window lives in the
-    `pve_vzdump_jobs` comment in `host_vars/pve-nas-01.yml`.
+    `proxmox_backup_vzdump_jobs` comment in `host_vars/pve-nas-01.yml`.
   - **Opting out.** If you'd rather not back the desktop up at all, exclude VMID
-    155 from the vzdump job (`pve_vzdump_jobs` in `host_vars/pve-nas-01.yml` —
+    155 from the vzdump job (`proxmox_backup_vzdump_jobs` in `host_vars/pve-nas-01.yml` —
     set `exclude: [155]`); the default is **included**.
 
 ---
@@ -99,7 +100,7 @@ ls -lh /mnt/pve/tank-proxmox/template/iso/Win11_25H2_English_x64_v2.iso
 ```
 
 The VirtIO driver ISO is fetched + checksum-verified automatically by the role
-(pinned via `virtio_win_version` in `all.yml`) — no manual step.
+(pinned via `proxmox_vm_virtio_win_version` in `all.yml`) — no manual step.
 
 ### 2. Provision the VM shell
 
@@ -161,14 +162,13 @@ ssh eric@192.168.0.102 "sudo qm set 155 --boot order=scsi0"
 
 Activation is the operator's responsibility (Settings → System → Activation).
 
-### 7. Arm RDP monitoring
+### 7. Confirm RDP monitoring
 
-Only after Windows is installed and RDP answers, uncomment the `windows-rdp`
-blackbox target in
-`kubernetes/infrastructure/observability/exporters/blackbox-exporter.yaml` (one
-target block) and commit/push. Flux reconciles the probe; the `WindowsRdpDown`
-alert (30-minute `for`, deliberately tolerant of an on-demand desktop being
-powered off) then covers reachability. `probe_success` also feeds the Blackbox
+The `windows-rdp` blackbox target is live in
+`kubernetes/infrastructure/observability/exporters/blackbox-exporter.yaml`, so
+once Windows is installed and RDP answers, the `WindowsRdpDown` alert (30-minute
+`for`, deliberately tolerant of the desktop being powered off) covers
+reachability with no further change. `probe_success` also feeds the Blackbox
 Grafana dashboard.
 
 ```bash
@@ -217,8 +217,9 @@ You can start or stop it by hand at any time:
 **No manual decryption is needed.** The disks live on the encrypted `ssd` pool,
 which is unlocked once at NAS boot (key from 1Password Connect, docs/32) for all
 its guests — so by the time you start Windows the storage is already decrypted,
-and Windows itself does no in-guest crypto. When you're done, shut it down from
-inside Windows (or `qm shutdown 155`); it stays off until the next manual start.
+and Windows itself does no in-guest crypto. Shutting it down from inside Windows
+(or `qm shutdown 155`) leaves it off until you start it again — or until the next
+NAS boot, which auto-starts it as described above.
 
 ---
 
@@ -242,8 +243,8 @@ inside Windows (or `qm shutdown 155`); it stays off until the next manual start.
 - **Logs / in-guest metrics** are **not** collected: `alloy_host` and
   `node_exporter_host` are Linux-only and are deliberately absent from the
   `windows_vms` plays (the guest isn't Ansible-managed).
-- **RDP reachability**: the commented `windows-rdp` blackbox target +
-  `WindowsRdpDown` alert (step 7).
+- **RDP reachability**: the `windows-rdp` blackbox target + `WindowsRdpDown`
+  alert.
 
 ### Optional follow-up — `windows_exporter` (not automated)
 
@@ -275,7 +276,7 @@ this repo:
 | Installer shows no disk | VirtIO SCSI driver not loaded — Load driver → `amd64\w11\viostor` (step 3). |
 | No network after install | `netkvm` not installed — run `virtio-win-guest-tools.exe` (step 4). |
 | `task windows:provision` fails "vm_install_iso is empty" | Set `vm_install_iso` in hosts.yml and stage the ISO (step 1). |
-| get_url checksum mismatch on the VirtIO ISO | `virtio_win_checksum` in `all.yml` is stale for the pinned version — recompute per the comment there. |
+| get_url checksum mismatch on the VirtIO ISO | `proxmox_vm_virtio_win_checksum` in `all.yml` is stale for the pinned version — recompute per the comment there. |
 | Windows did not come up after a NAS reboot | 155 is in `zfs_encryption_guest_vmids` and starts last in that cohort, so this is a fault, not the design. Check `systemctl status pve-start-encrypted-guests` and `journalctl -t zfs-start-encrypted-guests`; if the `ssd` pool failed to unlock, every other `ssd` guest is down too, so it is not Windows-specific (docs/32). `qm start 155` still works by hand. |
 | `qm start 155` fails with a storage/volume error | The `ssd` pool didn't unlock at boot — check `systemctl status zfs-mount-encrypted` and 1Password Connect reachability (docs/32). Every other `ssd` guest would be down too, so this is not Windows-specific. |
 | RDP refused | RDP not enabled / NLA blocking / account has no password (step 4). |

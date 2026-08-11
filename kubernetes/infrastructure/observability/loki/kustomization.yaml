@@ -4,20 +4,17 @@ kind: Kustomization
 resources:
   - storage.yaml
   - release.yaml
-  # nodeport.yaml is intentionally NOT reconciled: an always-on NodePort exposes
-  # an unauthenticated Loki push/read path on every node IP, bypassing both the
-  # basic-auth IngressRoute and the allow-loki-ingress NetworkPolicy. It is kept
-  # in this directory as an apply-on-demand emergency fallback only
-  # (kubectl apply -f loki/nodeport.yaml); host Alloy ships via the authenticated
-  # https://loki.esweiss.com ingress by default.
-# Loki ruler rule files, delivered to the loki-sc-rules sidecar. Mirrors the
-# grafana-dashboards convention (configMapGenerator + discovery label +
-# disableNameSuffixHash). The loki_rule:"1" label matches the sidecar's LABEL
-# env; the k8s-sidecar-target-directory annotation (folderAnnotation in
-# release.yaml) makes the sidecar write the file into /rules/fake so the ruler's
-# local storage (tenant "fake" under auth_enabled:false) loads it. The parent
-# observability/kustomization.yaml sets namespace: observability, where the
-# sidecar searches.
+  # No NodePort here, deliberately: an always-on NodePort would expose an
+  # unauthenticated Loki push/read path on every node IP, bypassing the
+  # basic-auth IngressRoute and allow-loki-ingress. Host Alloy ships via
+  # https://loki.esweiss.com; the break-glass NodePort is an apply-by-hand
+  # manifest in docs/12-runbooks.md § Loki break-glass NodePort, not a
+  # manifest Flux would keep alive forever.
+# Loki ruler rule files, delivered by the loki-sc-rules sidecar (same
+# configMapGenerator convention as the Grafana dashboards). loki_rule:"1" matches
+# the sidecar's LABEL; the k8s-sidecar-target-directory annotation makes it write
+# into /rules/fake, where the ruler's local storage looks for the single
+# auth_enabled:false tenant.
 generatorOptions:
   # Stable name (no content-hash suffix) so the sidecar keeps discovering it and
   # no orphan rule ConfigMaps accumulate.

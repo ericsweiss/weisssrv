@@ -3,14 +3,9 @@
 # molecule-tests and integration-tests CI jobs so the retry policy (max attempts
 # + jitter window) lives in ONE place instead of two hand-synced copies.
 #
-# Why the retry exists: under a full pipeline fan-out, simultaneous systemd-
-# container starts on a shared node race cgroup setup and die at prepare
-# ("Container X is not running"). Job-level retry re-rolls the same dice (all
-# attempts land in the same storm); destroy + a randomized sleep de-conflicts
-# the restart instead. The durable fix is right-sizing the privileged runner
-# quota (kubernetes/apps/gitlab-runner-privileged) so the storm is rare — this
-# loop is the documented complementary stopgap (see .molecule-base in
-# .gitlab-ci.yml).
+# Concurrent systemd-container starts race cgroup setup and die at prepare;
+# destroy + a jittered sleep de-conflicts the retry, where a job-level retry
+# would land every attempt in the same storm.
 #
 # The caller cd's into the role / integration-test directory first; molecule
 # runs in $PWD. Base opts (before the subcommand, e.g. `-c <base.yml>`) and

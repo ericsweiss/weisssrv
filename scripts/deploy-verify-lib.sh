@@ -1,18 +1,17 @@
 #!/usr/bin/env bash
-# Pure classification helpers extracted from scripts/deploy-verify.sh so the
-# jq/awk state-classification logic that gates the deploy-verify CI job can be
-# unit-tested without a live cluster (scripts/test_deploy_verify_lib.py, same
-# pattern as collect-state-lib.sh / maintenance-lib.sh).
+# Classification helpers for the verify scripts, extracted so the logic that
+# gates deploy-verify can be unit-tested without a live cluster
+# (scripts/test_deploy_verify_lib.py, same pattern as collect-state-lib.sh).
 #
 # Functions only — no top-level side effects, safe to `source` under `set -e`.
 # Each reads its input from stdin (recorded `kubectl get ... -o json`, or a
 # `kubectl get ... --no-headers` table) or positional args, and writes a verdict
-# to stdout / returns an exit status. None call kubectl/flux/curl themselves.
+# to stdout / returns an exit status. None call kubectl/flux themselves.
 #
-# The deploy-verify env provides jq (extends .k3s-deploy-base). The jq-based
-# helpers below are NOT sourced by post-maintenance-verify.sh, which keeps its
-# own jq-free classifiers in maintenance-lib.sh (it must run from any
-# kubectl+curl-only CI image — see that script's header).
+# Most helpers need jq, which the deploy-verify env provides (.k3s-deploy-base).
+# post-maintenance-verify.sh sources this file ONLY for gitlab_health_code
+# (curl-only) and keeps its own jq-free classifiers in maintenance-lib.sh, since
+# it must run from any kubectl+curl CI image — see that script's header.
 
 # jq fragment: select list items whose Ready condition is missing or not True.
 # Shared by the count/name/dump helpers below (and referenced by deploy-verify.sh
@@ -91,4 +90,23 @@ helmreleases_hard_failed() {
         )
       )
     | .metadata.name' 2>/dev/null || true
+}
+
+# gitlab_health_code <path>: single GitLab health probe (curl only, no jq).
+# Tries the internal chain (DNS -> Traefik VIP -> GitLab nginx) first and falls
+# back to the external hostname ONLY on a connection-level failure ("000"/empty)
+# — the internal Traefik->VM leg can stall past the timeout on a healthy GitLab,
+# and both verify scripts run during peak ingress churn. A real HTTP status
+# (incl. 4xx/5xx) means GitLab answered, so it is trusted as-is rather than let
+# an external 200 mask an internal error. Echoes the status code; callers own
+# their own retry budget. The two base URLs are env-overridable for tests.
+gitlab_health_code() {
+  local path="${1:-/-/health}" code
+  local internal="${GITLAB_HEALTH_INTERNAL:-https://git.esweiss.com}"
+  local external="${GITLAB_HEALTH_EXTERNAL:-https://git.ericsweiss.com}"
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${internal}${path}" 2>/dev/null || true)
+  if [ -z "$code" ] || [ "$code" = "000" ]; then
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${external}${path}" 2>/dev/null || true)
+  fi
+  echo "$code"
 }

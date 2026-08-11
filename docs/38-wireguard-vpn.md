@@ -191,9 +191,10 @@ task infra:deploy   # or: ansible-playbook -i ansible/inventories/prod ansible/p
 ansible-playbook -i ansible/inventories/prod ansible/playbooks/site.yml --tags proxmox_firewall
 ```
 (On merge CI's `deploy-ansible-firewall` job applies the firewall rule
-automatically — the `ansible/roles/proxmox_firewall/**` change is a trigger — so
+automatically — `ansible/inventories/prod/hosts.yml` and `ansible/requirements.yml`
+are triggers — so
 the manual run above is only for out-of-band deploys.)
-(`nas_appdata_dirs` gained `wg-easy`; `cluster.fw.j2` gained the VIP-scoped
+(`nas_storage_appdata_dirs` gained `wg-easy`; `cluster.fw.j2` gained the VIP-scoped
 WireGuard rule.)
 
 ### 3. Terraform — external DNS record
@@ -216,7 +217,7 @@ Commit + push the branch, merge the MR. Flux reconciles:
 
 Force it if impatient: `task flux:reconcile`. Verify:
 ```bash
-task vpn:status                          # pod Ready, svc EXTERNAL-IP 192.168.0.99
+task wg-easy:status                          # pod Ready, svc EXTERNAL-IP 192.168.0.99
 kubectl get svc -n wg-easy wg-easy       # confirms the VIP was assigned
 ```
 
@@ -235,26 +236,30 @@ password** to the exact `metrics-token` value from 1Password. The ServiceMonitor
 scrape is 401/`up=0`; no alert keys off it — `WgEasyDown` watches Deployment
 availability instead.)
 
-### 7. Authentik provider + application (operator, one-time)
-The pinned wg-easy 15.3.0 has no native OIDC (generic `OAUTH_PROVIDERS` support
-landed on upstream `master` ~4 weeks after the 15.3.0 release and is not in this
-tag), so the UI is protected by Traefik ForwardAuth via the shared
-`authentik-auth` outpost — the same pattern the `*arr` apps use. In the Authentik
-admin UI:
+### 7. Authentik objects (Terraform)
 
-1. **Directory → Groups →** create group `vpn-admins`; add yourself.
-2. **Applications → Providers → Create → Proxy Provider**:
-   - Name: `wg-easy`
-   - Authorization flow: `default-provider-authorization-implicit-consent`
-   - **Forward auth (single application)**
-   - External host: `https://vpn.esweiss.com`
-3. **Applications → Applications → Create**:
-   - Name: `wg-easy`, Slug: `wg-easy`
-   - Provider: `wg-easy`
-   - **Policy bindings** → bind group `vpn-admins` (only that group may enter).
-4. **Outposts →** edit the embedded `authentik Embedded Outpost` and ensure the
-   `wg-easy` application is added to it (the `authentik-auth` middleware points
-   at that outpost).
+The pinned wg-easy 15.3.0 has no native OIDC (generic `OAUTH_PROVIDERS` support
+landed upstream after this tag), so the UI is protected by Traefik ForwardAuth via
+the shared `authentik-auth` outpost — the same pattern the `*arr` apps use.
+
+The proxy provider, application and `vpn-admins` group are declared in
+`terraform/authentik/` (`providers_proxy.tf`, `applications.tf`, `groups.tf`,
+`policy_bindings.tf`) and applied under supervision
+([docs/40](40-authentik-terraform.md)) — not in the admin UI. Values:
+
+| Setting | Value |
+|---|---|
+| Provider type | Proxy — **forward auth (single application)** |
+| Provider / application name | `wg-easy` |
+| Application slug | `wg-easy` |
+| Authorization flow | `default-provider-authorization-implicit-consent` |
+| External host | `https://vpn.esweiss.com` |
+| Access gate | `vpn-admins` group binding |
+
+The one step that is **not** in Terraform: the application must be attached to the
+embedded outpost (`authentik Embedded Outpost`), which is what the
+`authentik-auth` middleware points at.
+
 
 This is the same forward-auth pattern the `*arr` apps use; see
 `kubernetes/apps/authentik/README.md` and `docs/23-recipes-sso-setup.md`.
@@ -300,8 +305,8 @@ nslookup git.esweiss.com 10.43.0.10       ; echo "exit=$?"   # MUST fail / time 
 
 Server-side:
 ```bash
-task vpn:peers        # shows the handshake for the connected client
-task vpn:status
+task wg-easy:peers        # shows the handshake for the connected client
+task wg-easy:status
 ```
 
 ---
@@ -310,10 +315,10 @@ task vpn:status
 
 | Task | Command |
 |------|---------|
-| Status (pod/svc/VIP/PVC/ingress) | `task vpn:status` |
-| Live peers / handshakes | `task vpn:peers` |
-| Logs | `task vpn:logs` |
-| Restart the pod | `task vpn:restart` |
+| Status (pod/svc/VIP/PVC/ingress) | `task wg-easy:status` |
+| Live peers / handshakes | `task wg-easy:peers` |
+| Logs | `task wg-easy:logs` |
+| Restart the pod | `task wg-easy:restart` |
 
 - **Config changes** (client subnet, endpoint, hooks, per-client firewall) are
   made in the **UI**. The `INIT_*` env vars apply on first boot only — editing
@@ -338,10 +343,18 @@ replicator with no extra configuration.
 **Restore** (lost/rebuilt cluster, NFS data intact): the PV/PVC re-bind to the
 existing `/appdata/wg-easy` and wg-easy comes back with all peers — no INIT
 re-bootstrap (the DB already exists, so `INIT_*` is skipped). If the NFS dataset
-itself was lost, restore it from the archive replica first:
+itself was lost, restore it from the archive replica first — the file-wise recipe
+in [docs/17 § Other backup types](17-disaster-recovery.md#other-backup-types):
+
 ```bash
-# on pve-nas-01, restore the dataset from the archive pool, then let Flux
-# recreate the pod (peers + server key are in the restored SQLite DB).
+# On pve-nas-01: restore the appdata dataset, unlock it, then copy the SQLite DB
+# back into place (peers + server key both live in it).
+sudo archive-backupctl restore appdata
+sudo zfs load-key -r -L prompt ssd/appdata-restore-<ts>
+sudo zfs mount -r ssd/appdata-restore-<ts>
+kubectl -n wg-easy scale deploy/wg-easy --replicas=0
+sudo cp -a /mnt/restore/appdata/<ts>/wg-easy/. /mnt/ssd/appdata/wg-easy/
+kubectl -n wg-easy scale deploy/wg-easy --replicas=1
 ```
 If the DB is unrecoverable, wg-easy re-bootstraps a **new** server key on next
 start (INIT applies to an empty `/etc/wireguard`); every client must then be

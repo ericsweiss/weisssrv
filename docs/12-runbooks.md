@@ -16,9 +16,12 @@ This document provides step-by-step procedures for common operational tasks.
 10. [Backup and Recovery](#backup-and-recovery)
 11. [Performance Investigation](#performance-investigation)
 12. [System Maintenance](#system-maintenance)
-13. [Understanding Skipped Tasks](#understanding-skipped-tasks)
-14. [Proxmox HA Post-Failover Reconciliation](#proxmox-ha-post-failover-reconciliation)
-15. [Observability Stack](#observability-stack)
+13. [K3s Cluster Maintenance](#k3s-cluster-maintenance)
+14. [Understanding Skipped Tasks](#understanding-skipped-tasks)
+15. [Proxmox HA Post-Failover Reconciliation](#proxmox-ha-post-failover-reconciliation)
+16. [Observability Stack](#observability-stack)
+17. [Emergency Contact / Escalation](#emergency-contact--escalation)
+18. [Related documentation](#related-documentation)
 
 ---
 
@@ -101,7 +104,7 @@ This document provides step-by-step procedures for common operational tasks.
    ```bash
    # Via Proxmox Web UI or CLI
    # Note: Use Debian 13 (Trixie) and local-ssd storage. The template name is
-   # pinned as `lxc_template` in all.yml — upstream rotates the point release
+   # pinned as `proxmox_lxc_template` in all.yml — upstream rotates the point release
    # and a stale name breaks a recreate.
    sudo pct create 200 \
      local:vztmpl/debian-13-standard_13.6-1_amd64.tar.zst \
@@ -244,7 +247,7 @@ Managed via AdGuard Home rewrites.
 1. **Edit DNS Variables**:
    ```yaml
    # ansible/inventories/prod/group_vars/dns.yml
-   adguard_rewrites:
+   adguard_home_rewrites:
      - domain: "new-service.{{ internal_domain }}"
        answer: "192.168.0.XXX"
    ```
@@ -263,7 +266,7 @@ Managed via AdGuard Home rewrites.
 4. Changes sync automatically to dns-02 via adguardhome-sync
 
 **Warning**: UI-added rewrites are deleted on the next Ansible deploy — the
-adguard_home role prunes any rewrite not in the codified `adguard_rewrites`
+adguard_home role prunes any rewrite not in the codified `adguard_home_rewrites`
 list. Codify in `group_vars/dns.yml` (Option 1) for anything permanent.
 
 ### External Records (*.ericsweiss.com)
@@ -394,6 +397,17 @@ label.
    sudo cat /etc/pve/firewall/cluster.fw
    ```
 
+### Sweep all hosts at once
+
+```bash
+task diagnose:network        # cluster/HA/ARP/bond/corosync/kube-vip/MetalLB, every host
+```
+
+One SSH pass over all Proxmox hosts and k3s servers, each call wall-clock
+bounded so an unreachable host does not stall the sweep. Start here when the
+fault is not obviously scoped to a single service — the output names which of
+the two shapes below you have.
+
 ### A Proxmox host or guest went dark
 
 Two host-level network faults have their own runbook in
@@ -403,11 +417,12 @@ before chasing the switch:
 - **A single guest** on a bonded host (`.104` / `.105` / `.106`) black-holed
   while the host and its co-resident guests stay reachable → the
   `all_slaves_active` bond bug.
-- **A whole OptiPlex host** dropped out of the cluster and needed a
-  power-cycle, with `e1000e 0000:00:19.0 nic0: Detected Hardware Unit Hang` in
-  the journal (or in Loki, which survives the power-cycle) → the e1000e TX hang;
-  the fix is `tso/gso/gro off` on `nic0`, codified in
-  `host_vars/pve-opt-0{1,2,3}.yml`.
+- **A whole `e1000e` host** (.104 / .105 / .106 / .107) dropped out of the
+  cluster and needed a power-cycle, with `e1000e 0000:00:19.0 nic0: Detected
+  Hardware Unit Hang` in the journal (`00:1f.6` on .107, or in Loki, which
+  survives the power-cycle) → the e1000e TX hang; the fix is `tso/gso/gro off`
+  on `nic0`, codified in `host_vars/pve-opt-0{1,2,3}.yml` and
+  `host_vars/pve-prec-01.yml`.
 
 ---
 
@@ -540,8 +555,9 @@ job itself is managed by the `proxmox_backup` role):
   tank-proxmox) did not complete successfully. Check the Proxmox task log
   (`Datacenter → Tasks` or `journalctl -u pvescheduler` on pve-nas-01) and
   the target storage's health/space.
-- **VzdumpBackupStale** — no successful vzdump in over 26 hours (one nightly
-  cycle + grace) on the named node, or the metric is absent on every Proxmox
+- **VzdumpBackupStale** — no successful vzdump in over 36 hours (one nightly
+  cycle plus a night deferred by planned host maintenance) on the named node,
+  or the metric is absent on every Proxmox
   host (hookscript not deployed anywhere). The metric is per-node, so a single
   node_exporter being unreachable is covered by the node-down alerts, not this
   one. Guest VM/LXC images are the DR path for the compute-node guests — treat
@@ -555,7 +571,7 @@ remediation follows.
 Cold-tier replication to the `archive` pool via `archive-backupctl`
 (`/usr/local/sbin/archive-backupctl run`, `nas_storage` role), fired by
 `archive-backup.timer` (OnCalendar in
-`ansible/roles/nas_storage/templates/archive-backup.timer.j2` is the source of
+weisssrv-lib `ansible_collections/weisssrv/infra/roles/nas_storage/templates/archive-backup.timer.j2` is the source of
 truth — currently 06:30, after the throttled cluster-wide vzdump finishes). It
 emits `archive_backup_last_run_success` / freshness metrics; `ArchiveBackupStale`
 additionally guards ~2-day staleness.
@@ -581,7 +597,7 @@ additionally guards ~2-day staleness.
   move `archive-backup.timer.j2` later / revisit the vzdump `bwlimit` in
   host_vars.
 
-#### ResticOffsiteFailed / ResticOffsiteStale / BackupArtifactStale
+#### ResticOffsite* / BackupArtifactStale
 
 Nightly offsite backup to Backblaze B2 via `restic-offsitectl run`
 (`restic_offsite` role), chained `OnSuccess=` after `archive-backup.service`
@@ -589,15 +605,46 @@ Nightly offsite backup to Backblaze B2 via `restic-offsitectl run`
 commands (source the env first: `set -a; . /etc/restic-offsite/env; set +a`):
 `restic-offsitectl status|snapshots|verify|restore <name>|prune`.
 
-- **ResticOffsiteFailed** — the last run exited non-zero. This ALSO fires on a
+The run emits one metric per stage rather than a single pass/fail, so upload
+health and retention health alert independently — a blocked prune no longer
+reads as a failed backup:
+
+| metric | alert(s) | means |
+|---|---|---|
+| `restic_offsite_last_backup_success` | ResticOffsiteFailed (1h, warning) → ResticOffsiteFailedProlonged (24h, critical) | the upload to B2 |
+| `restic_offsite_last_prune_success` | ResticOffsitePruneFailed (24h, warning) | the forget/prune stage |
+| `restic_offsite_retention_blocked` | ResticOffsitePruneBlocked (48h, warning) | the forget-ceiling guard refused |
+| `restic_offsite_repo_size_bytes` | ResticOffsiteRepoShrank (critical) | over-broad forget: >20% shrink in 2 days |
+| `restic_offsite_last_success_timestamp_seconds` | ResticOffsiteStale (50h, warning) → ResticOffsiteStaleCritical (4d, critical) | freshness of the last good run |
+| `restic_offsite_last_verify_success` / `_timestamp_seconds` | ResticOffsiteVerifyFailed (critical) / ResticOffsiteVerifyStale (8d, warning) → …StaleCritical (14d, critical) | the weekly `restic check` |
+
+- **ResticOffsiteFailed** — the upload stage failed. This ALSO fires on a
   **freshness-guard abort** (a source's newest `archsync-*` snapshot older than
-  26h — the guard refuses to upload a stale tree; look for `stale-source` in the
-  log). Inspect `journalctl -u restic-offsite.service` on pve-nas-01. If the
-  archive run itself is deferring `tank/proxmox`, fix that first (the
-  ArchiveBackup runbook above); B2 rides a good archive run. Re-run:
-  `sudo restic-offsitectl run`.
+  `restic_offsite_freshness_max_age_h`, 26h — the guard refuses to upload a
+  stale tree; look for `stale-source` in the log). Inspect
+  `journalctl -u restic-offsite.service` on pve-nas-01. If the archive run
+  itself is deferring `tank/proxmox`, fix that first (the ArchiveBackup runbook
+  above); B2 rides a good archive run. Re-run: `sudo restic-offsitectl run`.
+  Uploads that keep failing for a full day escalate to
+  **ResticOffsiteFailedProlonged** (critical, emails).
+- **ResticOffsitePruneFailed / ResticOffsitePruneBlocked** — uploads are fine
+  but retention is not. `PruneFailed` is usually a stale repository lock from an
+  interrupted prune (`restic-offsitectl status` shows it). `PruneBlocked` is the
+  forget-ceiling guard: the delete set exceeded
+  `restic_offsite_forget_max_remove` and the run refused rather than expiring a
+  large batch unattended. The guard is self-latching — the delete set only grows
+  — so confirm the set is legitimate (`restic-offsitectl snapshots`) and then
+  run `sudo restic-offsitectl prune --max-remove <n>` once.
+- **ResticOffsiteRepoShrank** — treat as a possible over-broad forget. B2's
+  hide lifecycle keeps deleted objects for 30 days; stop the next prune and
+  recover inside that window (docs/42).
 - **ResticOffsiteStale** — no successful offsite run within ~50h (tolerates one
   deferred-archive night). Confirm the timer + the OnSuccess chain, then run once.
+- **ResticOffsiteVerifyFailed / ResticOffsiteVerifyStale** — `Failed` means the
+  weekly `restic check` found repository damage: stop writing and work docs/42's
+  recovery path. `Stale` only means the check has not run (commonly blocked by
+  the same lock as `PruneFailed`); clear the blocker and
+  `sudo restic-offsitectl verify`.
 - **BackupArtifactStale** (`{app=...}`) — the NAS-side mtime collector sees no
   fresh file under `tank/backups/apps/<app>`, i.e. a relocated dump did not LAND
   (broken NFS mount / wrong path) even if the app's own wrapper metric is green.
@@ -667,20 +714,19 @@ to `tank/media` (see docs/07).
    done
    ```
 
-2. **Proxmox Backup**:
+2. **Proxmox Backup** (the nightly job targets `tank-proxmox`; use the same
+   storage by hand so the archive replication and restic offsite chain see it):
    ```bash
    # Via UI: Datacenter → Backup
    # Or via CLI
-   sudo vzdump --all --storage local --mode snapshot
+   sudo vzdump --all --storage tank-proxmox --mode snapshot
    ```
 
-3. **Configuration Backup**:
+3. **Configuration Backup** — this repository *is* the configuration backup, and
+   the normal branch + merge-request flow already pushes it. Confirm nothing is
+   uncommitted locally:
    ```bash
-   # This repository serves as config backup
-   git status
-   git add .
-   git commit -m "Backup: $(date)"
-   git push
+   git status --short
    ```
 
 ### Restore from Backup
@@ -762,7 +808,9 @@ The infrastructure has three independent update scopes, each with rolling deploy
 2. **K3s cluster nodes** - k3s binary on server/agent VMs (Ansible, rolling cordon/restart; kernel reboots via kured)
 3. **K3s workloads** - Helm charts and application images (managed by Flux: update `all.yml`, `task flux:sync-versions`, commit, push)
 
-**Note:** OS package updates (`task maintenance:update-packages`) span base infrastructure hosts, k3s node VMs, and app hosts (Plex + GitLab) in a single rolling run.
+**Note:** OS package updates (`task maintenance:update-packages`) span base
+infrastructure hosts, k3s node VMs, and the `app_servers` group (plex, gitlab,
+nextcloud, immich, immich-ml) in a single rolling run.
 
 ### Quick Reference
 
@@ -999,6 +1047,49 @@ ansible <host> -i inventories/prod -m command -a "systemctl status AdGuardHome"
 ansible <host> -i inventories/prod -m shell -a "journalctl -u AdGuardHome -n 50"
 ```
 
+### Post-maintenance verification
+
+`scripts/post-maintenance-verify.sh` is the cluster-health gate that runs after
+every maintenance op. It exits 0 on a healthy cluster, 1 on any ERROR.
+
+**When it runs**
+
+- Automatically after each `maintenance-*` CI job — those jobs invoke
+  `scripts/maintenance-run-with-verify.sh`, which always runs the verify even
+  when the maintenance command itself failed (so a half-finished op cannot skip
+  the health check).
+- On demand: the manual `maintenance-verify` job in the pipeline, or
+  `bash scripts/post-maintenance-verify.sh` locally against a working kubeconfig.
+
+**What it checks**
+
+| check | ERROR when |
+|---|---|
+| k3s nodes | a node is not `Ready` (`Ready,SchedulingDisabled` passes) |
+| pods | any pod unhealthy, CrashLoopBackOff included |
+| critical deployments | available replicas below desired |
+| Jobs | a Job in `Failed` |
+| GitLab | `/-/health` does not return 200 |
+| cluster DNS | in-cluster resolution fails (one-shot `busybox` pod, tag pinned to `busybox_version`; `task lint:busybox-version-pin` guards the pin) |
+
+**kured excuse, and its two accepted limitations.** kured reboots nodes
+serially during a maintenance run, so NotReady nodes and evicted pods are an
+expected transient. The verify excuses them *node-scoped*: an unhealthy pod or
+under-replicated Deployment is downgraded to WARN only while kured is mid-reboot
+**and** the workload sits on a rebooting node (or is unscheduled). Anything else
+is a hard ERROR. Two cases therefore WARN when they arguably should ERROR, and
+both are deliberate — the alternative is mis-classifying a real kured transient
+as a failure:
+
+- A pod that is unschedulable for an unrelated reason has no node, so it reads
+  the same as a drain-evicted pod during a reboot window.
+- On a multi-replica Deployment, one replica on a rebooting node excuses the
+  whole Deployment for that window.
+
+Re-run the verify after kured settles (`kubectl get nodes` shows no
+`weave.works/kured-reboot-in-progress` annotation); the excuse disappears with
+the reboot and any WARN that was real becomes an ERROR.
+
 ---
 
 ## K3s Cluster Maintenance
@@ -1164,7 +1255,7 @@ ssh <host> sudo ha-manager status | grep service:   # homes restored
 Do NOT try `ha-manager migrate <svc> <node>` to move a service off its home
 while the home is up — it is refused with *"resource not allowed on target
 node"*. That is correct behaviour, not a fault: with the priority groups in
-`ha_rules` (home at `:2`, the rest at `:1`) only the highest-priority AVAILABLE
+`proxmox_ha_rules` (home at `:2`, the rest at `:1`) only the highest-priority AVAILABLE
 node is a legal placement, and lower-priority nodes become legal exactly when
 the home goes away. Maintenance mode is the supported way to make a node
 unavailable on purpose. Automatic failover on a real node failure is unaffected.
@@ -1174,9 +1265,6 @@ Leaving `shutdown_policy` at `conditional` is deliberate. Switching it to
 and container migration is stop/start regardless, so you would get the same
 outage on a different host plus needless shuffling on every kernel reboot. The
 redundancy that matters is the dns-01/dns-02 pair plus automatic failover.
-
-Verified end-to-end on pve-laptop-01 (2026-08-08): drained, rebooted, released,
-and ct:150 returned to its home unaided while dns-02 served throughout.
 
 ### Rollback Procedures
 
@@ -1421,9 +1509,10 @@ When Proxmox HA migrates a VM/container to a different node (due to node failure
    # Use the HA status task (checks all source nodes)
    task proxmox:ha-status
 
-   # Or SSH to each replication SOURCE node (pvesr only shows local jobs)
-   # Source nodes: pve-laptop-01, pve-opt-01, pve-opt-02, pve-opt-03, pve-prec-01
-   ssh pve-laptop-01 sudo pvesr status
+   # Or SSH to each replication SOURCE node (pvesr only shows local jobs).
+   # The source set is whatever `source_node` values `proxmox_ha_replication_jobs`
+   # currently carries in group_vars/all.yml.
+   ssh pve-prec-01 sudo pvesr status
    ssh pve-opt-01 sudo pvesr status
    # ... etc
 
@@ -1440,7 +1529,7 @@ Use this when the original node is offline for extended maintenance or has faile
 
 1. **Edit `/Users/eric/src/weisssrv/ansible/inventories/prod/group_vars/all.yml`:**
    ```yaml
-   # Find the storage_replication_jobs section
+   # Find the proxmox_ha_replication_jobs section
    # Update source_node for all jobs of the affected VMID
 
    # Example: home-assistant (VMID 154) failed over from pve-prec-01 to pve-opt-02
@@ -1455,12 +1544,9 @@ Use this when the original node is offline for extended maintenance or has faile
      target_node: pve-prec-01  # <-- swap: old source becomes a target
    ```
 
-   The `ha_rules` node-affinity home for the VMID must move with it (`source_node`
+   The `proxmox_ha_rules` node-affinity home for the VMID must move with it (`source_node`
    has to track the HA home or `proxmox_ha/replication.yml` cannot manage the jobs).
-   `pve-laptop-01` is currently fallback-only (priority 1, never a home). Its RAM
-   was replaced 2026-08-08 and memtest86+ passed clean, so this is a soak
-   decision rather than a hardware block (`all.yml` `affinity-dns-01` has the
-   detail).
+   `pve-laptop-01` is fallback-only (priority 1, never a home).
 
 2. **Update all 4 jobs for the VMID:**
    - Change `source_node` to the current running node
@@ -1520,15 +1606,14 @@ Use this when the original node is back online and you want to restore the origi
 
 | Service | VMID | Primary Node | Schedule | Notes |
 |---------|------|--------------|----------|-------|
-| dns-01 | 150 | pve-laptop-01 | `*/15` (0,15,30,45) | Primary DNS; dns-02 provides redundancy |
+| dns-01 | 150 | pve-prec-01 | `*/15` (0,15,30,45) | Primary DNS; dns-02 provides redundancy |
 | smtp-relay | 151 | pve-opt-01 | `3-59/15` (3,18,33,48) | Single instance; brief outage during failover |
 | dns-02 | 160 | pve-opt-03 | `6-59/15` (6,21,36,51) | Secondary DNS; dns-01 provides redundancy |
 | home-assistant | 154 | pve-prec-01 | `9-59/15` (9,24,39,54) | HAOS VM; check integrations after failover |
 
-dns-01's home moved off pve-laptop-01 while it had a memtest-confirmed dead RAM
-cell, and returned on 2026-08-08 once the RAM was replaced and memtest86+ passed
-clean. `ha_rules` / `storage_replication_jobs` in `group_vars/all.yml` are the
-source of truth for the current homes.
+`proxmox_ha_rules` and `proxmox_ha_replication_jobs` in `group_vars/all.yml`, plus each
+guest's `proxmox_host` in `hosts.yml`, are the source of truth for the current
+homes — this table is a convenience copy.
 
 ### Replication Job ID Format
 
@@ -1666,6 +1751,56 @@ host pool. Auto-snapshots are now disabled at the dataset level (see
 
 3. **If disk is full**, reduce retention in `loki/release.yaml` (`retention_period`) or expand the zvol.
 
+### Loki break-glass NodePort (host log shipping when the ingress is down)
+
+**Symptoms:** host Alloy cannot push (`HostLogsStale` / Alloy `remote_write`
+errors) because Traefik, the `*.esweiss.com` cert, or the basic-auth middleware
+is broken — not Loki itself.
+
+Host Alloy normally ships to `https://loki.esweiss.com/loki/api/v1/push`. There
+is **no NodePort Service in git**: an always-on NodePort is an unauthenticated
+push/read path on every node IP that bypasses the IngressRoute and the
+`allow-loki-ingress` NetworkPolicy, and Flux would keep it alive forever. Apply
+it by hand for the duration of the outage only:
+
+```bash
+kubectl apply -f - <<'EOF'
+apiVersion: v1
+kind: Service
+metadata:
+  name: loki-external
+  namespace: observability
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: loki
+  ports:
+    - name: http
+      port: 3100
+      targetPort: 3100
+      nodePort: 31100
+EOF
+```
+
+Then point the affected hosts at it and redeploy Alloy:
+
+```bash
+# per host, in ansible/inventories/prod/host_vars/<host>.yml
+alloy_host_loki_url: http://192.168.0.161:31100/loki/api/v1/push
+ansible-playbook ansible/playbooks/site.yml --limit <host> --tags alloy_host
+```
+
+`31100` is already open in the Proxmox firewall (`sg-metrics`, docs/11), so no
+firewall change is needed. **Tear it down as soon as the ingress is back** —
+revert the `alloy_host_loki_url` override, redeploy, then:
+
+```bash
+kubectl delete service -n observability loki-external
+```
+
+Flux never reconciles this Service (it is in no kustomization), so nothing
+removes it for you.
+
 ### Exporter Down
 
 **Symptoms:** `up == 0` in Prometheus for a scrape target, gaps in dashboards.
@@ -1793,7 +1928,7 @@ the LAN).
 
 ---
 
-## References
+## Related documentation
 
 - [Proxmox VE Documentation](https://pve.proxmox.com/pve-docs/)
 - [ZFS Administration Guide](https://openzfs.github.io/openzfs-docs/)

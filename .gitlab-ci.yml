@@ -8,20 +8,35 @@
 # - Machine reboots: manual approval required (maintenance jobs auto-reboot when triggered)
 #
 # Required CI/CD Variables (Settings > CI/CD > Variables):
-# - OP_SERVICE_ACCOUNT_TOKEN (masked, protected) - 1Password service account
+# - OP_SERVICE_ACCOUNT_TOKEN (masked) - 1Password service account. NOT protected
+#   today; see the credential-scope note on terraform-plan before changing that.
 #
 # Optional CI/CD Variables:
 # - GH_API_TOKEN (masked) - For version checker API rate limits
 #
-# Pipeline triggers:
-# - Merge requests: Validation only (no deploy)
-# - Push to main: Validation + auto-deploy
-# - Scheduled: Version checking, secret detection, and the advisory
-#   tailscale-drift-plan / authentik-drift-plan (token-guarded); all other jobs
-#   excluded via when: never,
-#   EXCEPT a schedule with SCHEDULE_TYPE=full-test, which also runs the molecule
-#   image builds + molecule/integration tests as an external-dependency canary
-# - Manual (web): Lint, validate, test, security stages only (deploy/gate/maintenance excluded)
+# Pipeline triggers — what each pipeline source runs:
+#
+#   merge_request_event  lint + validate + test + AI review, and terraform-plan.
+#                        Never deploys; the drift plans do not run either.
+#   main                 the same checks, then validation-gate and the deploy
+#                        jobs each path-gated on its own inputs.
+#   schedule             version-check, secret detection and the four drift
+#                        plans. Everything else is when: never, except two
+#                        typed schedules:
+#                          SCHEDULE_TYPE=full-test    integration tests,
+#                                                     unfiltered, as an
+#                                                     external-dependency canary
+#                          SCHEDULE_TYPE=version-bump version-bump-bot
+#   web                  lint/validate/test/security only — the cheap jobs run,
+#                        the expensive ones (image builds, integration tests,
+#                        repo-policy-checks) are manual buttons. Deploy, gate
+#                        and maintenance stages are excluded; the maintenance
+#                        ops are manual buttons on main.
+#
+# Roles live in the weisssrv.infra collection (weisssrv-lib), so this pipeline
+# has no molecule matrix: the library tests the roles, ansible/requirements.yml
+# pins the version, and the five integration stacks here test role COMBINATIONS
+# against this repo's prod inventory.
 
 stages:
   - build
@@ -57,57 +72,52 @@ variables:
   # as a literal and scripts/check-lib-pins.py enforces that they all equal this
   # value and that it is a release tag. Bump here, then `--fix`. See the comment
   # on the include block.
-  WEISSSRV_LIB_REF: "v0.5.2"
-  # Single source for the Ansible pin used by the lint (.ansible-base) and
-  # deploy (.deploy-base) pip installs. Keep in step with requirements.txt's
-  # ansible pin (which the molecule-ci image builds from).
+  WEISSSRV_LIB_REF: "v0.6.0"
+  # Single source for the Ansible pin the deploy jobs (.deploy-base) pip-install.
+  # Keep in step with requirements.txt's ansible pin.
   ANSIBLE_VERSION: "11.6.0"
-  # Single source for the kustomize pin used by flux-lint and deploy-verify.
+  # Single source for the kustomize pin used by flux-lint and deploy-verify, and
+  # for the pytest/PyYAML pins the lint/test/verify jobs install. Jobs read the
+  # variables; `include:` inputs cannot (they resolve before this block exists),
+  # so those entries repeat the literals and repo-policy-checks' ci-pin-parity
+  # check fails the pipeline if a copy drifts.
   KUSTOMIZE_VERSION: "5.4.3"
   KUSTOMIZE_SHA256: "3669470b454d865c8184d6bce78df05e977c9aea31c30df3c669317d43bcc7a7"
-  # Single source for the pytest/PyYAML pins pip-installed by the lint/test/
-  # verify jobs. PYYAML_VERSION also matches the version-check job's pin so
-  # every job parses YAML with the same library version.
   PYTEST_VERSION: "9.1.1"
   PYYAML_VERSION: "6.0.2"
+  # ansible-galaxy resolves the weisssrv.infra collection from a git+https
+  # source on this instance. git reads these three as config, so the clone
+  # authenticates with the job token without writing a ~/.gitconfig. The
+  # rewrite matches only credential-less URLs, and the runner's own checkout URL
+  # already carries userinfo, so it is untouched.
+  GIT_CONFIG_COUNT: "1"
+  GIT_CONFIG_KEY_0: "url.https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/.insteadOf"
+  GIT_CONFIG_VALUE_0: "https://${CI_SERVER_HOST}/"
 
 # Workflow rules - when to run the pipeline
 workflow:
-  # Aggressively cancel superseded MR pipelines. GitLab's default auto-cancel is
-  # "conservative": it stops cancelling a pipeline the moment any NON-interruptible
-  # job (the molecule image builds, the deploy-* jobs) has started — so on a busy MR,
-  # every push left the previous pipeline's heavy but interruptible molecule/
-  # integration jobs running, piling up on the shared k3s runners and starving
-  # them (the systemd-in-DinD containers then time out — the "Container is not
-  # running" flakes get worse the more commits are pushed). on_new_commit:
-  # interruptible cancels those interruptible jobs on the next push while leaving
-  # the non-interruptible image-build/deploy jobs untouched.
+  # AUTHORITATIVE description of this pipeline's cancellation policy; other jobs
+  # point here rather than restating it.
   #
-  # That aggression is correct for an MR ref and WRONG for main. auto_cancel is
-  # evaluated per-ref, so it never touches another MR's pipeline — but on main it
-  # orphaned merged work: the molecule matrices upstream of the fan-ins stay
-  # interruptible on purpose, so a second merge landing during the first one's
-  # matrices cancelled them, which skipped the fan-ins, which skipped
-  # validation-gate, which left every deploy job of the FIRST merge unmet and
-  # never run. The second pipeline computes `changes:` against its own parent, so
-  # the first merge's paths are not re-covered either — the change merges and
-  # silently never reaches a host. interruptible:false on the fan-ins hardened
-  # the tail but could not fix that, and it is what the "never rapid-merge"
-  # operating rule was working around.
+  # MR refs: `on_new_commit: interruptible` — a new push cancels the previous
+  # pipeline's interruptible jobs (the heavy DinD integration matrix) instead of
+  # letting them pile up on the scarce privileged runner. GitLab's default is
+  # "conservative", which stops cancelling as soon as any non-interruptible job
+  # has started, so it would leave that matrix running.
   #
-  # `on_new_commit: none` for main means a merged pipeline always runs to
-  # completion; rapid merges then QUEUE at the deploy jobs' resource_groups
-  # rather than cancelling each other. MR refs keep the aggressive setting.
+  # main: `on_new_commit: none` (the rule below) — a merged pipeline always runs
+  # to completion. Under the aggressive setting a second merge cancelled the
+  # first's still-running interruptible jobs, which skipped validation-gate and
+  # left the first merge's deploys unmet and never run, with its `changes:` not
+  # re-covered by the second pipeline. Rapid merges instead QUEUE at the deploy
+  # jobs' resource_groups.
   #
-  # Those groups are PER TARGET, not one repo-wide group, and the resource_groups
-  # API sets them oldest_first: a given target is never deployed by two pipelines
-  # at once and always in merge order, so the last run per target is the newest
-  # merge. What that deliberately does NOT buy is whole-pipeline atomicity — once
-  # the first merge's deploy-ansible-base frees its group the second merge's can
-  # start while the first's per-app deploys are still running, and base targets
-  # every host, so two Ansible runs can meet on one box. A single repo-wide group
-  # would close that at the cost of serialising the app-deploy fan-out within
-  # every pipeline; per-target was chosen knowingly.
+  # Those groups are PER TARGET and oldest_first: one target is never deployed by
+  # two pipelines at once, and always in merge order. That is not whole-pipeline
+  # atomicity — two pipelines' Ansible runs can still meet on one host once the
+  # earlier one frees a group — which is why "serialize merges" is an operating
+  # rule (docs/13). A single repo-wide group would close it at the cost of
+  # serialising the app-deploy fan-out inside every pipeline.
   auto_cancel:
     on_new_commit: interruptible
   rules:
@@ -119,125 +129,10 @@ workflow:
     - if: '$CI_PIPELINE_SOURCE == "web"'
 
 # Templates for reuse
-
-# Persist the pip download cache + the ansible-galaxy collections across jobs so
-# the pip/galaxy installs in .ansible-base and .deploy-base stop re-fetching the
-# same pinned artifacts from PyPI/galaxy on every run (network round-trips that
-# add wall-clock time AND re-expose the pipeline to upstream transient failures,
-# e.g. a galaxy 500/timeout). Both env vars point the tools at cached dirs under
-# the build root; the cache key includes the pin files so a dependency bump
-# busts it. No-op (just no cache hits) when the runner has no distributed cache
-# backend — safe either way. Pulled in via `extends`.
-.dep-cache:
-  variables:
-    PIP_CACHE_DIR: "${CI_PROJECT_DIR}/.cache/pip"
-    ANSIBLE_COLLECTIONS_PATH: "${CI_PROJECT_DIR}/.cache/ansible-collections"
-  cache:
-    key:
-      files:
-        - requirements.txt
-        - ansible/requirements.yml
-    paths:
-      - .cache/pip
-      - .cache/ansible-collections
-
-.ansible-base:
-  extends: .dep-cache
-  variables:
-    # GitLab checkout is world-writable, causing Ansible to ignore ansible.cfg
-    # Use absolute roles path; config is copied to a secure temp file in before_script
-    ANSIBLE_ROLES_PATH: ${CI_PROJECT_DIR}/ansible/roles
-  before_script:
-    - apt-get update -qq
-    - apt-get install -y -qq git
-    - |
-      # Copy ansible.cfg to unpredictable temp path (avoids symlink attacks in /tmp)
-      export ANSIBLE_CONFIG="$(mktemp /tmp/ansible-XXXXXXXXXX.cfg)"
-      install -m 600 ansible/ansible.cfg "$ANSIBLE_CONFIG"
-      trap "rm -f '$ANSIBLE_CONFIG'" EXIT
-    # black<26.5.0: ansible-lint's jinja rule imports black, and the black 26.5.x
-    # wheels ship a broken mypyc extension (ImportError: undefined symbol
-    # CPyMndule_black___resources) that makes ansible-lint fail to load. Pin below
-    # it (ansible-lint only needs black>=24.3.0); lift once 26.5.x is fixed.
-    - pip install --quiet "ansible==${ANSIBLE_VERSION}" ansible-lint==25.12.2 'black<26.5.0'
-    - ansible-galaxy collection install -r ansible/requirements.yml
-
-.install-1password:
-  before_script:
-    - apt-get update -qq
-    - apt-get install -y -qq curl gnupg openssh-client
-    - |
-      # Install 1Password CLI.
-      #
-      # SUPPLY-CHAIN PIN: TLS alone does not prove the signing key is authentic
-      # (a compromised/MITM'd endpoint could serve a substituted key that then
-      # signs a malicious apt repo). So verify the downloaded key's fingerprint
-      # against 1Password's published code-signing key BEFORE trusting it.
-      # This RSA4096 code-signing key (created 2017-05-18, expires 2032-05-16) is
-      # long-lived; the fingerprint was obtained with:
-      #   curl -sSf https://downloads.1password.com/linux/keys/1password.asc \
-      #     | gpg --show-keys --with-fingerprint --with-colons \
-      #     | awk -F: '/^fpr:/{print $10; exit}'
-      OP_APT_KEY_FPR="3FEF9748469ADBE15DA7CA80AC2D62742012EA22"
-      op_key="$(mktemp)"
-      curl -sSf https://downloads.1password.com/linux/keys/1password.asc -o "$op_key"
-      # Collect the fingerprint of EVERY primary (pub) key in the downloaded
-      # material — not only the first — and require the set to be EXACTLY the one
-      # expected key. `gpg --dearmor` trusts every key in the file, so a bundle
-      # that prepends the genuine 1Password key before an injected primary key
-      # would otherwise pass a first-match check and still install the extra key.
-      got_fprs="$(gpg --show-keys --with-fingerprint --with-colons "$op_key" \
-        | awk -F: '/^pub:/ {p=1; next} /^fpr:/ && p {print $10; p=0}')"
-      if [ "$got_fprs" != "$OP_APT_KEY_FPR" ]; then
-        echo "ERROR: 1Password apt key material did not verify. Expected exactly:" >&2
-        echo "  $OP_APT_KEY_FPR" >&2
-        echo "Got:" >&2
-        echo "$got_fprs" | sed 's/^/  /' >&2
-        rm -f "$op_key"
-        exit 1
-      fi
-      gpg --dearmor --output /usr/share/keyrings/1password-archive-keyring.gpg < "$op_key"
-      rm -f "$op_key"
-      echo "deb [arch=amd64 signed-by=/usr/share/keyrings/1password-archive-keyring.gpg] https://downloads.1password.com/linux/debian/amd64 stable main" \
-        > /etc/apt/sources.list.d/1password.list
-      apt-get update -qq && apt-get install -y -qq 1password-cli
-    - op --version
-
-.install-1password-alpine:
-  before_script:
-    - apk add --no-cache curl bash gnupg jq
-    - |
-      # 1Password's apk repo is signed with their published RSA key; fetch the
-      # public key into /etc/apk/keys under its exact filename so apk can verify
-      # the index. The older `curl 1password.asc | gpg --dearmor` form broke once
-      # 1Password moved to this RSA key — apk reported "UNTRUSTED signature" and
-      # 1password-cli became unselectable. See 1password.dev/cli/get-started.
-      #
-      # SUPPLY-CHAIN PIN: TLS alone does not prove the key is authentic, so verify
-      # the downloaded RSA public key's SHA-256 checksum against the known-good
-      # value BEFORE adding the repo / installing. This apk key is a bare RSA
-      # public key (not a GPG key), so we pin its content hash rather than a GPG
-      # fingerprint; recompute with `curl -sSf <url> | sha256sum` if 1Password
-      # ever rotates it.
-      OP_APK_KEY_SHA256="0e88171d9f8b7630763f70cbf69f2a01b4ba8ea1d8e79487f59c162db255eb84"
-      op_apk_key="/etc/apk/keys/support@1password.com-61ddfc31.rsa.pub"
-      op_apk_key_tmp="$(mktemp)"
-      curl -sSf https://downloads.1password.com/linux/keys/alpinelinux/support@1password.com-61ddfc31.rsa.pub \
-        -o "$op_apk_key_tmp"
-      # Verify BEFORE moving into /etc/apk/keys: never let unverified key material
-      # sit in the trusted keys dir, and don't clobber a pre-existing valid key on
-      # a mismatched re-download.
-      if ! echo "${OP_APK_KEY_SHA256}  ${op_apk_key_tmp}" | sha256sum -c - ; then
-        echo "ERROR: 1Password apk key checksum mismatch (expected $OP_APK_KEY_SHA256)" >&2
-        rm -f "$op_apk_key_tmp"
-        exit 1
-      fi
-      install -m 0644 "$op_apk_key_tmp" "$op_apk_key"
-      rm -f "$op_apk_key_tmp"
-      echo "https://downloads.1password.com/linux/alpinelinux/stable/" >> /etc/apk/repositories
-      apk update
-      apk add --no-cache 1password-cli
-    - op --version
+#
+# .dep-cache, .install-1password and .install-1password-alpine now come from the
+# shared CI library's ci/templates/ fragments (see the include: block); they are
+# used exactly as before, via `extends:` / `!reference`.
 
 # Shared "never on scheduled or web pipelines" rule preamble. Deploy/
 # maintenance/gate jobs start their rules with this so the policy lives in
@@ -272,26 +167,13 @@ workflow:
 # instead of in two hand-synced copies (which silently drift — a job just stops
 # running on one trigger). Hidden jobs (dot-prefixed) are template fragments,
 # never scheduled. NOT plain YAML anchors: the pipeline stays anchor-free
-# (extends/!reference only) so the planned include:-file split remains safe
-# (docs/16 ARCH-4 — anchors are file-local and would break across includes).
-# The two molecule CI images have DISJOINT inputs, so each build job gates on
-# only its own — a requirements.txt pip bump must not rebuild molecule-test's
-# ~40-package apt layer, and a molecule-test apt change must not rebuild
-# molecule-ci's pip+galaxy layers.
-.paths-build-molecule-test:
-  changes:
-    - docker/molecule-test/**/*
-.paths-build-molecule-ci:
-  changes:
-    - docker/molecule-ci/**/*
-    - requirements.txt
-    - ansible/requirements.yml
+# (extends/!reference only) so anchors can never be referenced across an
+# include boundary, where they do not resolve.
 .paths-build-hermes-agent:
   changes:
     # The build clones upstream at hermes_version and builds THEIR Dockerfile,
     # so the only real build inputs are the pin (all.yml) and the build notes
-    # under docker/hermes-agent/. Deliberately NOT gated on .gitlab-ci.yml —
-    # matching the sibling build jobs (.paths-build-molecule-{test,ci}) — so an
+    # under docker/hermes-agent/. Deliberately NOT gated on .gitlab-ci.yml so an
     # unrelated CI edit can't trigger a multi-minute DinD rebuild + re-push of
     # the :<version>/:latest tags.
     - docker/hermes-agent/**/*
@@ -304,25 +186,6 @@ workflow:
     # docker/camofox-browser/. Not gated on .gitlab-ci.yml.
     - docker/camofox-browser/**/*
     - ansible/inventories/prod/group_vars/all.yml
-.paths-molecule-any:
-  # Union of .paths-molecule + .paths-integration — the trigger set for the MR
-  # targeted child pipeline (molecule-plan/molecule-trigger). The generator
-  # decides WHICH scenarios run; this union only decides whether planning is
-  # needed at all, so it must be a superset of both suites' trigger sets.
-  changes:
-    - ansible/roles/**/*
-    - ansible/molecule/**/*
-    - ansible/integration-tests/**/*
-    - ansible/playbooks/maintenance/**/*
-    - ansible/inventories/prod/group_vars/all.yml
-    - docker/molecule-test/**/*
-    - docker/molecule-ci/**/*
-    - requirements.txt
-    - ansible/requirements.yml
-    - scripts/molecule-retry.sh
-    - .gitlab/ci/molecule-jobs.gitlab-ci.yml
-    - scripts/generate-molecule-pipeline.py
-    - .gitlab-ci.yml
 .paths-repo-sync:
   # Union for repo-sync-checks (generated-file freshness): each check inside
   # the job is cheap enough that firing both on either trigger set is free.
@@ -334,27 +197,23 @@ workflow:
     - kubernetes/infrastructure/sources/versions-configmap.yaml
     - scripts/generate-versions-configmap.py
 .paths-repo-policy:
-  # Union for repo-policy-checks (repo-invariant asserts: molecule-matrix
-  # coverage, deploy coverage, kubectl/flux version pins, Taskfile smoke).
-  # Superset of every constituent check's old trigger set — a check may run
-  # on a path it doesn't care about (seconds of work), but can never be
-  # missed on one it does.
+  # Union for repo-policy-checks (repo-invariant asserts: deploy coverage,
+  # kubectl/flux/busybox/CI version pins, NetworkPolicy except-list parity,
+  # Taskfile smoke). Superset of every constituent check's own trigger set — a
+  # check may run on a path it doesn't care about (seconds of work), but can
+  # never be missed on one it does.
   changes:
-    - ansible/roles/**/*
     - ansible/playbooks/**/*
     - ansible/inventories/prod/**/*
     - ansible/integration-tests/**/*
+    - ansible/requirements.yml
     - scripts/**/*
     - .gitlab-ci.yml
-    - kubernetes/infrastructure/sources/versions-configmap.yaml
-    # backup-artifact-apps reads BackupArtifactStale's absent() arms from here;
-    # without this path a change to the ALERT half of that invariant does not
-    # trigger the check that pairs it with the collector's app list.
-    - kubernetes/infrastructure/observability/kube-prometheus-stack/release.yaml
+    # netpol-except-parity reads every NetworkPolicy; backup-artifact-apps reads
+    # BackupArtifactStale's absent() arms out of the kube-prometheus-stack
+    # release. Both live under kubernetes/.
+    - kubernetes/**/*
     - Taskfile.yml
-.paths-ansible:
-  changes:
-    - ansible/**/*
 # Cloudflare-only jobs (terraform-plan, deploy-terraform) gate on just the
 # cloudflare module so an unrelated tailscale change can't fire a Cloudflare
 # plan+apply. (terraform-fmt / terraform-validate come from the shared CI
@@ -371,99 +230,59 @@ workflow:
 .paths-b2-drift:
   changes:
     - scripts/b2-bucket-drift.py
-    - scripts/test_b2_bucket_drift.py
+    # The desired bucket settings the script reconciles against.
+    - scripts/b2-bucket.json
 .paths-prometheus-config:
   changes:
     - kubernetes/infrastructure/observability/kube-prometheus-stack/release.yaml
     - kubernetes/infrastructure/observability/kube-prometheus-stack/alertmanager-config.yaml
+    # Every custom alert now lives in standalone PrometheusRule CRs here, so
+    # without this an MR editing only a rule file would get no promtool check
+    # and no unit-test run — flux-lint/kubeconform validate the CR schema and
+    # never parse `expr`.
+    - kubernetes/infrastructure/observability/rules/**/*
     - scripts/extract-prometheus-config.py
     - scripts/lint-prometheus-config.sh
+    - scripts/check-alertmanager-behaviour.py
     # promtool unit tests + vendored upstream rules run by the lint script.
     - scripts/prometheus-rule-tests/**/*
-.paths-molecule:
-  changes:
-    - ansible/roles/**/*
-    - ansible/molecule/**/*
-    # The ONLY playbook any molecule scenario consumes:
-    # k3s/molecule/default/verify.yml include_tasks's
-    # playbooks/maintenance/_reboot-if-needed.yml. Other playbooks are
-    # exercised by integration-tests + deploy jobs, never by molecule — and
-    # prod group_vars/host_vars are NOT inputs either (every default scenario
-    # builds its own inventory in ansible/molecule/base.yml; version pins the
-    # scenarios need are duplicated into each molecule.yml or role defaults).
-    # A pure version bump therefore no longer fires this 43-job matrix.
-    - ansible/playbooks/maintenance/**/*
-    # Test-image/dependency changes must run the suite they feed
-    # (the build-molecule-test/ci jobs fire on these paths).
-    - docker/molecule-test/**/*
-    - docker/molecule-ci/**/*
-    - requirements.txt
-    - ansible/requirements.yml
-    # The shared in-job retry wrapper both suites run through.
-    - scripts/molecule-retry.sh
-    # The shared job templates both the static matrices and the generated
-    # child extend — a template edit must re-run the suites.
-    - .gitlab/ci/molecule-jobs.gitlab-ci.yml
-    # .gitlab-ci.yml defines the matrix + the plan/trigger wiring: a CI-only
-    # change must re-run the suites (the generator also global-triggers on it)
-    # rather than pass green and break the NEXT ansible MR.
-    - .gitlab-ci.yml
 .paths-integration:
   changes:
     - ansible/integration-tests/**/*
-    - ansible/roles/**/*
     # Every integration converge include_tasks's
     # ansible/molecule/tasks/container-warmup.yml, and _shared/prepare.yml
-    # re-imports ansible/molecule/prepare-common.yml — an edit there must
-    # re-run this suite, not just the molecule matrix.
+    # re-imports ansible/molecule/prepare-common.yml.
     - ansible/molecule/**/*
-    # Integration converges vars_files prod group_vars/all.yml (unlike
-    # molecule). host_vars/hosts.yml are NOT sourced — scoped to all.yml so
-    # host_vars edits don't fire the 5-job suite.
-    - ansible/inventories/prod/group_vars/all.yml
-    - docker/molecule-test/**/*
-    - docker/molecule-ci/**/*
-    - requirements.txt
+    # The roles under test now ship in weisssrv.infra: the pin is the suite's
+    # real input, alongside the prod all.yml the converges vars_files.
     - ansible/requirements.yml
+    - ansible/inventories/prod/group_vars/all.yml
+    # The shared in-job retry wrapper the suite runs through.
     - scripts/molecule-retry.sh
-    - .gitlab/ci/molecule-jobs.gitlab-ci.yml
     - .gitlab-ci.yml
 
-# GitLab HTTP state backend (project-scoped Terraform state + lock) shared by
-# terraform-plan and deploy-terraform via `extends`. Edit the path/auth once.
-.terraform-http-backend:
-  variables:
-    TF_HTTP_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/${CI_PROJECT_ID}/terraform/state/cloudflare"
-    TF_HTTP_LOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/${CI_PROJECT_ID}/terraform/state/cloudflare/lock"
-    TF_HTTP_UNLOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/${CI_PROJECT_ID}/terraform/state/cloudflare/lock"
-    TF_HTTP_USERNAME: "gitlab-ci-token"
-    TF_HTTP_PASSWORD: "${CI_JOB_TOKEN}"
-    TF_HTTP_LOCK_METHOD: "POST"
-    TF_HTTP_UNLOCK_METHOD: "DELETE"
-    TF_HTTP_RETRY_WAIT_MIN: "5"
-
 .deploy-base:
-  # .dep-cache: reuse pip wheels + galaxy collections across deploy jobs (the
-  # 12 jobs extending this each pip-install ansible + galaxy-install collections).
+  # .dep-cache (shared CI library fragment): reuse pip wheels + the galaxy
+  # collections across deploy jobs — every job extending this pip-installs
+  # ansible and galaxy-installs weisssrv.infra + its dependencies. Its
+  # ANSIBLE_COLLECTIONS_PATH is where the roles the playbooks address by FQCN
+  # are resolved from.
   extends: [.install-1password, .dep-cache]
   # Deploys touch shared infrastructure; never cancel a running deploy when a new
   # pipeline starts — wait for it to complete instead.
   interruptible: false
-  # Runner-pod casualties (scheduling timeout, NoExecute taint eviction
-  # when a node degrades mid-job — pipeline 355 lost deploy-ansible-base
-  # to DeletionByTaintManager) are environmental, and the playbooks are
-  # idempotent: retry instead of failing the whole needs chain.
+  # Runner-pod casualties (scheduling timeout, NoExecute taint eviction when a
+  # node degrades mid-job) are environmental, and the playbooks are idempotent:
+  # retry instead of failing the whole needs chain.
   retry:
     max: 2
     when:
       - runner_system_failure
   variables:
-    ANSIBLE_ROLES_PATH: ${CI_PROJECT_DIR}/ansible/roles
     # alloy_host renders loki.write basic_auth from these and asserts they are
-    # non-empty (pipeline 355 silently clobbered the fleet's alloy configs when
-    # they were missing). Defined on the shared base so EVERY deploy job that
-    # may run alloy_host (e.g. deploy-ansible-mail via site.yml --limit) has
-    # them, not just deploy-ansible-base.
+    # non-empty — absent, a deploy clobbers the fleet's alloy configs. On the
+    # shared base so EVERY deploy job that may run alloy_host (e.g.
+    # deploy-ansible-mail via site.yml --limit) has them.
     LOKI_PUSH_USER: "op://Homelab/Loki Push Auth/username"
     LOKI_PUSH_PASSWORD: "op://Homelab/Loki Push Auth/password"
   before_script:
@@ -570,13 +389,12 @@ workflow:
 
 # BUILD STAGE - Container images
 
-# The two CI images are built by separate jobs (build-molecule-test,
-# build-molecule-ci) so each rebuilds only when ITS OWN inputs change — a
-# requirements.txt pip bump no longer rebuilds molecule-test's ~40-package apt
-# layer, and vice-versa. Both share this base: the pinned static docker CLI
-# install, the dind-ready wait, registry login, and a build_and_push helper with
-# registry-backed BuildKit layer caching + a bounded in-script build retry.
-.build-molecule-base:
+# The two app images (hermes-agent, camofox-browser) share this base: the
+# pinned static docker CLI install, the dind-ready wait, registry login, and a
+# build_and_push helper with registry-backed BuildKit layer caching + a bounded
+# in-script build retry. The molecule CI/test images are published by
+# weisssrv-lib and consumed from its registry (see the integration jobs).
+.build-image-base:
   # Pushes images consumed by later jobs in this pipeline; do not interrupt.
   interruptible: false
   # Infra-class retries only. NOT script_failure: a genuinely broken Dockerfile
@@ -591,18 +409,24 @@ workflow:
   stage: build
   image: python:3.11
   services:
-    - docker:24.0-dind
+    # DinD daemon 24.0 (digest-pinned): its embedded BuildKit frontend accepts
+    # upstream hermes' symbolic `COPY --chmod`, which the 27.x builtin frontend
+    # rejects. The static docker CLI installed below stays 27.5.1 (newer client,
+    # older daemon is fine). This daemon runs privileged.
+    - name: docker:24.0-dind@sha256:167bad11bade46d4d9a88646ed7f9b11014dfdb898ba75c5a390eb03f21f0c45
+      # Explicit: the runner derives a service alias from the image name, and a
+      # digest-bearing name must still answer at the `docker` host DOCKER_HOST
+      # points at.
+      alias: docker
   variables:
     DOCKER_HOST: tcp://docker:2375
     DOCKER_TLS_CERTDIR: ""
-    # Daemon-embedded BuildKit (dind 24.0) — no buildx CLI plugin needed (the
-    # static docker binary lacks it). Enables --cache-from + inline cache.
+    # Daemon-embedded BuildKit; enables --cache-from + inline cache.
     DOCKER_BUILDKIT: "1"
   before_script:
-    # Install the static docker CLI (NOT docker.io: the Trixie docker.io package
-    # ships only the daemon, no CLI — see docker/molecule-ci/Dockerfile). Pinned
-    # version + sha256 to match the checksum discipline used for every other
-    # downloaded binary in this pipeline.
+    # Install the static docker CLI (NOT docker.io: that Debian package ships
+    # only the daemon, no CLI). Pinned version + sha256 to match the checksum
+    # discipline used for every other downloaded binary in this pipeline.
     - |
       ARCH=$(dpkg --print-architecture)
       case "$ARCH" in
@@ -658,59 +482,6 @@ workflow:
         fi
       }
 
-# molecule-test: the container molecule spins up (has all role apt deps). apt-
-# only build; rebuilt only when docker/molecule-test/** changes.
-build-molecule-test:
-  extends: .build-molecule-base
-  script:
-    - build_and_push molecule-test docker/molecule-test/
-  rules:
-    # full-test schedule canary: rebuild from scratch so build-time external deps
-    # (apt) are exercised. Must precede the schedule when:never (first-match).
-    - if: '$CI_PIPELINE_SOURCE == "schedule" && $SCHEDULE_TYPE == "full-test"'
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      changes: !reference [.paths-build-molecule-test, changes]
-    - if: '$CI_COMMIT_BRANCH == "main"'
-      changes: !reference [.paths-build-molecule-test, changes]
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-      when: manual
-      allow_failure: true
-
-# molecule-ci: the GitLab CI runner image (docker-cli + pip deps + collections).
-# Rebuilt only when docker/molecule-ci/**, requirements.txt, or
-# ansible/requirements.yml change. Emits the MOLECULE_CI_IMAGE digest dotenv.
-build-molecule-ci:
-  extends: .build-molecule-base
-  script:
-    - build_and_push molecule-ci -f docker/molecule-ci/Dockerfile .
-    # Capture the immutable digest of the CI runner image and emit it as a
-    # dotenv var. The .molecule-base `image:` reference consumes MOLECULE_CI_IMAGE
-    # so a same-pipeline rebuild can't be raced by anyone retagging :latest
-    # mid-flight. The molecule-TEST image needs no digest dotenv: the molecule
-    # jobs pull it by its immutable `:${CI_COMMIT_SHORT_SHA}` tag (see
-    # .molecule-base before_script), which already pins the test target per
-    # pipeline.
-    - MOLECULE_CI_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "${CI_REGISTRY_IMAGE}/molecule-ci:${CI_COMMIT_SHORT_SHA}")
-    - echo "MOLECULE_CI_IMAGE=${MOLECULE_CI_DIGEST}" > molecule-images.env
-    - cat molecule-images.env
-  artifacts:
-    reports:
-      dotenv: molecule-images.env
-    expire_in: 7 days
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule" && $SCHEDULE_TYPE == "full-test"'
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      changes: !reference [.paths-build-molecule-ci, changes]
-    - if: '$CI_COMMIT_BRANCH == "main"'
-      changes: !reference [.paths-build-molecule-ci, changes]
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-      when: manual
-      allow_failure: true
-
 # build-hermes-agent: NousResearch Hermes Agent publishes no container image, so
 # we build our own into the GitLab registry. The job clones the upstream repo at
 # the pinned tag (hermes_version in all.yml) and builds THEIR self-contained
@@ -724,24 +495,23 @@ build-molecule-ci:
 # on an MR — the :<hermes_version>, :latest, and :<commit-sha> tags are all
 # pushed only on main so an unmerged branch can't repoint a running deployment.
 build-hermes-agent:
-  extends: .build-molecule-base
+  extends: .build-image-base
   variables:
     HERMES_UPSTREAM_REPO: "https://github.com/NousResearch/hermes-agent.git"
     # The image build EXECUTES the CLIs it installs (`codex --version` /
     # `claude --version` verification steps), and the Claude CLI's native
-    # binary SIGILLs on the legacy OptiPlex Core 2 Quads ("Illegal
-    # instruction", pipeline 854) — pin the build to modern-CPU nodes, same
-    # invariant as secret_detection's gitleaks pin above.
+    # binary SIGILLs on the legacy OptiPlex Core 2 Quads — pin the build to
+    # modern-CPU nodes, same invariant as secret_detection's gitleaks pin.
     KUBERNETES_NODE_SELECTOR_CPU: "esweiss.com/cpu=modern"
   script:
     - |
       # Install the Docker buildx CLI plugin (pinned + sha256, matching the
-      # checksum discipline used for the static docker CLI in .build-molecule-base).
+      # checksum discipline used for the static docker CLI in .build-image-base).
       # The static docker binary ships no buildx plugin, and upstream Hermes's
       # Dockerfile uses BuildKit-only features (COPY --link / --chmod), so the
       # classic builder cannot build it and DOCKER_BUILDKIT=1 `docker build`
       # fails with "buildx component is missing". Installing the plugin lets
-      # `docker build` route through the daemon's embedded BuildKit (dind 24.0).
+      # `docker build` route through the daemon's embedded BuildKit.
       BUILDX_ARCH=$(dpkg --print-architecture)
       BUILDX_VERSION=v0.35.0
       case "$BUILDX_ARCH" in
@@ -880,7 +650,7 @@ build-hermes-agent:
 # load-bearing :<version>/:latest tags push only on main so an unmerged branch
 # can't repoint a running deployment.
 build-camofox-browser:
-  extends: .build-molecule-base
+  extends: .build-image-base
   variables:
     CAMOFOX_UPSTREAM_REPO: "https://github.com/jo-inc/camofox-browser.git"
   script:
@@ -888,8 +658,7 @@ build-camofox-browser:
       # Install the Docker buildx CLI plugin (pinned + sha256). The base
       # template exports DOCKER_BUILDKIT=1 globally, so EVERY `docker build`
       # here requires the buildx component even for a Dockerfile with no
-      # BuildKit-only syntax — same reason build-hermes-agent installs it
-      # (learned the hard way: 3x "buildx component is missing" retries).
+      # BuildKit-only syntax — same reason build-hermes-agent installs it.
       BUILDX_ARCH=$(dpkg --print-architecture)
       BUILDX_VERSION=v0.35.0
       case "$BUILDX_ARCH" in
@@ -1081,6 +850,18 @@ repo-policy-checks:
         if [ "$rc" -ne 0 ]; then overall=1; failed="$failed $name"; echo "FAILED: $name (rc=$rc)"; fi
       }
 
+      # Every deploy job that runs an Ansible playbook must ALSO trigger on
+      # ansible/requirements.yml. The roles ship in weisssrv.infra, so the
+      # collection pin is the only in-repo signal that a role changed; a job
+      # that misses it goes on deploying the old version, silently.
+      # check-deploy-coverage.sh cannot see this — requirements.yml is not a
+      # role/playbook/inventory path.
+      #
+      # Lives in scripts/ rather than inline here so `task lint` can run the
+      # SAME code: an inline heredoc is reachable only from this job, and both
+      # this check and ci-pin-parity fire exactly on a .gitlab-ci.yml edit —
+      # precisely when a green local run is most likely to be trusted.
+
       # deploy-verify FLUX_VERSION pin must match the versions-configmap.
       check_flux_version_pin() {
         set -eu
@@ -1092,15 +873,36 @@ repo-policy-checks:
         [ "$PIN" = "$CM" ] || { echo "FLUX_VERSION pin (${PIN}) drifted from versions-configmap flux_version (${CM}) — bump the deploy-verify version + sha256 pair in .gitlab-ci.yml"; return 1; }
       }
 
+      # post-maintenance-verify's busybox image vs the busybox_version pin
+      # (mirrors task lint:busybox-version-pin). The script runs kubectl outside
+      # Flux, so no ${busybox_version} substitution reaches it.
+      check_busybox_version_pin() {
+        set -eu
+        PIN=$(sed -n 's/.*--image=busybox:\([0-9.]*\).*/\1/p' scripts/post-maintenance-verify.sh | head -1)
+        AV=$(sed -n 's/^busybox_version: *"\{0,1\}\([0-9.]*\)"\{0,1\} *$/\1/p' ansible/inventories/prod/group_vars/all.yml | head -1)
+        echo "post-maintenance-verify busybox: ${PIN:-<not found>} / all.yml busybox_version: ${AV:-<not found>}"
+        [ -n "$PIN" ] || { echo "Could not extract the busybox image pin from scripts/post-maintenance-verify.sh"; return 1; }
+        [ -n "$AV" ] || { echo "Could not extract busybox_version from group_vars/all.yml"; return 1; }
+        [ "$PIN" = "$AV" ] || { echo "busybox pin (${PIN}) drifted from all.yml busybox_version (${AV})"; return 1; }
+      }
+
+      # ci-pin-parity also lives in scripts/ (see the note above
+      # check_flux_version_pin): both it and collection-pin-trigger are the two
+      # checks `task lint` used to be missing, and an inline function is
+      # unreachable from there.
+
       check_taskfile() { task --list >/dev/null && bash scripts/check-taskfile.sh; }
 
-      run_check molecule-matrix-coverage bash scripts/check-molecule-matrix-coverage.sh
       run_check deploy-coverage bash scripts/check-deploy-coverage.sh
       run_check deploy-host-coverage python3 scripts/check-deploy-host-coverage.py
-      run_check env-secret-coverage python3 scripts/check-env-secret-coverage.py
+      run_check collection-pin-trigger python3 scripts/check-collection-pin-trigger.py
+      run_check integration-matrix-coverage bash scripts/check-integration-matrix-coverage.sh
       run_check backup-artifact-apps python3 scripts/check-backup-artifact-apps.py
+      run_check netpol-except-parity python3 scripts/check-netpol-except-parity.py
       run_check kubectl-version-pin python3 scripts/check-kubectl-version-pin.py
       run_check flux-version-pin check_flux_version_pin
+      run_check busybox-version-pin check_busybox_version_pin
+      run_check ci-pin-parity bash scripts/check-ci-pin-parity.sh
       run_check taskfile-smoke check_taskfile
       [ "$overall" -eq 0 ] || echo "Failed policy checks:$failed"
       exit "$overall"
@@ -1115,178 +917,8 @@ repo-policy-checks:
       when: manual
       allow_failure: true
 
-ansible-lint:
-  needs: []
-  stage: lint
-  extends: .ansible-base
-  script:
-    - cd ansible
-    - |
-      export SSH_PUBLIC_KEY="ssh-ed25519 AAAA_PLACEHOLDER_FOR_CI_SYNTAX_CHECK"
-      export SMTP_RELAY_USER="ci-placeholder"
-      export SMTP_RELAY_PASSWORD="ci-placeholder"
-      for playbook in playbooks/*.yml playbooks/*/*.yml; do
-        if [ -f "$playbook" ]; then
-          # Skip task include files (convention: prefix with underscore)
-          # POSIX-compatible pattern match (works in sh, not just bash)
-          case "$(basename "$playbook")" in
-            _*)
-              echo "Skipping task include: $playbook"
-              continue
-              ;;
-          esac
-          echo "Checking syntax: $playbook"
-          ansible-playbook --syntax-check -i inventories/prod "$playbook"
-        fi
-      done
-    - ansible-lint playbooks/ roles/
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      changes: !reference [.paths-ansible, changes]
-    - if: '$CI_COMMIT_BRANCH == "main"'
-      changes: !reference [.paths-ansible, changes]
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-
-# AI-REVIEW STAGE - AI-powered code review on MRs
-
-# PR-Agent by Qodo - AI code review
-# Requires: GitLab API Token and OpenAI API Key in 1Password
-pr-agent-review:
-  stage: ai-review
-  needs:
-    # Wait for lint + security only — no need to block on slow test jobs.
-    # AI review benefits from knowing the code is lint-clean and secret-safe
-    # but doesn't depend on molecule/integration test results.
-    - job: shellcheck
-      optional: true
-    - job: yaml-lint
-      optional: true
-    - job: ansible-lint
-      optional: true
-    - job: terraform-fmt
-      optional: true
-    - job: repo-sync-checks
-      optional: true
-    - job: flux-lint
-      optional: true
-    - job: secret_detection
-  # Pinned by digest to prevent supply-chain surprises on a job that handles
-  # both a GitLab PAT and an OpenAI key. Bump alongside upstream releases.
-  image: codiumai/pr-agent:0.34@sha256:1c1743e93bf6627cd14528cd4defe82465f17860e8f20e6c0ac6558971f61c61
-  variables:
-    CONFIG__GIT_PROVIDER: "gitlab"
-    GITLAB__URL: "https://git.ericsweiss.com"
-    # gpt-5.6, matching the library template's default so every reviewer in the
-    # repo family runs the same model at the same effort — a review that differs
-    # per repo is one you cannot reason about from its output. The other three
-    # repos take it from ci/review/pr-agent.yml; this job is inline, so it is
-    # pinned here by hand and must be moved WITH that default.
-    # See: https://qodo-merge-docs.qodo.ai/usage-guide/changing_a_model/
-    CONFIG__MODEL: "gpt-5.6"
-    # Use (most of) the model's ~1M context for deep review. The window is 1.05M
-    # total = ~922k input + 128k output; get_max_tokens() returns TOTAL context
-    # and does NOT reserve output, so cap usage at 900k to stay under the input
-    # limit (with headroom for the system prompt). This is the operational cap
-    # that get_max_tokens min()s against.
-    CONFIG__MAX_MODEL_TOKENS: "900000"
-    # gpt-5.6 shipped after pr-agent 0.34, so it is absent from pr-agent's
-    # MAX_TOKENS table — declare the model's context window explicitly or
-    # get_max_tokens() errors out ("Model gpt-5.6 is not defined in MAX_TOKENS").
-    # Set to the full ~1.05M window; MAX_MODEL_TOKENS above is the real cap.
-    # (Reasoning + temperature-omission still apply via the gpt-5* prefix check.)
-    CONFIG__CUSTOM_MODEL_MAX_TOKENS: "1050000"
-    # 'high', and NOT because xhigh is unavailable — because it is a trap. Two
-    # independent reasons, both measured:
-    #   1. The litellm bundled in pr-agent 0.34 only allows xhigh for
-    #      gpt-5.1-codex-max and gpt-5.2; elsewhere it raises
-    #      UnsupportedParamsError and pr-agent silently falls back to o4-mini.
-    #   2. Where xhigh IS accepted (pr-agent 0.40 on weisssrv-lib) it does not
-    #      finish: 40.7m/44.6m/74.5m to succeed and two outright failures at
-    #      45m/90m emitting NOTHING, on a 56k-token diff. Behind allow_failure
-    #      that reads as a GREEN pipeline with no review. At 'high' the same
-    #      reviews complete in ~7m.
-    # This matches the library template's default so every reviewer in the repo
-    # family runs identically.
-    CONFIG__REASONING_EFFORT: "high"
-    # Per-LLM-call timeout (litellm). 120s timed out immediately; 600s was not
-    # enough either — measured on weisssrv-lib!4, one `improve` call on a
-    # 52k-token diff took 1478s, timed out at 600, RETRIED, and the retry ate the
-    # job budget. This repo's MRs are far larger (this branch's own diff is ~8.8x
-    # that one), so size the call timeout above the slow case and let the job
-    # timeout below be the real bound. A too-small value does not fail fast — it
-    # fails, retries, and fails again having done the work twice.
-    # 1200s per call. Raised from 600 after a 52k-token diff on weisssrv-lib!4
-    # took 1478s in ONE improve call, timed out, retried, and ate the job budget.
-    # 1800 was over-corrected for THIS repo. Be precise about what 1200 does and
-    # does not cover: it clears every pass observed here (the 407-file !201 did
-    # both passes in 16.2m total) but it is still BELOW that 1478s lib!4 call, so
-    # a diff of that shape would time out. That is an accepted trade — this file
-    # governs weisssrv only, the failure is loud in the job, and the fix is to
-    # raise this AND the job timeout together. It is not a value that makes all
-    # conceivable diffs safe.
-    CONFIG__AI_TIMEOUT: "1200"
-    PR_REVIEWER__NUM_CODE_SUGGESTIONS: "6"
-    PR_REVIEWER__EXTRA_INSTRUCTIONS: "Be thorough. Review every file. Flag all bugs, security issues, and documentation drift."
-    PR_CODE_SUGGESTIONS__NUM_CODE_SUGGESTIONS: "6"
-  script:
-    - |
-      # NO 1Password here, deliberately. Both credentials arrive as masked CI
-      # variables (GITLAB__PERSONAL_ACCESS_TOKEN, OPENAI__KEY), so this job no
-      # longer needs OP_SERVICE_ACCOUNT_TOKEN — a whole-vault credential with no
-      # business in a job whose .gitlab-ci.yml comes from the branch under
-      # review. Fetching a token here never protected it anyway: the fetch runs
-      # in the same shell as the reviewed code, so anything that shell can do to
-      # a variable it can do to an `op read`.
-      #
-      # GITLAB__PERSONAL_ACCESS_TOKEN is now a PROJECT access token
-      # (weisssrv-review-bot, Developer + api) rather than a user PAT, so reviews
-      # post as the bot and the token cannot push. Developer rather than Reporter
-      # because pr-agent applies its "Review effort N/5" label, which Reporter
-      # cannot do — verified against the API before the swap.
-
-      echo "Running AI code review on MR !${CI_MERGE_REQUEST_IID}..."
-      echo "Model: gpt-5.6 (high reasoning, 900k context, 1200s call timeout)"
-
-      # Run full review
-      python -m pr_agent.cli \
-        --pr_url="https://git.ericsweiss.com/eric/weisssrv/-/merge_requests/${CI_MERGE_REQUEST_IID}" \
-        review
-
-      # Suggest improvements
-      python -m pr_agent.cli \
-        --pr_url="https://git.ericsweiss.com/eric/weisssrv/-/merge_requests/${CI_MERGE_REQUEST_IID}" \
-        improve
-
-      echo "AI review complete"
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    # OPERATIONAL INVARIANT: the && $OP_SERVICE_ACCOUNT_TOKEN guard means this
-    # job is never CREATED when the token is unset (e.g. fork MRs). An absent
-    # AI review is therefore expected, not a failure — a missing pr-agent-review
-    # on such an MR is not a regression. validation-gate does NOT need this job
-    # (AI review is advisory), so its absence never blocks deploys.
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $OP_SERVICE_ACCOUNT_TOKEN'
-  allow_failure: true  # Don't block MRs on AI review
-  # Must exceed CONFIG__AI_TIMEOUT times the number of passes (review + improve
-  # = 2 x 1200s = 40m), plus the 1Password install and clone. Keep that inequality
-  # if either number changes: a job timeout below it kills a call that had not yet
-  # hit its own timeout, discarding the output of the pass that already finished.
-  #
-  # 45m, not 90m. MEASURED durations on this repo: 3.0m and 5.6m on small MRs,
-  # 16.2m on the 407-file !201 — so 90m was 5.5x the worst case ever seen and only
-  # ever served as a hang budget. Note a timeout is a CEILING, not a duration:
-  # lowering it does not make a passing pipeline faster, it bounds how long a
-  # wedged one burns a runner before failing. Both review passes are kept —
-  # dropping `improve` would halve the ceiling by removing review coverage, which
-  # is not the trade being made here.
-  #
-  # allow_failure means it never blocks — and that is exactly why a failure here
-  # is easy to miss: the pipeline stays GREEN and the review comment simply never
-  # appears. Check the job, not the pipeline.
-  timeout: 45m
+# ansible-lint and the AI reviewer (pr-agent-review) are generated from the
+# shared CI library templates — see the include: block below.
 
 # VALIDATE STAGE - Schema and configuration validation
 
@@ -1330,11 +962,16 @@ terraform-plan:
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
-    # OPERATIONAL INVARIANT: the && $OP_SERVICE_ACCOUNT_TOKEN guard means a
-    # terraform/ change on a tokenless pipeline (e.g. fork MR) produces NO plan
-    # — the MR widget will simply lack a Terraform report. That's an expected
-    # skip, not a clean plan. validation-gate needs this job optionally, so a
-    # token-gated skip can't silently mask drift on a real (token-bearing) run.
+    # CREDENTIAL SCOPE, accepted deliberately. This is the ONLY job that reads
+    # 1Password secrets on a merge_request_event ref, and it keeps that rule
+    # because it is the only pre-merge preview of a change deploy-terraform
+    # auto-applies on main. OP_SERVICE_ACCOUNT_TOKEN is a project variable, so
+    # it is in every MR job's environment regardless — the exposure closes by
+    # marking it PROTECTED in project settings, which also removes this plan
+    # from MRs and needs pr-agent-review's gate switched to $OPENAI__KEY in the
+    # same change (docs/13). The token guard means a tokenless pipeline gets NO
+    # plan; that is an expected skip, not a clean plan, and validation-gate
+    # needs this job optionally so it cannot mask drift on a real run.
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes: !reference [.paths-terraform-cloudflare, changes]
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
@@ -1376,27 +1013,23 @@ tailscale-drift-plan:
   # Advisory drift signal only — never blocks CI (apply stays supervised).
   allow_failure: true
   rules:
-    # Periodic drift detection on the schedule (token available on the protected
-    # main branch). No changes: filter — the point is to catch out-of-band
-    # Admin-console edits when nothing in-repo changed.
+    # Schedule is the real detector: no changes: filter, so it catches
+    # out-of-band Admin-console edits when nothing in-repo changed.
     - if: '$CI_PIPELINE_SOURCE == "schedule" && $OP_SERVICE_ACCOUNT_TOKEN'
-    # And validate a tailscale-module change against live state before its
-    # supervised apply. Token-guarded like terraform-plan (fork MRs lack it).
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $OP_SERVICE_ACCOUNT_TOKEN'
-      changes: !reference [.paths-terraform-tailscale, changes]
+    # Post-merge, before the supervised apply. Deliberately NO merge_request_event
+    # rule: this job materializes vault secrets into a job that runs the branch's
+    # own code, and an advisory drift signal is not worth that on an unmerged ref
+    # (terraform-plan is the one job that keeps its MR rule — see it for why).
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes: !reference [.paths-terraform-tailscale, changes]
 
 # Read-only drift `terraform plan` for the authentik SSO module against the
-# live authentik objects. Never applies (every apply is a supervised manual
-# step — see terraform/authentik/README.md; there is deliberately no
-# terraform:authentik-apply task yet). A non-empty plan = an Admin-UI edit
-# drifted from the codified state; allow_failure so drift, or a plan hiccup,
-# surfaces without blocking CI. Mirrors tailscale-drift-plan (op-injected
-# creds + TF_HTTP_* backend), scoped to the authentik module + its own state
-# name. KNOWN ADVISORY DIFF: until the approved Sonarr basic-auth clear is
-# applied, this job exits 2 (yellow) with exactly that one in-place update —
-# designed signal, not a failure (README "The Sonarr exception").
+# live authentik objects. Never applies from CI: the apply is `task
+# terraform:authentik-apply`, which refuses to run non-interactively (see
+# terraform/authentik/README.md). A non-empty plan = an Admin-UI edit drifted
+# from the codified state; allow_failure so drift, or a plan hiccup, surfaces
+# without blocking CI. Mirrors tailscale-drift-plan (op-injected creds +
+# TF_HTTP_* backend), scoped to the authentik module + its own state name.
 authentik-drift-plan:
   # Shared HTTP-backend auth/lock settings come from .terraform-http-backend;
   # only the authentik state path is overridden here.
@@ -1438,14 +1071,12 @@ authentik-drift-plan:
   # Advisory drift signal only — never blocks CI (apply stays supervised).
   allow_failure: true
   rules:
-    # Periodic drift detection on the schedule (token available on the protected
-    # main branch). No changes: filter — the point is to catch out-of-band
-    # Admin-UI edits when nothing in-repo changed.
+    # Schedule is the real detector: no changes: filter, so it catches
+    # out-of-band Admin-UI edits when nothing in-repo changed.
     - if: '$CI_PIPELINE_SOURCE == "schedule" && $OP_SERVICE_ACCOUNT_TOKEN'
-    # And validate an authentik-module change against live state before its
-    # supervised apply. Token-guarded like terraform-plan (fork MRs lack it).
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $OP_SERVICE_ACCOUNT_TOKEN'
-      changes: !reference [.paths-terraform-authentik, changes]
+    # Post-merge, before the supervised apply. NO merge_request_event rule: this
+    # job reads thirteen vault items (every OIDC client secret among them) and
+    # must not do that in a job running an unmerged branch's code.
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes: !reference [.paths-terraform-authentik, changes]
 
@@ -1471,14 +1102,13 @@ b2-drift-plan:
   # Advisory drift signal only — never blocks CI (apply stays supervised).
   allow_failure: true
   rules:
-    # Periodic drift detection on the schedule (token available on the protected
-    # main branch). No changes: filter — the point is to catch out-of-band
-    # Backblaze-console edits when nothing in-repo changed.
+    # Schedule is the real detector: no changes: filter, so it catches
+    # out-of-band Backblaze-console edits when nothing in-repo changed.
     - if: '$CI_PIPELINE_SOURCE == "schedule" && $OP_SERVICE_ACCOUNT_TOKEN'
-    # And validate a drift-script change against the live bucket before merge.
-    # Token-guarded like terraform-plan (fork MRs lack it).
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $OP_SERVICE_ACCOUNT_TOKEN'
-      changes: !reference [.paths-b2-drift, changes]
+    # Post-merge validation of a drift-script change against the live bucket.
+    # NO merge_request_event rule — same credential-scope reasoning as the two
+    # drift plans above; the script and its bucket config are covered pre-merge
+    # by python-tests.
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes: !reference [.paths-b2-drift, changes]
 
@@ -1531,6 +1161,10 @@ prometheus-config-lint:
       promtool --version && amtool --version
   script:
     - bash scripts/lint-prometheus-config.sh
+    # Behavioural half of the gate: amtool check-config accepts a route reorder
+    # that silences Watchdog and a one-sided alertname rename that unbinds an
+    # inhibit pair. Same pairing as `task lint:prometheus-config`.
+    - python3 scripts/check-alertmanager-behaviour.py
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
@@ -1540,162 +1174,119 @@ prometheus-config-lint:
       changes: !reference [.paths-prometheus-config, changes]
     - if: '$CI_PIPELINE_SOURCE == "web"'
 
-# TEST STAGE - Unit and integration tests
+# TEST STAGE - Integration tests
 
-# NOTE: Molecule/integration tests require Docker-in-Docker, which needs a privileged
-# runner. All weisssrv jobs (including these) run on the infrastructure runner
-# (gitlab-runner-privileged Helm release, tags: infrastructure) which has privileged=true.
-# The runner is Flux-managed: edit kubernetes/apps/gitlab-runner-privileged/release.yaml
-# and push; Flux reconciles within ~1 min (or run `task flux:reconcile` to force).
-
-# Molecule unit tests — one parallel job per role/scenario. Each role with a
-# molecule/ directory gets its own CI job via parallel:matrix.
-# Full static matrix — main, web, and the scheduled full-test run. MR
-# pipelines run the TARGETED subset instead via molecule-plan/molecule-trigger
-# below (the generated child extends the same .molecule-test-job template).
-molecule-tests:
-  extends: .molecule-test-job
-  parallel:
-    matrix:
-      # Each role/scenario combo gets its own parallel job. Roles with a
-      # single scenario use "default". k3s has two scenarios (default +
-      # agent) that run as separate jobs to halve wall time.
-      - ROLE: acme_certs
-        SCENARIO: default
-      - ROLE: alloy_host
-        SCENARIO: default
-      - ROLE: adguard_home
-        SCENARIO: default
-      - ROLE: adguard_home
-        SCENARIO: tls
-      - ROLE: adguard_sync
-        SCENARIO: default
-      - ROLE: base
-        SCENARIO: default
-      - ROLE: gitlab
-        SCENARIO: default
-      # immich: render/contract scenario (immich_skip_install) — asserts the
-      # compose/config/.env/nginx/systemd/backup-wrapper renders without a real
-      # Docker runtime.
-      - ROLE: immich
-        SCENARIO: default
-      # immich_ml: render/contract scenario (skip_immich_ml_deploy) — asserts
-      # the OpenVINO compose (image lockstep on immich_version, /dev/dri, port
-      # 3003) + systemd unit render without a Docker runtime or GPU.
-      - ROLE: immich_ml
-        SCENARIO: default
-      # home_assistant: contract test for the two Jinja2 templates
-      # (configuration.yaml.j2, secrets.yaml.j2). The role's scp/ssh
-      # path against the live HAOS appliance can't be exercised in a
-      # container — HAOS isn't a Linux distro you can run in Docker —
-      # so the scenario flips home_assistant_render_only=true to skip
-      # the deploy half and asserts on the rendered output.
-      - ROLE: home_assistant
-        SCENARIO: default
-      - ROLE: k3s
-        SCENARIO: default
-      - ROLE: k3s
-        SCENARIO: agent
-      - ROLE: nas_storage
-        SCENARIO: default
-      # restic_offsite is the nightly B2 offsite-backup role on pve-nas-01; its
-      # hermetic scenario runs against a local file repo + fake archsync snapshot
-      # tree (no network), asserting subcommands/metric names/0600 secret files/
-      # timer enable + the freshness-guard abort (docs/42).
-      - ROLE: restic_offsite
-        SCENARIO: default
-      # encrypted_swap is the dm-crypt random-key swap role (NAS + compute hosts);
-      # its scenario contract-tests the crypttab/systemd render on the skip path.
-      - ROLE: encrypted_swap
-        SCENARIO: default
-      - ROLE: zfs_arc_cap
-        SCENARIO: default
-      - ROLE: vfio_passthrough
-        SCENARIO: default
-      - ROLE: nextcloud
-        SCENARIO: default
-      - ROLE: nfs_tls
-        SCENARIO: default
-      - ROLE: nic_tuning
-        SCENARIO: default
-      - ROLE: plex
-        SCENARIO: default
-      - ROLE: postfix_null_client
-        SCENARIO: default
-      - ROLE: qol
-        SCENARIO: default
-      - ROLE: smtp_relay
-        SCENARIO: default
-      - ROLE: tailscale
-        SCENARIO: default
-      - ROLE: unbound
-        SCENARIO: default
-      # apt_signed_repo is the shared signed-apt-repo pipeline backing
-      # alloy_host + gitlab + plex; its scenario hermetically tests both the
-      # accept (correct fingerprint) and reject (wrong fingerprint) paths.
-      - ROLE: apt_signed_repo
-        SCENARIO: default
-      # docker_engine is the shared pinned-Docker-Engine install pipeline
-      # backing immich + immich_ml + nextcloud; its scenario renders + asserts
-      # the journald daemon.json on the skip-install path (no real repo/daemon).
-      - ROLE: docker_engine
-        SCENARIO: default
-      # compose_app is the shared compose-lifecycle super-role backing immich +
-      # immich_ml + nextcloud (compose systemd unit + write_prom_metrics lib +
-      # nginx task-flow); its scenario asserts the rendered unit body (empty and
-      # non-empty RequiresMountsFor) and the metrics lib without a Docker runtime.
-      - ROLE: compose_app
-        SCENARIO: default
-      # prometheus_exporter is the shared install pipeline backing
-      # zfs_exporter + unbound_exporter; its scenario contract-tests both
-      # artifact branches (tarball + deb) on the skip path.
-      - ROLE: prometheus_exporter
-        SCENARIO: default
-      - ROLE: zfs_exporter
-        SCENARIO: default
-      - ROLE: unbound_exporter
-        SCENARIO: default
-      - ROLE: node_exporter_host
-        SCENARIO: default
-      - ROLE: textfile_collector
-        SCENARIO: default
-      - ROLE: resolv_conf
-        SCENARIO: default
-      - ROLE: resolv_conf
-        SCENARIO: empty-search
-      # zvol_mount uses loop devices in prepare; works under privileged DinD.
-      - ROLE: zvol_mount
-        SCENARIO: default
-      - ROLE: proxmox_firewall
-        SCENARIO: default
-      - ROLE: proxmox_vm
-        SCENARIO: default
-      - ROLE: proxmox_lxc
-        SCENARIO: default
-      - ROLE: proxmox_ha
-        SCENARIO: default
-      - ROLE: proxmox_backup
-        SCENARIO: default
-      # zfs_encryption: validates template rendering, file modes, systemd
-      # ordering hooks, and per-pool service enable. Cannot exercise
-      # `zfs load-key` (no kernel module in container) or live Connect
-      # calls (no fixture endpoint), but covers the deploy contract end
-      # to end with mocked inputs.
-      - ROLE: zfs_encryption
-        SCENARIO: default
-  rules:
-    # full-test schedule canary (must precede the schedule when:never rule —
-    # first-match-wins): catches external-dependency rot (apt/galaxy/upstream
-    # installers) without waiting for an unrelated ansible MR to turn red.
-    - if: '$CI_PIPELINE_SOURCE == "schedule" && $SCHEDULE_TYPE == "full-test"'
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    # NO merge_request_event clause: MR pipelines run the targeted child
-    # (molecule-plan/molecule-trigger, gated on .paths-molecule-any) instead
-    # of this full matrix.
-    - if: '$CI_COMMIT_BRANCH == "main"'
-      changes: !reference [.paths-molecule, changes]
-    - if: '$CI_PIPELINE_SOURCE == "web"'
+# The role molecule matrix lives in weisssrv-lib, which owns the roles. What
+# stays here are the five multi-container stack tests: they exercise ROLE
+# COMBINATIONS against this repo's prod group_vars, which is a weisssrv
+# property the library cannot test.
+#
+# They need Docker-in-Docker, so they run on the privileged infrastructure
+# runner (gitlab-runner-privileged Helm release, tags: infrastructure). That
+# runner is Flux-managed: edit kubernetes/apps/gitlab-runner-privileged/
+# release.yaml and push.
+.integration-test-job:
+  stage: test
+  # Backstop for infra-class scheduling failures (a job pod that can't be placed
+  # during transition churn surfaces as runner_system_failure). Deliberately NOT
+  # script_failure (a failing test must not be masked — transient container
+  # start storms are handled by the in-job destroy+jitter loop in
+  # scripts/molecule-retry.sh) and NOT stuck_or_timeout_failure (a hung test
+  # should fail fast, not burn another full timeout).
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - scheduler_failure
+  needs:
+    # Gate the expensive privileged-DinD fan-out behind the two fastest
+    # correctness lints, so an MR with a syntax/lint error doesn't burn the
+    # suite on the scarce privileged runner. optional: both are path-gated.
+    - job: ansible-lint
+      optional: true
+    - job: yaml-lint
+      optional: true
+  # The library's pre-built CI runner image (docker-cli + molecule + ansible +
+  # its dependency collections baked in), pinned to the same tag as every other
+  # library include. `image:` expands $VAR but not bash defaults, so the ref
+  # lives in the variables block below.
+  image: $MOLECULE_CI_IMAGE
+  services:
+    # Digest-pinned (multi-arch index), matching the library's molecule jobs.
+    #
+    # --insecure-registry: the in-cluster pull-through cache (kubernetes/apps/
+    # registry-cache, docs/27) is plaintext HTTP, network-fenced to this
+    # namespace; every fresh DinD daemon needs the flag to pull from it.
+    - name: docker:27.5.1-dind@sha256:aa3df78ecf320f5fafdce71c659f1629e96e9de0968305fe1de670e0ca9176ce
+      # Explicit: the runner derives a service alias from the image name, and a
+      # digest-bearing name must still answer at the `docker` host DOCKER_HOST
+      # points at.
+      alias: docker
+      command: ["--insecure-registry=registry-cache.registry-cache.svc.cluster.local:5000"]
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+    ANSIBLE_FORCE_COLOR: "1"
+    PY_COLORS: "1"
+    ANSIBLE_CALLBACKS_ENABLED: junit
+    JUNIT_OUTPUT_DIR: "$CI_PROJECT_DIR/junit"
+    # Both images are published by weisssrv-lib's release pipeline under the
+    # release tag; weisssrv must stay on that project's CI/CD job-token
+    # allowlist for these cross-project pulls to authenticate.
+    MOLECULE_CI_IMAGE: "$CI_REGISTRY/eric/weisssrv-lib/molecule-ci:$WEISSSRV_LIB_REF"
+    # Read by the scenarios' `platforms[].image` (they carry the same tag as a
+    # fallback default for a local run), so this job's pull and the containers
+    # molecule starts are the same build.
+    MOLECULE_TEST_IMAGE: "$CI_REGISTRY/eric/weisssrv-lib/molecule-test:$WEISSSRV_LIB_REF"
+    # In-cluster pull-through registry cache: the first job's fresh DinD
+    # cold-pulls the test image, the rest hit the LAN cache.
+    REGISTRY_CACHE: "registry-cache.registry-cache.svc.cluster.local:5000"
+  before_script:
+    # Wait for the DinD sidecar — with a pre-built CI image the script starts
+    # before DinD is ready (no apt-get delay to absorb its startup).
+    - |
+      for i in $(seq 1 30); do
+        docker info >/dev/null 2>&1 && break
+        echo "Waiting for DinD... ($i)"
+        sleep 1
+      done
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+    # Pre-pull the test image into this job's DinD so the scenarios
+    # (pre_build_image: true) start containers without pulling. Cache first,
+    # timeout-bounded, falling back to the direct registry — a cache outage only
+    # loses the warm hit.
+    - |
+      cref="${REGISTRY_CACHE}/${MOLECULE_TEST_IMAGE#"${CI_REGISTRY}"/}"
+      if timeout 25 docker pull "$cref" 2>/dev/null; then
+        docker tag "$cref" "$MOLECULE_TEST_IMAGE"
+      else
+        docker pull "$MOLECULE_TEST_IMAGE"
+      fi
+    # weisssrv.infra itself is installed by molecule's own `dependency` step
+    # (each scenario points it at ansible/requirements.yml) — deliberately not
+    # duplicated here, so the pin has one installer.
+    - mkdir -p "$CI_PROJECT_DIR/junit"
+  artifacts:
+    when: always
+    reports:
+      junit: junit/*.xml
+  # Multi-container scenarios run 2-3 systemd containers through full role
+  # stacks; base-infrastructure alone is ~12m idle, and the in-job wrapper
+  # retries molecule up to 4 attempts.
+  timeout: 35m
+  script:
+    - cd "ansible/integration-tests/$TEST"
+    # Shared destroy+jitter retry (scripts/molecule-retry.sh) — multi-container
+    # scenarios are the most start-storm-prone. No base/scenario opts: each
+    # integration test has a single molecule.yml.
+    - bash "$CI_PROJECT_DIR/scripts/molecule-retry.sh"
+    # Downgrade the scenario's DECLARED negative-path failures in the junit
+    # report so a green job uploads a green report (no stack declares any
+    # today — the absent file is a no-op). Runs only on success; a failed job
+    # never reaches this line and keeps its raw report.
+    - python3 "$CI_PROJECT_DIR/scripts/sanitize-junit-expected-failures.py"
+      --junit-dir "$CI_PROJECT_DIR/junit"
+      --expectations "$CI_PROJECT_DIR/ansible/integration-tests/$TEST/molecule/default/expected-junit-failures.txt"
 
 integration-tests:
   extends: .integration-test-job
@@ -1708,149 +1299,147 @@ integration-tests:
           - mail-stack
           - storage-stack
   rules:
-    # full-test schedule canary — same rationale as molecule-tests.
+    # full-test schedule canary (must precede the schedule when:never rule —
+    # first match wins): catches external-dependency rot (apt/galaxy/upstream
+    # installers) without waiting for an unrelated MR to turn red.
     - if: '$CI_PIPELINE_SOURCE == "schedule" && $SCHEDULE_TYPE == "full-test"'
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
-    # NO merge_request_event clause: MRs use the targeted child pipeline.
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes: !reference [.paths-integration, changes]
     - if: '$CI_COMMIT_BRANCH == "main"'
       changes: !reference [.paths-integration, changes]
     - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+      allow_failure: true
 
-# MR-targeted molecule child pipeline
-# On MRs the full 43+5 matrix is replaced by a GENERATED child pipeline running
-# only the scenarios affected by the diff (scripts/generate-molecule-pipeline.py:
-# role dirs -> their scenarios, provider roles -> dependent roles transitively,
-# integration stacks by exercised role, all.yml -> integration only, global
-# inputs -> everything; unknown role dirs fail loudly, over-selects when in
-# doubt). Full coverage still runs on every merge to main + the scheduled
-# full-test pipeline, so a cross-role regression a targeted MR run missed is
-# caught before any deploy (deploys are main-only, behind validation-gate).
-molecule-plan:
-  stage: test
-  image: python:3.11-slim
-  needs: []
-  variables:
-    # Full clone so the MR diff base is always reachable (same rationale as
-    # repo-policy-checks' merge-base guard).
-    GIT_DEPTH: 0
-  before_script:
-    - apt-get update -qq && apt-get install -y -qq --no-install-recommends git
-    - pip install --no-cache-dir --quiet "PyYAML==${PYYAML_VERSION}"
-  script:
-    - python3 scripts/generate-molecule-pipeline.py "$CI_MERGE_REQUEST_DIFF_BASE_SHA" -o molecule-child.yml
-    - cat molecule-child.yml
-  artifacts:
-    paths:
-      - molecule-child.yml
-    expire_in: 1 day
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      changes: !reference [.paths-molecule-any, changes]
-
-molecule-trigger:
-  stage: test
-  needs:
-    - job: molecule-plan
-    # Forward build-molecule-ci's dotenv digest pin into the trigger job so the
-    # child's jobs resolve the exact rebuilt CI image (not a racy :latest) when
-    # the image changed in this MR. optional: the build only runs on docker/
-    # changes; without it the child falls back to :latest via .molecule-base.
-    - job: build-molecule-ci
-      optional: true
-      artifacts: true
-    # Parity with the static matrix's anti-retag guard: when docker/molecule-test
-    # changed, the child's SHA-tag pull must not race the image push — hold the
-    # trigger until the build lands. optional: absent on non-image MRs.
-    - job: build-molecule-test
-      optional: true
-  trigger:
-    include:
-      - artifact: molecule-child.yml
-        job: molecule-plan
-    # depend: this job's result mirrors the child pipeline's — a red child
-    # reds the MR pipeline, so targeted tests gate MRs exactly like the full
-    # matrix used to.
-    strategy: depend
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      changes: !reference [.paths-molecule-any, changes]
-# SECURITY STAGE - Secret detection and scanning
-
+# SHARED CI LIBRARY (eric/weisssrv-lib)
+#
+# The generic lint/validate/test/security/review jobs and the reusable
+# `.dep-cache` / `.install-1password*` / `.terraform-http-backend` fragments are
+# consumed from the library via include:project at a pinned tag. Only the inputs
+# that differ from a library default are passed.
+#
+# THE PIN IS REPEATED, AND THAT IS NOT A CHOICE. `include:` resolves at
+# pipeline-CREATION time, before this file's `variables:` block exists, so
+# `ref: $WEISSSRV_LIB_REF` silently does not work. (A project-level CI/CD
+# variable IS readable there, but it would move the pin out of git, where a
+# library bump stops showing up in a diff and cannot be reverted as an MR.)
+# variables.WEISSSRV_LIB_REF is the single source of truth and
+# scripts/check-lib-pins.py fails the pipeline if any entry drifts from it or
+# pins a branch; `--fix` rewrites them. Bump the variable, then run --fix.
+#
+# GitLab's managed Secret-Detection template is pulled in by the library's
+# secret-detection component, which overrides that job — including it directly
+# here as well would be redundant.
 include:
-  # Secret-Detection (gitleaks) is pulled in by the shared library's
-  # secret-detection component below, which overrides the managed job — so it is
-  # NOT included directly here (a second include of the same managed template
-  # would be redundant).
-  #
-  # .molecule-base + the molecule/integration job templates stay LOCAL: the
-  # generated MR child pipeline (molecule-plan -> molecule-trigger) includes ONLY
-  # this file, so moving it into the shared library would break the "child
-  # includes just this file" invariant (docs/16 ARCH-4) and re-introduce the
-  # default: tags non-inheritance bug pipeline 777 hit.
-  - local: .gitlab/ci/molecule-jobs.gitlab-ci.yml
-
-  # Shared CI library (eric/weisssrv-lib) — the generic/parameterizable
-  # lint/validate/test/security jobs, consumed via include:project + pinned tag.
-  # Inputs reproduce weisssrv's prior INLINE behavior job-for-job: the default
-  # tags:[infrastructure] keeps every job on the privileged infrastructure
-  # runner, and each `changes:` path list matches the old .paths-* anchor. The
-  # adoption MR description carries the job-by-job parity evidence.
-  #
-  # THE PIN IS REPEATED, AND THAT IS NOT A CHOICE. `include:` is resolved at
-  # pipeline-CREATION time, before this file's `variables:` block exists, so
-  # `ref: $WEISSSRV_LIB_REF` silently does not work. (A project-level CI/CD
-  # variable IS readable there, but it would move the pin out of git, where a
-  # library bump stops showing up in a diff and cannot be reverted as an MR.)
-  # variables.WEISSSRV_LIB_REF is the single source of truth and
-  # scripts/check-lib-pins.py fails the pipeline if any entry drifts from it or
-  # pins a branch; `--fix` rewrites them. Bump the variable, run --fix.
-  #
-  # These four take the library defaults verbatim, so they share ONE entry:
-  # `file:` accepts a list. The entries below it each pass their own `inputs:`,
-  # which bind per ENTRY, so they cannot be folded in here.
-  #   yaml-lint: reproduces weisssrv's four `yamllint -d relaxed <target>`
-  #     invocations + .paths-yaml-lint.
-  #   shellcheck: reproduces the scripts/ + ansible/*.sh globs, the ansible/roles
-  #     find, the *.sh.j2 Jinja neutralizer, and .paths-shellcheck.
-  #   terraform: emits BOTH terraform-fmt (lint) and terraform-validate
-  #     (validate); reproduces fmt_dir terraform/, module_glob terraform/*/, and
-  #     .paths-terraform.
-  #   secret_detection: overrides GitLab's managed Secret-Detection job
-  #     (cpu_selector esweiss.com/cpu=modern, allow_failure true,
-  #     MR/main/schedule rules); the hard block still comes from validation-gate
-  #     needing this job non-optionally.
+  # Reusable fragments, no jobs of their own. terraform-http-backend's defaults
+  # already describe this instance and the cloudflare state; the two drift-plan
+  # jobs override the three TF_HTTP_*ADDRESS vars for their own state names.
   - project: eric/weisssrv-lib
-    ref: v0.5.2
+    ref: v0.6.0
     file:
-      - /ci/lint/yaml-lint.yml
-      - /ci/lint/shellcheck.yml
+      - /ci/templates/dep-cache.yml
+      - /ci/templates/install-1password.yml
+      - /ci/templates/terraform-http-backend.yml
+
+  # These take the library defaults verbatim, so they share ONE entry (`file:`
+  # accepts a list; `inputs:` bind per ENTRY, so anything parameterized needs
+  # its own entry below).
+  #   terraform: emits BOTH terraform-fmt (lint) and terraform-validate
+  #     (validate) over terraform/ and terraform/*/.
+  #   secret_detection: overrides GitLab's managed job (modern-CPU node
+  #     selector, allow_failure, MR/main/schedule rules); the hard block comes
+  #     from validation-gate needing this job non-optionally.
+  - project: eric/weisssrv-lib
+    ref: v0.6.0
+    file:
       - /ci/validate/terraform.yml
       - /ci/security/secret-detection.yml
+
+  # yaml-lint: the library default targets `.gitlab/ci/`, which this repo no
+  # longer has; lint all of `.gitlab/` (the GitLab agent config) instead.
+  - project: eric/weisssrv-lib
+    ref: v0.6.0
+    file: /ci/lint/yaml-lint.yml
+    inputs:
+      targets: "ansible/ kubernetes/ .gitlab-ci.yml .gitlab/"
+      changes:
+        - "ansible/**/*"
+        - "kubernetes/**/*"
+        - ".gitlab-ci.yml"
+        - ".gitlab/**/*"
+
+  # shellcheck: `find_dir` is empty and `ansible/*.sh` is gone from the default
+  # globs — the shell the roles ship now lives in the weisssrv.infra collection,
+  # where the library's own pipeline shellchecks it. What is left is scripts/
+  # plus the terraform helper scripts the default set missed.
+  - project: eric/weisssrv-lib
+    ref: v0.6.0
+    file: /ci/lint/shellcheck.yml
+    inputs:
+      direct_globs: "scripts/*.sh terraform/*/*.sh"
+      find_dir: ""
+      changes:
+        - "scripts/**/*"
+        - "terraform/*/*.sh"
+
+  # ansible-lint: playbooks, inventories and the integration scenarios. The
+  # roles they address by FQCN come from the collection, so the pin is installed
+  # first (galaxy_requirements). ansible-lint's own syntax-check rule runs
+  # `ansible-playbook --syntax-check` per playbook, so no separate loop.
+  #
+  # No `config:` input: the job runs from the repo root, and ansible-lint only
+  # walks UP from its cwd, so the config lives at ./.ansible-lint (moved there
+  # from ansible/, where a root-cwd run never saw it). It is in `changes:` so an
+  # edit to the profile re-runs the job.
+  - project: eric/weisssrv-lib
+    ref: v0.6.0
+    file: /ci/lint/ansible-lint.yml
+    inputs:
+      targets: "ansible/"
+      galaxy_requirements: "ansible/requirements.yml"
+      # Full image, not slim: galaxy installs the collection from a git+ URL,
+      # which needs the git executable.
+      image: python:3.13
+      changes:
+        - "ansible/**/*"
+        - ".ansible-lint"
+        - ".gitlab-ci.yml"
+
+  # python-lint: ruff over the helper scripts, using the library's shared
+  # profile vendored to this repo's root as ruff.toml.
+  - project: eric/weisssrv-lib
+    ref: v0.6.0
+    file: /ci/lint/python-lint.yml
+    inputs:
+      targets: "scripts"
+      config: "--config ruff.toml"
+      changes:
+        - "scripts/**/*.py"
+        - "ruff.toml"
+        - ".gitlab-ci.yml"
+
   # docs-link-check: runs weisssrv's repo-local scripts/check-doc-links.py, which
   # scans every TRACKED *.md (role/app/agent READMEs link into docs/ too), so the
   # trigger list has to be `**/*.md`-wide — the library default only covers
   # docs/ + the top-level READMEs.
   - project: eric/weisssrv-lib
-    ref: v0.5.2
+    ref: v0.6.0
     file: /ci/lint/docs-link-check.yml
     inputs:
       changes:
         - "**/*.md"
         - "scripts/check-doc-links.py"
         - "scripts/test_check_doc_links.py"
+
   # version-check: reports available pin updates and changes nothing — the
-  # read-only half of the pair whose other half is version-bump-bot (still a
-  # local job below). Replaces an 85-line local job that this template was
-  # generalised FROM, so the defaults are that job: stage lint, image
-  # python:3.11, needs: [], the version-report.json artifact at
-  # `when: always`, and the four soft-fail rules (schedule / web-manual /
-  # MR / main). Only the two commands differ per consumer.
+  # read-only half of the pair whose other half is version-bump-bot (a local job
+  # below). Only the two commands differ from the library defaults.
   #
-  # `changes` is deliberately NOT passed. The library default is `["**/*"]`,
-  # which matches every merge request — exactly what the local job did by
-  # carrying no filter at all. Passing `[]` would match NOTHING and delete the
-  # job silently.
+  # `changes` is deliberately NOT passed: the library default is `["**/*"]`,
+  # which matches every merge request. Passing `[]` would match NOTHING and
+  # delete the job silently.
   #
   # No credential input exists by design: `setup_command` and `check_command`
   # come from the branch under review, so a token fetched here would be readable
@@ -1859,51 +1448,50 @@ include:
   # to push. Without it, version-check-ci.py skips the comment and still writes
   # the report; that graceful skip lives in the script, not in this job.
   - project: eric/weisssrv-lib
-    ref: v0.5.2
+    ref: v0.6.0
     file: /ci/maintenance/version-check.yml
     inputs:
       setup_command: 'pip install --quiet "pyyaml==${PYYAML_VERSION}" requests==2.34.2'
       check_command: "python3 ./scripts/version-check-ci.py"
+
   # python-tests: pytest scripts/. Most of the suite are drift guards that read
   # files OUTSIDE scripts/, so the library default `changes` (scripts/ + docs)
   # leaves them unable to fire on their own subject.
   #
   # GOAL: every repo file a scripts/test_*.py reads matches a pattern below, so a
-  # guard fires on its own subject.
+  # guard fires on its own subject. Derived by TRACING, not by reading the tests:
+  # a sys.addaudithook over `pytest scripts/` recorded every open, and each path
+  # was matched with Ruby File.fnmatch under GitLab's flags
+  # (PATHNAME|DOTMATCH|EXTGLOB). Re-run that trace when adding a test rather than
+  # guessing its inputs — the list is hand-maintained and only as current as the
+  # last trace.
   #
-  # Derived by TRACING, not by reading the tests: a sys.addaudithook over
-  # `pytest scripts/` recorded every open, and each path was matched with Ruby
-  # File.fnmatch under GitLab's flags (PATHNAME|DOTMATCH|EXTGLOB). Reasoning
-  # about which paths a test "should" read under-swept twice — the trace found
-  # 523 opened files and 67 unmatched after the second attempt, including
-  # roles/*/handlers/ + meta/ (test_flux_render) and
-  # infrastructure/sources/versions-configmap.yaml (test_generate_versions_configmap,
-  # i.e. the version-substitution map itself). Now 522/523; the one residual is a
-  # bare relative "tasks" that is not a repo path. Re-run the trace when adding a
-  # test rather than guessing its inputs.
+  # The pytest/PyYAML pins are passed rather than left to the template defaults
+  # so the variables: block above is their single source (repo-policy-checks'
+  # ci-pin-parity check enforces the equality).
   #
-  # NOT a closed invariant: the list is hand-maintained and only as current as
-  # the last trace. A meta-gate asserting it was rejected — every implementation
-  # missed paths built from string constants inside functions, which would be one
-  # more gate that cannot fail on part of its subject.
+  # setup_command clones the library at the pinned tag:
+  # scripts/test_vendored_byte_identity.py compares this repo's vendored script
+  # copies against it and never skips, so the checkout is a hard requirement of
+  # the job (WEISSSRV_LIB_PATH points at it — see the job override below).
   - project: eric/weisssrv-lib
-    ref: v0.5.2
+    ref: v0.6.0
     file: /ci/test/python-tests.yml
     inputs:
+      pytest_version: "9.1.1"
+      pyyaml_version: "6.0.2"
+      setup_command: 'git clone --depth 1 --branch "$WEISSSRV_LIB_REF" "$CI_SERVER_URL/eric/weisssrv-lib.git" "$WEISSSRV_LIB_PATH"'
       changes:
         - "scripts/**/*"
         - "ansible/inventories/prod/**/*"
-        - "ansible/roles/**/molecule/**/*"
-        - "ansible/roles/*/tasks/**/*"
-        - "ansible/roles/*/templates/**/*"
-        - "ansible/roles/*/defaults/**/*"
-        - "ansible/roles/*/handlers/**/*"
-        - "ansible/roles/*/meta/**/*"
-        - "ansible/roles/*/README.md"
         - "ansible/playbooks/**/*"
         - "ansible/integration-tests/**/*"
+        - "ansible/requirements.yml"
         - "ansible/README.md"
         - "ansible/TESTING.md"
+        # test_vendored_byte_identity.py gates ruff.toml itself (VENDORED_PATHS),
+        # so an edit to that file must be able to run its own gate.
+        - "ruff.toml"
         - "kubernetes/clusters/weisssrv/**/*"
         - "kubernetes/infrastructure/observability/**/*"
         - "kubernetes/infrastructure/configs/**/*"
@@ -1920,15 +1508,19 @@ include:
         - ".claude/**/*"
         - "Taskfile.yml"
         - ".gitlab-ci.yml"
+
   # flux-lint: substitute mode (postBuild var substitution from the cluster
   # versions ConfigMap; needs a root runner for gettext-base). Version pins +
-  # cluster paths are passed explicitly (equal to the library defaults); the
-  # default `changes` already equals .paths-flux-lint. extra_validation carries
-  # weisssrv's HPA/VPA invariant, scrape/NetworkPolicy invariant, secret-store
-  # scoping and helm-values checks, which call weisssrv-local scripts (kept in
-  # scripts/), running with $RENDER_ALL / $FAILED in scope.
+  # cluster paths are passed explicitly. extra_validation carries weisssrv's HPA/VPA invariant,
+  # scrape/NetworkPolicy invariant, secret-store scoping, PVC storage class and
+  # helm-values checks, which call weisssrv-local scripts (kept in scripts/),
+  # running with $RENDER_ALL / $FAILED in scope. The site data those two gates
+  # read lives outside them (scripts/helm-values-releases.yaml,
+  # scripts/autoscaling-policy.yaml), so both paths must be passed here exactly
+  # as `task flux:lint` passes them — an omitted --releases is a FileNotFoundError
+  # and an omitted --policy-config silently asserts zero chart-native targets.
   - project: eric/weisssrv-lib
-    ref: v0.5.2
+    ref: v0.6.0
     file: /ci/validate/flux-lint.yml
     inputs:
       substitute: true
@@ -1943,7 +1535,71 @@ include:
       versions_configmap: "kubernetes/infrastructure/sources/versions-configmap.yaml"
       flux_render_script: "scripts/flux-render.sh"
       skipped_script: "scripts/kubeconform-skipped.py"
-      extra_validation: 'echo "=== Checking HPA/VPA invariant ==="; python3 scripts/check-hpa-vpa-invariant.py --require-chart-native-vpas < "$RENDER_ALL" || FAILED=1; echo "=== Checking scrape/NetworkPolicy invariant ==="; python3 scripts/check-scrape-netpol.py < "$RENDER_ALL" || FAILED=1; echo "=== Checking ClusterSecretStore scoping ==="; python3 scripts/check-secretstore-scope.py < "$RENDER_ALL" || FAILED=1; echo "=== Checking PVC storageClassName ==="; python3 scripts/check-pvc-storageclass.py < "$RENDER_ALL" || FAILED=1; echo "=== Schema-validating HelmRelease values blocks (helm template) ==="; python3 scripts/validate-helm-values.py --kubeconform || FAILED=1'
+      # The library default is the first two entries only. Everything after them
+      # is a file this job's behaviour is DEFINED by but which lives outside
+      # kubernetes/: the two site-data files the gates read (autoscaling-policy
+      # decides which workloads must carry a chart-native VPA;
+      # helm-values-releases decides which HelmReleases get `helm template`d),
+      # the gate scripts themselves, and the two scripts passed above as
+      # flux_render_script / skipped_script. Without them an MR that loosens a
+      # policy file or a gate skips flux-lint entirely and merges green — the
+      # externalisation that put the site data in scripts/ is exactly what moved
+      # it out of the default list's reach.
+      changes:
+        - "kubernetes/**/*"
+        - "ansible/inventories/prod/group_vars/all.yml"
+        - "scripts/autoscaling-policy.yaml"
+        - "scripts/helm-values-releases.yaml"
+        - "scripts/check-hpa-vpa-invariant.py"
+        - "scripts/check-scrape-netpol.py"
+        - "scripts/check-secretstore-scope.py"
+        - "scripts/check-pvc-storageclass.py"
+        - "scripts/validate-helm-values.py"
+        - "scripts/flux-render.sh"
+        - "scripts/kubeconform-skipped.py"
+      extra_validation: 'echo "=== Checking HPA/VPA invariant ==="; python3 scripts/check-hpa-vpa-invariant.py --require-chart-native-vpas --policy-config scripts/autoscaling-policy.yaml < "$RENDER_ALL" || FAILED=1; echo "=== Checking scrape/NetworkPolicy invariant ==="; python3 scripts/check-scrape-netpol.py < "$RENDER_ALL" || FAILED=1; echo "=== Checking ClusterSecretStore scoping ==="; python3 scripts/check-secretstore-scope.py < "$RENDER_ALL" || FAILED=1; echo "=== Checking PVC storageClassName ==="; python3 scripts/check-pvc-storageclass.py < "$RENDER_ALL" || FAILED=1; echo "=== Schema-validating HelmRelease values blocks (helm template) ==="; python3 scripts/validate-helm-values.py --kubeconform --releases scripts/helm-values-releases.yaml --policy-config scripts/autoscaling-policy.yaml || FAILED=1'
+
+  # pr-agent-review (ai-review stage): advisory AI review of the MR. Both
+  # credentials are masked CI variables (OPENAI__KEY, the
+  # GITLAB__PERSONAL_ACCESS_TOKEN project access token weisssrv-review-bot,
+  # Developer + api) — secrets_source: env deliberately keeps 1Password out of a
+  # job whose CI config comes from the branch under review.
+  #
+  # `gate` decides whether the job is CREATED at all; an absent review on a
+  # gate-less pipeline is expected, not a regression. It stays
+  # $OP_SERVICE_ACCOUNT_TOKEN (the "trusted pipeline" marker this repo already
+  # uses); if that variable is ever marked protected it must move to
+  # $OPENAI__KEY in the same change or the reviewer disappears from MRs.
+  # Model, reasoning effort and both timeouts are the library defaults.
+  - project: eric/weisssrv-lib
+    ref: v0.6.0
+    file: /ci/review/pr-agent.yml
+    inputs:
+      secrets_source: "env"
+      gate: "$OP_SERVICE_ACCOUNT_TOKEN"
+      # Lint + secret detection only: AI review benefits from knowing the code
+      # is lint-clean and secret-safe, and must not wait on the DinD suite.
+      needs:
+        - job: shellcheck
+          optional: true
+        - job: yaml-lint
+          optional: true
+        - job: ansible-lint
+          optional: true
+        - job: terraform-fmt
+          optional: true
+        - job: repo-sync-checks
+          optional: true
+        - job: flux-lint
+          optional: true
+        - job: secret_detection
+
+# Additive override of the library-generated job: the checkout path its
+# setup_command writes and test_vendored_byte_identity.py reads. Declared here
+# rather than as an input because the template exposes no variables input.
+python-tests:
+  variables:
+    WEISSSRV_LIB_PATH: "$CI_PROJECT_DIR/.tmp/weisssrv-lib"
 
 # GATE STAGE - Validation gate for deploy jobs
 # All deploy jobs depend on this gate (non-optional). The gate lists every
@@ -1959,66 +1615,34 @@ include:
 #
 # Net effect: all applicable checks must pass before any deploy job runs.
 
-# Fan-in for the parallel test matrices. molecule-tests (one job per role) and
-# integration-tests (one per stack) are `parallel: matrix` jobs, so a `needs:`
-# on either expands to ONE entry PER matrix instance (currently 43 + 5 = 48).
-# Listed directly in validation-gate alongside its scalar needs the total
-# exceeded GitLab's hard cap of 50 needs-per-job, so the main pipeline failed
-# to even be created ("one job can only need 50 others"). TWO thin fan-ins —
-# one per matrix — collapse those 48 into two dependencies, keeping each
-# aggregator's expanded-need count (43 / 5) comfortably under the cap with
-# per-group headroom (a single combined fan-in would sit at 48/50 today, two
-# molecule scenarios away from breaking main pipeline creation). Gating is
-# unchanged — a failed matrix instance leaves its (non-optional-by-default)
-# dependency unmet, its aggregator is skipped, and validation-gate (which
-# needs both non-optionally) is skipped in turn, blocking every deploy job.
-# optional:true on each matrix keeps a path-filtered no-op pipeline green.
+# Fan-in for the integration-tests matrix. `parallel: matrix` means a `needs:`
+# on it expands to ONE entry PER instance, and GitLab caps a job at 50 needs;
+# this thin aggregator collapses the matrix into a single dependency on
+# validation-gate and keeps that headroom. Gating is unchanged — a failed
+# instance leaves this job's (non-optional-by-default) dependency unmet, so this
+# job is skipped and validation-gate with it, blocking every deploy job.
+# optional:true keeps a path-filtered no-op pipeline green.
 #
-# interruptible:false on both (not the default true): on main, a second merge
-# landing while a fan-in / validation-gate is still running must NOT
-# auto-cancel it (workflow auto_cancel is on_new_commit:interruptible), or the
-# first merge's deploy jobs would be left with an unmet need and silently
-# never run. NOTE this protection is necessary but NOT sufficient: the matrix
-# jobs UPSTREAM of the fan-ins stay interruptible (deliberately — MR pipelines
-# rely on auto-cancel to free runner capacity), so a rapid second merge can
-# still cancel the first pipeline's running matrices, skip its fan-ins + gate,
-# and orphan its deploys — and the second pipeline's `changes:` are computed
-# against its own parent, so the first merge's paths are NOT re-covered. That
-# chain is exactly why the "serialize merges — never rapid-merge" operating
-# rule exists; these flags only harden the tail of the pipeline, not the
-# matrices. Deploys are already serialized by resource_group.
-test-aggregate-molecule:
-  stage: security
-  image: alpine:3.23
-  interruptible: false
-  needs:
-    # artifacts: false — this is a status-only fan-in (script is a bare echo).
-    # The matrix extends .molecule-base and emits junit artifacts; without
-    # this, GitLab would download them from all 43 instances here for no
-    # reason.
-    - job: molecule-tests
-      optional: true
-      artifacts: false
-  script:
-    - echo "molecule test matrix complete"
-  # These rules MUST stay identical to validation-gate's below: it needs this
-  # job non-optionally, so if this job is created for a pipeline where that gate
-  # is not (or vice versa), pipeline creation fails. Same rules => co-present.
-  rules:
-    - !reference [.skip-schedule-web, rules]
-    - if: '$CI_COMMIT_BRANCH == "main"'
-
+# interruptible:false (not the default true): on main, a second merge landing
+# while this or validation-gate is running must not auto-cancel it, or the first
+# merge's deploy jobs are orphaned with an unmet need. The matrix upstream stays
+# interruptible on purpose, so this hardens the tail only — see the workflow
+# block for why "serialize merges" is still an operating rule.
 test-aggregate-integration:
   stage: security
   image: alpine:3.23
   interruptible: false
   needs:
+    # artifacts: false — status-only fan-in (the script is a bare echo); without
+    # it GitLab would download every instance's junit artifact for no reason.
     - job: integration-tests
       optional: true
       artifacts: false
   script:
     - echo "integration test matrix complete"
-  # Rules identical to validation-gate's — see test-aggregate-molecule.
+  # These rules MUST stay identical to validation-gate's below: it needs this
+  # job non-optionally, so if this job is created for a pipeline where that gate
+  # is not (or vice versa), pipeline creation fails. Same rules => co-present.
   rules:
     - !reference [.skip-schedule-web, rules]
     - if: '$CI_COMMIT_BRANCH == "main"'
@@ -2057,21 +1681,19 @@ validation-gate:
       optional: true
     - job: docs-link-check
       optional: true
-    # tailscale-drift-plan / authentik-drift-plan are deliberately NOT here:
-    # they are advisory (allow_failure) like pr-agent-review, so they can
-    # never block the gate.
+    - job: python-lint
+      optional: true
+    # The drift plans are deliberately NOT here: they are advisory
+    # (allow_failure) like pr-agent-review, so they could never block the gate.
     - job: python-tests
       optional: true
-    # molecule-tests + integration-tests are fanned in via the two
-    # test-aggregate-* jobs (see their comment above) so this gate's expanded
-    # needs stay under GitLab's hard 50-per-job cap. Both aggregators carry the
-    # SAME rules as this gate (skip-schedule-web + main-only), so all three are
-    # always created together. These needs are intentionally NON-optional: if
-    # that shared-rules invariant is ever broken, a loud pipeline-creation
-    # failure is safer than optional's silent skip, which would let deploy run
-    # with the test matrices un-gated. Keep the rule blocks identical (or make
-    # these optional) if you change any of them.
-    - job: test-aggregate-molecule
+    # integration-tests is fanned in via test-aggregate-integration (see its
+    # comment above) so this gate's expanded needs stay under GitLab's hard
+    # 50-per-job cap. That aggregator carries the SAME rules as this gate
+    # (skip-schedule-web + main-only), so the two are always created together.
+    # This need is intentionally NON-optional: if that shared-rules invariant is
+    # ever broken, a loud pipeline-creation failure is safer than optional's
+    # silent skip, which would let deploys run with the suite un-gated.
     - job: test-aggregate-integration
     # Always-run jobs (no path filter, always present on main pushes)
     - job: secret_detection
@@ -2152,16 +1774,12 @@ deploy-ansible-base:
   script:
     - cd ansible
     - op run -- ansible-playbook -i inventories/prod playbooks/base.yml
-    # base.yml doesn't include node_exporter_host, alloy_host, or
-    # encrypted_swap (those live in site.yml); when changes touch them we
-    # follow up with a tag-scoped site.yml run so the rules block below stays
-    # honest. Idempotent if none changed; the tag filter skips everything else
-    # in site.yml. encrypted_swap was listed in the TRIGGERS below but missing
-    # from this tag list, so the job went green on every role change while the
-    # role never executed on any host (caught when the NAS reboot activated
-    # nothing: /etc/crypttab empty fleet-wide). The role writes the crypttab +
-    # fstab + boot finalize config idempotently; encrypted swap activates on each
-    # host's next reboot (there is no live switchover).
+    # node_exporter_host, alloy_host and encrypted_swap live in site.yml, not
+    # base.yml, and run on the same host set — so this tag-scoped follow-up is
+    # what actually deploys them. Every role named here must stay in the tag
+    # list: a role missing from it deploys nothing while the job stays green.
+    # Idempotent; the tag filter skips the rest of site.yml. encrypted_swap
+    # writes crypttab/fstab and activates on the host's next reboot.
     - op run -- ansible-playbook -i inventories/prod playbooks/site.yml --tags node_exporter_host,alloy_host,encrypted_swap
   environment:
     name: production/ansible-base
@@ -2169,27 +1787,12 @@ deploy-ansible-base:
     - !reference [.skip-schedule-web, rules]
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes:
-        - ansible/roles/base/**/*
-        - ansible/roles/nic_tuning/**/*
-        # Transitive: resolv_conf is invoked by base when skip_dns_config=false.
-        - ansible/roles/resolv_conf/**/*
-        # node_exporter_host + alloy_host live in site.yml and run on the
-        # same host set base does. The script above runs site.yml with
-        # --tags node_exporter_host,alloy_host as a second step so these
-        # changes actually deploy when this rule fires.
-        - ansible/roles/node_exporter_host/**/*
-        - ansible/roles/alloy_host/**/*
-        # apt_signed_repo is the shared signed-repo helper alloy_host includes;
-        # list it so a helper-only change still triggers the base deploy (same
-        # pattern prometheus_exporter uses under deploy-ansible-dns/storage).
-        - ansible/roles/apt_signed_repo/**/*
-        # textfile_collector is the shared unit/timer scaffold node_exporter_host
-        # includes for its corosync/zpool/smartmon collectors; list it so a
-        # helper-only change still triggers the node_exporter_host deploy.
-        - ansible/roles/textfile_collector/**/*
-        # encrypted_swap runs in site.yml's proxmox play (dm-crypt random-key
-        # swap on all six hosts) — a role-only change must trigger this deploy.
-        - ansible/roles/encrypted_swap/**/*
+        # THE COLLECTION PIN. Every role these plays run ships in
+        # weisssrv.infra, so a role change reaches this repo as a version bump
+        # in ansible/requirements.yml and nothing else — it is the only
+        # role-side trigger any deploy job has, and every one of them watches
+        # it. A bump re-runs the fleet's plays, which are idempotent.
+        - ansible/requirements.yml
         - ansible/playbooks/base.yml
         # all.yml triggers deploy for alloy_host_version (host-side apt pin
         # applied by the tag-scoped site.yml follow-up above) and other
@@ -2208,6 +1811,7 @@ deploy-ansible-base:
         - ansible/inventories/prod/host_vars/pve-opt-01.yml
         - ansible/inventories/prod/host_vars/pve-opt-02.yml
         - ansible/inventories/prod/host_vars/pve-opt-03.yml
+        - ansible/inventories/prod/host_vars/pve-prec-01.yml
         - ansible/inventories/prod/host_vars/pve-nas-01.yml
         - ansible/inventories/prod/host_vars/pve-laptop-01.yml
 
@@ -2242,15 +1846,8 @@ deploy-ansible-proxmox:
     - !reference [.skip-schedule-web, rules]
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes:
-        - ansible/roles/qol/**/*
-        - ansible/roles/tailscale/**/*
-        - ansible/roles/postfix_null_client/**/*
-        - ansible/roles/zfs_arc_cap/**/*
-        - ansible/roles/vfio_passthrough/**/*
-        # tlshd (client mode) on the five non-NAS Proxmox hosts — the tank-proxmox
-        # storage.cfg entry mounts with xprtsec=tls on every node, so all six need
-        # it; deploy-ansible-storage only reaches pve-nas-01.
-        - ansible/roles/nfs_tls/**/*
+    # Collection pin (see deploy-ansible-base).
+        - ansible/requirements.yml
         # This job RUNS site.yml plays (--limit proxmox); a change to those
         # plays must redeploy too (idempotent, so extra triggers are safe).
         - ansible/playbooks/site.yml
@@ -2271,6 +1868,7 @@ deploy-ansible-proxmox:
         - ansible/inventories/prod/host_vars/pve-opt-01.yml
         - ansible/inventories/prod/host_vars/pve-opt-02.yml
         - ansible/inventories/prod/host_vars/pve-opt-03.yml
+        - ansible/inventories/prod/host_vars/pve-prec-01.yml
 
 deploy-ansible-firewall:
   stage: deploy
@@ -2290,7 +1888,8 @@ deploy-ansible-firewall:
     - !reference [.skip-schedule-web, rules]
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes:
-        - ansible/roles/proxmox_firewall/**/*
+    # Collection pin (see deploy-ansible-base).
+        - ansible/requirements.yml
         # Per-guest firewall assignments (guest_security_groups / firewall_ipsets)
         # live ONLY in hosts.yml, not the role — without this an inventory-only
         # firewall edit silently never deploys. site.yml now has a `hosts: k3s`
@@ -2337,19 +1936,8 @@ deploy-ansible-dns:
     - !reference [.skip-schedule-web, rules]
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes:
-        - ansible/roles/unbound/**/*
-        - ansible/roles/adguard_home/**/*
-        - ansible/roles/adguard_sync/**/*
-        - ansible/roles/postfix_null_client/**/*
-        # Transitive: resolv_conf used by adguard_home; unbound_exporter
-        # invoked from dns.yml.
-        - ansible/roles/resolv_conf/**/*
-        - ansible/roles/unbound_exporter/**/*
-        # unbound_exporter is a thin wrapper over prometheus_exporter (the
-        # shared install pipeline), so a change to the shared role must
-        # redeploy dns too. It also backs zfs_exporter, so the same path is
-        # listed under deploy-ansible-storage.
-        - ansible/roles/prometheus_exporter/**/*
+    # Collection pin (see deploy-ansible-base).
+        - ansible/requirements.yml
         - ansible/playbooks/dns.yml
         # all.yml triggers deploy for unbound_exporter_version /
         # adguard-stack pins consumed by dns.yml; unrelated bumps re-run an
@@ -2395,24 +1983,8 @@ deploy-ansible-storage:
     - !reference [.skip-schedule-web, rules]
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes:
-        - ansible/roles/nas_storage/**/*
-        # zfs_exporter is invoked from storage.yml; nfs_tls is the
-        # opt-in NFSv4-over-TLS daemon that runs on the same NAS host
-        # plus the k3s NFS clients (cert paths shared with acme_certs).
-        - ansible/roles/zfs_exporter/**/*
-        # zfs_exporter is a thin wrapper over prometheus_exporter (the
-        # shared install pipeline), so a change to the shared role must
-        # redeploy storage too. It also backs unbound_exporter, so the
-        # same path is listed under deploy-ansible-dns.
-        - ansible/roles/prometheus_exporter/**/*
-        - ansible/roles/nfs_tls/**/*
-        # Declarative storage.cfg + vzdump jobs — runs from storage.yml on
-        # pve-nas-01 (cluster-wide config, idempotent).
-        - ansible/roles/proxmox_backup/**/*
-        # restic_offsite is the nightly B2 backup role, deployed on pve-nas-01
-        # via storage.yml (chained after archive-backup). A role-only change
-        # must redeploy storage.
-        - ansible/roles/restic_offsite/**/*
+    # Collection pin (see deploy-ansible-base).
+        - ansible/requirements.yml
         # Inventory inputs: pve-nas-01 host_vars carry the NFS exports, zvol + vzdump config the storage play renders
         - ansible/inventories/prod/host_vars/pve-nas-01.yml
         - ansible/inventories/prod/group_vars/proxmox.yml
@@ -2449,12 +2021,8 @@ deploy-ansible-mail:
     - !reference [.skip-schedule-web, rules]
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes:
-        - ansible/roles/smtp_relay/**/*
-        - ansible/roles/postfix_null_client/**/*
-        # textfile_collector is the shared unit/timer scaffold smtp_relay includes
-        # for its postfix queue collector; list it so a helper-only change still
-        # triggers the mail deploy.
-        - ansible/roles/textfile_collector/**/*
+    # Collection pin (see deploy-ansible-base).
+        - ansible/requirements.yml
         # Mail group vars: relay/null-client settings consumed by the
         # site.yml --limit mail run, so a vars-only change must trigger
         # a redeploy (mirrors group_vars/dns.yml on the dns job).
@@ -2471,8 +2039,8 @@ deploy-ansible-certs:
   extends: .deploy-base
   resource_group: deploy-ansible-certs
   variables:
-    # acme_certs asserts acme_email on dns-01, and acme_email <- admin_email <-
-    # ROOT_EMAIL_ALIAS. Every other deploy job injects this op:// ref; it was
+    # acme_certs asserts acme_certs_email on dns-01, and that resolves from
+    # admin_email <- ROOT_EMAIL_ALIAS. Every other deploy job injects this op:// ref; it was
     # missing here, so `op run` left admin_email undefined and the play failed
     # the "Validate required acme.sh variables" assert (the SSH-key fields, by
     # contrast, are handled via `op read` in script below).
@@ -2507,7 +2075,8 @@ deploy-ansible-certs:
     - !reference [.skip-schedule-web, rules]
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes:
-        - ansible/roles/acme_certs/**/*
+    # Collection pin (see deploy-ansible-base).
+        - ansible/requirements.yml
         # host_vars/dns-01.yml carries the pinned host_key entries that
         # acme_certs uses for cert distribution; a change to those
         # fingerprints needs a redeploy.
@@ -2529,7 +2098,7 @@ deploy-plex:
     - job: deploy-ansible-base
       optional: true
   variables:
-    # plex.yml runs postfix_null_client, which renders mail_aliases
+    # plex.yml runs postfix_null_client, which renders postfix_null_client_aliases
     # (root -> admin_email -> ROOT_EMAIL_ALIAS); without it the aliases
     # task fails with AnsibleUndefinedVariable. Mirrors the other deploy jobs.
     ROOT_EMAIL_ALIAS: "op://Homelab/Email Config/root_alias"
@@ -2549,22 +2118,8 @@ deploy-plex:
     - !reference [.skip-schedule-web, rules]
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes:
-        - ansible/roles/plex/**/*
-        # apt_signed_repo: shared signed-repo helper plex includes (Debian
-        # non-free repo pin) — a helper-only change must still deploy plex.
-        - ansible/roles/apt_signed_repo/**/*
-        - ansible/roles/proxmox_lxc/**/*
-        # base + postfix_null_client + proxmox_firewall are first-class roles in
-        # this app's playbook, and this is the ONLY job that runs them on this
-        # host: deploy-ansible-base runs base.yml (hosts: base_managed, which
-        # excludes the app guests) and deploy-ansible-firewall's site.yml plays
-        # cover the Proxmox/DNS/mail/k3s guests, not this one. Without these
-        # paths an ssh-hardening, sshd, common-packages or guest-firewall change
-        # merged green while never reaching this host — the gap
-        # scripts/check-deploy-host-coverage.py now fails on.
-        - ansible/roles/base/**/*
-        - ansible/roles/postfix_null_client/**/*
-        - ansible/roles/proxmox_firewall/**/*
+    # Collection pin (see deploy-ansible-base).
+        - ansible/requirements.yml
         - ansible/playbooks/plex.yml
         # Inventory inputs of the plex play (LXC definition + app vars).
         - ansible/inventories/prod/group_vars/plex_servers.yml
@@ -2623,26 +2178,8 @@ deploy-gitlab:
     - !reference [.skip-schedule-web, rules]
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes:
-        - ansible/roles/gitlab/**/*
-        # apt_signed_repo: shared signed-repo helper the gitlab role includes
-        # for the GitLab omnibus apt repo — a helper-only change must deploy it.
-        - ansible/roles/apt_signed_repo/**/*
-        # zvol_mount is invoked by the gitlab role for the
-        # /mnt/gitlab-repos persistent volume.
-        - ansible/roles/zvol_mount/**/*
-        # nfs_tls: the backup NFS mount requires xprtsec=tls (tlshd on the VM).
-        - ansible/roles/nfs_tls/**/*
-        # base + postfix_null_client + proxmox_firewall are first-class roles in
-        # this app's playbook, and this is the ONLY job that runs them on this
-        # host: deploy-ansible-base runs base.yml (hosts: base_managed, which
-        # excludes the app guests) and deploy-ansible-firewall's site.yml plays
-        # cover the Proxmox/DNS/mail/k3s guests, not this one. Without these
-        # paths an ssh-hardening, sshd, common-packages or guest-firewall change
-        # merged green while never reaching this host — the gap
-        # scripts/check-deploy-host-coverage.py now fails on.
-        - ansible/roles/base/**/*
-        - ansible/roles/postfix_null_client/**/*
-        - ansible/roles/proxmox_firewall/**/*
+    # Collection pin (see deploy-ansible-base).
+        - ansible/requirements.yml
         - ansible/playbooks/gitlab.yml
         # gitlab_servers group vars (postfix null-client, kernel tuning) are
         # consumed by the gitlab playbook, so a vars-only change must redeploy.
@@ -2683,33 +2220,8 @@ deploy-nextcloud:
     - !reference [.skip-schedule-web, rules]
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes:
-        - ansible/roles/nextcloud/**/*
-        # apt_signed_repo: shared signed-repo helper the nextcloud role includes
-        # for the Docker apt repo — a helper-only change must redeploy nextcloud.
-        - ansible/roles/apt_signed_repo/**/*
-        # docker_engine: shared Docker Engine install helper the nextcloud role
-        # includes — a helper-only change must redeploy nextcloud.
-        - ansible/roles/docker_engine/**/*
-        # nfs_tls: the backup NFS mount requires xprtsec=tls (tlshd on the VM).
-        - ansible/roles/nfs_tls/**/*
-        # compose_app: shared compose-lifecycle super-role the nextcloud role
-        # includes (compose unit + nginx task-flow + backup lib) — a helper-only
-        # change must redeploy nextcloud.
-        - ansible/roles/compose_app/**/*
-        # zvol_mount is invoked by the nextcloud role for the three passthrough
-        # data disks.
-        - ansible/roles/zvol_mount/**/*
-        # base + postfix_null_client + proxmox_firewall are first-class roles in
-        # this app's playbook, and this is the ONLY job that runs them on this
-        # host: deploy-ansible-base runs base.yml (hosts: base_managed, which
-        # excludes the app guests) and deploy-ansible-firewall's site.yml plays
-        # cover the Proxmox/DNS/mail/k3s guests, not this one. Without these
-        # paths an ssh-hardening, sshd, common-packages or guest-firewall change
-        # merged green while never reaching this host — the gap
-        # scripts/check-deploy-host-coverage.py now fails on.
-        - ansible/roles/base/**/*
-        - ansible/roles/postfix_null_client/**/*
-        - ansible/roles/proxmox_firewall/**/*
+    # Collection pin (see deploy-ansible-base).
+        - ansible/requirements.yml
         - ansible/playbooks/nextcloud.yml
         - ansible/inventories/prod/group_vars/nextcloud_servers.yml
         # hosts.yml: VM definition (IP/zvols/resources) for this play's host
@@ -2748,32 +2260,8 @@ deploy-immich:
     - !reference [.skip-schedule-web, rules]
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes:
-        - ansible/roles/immich/**/*
-        # apt_signed_repo: shared signed-repo helper the immich role includes for
-        # the Docker apt repo — a helper-only change must redeploy immich.
-        - ansible/roles/apt_signed_repo/**/*
-        # docker_engine: shared Docker Engine install helper the immich role
-        # includes — a helper-only change must redeploy immich.
-        - ansible/roles/docker_engine/**/*
-        # compose_app: shared compose-lifecycle super-role the immich role
-        # includes (compose unit + nginx task-flow + backup lib) — a helper-only
-        # change must redeploy immich.
-        - ansible/roles/compose_app/**/*
-        # zvol_mount is invoked by the immich role for the app/postgres/library zvols.
-        - ansible/roles/zvol_mount/**/*
-        # nfs_tls: the backup NFS mount requires xprtsec=tls (tlshd on the VM).
-        - ansible/roles/nfs_tls/**/*
-        # base + postfix_null_client + proxmox_firewall are first-class roles in
-        # this app's playbook, and this is the ONLY job that runs them on this
-        # host: deploy-ansible-base runs base.yml (hosts: base_managed, which
-        # excludes the app guests) and deploy-ansible-firewall's site.yml plays
-        # cover the Proxmox/DNS/mail/k3s guests, not this one. Without these
-        # paths an ssh-hardening, sshd, common-packages or guest-firewall change
-        # merged green while never reaching this host — the gap
-        # scripts/check-deploy-host-coverage.py now fails on.
-        - ansible/roles/base/**/*
-        - ansible/roles/postfix_null_client/**/*
-        - ansible/roles/proxmox_firewall/**/*
+    # Collection pin (see deploy-ansible-base).
+        - ansible/requirements.yml
         - ansible/playbooks/immich.yml
         - ansible/inventories/prod/group_vars/immich_servers.yml
         # hosts.yml: VM definition (IP/zvols/resources) for this play's host
@@ -2808,29 +2296,8 @@ deploy-immich-ml:
     - !reference [.skip-schedule-web, rules]
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes:
-        - ansible/roles/immich_ml/**/*
-        # apt_signed_repo: shared signed-repo helper the immich_ml role
-        # includes for the Docker apt repo — a helper-only change must
-        # redeploy immich-ml.
-        - ansible/roles/apt_signed_repo/**/*
-        # docker_engine: shared Docker Engine install helper the immich_ml role
-        # includes — a helper-only change must redeploy immich-ml.
-        - ansible/roles/docker_engine/**/*
-        # compose_app: shared compose-lifecycle super-role the immich_ml role
-        # includes (compose unit) — a helper-only change must redeploy immich-ml.
-        - ansible/roles/compose_app/**/*
-        - ansible/roles/proxmox_lxc/**/*
-        # base + postfix_null_client + proxmox_firewall are first-class roles in
-        # this app's playbook, and this is the ONLY job that runs them on this
-        # host: deploy-ansible-base runs base.yml (hosts: base_managed, which
-        # excludes the app guests) and deploy-ansible-firewall's site.yml plays
-        # cover the Proxmox/DNS/mail/k3s guests, not this one. Without these
-        # paths an ssh-hardening, sshd, common-packages or guest-firewall change
-        # merged green while never reaching this host — the gap
-        # scripts/check-deploy-host-coverage.py now fails on.
-        - ansible/roles/base/**/*
-        - ansible/roles/postfix_null_client/**/*
-        - ansible/roles/proxmox_firewall/**/*
+    # Collection pin (see deploy-ansible-base).
+        - ansible/requirements.yml
         - ansible/playbooks/immich-ml.yml
         # LXC sizing/GPU vars consumed by the immich-ml playbook (create-time
         # for most knobs, but a redeploy is idempotent and cheap).
@@ -2865,7 +2332,8 @@ deploy-home-assistant-config:
     - !reference [.skip-schedule-web, rules]
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes:
-        - ansible/roles/home_assistant/**/*
+    # Collection pin (see deploy-ansible-base).
+        - ansible/requirements.yml
         - ansible/playbooks/home-assistant.yml
         - ansible/inventories/prod/host_vars/home.yml
         # hosts.yml: VM definition (IP/zvols/resources) for this play's host
@@ -2964,6 +2432,8 @@ deploy-verify:
       optional: true
     - job: deploy-nextcloud
       optional: true
+    - job: deploy-immich
+      optional: true
     - job: deploy-immich-ml
       optional: true
     - job: deploy-home-assistant-config
@@ -3009,6 +2479,7 @@ deploy-verify:
     - !reference [deploy-plex, rules]
     - !reference [deploy-gitlab, rules]
     - !reference [deploy-nextcloud, rules]
+    - !reference [deploy-immich, rules]
     - !reference [deploy-immich-ml, rules]
     - !reference [deploy-home-assistant-config, rules]
     # Flux-only changes (kubernetes/ manifests with no Ansible or all.yml edit)

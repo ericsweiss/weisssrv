@@ -24,11 +24,10 @@
 #   authentik-auth-basic Traefik middleware forwards it upstream. Currently:
 #   nzbget (nzbget_user/nzbget_password on media-admins) and the two AdGuard
 #   providers (adguard_user/adguard_password on dns-admins). All other
-#   providers keep injection disabled with both attribute fields empty. On
-#   Sonarr the live object still carries stale values in the two attribute
-#   fields (a leaked literal credential) — the plan shows exactly that one
-#   clear-to-empty diff until the first supervised apply flushes it, which is
-#   approved. See README "The Sonarr exception".
+#   providers keep injection disabled with both attribute fields empty. These
+#   fields name ATTRIBUTES — never put a literal credential in them.
+# - every provider carries prevent_destroy: a rename plans as destroy+create and
+#   breaks that app's forward-auth (README § Guardrails).
 
 resource "authentik_provider_proxy" "sonarr" {
   name          = "Sonarr"
@@ -51,6 +50,10 @@ resource "authentik_provider_proxy" "sonarr" {
 
   access_token_validity  = "hours=24"
   refresh_token_validity = "days=30"
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "authentik_provider_proxy" "radarr" {
@@ -74,6 +77,10 @@ resource "authentik_provider_proxy" "radarr" {
 
   access_token_validity  = "hours=24"
   refresh_token_validity = "days=30"
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "authentik_provider_proxy" "lidarr" {
@@ -97,6 +104,10 @@ resource "authentik_provider_proxy" "lidarr" {
 
   access_token_validity  = "hours=24"
   refresh_token_validity = "days=30"
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "authentik_provider_proxy" "qbittorrent" {
@@ -120,6 +131,10 @@ resource "authentik_provider_proxy" "qbittorrent" {
 
   access_token_validity  = "hours=24"
   refresh_token_validity = "days=30"
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "authentik_provider_proxy" "nzbget" {
@@ -137,21 +152,20 @@ resource "authentik_provider_proxy" "nzbget" {
   skip_path_regex              = ""
   cookie_domain                = ""
 
-  # Basic-auth injection: NZBGet validates HTTP Basic against its own
-  # ControlUsername/ControlPassword (nzbget.conf) and has no External auth
-  # mode like the *arrs — injecting the credentials kills the double-login.
-  # The attribute VALUES live on the media-admins group (groups.tf, from the
-  # 'NZBGet' 1Password item); these fields name the attributes, they never
-  # hold literals (see README "The Sonarr exception" for the anti-pattern).
-  # The nzbget IngressRoute must use the authentik-auth-basic middleware
-  # (kubernetes/apps/download-clients/ingress-routes/nzbget) or the injected
-  # Authorization header is stripped.
+  # NZBGet validates HTTP Basic against its own ControlUsername/ControlPassword
+  # and has no External auth mode, so injection kills the double-login. Values
+  # live on the media-admins group (groups.tf). The nzbget IngressRoute must use
+  # the authentik-auth-basic middleware or the header is stripped.
   basic_auth_enabled            = true
   basic_auth_username_attribute = "nzbget_user"
   basic_auth_password_attribute = "nzbget_password"
 
   access_token_validity  = "hours=24"
   refresh_token_validity = "days=30"
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "authentik_provider_proxy" "prowlarr" {
@@ -175,6 +189,10 @@ resource "authentik_provider_proxy" "prowlarr" {
 
   access_token_validity  = "hours=24"
   refresh_token_validity = "days=30"
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "authentik_provider_proxy" "pulsarr" {
@@ -198,6 +216,10 @@ resource "authentik_provider_proxy" "pulsarr" {
 
   access_token_validity  = "hours=24"
   refresh_token_validity = "days=30"
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "authentik_provider_proxy" "wireguard_easy" {
@@ -221,6 +243,10 @@ resource "authentik_provider_proxy" "wireguard_easy" {
 
   access_token_validity  = "hours=24"
   refresh_token_validity = "days=30"
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 # AdGuard Home SSO dashboards (Terraform-authored, docs/08)
@@ -253,6 +279,10 @@ resource "authentik_provider_proxy" "adguard_01" {
 
   access_token_validity  = "hours=24"
   refresh_token_validity = "days=30"
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "authentik_provider_proxy" "adguard_02" {
@@ -276,4 +306,8 @@ resource "authentik_provider_proxy" "adguard_02" {
 
   access_token_validity  = "hours=24"
   refresh_token_validity = "days=30"
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }

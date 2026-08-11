@@ -1,17 +1,8 @@
 ---
-# stakater/Reloader — watches ConfigMaps (Secrets are ignored, see
-# ignoreSecrets below) and rolls the annotated workloads that consume them, so a mounted-file ConfigMap edit
-# actually reaches running pods (a plain Flux reconcile updates the ConfigMap but
-# leaves the pod's mounted copy stale until a manual rollout).
-#
-# WHY: the download-clients VPN config is a per-app ConfigMap mounted into the
-# Gluetun sidecar (nzbget-vpn-config / qbittorrent-vpn-config). Editing it used
-# to require `kubectl rollout restart` (or `task flux:rotate-secret`). Those
-# Deployments now carry `reloader.stakater.com/auto: "true"`, so Reloader detects
-# the ConfigMap/Secret refs in their pod specs and restarts them automatically on
-# change. Opt-in only (annotation-driven) — Reloader does NOTHING to workloads
-# that don't carry an annotation, so adding it is behavior-preserving everywhere
-# else in the cluster.
+# stakater/Reloader — rolls workloads annotated `reloader.stakater.com/auto`
+# when a ConfigMap they mount changes, so an edit reaches running pods without a
+# manual rollout. Opt-in only: an unannotated workload is never touched.
+# Secrets are deliberately out of scope (ignoreSecrets below).
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -42,8 +33,7 @@ spec:
       remediateLastFailure: true
   values:
     reloader:
-      # Watch every namespace (cluster default) so opt-in annotations work
-      # anywhere; Reloader only acts on annotated workloads.
+      # Watch every namespace so opt-in annotations work anywhere.
       watchGlobally: true
       # Reloads here are ConfigMap-driven (the download-clients VPN config), so
       # ignore Secrets: this drops cluster-wide Secret get/list/watch from
@@ -52,29 +42,18 @@ spec:
       # credential-Secret rotation is handled by a manual restart.)
       ignoreSecrets: true
       logFormat: json
-      # Scrape Reloader's reload counters (reloader_reload_executed_total etc.)
-      # so reload activity/failures are visible in Prometheus. PodMonitor, not the
-      # deprecated serviceMonitor — it scrapes the pod directly, no extra Service.
-      # Prometheus discovers it cluster-wide (podMonitorSelectorNilUsesHelmValues:
-      # false).
+      # PodMonitor, not the chart's deprecated serviceMonitor: it scrapes the pod
+      # directly, so no extra Service is needed.
       podMonitor:
         enabled: true
-      # Chart toggle: sets the container's readOnlyRootFilesystem AND mounts the
-      # paired writable /tmp emptyDir. Setting readOnlyRootFilesystem only via
-      # containerSecurityContext (below) would leave Reloader with a read-only
-      # rootfs and no writable /tmp.
+      # Chart toggle, NOT containerSecurityContext.readOnlyRootFilesystem: only
+      # this one also mounts the paired writable /tmp emptyDir.
       readOnlyRootFileSystem: true
       deployment:
-        # Single replica is fine — a brief gap during a Reloader restart only
-        # delays (never drops) a reload; no HA needed for this low-stakes role.
+        # Single replica: a restart delays a reload, never drops it.
         replicas: 1
-        # Satisfy the namespace's restricted Pod Security Standard. The chart's
-        # default pod securityContext already sets runAsNonRoot/runAsUser 65534/
-        # seccompProfile RuntimeDefault; the container-level fields below
-        # (allowPrivilegeEscalation + drop ALL caps) are what restricted also
-        # requires and the chart leaves empty by default. (readOnlyRootFilesystem
-        # comes from the reloader.readOnlyRootFileSystem toggle above so it also
-        # gets the writable /tmp emptyDir.)
+        # The two restricted-PSS fields the chart leaves empty; the rest of the
+        # profile comes from its default pod securityContext.
         containerSecurityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -84,7 +63,6 @@ spec:
           requests:
             cpu: 10m
             memory: 64Mi
-          # Memory limit only — no CPU limit (compressible resource; see
-          # docs/33-autoscaling.md).
+          # Memory limit only, no CPU limit (docs/33).
           limits:
             memory: 128Mi

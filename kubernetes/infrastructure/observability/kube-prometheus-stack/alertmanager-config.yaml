@@ -1,11 +1,9 @@
 ---
-# Alertmanager configuration via ExternalSecret template.
-# Pulls the Discord webhook URL, SMTP password, and healthchecks.io ping
-# URL from 1Password and renders them into alertmanager.yaml. Uses
-# webhook_url (not webhook_url_file) because the Prometheus Operator's
-# config parser does not support the _file suffix for discord_configs.
-# Secret values are rendered through the `quote` template function so a
-# rotated password or webhook URL with any special characters stays valid.
+# Alertmanager configuration, rendered from 1Password through an ExternalSecret
+# template (Discord webhook, SMTP password, healthchecks.io ping URL).
+# webhook_url, not webhook_url_file: the Prometheus Operator's config parser does
+# not support the _file suffix for discord_configs. Values go through `quote` so
+# a rotated secret with special characters stays valid.
 apiVersion: external-secrets.io/v1
 kind: ExternalSecret
 metadata:
@@ -38,16 +36,13 @@ spec:
               equal:
                 - alertname
                 - namespace
-            # The custom warning/critical pairs use different alertnames
-            # (DiskUsageWarning vs DiskUsageCritical, CPUTempWarning vs
-            # CPUTempCritical, ...) so the rule above never matches them.
-            # CPU/GPU/NIC carry one temp alert per host+component, so pairing
-            # on instance+component dedups warning->critical cleanly. Storage
-            # is deliberately excluded here: SATA/NVMe report many drives per
-            # host (all component=storage), and equal:[instance,component]
-            # would let one drive crossing critical silence a *different*
-            # drive's warning on the same host. The per-device storage pairs
-            # below key on instance+chip instead.
+            # The custom warning/critical pairs use distinct alertnames, so the
+            # generic rule above never matches them; each is paired explicitly
+            # below on its own identity labels. CPU/GPU/NIC carry one temp alert
+            # per host+component, so instance+component dedups cleanly. Storage is
+            # excluded here — SATA/NVMe report many drives per host under one
+            # component, so that pairing would let one drive's critical silence a
+            # different drive's warning. They pair on instance+chip below.
             - source_matchers:
                 - severity="critical"
                 - component=~"cpu|gpu|network"
@@ -133,33 +128,95 @@ spec:
                 - alertname="EndpointDown"
               equal:
                 - instance
+            # Upstream's InfoInhibitor pairing. `equal: [namespace]` is
+            # load-bearing: without it one namespace's info condition suppresses
+            # every info alert in the cluster, including the non-namespaced
+            # host-level ones.
             - source_matchers:
                 - alertname="InfoInhibitor"
               target_matchers:
                 - severity="info"
-            # Node outage storm control: while a node is down, per-pod /
-            # per-workload warnings are pure noise (2026-06-10 outage produced
-            # ~25 distinct warnings and Discord rate-limiting). Tradeoff:
-            # an unrelated pod failure elsewhere is also suppressed during
-            # the outage window. The warning-tier k3s reboot churn that routine
-            # kured kernel rollouts provoke (KubeAggregatedAPIDown,
-            # NodeSystemSaturation) is included here — Discord-only, keyed on a
-            # node being NotReady/Unreachable, NOT a blanket maintenance silence.
-            # The etcd/kubelet criticals (etcdInsufficientMembers, KubeletDown)
-            # are deliberately NOT inhibited: a serialized concurrency:1 reboot
-            # must never lose quorum, so their firing is a genuine signal.
+              equal:
+                - namespace
+            # Node-outage storm control: while a node is down, per-pod and
+            # per-workload warnings are noise. The source is deliberately
+            # NodeOutageStormControl, not KubeNodeNotReady — it stops firing
+            # after 6h, so a multi-day outage cannot silently suppress the whole
+            # cluster (rules/monitoring.yaml). Nothing critical is inhibited, and
+            # neither are EndpointDown/TargetDown, which cover off-cluster infra
+            # whose health is independent of k3s node readiness.
             #
-            # Deliberately does NOT suppress EndpointDown or TargetDown:
-            # EndpointDown (blackbox probe_success) covers OFF-cluster infra
-            # (DNS .150/.160, GitLab, Authentik, Plex, Home Assistant) whose
-            # health is independent of k3s node readiness — masking it
-            # cluster-wide during any node-down window would hide a genuinely
-            # down external service. TargetDown likewise spans non-node scrape
-            # jobs. BlackboxExporterDown still covers total probe blindness.
+            # Every name here must resolve to a rule in observability/rules/ or
+            # to scripts/check-alertmanager-behaviour.py's UPSTREAM_ALERTS —
+            # an unmatched member of an alternation is an inert matcher that
+            # nothing surfaces at runtime. KubeletInstanceUnreachable was one:
+            # it matches no chart rule (upstream ships KubeNodeUnreachable /
+            # KubeletDown / KubeNodeNotReady, all node-level truths that must
+            # stay visible during an outage), so it was dropped rather than
+            # remapped.
             - source_matchers:
-                - alertname=~"KubeNodeNotReady|KubeNodeUnreachable"
+                - alertname="NodeOutageStormControl"
               target_matchers:
-                - alertname=~"KubePodNotReady|KubeContainerWaiting|KubeDaemonSetRolloutStuck|KubeDaemonSetMisScheduled|KubeDeploymentReplicasMismatch|KubeStatefulSetReplicasMismatch|KubeletInstanceUnreachable|KubeAggregatedAPIDown|NodeSystemSaturation"
+                - alertname=~"KubePodNotReady|KubeContainerWaiting|KubeDaemonSetRolloutStuck|KubeDaemonSetMisScheduled|KubeDeploymentReplicasMismatch|KubeStatefulSetReplicasMismatch|KubeAggregatedAPIDown|NodeSystemSaturation|HindsightDown|RegistryCacheDown|TailscaleProxyDown|GitLabAgentDown|AuthentikWorkerDown"
+
+            # The warning-tier custom *Down alerts are on the target list too:
+            # they are deployment/statefulset-availability rules, so a node
+            # outage is exactly what makes them noise. Nothing critical is
+            # inhibited here.
+            #
+            # Backup-tier escalations: each critical sibling silences the warning
+            # it escalates so a multi-day failure pages once, not twice.
+            - source_matchers:
+                - alertname="ArchiveBackupFailedProlonged"
+              target_matchers:
+                - alertname="ArchiveBackupFailed"
+              equal:
+                - instance
+            - source_matchers:
+                - alertname="ArchiveBackupStaleCritical"
+              target_matchers:
+                - alertname="ArchiveBackupStale"
+              equal:
+                - instance
+            - source_matchers:
+                - alertname="ResticOffsiteFailedProlonged"
+              target_matchers:
+                - alertname="ResticOffsiteFailed"
+              equal:
+                - instance
+            - source_matchers:
+                - alertname="ResticOffsiteStaleCritical"
+              target_matchers:
+                - alertname="ResticOffsiteStale"
+              equal:
+                - instance
+            - source_matchers:
+                - alertname="ResticOffsiteVerifyStaleCritical"
+              target_matchers:
+                - alertname="ResticOffsiteVerifyStale"
+              equal:
+                - instance
+            - source_matchers:
+                - alertname="VzdumpBackupStaleCritical"
+              target_matchers:
+                - alertname="VzdumpBackupStale"
+              equal:
+                - instance
+            # BackupArtifactStale is per-app on one host, so the pair must key on
+            # app as well as instance.
+            - source_matchers:
+                - alertname="BackupArtifactStaleCritical"
+              target_matchers:
+                - alertname="BackupArtifactStale"
+              equal:
+                - instance
+                - app
+            - source_matchers:
+                - alertname="CertRenewalFailedProlonged"
+              target_matchers:
+                - alertname="CertRenewalFailed"
+              equal:
+                - instance
 
           route:
             receiver: discord-default
@@ -176,15 +233,12 @@ spec:
             group_interval: 10m
             repeat_interval: 4h
             routes:
-              # Dead-man's switch (docs/17): the chart's Watchdog alert always
-              # fires; healthchecks.io alarms when the pings STOP — i.e. when
-              # Prometheus, Alertmanager, the NAS node, or notification egress
-              # is down. This is the only signal that survives a total
-              # observability-plane outage (including both DNS resolvers, on
-              # which the SMTP and Discord receivers depend for name
-              # resolution). Must precede the severity=none null route:
-              # Watchdog carries severity=none, and InfoInhibitor (also
-              # severity=none) must stay null-routed.
+              # Dead-man's switch (docs/17): Watchdog always fires, so
+              # healthchecks.io alarms when the pings STOP — the only signal that
+              # survives a total observability-plane outage. MUST precede the
+              # severity=none null route: Watchdog carries severity=none, and the
+              # other severity=none alerts (InfoInhibitor, NodeOutageStormControl)
+              # must stay null-routed.
               - receiver: watchdog-heartbeat
                 matchers:
                   - alertname="Watchdog"
@@ -201,6 +255,13 @@ spec:
                 matchers:
                   - severity="warning"
                 repeat_interval: 12h
+              # severity=info is a notice, not a fault (e.g.
+              # SwapCleanStoppedGuests). Without this branch it would inherit the
+              # route's 4h repeat — more often than a warning.
+              - receiver: discord-default
+                matchers:
+                  - severity="info"
+                repeat_interval: 24h
 
           receivers:
             - name: "null"
@@ -230,10 +291,7 @@ spec:
       remoteRef:
         key: SMTP Relay Auth
         property: password
-    # healthchecks.io check ping URL for the Watchdog dead-man's switch.
-    # Until the 1Password item exists, ESO keeps serving the last rendered
-    # Secret and ExternalSecretSyncFailure fires — create the item promptly
-    # after merge (docs/15).
+    # healthchecks.io ping URL for the Watchdog dead-man's switch (docs/17).
     - secretKey: healthchecksPingUrl
       remoteRef:
         key: Healthchecks Watchdog

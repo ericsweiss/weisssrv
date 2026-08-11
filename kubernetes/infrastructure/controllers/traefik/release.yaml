@@ -10,17 +10,11 @@ metadata:
 spec:
   interval: 30m
   releaseName: traefik
-  # Correct out-of-band edits to chart-rendered objects (a `kubectl edit deploy
-  # traefik`, a manual scale, a hand-patched Service). Without this, helm-
-  # controller only re-renders when the chart version or .spec.values change, so
-  # a manual mutation survives forever — which contradicts the repo's "Flux owns
-  # everything in-cluster" contract. Safe here: the chart renders no webhook
-  # whose caBundle a runtime controller injects, and with autoscaling.enabled the
-  # Deployment omits .spec.replicas entirely, so the HPA has nothing to fight.
-  # NOT enabled on cert-manager / external-secrets / metallb / vpa /
-  # kube-prometheus-stack: each ships a webhook whose caBundle is written at
-  # runtime (cainjector, cert-controller, the metallb controller, a chart hook),
-  # and drift correction would wipe it on every reconcile.
+  # Revert out-of-band edits to chart-rendered objects. Repo rule: enabled
+  # unless the chart ships a webhook whose caBundle is injected at runtime
+  # (cert-manager, external-secrets, metallb, vpa, kube-prometheus-stack —
+  # drift correction would wipe it every reconcile). Safe here, and
+  # autoscaling.enabled omits .spec.replicas so the HPA has nothing to fight.
   driftDetection:
     mode: enabled
   chart:
@@ -49,14 +43,10 @@ spec:
       enabled: true
       minAvailable: 1
 
-    # Horizontal autoscaling via the chart's own autoscaling (min 2 / max 6 on
-    # ~70% CPU). Using the chart's `autoscaling.enabled` (rather than a separate
-    # HorizontalPodAutoscaler) makes the chart omit `.spec.replicas` from the
-    # Deployment entirely — a standalone HPA would leave the chart re-asserting
-    # the default `replicas: 1` on every helm upgrade, briefly dropping below
-    # the HA floor before the HPA scaled back up. The Traefik VPA
-    # (configs/vpa/platform.yaml) controls memory only, so it does not contend
-    # with this HPA on CPU.
+    # Chart-native autoscaling (min 2 / max 6 on ~70% CPU) rather than a
+    # standalone HPA: it makes the chart omit `.spec.replicas`, so a helm
+    # upgrade cannot re-assert replicas:1 under the HA floor. The Traefik VPA
+    # (configs/vpa/platform.yaml) is memory-only, so it never contends on CPU.
     autoscaling:
       enabled: true
       minReplicas: 2
@@ -68,13 +58,9 @@ spec:
             target:
               type: Utilization
               averageUtilization: 70
-      # Damp HPA flap: CI image-pull bursts (registry traffic through Traefik)
-      # push per-pod CPU past 200% of the 250m request, so with the default 0s
-      # scaleUp window the HPA jumps toward max on transient spikes and fires
-      # KubeHpaMaxedOut before scaling back — the flap authentik-server got a
-      # behavior block for. Require ~2 min of sustained pressure before adding a
-      # pod, one at a time; keep the default 5-min downscale damping. Genuine
-      # sustained load still reaches max=6.
+      # Damp HPA flap on CI image-pull bursts: require ~2 min of sustained
+      # pressure before adding a pod, one at a time. Sustained load still
+      # reaches max=6.
       behavior:
         scaleUp:
           stabilizationWindowSeconds: 120
@@ -89,10 +75,8 @@ spec:
               value: 1
               periodSeconds: 120
 
-    # Deployment configuration. No static `replicas` (autoscaling owns it).
-    # Metrics are scraped via the ServiceMonitor below; no prometheus.io/scrape
-    # podAnnotations (kube-prometheus-stack does not run an annotation-based
-    # scrape job, so they were dead config).
+    # No static `replicas` (autoscaling owns it); metrics come from the
+    # ServiceMonitor below, not scrape annotations.
     deployment: {}
 
     # Service configuration (external/public traffic - *.ericsweiss.com)
@@ -108,17 +92,10 @@ spec:
       # single-IP public pool cannot blackhole while at least one Traefik pod is
       # Ready (it runs on every esweiss.com/ingress node, spread by anti-affinity).
       #
-      # No NodePorts: MetalLB L2 announces the VIP directly and never uses them,
-      # so the default-allocated ports were unused listeners on every node. The
+      # No NodePorts: MetalLB L2 announces the VIP directly and never uses them.
       # healthCheckNodePort stays — required by externalTrafficPolicy: Local.
-      # Flipping this flag does not release NodePorts already allocated on a
-      # Service: neither Helm nor Flux SSA owns spec.ports[*].nodePort, so if a
-      # Service was created before this flag was set it keeps its stale nodePorts
-      # until an operator strips them once with:
-      #   kubectl -n traefik patch svc traefik --type=json \
-      #     -p '[{"op":"remove","path":"/spec/ports/0/nodePort"},
-      #          {"op":"remove","path":"/spec/ports/1/nodePort"}]'
-      #   (repeat for svc traefik-internal)
+      # Nothing owns spec.ports[*].nodePort, so already-allocated ports must be
+      # stripped by hand (docs/12-runbooks.md).
       spec:
         externalTrafficPolicy: Local
         allocateLoadBalancerNodePorts: false
@@ -149,35 +126,20 @@ spec:
         entryPoint: metrics
         serviceMonitor:
           enabled: true
-          # honorLabels so Prometheus keeps Traefik's native per-backend `service`
-          # label instead of prefixing it to `exported_service` (the scraped k8s
-          # Service is also named "traefik", which would otherwise collide). Without
-          # this the traefik-official dashboard's $service variable and every
-          # per-service panel collapse all ~36 backends into a single "traefik"
-          # series (the label_replace @-strip becomes a no-op on the bare value).
+          # Keep Traefik's native per-backend `service` label; without this it is
+          # renamed to `exported_service` (the k8s Service is also "traefik") and
+          # every per-service dashboard panel collapses to one series.
           honorLabels: true
 
     providers:
       kubernetesCRD:
         enabled: true
-        # ACCEPTED RISK (single-operator today) — REVIEW BEFORE MULTI-TENANT:
-        # cluster-wide cross-namespace refs let any IngressRoute reference
-        # middlewares/services in OTHER namespaces (e.g. a tenant route pulling
-        # platform middlewares like lan-tailscale-only or another namespace's
-        # Service). Fine while every IngressRoute is operator-authored. Before
-        # multi-repo tenant onboarding (docs/30) goes live, guard this — scope
-        # the provider per-tenant or add a validating policy that pins each
-        # tenant's @namespace refs — otherwise revert to allowCrossNamespace:false.
-        #
-        # Paired exposure to weigh in that same review: because the CRD/Ingress
-        # providers watch every namespace, the chart's ClusterRole grants the
-        # Traefik SA cluster-wide `secrets` get/list/watch (it must resolve TLS
-        # and basic-auth middleware Secrets wherever a route lives). Traefik is
-        # the internet-facing edge, so scoping the provider to a namespace list
-        # is what also makes `rbac.namespaced: true` possible — the two are one
-        # decision, not two. Kept as-is today: routes live in ~10 namespaces that
-        # already hold nearly every app Secret, so the reduction would be small
-        # and every new namespace would silently stop routing until listed.
+        # ACCEPTED RISK, single-operator only. Any IngressRoute may reference
+        # middlewares/Services in other namespaces, and watching every namespace
+        # is why the chart's ClusterRole holds cluster-wide secrets get/list/watch
+        # (one decision, not two). REVIEW BEFORE THE FIRST TENANT ONBOARDS
+        # (docs/30): scope the provider per-tenant or set allowCrossNamespace:
+        # false. Nothing enforces this precondition today.
         allowCrossNamespace: true
       kubernetesIngress:
         enabled: true
@@ -190,18 +152,10 @@ spec:
         port: 80
       websecure:
         port: 443
-        # TLS is enabled by default on websecure port in Traefik v3+
-        #
-        # Traefik v3 changed the entrypoint readTimeout default from unlimited
-        # to 60s (slowloris hardening). That kills any request whose BODY takes
-        # longer than 60s to stream — observed breaking every docker push of a
-        # large hermes-agent image layer to the GitLab registry (blob PATCH
-        # reset at duration_ms≈60000; registry logs "client disconnected
-        # during blob PATCH", docker sees HTTP 499), and it would equally break
-        # big/slow Nextcloud/Immich uploads on the internal Traefik-fronted
-        # hosts. 30m bounds the exposure (still slowloris-resistant on a
-        # LAN-facing homelab ingress) while fitting multi-GB uploads on slow
-        # links. writeTimeout stays default (0/unlimited); idleTimeout default.
+        # TLS is on by default on websecure in Traefik v3+.
+        # readTimeout bounds how long a request BODY may stream; the v3 default
+        # of 60s cuts large registry pushes and Nextcloud/Immich uploads. 30m
+        # fits multi-GB uploads and is still slowloris-resistant here.
         transport:
           respondingTimeouts:
             readTimeout: 30m
@@ -232,12 +186,8 @@ spec:
     # Tolerations for scheduling
     tolerations: []
 
-    # Resource limits. CPU request sized against observed per-pod bursts
-    # (p95 ~490m): at 100m the HPA's 70% target sat at 70m — noise level —
-    # so every traffic burst pinned the HPA at maxReplicas and fired
-    # KubeHpaMaxedOut. 250m puts idle at ~3% and bursts around 200%, and
-    # scaling reacts to real load instead of jitter (per docs/33: raise the
-    # request, not the threshold). The VPA controls memory only.
+    # CPU request sized so the HPA's 70% target tracks real load, not jitter
+    # (docs/33: raise the request, not the threshold). The VPA owns memory.
     resources:
       requests:
         cpu: 250m

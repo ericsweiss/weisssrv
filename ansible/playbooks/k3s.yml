@@ -6,13 +6,13 @@
   hosts: k3s
   become: true
   roles:
-    - base
-    - qol
-    - postfix_null_client
+    - weisssrv.infra.base
+    - weisssrv.infra.qol
+    - weisssrv.infra.postfix_null_client
     # Host-side journald -> Loki shipping. site.yml deploys this to k3s nodes in
     # a dedicated play; include it here so a standalone `task k3s:deploy` does not
     # leave the k3s VMs without host log shipping.
-    - alloy_host
+    - weisssrv.infra.alloy_host
 
 # NFSv4-over-TLS daemon for k3s NFS clients — MUST precede the server/agent plays.
 # The k3s role's off-node etcd-snapshot task asserts tlshd is active (and mounts
@@ -26,14 +26,14 @@
   hosts: k3s
   become: true
   roles:
-    - nfs_tls
+    - weisssrv.infra.nfs_tls
 
 - name: Deploy k3s server(s)
   hosts: k3s_servers
   become: true
   serial: 1  # One server at a time for safe cluster formation
   roles:
-    - k3s
+    - weisssrv.infra.k3s
 
 - name: Deploy k3s agents
   hosts: k3s_agents
@@ -44,12 +44,12 @@
   # .100/.101 VIPs. Matches the server play above and maintenance/update-k3s-nodes.yml.
   serial: 1
   roles:
-    - k3s
+    - weisssrv.infra.k3s
 
 - name: Deploy guest firewall rules
   hosts: k3s
   roles:
-    - proxmox_firewall
+    - weisssrv.infra.proxmox_firewall
 
 - name: Verify cluster health
   hosts: k3s_servers[0]

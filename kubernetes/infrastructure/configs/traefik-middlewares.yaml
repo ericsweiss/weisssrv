@@ -1,46 +1,15 @@
 ---
-# Platform-level Traefik middlewares used cross-stage.
-#
-# These live in infrastructure/configs/ (not apps/vm-ingress/) because
-# they are referenced from IngressRoutes outside the apps stage:
-#   - infrastructure/configs/onepassword-connect-ingress.yaml
-#     uses lan-tailscale-strict + hsts-header (configs stage, same as here).
-#   - infrastructure/observability/ingress/ingress-route.yaml
-#     uses lan-tailscale-only on Loki (observability stage, runs after
-#     configs — middlewares already exist by then).
-#   - infrastructure/controllers/traefik/release.yaml dashboard
-#     ingressRoute uses lan-tailscale-only (controllers stage; on cold
-#     boot Traefik marks the dashboard router errored while the
-#     middleware is missing — requests 404 — and picks it up on the
-#     next watch cycle once configs runs).
-#
-# A missing middleware fails CLOSED: Traefik logs "middleware does not
-# exist" and disables the router (404) until the middleware reconciles.
-# Keeping these in an early stage is therefore an availability concern
-# (routes would 404 during every cold-boot gap), not an exposure one.
-#
-# home-assistant-headers stays in apps/vm-ingress/middleware.yaml because all
-# of its consumers are in the apps stage.
+# Platform Traefik middlewares, referenced by IngressRoutes in the configs,
+# controllers, observability and apps stages. They live here (not in
+# apps/vm-ingress) so they exist before the later stages: a missing middleware
+# fails closed — Traefik disables the router and the route 404s until it
+# reconciles. Middlewares used only by apps stay in apps/vm-ingress/middleware.yaml.
 
 # IP allowlist for internal-only services (LAN + Tailscale + in-cluster pods).
-#
-# Why include the cluster pod CIDR (10.42.0.0/16): the traefik-internal
-# Service runs with externalTrafficPolicy: Local to preserve source IP for
-# this allowlist to work for LAN/Tailscale clients. The side effect is that
-# in-cluster pod consumers (e.g. blackbox-exporter probing
-# https://git.esweiss.com, future internal API clients) reach Traefik with
-# their pod-CIDR source IP — which without this allowance would 403 every
-# such request. The KAS path in vm-ingress/gitlab.yaml already worked around
-# this by being a dedicated route without lan-tailscale-only; allowing
-# 10.42.0.0/16 here is the more general fix.
-#
-# Threat-model note: external attackers cannot spoof a source IP from
-# 10.42.0.0/16 — the pod CIDR is routable only inside the cluster's CNI
-# overlay. Any traffic seen with that source IP has already passed through
-# a kube-proxy / CNI path that originated inside the cluster. So this
-# allowance widens "who can reach internal routes" to include cluster pods
-# (which already have many other intra-cluster paths to the same backends)
-# without exposing them to the public internet.
+# The pod CIDR is included because traefik-internal runs
+# externalTrafficPolicy: Local, so in-cluster callers (e.g. blackbox-exporter
+# probing https://git.esweiss.com) arrive with a pod source IP. That CIDR is
+# routable only inside the CNI overlay, so it cannot be spoofed from outside.
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:
@@ -54,18 +23,10 @@ spec:
       - 10.42.0.0/16       # K3s pod CIDR (see k3s_cluster_cidr in group_vars)
 
 ---
-# Stricter allowlist: same as lan-tailscale-only but WITHOUT the pod CIDR. Use
-# it for any route whose only gates are the IP allowlist plus the backend's own
-# login — i.e. where an in-cluster pod reaching the route would be a real
-# escalation. Current consumers:
-#   * connect.esweiss.com (1Password Connect) — no in-cluster consumer needs the
-#     ingress: ESO reaches Connect via the ClusterIP (cluster-secret-store.yaml)
-#     and Connect's NetworkPolicy scopes that ClusterIP to same-namespace ESO
-#     pods; the pod-CIDR allowlist would undo that scoping.
-#   * router.esweiss.com and the dns-01/dns-02 AdGuard raw routes — appliance
-#     admin UIs with no forward-auth. Pods that hold blanket :443 egress to the
-#     traefik namespace (hermes runs LLM-authored code; homarr) must not reach
-#     them; in-cluster AdGuard consumers use the direct .150/.160 IPs.
+# Stricter allowlist: lan-tailscale-only without the pod CIDR. For routes whose
+# only gates are the IP allowlist plus the backend's own login, where an
+# in-cluster pod reaching the route would be a real escalation — 1Password
+# Connect, and the router/AdGuard appliance UIs that have no forward-auth.
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:
@@ -78,7 +39,7 @@ spec:
       - 100.64.0.0/10      # Tailscale CGNAT range
 
 ---
-# HSTS headers for public services
+# HSTS for public services. Chain security-headers alongside it on WAN routes.
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:
@@ -88,3 +49,20 @@ spec:
   headers:
     stsSeconds: 31536000
     stsIncludeSubdomains: true
+
+---
+# Baseline response headers for WAN-facing routes, chained after hsts-header.
+# Kept separate from hsts-header so a route that must be framed (or needs a
+# looser referrer policy) can take HSTS without this. frameDeny is safe for the
+# current consumers — none embeds itself in an iframe; an app that does needs
+# its own middleware with customFrameOptionsValue: SAMEORIGIN.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: security-headers
+  namespace: traefik
+spec:
+  headers:
+    contentTypeNosniff: true
+    frameDeny: true
+    referrerPolicy: strict-origin-when-cross-origin

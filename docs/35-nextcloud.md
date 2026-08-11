@@ -5,7 +5,7 @@ as a Docker Compose stack. It is reachable at **cloud.ericsweiss.com** (external
 + internal) and **cloud.esweiss.com** (internal only), SSO-only via Authentik
 OIDC. All state rides ZFS zvol passthrough disks — there is **no NFS** anywhere.
 
-- **Ansible role**: `ansible/roles/nextcloud/`
+- **Ansible role**: `weisssrv.infra.nextcloud` (weisssrv-lib)
 - **Playbook**: `ansible/playbooks/nextcloud.yml` (`task nextcloud:deploy`)
 - **Ingress**: `kubernetes/apps/vm-ingress/{services-nextcloud,nextcloud}.yaml`
 - **Metrics**: `kubernetes/infrastructure/observability/service-monitors/nextcloud.yaml`
@@ -28,7 +28,7 @@ Client ──HTTPS──▶ Traefik (MetalLB .100 public / .101 internal)
             └─ nextcloud-exporter  (0.0.0.0:9205  ← Prometheus scrapes VM:9205)
 ```
 
-- The VM is **pinned to pve-nas-01** (`vm_cpu_type: host`, `onboot=0`), started by
+- The VM is **pinned to pve-nas-01** (`proxmox_vm_cpu_type: host`, `onboot=0`), started by
   `pve-start-encrypted-guests.service` after the encrypted ssd/tank pools unlock
   (vmid 156 is in `zfs_encryption_guest_vmids`, host_vars/pve-nas-01.yml).
 - Nextcloud accepts **both** hostnames (`trusted_domains`); only the protocol
@@ -105,34 +105,32 @@ The role installs + configures the `user_oidc` app idempotently via `occ`
 scopes `openid email profile groups`, `preferred_username`→uid, `groups`→groups,
 group provisioning on, `allow_multiple_user_backends=0`).
 
-### Authentik setup (manual, one-time — do this BEFORE `task nextcloud:deploy`)
+### Authentik objects (Terraform)
 
-1. **Groups** — Directory → Groups → Create: `nextcloud-admins` and
-   `nextcloud-users`. Add the appropriate users.
-2. **Provider** — Applications → Providers → Create → **OAuth2/OpenID Provider**:
-   - Name: `Nextcloud`
-   - Authorization flow: `default-provider-authorization-implicit-consent`
-   - Client type: **Confidential**
-   - Redirect URIs (**Strict**), one per line:
-     - `https://cloud.ericsweiss.com/apps/user_oidc/code`
-     - `https://cloud.esweiss.com/apps/user_oidc/code`
-   - Signing Key: the Authentik self-signed certificate (enables RS256 / a JWKS).
-   - Scopes: `openid`, `email`, `profile`, and a mapping that emits the `groups`
-     claim (Authentik ships *"authentik default OAuth Mapping: OpenID 'profile'"*
-     which includes `groups`; otherwise add a Scope Mapping named `groups`
-     returning `[g.name for g in request.user.ak_groups.all()]`).
-   - Copy the generated **Client ID** and **Client Secret**.
-3. **Application** — Applications → Applications → Create:
-   - Name: `Nextcloud`, **Slug: `nextcloud`** (must match the discovery URI).
-   - Provider: `Nextcloud` (the provider above).
-   - Under **Policy / Group / User Bindings**, bind the app to
-     `nextcloud-admins` and `nextcloud-users` so only those groups can launch it.
-4. **1Password** — put the client id/secret in item **Nextcloud SSO**
-   (`client-id`, `client-secret`).
+The Nextcloud OAuth2 provider, application and the `nextcloud-users` group are
+declared in `terraform/authentik/` and applied under supervision
+([docs/40](40-authentik-terraform.md)) — **not** in the Authentik admin UI. The
+values Terraform sets, which the `user_oidc` config above must agree with:
 
-> Nextcloud admin membership is managed inside Nextcloud (Settings → Users), not
-> mapped from the `nextcloud-admins` group automatically — first admin logs in
-> via SSO and is promoted, or use the break-glass local admin.
+| Setting | Value |
+|---|---|
+| Provider / application name | `Nextcloud` |
+| Application slug | `cloud` — this is what the discovery URI path contains |
+| Client type | Confidential |
+| Authorization flow | `default-provider-authorization-implicit-consent` |
+| Redirect URIs (Strict) | `https://cloud.ericsweiss.com/apps/user_oidc/code`<br>`https://cloud.esweiss.com/apps/user_oidc/code` |
+| Scopes | `openid`, `email`, `profile`, plus a mapping that emits the `groups` claim |
+| Signing key | the Authentik self-signed certificate (enables RS256 / a JWKS) |
+| Access gate | `nextcloud-users` group binding |
+
+The client id/secret live on the **Nextcloud SSO** 1Password item (`client-id`,
+`client-secret`) and are read by both ESO and Terraform.
+
+> There is deliberately **no** `nextcloud-admins` group. Nextcloud admin
+> membership is managed inside Nextcloud (Settings → Users), not mapped from an
+> Authentik group — the first admin logs in via SSO and is promoted, or you use
+> the break-glass local admin.
+
 
 ### SSRF toggle (`allow_local_remote_servers`) — accepted risk
 
@@ -196,7 +194,7 @@ real wildcard cert is distributed. To install the real cert (POST-PROVISION):
    task certs:show-host-keys        # copy the nextcloud (192.168.0.156) ssh-ed25519 line
    ```
    Uncomment the `nextcloud` block in
-   `ansible/inventories/prod/host_vars/dns-01.yml` (`cert_distribution_targets`),
+   `ansible/inventories/prod/host_vars/dns-01.yml` (`acme_certs_distribution_targets`),
    paste the real `host_key`, commit, then:
    ```bash
    task dns:deploy                  # issues + pushes *.esweiss.com to /etc/ssl/nextcloud, reloads nginx
@@ -263,9 +261,9 @@ encrypted-tree restores need the source pool key loaded before mount).
 ## Docker Engine version bumps
 
 Docker Engine + the plugins are pinned in `group_vars/all.yml` as **shared**
-pins consumed by the `docker_engine` role — `docker_ce_version`,
-`containerd_version`, `docker_buildx_plugin_version`,
-`docker_compose_plugin_version` — from `download.docker.com` (Debian trixie),
+pins consumed by the `docker_engine` role — `docker_engine_ce_version`,
+`docker_engine_containerd_version`, `docker_engine_buildx_plugin_version`,
+`docker_engine_compose_plugin_version` — from `download.docker.com` (Debian trixie),
 and `dpkg`-held so the maintenance apt-upgrade cannot bump them under a running
 stack. The same four pins back **immich, immich_ml and nextcloud**, so a bump
 redeploys all three guests. Because download.docker.com prunes old versions over

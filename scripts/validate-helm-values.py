@@ -7,10 +7,10 @@ a Flux CR and never renders its chart, so the chart-specific keys inside
 free-form object. A typo in a values key (e.g. `prometheuss:` for `prometheus:`)
 therefore slips past lint and silently no-ops in-cluster.
 
-This closes that gap for the value-heavy releases listed in RELEASES by
-extracting each release's `.spec.values`, substituting the `${...}` postBuild
-placeholders from the cluster-versions ConfigMap, and running `helm template`
-against the pinned chart version. That:
+This closes that gap for the releases named in --releases by extracting each
+release's `.spec.values`, substituting the `${...}` postBuild placeholders from
+the cluster-versions ConfigMap, and running `helm template` against the pinned
+chart version. That:
   - hard-fails on a typo'd key for charts that ship a values.schema.json
     (traefik does; helm validates values against it),
   - hard-fails on any values that produce an unrenderable template (all charts),
@@ -18,11 +18,21 @@ against the pinned chart version. That:
     validation of the produced resources.
 
 It requires network access (it does `helm repo add`/`update` against the public
-chart repos). The flux-lint CI job and `task flux:lint` invoke it. It is scoped
-to exactly the releases below; add an entry to RELEASES to cover another.
+chart repos). Which releases to render is consumer data, read from a YAML/JSON
+list (`--releases`, default `helm-values-releases.yaml` under the repo root):
+
+    - name: traefik
+      manifest: kubernetes/infrastructure/controllers/traefik/release.yaml
+      chart: traefik
+      repo_name: traefik
+      repo_url: https://traefik.github.io/charts
+
+The chart version comes from the manifest's `.spec.chart.spec.version` (a literal
+or a "${configmap_key}" placeholder), so there is no version to keep in sync here.
 
 Usage:
-  validate-helm-values.py [--kubeconform] [--repo-root DIR]
+  validate-helm-values.py [--kubeconform] [--repo-root DIR] [--releases FILE]
+                          [--versions-configmap PATH] [--policy-config PATH]
 
 Exit code is non-zero if any release fails to template (or fails kubeconform
 when --kubeconform is given).
@@ -52,13 +62,10 @@ _hpa_spec = importlib.util.spec_from_file_location("check_hpa_vpa_invariant", _H
 _hpa = importlib.util.module_from_spec(_hpa_spec)
 _hpa_spec.loader.exec_module(_hpa)
 
-# The traefik chart's servicemonitor.yaml hard-fails templating unless the
-# prometheus-operator API is present in .Capabilities.APIVersions (the cluster
-# installs it via kube-prometheus-stack). Declare it so `helm template` of a
-# serviceMonitor-enabled release succeeds offline. Charts commonly gate on the
-# kind-qualified form (.Capabilities.APIVersions.Has
-# "monitoring.coreos.com/v1/ServiceMonitor"), so declare the kind-qualified CRDs
-# the cluster actually has, not just the bare group/version.
+# Charts gate on .Capabilities.APIVersions, commonly in the kind-qualified form
+# (".../v1/ServiceMonitor"), so declare both the group/version and the
+# kind-qualified CRDs the cluster has — otherwise offline `helm template` of a
+# serviceMonitor-enabled release fails.
 # Kubernetes version for capability-gated rendering, shared by `helm template`
 # (--kube-version) and kubeconform (-kubernetes-version) so version-gated chart
 # templates render the way both tools see them. Derived at runtime from
@@ -73,84 +80,42 @@ HELM_API_VERSIONS = [
     "monitoring.coreos.com/v1/PrometheusRule",
 ]
 
-# Value-heavy HelmReleases worth rendering. Each: the release manifest, the
-# chart name, and the Helm repo (name + classic HTTPS url). The chart version is
-# read straight from the manifest's `.spec.chart.spec.version` — a literal or a
-# "${configmap_key}" placeholder resolved from versions-configmap — so there is
-# no separate version key to keep in sync here.
-RELEASES = [
-    {
-        "name": "traefik",
-        "manifest": "kubernetes/infrastructure/controllers/traefik/release.yaml",
-        "chart": "traefik",
-        "repo_name": "traefik",
-        "repo_url": "https://traefik.github.io/charts",
-    },
-    {
-        "name": "kube-prometheus-stack",
-        "manifest": "kubernetes/infrastructure/observability/kube-prometheus-stack/release.yaml",
-        "chart": "kube-prometheus-stack",
-        "repo_name": "prometheus-community",
-        "repo_url": "https://prometheus-community.github.io/helm-charts",
-    },
-    {
-        "name": "authentik",
-        "manifest": "kubernetes/apps/authentik/release.yaml",
-        "chart": "authentik",
-        "repo_name": "authentik",
-        "repo_url": "https://charts.goauthentik.io",
-    },
-    {
-        "name": "kured",
-        "manifest": "kubernetes/infrastructure/controllers/kured/release.yaml",
-        "chart": "kured",
-        "repo_name": "kured",
-        "repo_url": "https://kubereboot.github.io/charts",
-    },
-    {
-        "name": "reloader",
-        "manifest": "kubernetes/infrastructure/controllers/reloader/release.yaml",
-        "chart": "reloader",
-        "repo_name": "stakater",
-        "repo_url": "https://stakater.github.io/stakater-charts",
-    },
-    {
-        "name": "tailscale-operator",
-        "manifest": "kubernetes/infrastructure/controllers/tailscale-operator/release.yaml",
-        "chart": "tailscale-operator",
-        "repo_name": "tailscale",
-        "repo_url": "https://pkgs.tailscale.com/helmcharts",
-    },
-    {
-        # Listed for the CPU-limit check specifically: the release's values set
-        # only a memory limit, which is safe solely because the chart's current
-        # default is `resources: {}`. A future chart version adding a default
-        # limits.cpu would merge in silently, and only `helm template` sees it.
-        "name": "gitlab-agent",
-        "manifest": "kubernetes/apps/gitlab-agent/release.yaml",
-        "chart": "gitlab-agent",
-        "repo_name": "gitlab",
-        "repo_url": "https://charts.gitlab.io",
-    },
-]
-
-VERSIONS_CONFIGMAP = "kubernetes/infrastructure/sources/versions-configmap.yaml"
+DEFAULT_VERSIONS_CONFIGMAP = "kubernetes/infrastructure/sources/versions-configmap.yaml"
+DEFAULT_RELEASES_FILE = "helm-values-releases.yaml"
+REQUIRED_RELEASE_KEYS = ("name", "manifest", "chart", "repo_name", "repo_url")
 PLACEHOLDER_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
-def load_versions(repo_root: str) -> dict:
+def load_versions(repo_root: str, configmap: str = DEFAULT_VERSIONS_CONFIGMAP) -> dict:
     """Return the cluster-versions ConfigMap data map."""
-    path = os.path.join(repo_root, VERSIONS_CONFIGMAP)
+    path = os.path.join(repo_root, configmap)
     with open(path) as f:
         doc = yaml.safe_load(f)
     if not isinstance(doc, dict):
         raise SystemExit(
-            f"ERROR: {VERSIONS_CONFIGMAP} must be a mapping, got {type(doc).__name__}"
+            f"ERROR: {configmap} must be a mapping, got {type(doc).__name__}"
         )
     data = doc.get("data", {}) or {}
     if not data:
-        raise SystemExit(f"ERROR: no data keys in {VERSIONS_CONFIGMAP}")
+        raise SystemExit(f"ERROR: no data keys in {configmap}")
     return {k: str(v) for k, v in data.items()}
+
+
+def load_releases(path: str) -> list[dict]:
+    """Return the consumer's release list, validating the required keys."""
+    with open(path) as f:
+        doc = yaml.safe_load(f)
+    if isinstance(doc, dict):
+        doc = doc.get("releases")
+    if not isinstance(doc, list) or not doc:
+        raise SystemExit(f"ERROR: {path} must hold a non-empty list of releases")
+    for rel in doc:
+        if not isinstance(rel, dict):
+            raise SystemExit(f"ERROR: {path}: release entry is not a mapping: {rel!r}")
+        missing = [k for k in REQUIRED_RELEASE_KEYS if not rel.get(k)]
+        if missing:
+            raise SystemExit(f"ERROR: {path}: release {rel!r} is missing {missing}")
+    return doc
 
 
 def derive_kube_version(versions: dict) -> str:
@@ -193,7 +158,7 @@ def extract_helmrelease(manifest_path: str) -> dict:
 
 
 def validate_release(rel: dict, versions: dict, repo_root: str, run_kubeconform: bool,
-                     kube_version: str) -> bool:
+                     kube_version: str, cpu_limit_allowlist: set | None = None) -> bool:
     """Template one release; return True on success."""
     manifest = os.path.join(repo_root, rel["manifest"])
     # Substitute ${placeholders} in the RAW manifest text first — exactly like
@@ -250,21 +215,19 @@ def validate_release(rel: dict, versions: dict, repo_root: str, run_kubeconform:
             print("stderr:", proc.stderr.strip())
             return False
 
-        # No-CPU-limits policy on the CHART-RENDERED pods — the gap
-        # check-hpa-vpa-invariant.py can't see: it scans only the HelmRelease
-        # `.spec.values`, never the chart's default pod specs, so a chart default
-        # could introduce a CPU limit unnoticed. Reuse that script's scanner +
-        # allowlist (loaded above) so the two checks stay identical. Runs before
-        # the optional kubeconform so the policy holds for `task flux:lint` too.
+        # No-CPU-limits policy on the CHART-RENDERED pods: check-hpa-vpa-
+        # invariant.py scans only the HelmRelease `.spec.values`, so a chart
+        # default would slip past it. Same scanner and allowlist, so the two
+        # checks cannot disagree.
         rendered_docs = [d for d in yaml.safe_load_all(proc.stdout) if isinstance(d, dict)]
-        cpu_viol = _hpa._cpu_limit_violations(rendered_docs)
+        cpu_viol = _hpa.cpu_limit_violations(rendered_docs, cpu_limit_allowlist)
         if cpu_viol:
             print(
                 f"ERROR [{rel['name']}]: chart-rendered pods set a CPU limit "
                 "(a compressible resource; CFS throttling distorts latency and "
-                "CPU-based HPAs — see docs/33-autoscaling.md). To intentionally "
-                "permit one, add its 'namespace/Kind/name' key to "
-                "CPU_LIMIT_ALLOWLIST in check-hpa-vpa-invariant.py. Offenders:"
+                "CPU-based HPAs). To intentionally permit one, add its "
+                "'namespace/Kind/name' key to cpu_limit_allowlist in the "
+                "--policy-config. Offenders:"
             )
             print("\n".join(cpu_viol))
             return False
@@ -302,6 +265,18 @@ def main() -> int:
         "--repo-root", default=".",
         help="repo root (default: cwd)",
     )
+    parser.add_argument(
+        "--releases", default=None,
+        help=f"release list (default: <repo-root>/{DEFAULT_RELEASES_FILE})",
+    )
+    parser.add_argument(
+        "--versions-configmap", default=DEFAULT_VERSIONS_CONFIGMAP,
+        help="cluster-versions ConfigMap, relative to --repo-root",
+    )
+    parser.add_argument(
+        "--policy-config", default=None,
+        help="autoscaling policy file supplying the shared cpu_limit_allowlist",
+    )
     args = parser.parse_args()
 
     if shutil.which("helm") is None:
@@ -311,15 +286,19 @@ def main() -> int:
         print("ERROR: kubeconform not found on PATH (--kubeconform given)")
         return 1
 
-    versions = load_versions(args.repo_root)
+    releases = load_releases(
+        args.releases or os.path.join(args.repo_root, DEFAULT_RELEASES_FILE)
+    )
+    policy = _hpa.load_policy(args.policy_config) if args.policy_config else _hpa.Policy()
+    versions = load_versions(args.repo_root, args.versions_configmap)
     kube_version = derive_kube_version(versions)
 
     # Add/refresh the chart repos once (network).
-    for rel in RELEASES:
+    for rel in releases:
         add = subprocess.run(
-            # --force-update keeps repeated local flux:lint runs idempotent (a
-            # plain `repo add` errors when the repo already exists) and refreshes
-            # a changed URL.
+            # --force-update keeps repeated local runs idempotent (a plain
+            # `repo add` errors when the repo already exists) and refreshes a
+            # changed URL.
             ["helm", "repo", "add", rel["repo_name"], rel["repo_url"], "--force-update"],
             capture_output=True, text=True,
         )
@@ -334,13 +313,14 @@ def main() -> int:
         return 1
 
     failed = 0
-    for rel in RELEASES:
-        if not validate_release(rel, versions, args.repo_root, args.kubeconform, kube_version):
+    for rel in releases:
+        if not validate_release(rel, versions, args.repo_root, args.kubeconform, kube_version,
+                                policy.cpu_limit_allowlist):
             failed += 1
     if failed:
         print(f"\n{failed} release(s) failed helm-values validation")
         return 1
-    print("\nAll value-heavy HelmReleases validated via helm template")
+    print(f"\nAll {len(releases)} HelmRelease(s) validated via helm template")
     return 0
 
 

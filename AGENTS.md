@@ -1,5 +1,15 @@
 # AGENTS.md
 
-Agent instructions for this repository live in [CLAUDE.md](CLAUDE.md) — read it first. It points to the canonical sources (`README.md`, `docs/`, `Taskfile.yml`) for everything else; do not duplicate its content here.
+**Tech stack**: Proxmox VE + Debian, Ansible (roles come from the
+`weisssrv.infra` collection in `eric/weisssrv-lib`), Terraform (Cloudflare,
+Tailscale, Authentik), k3s + Flux CD GitOps, External Secrets Operator with
+1Password Connect, ZFS.
 
-Before making any change, follow the [`weisssrv-development` skill](.claude/skills/weisssrv-development/SKILL.md) — it carries the repo's workflow, pre-MR gates, and change-type decision tree. Claude Code invokes it automatically via the Skill tool; other agents should read the `SKILL.md` and the `references/` file for the change at hand.
+1. Read [CLAUDE.md](CLAUDE.md) — the top-level fact source. It points at the
+   canonical home of everything else (`README.md`, `docs/`, `Taskfile.yml`,
+   `ansible/README.md`); nothing is duplicated here.
+2. Before making any change, follow the
+   [`weisssrv-development` skill](.claude/skills/weisssrv-development/SKILL.md)
+   and the `references/` file for the change at hand — it carries the workflow
+   invariants, pre-MR gates, and change-type decision tree. Claude Code invokes
+   it via the Skill tool; other agents read the files directly.

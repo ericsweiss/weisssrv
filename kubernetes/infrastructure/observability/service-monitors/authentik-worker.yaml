@@ -1,0 +1,28 @@
+---
+# authentik-worker metrics. A PodMonitor rather than a ServiceMonitor because the
+# chart ships a Service for the server only; the worker pod declares its own
+# `metrics` port (9300). The worker runs blueprints, outpost synchronisation,
+# scheduled tasks and outbound email, so a wedged worker leaves the server
+# serving stale configuration — AuthentikWorkerDown (rules/infrastructure.yaml)
+# is the availability half of this coverage.
+#
+# Requires an ingress allow from observability to the worker pods on 9300 in
+# kubernetes/apps/authentik/networkpolicy.yaml; the namespace is
+# default-deny-ingress and the existing allow covers component=server only.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: authentik-worker
+  namespace: observability
+spec:
+  namespaceSelector:
+    matchNames:
+      - authentik
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: authentik
+      app.kubernetes.io/component: worker
+  podMetricsEndpoints:
+    - port: metrics
+      interval: 60s
+      path: /metrics

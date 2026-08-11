@@ -2,7 +2,7 @@
 # Shared shell helpers sourced by repo scripts. Function-only: NO top-level
 # side effects, so sourcing is safe even under a caller's `set -e`.
 #
-# Source via the _SCRIPT_DIR pattern (same as collect-state-lib.sh):
+# Source via the _SCRIPT_DIR pattern:
 #   _SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 #   # shellcheck source=scripts/shell-lib.sh
 #   . "$_SCRIPT_DIR/shell-lib.sh"
@@ -20,9 +20,9 @@ timeout_cmd() {
     elif command -v gtimeout >/dev/null 2>&1; then
         gtimeout "$seconds" "$@"
     else
-        # Warn once per shell: silently losing the wall-clock backstop turns a
-        # bounded probe into an indefinite hang on a host that connects and then
-        # stalls, and the operator has no way to tell that happened.
+        # Warn once per shell: losing the wall-clock backstop silently turns a
+        # bounded probe into an indefinite hang, with nothing to tell the
+        # operator it happened.
         if [ -z "${_SHELL_LIB_TIMEOUT_WARNED:-}" ]; then
             echo "warning: neither timeout(1) nor gtimeout(1) found — probes run UNBOUNDED (macOS: brew install coreutils)" >&2
             _SHELL_LIB_TIMEOUT_WARNED=1
@@ -34,9 +34,14 @@ timeout_cmd() {
 # SSH reachability probe: short-timeout, keepalive-bounded ssh under a
 # wall-clock backstop. ConnectTimeout=2 bounds the TCP connect; ServerAlive*
 # trips a dead post-connect channel; timeout_cmd is the backstop for a host that
-# connects then stalls (PAM/sssd, disk-stuck remote shell). Shared by
-# find-reachable-host.sh and find-pve-host-for-vm.sh. Pass the target and remote
-# command as args, e.g. `ssh_probe "$host" "true"`.
+# connects then stalls (PAM/sssd, disk-stuck remote shell). Pass the target and
+# remote command as args, e.g. `ssh_probe "$host" "true"`.
+#
+# Callers are deliberately NOT enumerated here: this file is vendored verbatim
+# into the consumer repos, where it is also sourced by scripts that do not exist
+# in this library (weisssrv's collect-state.sh among them), so any list written
+# here is wrong in at least one copy. Find them with
+# `grep -rl shell-lib.sh scripts/`.
 ssh_probe() {
     timeout_cmd 6 ssh -o ConnectTimeout=2 -o BatchMode=yes \
         -o ServerAliveInterval=2 -o ServerAliveCountMax=2 "$@"

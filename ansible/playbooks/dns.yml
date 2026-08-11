@@ -7,34 +7,34 @@
   gather_facts: false
   serial: 1  # Provision one at a time
   roles:
-    - proxmox_lxc
+    - weisssrv.infra.proxmox_lxc
 
 - name: Deploy DNS server configuration
   hosts: dns
   become: true
   serial: 1  # Deploy one DNS server at a time
   roles:
-    - base
-    - postfix_null_client
-    - unbound
-    - unbound_exporter
-    - adguard_home
+    - weisssrv.infra.base
+    - weisssrv.infra.postfix_null_client
+    - weisssrv.infra.unbound
+    - weisssrv.infra.unbound_exporter
+    - weisssrv.infra.adguard_home
     # Host-level observability. site.yml deploys node_exporter_host (to dns via
     # proxmox:dns:mail:gitlab_servers) and alloy_host (to dns via base_managed)
     # in dedicated plays; include them here so a standalone `task dns:deploy`
     # keeps host metrics + log shipping in sync with the role.
-    - node_exporter_host
-    - alloy_host
+    - weisssrv.infra.node_exporter_host
+    - weisssrv.infra.alloy_host
 
 - name: Deploy certificate and sync management
   hosts: dns
   become: true
   serial: 1  # Deploy one DNS server at a time
   roles:
-    - acme_certs
-    - adguard_sync
+    - weisssrv.infra.acme_certs
+    - weisssrv.infra.adguard_sync
 
 - name: Deploy guest firewall rules
   hosts: dns
   roles:
-    - proxmox_firewall
+    - weisssrv.infra.proxmox_firewall

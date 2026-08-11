@@ -9,11 +9,13 @@ This document covers the deployment and configuration of Plex Media Server as an
 3. [Prerequisites](#prerequisites)
 4. [Deployment](#deployment)
 5. [Storage Configuration](#storage-configuration)
-6. [UID/GID Mapping](#uidgid-mapping)
-7. [Accessing Plex](#accessing-plex)
-8. [Backup Restoration](#backup-restoration)
-9. [Maintenance](#maintenance)
-10. [Troubleshooting](#troubleshooting)
+6. [GPU Hardware Transcoding](#gpu-hardware-transcoding)
+7. [UID/GID Mapping](#uidgid-mapping)
+8. [Accessing Plex](#accessing-plex)
+9. [Backup Restoration](#backup-restoration)
+10. [Maintenance](#maintenance)
+11. [Troubleshooting](#troubleshooting)
+12. [Related documentation](#related-documentation)
 
 ---
 
@@ -576,7 +578,7 @@ ssh eric@192.168.0.152 "sudo intel_gpu_top"
    ssh eric@192.168.0.152 "tail -100 '/config/Library/Application Support/Plex Media Server/Logs/Plex Media Server.log' | grep -i 'hardware\|vaapi\|qsv'"
    ```
 
-## References
+## Related documentation
 
 - [Plex Media Server Documentation](https://support.plex.tv/articles/)
 - [Proxmox LXC Unprivileged Containers](https://pve.proxmox.com/wiki/Unprivileged_LXC_containers)

@@ -1,19 +1,11 @@
 ---
 # Traefik exposed as a tailnet L3 device via the Tailscale operator.
 #
-# Sibling of traefik-internal-service.yaml (MetalLB .101) — a single Service
-# can't be both MetalLB and tailscale, so this is a second Service selecting the
-# SAME Traefik pods. loadBalancerClass: tailscale makes the operator register a
-# tailnet device named "traefik-tailnet" (stable MagicDNS name
-# traefik-tailnet.<tailnet>.ts.net) that L3/DNAT-forwards 443/80 to Traefik.
-# Because it's plain TCP passthrough, SNI/Host are preserved and Traefik
-# terminates the *.esweiss.com wildcard cert and routes by Host exactly as for a
-# LAN client. The tailnet-dns resolver returns this device's MagicDNS name as
-# the CNAME target for Traefik-fronted *.esweiss.com names, so a remote phone
-# reaches the internal web apps over the mesh (not the broken subnet-route path
-# to the .101 VIP). Tailnet traffic arrives at Traefik from the proxy pod's
-# cluster IP (10.42.0.0/16), which the lan-tailscale-only middleware already
-# permits. See docs/05-tailscale.md.
+# A second Service over the SAME Traefik pods (a Service cannot be both MetalLB
+# and tailscale). loadBalancerClass: tailscale makes the operator register a
+# tailnet device that TCP-passthrough-forwards 80/443, so SNI/Host survive and
+# Traefik routes as it does for a LAN client. tailnet-dns CNAMEs the internal
+# *.esweiss.com names at that device. See docs/05-tailscale.md.
 apiVersion: v1
 kind: Service
 metadata:
@@ -21,8 +13,8 @@ metadata:
   namespace: traefik
   annotations:
     tailscale.com/hostname: "traefik-tailnet"
-    # Sizes the operator-created proxy pod's resources (default request is ~1Mi
-    # memory; actual RSS ~55Mi) — see controllers/tailscale-operator/proxyclass.yaml.
+    # Sizes the operator-created proxy pod (controllers/tailscale-operator/
+    # proxyclass.yaml); without it the request is ~1Mi.
     tailscale.com/proxy-class: default-proxyclass
 spec:
   type: LoadBalancer

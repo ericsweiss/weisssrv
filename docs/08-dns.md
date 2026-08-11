@@ -61,7 +61,7 @@ forward-zone:
 
 ### Ansible Role
 
-Deploy with: `ansible/roles/unbound`
+Deploy with: the `weisssrv.infra.unbound` role (`ansible/playbooks/dns.yml`)
 
 ## AdGuard Home
 
@@ -89,7 +89,7 @@ ReadWritePaths=/opt/AdGuardHome
 ### DNS Rewrites
 
 Internal services use AdGuard rewrites instead of split-horizon DNS. Rewrites
-are **not** configured in the UI — they are codified as `adguard_rewrites` in
+are **not** configured in the UI — they are codified as `adguard_home_rewrites` in
 `ansible/inventories/prod/group_vars/dns.yml` (the source of truth) and applied
 via the AdGuard API by the `adguard_home` role on `task dns:deploy`. The role
 also **deletes any rewrite not in the codified list**, so UI-added entries
@@ -160,14 +160,15 @@ tools fight over one record.
 #### Reverse DNS (PTR Records)
 
 PTR records are implemented as `$dnsrewrite` filter rules in
-`adguard_user_rules` (same file, deployed the same way), e.g.:
+`adguard_home_user_rules` (same file, deployed the same way), e.g.:
 
 ```
 '||150.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;dns-01.{{ internal_domain }}.'
 ```
 
 dns.yml carries PTR rules for the infrastructure hosts (.102–.107,
-.150/.151/.160, .152–.155), all k3s nodes, and the VIPs.
+.150/.151/.160, .152–.157), all k3s nodes, and the VIPs. immich-ml (.158) is
+deliberately absent, like its forward rewrite.
 
 **Note**: AdGuard Home syncs DNS rewrites from dns-01 to dns-02 automatically via adguardhome-sync.
 
@@ -181,7 +182,7 @@ Certificate paths:
 
 ### Ansible Role
 
-Deploy with: `ansible/roles/adguard_home`
+Deploy with: the `weisssrv.infra.adguard_home` role (`ansible/playbooks/dns.yml`)
 
 ## AdGuard Home Sync
 
@@ -218,12 +219,12 @@ features:
 
 The block above is abbreviated — the full synced feature set
 (dhcp, generalSettings, queryLogConfig, statsConfig, clientSettings,
-services, theme) is defined in `adguardhome_sync_features` in
+services, theme) is defined in `adguard_sync_features` in
 `group_vars/dns.yml`.
 
 ### Ansible Role
 
-Deploy with: `ansible/roles/adguard_sync`
+Deploy with: the `weisssrv.infra.adguard_sync` role (`ansible/playbooks/dns.yml`)
 
 ## Search Domains and Pod DNS
 
@@ -293,3 +294,12 @@ dig @192.168.0.150 dns-01.esweiss.com
 systemctl start adguardhome-sync.service
 journalctl -u adguardhome-sync -f
 ```
+
+---
+
+## Related documentation
+
+- [docs/01-overview.md](01-overview.md) — split-horizon DNS and topology
+- [docs/09-certs.md](09-certs.md) — DNS-01 certificate issuance
+- [docs/11-firewall.md](11-firewall.md) — `sg-dns` and the admin sources
+- [docs/12-runbooks.md](12-runbooks.md) — updating DNS records
