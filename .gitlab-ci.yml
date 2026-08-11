@@ -287,6 +287,9 @@ workflow:
     LOKI_PUSH_PASSWORD: "op://Homelab/Loki Push Auth/password"
   before_script:
     - !reference [.install-1password, before_script]
+    # ansible-galaxy installs weisssrv.infra from a git+ URL, so the deploy
+    # image needs git.
+    - apt-get install -y --no-install-recommends git
     - pip install --quiet "ansible==${ANSIBLE_VERSION}"
     - |
       # Copy ansible.cfg to secure temp path (world-writable checkout causes Ansible to ignore it)

@@ -107,16 +107,14 @@ spec:
               esac
               echo "VPN enabled - starting Gluetun (provider: $VPN_PROVIDER)"
               exec /gluetun-entrypoint
-          # drop: [ALL] first, or the container silently keeps the runtime's
-          # whole default set on top of the adds. NET_ADMIN is for the tun
-          # device and routing; NET_RAW is required by gluetun's iptables
-          # firewall/killswitch (same pairing as wg-easy).
+          # NET_ADMIN for the tun device and routing. gluetun runs as root and
+          # chowns its OpenVPN config, so the default capability set is kept
+          # rather than drop:[ALL] — dropping CHOWN/DAC_OVERRIDE crashloops the
+          # VPN (the killswitch then blocks all client egress).
           securityContext:
             capabilities:
-              drop: ["ALL"]
               add:
                 - NET_ADMIN
-                - NET_RAW
           # env[0]=VPN_SERVICE_PROVIDER and env[1]=SERVER_COUNTRIES are the two
           # per-app configMapKeyRef entries the overlays repoint at their own
           # ConfigMap — keep them first so the overlay index guards stay simple.
