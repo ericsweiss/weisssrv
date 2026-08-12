@@ -2014,6 +2014,11 @@ deploy-ansible-mail:
     SMTP_GMAIL_USER: "op://Homelab/SMTP Relay Gmail/username"
     SMTP_GMAIL_PASSWORD: "op://Homelab/SMTP Relay Gmail/password"
     DNS01_SSH_PUBLIC_KEY: "op://Homelab/DNS-01 SSH Key/public key"
+    # site.yml --limit mail runs base on smtp-relay, which manages the admin
+    # authorized_keys from ssh_authorized_keys (built from SSH_PUBLIC_KEY). Without
+    # it base_ssh_authorized_keys is empty and base's SSH-lockout guard fails the
+    # deploy. Every other deploy-ansible-* job that runs base injects this too.
+    SSH_PUBLIC_KEY: "op://Homelab/SSH Key/public key"
   script:
     - cd ansible
     # Mail roles are deployed via site.yml with host targeting
