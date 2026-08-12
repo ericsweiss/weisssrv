@@ -110,16 +110,21 @@ spec:
               is at {{ $value | printf "%.0f" }}C — within a few degrees of
               thermal throttle.
 
-        # CPU package + per-core temps via coretemp. 80C is the typical "high"
-        # warning level, well under a consumer TJunction of ~100C.
+        # CPU package + per-core temps via coretemp. These are consumer CPUs
+        # (laptop, OptiPlex, Precision) that briefly spike toward their ~100C
+        # TJunction under load — normal and harmless — so the thresholds target
+        # SUSTAINED heat, not peaks. Observed 24h peaks are 91C (laptop, avg 65C,
+        # ~11% of the day >=88C in bursts) and 82C (prec); both are bursty, so a
+        # long `for:` rides them out and only a genuine cooling failure that pins
+        # the CPU hot for many minutes trips the alert.
         - alert: CPUTempWarning
           expr: >-
             max by (instance) (
               node_hwmon_temp_celsius{job="node-exporter-host", instance=~"192\\.168\\.0\\.10[2-7]:9101"}
               * on (instance, chip) group_left(chip_name)
               node_hwmon_chip_names{job="node-exporter-host", chip_name="coretemp"}
-            ) >= 80
-          for: 10m
+            ) >= 90
+          for: 15m
           labels:
             severity: warning
             component: cpu
@@ -128,7 +133,8 @@ spec:
             summary: 'CPU on {{ $labels.instance }} sustained {{ $value | printf "%.0f" }}C'
             description: >-
               CPU on {{ $labels.instance }} has been at or above
-              80C for 10 minutes. Check load and fan health.
+              90C for 15 minutes — sustained, not a load spike. Check load,
+              fan health and thermal paste.
 
         - alert: CPUTempCritical
           expr: >-
@@ -136,8 +142,8 @@ spec:
               node_hwmon_temp_celsius{job="node-exporter-host", instance=~"192\\.168\\.0\\.10[2-7]:9101"}
               * on (instance, chip) group_left(chip_name)
               node_hwmon_chip_names{job="node-exporter-host", chip_name="coretemp"}
-            ) >= 90
-          for: 2m
+            ) >= 95
+          for: 5m
           labels:
             severity: critical
             component: cpu

@@ -154,10 +154,13 @@ spec:
         # 1Password Connect is the secrets backend for every ExternalSecret AND
         # the ZFS key-load path at boot. OnePasswordConnectDown watches the
         # Deployment and ExternalSecretSyncFailure the consumer; neither covers
-        # the ingress + TLS hop. `/` is a 404, so probe the health endpoint.
+        # the ingress + TLS hop. `/` is a 404, so probe the health endpoint. Its
+        # IngressRoute is access-controlled (internal-only), so /health returns
+        # 403 to the exporter's source — http_sso accepts 200/401/403 (Traefik +
+        # TLS reachable), while a real outage still returns 502/503 and fires.
         - name: onepassword-connect
           url: https://connect.esweiss.com/health
-          module: http_2xx
+          module: http_sso
         # AdGuard UIs. adguard*/dns-0* are two router pairs onto the same two
         # resolvers: the adguard* names sit behind Authentik ForwardAuth (302 to
         # auth), the dns-0* names go straight to AdGuard's own login (302).

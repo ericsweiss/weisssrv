@@ -201,13 +201,14 @@ spec:
         # counter below), so job="node-exporter-host" is the only emitter and
         # the only job selected here.
         #
-        # The excluded units are cosmetically and permanently failed —
-        # openrgb-ram-off on the NAS and getty@tty1 on the headless guests — and
-        # would otherwise pin the alert on forever, masking a real unit failure.
+        # The excluded units are cosmetically and permanently restarting: the
+        # console gettys on the headless guests (getty@tty1, serial-getty@ttyS0)
+        # have no attached console, so they loop forever and would otherwise pin
+        # the alert on, masking a real unit failure.
         - alert: NodeSystemdServiceFailed
           expr: >-
             node_systemd_unit_state{job="node-exporter-host", state="failed",
-            name!~"openrgb-ram-off\\.service|getty@tty1\\.service"} == 1
+            name!~"getty@tty1\\.service|serial-getty@ttyS0\\.service"} == 1
           for: 15m
           labels:
             severity: warning
@@ -222,7 +223,7 @@ spec:
         - alert: NodeSystemdServiceCrashlooping
           expr: >-
             increase(node_systemd_service_restart_total{job="node-exporter-host",
-            name!~"openrgb-ram-off\\.service|getty@tty1\\.service"}[5m]) > 2
+            name!~"getty@tty1\\.service|serial-getty@ttyS0\\.service"}[5m]) > 2
           for: 15m
           labels:
             severity: warning
