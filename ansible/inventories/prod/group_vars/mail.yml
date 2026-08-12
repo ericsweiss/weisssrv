@@ -11,7 +11,13 @@ proxmox_lxc_nesting: true
 # different content they overwrite each other and every deploy reports changed.
 # Aligning the content makes the reconcile idempotent (base runs last, so the file
 # already ends each run in the from= state either way — this just stops the churn).
-proxmox_lxc_ssh_public_keys: '{{ ssh_authorized_keys | join("\n") }}'
+# Guarded on SSH_PUBLIC_KEY: ssh_authorized_keys hard-fails (undef) when that env
+# var is absent, so a per-role deploy job that does not inject it must SKIP the
+# reconcile (length 0), not error. The ternary short-circuits — ssh_authorized_keys
+# is evaluated only when the key is actually present.
+proxmox_lxc_ssh_public_keys: >-
+  {{ ssh_authorized_keys | join("\n")
+     if lookup('ansible.builtin.env', 'SSH_PUBLIC_KEY', default='') else '' }}
 
 # Boot order (proxmox_lxc_startup_order/delay) is set in host_vars/smtp-relay.yml
 # (the only mail host).
