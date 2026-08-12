@@ -5,6 +5,14 @@
 # Nesting required for systemd 257+ (Debian 13) to function correctly
 proxmox_lxc_nesting: true
 
+# Write the SAME key base deploys (ssh_authorized_keys, from=-restricted), not the
+# plain SSH_PUBLIC_KEY the role defaults to. This LXC is base_managed AND
+# proxmox_lxc-managed, so both roles reconcile authorized_keys every run; with
+# different content they overwrite each other and every deploy reports changed.
+# Aligning the content makes the reconcile idempotent (base runs last, so the file
+# already ends each run in the from= state either way — this just stops the churn).
+proxmox_lxc_ssh_public_keys: '{{ ssh_authorized_keys | join("\n") }}'
+
 # Boot order (proxmox_lxc_startup_order/delay) is set in host_vars/smtp-relay.yml
 # (the only mail host).
 

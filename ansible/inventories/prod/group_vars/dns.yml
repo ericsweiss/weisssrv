@@ -4,6 +4,13 @@
 # LXC container settings
 proxmox_lxc_nesting: true  # Required for systemd 257+
 
+# Write the SAME key base deploys (ssh_authorized_keys, from=-restricted), not the
+# plain SSH_PUBLIC_KEY the role defaults to. These LXCs are base_managed AND
+# proxmox_lxc-managed, so both roles reconcile authorized_keys every run; with
+# different content they overwrite each other and every deploy reports changed.
+# Aligning the content makes the reconcile idempotent.
+proxmox_lxc_ssh_public_keys: '{{ ssh_authorized_keys | join("\n") }}'
+
 # These hosts ARE the resolvers, so base must not point their /etc/resolv.conf
 # at themselves before AdGuard is up; it uses base_bootstrap_dns_servers until
 # the resolver answers.

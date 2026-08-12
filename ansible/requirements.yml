@@ -7,7 +7,7 @@ collections:
   # (local iteration against an unmerged library change).
   - name: git+https://git.ericsweiss.com/eric/weisssrv-lib.git#/ansible_collections/weisssrv/infra
     type: git
-    version: v0.6.0
+    version: v0.6.1
 
   # Galaxy dependencies of weisssrv.infra: they install with it. Listed here
   # only to pin the tested major line for `ansible-galaxy install -r`.
