@@ -1450,6 +1450,10 @@ include:
   # token (weisssrv-bot, Reporter + api) — enough to post the MR comment, unable
   # to push. Without it, version-check-ci.py skips the comment and still writes
   # the report; that graceful skip lives in the script, not in this job.
+  # NOTE: because this is a project-level masked variable it outranks any job's
+  # variables: block, so the gitlab DEPLOY path must NOT reuse the name — it reads
+  # its admin PAT from GITLAB_ADMIN_API_TOKEN (see the deploy-gitlab job) to avoid
+  # being silently shadowed by this project token.
   - project: eric/weisssrv-lib
     ref: v0.6.2
     file: /ci/maintenance/version-check.yml
@@ -2151,11 +2155,15 @@ deploy-gitlab:
     SSH_PUBLIC_KEY: "op://Homelab/SSH Key/public key"
     GITLAB_ROOT_PASSWORD: "op://Homelab/GitLab/root-password"
     GITLAB_SAML_CERT_FINGERPRINT: "op://Homelab/GitLab SSO/saml-cert-fingerprint"
-    # Personal Access Token used by the role's Web IDE Application Settings
-    # API calls (vscode_extension_marketplace_*). The gitlab role asserts
-    # this is set and resolved (not still an op:// reference) before the
-    # API block runs.
-    GITLAB_API_TOKEN: "op://Homelab/GitLab API Token/credential"
+    # Instance-ADMIN PAT for the role's Web IDE Application Settings API calls
+    # (vscode_extension_marketplace_*) — /application/settings is admin-only.
+    # Name is GITLAB_ADMIN_API_TOKEN, NOT GITLAB_API_TOKEN: the latter is a
+    # project-level masked CI variable (version-check's weisssrv-bot project
+    # token), and project CI/CD variables OUTRANK a job's variables: block, so a
+    # job-level GITLAB_API_TOKEN op:// ref is silently shadowed by that project
+    # token — op run never resolves it and the deploy 403s. The role asserts this
+    # is set and resolved (not still an op:// reference) before the API block runs.
+    GITLAB_ADMIN_API_TOKEN: "op://Homelab/GitLab API Token/credential"
   script:
     - cd ansible
     - op run -- ansible-playbook -i inventories/prod playbooks/gitlab.yml

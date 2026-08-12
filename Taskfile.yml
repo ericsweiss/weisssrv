@@ -2816,7 +2816,10 @@ tasks:
       LOKI_PUSH_PASSWORD: op://Homelab/Loki Push Auth/password
       GITLAB_ROOT_PASSWORD: op://Homelab/GitLab/root-password
       GITLAB_SAML_CERT_FINGERPRINT: op://Homelab/GitLab SSO/saml-cert-fingerprint
-      GITLAB_API_TOKEN: op://Homelab/GitLab API Token/credential
+      # Admin api token for the Web IDE /application/settings block. Named
+      # GITLAB_ADMIN_API_TOKEN to match the deploy job and avoid the CI-side
+      # GITLAB_API_TOKEN project-variable shadow (see gitlab_servers.yml).
+      GITLAB_ADMIN_API_TOKEN: op://Homelab/GitLab API Token/credential
     preconditions: &gitlab_deploy_preconditions
       - sh: command -v ansible-playbook
         msg: "ansible-playbook is not installed"

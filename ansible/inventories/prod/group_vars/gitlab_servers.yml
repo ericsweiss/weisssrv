@@ -78,7 +78,13 @@ gitlab_pages_external_url: "https://pages.git.{{ external_domain }}"
 # browser same-origin policy isolates extension code from the session cookie
 # (CVE-2026-5816). Bare parent hostname, no wildcard.
 gitlab_web_ide_extension_host_domain: "ide.git.{{ external_domain }}"
-gitlab_api_token: "{{ lookup('ansible.builtin.env', 'GITLAB_API_TOKEN') }}"
+# Instance-ADMIN api token — the Web IDE block PUTs /application/settings, which
+# is admin-only. Read from GITLAB_ADMIN_API_TOKEN, deliberately NOT
+# GITLAB_API_TOKEN: that name is a project-level masked CI variable (the
+# version-check comment token, weisssrv-bot/Reporter) and project CI/CD variables
+# outrank a job's variables: block, so a job-level GITLAB_API_TOKEN op:// ref is
+# silently shadowed by the project token and the deploy 403s. See docs/27.
+gitlab_api_token: "{{ lookup('ansible.builtin.env', 'GITLAB_ADMIN_API_TOKEN') }}"
 
 # Outbound mail via the SMTP relay (same credential as every null client).
 gitlab_smtp_enabled: true

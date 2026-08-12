@@ -132,7 +132,7 @@ create these items in your **Homelab** vault:
 | **GitLab SSO** | Password | `saml-cert-fingerprint` |
 | **GitLab Runner** | Password | `runner-token` (runner authentication token, `glrt-*` format) |
 | **GitLab Runner Privileged** | Password | `runner-token` (runner authentication token, `glrt-*` format, tags: `infrastructure`) |
-| **GitLab API Token** | Password | `credential` (personal access token for the Rollback step below and PR-Agent AI code review; see docs/15) |
+| **GitLab API Token** | Password | `credential` (**instance-admin** PAT — `svc-gitlab-admin` — for the Web IDE Application Settings block; injected as `GITLAB_ADMIN_API_TOKEN`, see docs/15 and § Web IDE Extension Host) |
 | **SMTP Relay Auth** | Login | `username`, `password` (for GitLab email notifications) |
 | **Email Config** | Login | `root_alias` (admin email address, e.g., `admin@example.com`) |
 | **SSH Key** | SSH Key | `public key` (for VM access via cloud-init) |
@@ -847,6 +847,8 @@ extension can hit `/api/v4/...` with the user's session cookie.
 ### GitLab settings (Application Settings API)
 
 Set by the `Web IDE | …` block in weisssrv-lib `ansible_collections/weisssrv/infra/roles/gitlab/tasks/main.yml`. These have no Omnibus `gitlab.rb` key on the pinned release (see `gitlab_version` in `ansible/inventories/prod/group_vars/all.yml`); they live only in the `application_settings` table.
+
+`/api/v4/application/settings` is **instance-admin-only**, so `gitlab_api_token` must be a PAT belonging to an instance admin (`svc-gitlab-admin`), stored in the `GitLab API Token` 1Password item. A project/group access token 403s here (its bot user is never an instance admin). The role reads it from the **`GITLAB_ADMIN_API_TOKEN`** env var, deliberately *not* `GITLAB_API_TOKEN`: that name is a project-level masked CI/CD variable (the version-check comment token, `weisssrv-bot`), and project CI/CD variables outrank a job's `variables:` block — a job-level `GITLAB_API_TOKEN: op://…` would be silently shadowed by the project token, so `op run` never resolves the `op://` reference and the deploy 403s.
 
 | Field | Value |
 |---|---|
