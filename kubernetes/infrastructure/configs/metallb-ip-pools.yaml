@@ -14,7 +14,7 @@ metadata:
 spec:
   autoAssign: false
   addresses:
-    - 192.168.0.100/32
+    - ${cluster_metallb_public_vip}/32
 ---
 apiVersion: metallb.io/v1beta1
 kind: IPAddressPool
@@ -24,7 +24,7 @@ metadata:
 spec:
   autoAssign: false
   addresses:
-    - 192.168.0.101/32
+    - ${cluster_metallb_internal_vip}/32
 ---
 # VPN pool: 192.168.0.99 — the wg-easy WireGuard UDP endpoint, kept in its own
 # /32 pool so the public/internal ingress semantics stay clean.
@@ -39,7 +39,7 @@ metadata:
 spec:
   autoAssign: false
   addresses:
-    - 192.168.0.99/32
+    - ${cluster_wg_easy_vip}/32
 ---
 # ARP announcement. No interface restrictions: MetalLB auto-filters CNI/virtual
 # interfaces, and an explicit list would break nodes whose NIC is not ens18.

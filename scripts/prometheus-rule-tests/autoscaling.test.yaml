@@ -38,3 +38,49 @@ tests:
       - eval_time: 30h
         alertname: VPARecommendationCapped
         exp_alerts: []
+
+  # nzbget memory is the one clamp that is the sizing DECISION, not a symptom
+  # (the recommender chases the unpack-time page cache — docs/33 and
+  # apps/download-clients/vpa.yaml), so it is excluded. Left in, it is a
+  # permanently-firing warning on an otherwise alert-clear cluster.
+  - interval: 6h
+    input_series:
+      - series: 'vpa_recommendation_uncappedtarget{exported_namespace="downloads", verticalpodautoscaler="nzbget", container="nzbget", resource="memory", unit="byte"}'
+        values: '3000+0x8'
+      - series: 'vpa_recommendation_target{exported_namespace="downloads", verticalpodautoscaler="nzbget", container="nzbget", resource="memory", unit="byte"}'
+        values: '2000+0x8'
+    alert_rule_test:
+      - eval_time: 30h
+        alertname: VPARecommendationCapped
+        exp_alerts: []
+
+  # The exclusion is scoped to nzbget's MEMORY series only: a CPU clamp on the
+  # same VPA, or a clamp on any other download-clients workload, still alerts.
+  - interval: 6h
+    input_series:
+      - series: 'vpa_recommendation_uncappedtarget{exported_namespace="downloads", verticalpodautoscaler="nzbget", container="nzbget", resource="cpu", unit="core"}'
+        values: '3+0x8'
+      - series: 'vpa_recommendation_target{exported_namespace="downloads", verticalpodautoscaler="nzbget", container="nzbget", resource="cpu", unit="core"}'
+        values: '2+0x8'
+      - series: 'vpa_recommendation_uncappedtarget{exported_namespace="downloads", verticalpodautoscaler="sonarr", container="sonarr", resource="memory", unit="byte"}'
+        values: '3000+0x8'
+      - series: 'vpa_recommendation_target{exported_namespace="downloads", verticalpodautoscaler="sonarr", container="sonarr", resource="memory", unit="byte"}'
+        values: '2000+0x8'
+    alert_rule_test:
+      - eval_time: 30h
+        alertname: VPARecommendationCapped
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              exported_namespace: downloads
+              verticalpodautoscaler: nzbget
+              container: nzbget
+              resource: cpu
+              unit: core
+          - exp_labels:
+              severity: warning
+              exported_namespace: downloads
+              verticalpodautoscaler: sonarr
+              container: sonarr
+              resource: memory
+              unit: byte

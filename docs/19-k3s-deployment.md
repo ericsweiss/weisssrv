@@ -146,7 +146,9 @@ the machine-readable source.
 
 Cluster features:
 - **kube-vip** - API VIP at 192.168.0.161
-- **MetalLB** - LoadBalancer with IPs .100 (public) and .101 (internal)
+- **MetalLB** - LoadBalancer IPs; pools are defined in
+  `kubernetes/infrastructure/configs/metallb-ip-pools.yaml` (.100 public, .101
+  internal, .99 wg-easy UDP endpoint)
 - **Traefik** - Ingress controller
 - **external-dns** - Automatic Cloudflare DNS management
 

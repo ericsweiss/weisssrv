@@ -39,7 +39,7 @@ spec:
       # Internal hostname (git.esweiss.com → Traefik VIP 192.168.0.101) keeps
       # the agent's KAS long-poll inside the LAN: no WAN roundtrip, no
       # router-hairpin dependency.
-      kasAddress: wss://git.esweiss.com/-/kubernetes-agent/
+      kasAddress: wss://git.${cluster_internal_domain}/-/kubernetes-agent/
       # Chart reads key "token" from the referenced Secret (non-configurable
       # in chart; tokenKey is set explicitly for clarity and forward
       # compatibility). The sibling ExternalSecret (externalsecret.yaml)

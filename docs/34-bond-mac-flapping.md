@@ -228,9 +228,13 @@ Verify on the host: `ethtool -k nic0 | grep -E 'tcp-segmentation|generic-(segmen
 
 ### Notes
 
-- The offloads are disabled on the four `e1000e` hosts (.104/.105/.106/.107).
-  `.102` / `.103` use different NICs and keep their offloads (`nic_tuning` is
-  override-driven, so an empty `nic_tuning_overrides` is a no-op). On .107 the
+- The TSO/GSO/GRO fix covers the four `e1000e` hosts (.104/.105/.106/.107).
+  `.103` has no `nic_tuning_overrides` at all (`nic_tuning` is override-driven,
+  so an empty list is a no-op). `.102` is not override-free: it carries an
+  unrelated `gro off` on `nic1` for the AQC113 10GbE NIC (a stability
+  workaround; the pending firmware update is in
+  [docs/16](16-next-steps.md#aqc113-firmware-update-pve-nas-01)), so an audit of
+  NIC tuning must not skip it. On .107 the
   offloads were already off live but nothing persisted them, so the host_vars
   entry is what makes the setting survive a reboot.
 - Turning off segmentation offload costs some CPU per gigabit; on these hosts

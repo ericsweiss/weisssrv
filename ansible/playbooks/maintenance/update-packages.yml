@@ -146,8 +146,6 @@
 
 - name: Update OS packages on application hosts (rolling)
   # app_servers = plex, gitlab, nextcloud, immich, immich-ml (see hosts.yml).
-  # Previously only plex+gitlab were patched here; nextcloud/immich/immich-ml
-  # (all internet-facing Debian guests) silently received no OS updates.
   hosts: app_servers
   become: true
   serial: 1  # One host at a time

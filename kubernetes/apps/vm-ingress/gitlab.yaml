@@ -15,7 +15,7 @@ spec:
   entryPoints:
     - websecure
   routes:
-    - match: Host(`git.ericsweiss.com`)
+    - match: Host(`git.${cluster_external_domain}`)
       kind: Rule
       middlewares:
         - name: hsts-header
@@ -48,7 +48,7 @@ spec:
   entryPoints:
     - websecure
   routes:
-    - match: Host(`git.esweiss.com`) && PathPrefix(`/-/kubernetes-agent/`)
+    - match: Host(`git.${cluster_internal_domain}`) && PathPrefix(`/-/kubernetes-agent/`)
       kind: Rule
       middlewares:
         - name: lan-tailscale-only
@@ -73,7 +73,7 @@ spec:
   entryPoints:
     - websecure
   routes:
-    - match: Host(`git.esweiss.com`)
+    - match: Host(`git.${cluster_internal_domain}`)
       kind: Rule
       middlewares:
         - name: lan-tailscale-only
@@ -101,7 +101,7 @@ spec:
   entryPoints:
     - websecure
   routes:
-    - match: Host(`registry.git.ericsweiss.com`)
+    - match: Host(`registry.git.${cluster_external_domain}`)
       kind: Rule
       middlewares:
         - name: hsts-header
@@ -125,7 +125,7 @@ spec:
   entryPoints:
     - websecure
   routes:
-    - match: Host(`registry.git.esweiss.com`)
+    - match: Host(`registry.git.${cluster_internal_domain}`)
       kind: Rule
       middlewares:
         - name: lan-tailscale-only
@@ -176,7 +176,7 @@ spec:
           scheme: https
           serversTransport: vm-tls-wildcard
     # Apex pages domain
-    - match: Host(`pages.git.ericsweiss.com`)
+    - match: Host(`pages.git.${cluster_external_domain}`)
       kind: Rule
       middlewares:
         - name: hsts-header
@@ -216,7 +216,7 @@ spec:
           scheme: https
           serversTransport: vm-tls-wildcard
     # Apex pages domain
-    - match: Host(`pages.git.esweiss.com`)
+    - match: Host(`pages.git.${cluster_internal_domain}`)
       kind: Rule
       middlewares:
         - name: lan-tailscale-only
@@ -269,7 +269,7 @@ spec:
           scheme: https
           serversTransport: vm-tls-wildcard
     # Apex ide.git.ericsweiss.com
-    - match: Host(`ide.git.ericsweiss.com`)
+    - match: Host(`ide.git.${cluster_external_domain}`)
       kind: Rule
       middlewares:
         - name: hsts-header

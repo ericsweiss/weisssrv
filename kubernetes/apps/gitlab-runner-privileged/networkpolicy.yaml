@@ -96,7 +96,7 @@ metadata:
 spec:
   podSelector:
     matchLabels:
-      esweiss.com/runner-class: infrastructure
+      ${cluster_node_label_domain}/runner-class: infrastructure
   policyTypes:
     - Egress
   egress:

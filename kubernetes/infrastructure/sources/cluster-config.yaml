@@ -1,0 +1,85 @@
+---
+# Cluster identity and addressing for Flux postBuild substitution — the sibling
+# of cluster-versions. Every stage after `sources` substitutes from BOTH
+# (kubernetes/clusters/weisssrv/*.yaml), so a manifest anywhere under
+# kubernetes/apps or kubernetes/infrastructure can spell this cluster's domains,
+# CIDRs and VIPs as `${placeholder}` instead of a literal.
+#
+# Key names are the cluster-template's contract (weisssrv-cluster-template
+# docs/ARCHITECTURE.md) so the reference cluster and the template agree; only
+# the keys the manifests here actually reference are defined, and the rest of
+# the contract lands as the manifests adopt it. Renaming a key does NOT fail the
+# build — Flux and envsubst both render an unknown `${placeholder}` as an EMPTY
+# STRING. scripts/check-cluster-literals.py is what catches that, together with
+# flux-lint's pre-substitution "unknown placeholder" check.
+#
+# THIS FILE IS NOT SUBSTITUTED INTO ANYTHING ITSELF: infrastructure-sources.yaml
+# deliberately carries no substituteFrom (it is where both ConfigMaps live), so
+# everything under kubernetes/infrastructure/sources/ stays literal.
+#
+# WHAT DELIBERATELY STAYS A LITERAL in the substituted trees — anything a tool
+# parses BEFORE Flux substitutes:
+#   * NetworkPolicy `ipBlock` CIDRs — scripts/check-netpol-except-parity.py
+#     reads them straight from git; a placeholder blinds the one gate that keeps
+#     the reserved-CIDR fences from drifting.
+#   * PromQL `expr` and the addresses in kubernetes/infrastructure/observability/rules/
+#     — promtool lints and unit-tests them from source, against fixtures that
+#     carry real addresses (scripts/prometheus-rule-tests/).
+#   * regex patterns that escape the dots (`esweiss\.com`) — substituting a
+#     value into a pattern changes what the pattern means.
+#   * per-guest and per-node addresses (the VM/LXC guests, the Proxmox hosts,
+#     the k3s nodes). Those are Ansible inventory data; a second hand-maintained
+#     copy here would be a source of truth that drifts, not one that helps.
+# scripts/check-cluster-literals.py enforces exactly that split, and
+# scripts/test_check_cluster_literals.py covers the gate. That gate scans the
+# GENERATOR sources too (Grafana dashboard *.json, the cloudflare-ddns *.py),
+# not just *.yaml: they are rendered into a substituted manifest, so a hostname
+# in a dashboard's PromQL matcher has to move with the domain like any other.
+#
+# The values below that also exist in the Ansible inventory (internal_domain,
+# external_domain, dns_servers, k3s_cluster_cidr / k3s_service_cidr, and the two
+# MetalLB VIPs — mirrored as AdGuard rewrite answers in group_vars/dns.yml) are
+# cross-checked against it by the same gate, so this file and
+# ansible/inventories/prod/ cannot silently disagree.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-config
+  namespace: flux-system
+data:
+  # Split-horizon DNS: internal names resolve on the LAN/tailnet only; external
+  # names are published to the public Cloudflare zone (docs/08).
+  cluster_internal_domain: "esweiss.com"
+  cluster_external_domain: "ericsweiss.com"
+
+  # Prefix for this repo's own label, taint and annotation keys
+  # (<prefix>/nas, <prefix>/gpu, <prefix>/runner-class, ...). Equal to the
+  # internal domain, but a separate key because the k3s Ansible layer must label
+  # nodes with this same prefix or the affinity rules never match — moving the
+  # internal domain and moving the label prefix are different changes.
+  cluster_node_label_domain: "esweiss.com"
+
+  cluster_lan_cidr: "192.168.0.0/24"
+  cluster_pod_cidr: "10.42.0.0/16"
+  cluster_service_cidr: "10.43.0.0/16"
+  # CGNAT range (RFC 6598) that Tailscale allocates from — a constant, kept here
+  # so allowlists stay declarative.
+  cluster_tailnet_cidr: "100.64.0.0/10"
+
+  # MetalLB VIPs. This ConfigMap is their source of truth: the pools that assign
+  # them (infrastructure/configs/metallb-ip-pools.yaml) read them from here, and
+  # they have no Ansible-inventory counterpart. AdGuard's rewrites
+  # (group_vars/dns.yml) point at the same addresses and must move with them.
+  cluster_metallb_public_vip: "192.168.0.100"
+  cluster_metallb_internal_vip: "192.168.0.101"
+  # wg-easy's WAN endpoint gets its own VIP so the UDP port-forward is
+  # independent of the two ingress VIPs (docs/38).
+  cluster_wg_easy_vip: "192.168.0.99"
+
+  # LAN resolvers, space-separated — the form CoreDNS's `forward` needs, and the
+  # same pair as `dns_servers` in group_vars/all.yml.
+  cluster_upstream_dns_servers: "192.168.0.150 192.168.0.160"
+
+  # Prefix every alert's runbook_url gets. Composed from the canonical GitLab
+  # remote, so a 3am alert link and the repo Flux reconciles from cannot drift.
+  cluster_runbook_base_url: "https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs"

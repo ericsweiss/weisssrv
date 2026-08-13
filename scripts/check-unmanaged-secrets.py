@@ -33,6 +33,11 @@ ALLOWLIST: dict[str, str] = {
     "external-secrets/onepassword-connect-token": "ESO bootstrap (docs/29)",
     # Written by `flux bootstrap`; holds the git deploy key.
     "flux-system/flux-system": "flux bootstrap git credentials",
+    # Created out-of-band by the GitLab agent's Flux module alongside its
+    # Receiver; the HMAC trigger token is minted by KAS, not by us (docs/29).
+    # Inert today (the Secret also carries ownerReferences) — it is here so the
+    # owner is on the record rather than inferred.
+    "flux-system/gitlab-receiver-flux-system": "GitLab agent Flux module (docs/29)",
     # Controller-generated state, not credentials we mint.
     "tailscale/operator": "tailscale operator device state",
     "kube-system/k3s-serving": "k3s dynamic listener serving cert",

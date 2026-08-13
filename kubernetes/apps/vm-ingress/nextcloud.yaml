@@ -12,12 +12,12 @@ metadata:
   name: nextcloud
   namespace: default
   annotations:
-    external-dns.alpha.kubernetes.io/target: ericsweiss.com
+    external-dns.alpha.kubernetes.io/target: ${cluster_external_domain}
 spec:
   entryPoints:
     - websecure
   routes:
-    - match: Host(`cloud.ericsweiss.com`)
+    - match: Host(`cloud.${cluster_external_domain}`)
       kind: Rule
       middlewares:
         - name: hsts-header
@@ -40,7 +40,7 @@ spec:
   entryPoints:
     - websecure
   routes:
-    - match: Host(`cloud.esweiss.com`)
+    - match: Host(`cloud.${cluster_internal_domain}`)
       kind: Rule
       middlewares:
         - name: lan-tailscale-only

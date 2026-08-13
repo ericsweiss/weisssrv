@@ -39,10 +39,13 @@ spec:
       retries: 3
       remediateLastFailure: true
   values:
+    # `platform` (sources/priorityclasses.yaml) — outrank apps and CI job pods.
+    priorityClassName: platform
+
     provider:
       name: cloudflare
 
-    # Enable Cloudflare proxy (orange cloud) for DDoS protection and hiding public IP
+    # Orange-cloud the records: DDoS protection + origin-IP hiding.
     extraArgs:
       - --cloudflare-proxied
 
@@ -59,9 +62,8 @@ spec:
       - traefik-proxy  # Watch Traefik IngressRoute CRDs
 
     domainFilters:
-      - ericsweiss.com  # External domain managed by Cloudflare
+      - ${cluster_external_domain}  # External domain managed by Cloudflare
 
-    # TXT registry for ownership tracking
     txtOwnerId: "k3s-external-dns"
     txtPrefix: "_external-dns."
 
@@ -82,7 +84,6 @@ spec:
 
     triggerLoopOnEvent: true
 
-    # RBAC permissions for Traefik IngressRoutes
     rbac:
       create: true
       additionalPermissions:
@@ -98,11 +99,13 @@ spec:
     serviceMonitor:
       enabled: true
 
-    # Sized above the observed peak (~127Mi) with headroom; keep in lockstep with
-    # the external-dns VPA maxAllowed in configs/vpa/platform.yaml.
+    # The limit is hand-set and the VPA is RequestsOnly, so this number is the
+    # real ceiling: 30d working-set peak (~151Mi) +60%, rounded up. Keep in
+    # lockstep with the external-dns VPA maxAllowed in configs/vpa/platform.yaml
+    # — the request may rise to the ceiling, never past it.
     resources:
       requests:
         cpu: 50m
         memory: 192Mi
       limits:
-        memory: 384Mi
+        memory: 256Mi

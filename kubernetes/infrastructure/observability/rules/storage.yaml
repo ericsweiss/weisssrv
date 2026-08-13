@@ -23,7 +23,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
             summary: 'Disk usage above 80% on {{ $labels.instance }}:{{ $labels.mountpoint }}'
             description: >-
               Disk usage is {{ $value | printf "%.1f" }}%
@@ -39,7 +39,7 @@ spec:
           labels:
             severity: critical
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
             summary: 'Disk usage above 90% on {{ $labels.instance }}:{{ $labels.mountpoint }}'
             description: >-
               Disk usage is {{ $value | printf "%.1f" }}%
@@ -52,7 +52,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
             summary: 'PVC {{ $labels.persistentvolumeclaim }} in {{ $labels.namespace }} above 80%'
             description: 'PVC usage is {{ $value | printf "%.1f" }}%.'
 
@@ -62,7 +62,7 @@ spec:
           labels:
             severity: critical
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
             summary: 'PVC {{ $labels.persistentvolumeclaim }} in {{ $labels.namespace }} above 90%'
             description: 'PVC usage is {{ $value | printf "%.1f" }}%.'
 
@@ -75,7 +75,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#backup-and-recovery'
             summary: 'PersistentVolume {{ $labels.persistentvolume }} is on the local-path StorageClass'
             description: >-
               PV {{ $labels.persistentvolume }} uses the local-path
@@ -100,7 +100,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
             summary: 'Inodes below 10% free on {{ $labels.instance }}:{{ $labels.mountpoint }}'
             description: >-
               Only {{ $value | printf "%.1f" }}% of inodes are free
@@ -116,7 +116,7 @@ spec:
           labels:
             severity: critical
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
             summary: 'Inodes below 5% free on {{ $labels.instance }}:{{ $labels.mountpoint }}'
             description: >-
               Only {{ $value | printf "%.1f" }}% of inodes are free
@@ -136,7 +136,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/06-zfs.md'
+            runbook_url: '${cluster_runbook_base_url}/06-zfs.md'
             summary: 'NAS swap not clearing — above 2 GiB for 2 days on {{ $labels.instance }}'
             description: >-
               pve-nas-01 swap has stayed above 2 GiB for 2 days (min
@@ -155,7 +155,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/42-offsite-backup.md'
+            runbook_url: '${cluster_runbook_base_url}/42-offsite-backup.md'
             summary: 'NAS has zero swap configured on {{ $labels.instance }}'
             description: >-
               pve-nas-01 reports SwapTotal == 0 — the structurally
@@ -175,7 +175,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/06-zfs.md'
+            runbook_url: '${cluster_runbook_base_url}/06-zfs.md'
             summary: 'NAS swap-clean job failed or aborted-unsafe on {{ $labels.instance }}'
             description: >-
               The daily swap-clean run on pve-nas-01 recorded a non-clean
@@ -195,7 +195,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/06-zfs.md'
+            runbook_url: '${cluster_runbook_base_url}/06-zfs.md'
             summary: 'NAS swap-clean failed to restart a stopped guest on {{ $labels.instance }}'
             description: >-
               swap-clean on pve-nas-01 gracefully stopped a production guest
@@ -218,7 +218,7 @@ spec:
           labels:
             severity: info
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/06-zfs.md'
+            runbook_url: '${cluster_runbook_base_url}/06-zfs.md'
             summary: 'NAS swap-clean stopped production guests to reclaim swap'
             description: >-
               swap-clean on pve-nas-01 had to gracefully stop
@@ -241,7 +241,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#handling-disk-failure-zfs'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#handling-disk-failure-zfs'
             summary: 'SMART overall-health FAILED on {{ $labels.device }} ({{ $labels.instance }})'
             description: >-
               smartmon_device_smart_healthy for {{ $labels.device }} on
@@ -260,7 +260,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#handling-disk-failure-zfs'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#handling-disk-failure-zfs'
             summary: 'Reallocated sectors growing on {{ $labels.device }} ({{ $labels.instance }})'
             description: >-
               Reallocated_Sector_Ct on {{ $labels.device }} on
@@ -278,7 +278,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#handling-disk-failure-zfs'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#handling-disk-failure-zfs'
             summary: 'Current pending sectors on {{ $labels.device }} ({{ $labels.instance }})'
             description: >-
               Current_Pending_Sector on {{ $labels.device }} on
@@ -292,7 +292,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#handling-disk-failure-zfs'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#handling-disk-failure-zfs'
             summary: 'Offline-uncorrectable sectors on {{ $labels.device }} ({{ $labels.instance }})'
             description: >-
               Offline_Uncorrectable on {{ $labels.device }} on
@@ -308,7 +308,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#handling-disk-failure-zfs'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#handling-disk-failure-zfs'
             summary: 'NVMe media errors on {{ $labels.device }} ({{ $labels.instance }})'
             description: >-
               Media and Data Integrity Errors on {{ $labels.device }} on
@@ -326,7 +326,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#handling-disk-failure-zfs'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#handling-disk-failure-zfs'
             summary: 'smartmon collector is degraded or missing on {{ $labels.instance }}'
             description: >-
               smartmon_collector_last_success_seconds is stale (>15m) or

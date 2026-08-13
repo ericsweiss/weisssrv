@@ -409,7 +409,13 @@ If `eric` user is prompted for password:
    ansible-playbook ansible/playbooks/base.yml --tags users
    ```
 
-## References
+## Related documentation
+
+- [docs/02 — Installation](02-install.md) (the deployment this hardening rides on)
+- [docs/18 — Bootstrapping new systems](18-bootstrap-new-systems.md) (pre-Ansible SSH access)
+- [docs/15 — Credential rotation](15-credential-rotation.md) (SSH key rotation)
+
+## External references
 
 - [SSH Hardening Guide](https://www.ssh.com/academy/ssh/sshd_config)
 - [Ansible Connection Methods](https://docs.ansible.com/ansible/latest/user_guide/connection_details.html)

@@ -11,13 +11,16 @@ Container Registry, in two stages:
    tag and build *their* `Dockerfile`. It is a complete, self-contained
    multi-stage build (Debian 13 + uv/Python 3.13 + **Node 22** + s6-overlay) meant
    to be built at a tag; vendoring a copy would only add drift.
-2. **Codex wrapper** — [`Dockerfile.codex`](Dockerfile.codex), a thin
-   `FROM <upstream base>` layer that installs the pinned OpenAI Codex CLI
-   (`npm i -g @openai/codex@<hermes_codex_version>`). Node 22 + npm are already in
+2. **CLI wrapper** — [`Dockerfile.codex`](Dockerfile.codex), a thin
+   `FROM <upstream base>` layer that bakes in the three pinned CLIs: the OpenAI
+   Codex CLI (`npm i -g @openai/codex@<hermes_codex_version>`), the Claude Code
+   CLI (`@anthropic-ai/claude-code@<hermes_claude_version>`, the coding-delegate
+   path) and the 1Password CLI (`op`, `<hermes_op_version>`, from 1Password's
+   signed apt repo — docs/37 §1Password). Node 22 + npm are already in
    the base and its final stage is `USER root` (s6 `/init` remaps + drops
-   privileges at runtime), so the CLI installs to `/usr/local/bin` (on PATH) and
-   the runtime user model is unchanged. This wrapper is the **final published
-   image**.
+   privileges at runtime), so the npm CLIs install to `/usr/local/bin` (on PATH)
+   and the runtime user model is unchanged. This wrapper is the **final
+   published image**.
 
 The `build-hermes-agent` CI job (`.gitlab-ci.yml`) does both stages.
 
@@ -30,6 +33,13 @@ The `build-hermes-agent` CI job (`.gitlab-ci.yml`) does both stages.
   refuses to run if `git clone --branch hermes_version` resolves elsewhere,
   defending against a moved/compromised upstream tag. Bump in lockstep with
   `hermes_version`.
+- **`hermes_image_version`** — the tag the **cluster actually pulls**, always
+  `<hermes_version>-r<N>`. The `-rN` local revision exists because the image is
+  upstream *plus* the reviewed `patches/`: a patch change with no upstream bump
+  still has to produce a new tag, or the nodes' `IfNotPresent` cache keeps
+  serving the unpatched image. Bump `-rN` when the patches change; reset to
+  `-r1` on a `hermes_version` bump. CI hard-fails the build if the prefix does
+  not match `hermes_version`, so the two cannot drift.
 - **`hermes_codex_version`** — the OpenAI Codex CLI version baked in by the
   wrapper (e.g. `0.144.5`; requires `>= 0.130.0` for the Hermes runtime). Bumped
   independently of the Hermes release.
@@ -49,13 +59,13 @@ The `build-hermes-agent` CI job (`.gitlab-ci.yml`) does both stages.
   with `--build-arg HERMES_IMAGE=<intermediate> --build-arg
   HERMES_CODEX_VERSION=<pin>` as the final image. `HERMES_GIT_SHA` is baked in so
   `hermes dump` / the banner report the exact upstream commit.
-- **Push**: the final image is tagged
-  `registry.git.ericsweiss.com/eric/weisssrv/hermes-agent:<hermes_version>`. MR
-  pipelines build-only (nothing is pushed); the `:<hermes_version>`, `:latest`,
-  and `:<commit-sha>` tags are all pushed only on `main`.
+- **Push**: MR pipelines build-only (nothing is pushed); on `main` the image is
+  pushed as `:<hermes_image_version>` (the tag the cluster pulls) alongside
+  `:<hermes_version>`, `:latest` and `:<commit-sha>`, and the job then verifies
+  the registry actually resolves `:<hermes_image_version>` before finishing.
 - **Pull**: the in-cluster Deployment
   (`kubernetes/apps/hermes/deployment.yaml`) references
-  `registry.git.esweiss.com/eric/weisssrv/hermes-agent:${hermes_version}` — the
+  `registry.git.esweiss.com/eric/weisssrv/hermes-agent:${hermes_image_version}` — the
   **internal** registry host (AdGuard rewrite → Traefik `.101` → GitLab VM
   registry, same backend as the external host, no hairpin NAT). Auth is a
   `read_registry` GitLab deploy token rendered into a `dockerconfigjson` Secret
@@ -65,13 +75,20 @@ The `build-hermes-agent` CI job (`.gitlab-ci.yml`) does both stages.
 
 1. **Hermes**: pick a newer tag from
    <https://github.com/NousResearch/hermes-agent/releases>, set `hermes_version`
-   **and** `hermes_git_sha` (the tag's commit).
-2. **Codex CLI** (optional, independent): pick a newer stable release from
+   **and** `hermes_git_sha` (the tag's commit), **and** `hermes_image_version`
+   to `<new hermes_version>-r1`. All three move together — CI fails the build if
+   the third does not match the first.
+2. **Patch-only change** (no upstream bump): leave `hermes_version` alone and
+   bump only the `-rN` in `hermes_image_version`, or the nodes keep the cached
+   image.
+3. **Codex CLI** (optional, independent): pick a newer stable release from
    <https://github.com/openai/codex/releases> (`rust-vX.Y.Z` → the bare `X.Y.Z`)
-   and set `hermes_codex_version`.
-3. Run `task flux:sync-versions`, commit the changed files on a branch, open an
+   and set `hermes_codex_version`. `hermes_claude_version` and `hermes_op_version`
+   bump the same way — but any of them changes the built image, so bump `-rN`
+   with them.
+4. Run `task flux:sync-versions`, commit the changed files on a branch, open an
    MR, merge.
-4. On `main`, `build-hermes-agent` rebuilds and pushes the new tag; Flux then
+5. On `main`, `build-hermes-agent` rebuilds and pushes the new tag; Flux then
    rolls the Deployment. The Codex OAuth token in `CODEX_HOME=/opt/data/.codex`
    persists across the roll — no re-login needed.
 

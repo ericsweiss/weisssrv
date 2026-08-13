@@ -7,12 +7,9 @@
 # a ROUTE_CASE in scripts/check-alertmanager-behaviour.py, so a rename here has
 # to break something loudly.
 #
-# That last claim was false when written and is now made true. A ROUTE_CASE
-# pins the severity->receiver mapping, NOT the alertname: amtool resolves a
-# route from labels alone and never asks whether the alert exists, so a renamed
-# EtcdQuorumAtRisk kept resolving `email-and-discord` and the case silently
-# asserted nothing. check_route_case_alertnames() in that script now fails when
-# a ROUTE_CASE names a rule the corpus no longer defines.
+# A ROUTE_CASE pins the severity->receiver mapping, not the alertname —
+# check_route_case_alertnames() in scripts/check-alertmanager-behaviour.py is
+# what fails when a ROUTE_CASE names a rule the corpus no longer defines.
 rule_files:
   - rules.yaml
 # 5m, not the 1m the short-horizon files use: the etcd/node cases run to 6-7h of
@@ -205,6 +202,59 @@ tests:
               service: wg-easy
               ip: 192.168.0.99
 
+  # The two Traefik ingress VIPs get the same value-asserting guard. Both
+  # present: silent.
+  - interval: 1m
+    input_series:
+      - series: 'kube_service_status_load_balancer_ingress{namespace="traefik", service="traefik", ip="192.168.0.100"}'
+        values: '1+0x30'
+      - series: 'kube_service_status_load_balancer_ingress{namespace="traefik", service="traefik-internal", ip="192.168.0.101"}'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: TraefikPublicVipMissing
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: TraefikInternalVipMissing
+        exp_alerts: []
+  # The internal VIP lost while the public one holds: only the internal rule
+  # fires, so the alert names which half of the ingress plane is down.
+  - interval: 1m
+    input_series:
+      - series: 'kube_service_status_load_balancer_ingress{namespace="traefik", service="traefik", ip="192.168.0.100"}'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: TraefikPublicVipMissing
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: TraefikInternalVipMissing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              namespace: traefik
+              service: traefik-internal
+              ip: 192.168.0.101
+  # And the mirror image. Without this case TraefikPublicVipMissing was only
+  # ever asserted NOT to fire, so a wrong matcher on its absent() arm — a typo'd
+  # service or ip label — would have satisfied every assertion in the suite.
+  - interval: 1m
+    input_series:
+      - series: 'kube_service_status_load_balancer_ingress{namespace="traefik", service="traefik-internal", ip="192.168.0.101"}'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: TraefikInternalVipMissing
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: TraefikPublicVipMissing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              namespace: traefik
+              service: traefik
+              ip: 192.168.0.100
+
   # TailscaleProxyDown is namespace-scoped (the operator generates the
   # StatefulSet name suffixes), so it must fire per statefulset and only for the
   # one with no ready replica.
@@ -280,15 +330,21 @@ tests:
 
   # PostgresDown covers all five databases through three discovery shapes
   # (chart ServiceMonitor for authentik, PodMonitor for mealie, static
-  # EndpointSlice targets for the three VMs), so the rule carries NO job
-  # matcher. This pins that: a pg_up==0 from any job fires, one per instance.
+  # EndpointSlice targets for the three VMs). The pg_up==0 arm carries NO job
+  # matcher, so a down database from any job fires, one per instance — the
+  # enumerated absent() arms below are a separate concern. All five jobs are
+  # present here so only the down ones alert.
   - interval: 1m
     input_series:
-      - series: 'pg_up{job="authentik", instance="10.42.3.11:9187"}'
+      - series: 'pg_up{job="authentik-postgresql-metrics", instance="10.42.3.11:9187"}'
         values: '0+0x20'
       - series: 'pg_up{job="gitlab", instance="192.168.0.153:9187"}'
         values: '0+0x20'
       - series: 'pg_up{job="nextcloud", instance="192.168.0.156:9187"}'
+        values: '1+0x20'
+      - series: 'pg_up{job="immich", instance="192.168.0.157:9187"}'
+        values: '1+0x20'
+      - series: 'pg_up{job="observability/mealie-postgres", instance="10.42.7.219:9187"}'
         values: '1+0x20'
     alert_rule_test:
       - eval_time: 15m
@@ -296,18 +352,56 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
-              job: authentik
+              job: authentik-postgresql-metrics
               instance: 10.42.3.11:9187
           - exp_labels:
               severity: warning
               job: gitlab
               instance: 192.168.0.153:9187
 
-  # No absent() arm on PostgresDown, deliberately: the VM exporters are opt-in
-  # per host and ship on the Ansible lifecycle, so absence is TargetDown's job.
+  # An exporter dropping out of its ServiceMonitor or pinned Endpoints stops
+  # producing pg_up entirely, which the ==0 arm cannot see. The absent() arm
+  # names each of the five, so one vanishing fires alone with the job label
+  # synthesized from the matcher.
+  - interval: 1m
+    input_series:
+      - series: 'pg_up{job="authentik-postgresql-metrics", instance="10.42.3.11:9187"}'
+        values: '1+0x20'
+      - series: 'pg_up{job="gitlab", instance="192.168.0.153:9187"}'
+        values: '1+0x20'
+      - series: 'pg_up{job="nextcloud", instance="192.168.0.156:9187"}'
+        values: '1+0x20'
+      - series: 'pg_up{job="observability/mealie-postgres", instance="10.42.7.219:9187"}'
+        values: '1+0x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: PostgresDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: immich
+
+  # An empty corpus fires all five arms. That is the deliberate cost of the
+  # enumeration: a new Ansible-installed exporter must be deployed before its
+  # name is added to the rule, never the other way round.
   - interval: 1m
     input_series: []
     alert_rule_test:
       - eval_time: 15m
         alertname: PostgresDown
-        exp_alerts: []
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: authentik-postgresql-metrics
+          - exp_labels:
+              severity: warning
+              job: observability/mealie-postgres
+          - exp_labels:
+              severity: warning
+              job: gitlab
+          - exp_labels:
+              severity: warning
+              job: nextcloud
+          - exp_labels:
+              severity: warning
+              job: immich

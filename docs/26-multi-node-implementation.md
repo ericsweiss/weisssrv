@@ -548,6 +548,10 @@ ssh eric@192.168.0.102 "sudo ha-manager migrate ct:150 pve-laptop-01"
 
 ### Step 4.4: Test HA Functionality
 
+> Historical — the node names below are the ones this expansion used. The live
+> failover test, with the current homes, is `docs/25-multi-node-expansion.md`
+> § Step 6: Testing HA Failover; dns-01's home is now pve-prec-01.
+
 ```bash
 # Test DNS failover
 # 1. Note current location (should show pve-laptop-01 after migration)
@@ -752,27 +756,28 @@ The k3s role handles this automatically based on `k3s_is_first_server` flag.
 
 ### 6. Storage Migration for Existing VMs
 
-**Not required immediately, but recommended:**
+**Settled — the question this section asked has an answer, recorded here so a
+rebuild does not re-open it.**
 
-The k3s VMs on pve-nas-01 (k3s-srv-nas-01, k3s-agt-nas-01) use `local-lvm`
-(LVM thin pool) for their root disks; the GitLab VM root already lives on the
-`ssd` ZFS pool (see hosts.yml + docs/27). For HA:
-- `local-lvm` works for running VMs but cannot be replicated
-- Move the remaining `local-lvm` roots to the `ssd` pool (ZFS) for replication capability
+The HA guests were moved off `local-lvm` onto the compute hosts' `local-ssd`
+ZFS pools, which is what makes them replicable: home-assistant (VM 154) runs on
+pve-prec-01 with `proxmox_storage: local-ssd` (host_vars/home.yml), as do the
+dns and smtp-relay containers.
 
-Migration procedure (per VM):
+The two k3s VMs on pve-nas-01 (k3s-srv-nas-01 VM 222, k3s-agt-nas-01 VM 202)
+**deliberately stay on `local-lvm`** and are not HA-managed: VM 222 is an etcd
+quorum member and pve-nas-01's ZFS `ssd` pool is encrypted, so a root disk there
+would put cluster quorum behind a boot-time key unlock. The reasoning and the
+blast radius of that choice are in `docs/32-zfs-encryption.md`. Plex (CT 152)
+stays on pve-nas-01 for its bind mounts, with its sensitive `/config` bound from
+the encrypted `ssd/appdata`.
+
+Migration procedure, if a future guest does need to move:
 ```bash
-# Via Web UI: VM > Hardware > Disk > Disk Action > Move Storage > Target: ssd
-# Or CLI:
-qm move-disk <vmid> scsi0 ssd --delete
+# Via Web UI: VM > Hardware > Disk > Disk Action > Move Storage
+# Or CLI (target the host's own pool — local-ssd on compute, ssd on the NAS):
+qm move-disk <vmid> scsi0 local-ssd --delete
 ```
-
-**Priority order:**
-1. home-assistant (VM 154) - High value, candidate for HA
-2. k3s-srv-nas-01 (VM 222) - Control plane
-3. k3s-agt-nas-01 (VM 202) - Has persistent data (postgres zvols)
-
-Plex (CT 152) should stay on pve-nas-01 only due to bind mounts.
 
 ---
 

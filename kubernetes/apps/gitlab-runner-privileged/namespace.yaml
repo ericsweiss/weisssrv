@@ -1,10 +1,8 @@
 ---
-# Dedicated namespace for the privileged (infrastructure) GitLab Runner. Keeping
-# it separate from the shared `gitlab-runner` namespace is the isolation boundary:
-# the shared runner's namespace-scoped ServiceAccount RBAC can no longer read this
-# runner's token Secret (which previously co-resided and was readable by untrusted
-# shared job pods). PSS enforce stays `privileged` here because the DinD job pods
-# this runner spawns legitimately require it.
+# Dedicated namespace for the privileged (infrastructure) GitLab Runner. The
+# namespace split is the isolation boundary: the shared runner's namespace-scoped
+# ServiceAccount RBAC cannot read this runner's token Secret. PSS enforce stays
+# `privileged` because the DinD job pods this runner spawns require it.
 apiVersion: v1
 kind: Namespace
 metadata:

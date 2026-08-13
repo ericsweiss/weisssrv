@@ -1,7 +1,7 @@
 ---
 # wg-easy — WireGuard VPN + admin UI (internet-exit only; see docs/38 for the
 # two-layer no-LAN egress security model). Image tag has no leading "v"
-# (upstream container convention: ghcr.io/wg-easy/wg-easy:15.3.0).
+# (upstream container convention); the pin is the wg_easy_version key.
 #
 # replicas:1 + Recreate: the SQLite state on NFS tolerates exactly one writer,
 # and only one node may own the WireGuard listener behind the MetalLB VIP.
@@ -37,7 +37,7 @@ spec:
       # (controllers/traefik/release.yaml). State floats on NFS, so there is no
       # locality reason to pin harder.
       nodeSelector:
-        esweiss.com/ingress: "true"
+        ${cluster_node_label_domain}/ingress: "true"
       # wg-easy is not a Kubernetes-integrated app; it needs no API access.
       automountServiceAccountToken: false
       # Public resolvers for the POD itself — deliberately NOT kube-dns. wg-easy
@@ -107,7 +107,7 @@ spec:
             # Endpoint clients dial. External host (Cloudflare DNS-only A record
             # + DDNS follows the home IP); router forwards WAN :51820/udp here.
             - name: INIT_HOST
-              value: "vpn.ericsweiss.com"
+              value: "vpn.${cluster_external_domain}"
             - name: INIT_PORT
               value: "51820"
             # Public resolvers pushed to clients — NEVER the internal AdGuard.
@@ -180,8 +180,8 @@ spec:
           # from pve-nas-01). After a NAS/NFS reboot the established mount returns
           # stale file handles that wg-easy does not recover from — the UI can
           # keep answering on :51821 (a tcpSocket liveness would stay green) while
-          # its SQLite state is unreadable, and the pod had to be manually deleted
-          # to remount. stat-ing the mount surfaces ESTALE (immediate error) or a
+          # its SQLite state is unreadable. stat-ing the mount surfaces ESTALE
+          # (immediate error) or a
           # hung hard-mount (probe timeout); either fails the probe so kubelet
           # restarts the pod and it remounts. The tcpSocket UI check is retained
           # as the readinessProbe above. Conservative timing so a brief NFS blip

@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 """Assert the backup-artifact app list and its alert arms stay paired.
 
-The COLLECTOR's app list is site data
-(`nas_storage_backup_artifact_apps` in the NAS host_vars; the collection role
-defaults it to `[]`); the matching `absent(backup_artifact_last_mtime_seconds{app="..."})` arms are
-hand-enumerated in the BackupArtifactStale rule in
-kubernetes/infrastructure/observability/kube-prometheus-stack/release.yaml. The
-two live in different lifecycles (Ansible deploy vs Flux reconcile) and nothing
-tied them together:
+The COLLECTOR's app list is site data (`nas_storage_backup_artifact_apps` in the
+NAS host_vars; the nas_storage role defaults it to `[]`); the matching
+`absent(backup_artifact_last_mtime_seconds{app="..."})` arms are hand-enumerated
+in the BackupArtifactStale rule. The two live in different lifecycles (Ansible
+deploy vs Flux reconcile) and nothing else ties them together:
 
   - adding an app with no absent() arm means a landing dir that is never created
     emits NO series at all, so the freshness arm has nothing to fire on — the
@@ -26,20 +24,22 @@ shipped while no app declares a companion has zero series to match: it reads as
 active DR coverage and can never fire. Both directions of that pairing are
 checked too.
 
+Both file paths are site data and come from flags.
+
 Exit 0 when the two sets match, 1 otherwise.
+
+  check-backup-artifact-apps.py --host-vars FILE --rules FILE
 """
 
 from __future__ import annotations
 
+import argparse
 import re
 import sys
 from pathlib import Path
 
 import yaml
 
-REPO = Path(__file__).resolve().parent.parent
-HOST_VARS = REPO / "ansible/inventories/prod/host_vars/pve-nas-01.yml"
-RULES = REPO / "kubernetes/infrastructure/observability/rules/scripts.yaml"
 ALERT = "BackupArtifactStale"
 COMPANION_ALERT = "BackupArtifactCompanionMissing"
 ARM_RE = re.compile(r'absent\(\s*backup_artifact_last_mtime_seconds\{app="([^"]+)"\}\s*\)')
@@ -70,9 +70,19 @@ def collector_companions(host_vars_text: str) -> dict[str, list[str]]:
     return out
 
 
+def _alert_start(lines: list[str], alert: str) -> int | None:
+    """Index of an exact, active `- alert: <name>` declaration.
+
+    Exact-match so a commented-out rule or a name that merely starts with the
+    expected one (`<name>Legacy`) cannot satisfy the gate.
+    """
+    pattern = re.compile(rf"""^\s*-\s*alert:\s*["']?{re.escape(alert)}["']?\s*(?:#.*)?$""")
+    return next((i for i, line in enumerate(lines) if pattern.match(line)), None)
+
+
 def alert_exists(rules_text: str, alert: str) -> bool:
-    """Whether the rules corpus defines `alert: <name>`."""
-    return any(f"alert: {alert}" in ln for ln in rules_text.splitlines())
+    """Whether the rules corpus defines the exact active alert."""
+    return _alert_start(rules_text.splitlines(), alert) is not None
 
 
 def alert_arm_apps(rules_text: str) -> set[str]:
@@ -84,21 +94,23 @@ def alert_arm_apps(rules_text: str) -> set[str]:
     buys nothing over scoping to the alert's own block.
     """
     lines = rules_text.splitlines()
-    try:
-        start = next(i for i, ln in enumerate(lines) if f"alert: {ALERT}" in ln)
-    except StopIteration:
-        raise SystemExit(f"ERROR: no `alert: {ALERT}` rule found in {RULES}") from None
-    # The expr block ends at the alert's `for:` key, at the same indentation as
-    # the `expr:` that opened it.
+    start = _alert_start(lines, ALERT)
+    if start is None:
+        raise SystemExit(f"ERROR: no `alert: {ALERT}` rule found in the rules file")
+    # The expr block ends at the alert's `for:` key — or at the NEXT alert
+    # declaration, since `for:` is optional and its absence must not let a
+    # later alert's arms satisfy this one.
     body: list[str] = []
     for ln in lines[start + 1 :]:
-        if re.match(r"\s*for:\s", ln):
+        if re.match(r"\s*for:\s", ln) or re.match(r"\s*-\s*alert:\s", ln):
             break
         body.append(ln)
     return set(ARM_RE.findall("\n".join(body)))
 
 
-def check_companions(host_vars_text: str, rules_text: str) -> list[str]:
+def check_companions(
+    host_vars_text: str, rules_text: str, host_vars: Path, rules: Path
+) -> list[str]:
     """Problems in the companions <-> BackupArtifactCompanionMissing pairing."""
     declared = collector_companions(host_vars_text)
     have_alert = alert_exists(rules_text, COMPANION_ALERT)
@@ -111,9 +123,9 @@ def check_companions(host_vars_text: str, rules_text: str) -> list[str]:
             f"companion, so the rule has zero series to match and can NEVER "
             f"fire — it reads as active restore-dependency coverage and is "
             f"not.\n"
-            f"    Fix: declare the companion(s) in {HOST_VARS.relative_to(REPO)} "
+            f"    Fix: declare the companion(s) in {host_vars} "
             f"(e.g. gitlab-secrets.json on the gitlab entry), or delete the "
-            f"rule from {RULES.relative_to(REPO)}."
+            f"rule from {rules}."
         )
     if declared and not have_alert:
         named = ", ".join(f"{a} ({', '.join(g)})" for a, g in sorted(declared.items()))
@@ -121,18 +133,37 @@ def check_companions(host_vars_text: str, rules_text: str) -> list[str]:
             f"apps declare `companions:` but {COMPANION_ALERT} does not exist: "
             f"{named}. The collector emits the series and nothing alerts on "
             f"them, so a missing restore dependency is silent.\n"
-            f"    Fix: restore the rule in {RULES.relative_to(REPO)}, or drop "
+            f"    Fix: restore the rule in {rules}, or drop "
             f"the `companions:` keys."
         )
     return problems
 
 
-def main() -> int:
-    host_vars_text = HOST_VARS.read_text()
-    rules_text = RULES.read_text()
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="The backup-artifact app list and its alert arms must stay paired.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--host-vars", type=Path, required=True,
+        help="host_vars file declaring nas_storage_backup_artifact_apps",
+    )
+    parser.add_argument(
+        "--rules", type=Path, required=True,
+        help=f"manifest defining the {ALERT} rule",
+    )
+    args = parser.parse_args(argv)
+
+    for path in (args.host_vars, args.rules):
+        if not path.is_file():
+            print(f"ERROR: {path} not found", file=sys.stderr)
+            return 2
+
+    host_vars_text = args.host_vars.read_text()
+    rules_text = args.rules.read_text()
     collector = collector_apps(host_vars_text)
     arms = alert_arm_apps(rules_text)
-    companion_problems = check_companions(host_vars_text, rules_text)
+    companion_problems = check_companions(host_vars_text, rules_text, args.host_vars, args.rules)
 
     if collector == arms and not companion_problems:
         declared = collector_companions(host_vars_text)
@@ -161,7 +192,7 @@ def main() -> int:
         )
         print(
             f"    Fix: add `or absent(backup_artifact_last_mtime_seconds{{app=\"<name>\"}})` "
-            f"to {ALERT} in\n    {RULES.relative_to(REPO)}"
+            f"to {ALERT} in\n    {args.rules}"
         )
     if orphan_arm:
         print(
@@ -170,7 +201,7 @@ def main() -> int:
         )
         print(
             f"    Fix: drop that arm, or re-add the app to nas_storage_backup_artifact_apps in\n"
-            f"    {HOST_VARS.relative_to(REPO)}"
+            f"    {args.host_vars}"
         )
     return 1
 

@@ -1,27 +1,38 @@
 #!/usr/bin/env python3
 """Assert what the Alertmanager config DOES, not just that it parses.
 
-`amtool check-config` (run by scripts/lint-prometheus-config.sh) is a syntax
-gate: a route reorder that silences the Watchdog dead-man's switch, a matcher
-that misroutes a critical, a redundant `equal:` label that makes an inhibit pair
-dedup nothing, and a one-sided alertname rename between an inhibit source and
-target all pass it green.
+`amtool check-config` is a syntax gate: a route reorder that silences the
+Watchdog dead-man's switch, a matcher that misroutes a critical, a redundant
+`equal:` label that makes an inhibit pair dedup nothing, and a one-sided
+alertname rename between an inhibit source and target all pass it green.
 
-Extracts the config + rules with scripts/extract-prometheus-config.py, then:
-  * resolves each ROUTE_CASE with `amtool config routes test` and compares the
-    receiver actually reached;
+Extracts the config + rules with the consumer's extract-prometheus-config.py,
+then:
+  * resolves each declared route case with `amtool config routes test` and
+    compares the receiver actually reached;
   * checks every inhibit rule for parseable matchers, a redundant `equal:`
     label, and alertnames that no longer exist. EVERY member of a regex
-    alternation is checked, not just "at least one survives": the storm-control
-    rule pins 14 target alertnames, so 13 could be typos while the pair still
-    looked bound. Upstream chart alerts are invisible to the extractor, so they
-    are named explicitly in UPSTREAM_ALERTS.
+    alternation is checked, not just "at least one survives", so a long target
+    list cannot hide a typo. Chart-shipped alerts are invisible to the
+    extractor, so they are declared explicitly.
 
-Requires amtool on PATH. Run from the repo root; exit 0 clean, 1 on a finding,
-2 on an operator error.
+The routing table, the receivers and the upstream alert set are site data and
+come from `--config` (see examples/alertmanager-behaviour.example.yaml):
+
+    route_cases:                 # required, non-empty
+      - receiver: watchdog-heartbeat
+        labels: [alertname=Watchdog, severity=none]
+    synthetic_route_alerts: []   # route-case alertnames that name no rule
+    upstream_alerts: []          # alertnames shipped by a chart's own rules
+
+Requires amtool on PATH. Exit 0 clean, 1 on a finding, 2 on an operator error.
+
+  check-alertmanager-behaviour.py --config FILE [--repo-root DIR]
+                                  [--extract-script PATH]
 """
 from __future__ import annotations
 
+import argparse
 import re
 import shutil
 import subprocess
@@ -34,70 +45,79 @@ try:
 except ImportError:
     sys.exit("PyYAML required: pip install pyyaml")
 
-REPO = Path(__file__).resolve().parent.parent
-EXTRACT = REPO / "scripts" / "extract-prometheus-config.py"
-
-# (expected receiver, alert labels). amtool prints every matching receiver in
-# tree order and only the first delivers, so the first line is what is asserted.
-# One case per receiver, plus the ordering the config itself calls load-bearing:
-# Watchdog carries severity=none and MUST beat the severity=none null route.
-ROUTE_CASES = [
-    ("watchdog-heartbeat", ["alertname=Watchdog", "severity=none"]),
-    ("null", ["alertname=InfoInhibitor", "severity=none"]),
-    ("email-and-discord", ["alertname=EtcdQuorumAtRisk", "severity=critical"]),
-    ("discord-default", ["alertname=DiskUsageWarning", "severity=warning"]),
-    # severity=info matches no child route and falls through to the root.
-    ("discord-default", ["alertname=SwapCleanStoppedGuests", "severity=info"]),
-    ("discord-default", ["alertname=SomeUnlabelledAlert"]),
-]
-
-# ROUTE_CASE alertnames that deliberately name no rule. Only one: the
-# fall-through case, whose whole point is that an alert matching no child route
-# still reaches the root receiver.
-SYNTHETIC_ROUTE_ALERTS = {"SomeUnlabelledAlert"}
-
 MATCHER_RE = re.compile(r'^\s*(\w+)\s*(=~|!~|!=|=)\s*"?(.*?)"?\s*$')
 
-# Alerts shipped by the kube-prometheus-stack chart's own rule groups. The
-# extractor only sees this repo's PrometheusRules, so a chart alertname named in
-# an inhibit rule would otherwise read as dead. Entries here are a claim that the
-# name exists upstream AND is not in defaultRules.disabled — verify against the
-# chart before adding one, because a typo'd entry recreates the blind spot.
-UPSTREAM_ALERTS = {
-    "InfoInhibitor",
-    "KubeAggregatedAPIDown",
-    "KubeContainerWaiting",
-    "KubeDaemonSetMisScheduled",
-    "KubeDaemonSetRolloutStuck",
-    "KubeDeploymentReplicasMismatch",
-    "KubePodNotReady",
-    "KubeStatefulSetReplicasMismatch",
-    "NodeSystemSaturation",
-    "Watchdog",
-}
+
+class Config:
+    """The consumer data from --config. A value, not module state."""
+
+    def __init__(self, route_cases, synthetic, upstream):
+        self.route_cases = route_cases
+        self.synthetic_route_alerts = synthetic
+        self.upstream_alerts = upstream
 
 
-def _extract(work: Path) -> tuple[Path, Path]:
+def load_config(path) -> Config:
+    """Read and validate a --config file. Raises ValueError on a bad file."""
+    with open(path) as f:
+        doc = yaml.safe_load(f) or {}
+    if not isinstance(doc, dict):
+        raise ValueError(f"{path}: top-level must be a mapping")
+    raw_cases = doc.get("route_cases")
+    if not isinstance(raw_cases, list) or not raw_cases:
+        raise ValueError(f"{path}: `route_cases` must be a non-empty list")
+    cases = []
+    for case in raw_cases:
+        if not isinstance(case, dict) or not case.get("receiver") or not case.get("labels"):
+            raise ValueError(f"{path}: route case needs receiver + labels: {case!r}")
+        cases.append((str(case["receiver"]), [str(label) for label in case["labels"]]))
+    return Config(
+        cases,
+        {str(a) for a in doc.get("synthetic_route_alerts") or []},
+        {str(a) for a in doc.get("upstream_alerts") or []},
+    )
+
+
+class ExtractionError(RuntimeError):
+    """The consumer's extractor failed — an operator error (exit 2)."""
+
+
+def _extract(work: Path, extract_script: Path, repo_root: Path) -> tuple[Path, Path]:
+    """Run the consumer's extractor, FROM the consumer's repo root.
+
+    The extractor resolves its manifest defaults against the process cwd, so
+    without `cwd=` the `--repo-root` seam only locates the script and the run
+    dies anywhere but the consumer root.
+    """
     rules, am = work / "rules.yaml", work / "alertmanager.yaml"
     for args in (["rules", str(rules)], ["alertmanager", str(am)]):
         run = subprocess.run(
-            [sys.executable, str(EXTRACT), *args], capture_output=True, text=True
+            [sys.executable, str(extract_script), *args],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
         )
         if run.returncode:
-            sys.exit(f"ERROR: extraction failed:\n{run.stdout}{run.stderr}")
+            raise ExtractionError(f"extraction failed:\n{run.stdout}{run.stderr}")
     return am, rules
 
 
-def check_routes(am_config: Path) -> list[str]:
+def check_routes(am_config: Path, route_cases) -> list[str]:
     problems = []
-    for want, labels in ROUTE_CASES:
+    for want, labels in route_cases:
         run = subprocess.run(
             ["amtool", "config", "routes", "test", f"--config.file={am_config}", *labels],
             capture_output=True,
             text=True,
         )
         got = " ".join((run.stdout + run.stderr).split())
-        if not got.startswith(want):
+        # amtool can print several matching receivers in tree order, so only the
+        # FIRST token is the resolution. Compare it exactly: a prefix test passes
+        # `critical-page` for an expected `critical`, which is the misroute the
+        # gate exists to catch.
+        tokens = got.split()
+        first = tokens[0] if tokens else ""
+        if first != want:
             problems.append(f"[{' '.join(labels)}] expected receiver {want!r}, resolved {got!r}")
     return problems
 
@@ -117,13 +137,12 @@ def _exact_alertnames(parsed: dict) -> tuple[list[str], str | None]:
     """(alertnames a matcher set pins exactly, why it could not be validated).
 
     Exactly one of the two is meaningful. `=` pins one name; `=~` pins a set
-    only when the regex is a plain alternation of names — the shape every rule
-    here uses. Any OTHER regex returns a REASON, not an empty list: silently
-    returning [] meant zero names to check, zero problems reported, and the gate
-    still printing "N inhibit rule(s) well-formed" — the exact blind spot the
-    per-member check was hardened to close. Anchors are a no-op in Alertmanager
-    (matchers are already fully anchored), so `^(A|B)$` reads as validatable to
-    a human while this parser rejected it.
+    only when the regex is a plain alternation of names. Any OTHER regex returns
+    a REASON, not an empty list — an empty list is zero names to check, zero
+    problems reported, and the gate still printing "N inhibit rule(s)
+    well-formed". Anchors are a no-op in Alertmanager (matchers are already
+    fully anchored), so `^(A|B)$` reads as validatable to a human but is
+    rejected here.
     """
     op, val = parsed.get("alertname", (None, None))
     if op == "=":
@@ -140,8 +159,31 @@ def _exact_alertnames(parsed: dict) -> tuple[list[str], str | None]:
     return [], None
 
 
-def _known_alertnames(rules_file: Path) -> set[str]:
-    rules_doc = yaml.safe_load(rules_file.read_text()) or {}
+def _load_extracted(path: Path, what: str) -> dict:
+    """Parse one extracted file, or raise ExtractionError (exit 2).
+
+    The extractor copies the alertmanager.yaml block scalar out of the
+    ExternalSecret verbatim without parsing it, so a YAML typo INSIDE that block
+    leaves the outer manifest valid and the extractor green, and the malformed
+    body arrives here. Unparsed, it reaches yaml.safe_load mid-check as an
+    uncaught traceback on exit 1 — the code that means "routing drifted".
+    """
+    try:
+        # The handle, not the text, so PyYAML's mark names the file.
+        with path.open() as fh:
+            doc = yaml.safe_load(fh)
+    except (OSError, yaml.YAMLError) as exc:
+        raise ExtractionError(f"extracted {what} ({path}) is not parseable YAML: {exc}") from exc
+    if doc is None:
+        raise ExtractionError(f"extracted {what} ({path}) is empty")
+    if not isinstance(doc, dict):
+        raise ExtractionError(
+            f"extracted {what} ({path}) is a {type(doc).__name__}, not a YAML mapping"
+        )
+    return doc
+
+
+def _known_alertnames(rules_doc: dict) -> set[str]:
     return {
         r["alert"]
         for g in rules_doc.get("groups") or []
@@ -150,35 +192,31 @@ def _known_alertnames(rules_file: Path) -> set[str]:
     }
 
 
-def check_route_case_alertnames(known: set[str]) -> list[str]:
-    """Every ROUTE_CASE alertname must still name a real rule.
+def check_route_case_alertnames(known: set[str], config: Config) -> list[str]:
+    """Every route-case alertname must still name a real rule.
 
     amtool resolves a route from LABELS alone: it never asks whether the alert
-    exists, so renaming a rule leaves its ROUTE_CASE resolving the same
-    receiver, green, and testing nothing. This is what makes the claim in
-    prometheus-rule-tests/availability.test.yaml true — that a rename of e.g.
-    EtcdQuorumAtRisk has to break something loudly.
+    exists, so renaming a rule leaves its route case resolving the same
+    receiver, green, and testing nothing.
     """
     problems = []
-    for _want, labels in ROUTE_CASES:
+    for _want, labels in config.route_cases:
         for label in labels:
             key, _, value = label.partition("=")
-            if key != "alertname" or value in SYNTHETIC_ROUTE_ALERTS:
+            if key != "alertname" or value in config.synthetic_route_alerts:
                 continue
-            if value not in known and value not in UPSTREAM_ALERTS:
+            if value not in known and value not in config.upstream_alerts:
                 problems.append(
-                    f"ROUTE_CASE alertname {value!r} matches no rule in "
-                    f"observability/rules/ and is not in UPSTREAM_ALERTS. The "
-                    f"route case still passes (amtool resolves labels, not "
-                    f"rules), so it is now asserting nothing — renamed, deleted, "
-                    f"or a typo?"
+                    f"route case alertname {value!r} matches no extracted rule and is "
+                    f"not in upstream_alerts. The route case still passes (amtool "
+                    f"resolves labels, not rules), so it is asserting nothing — "
+                    f"renamed, deleted, or a typo?"
                 )
     return problems
 
 
-def check_inhibits(am_config: Path, known: set[str]) -> list[str]:
-    cfg = yaml.safe_load(am_config.read_text()) or {}
-    inhibits = cfg.get("inhibit_rules") or []
+def check_inhibits(am_doc: dict, known: set[str], upstream: set[str]) -> list[str]:
+    inhibits = am_doc.get("inhibit_rules") or []
     if not inhibits:
         return ["no inhibit_rules found in the Alertmanager config"]
 
@@ -200,7 +238,7 @@ def check_inhibits(am_config: Path, known: set[str]) -> list[str]:
         # declared upstream alert. Checked per alternation MEMBER: requiring only
         # that one member survives lets the rest rot into inert matchers, which
         # is precisely how a 14-name target list hides a typo.
-        defined = known | UPSTREAM_ALERTS
+        defined = known | upstream
         for side, (names, unvalidatable) in (
             ("source", _exact_alertnames(src)),
             ("target", _exact_alertnames(tgt)),
@@ -211,24 +249,66 @@ def check_inhibits(am_config: Path, known: set[str]) -> list[str]:
             dead = [n for n in names if n not in defined]
             if dead:
                 problems.append(
-                    f"rule {i}: {side} alertname(s) {dead} match no rule in "
-                    f"observability/rules/ and are not in UPSTREAM_ALERTS — "
-                    f"renamed, deleted, or a typo? An unmatched name in an "
-                    f"alternation is an inert matcher, not an error at runtime."
+                    f"rule {i}: {side} alertname(s) {dead} match no extracted rule and "
+                    f"are not in upstream_alerts — renamed, deleted, or a typo? "
+                    f"An unmatched name in an alternation is an inert matcher, "
+                    f"not an error at runtime."
                 )
     return problems
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Assert what the Alertmanager config does, not just that it parses.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--config", required=True, help="route cases + alert sets (see docstring)")
+    parser.add_argument("--repo-root", type=Path, default=Path.cwd())
+    parser.add_argument(
+        "--extract-script",
+        type=Path,
+        help="extract-prometheus-config.py (default: <repo-root>/scripts/)",
+    )
+    args = parser.parse_args(argv)
+
+    # Resolved ONCE, against the caller's cwd, before anything is validated: the
+    # extractor runs with `cwd=repo_root`, so a relative path handed straight
+    # through would be re-resolved against the CHILD's cwd and double its prefix.
+    repo_root = args.repo_root.resolve()
+    extract = (
+        args.extract_script or repo_root / "scripts" / "extract-prometheus-config.py"
+    ).resolve()
+    if not repo_root.is_dir():
+        print(f"ERROR: --repo-root {repo_root} is not a directory", file=sys.stderr)
+        return 2
+    if not extract.is_file():
+        print(f"ERROR: {extract} not found (pass --extract-script)", file=sys.stderr)
+        return 2
     if shutil.which("amtool") is None:
         print("ERROR: amtool not found on PATH", file=sys.stderr)
         return 2
+    try:
+        config = load_config(args.config)
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+
     with tempfile.TemporaryDirectory() as tmp:
-        am_config, rules_file = _extract(Path(tmp))
-        known = _known_alertnames(rules_file)
-        route_problems = check_routes(am_config) + check_route_case_alertnames(known)
-        inhibit_problems = check_inhibits(am_config, known)
-        inhibit_count = len(yaml.safe_load(am_config.read_text()).get("inhibit_rules") or [])
+        try:
+            am_config, rules_file = _extract(Path(tmp), extract, repo_root)
+            # Parsed ONCE here so a malformed body is an operator error (exit 2)
+            # rather than a traceback from mid-check on exit 1.
+            am_doc = _load_extracted(am_config, "Alertmanager config")
+            rules_doc = _load_extracted(rules_file, "rules")
+        except ExtractionError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
+        known = _known_alertnames(rules_doc)
+        route_problems = check_routes(am_config, config.route_cases) + check_route_case_alertnames(
+            known, config
+        )
+        inhibit_problems = check_inhibits(am_doc, known, config.upstream_alerts)
+        inhibit_count = len(am_doc.get("inhibit_rules") or [])
 
     if route_problems:
         print("ERROR: Alertmanager routing does not match the expected receivers:", file=sys.stderr)
@@ -242,8 +322,8 @@ def main() -> int:
         return 1
 
     print(
-        f"Alertmanager behaviour OK: {len(ROUTE_CASES)} route case(s) resolve as expected, "
-        f"{inhibit_count} inhibit rule(s) well-formed."
+        f"Alertmanager behaviour OK: {len(config.route_cases)} route case(s) resolve as "
+        f"expected, {inhibit_count} inhibit rule(s) well-formed."
     )
     return 0
 

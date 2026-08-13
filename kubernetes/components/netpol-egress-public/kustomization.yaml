@@ -1,0 +1,13 @@
+---
+# Egress to the public internet only (never the LAN), on TCP/443.
+#
+# A namespace that also needs public DNS — cert-manager's DNS-01 self-check
+# queries the zone's authoritative nameservers directly — adds the two :53 ports
+# with a JSON6902 patch in its own kustomization rather than widening this
+# component: nothing else here may talk to an arbitrary resolver.
+#
+# See netpol-egress-dns for the default-deny and podSelector caveats.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - allow-egress-public.yaml

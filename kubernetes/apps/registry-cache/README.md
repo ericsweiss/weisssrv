@@ -19,6 +19,13 @@ warm LAN hit. Design + deploy-token runbook: **[`docs/27-gitlab-deployment.md`](
   `registry-cache.registry-cache.svc.cluster.local:5000`; only the Prometheus
   scraper reaches `:5001`. No ingress route, no cert, no external DNS — this is
   cluster-internal, CI-only.
+  **The ingress allow is namespace-wide, and the cache holds a credential**: it
+  proxies upstream with its own `read_registry` deploy token, so *every* pod in
+  `gitlab-runner-privileged` — i.e. every CI job that runs there — can pull any
+  image that token can see, without holding the token itself. Acceptable while
+  that namespace runs only this repo's own trusted jobs; revisit (per-workload
+  selector, or a token scoped to the one project) the moment it runs anything
+  from a tenant or a fork.
 - **Upstream reach**: `registry.git.ericsweiss.com` is pinned to the internal
   Traefik VIP `.101` at pod scope (`hostAliases`, mirroring the node-level
   `k3s_registry_host_pins`) so the fetch stays on the internal Traefik path

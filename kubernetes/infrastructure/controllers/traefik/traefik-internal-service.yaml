@@ -12,7 +12,7 @@ metadata:
   name: traefik-internal
   namespace: traefik
   annotations:
-    metallb.io/loadBalancerIPs: "192.168.0.101"
+    metallb.io/loadBalancerIPs: "${cluster_metallb_internal_vip}"
 spec:
   type: LoadBalancer
   externalTrafficPolicy: Local  # Preserve source IP for IP allowlist middleware

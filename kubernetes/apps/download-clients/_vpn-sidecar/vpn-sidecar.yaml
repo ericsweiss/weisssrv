@@ -76,9 +76,9 @@ spec:
               VPN_ENABLED=$(cat /gluetun/vpn_enabled)
               if [ "$VPN_ENABLED" != "true" ]; then
                 echo "VPN disabled - sleeping indefinitely"
-                # Sleep but stay alive so pod doesn't restart. This early exec
+                # Sleep but stay alive so the pod does not restart. This exec
                 # runs BEFORE any provider/credential logic below, so the
-                # disabled path (nzbget default) can never touch the new code.
+                # VPN-disabled path never reaches it.
                 exec sleep infinity
               fi
               # Point gluetun at the credential FILES for the provider selected
@@ -136,7 +136,7 @@ spec:
             # exporter scrapes) + the two DNS resolvers. Everything else
             # non-tunnel is dropped by gluetun's own firewall.
             - name: FIREWALL_OUTBOUND_SUBNETS
-              value: "10.42.0.0/16,10.43.0.0/16,192.168.0.150/32,192.168.0.160/32"
+              value: "${cluster_pod_cidr},${cluster_service_cidr},192.168.0.150/32,192.168.0.160/32"
             # Health + control servers bind loopback only — every consumer (the
             # exec probes, the gluetun-exporter sidecar) shares this pod's
             # network namespace. The control API is role-authenticated via the
@@ -156,8 +156,9 @@ spec:
             - name: HTTP_CONTROL_SERVER_AUTH_CONFIG_FILEPATH
               value: "/gluetun-auth/config.toml"
             - name: DNS_ADDRESS
-              # Gluetun v3.41 rejects comma-separated values (only a single
-              # address is accepted) — a single-resolver dependency on dns-01.
+              # Gluetun rejects comma-separated values at the pinned release
+              # (a single address only — re-check on a bump), so this is a
+              # single-resolver dependency on dns-01.
               # Queries route OUTSIDE the tunnel via eth0 (dns-01 is in
               # FIREWALL_OUTBOUND_SUBNETS); Unbound's DoT covers upstream
               # privacy. Pod-level dnsConfig.nameservers above covers dns-02
@@ -253,10 +254,8 @@ spec:
             items:
               - key: config.toml
                 path: config.toml
-        # Provider credential files (vpn-credentials Secret). Both PrivadoVPN
-        # (privadovpn-user/-password) and, once the operator populates them,
-        # VPN Unlimited (vpnunlimited-user/-password + vpnunlimited-clientcrt/
-        # -clientkey) keys land here.
+        # Provider credential files (vpn-credentials Secret). The wired
+        # provider set is defined in ../externalsecret.yaml.
         - name: vpn-secrets
           secret:
             secretName: vpn-credentials

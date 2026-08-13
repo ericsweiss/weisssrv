@@ -21,5 +21,5 @@ spec:
               key: api-token
         selector:
           dnsZones:
-            - ericsweiss.com
-            - esweiss.com
+            - ${cluster_external_domain}
+            - ${cluster_internal_domain}

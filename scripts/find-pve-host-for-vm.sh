@@ -81,10 +81,8 @@ if [ -n "$NODE" ] && [ -n "$PVE_NODE_PREFIX" ]; then
 fi
 
 # Step 4: per-host scan (fallback when cluster API unavailable)
-# Capture then test rather than `ssh ... | grep -q`: under pipefail, grep -q
-# closing the pipe early can SIGPIPE a still-writing ssh, making the pipeline
-# non-zero even on a match and false-reporting the VM as not-found. Reading the
-# stream fully first removes that race.
+# Capture then test, not `ssh | grep -q`: under pipefail an early pipe close can
+# SIGPIPE ssh and false-report not-found.
 if [ -z "$NODE" ]; then
     for host in "${HOSTS[@]}"; do
         qm_status=$(ssh_probe "$host" "sudo qm status ${VMID}" 2>/dev/null || true)

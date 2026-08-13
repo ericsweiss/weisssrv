@@ -53,7 +53,7 @@ spec:
             # to the Plex LXC (.152) — unlike plex.esweiss.com, which goes to the
             # Traefik VIP — and Plex's wildcard *.esweiss.com cert verifies.
             - name: PLEX_SERVER
-              value: "https://plex-direct.esweiss.com:32400"
+              value: "https://plex-direct.${cluster_internal_domain}:32400"
             - name: PLEX_TOKEN
               valueFrom:
                 secretKeyRef:

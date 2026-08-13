@@ -1,22 +1,7 @@
 ---
-# GitLab Runner leaked-pod + leaked-credentials-secret reaper.
-# Full rationale (what leaks and why, the guard-by-guard reasoning, the RBAC
-# trade-off): docs/13-ci-cd.md § Runner garbage collection.
-#
-# The three pod guards (any one alone excludes a manager pod): label
-# `esweiss.com/runner-class` MUST EXIST; phase in {Succeeded, Failed}; name
-# matches runner-*-project-*-concurrent-*.
-# The three Secret guards: type == kubernetes.io/dockercfg (also applied
-# server-side via fieldSelector); name starts with `runner-`; not referenced by
-# any live pod via imagePullSecrets or ownerReferences.
-#
-# GRACE, the one rule that is unrecoverable from the code below: a terminal pod
-# is aged from its NEWEST container `finishedAt`, never from creation/startTime
-# — a 2h job is Running for 2h and the 30m clock starts only when it goes
-# terminal. If any started container lacks a parseable finishedAt the pod is
-# KEPT. Secrets have no termination time, so they age from creationTimestamp
-# with a much higher floor (180m) plus the unreferenced guard, which closes the
-# create-Secret-then-create-pod race.
+# GitLab Runner leaked-pod + leaked-credentials-secret reaper. What leaks, the
+# guard-by-guard reasoning and the RBAC trade-off: docs/13-ci-cd.md § Runner
+# garbage collection. Each guard is annotated at its call site below.
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -91,7 +76,7 @@ spec:
                   # Smaller page: runner pod specs/statuses are large, so 25 full Pod
                   # objects stay well under the 64Mi limit (100 could approach it).
                   PAGE = int(os.environ.get("PAGE_LIMIT", "25"))
-                  LABEL = "esweiss.com/runner-class"
+                  LABEL = "${cluster_node_label_domain}/runner-class"
 
                   SA = "/var/run/secrets/kubernetes.io/serviceaccount"
                   with open(f"{SA}/token") as fh:

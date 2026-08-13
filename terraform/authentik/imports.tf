@@ -3,6 +3,12 @@
 # once a resource is in state the block is a no-op, so this file is the permanent
 # state<->API identity map.
 #
+# Addresses are MODULE-QUALIFIED since the move onto the library `authentik-sso`
+# module (main.tf): the resources are keyed instances of the module's resources,
+# and the key is the map key in the sibling site-data files. moved.tf holds the
+# old->new address map for state that predates the move; this file is for state
+# that has none.
+#
 # SCOPE — the 44 objects that existed in the Admin UI at adoption time only.
 # Objects this module has AUTHORED since have no import block (authentik assigns
 # their pks/uuids at create time), which is why a state-loss rebuild is not a
@@ -34,88 +40,88 @@ locals {
 
 import {
   for_each = local.imported_application_slugs
-  to       = authentik_application.app[each.value]
+  to       = module.sso.authentik_application.this[each.value]
   id       = each.value
 }
 
 # Proxy providers (id = provider pk)
 
 import {
-  to = authentik_provider_proxy.sonarr
+  to = module.sso.authentik_provider_proxy.this["sonarr"]
   id = "4"
 }
 
 import {
-  to = authentik_provider_proxy.radarr
+  to = module.sso.authentik_provider_proxy.this["radarr"]
   id = "5"
 }
 
 import {
-  to = authentik_provider_proxy.lidarr
+  to = module.sso.authentik_provider_proxy.this["lidarr"]
   id = "6"
 }
 
 import {
-  to = authentik_provider_proxy.qbittorrent
+  to = module.sso.authentik_provider_proxy.this["qbittorrent"]
   id = "7"
 }
 
 import {
-  to = authentik_provider_proxy.nzbget
+  to = module.sso.authentik_provider_proxy.this["nzbget"]
   id = "8"
 }
 
 import {
-  to = authentik_provider_proxy.prowlarr
+  to = module.sso.authentik_provider_proxy.this["prowlarr"]
   id = "9"
 }
 
 import {
-  to = authentik_provider_proxy.pulsarr
+  to = module.sso.authentik_provider_proxy.this["pulsarr"]
   id = "10"
 }
 
 import {
-  to = authentik_provider_proxy.wireguard_easy
+  to = module.sso.authentik_provider_proxy.this["wireguard_easy"]
   id = "17"
 }
 
 # OAuth2 providers (id = provider pk)
 
 import {
-  to = authentik_provider_oauth2.mealie
+  to = module.sso.authentik_provider_oauth2.this["mealie"]
   id = "1"
 }
 
 import {
-  to = authentik_provider_oauth2.bar_assistant
+  to = module.sso.authentik_provider_oauth2.this["bar_assistant"]
   id = "2"
 }
 
 import {
-  to = authentik_provider_oauth2.home_assistant
+  to = module.sso.authentik_provider_oauth2.this["home_assistant"]
   id = "3"
 }
 
 import {
-  to = authentik_provider_oauth2.grafana
+  to = module.sso.authentik_provider_oauth2.this["grafana"]
   id = "13"
 }
 
 import {
-  to = authentik_provider_oauth2.nextcloud
+  to = module.sso.authentik_provider_oauth2.this["nextcloud"]
   id = "14"
 }
 
 import {
-  to = authentik_provider_oauth2.immich
+  to = module.sso.authentik_provider_oauth2.this["immich"]
   id = "15"
 }
 
 # SAML provider (id = provider pk)
 
 import {
-  to = authentik_provider_saml.gitlab
+  to = module.sso.authentik_provider_saml.this["gitlab"]
   id = "12"
 }
 
@@ -135,20 +141,20 @@ import {
     "nextcloud-users" = "afcfb27c-be96-4860-8613-fb81f4cce06b"
     "vpn-admins"      = "25c11794-4b0d-4344-8ddf-bd9272c04a6d"
   }
-  to = authentik_group.app[each.key]
+  to = module.sso.authentik_group.this[each.key]
   id = each.value
 }
 
 import {
-  to = authentik_group.authentik_admins
+  to = module.sso.authentik_group.this["authentik-admins"]
   id = "b3dbbcbb-2207-41fb-bf2b-dacd7aeec37c"
 }
 
 # Embedded outpost (id = outpost uuid). The import is what makes a provider-list
 # change an in-place append instead of an (impossible) create of authentik's own
-# outpost.
+# outpost. The [0] is the module's `count` on embedded_outpost != null.
 
 import {
-  to = authentik_outpost.embedded
+  to = module.sso.authentik_outpost.embedded[0]
   id = "436f896e-05cd-4cf7-b9db-7141ad70927b"
 }

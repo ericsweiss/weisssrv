@@ -29,3 +29,6 @@ spec:
       - kind: ConfigMap
         name: cluster-versions
         optional: false
+      - kind: ConfigMap
+        name: cluster-config
+        optional: false

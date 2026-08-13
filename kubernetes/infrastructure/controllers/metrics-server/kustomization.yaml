@@ -1,0 +1,11 @@
+---
+# No namespace.yaml and no netpol-baseline component: this lands in kube-system,
+# whose Namespace object k3s owns and whose default-deny — plus the :10250 allow
+# for the aggregation-layer call into this release — lives with the rest of the
+# kube-system policy set in ../../configs/kube-system-policies/. Splitting the
+# allow into this directory would let the deny land from a different
+# Kustomization while this one is still pending.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - release.yaml

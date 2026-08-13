@@ -109,6 +109,57 @@ class TestNotReadyNsNames:
         assert out == ""
 
 
+# without_items
+
+
+@needs_jq
+class TestWithoutItems:
+    """The metrics-server cutover carve-out: drop known-transitional objects only."""
+
+    def _obj(self, ns, name, status):
+        o = _ready(status)
+        o["metadata"] = {"namespace": ns, "name": name}
+        return o
+
+    def _corpus(self):
+        return _items(
+            self._obj("flux-system", "infrastructure-metrics-server", "False"),
+            self._obj("kube-system", "metrics-server", "False"),
+            self._obj("flux-system", "apps", "False"),
+            self._obj("flux-system", "infrastructure-configs", "True"),
+        )
+
+    def test_drops_only_the_named_items(self):
+        spec = "flux-system/infrastructure-metrics-server kube-system/metrics-server"
+        out = _run(f'without_items "{spec}"', self._corpus()).stdout
+        names = [i["metadata"]["name"] for i in json.loads(out)["items"]]
+        assert names == ["apps", "infrastructure-configs"]
+
+    def test_a_real_failure_survives_the_carve_out(self):
+        """flux-system/apps is Ready=False and must still be counted."""
+        spec = "flux-system/infrastructure-metrics-server kube-system/metrics-server"
+        proc = subprocess.run(
+            ["bash", "-c", f'. {LIB}\nwithout_items "{spec}" | count_not_ready\n'],
+            input=self._corpus(),
+            capture_output=True,
+            text=True,
+        )
+        assert proc.stdout.strip() == "1"
+
+    def test_an_empty_spec_is_a_pass_through(self):
+        out = _run('without_items ""', self._corpus()).stdout
+        assert len(json.loads(out)["items"]) == 4
+
+    def test_a_missing_spec_is_a_pass_through(self):
+        out = _run("without_items", self._corpus()).stdout
+        assert len(json.loads(out)["items"]) == 4
+
+    def test_a_same_named_object_in_another_namespace_is_kept(self):
+        corpus = _items(self._obj("other", "metrics-server", "False"))
+        out = _run('without_items "kube-system/metrics-server"', corpus).stdout
+        assert len(json.loads(out)["items"]) == 1
+
+
 # steady_state
 
 

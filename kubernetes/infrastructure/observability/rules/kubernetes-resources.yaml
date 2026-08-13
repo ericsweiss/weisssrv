@@ -36,6 +36,52 @@ spec:
               namespaces are excluded because their ResourceQuota
               deliberately over-requests for burst CI.
 
+        # The leading indicator the other two memory alerts lack: OOMKilled is
+        # the post-mortem and VPARecommendationExceedsLimit keys off the
+        # recommender, which lags a burst by hours. This is the live working set
+        # against the container's own limit.
+        #
+        # Exclusions are the workloads whose steady state legitimately sits near
+        # the ceiling: hindsight/llama is GPU/model-pinned with a deliberate Off
+        # VPA (docs/43) and spends ~15% of a month above 0.9, and Prometheus and
+        # Loki count reclaimable page cache in their working set. Everything else
+        # crossing 0.9 for 15m is a real sizing gap.
+        - alert: ContainerMemoryNearLimit
+          expr: >-
+            (
+              max by (namespace, pod, container) (
+                container_memory_working_set_bytes{container!="", container!="POD"}
+              )
+              / on (namespace, pod, container) group_left ()
+              max by (namespace, pod, container) (
+                kube_pod_container_resource_limits{resource="memory"}
+              )
+            ) > 0.9
+            unless on (namespace, container) (
+              kube_pod_container_resource_limits{resource="memory",
+                                                 namespace="hindsight",
+                                                 container="llama"}
+              or
+              kube_pod_container_resource_limits{resource="memory",
+                                                 namespace="observability",
+                                                 container=~"prometheus|loki"}
+            )
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: '${cluster_runbook_base_url}/33-autoscaling.md'
+            summary: >-
+              Container {{ $labels.namespace }}/{{ $labels.pod }}/{{ $labels.container }}
+              is within 10% of its memory limit
+            description: >-
+              Container {{ $labels.container }} in pod
+              {{ $labels.namespace }}/{{ $labels.pod }} has held above 90% of
+              its memory limit for 15 minutes
+              ({{ $value | humanizePercentage }}). Raise the limit in git and,
+              where the workload has a VPA, its maxAllowed alongside — docs/33
+              "Applying an Off-tier recommendation".
+
         # A container that OOMKills and restarts cleanly is invisible upstream:
         # KubePodCrashLooping needs a restart RATE and KubeContainerWaiting needs
         # the container to stay down. Edge-triggered on the restart counter and
@@ -50,7 +96,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/33-autoscaling.md'
+            runbook_url: '${cluster_runbook_base_url}/33-autoscaling.md'
             summary: >-
               Container {{ $labels.namespace }}/{{ $labels.pod }}/{{ $labels.container }}
               was OOMKilled

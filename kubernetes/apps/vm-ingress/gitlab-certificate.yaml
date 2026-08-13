@@ -21,10 +21,10 @@ spec:
   issuerRef:
     name: letsencrypt-prod
     kind: ClusterIssuer
-  commonName: "git.ericsweiss.com"
+  commonName: "git.${cluster_external_domain}"
   dnsNames:
-    - "git.ericsweiss.com"
-    - "registry.git.ericsweiss.com"
+    - "git.${cluster_external_domain}"
+    - "registry.git.${cluster_external_domain}"
   renewBefore: 720h
 
 ---
@@ -39,10 +39,10 @@ spec:
   issuerRef:
     name: letsencrypt-prod
     kind: ClusterIssuer
-  commonName: "git.esweiss.com"
+  commonName: "git.${cluster_internal_domain}"
   dnsNames:
-    - "git.esweiss.com"
-    - "registry.git.esweiss.com"
+    - "git.${cluster_internal_domain}"
+    - "registry.git.${cluster_internal_domain}"
   renewBefore: 720h
 
 ---
@@ -61,10 +61,10 @@ spec:
   issuerRef:
     name: letsencrypt-prod
     kind: ClusterIssuer
-  commonName: "*.pages.git.ericsweiss.com"
+  commonName: "*.pages.git.${cluster_external_domain}"
   dnsNames:
-    - "*.pages.git.ericsweiss.com"
-    - "pages.git.ericsweiss.com"
+    - "*.pages.git.${cluster_external_domain}"
+    - "pages.git.${cluster_external_domain}"
   renewBefore: 720h
 
 ---
@@ -79,10 +79,10 @@ spec:
   issuerRef:
     name: letsencrypt-prod
     kind: ClusterIssuer
-  commonName: "*.pages.git.esweiss.com"
+  commonName: "*.pages.git.${cluster_internal_domain}"
   dnsNames:
-    - "*.pages.git.esweiss.com"
-    - "pages.git.esweiss.com"
+    - "*.pages.git.${cluster_internal_domain}"
+    - "pages.git.${cluster_internal_domain}"
   renewBefore: 720h
 
 ---
@@ -111,8 +111,8 @@ spec:
   issuerRef:
     name: letsencrypt-prod
     kind: ClusterIssuer
-  commonName: "*.ide.git.ericsweiss.com"
+  commonName: "*.ide.git.${cluster_external_domain}"
   dnsNames:
-    - "*.ide.git.ericsweiss.com"
-    - "ide.git.ericsweiss.com"
+    - "*.ide.git.${cluster_external_domain}"
+    - "ide.git.${cluster_external_domain}"
   renewBefore: 720h

@@ -72,13 +72,15 @@ spec:
   updatePolicy: {updateMode: Initial}
   resourcePolicy:
     containerPolicies:
-      # RequestsOnly is required here: the prowlarr manifest sets memory
-      # request == limit (512Mi), so the default RequestsAndLimits would
-      # rewrite the limit down 1:1 with the request, leaving zero burst
-      # headroom (observed as OOMKills on search/backup spikes).
+      # RequestsOnly, and maxAllowed strictly UNDER prowlarr's 512Mi memory
+      # limit: the default RequestsAndLimits would rewrite the limit down 1:1
+      # with the request, and a cap equal to the limit would let a capped
+      # recommendation land back on request == limit — the zero-burst-headroom
+      # shape that OOMKilled prowlarr on search/backup spikes. 384Mi clears the
+      # 30d working-set peak (257Mi) with room for the recommender's margin.
       - containerName: "*"
         minAllowed: {cpu: 25m, memory: 64Mi}
-        maxAllowed: {cpu: 1, memory: 512Mi}
+        maxAllowed: {cpu: 1, memory: 384Mi}
         controlledResources: [cpu, memory]
         controlledValues: RequestsOnly
 ---
@@ -134,8 +136,14 @@ spec:
   resourcePolicy:
     containerPolicies:
       # 1.5Gi clears pulsarr's padded historical-peak recommendation, which a
-      # 1Gi ceiling clamped below the working set.
+      # 1Gi ceiling clamped below the working set, and equals the container's
+      # hand-set memory limit (pulsarr.yaml). RequestsOnly: on the default
+      # RequestsAndLimits the updater rescaled the LIMIT with each
+      # recommendation — five revisions in 7d, down to 783Mi against a 903Mi
+      # 30d working-set peak, so the next burst ran at >0.95 of its own
+      # ceiling. docs/33 § Limit oscillation.
       - containerName: "*"
         minAllowed: {cpu: 25m, memory: 64Mi}
         maxAllowed: {cpu: 1, memory: 1536Mi}
         controlledResources: [cpu, memory]
+        controlledValues: RequestsOnly

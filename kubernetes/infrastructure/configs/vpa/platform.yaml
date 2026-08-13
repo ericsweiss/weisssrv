@@ -4,6 +4,24 @@
 # admission path uses Initial instead — recommendations land on the next natural
 # restart, never by eviction: Traefik, cert-manager-webhook, external-dns,
 # metallb-speaker and tailscale-operator, each annotated below.
+#
+# controlledValues: RequestsOnly is a TARGETED setting, not a blanket one — the
+# five entries that carry it below (external-dns, the three external-secrets
+# components, onepassword-connect) are the ones whose limit was measured moving.
+# On the default RequestsAndLimits the updater rescales the LIMIT with the
+# recommendation, so a quiet period shrinks the ceiling and the next burst runs
+# at >0.95 of it (and on an Auto VPA each revision is an eviction); requests-only
+# keeps the limit at the hand-set manifest number, sized at the 30d working-set
+# peak +60%, with maxAllowed here tracking that same number.
+#
+# The other memory-driving policies here stay on RequestsAndLimits deliberately:
+# flipping one lowers its effective ceiling to the manifest limit, which is only
+# safe once that limit has been re-measured against 30d data and maxAllowed
+# reconciled with it (for cert-manager, cainjector, cert-manager-webhook,
+# reloader and tailscale-operator, maxAllowed currently sits ABOVE the limit the
+# HelmRelease sets). Add a policy to the set when its limit is observed to
+# oscillate, not on principle. docs/33 § Limit oscillation.
+#
 # Lives in configs/ because controllers/vpa installs the CRD.
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
@@ -152,6 +170,7 @@ spec:
         minAllowed: {cpu: 10m, memory: 32Mi}
         maxAllowed: {cpu: 200m, memory: 256Mi}
         controlledResources: [cpu, memory]
+        controlledValues: RequestsOnly
 ---
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
@@ -171,8 +190,9 @@ spec:
     containerPolicies:
       - containerName: "*"
         minAllowed: {cpu: 10m, memory: 32Mi}
-        maxAllowed: {cpu: 200m, memory: 512Mi}
+        maxAllowed: {cpu: 200m, memory: 256Mi}
         controlledResources: [cpu, memory]
+        controlledValues: RequestsOnly
 ---
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
@@ -192,6 +212,7 @@ spec:
         minAllowed: {cpu: 10m, memory: 32Mi}
         maxAllowed: {cpu: 200m, memory: 256Mi}
         controlledResources: [cpu, memory]
+        controlledValues: RequestsOnly
 ---
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
@@ -209,8 +230,9 @@ spec:
     containerPolicies:
       - containerName: "*"
         minAllowed: {cpu: 10m, memory: 32Mi}
-        maxAllowed: {cpu: 200m, memory: 256Mi}
+        maxAllowed: {cpu: 200m, memory: 320Mi}
         controlledResources: [cpu, memory]
+        controlledValues: RequestsOnly
 ---
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
@@ -231,8 +253,9 @@ spec:
     containerPolicies:
       - containerName: "*"
         minAllowed: {memory: 32Mi}
-        maxAllowed: {memory: 512Mi}
+        maxAllowed: {memory: 256Mi}
         controlledResources: [memory]
+        controlledValues: RequestsOnly
 ---
 # CoreDNS is HPA-pinned (configs/coredns/hpa.yaml), so this VPA is
 # recommend-only — it records a right-sizing signal without mutating pods the
@@ -257,8 +280,9 @@ spec:
         controlledResources: [cpu, memory]
 ---
 # kube-vip owns the API VIP on all three control-plane nodes and is rendered by
-# Ansible (roles/k3s), not Flux. Recommend-only: the updater must never evict the
-# pod serving the API endpoint, and its requests are hand-set in that template.
+# the weisssrv.infra k3s role's kube-vip-manifest.yaml.j2 template (weisssrv-lib),
+# not by Flux. Recommend-only: the updater must never evict the pod serving the
+# API endpoint, and its requests are hand-set in that template.
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
 metadata:
@@ -278,9 +302,11 @@ spec:
         maxAllowed: {cpu: 200m, memory: 192Mi}
         controlledResources: [cpu, memory]
 ---
-# metrics-server (k3s AddOn) feeds every HPA target and the VPA recommender, so
-# this stays recommend-only: an eviction gap would blind the whole autoscaling
-# stack at once. The recommendation just makes a future request bump data-driven.
+# metrics-server feeds every HPA target and the VPA recommender, so this stays
+# recommend-only: an eviction gap would blind the whole autoscaling stack at
+# once, even with the 2 replicas + PDB the HelmRelease now runs
+# (controllers/metrics-server). The recommendation just makes a future request
+# bump data-driven. maxAllowed tracks the release's memory limit.
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
 metadata:
@@ -297,7 +323,7 @@ spec:
     containerPolicies:
       - containerName: "*"
         minAllowed: {cpu: 25m, memory: 32Mi}
-        maxAllowed: {cpu: 500m, memory: 256Mi}
+        maxAllowed: {cpu: 500m, memory: 192Mi}
         controlledResources: [cpu, memory]
 ---
 apiVersion: autoscaling.k8s.io/v1

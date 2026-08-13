@@ -20,20 +20,17 @@ relies on). `apply` stays **out of CI and supervised**; only a read-only drift
 tailscale-module MRs, so an Admin-console hot-fix surfaces as drift instead of
 being silently reverted at the next apply.
 
-> **Is the lockdown applied?** Partly, and the plan is the only authority.
-> `tag:k8s` tagOwners is live (the operator-registered `ts-dns` and
-> `traefik-tailnet` devices could not have joined otherwise) — but that proves
-> one stanza, not the whole policy, and the supervised cutover's other half is
-> demonstrably still open: `tailscale status --json` on the Proxmox hosts shows
-> `Self.Tags: null` (checked 2026-07-27 on pve-opt-01), so none of the six
-> carries `tag:subnet-router` yet. `docs/16-next-steps.md` tracks it as
-> IMPLEMENTED (pending supervised apply).
+> **The ACL apply has landed** — the live tailnet policy is `policy.hujson`.
+> So the rule is unconditional: `tailscale-drift-plan` is **expected empty**, and
+> **any** non-empty plan is real drift — an Admin-console hot-fix that must be
+> reconciled back into this file. Because the job is `allow_failure: true`, its
+> colour is the only signal; a yellow one means review the diff with a supervised
+> `task terraform:tailscale-plan` before applying anything, never wave it through.
 >
-> So treat `tailscale-drift-plan` as **expected empty**, and confirm with a
-> supervised `task terraform:tailscale-plan` before deciding what a
-> non-empty plan means — real drift (an Admin-console hot-fix) and the
-> not-yet-applied remainder look identical in the job output, and applying
-> either rewrites the tailnet ACL. Do not wave it through unread.
+> What is *not* finished is step 3 of the staged runbook below: the six Proxmox
+> hosts still carry no `tag:subnet-router`, so route auto-approval still rides on
+> the owner entry in `autoApprovers.routes`, and the post-migration tightening is
+> still open. `docs/16-next-steps.md` tracks the remaining steps.
 
 ## What the policy grants (rule by rule)
 
@@ -63,8 +60,8 @@ one-line note per rule, and `docs/05-tailscale.md` points here.
   port. The port set is the honest union of what a subnet-routed tailnet device
   can reach today (Tailscale SNATs routed traffic to the router host's LAN IP, so
   it lands in the host firewall as an `admin_lan` / `pve_hosts` / `nfs_clients` /
-  `core-cluster` source). Each port maps to a real service and its `cluster.fw.j2`
-  security group (see the comment block in `policy.hujson`): 22 SSH, 53 DNS, 80
+  `core-cluster` source). Each port maps to a real service; which host-firewall
+  security group it lands in is owned by `docs/11-firewall.md`: 22 SSH, 53 DNS, 80
   HTTP, 111 rpcbind, 443 HTTPS, 445 SMB, 853 DoT, 2049 NFS, 2222 GitLab SSH, 3000
   AdGuard, 3389 RDP, 6443 kube-API (VIP .161 + servers .222/.223/.227), 8006
   Proxmox, 8123 HAOS, 22222 HAOS SSH, 32400 Plex, 32469 Plex companion. k3s-internal
@@ -105,13 +102,46 @@ one-line note per rule, and `docs/05-tailscale.md` points here.
   connects as `eric` (passwordless sudo on every host). A commented break-glass
   rule (with `root`) is kept in the file for emergency re-add.
 
+## Shape from the library, policy from here
+
+`main.tf` is a thin caller of the weisssrv-lib **`tailscale-acl`** module at a
+pinned `?ref=`: the module owns the `tailscale_acl` resource and its guardrails
+(`reset_acl_on_destroy = false`, `prevent_destroy = true`) plus the Split-DNS
+resources; `policy.hujson` and `local.split_dns` (`split_dns.tf`) are this site's
+data. `moved.tf` carries the state-address migration from the pre-module layout.
+
+Same two notes as `terraform/cloudflare`: the `?ref=` is bumped **by hand**
+(`scripts/check-lib-pins.py` does not read Terraform module sources), and
+`terraform init` clones `weisssrv-lib` over HTTPS — already covered in CI by the
+global `GIT_CONFIG_*` job-token URL rewrite in `.gitlab-ci.yml`.
+
 ## Split-DNS (`split_dns.tf`)
 
-`tailscale_dns_split_nameservers.esweiss` points tailnet `esweiss.com` queries at
-the `ts-dns` device's IPv4 tailnet address, resolved by hostname at apply time so
-a device rebuild self-heals. It carries `prevent_destroy = true`: dropping the
-entry silently breaks `*.esweiss.com` resolution for every tailnet client.
-Managing it is why the OAuth client needs the `dns` scope alongside `acl`.
+`local.split_dns` points tailnet `esweiss.com` queries at the `ts-dns` device's
+IPv4 tailnet address, resolved by hostname at plan time so a device rebuild
+self-heals. Managing it is why the OAuth client needs the `dns` scope alongside
+`acl`.
+
+Three things to know:
+
+- **Confirm the planned nameserver is the `100.x` address on every supervised
+  apply.** The pre-module lookup filtered the device's address list to the IPv4
+  entry so a provider/API ordering change could not repoint resolution; the
+  library module takes `addresses[0]`. Same value today, but by ordering rather
+  than by construction — so the plan review is the control until the filter is
+  restored upstream (`moved.tf` carries the same note).
+- **No `prevent_destroy`.** Unlike the ACL, the module's
+  `tailscale_dns_split_nameservers` resources carry none, so removing the
+  `esweiss.com` key plans a destroy — and that silently breaks `*.esweiss.com`
+  resolution for every tailnet client (the mesh path in `docs/05-tailscale.md`).
+  Treat the map as break-glass and read the plan.
+- **A renamed device fails the plan outright.** Tailscale appends a numeric
+  suffix (`ts-dns-1`) when the bare hostname is still held by a device that has
+  not aged out — the common outcome when the Service is recreated before the old
+  node key expires. The lookup then errors after its 60s wait, which looks
+  identical to ACL drift in the `allow_failure` job. Recovery: delete the stale
+  `ts-dns` device in the Admin console (or `tailscale logout` it) so the rebuilt
+  Service reclaims the hostname, then re-plan.
 
 > This tailnet ACL is a **separate layer** from the Proxmox host firewall
 > (`admin_ts` = the full `100.64.0.0/10` CGNAT range). The firewall governs which
@@ -154,6 +184,12 @@ bypassed by an errant flag. Review the plan and type `yes` at the prompt.
 
 Do this in a **maintenance window** with a **non-tailnet fallback** available
 (local LAN console / Proxmox IPMI), in case an SSH cutover goes wrong.
+
+> **Steps 1 and 2 are DONE** — the policy is applied and the drift plan is clean.
+> The live remainder is **step 3** (tag the six hosts) plus the post-migration
+> tightening at the end. Steps 1 and 2 are kept because they are also the
+> procedure for any *later* supervised apply of a policy change, and for a
+> rebuild-from-scratch.
 
 ### 1. Pre-apply checklist — validate nonroot SSH on ALL SIX hosts FIRST
 
@@ -201,21 +237,21 @@ this window** — there is no lockout:
   Ansible run uses — the inventory `ansible_host` values are the LAN IPs — so
   tagging never depends on Tailscale SSH being up.
 
-> **CI ordering note.** On merge, the `deploy-ansible-proxmox` pipeline runs the
-> tailscale role automatically (it triggers on the inventory and the
-> `ansible/requirements.yml` collection pin) *before* you perform this
-> supervised apply. Its **"Reconcile advertised
-> Tailscale ACL tags"** task will benignly report **needs reauth** for every host,
-> because the live ACL has no `tagOwners` entry yet — the task is best-effort by
-> default (`tailscale_tags_require_adoption: false`) and the following debug task
-> surfaces the `rc`/`stderr`, so the pipeline stays green. This is expected, not a
-> failure; the tags actually adopt in step 3 after the ACL is applied, where the
-> role is run strictly (`-e tailscale_tags_require_adoption=true`) so an adoption
-> that fails on a host is caught instead of passing green.
+> **CI ordering note.** The `deploy-ansible-proxmox` pipeline runs the tailscale
+> role automatically (it triggers on the inventory and the
+> `ansible/requirements.yml` collection pin). Until step 3 has been completed on
+> a host, its **"Reconcile advertised Tailscale ACL tags"** task benignly reports
+> **needs reauth** — first-time tag adoption on a user-owned device needs an
+> interactive reauth. The task is best-effort by default
+> (`tailscale_tags_require_adoption: false`) and the following debug task surfaces
+> the `rc`/`stderr`, so the pipeline stays green. This is expected, not a failure;
+> step 3 runs the role strictly (`-e tailscale_tags_require_adoption=true`) so an
+> adoption that fails on a host is caught instead of passing green.
 
-> First apply only: if the resource reports the ACL already has content, either
-> `terraform import tailscale_acl.policy acl`, or set
-> `overwrite_existing_content=true` on the resource for the first apply.
+> Bootstrapping a tailnet from scratch, first apply only: if the resource reports
+> the ACL already has content, either
+> `terraform import 'module.tailnet.tailscale_acl.this' acl`, or set
+> `overwrite_existing_content=true` on the module's resource for that first apply.
 
 ### 3. Tag the six hosts (adopt tag:subnet-router)
 
@@ -280,10 +316,10 @@ kubectl --kubeconfig ~/.kube/config-k3s get nodes   # hits .161/.222/.223/.227:6
   (Access controls). A console edit surfaces as drift in `tailscale-drift-plan`
   until reconciled back into the repo.
 - **Full revert:** `git revert` the lockdown commit and `task
-  terraform:tailscale-apply` to restore the previous policy. The module's
-  guardrails (`reset_acl_on_destroy = false`, `prevent_destroy = true` in
-  `main.tf`) mean an accidental `destroy` cannot silently revert the tailnet to
-  allow-all or tear the ACL down — untouched by this change.
+  terraform:tailscale-apply` to restore the previous policy. The library module's
+  guardrails (`reset_acl_on_destroy = false` and `prevent_destroy = true` on
+  `tailscale_acl.this`) mean an accidental `destroy` cannot silently revert the
+  tailnet to allow-all or tear the ACL down.
 - **Non-tailnet path:** the Proxmox host firewall still trusts `admin_lan`
   (`192.168.0.0/24`), so a device physically on the LAN reaches SSH/8006 directly
   regardless of the tailnet ACL.

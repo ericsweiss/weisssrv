@@ -6,12 +6,12 @@ metadata:
   name: authentik
   namespace: authentik
   annotations:
-    external-dns.alpha.kubernetes.io/target: ericsweiss.com
+    external-dns.alpha.kubernetes.io/target: ${cluster_external_domain}
 spec:
   entryPoints:
     - websecure
   routes:
-    - match: Host(`auth.ericsweiss.com`)
+    - match: Host(`auth.${cluster_external_domain}`)
       kind: Rule
       middlewares:
         - name: hsts-header
@@ -33,7 +33,7 @@ spec:
   entryPoints:
     - websecure
   routes:
-    - match: Host(`auth.esweiss.com`)
+    - match: Host(`auth.${cluster_internal_domain}`)
       kind: Rule
       middlewares:
         - name: lan-tailscale-only

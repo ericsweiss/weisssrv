@@ -22,6 +22,19 @@ immich_oauth_button_text: "Sign in with Authentik"
 immich_nginx_self_signed_subj: "/CN=photos.{{ internal_domain }}"
 immich_nginx_self_signed_san: "DNS:*.{{ internal_domain }}"
 
+# Trusted proxy hop for X-Forwarded-For. Pinned rather than left to the role
+# default: the derivation is a hard assert now, so an empty resolution fails the
+# play instead of attributing every request to Traefik. These two groups are the
+# only proxies in front of this VM (sg-immich admits :443 from k3s_nodes).
+immich_nginx_real_ip_groups:
+  - k3s_servers
+  - k3s_agents
+
+# The three published metrics ports bind the VM's LAN address, not 0.0.0.0:
+# Prometheus scrapes them from the k3s cluster (service-monitors/immich.yaml,
+# 8081/8082 plus the 9187 exporter), so loopback would break the scrape.
+immich_metrics_bind: "{{ ansible_host }}"
+
 # postgres_exporter sidecar for the in-cluster Prometheus. Unauthenticated —
 # scoped by sg-immich's :9187 rule to k3s_nodes.
 immich_postgres_exporter_enabled: true

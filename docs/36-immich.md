@@ -190,7 +190,8 @@ keeps its own `archsync` grandfather set.
   (Traefik-internal VIP). A direct `immich.esweiss.com` → `192.168.0.157` rewrite
   (+ PTR) exists for admin/SSH convenience. `group_vars/dns.yml`.
 - **External** (`photos.ericsweiss.com`): a **DNS-only** Cloudflare CNAME →
-  `direct.ericsweiss.com` (`terraform/cloudflare/dns.tf`, `cloudflare_record.photos`).
+  `direct.ericsweiss.com` (`terraform/cloudflare/dns.tf`, `local.dns_records["photos"]`,
+  which the library module renders as `module.zone.cloudflare_record.protected["photos"]`).
   It intentionally **bypasses the Cloudflare proxy** because the proxy caps
   request bodies at 100 MB and mobile video uploads exceed that. Traffic still
   lands on MetalLB `.100` via the router `:443` forward. Because the record is

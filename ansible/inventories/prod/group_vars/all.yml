@@ -23,13 +23,6 @@ dns_servers:
 # so losing their one host is still a hard UNREACHABLE that ends the run rc 4 —
 # listing smtp-relay or pve-nas-01 here does NOT make site.yml green.
 deploy_expected_absent_hosts: []
-# 2026-08-08: pve-laptop-01 rejoined and this list is empty again. Its CPU fan,
-# RAM and CMOS battery were replaced and memtest86+ passed clean, so the
-# GRUB_BADRAM page mask was retired on the host (/etc/default/grub, applies from
-# its next boot). The catch-up `task infra:deploy --limit pve-laptop-01` ran:
-# 261 tasks ok / 13 changed, and the relay credential it had missed is confirmed
-# working — a message deferred since Aug 7 with "SASL authentication failed"
-# delivered on the retry.
 
 # Proxmox autostart / boot order is set PER GUEST, never here.
 #
@@ -53,10 +46,8 @@ deploy_expected_absent_hosts: []
 proxmox_lxc_gateway: 192.168.0.1
 proxmox_vm_cloudinit_gateway: 192.168.0.1
 
-# Proxmox storage defaults by host role
-# NAS node (pve-nas-01) uses ssd pool for VMs/containers (raidz1 3x 4TB SSDs)
-# General/compute nodes (Optiplexes, laptops) use local-ssd (single 1TB SSD per node)
-# These defaults can be overridden per-VM/container by setting proxmox_storage or lxc_storage
+# Proxmox storage default per proxmox_role; override per guest with
+# proxmox_storage (VMs) / proxmox_lxc_storage (LXC). Pool geometry: docs/06.
 proxmox_storage_defaults:
   nas: ssd
   compute: local-ssd
@@ -90,15 +81,10 @@ haos_ssh_host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKcIncJ961hzakmaNlj9Nw6z
 # SSH authorized keys
 # IMPORTANT: SSH_PUBLIC_KEY must be set via 'op run' - empty key will fail validation
 #
-# from= ranges: LAN, Tailscale, and the k3s pod CIDR. The pod CIDR is
-# required because CI deploy jobs run as runner pods in-cluster: a pod
-# SSHing to any OTHER host is masqueraded to its node's LAN IP (already
-# permitted), but a pod SSHing to its OWN node hairpins without SNAT and
-# arrives with its 10.42.x.x pod IP — sshd then rejects the deploy key
-# with "Refused by key options" and that node drops out of the play
-# (pipeline 355, k3s-agt-opt-02). Since cross-host pod connections are
-# already permitted via masquerade, listing the pod CIDR adds no
-# practical exposure beyond what the SNAT path always allowed.
+# from= ranges: LAN, Tailscale, and the k3s pod CIDR. The pod CIDR is required
+# because a CI deploy pod SSHing to its OWN node hairpins without SNAT and
+# arrives with a 10.42.x source; cross-host pod connections already masquerade
+# to a permitted LAN IP, so it adds no exposure.
 ssh_authorized_keys:
   - >-
     from="192.168.0.0/24,100.64.0.0/10,10.42.0.0/16"
@@ -113,62 +99,10 @@ base_fail2ban_ignoreip:
   - 192.168.0.0/24
   - 100.64.0.0/10
 
-# 1Password secret references
-secrets:
-  cloudflare_api_token: "op://Homelab/Cloudflare DNS Token/credential"
-  cloudflare_account_id: "op://Homelab/Cloudflare DNS Token/username"
-  smtp_gmail_password: "op://Homelab/SMTP Relay Gmail/password"
-  smtp_gmail_user: "op://Homelab/SMTP Relay Gmail/username"
-  smtp_relay_user: "op://Homelab/SMTP Relay Auth/username"
-  smtp_relay_password: "op://Homelab/SMTP Relay Auth/password"
-  root_email_alias: "op://Homelab/Email Config/root_alias"
-  # AdGuard password - bcrypt hash is generated at deploy time by the adguard_home role
-  adguard_admin_password: "op://Homelab/AdGuard Home/password"
-  tailscale_auth_key: "op://Homelab/Tailscale Auth Key/credential"
-  ssh_public_key: "op://Homelab/SSH Key/public key"
-  samba_nas_password: "op://Homelab/Samba NAS User/password"
-  dns01_ssh_private_key: "op://Homelab/DNS-01 SSH Key/private key"
-  dns01_ssh_public_key: "op://Homelab/DNS-01 SSH Key/public key"
-  k3s_token: "op://Homelab/K3s Cluster Token/credential"
-  # Authentik SSO secrets
-  # Note: Redis password is no longer needed as of Authentik 2025.10
-  authentik_secret_key: "op://Homelab/Authentik Secrets/secret-key"
-  authentik_postgresql_password: "op://Homelab/Authentik Secrets/postgresql-password"
-  authentik_postgresql_admin_password: "op://Homelab/Authentik Secrets/postgresql-admin-password"
-  # Mealie SSO secrets (Mealie's OpenAI key is entered in-app, Settings > AI —
-  # never consumed by Ansible, so no op:// ref here; see docs/22)
-  mealie_oidc_client_id: "op://Homelab/Mealie SSO/oidc-client-id"
-  mealie_oidc_client_secret: "op://Homelab/Mealie SSO/oidc-client-secret"
-  # Bar Assistant SSO secrets
-  bar_assistant_authentik_client_id: "op://Homelab/Bar Assistant SSO/authentik-client-id"
-  bar_assistant_authentik_client_secret: "op://Homelab/Bar Assistant SSO/authentik-client-secret"
-  # GitLab secrets
-  gitlab_root_password: "op://Homelab/GitLab/root-password"
-  gitlab_saml_cert_fingerprint: "op://Homelab/GitLab SSO/saml-cert-fingerprint"
-  gitlab_runner_token: "op://Homelab/GitLab Runner/runner-token"
-  # Nextcloud secrets
-  nextcloud_admin_password: "op://Homelab/Nextcloud Secrets/admin-password"
-  nextcloud_postgres_password: "op://Homelab/Nextcloud Secrets/postgres-password"
-  nextcloud_serverinfo_token: "op://Homelab/Nextcloud Secrets/serverinfo-token"
-  # Nextcloud SSO (Authentik OIDC)
-  nextcloud_oidc_client_id: "op://Homelab/Nextcloud SSO/client-id"
-  nextcloud_oidc_client_secret: "op://Homelab/Nextcloud SSO/client-secret"
-  # Immich secrets (photo-management VM)
-  immich_postgres_password: "op://Homelab/Immich Secrets/postgres-password"
-  immich_oauth_client_id: "op://Homelab/Immich SSO/client-id"
-  immich_oauth_client_secret: "op://Homelab/Immich SSO/client-secret"
-  # B2 offsite backup (docs/42 Step 0 capability split). The restic_offsite
-  # role consumes the RESTRICTED hide-only key (restic_* fields);
-  # scripts/b2-bucket-drift.py (`task b2:drift` / `b2:apply`) uses the FULL
-  # master key on the b2_* fields for bucket lifecycle/SSE writes. (The
-  # terraform/b2 module that used to hold that role is retired and deleted.)
-  # restic_repo_password doubles as the restic repo password (RESTIC_PASSWORD)
-  # — losing it loses the repo.
-  b2_master_key_id: "op://Homelab/B2 Archive Backup/b2_key_id"
-  b2_master_application_key: "op://Homelab/B2 Archive Backup/b2_application_key"
-  restic_key_id: "op://Homelab/B2 Archive Backup/restic_key_id"
-  restic_application_key: "op://Homelab/B2 Archive Backup/restic_application_key"
-  restic_repo_password: "op://Homelab/B2 Archive Backup/restic_repo_password"
+# 1Password references are NOT duplicated here. `op run --` resolves them from
+# the literal op:// strings in the Taskfile's per-task `env:` blocks (and the
+# equivalent CI job variables); the authoritative item inventory is
+# docs/15-credential-rotation.md § Required 1Password Items.
 
 # Timezone
 timezone: America/Los_Angeles
@@ -308,7 +242,7 @@ plex_version: "1.43.3.10861-07dfddaeb"
 # current latest patch. Applied by task gitlab:deploy / the deploy-gitlab CI
 # job (triggered on all.yml changes); maintenance apt-upgrade honors the
 # gitlab-ee package hold and will not bump it.
-gitlab_version: "19.2.1-ee.0"
+gitlab_version: "19.2.2-ee.0"
 
 # GitLab Runner version for k3s cluster
 # https://gitlab.com/gitlab-org/charts/gitlab-runner/tags
@@ -339,9 +273,8 @@ nextcloud_postgres_version: "18.4-trixie"
 # pin above — same image/tag, tracked once by the "Redis" version-check entry.
 # Nextcloud exporter: https://github.com/xperimental/nextcloud-exporter/releases
 nextcloud_exporter_version: "0.9.1"
-# The Nextcloud VM's Docker engine is pinned by the shared docker_ce_version /
-# containerd_version / docker_compose_plugin_version pins below (consumed by the
-# shared docker_engine role) — one source of truth across immich/immich_ml/nextcloud.
+# The Nextcloud VM's Docker engine uses the shared docker_engine_* pins below —
+# one source of truth across immich / immich_ml / nextcloud.
 
 # Immich (photo-management VM, docker-compose stack — consumed by the immich
 # Ansible role; the VM-only pins ride the versions-configmap as a harmless
@@ -420,7 +353,7 @@ hermes_codex_version: "0.147.0"
 # Bump = pick a newer stable release, sync-versions, commit — CI rebuilds the
 # wrapper, Flux rolls the pods. Build-time only; rides in the versions
 # ConfigMap as a harmless superset (same as hermes_codex_version).
-hermes_claude_version: "2.1.226"
+hermes_claude_version: "2.1.231"
 # 1Password CLI (op), the official first-party binary. Baked into the hermes
 # image (docker/hermes-agent/Dockerfile.codex) so Hermes' first-party 1Password
 # skill can drive `op` against the isolated Agent vault via a service-account
@@ -432,13 +365,10 @@ hermes_claude_version: "2.1.226"
 # substituted into any manifest); rides in the versions ConfigMap as a harmless
 # superset like hermes_codex_version.
 #
-# This pin is NOT optional maintenance: 1Password PRUNES old versions from the
-# apt repo, so a stale value fails the image build outright rather than merely
-# lagging. 2.35.0-1 was withdrawn and build-hermes-agent died with
-# "E: Version '2.35.0-1' for '1password-cli' was not found" — at the time of this
-# bump 2.38.1-1 was the ONLY version the repo still carried. version-check cannot
-# catch this (there is no release feed), so if this job ever fails again, re-read
-# the repo's Packages index before assuming anything else is wrong.
+# NOT optional maintenance: 1Password PRUNES old versions from the apt repo, so
+# a stale pin FAILS the image build (not merely lags). version-check cannot
+# catch this — no release feed. On a build failure, re-read the repo's Packages
+# index first.
 hermes_op_version: "2.38.1-1"
 # Camofox anti-detection browser server (jo-inc/camofox-browser) — the sidecar
 # behind Hermes' camofox browser tool (CAMOFOX_URL). Upstream publishes no
@@ -575,35 +505,32 @@ helm_chart_versions:
   cert_manager: "v1.21.1"
   external_dns: "1.21.1"  # App version 0.20.0
   external_secrets: "2.9.0"  # ESO with 1Password Connect provider
-  kube_prometheus_stack: "88.2.0"  # prometheus-operator v0.93.0 (additive CRD fields; crds: CreateReplace)
+  kube_prometheus_stack: "88.3.0"  # prometheus-operator v0.93.0 (additive CRD fields; crds: CreateReplace)
   # prometheus-community/prometheus-operator-crds chart. Owns the
   # monitoring.coreos.com CRDs in the dedicated infrastructure-crds stage so
   # controllers (Traefik's ServiceMonitor) reconcile before kube-prometheus-stack
-  # (docs/29). 31.0.0 = appVersion v0.93.0, matching kube_prometheus_stack 88.x's
-  # operator v0.93.0. COUPLING: bump in lockstep with kube_prometheus_stack so the
+  # (docs/29). 31.0.1 = appVersion v0.93.1, at-or-ahead of kube_prometheus_stack
+  # 88.3.0's operator v0.93.0 (CRDs may lead the operator, never trail). COUPLING: bump in lockstep with kube_prometheus_stack so the
   # CRD set stays version-matched to the operator kps deploys (docs/12).
-  #
-  # This pair was NOT in lockstep before this bump: the CRDs had gone to 31.0.0
-  # (v0.93.0) while the stack stayed on 87.21.0 (v0.92.1), so the cluster ran CRDs
-  # a minor ahead of the operator consuming them. Tolerable in that direction —
-  # the fields are additive — but it is the coupling above being violated, and it
-  # is invisible because both pins looked individually current. Moving the stack
-  # to 88.2.0 restores the match rather than widening it.
-  prometheus_operator_crds: "31.0.0"
-  loki: "18.7.6"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0); 18.0.0 = dashboard-gen only
+  prometheus_operator_crds: "31.0.1"
+  loki: "18.8.0"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0); 18.0.0 = dashboard-gen only
   alloy: "1.11.1"
-  prometheus_blackbox_exporter: "11.17.1"
+  prometheus_blackbox_exporter: "11.17.2"
   onepassword_connect: "2.4.1"
-  vpa: "4.12.5"
+  vpa: "5.0.0"  # chart major = app 1.7.1; every values key this repo sets is unchanged in 5.x
   kured: "6.1.0"  # Kubernetes Reboot Daemon (app 1.22.1); owns k3s-node reboots flagged by maintenance
   reloader: "2.2.16"  # stakater/Reloader (app v1.4.20); auto-restarts annotated workloads on ConfigMap change (Secrets excluded via ignoreSecrets)
-  # Tailscale K8s operator (appVersion v1.98.9; tracks the host
+  # Tailscale K8s operator (appVersion v1.102.2; tracks the host
   # tailscale_version); exposes internal Traefik + tailnet-dns to the tailnet
-  tailscale_operator: "1.98.9"
+  tailscale_operator: "1.102.2"
   # NVIDIA k8s device plugin — advertises nvidia.com/gpu on the labelled GPU node
   # (kubernetes/infrastructure/controllers/nvidia-device-plugin). Chart tracks the
   # plugin appVersion. https://github.com/NVIDIA/k8s-device-plugin/releases
   nvidia_device_plugin: "0.19.3"
+  # kubernetes-sigs/metrics-server (chart 3.13.1 = app v0.8.1). Replaces the k3s
+  # packaged AddOn, which is disabled on the servers — see
+  # kubernetes/infrastructure/controllers/metrics-server/release.yaml.
+  metrics_server: "3.13.1"
 
 # Proxmox resource pools
 # These are created automatically when provisioning VMs/LXCs
@@ -635,6 +562,57 @@ proxmox_firewall_admin_lan_cidrs:
 # wireguard-native). docs/38.
 proxmox_firewall_wan_wireguard_vips:
   - 192.168.0.99
+
+# Resolver admin surfaces rendered into sg-dns ({port, sources[], comment?}).
+# The role default is the two admin sets only.
+#
+# Read the source lists as BOOKKEEPING, not as a reachability boundary:
+# admin_lan is the whole flat 192.168.0.0/24 (above) and every k3s node sits
+# inside it, with pod egress SNATed to the node's LAN IP — so naming k3s_nodes
+# admits nothing admin_lan does not already admit, and omitting it closes
+# nothing. Both entries are still spelled out deliberately:
+#   :443 names k3s_nodes because those ARE the in-cluster callers of AdGuard's
+#   own TLS listener (Traefik's vm-ingress and the adguard-exporter, which pins
+#   the name to the host IP with hostAliases —
+#   kubernetes/infrastructure/observability/exporters/adguard-exporter.yaml), so
+#   the rule documents them and survives a future admin_lan narrowing.
+#   :3000 is the PLAINTEXT admin API carrying a reusable admin credential and
+#   names only the two human break-glass sets, so that narrowing admin_lan (VLAN
+#   segmentation, docs/16) closes it to the cluster in one edit. Until that
+#   lands, anything on the LAN still reaches it — Homarr's two AdGuard
+#   integrations do exactly that (kubernetes/apps/homarr/networkpolicy.yaml,
+#   docs/41). The credential hardening here is the exporter's move to HTTPS,
+#   not the source list.
+proxmox_firewall_dns_admin_ports:
+  - port: 443
+    sources: [k3s_nodes, admin_ts, admin_lan]
+    comment: AdGuard Home HTTPS admin UI
+  - port: 3000
+    sources: [admin_ts, admin_lan]
+    comment: AdGuard Home plaintext admin API
+
+# Application scrape targets appended to sg-metrics ({port, sources[],
+# comment?}). The role builds in only the exporters its own roles bind (9100,
+# 9101, 9134, 9167); every app port below opens on EVERY node, which is why the
+# scraper set is named rather than defaulted. k3s SNATs pod traffic to node IPs,
+# so k3s_nodes is the scrape source; :31100 is the Loki push NodePort, i.e.
+# host -> k8s, not a scrape.
+proxmox_firewall_metrics_scrape_ports:
+  - port: 8123
+    sources: [k3s_nodes]
+    comment: home-assistant
+  - port: 32400
+    sources: [k3s_nodes]
+    comment: plex
+  - port: 7472
+    sources: [k3s_nodes]
+    comment: metallb speaker
+  - port: 7473
+    sources: [k3s_nodes]
+    comment: metallb controller
+  - port: 31100
+    sources: [core-cluster]
+    comment: loki push (NodePort, host->k8s)
 
 # Per-application security groups. The role owns the infrastructure groups
 # (sg-dns, sg-host-admin, sg-vm-admin, sg-k3s-*, sg-nfs-server, sg-metrics,
@@ -743,17 +721,8 @@ proxmox_firewall_security_groups:
 # node is down (strict=false), and (b) gives its HOME node priority 2 vs 1 for the
 # rest, so after an HA failover the service fails BACK to its home when that node
 # returns instead of stranding on the failover node — the placement drift the
-# proxmox_ha_replication_jobs source-node warnings flag. Replaces the old flat
-# critical-services-no-nas rule (kept off nas but had no per-service home
-# preference). Homes match the proxmox_ha_replication_jobs primary layout below.
-# dns-01 (ct:150) is still homed on pve-opt-01 rather than pve-laptop-01. The
-# hardware reason is GONE as of 2026-08-08 — pve-laptop-01's RAM, CPU fan and
-# CMOS battery were replaced and memtest86+ passed clean — so this is no longer
-# blocked on parts. It is now a deliberate soak: that host has a history (bad
-# RAM, thermal crashes), and moving the PRIMARY DNS back onto freshly-replaced
-# hardware is a decision to take on evidence, not automatically. Moving it back
-# means reverting three coupled places together — this rule, the 150-* jobs in
-# proxmox_ha_replication_jobs, and dns-01's proxmox_host in hosts.yml.
+# proxmox_ha_replication_jobs source-node warnings flag. Homes match the
+# proxmox_ha_replication_jobs primary layout below.
 proxmox_ha_rules:
   - name: affinity-dns-01
     type: node-affinity
@@ -859,12 +828,9 @@ proxmox_ha_resources:
 # - Replication job IDs: <VMID>-<job_number> (0, 1, 2, 3 for 4 targets)
 # - pve-nas-01 excluded: no local-ssd storage, services migrated OFF for I/O contention
 #
-# Node layout (primary locations):
-# - pve-laptop-01: dns-01 (150) — home restored 2026-08-08 after the RAM swap
-# - pve-opt-01: smtp-relay (151)
-# - pve-opt-02: (no primary services - backup only)
-# - pve-opt-03: dns-02 (160)
-# - pve-prec-01: home-assistant (154)
+# Node layout (primary locations): pve-prec-01 = dns-01 (150) + home-assistant
+# (154); pve-opt-01 = smtp-relay (151); pve-opt-03 = dns-02 (160);
+# pve-laptop-01 / pve-opt-02 = replication targets only.
 #
 proxmox_ha_replication_jobs:
   # dns-01 (VMID 150) - Primary on pve-prec-01 (matches the affinity-dns-01

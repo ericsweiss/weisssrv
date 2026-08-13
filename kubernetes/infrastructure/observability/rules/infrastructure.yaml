@@ -10,7 +10,7 @@ spec:
   groups:
     - name: homelab.infrastructure
       rules:
-        # gluetun_vpn_status (downloads/qbittorrent.yaml sidecar): 1 = running,
+        # gluetun_vpn_status (downloads/qbittorrent/resources.yaml sidecar): 1 =
         # anything else unhealthy. Only qbittorrent carries the exporter, and the
         # namespace scope keeps a future series elsewhere out. 15m exceeds a
         # Recreate rollout + OpenVPN reconnect.
@@ -20,7 +20,7 @@ spec:
           labels:
             severity: critical
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
             summary: 'Gluetun VPN unhealthy on {{ $labels.pod }}'
             description: >-
               gluetun_vpn_status is {{ $value }} (1 = running) on
@@ -35,7 +35,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
             summary: 'Gluetun VPN-health metric missing for qbittorrent'
             description: >-
               No gluetun_vpn_status series for 15m — the qbittorrent pod
@@ -54,7 +54,7 @@ spec:
           labels:
             severity: critical
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/38-wireguard-vpn.md'
+            runbook_url: '${cluster_runbook_base_url}/38-wireguard-vpn.md'
             summary: 'wg-easy VPN has no available replica'
             description: >-
               The wg-easy Deployment has 0 available replicas for 15m — the
@@ -73,7 +73,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/37-hermes.md'
+            runbook_url: '${cluster_runbook_base_url}/37-hermes.md'
             summary: 'Hindsight (Hermes memory backend) has no available replica'
             description: >-
               The hindsight Deployment has 0 available replicas for 15m —
@@ -92,7 +92,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/27-gitlab-deployment.md'
+            runbook_url: '${cluster_runbook_base_url}/27-gitlab-deployment.md'
             summary: 'CI registry pull-through cache has no available replica'
             description: >-
               The registry-cache Deployment has 0 available replicas for
@@ -114,14 +114,53 @@ spec:
           labels:
             severity: critical
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/38-wireguard-vpn.md'
+            runbook_url: '${cluster_runbook_base_url}/38-wireguard-vpn.md'
             summary: 'wg-easy WAN endpoint VIP 192.168.0.99 is not assigned'
             description: >-
               The wg-easy LoadBalancer Service no longer carries 192.168.0.99 —
-              the WAN WireGuard endpoint (vpn.ericsweiss.com:51820/udp) is
+              the WAN WireGuard endpoint (vpn.${cluster_external_domain}:51820/udp) is
               unreachable for every external client. Check MetalLB's
               IPAddressPool/L2Advertisement and the Service in
               kubernetes/apps/wg-easy.
+
+        # The same guard for the two ingress VIPs. MetalLB has wedged these
+        # twice (the reason the chart is pinned at 0.15.3 — docs/12), and the
+        # failure presents as dozens of EndpointDown probes with no statement of
+        # cause. Separate rules per Service so the alert names the VIP that went
+        # missing: .100 is every public route, .101 every internal one.
+        - alert: TraefikPublicVipMissing
+          expr: >-
+            absent(kube_service_status_load_balancer_ingress{namespace="traefik",
+            service="traefik", ip="192.168.0.100"})
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
+            summary: 'Traefik public VIP 192.168.0.100 is not assigned'
+            description: >-
+              The traefik LoadBalancer Service no longer carries
+              192.168.0.100 — every *.${cluster_external_domain} route is unreachable.
+              Check MetalLB's IPAddressPool/L2Advertisement and the speaker
+              DaemonSet before treating the downstream EndpointDown alerts as
+              app failures.
+
+        - alert: TraefikInternalVipMissing
+          expr: >-
+            absent(kube_service_status_load_balancer_ingress{namespace="traefik",
+            service="traefik-internal", ip="192.168.0.101"})
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
+            summary: 'Traefik internal VIP 192.168.0.101 is not assigned'
+            description: >-
+              The traefik-internal LoadBalancer Service no longer carries
+              192.168.0.101 — every *.${cluster_internal_domain} route is unreachable,
+              including the VM/LXC guests fronted by vm-ingress. Check
+              MetalLB's IPAddressPool/L2Advertisement and the speaker
+              DaemonSet.
 
         # The peer gauges are the only in-cluster view of the WireGuard datapath.
         # They vanish if the app's Prometheus toggle or Bearer token is reset,
@@ -132,7 +171,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/38-wireguard-vpn.md'
+            runbook_url: '${cluster_runbook_base_url}/38-wireguard-vpn.md'
             summary: 'wg-easy is exporting no WireGuard peer metrics'
             description: >-
               No wireguard_configured_peers series for 30m. Re-check the
@@ -152,7 +191,7 @@ spec:
           labels:
             severity: critical
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/19-k3s-deployment.md'
+            runbook_url: '${cluster_runbook_base_url}/19-k3s-deployment.md'
             summary: 'Tailscale operator has no available replica'
             description: >-
               The tailscale operator has had 0 available replicas for 15m — the
@@ -165,7 +204,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/19-k3s-deployment.md'
+            runbook_url: '${cluster_runbook_base_url}/19-k3s-deployment.md'
             summary: 'Tailscale proxy {{ $labels.statefulset }} has no ready replica'
             description: >-
               Tailnet proxy {{ $labels.statefulset }} has had 0 ready replicas
@@ -184,7 +223,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/29-flux-operations.md'
+            runbook_url: '${cluster_runbook_base_url}/29-flux-operations.md'
             summary: 'GitLab agent has no available replica'
             description: >-
               The GitLab agent Deployment has had 0 available replicas for 30m.
@@ -202,7 +241,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/40-authentik-terraform.md'
+            runbook_url: '${cluster_runbook_base_url}/40-authentik-terraform.md'
             summary: 'authentik-worker has no available replica'
             description: >-
               The authentik-worker Deployment has had 0 available replicas for
@@ -214,21 +253,37 @@ spec:
         # (authentik + mealie in-cluster sidecars, nextcloud/immich/gitlab as
         # static VM targets — see service-monitors/postgres.yaml). pg_up flips to
         # 0 when the exporter cannot reach its database; a dead exporter is
-        # TargetDown. Deliberately no absent() arm: the exporters ship on the
-        # apps/Ansible lifecycles, so an enumerated absent() would page until
-        # every one of them has landed.
+        # TargetDown.
+        #
+        # The absent() arm enumerates the five exporters that have landed. The
+        # constraint it encodes is a SEQUENCING one, not "absent() is unsafe":
+        # each name may only be added here once its exporter is deployed, so a
+        # new Ansible-installed target lands (or lands in the same change) before
+        # its ServiceMonitor and this list. Without the arm, an exporter silently
+        # dropped from the pinned Endpoints produces no alert at all —
+        # TargetDown does cover it, but the two are independent (all three VM
+        # jobs paged for ~2h on 2026-08-11 with pg_up producing nothing).
         - alert: PostgresDown
-          expr: pg_up == 0
+          expr: >-
+            pg_up == 0
+            or absent(pg_up{job="authentik-postgresql-metrics"})
+            or absent(pg_up{job="observability/mealie-postgres"})
+            or absent(pg_up{job="gitlab"})
+            or absent(pg_up{job="nextcloud"})
+            or absent(pg_up{job="immich"})
           for: 10m
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
-            summary: 'PostgreSQL unreachable for exporter {{ $labels.instance }}'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
+            summary: 'PostgreSQL exporter {{ $labels.job }} reports down or is missing'
             description: >-
-              postgres_exporter on {{ $labels.instance }} reports pg_up == 0 for
-              10 minutes — the database is down, refusing connections, or the
-              exporter credentials are wrong.
+              postgres_exporter for job {{ $labels.job }}
+              {{ with $labels.instance }}({{ . }}) {{ end }}reports pg_up == 0
+              for 10 minutes, or has stopped reporting pg_up entirely. The
+              database is down, refusing connections, the exporter credentials
+              are wrong, or the exporter has dropped out of its ServiceMonitor
+              / pinned Endpoints.
 
         - alert: PostgresConnectionsHigh
           expr: >-
@@ -240,7 +295,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
             summary: 'PostgreSQL on {{ $labels.instance }} above 80% of max_connections'
             description: >-
               {{ $labels.instance }} is holding
@@ -263,7 +318,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
             summary: 'Loki is returning 5xx on more than 5% of requests'
             # $value is a 0-1 ratio; humanizePercentage emits the % sign.
             description: >-
@@ -288,7 +343,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/31-observability.md'
+            runbook_url: '${cluster_runbook_base_url}/31-observability.md'
             summary: 'Loki is rate-limiting ingestion ({{ $labels.reason }})'
             description: >-
               Loki is rejecting pushes against its limits_config caps
@@ -308,7 +363,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/31-observability.md'
+            runbook_url: '${cluster_runbook_base_url}/31-observability.md'
             summary: 'Loki is rejecting out-of-order or too-old lines ({{ $labels.reason }})'
             description: >-
               Loki rejected {{ $value | printf "%.0f" }} lines
@@ -335,7 +390,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/31-observability.md'
+            runbook_url: '${cluster_runbook_base_url}/31-observability.md'
             summary: 'Loki ruler has fewer rules loaded than git ships'
             description: >-
               Loki's ruler is evaluating fewer than the 23
@@ -353,7 +408,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/31-observability.md'
+            runbook_url: '${cluster_runbook_base_url}/31-observability.md'
             summary: 'Loki ruler is failing to evaluate its rules'
             description: >-
               Loki's ruler has been erroring on rule evaluation for 15
@@ -370,7 +425,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/31-observability.md'
+            runbook_url: '${cluster_runbook_base_url}/31-observability.md'
             summary: 'Loki ruler cannot deliver alerts to Alertmanager'
             description: >-
               Loki's ruler is erroring on its Alertmanager push, or has
@@ -385,7 +440,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
             summary: 'Flux controller {{ $labels.controller }} has reconciliation errors'
             description: >-
               Flux controller {{ $labels.controller }}
@@ -401,7 +456,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
             summary: >-
               Flux resource {{ $labels.customresource_kind }}/{{ $labels.exported_namespace }}/{{ $labels.name }}
               not Ready
@@ -421,7 +476,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
             summary: '1Password Connect has no available replicas'
             description: >-
               1Password Connect deployment in external-secrets namespace
@@ -436,7 +491,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
             summary: 'ExternalSecret {{ $labels.name }} sync failing'
             description: 'ExternalSecret {{ $labels.name }} in {{ $labels.namespace }} has not synced for 15 minutes.'
 
@@ -451,12 +506,12 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#updating-dns-records'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#updating-dns-records'
             summary: 'Cloudflare DDNS has not had a successful run in over 1 hour'
             description: >-
               The cloudflare-ddns CronJob (every 5m) has had no successful
               completion for more than an hour, or the metric is absent.
-              Public-IP A records (ericsweiss.com, direct/git) may go stale
+              Public-IP A records (${cluster_external_domain}, direct/git) may go stale
               on the next WAN IP change.
 
         - alert: CertExpiringWarning
@@ -465,7 +520,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#certificate-renewal-issues'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#certificate-renewal-issues'
             summary: 'Certificate {{ $labels.name }} expiring in less than 14 days'
             description: >-
               Certificate {{ $labels.name }}
@@ -478,7 +533,7 @@ spec:
           labels:
             severity: critical
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#certificate-renewal-issues'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#certificate-renewal-issues'
             summary: 'Certificate {{ $labels.name }} expiring in less than 3 days'
             description: >-
               Certificate {{ $labels.name }}
@@ -496,7 +551,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
             summary: 'Traefik 5xx error rate above 5%'
             # $value is a 0-1 ratio; humanizePercentage emits the % sign.
             description: 'Traefik is returning 5xx errors at {{ $value | humanizePercentage }} over the last 5 minutes.'
@@ -505,13 +560,25 @@ spec:
         # maxAllowed — the workload outgrew its ceiling. 24h hold because
         # recommendations swing with daily load. Fed by the kube-state-metrics
         # customResourceState VPA config in kube-prometheus-stack/release.yaml.
+        #
+        # nzbget memory is excluded: its cap is the deliberate design (docs/33
+        # and apps/download-clients/vpa.yaml — the recommender chases the
+        # unpack-time page cache, so the ceiling is the sizing decision, not a
+        # symptom). Left in, it is a permanently-firing warning on an otherwise
+        # alert-clear cluster.
         - alert: VPARecommendationCapped
-          expr: vpa_recommendation_uncappedtarget > vpa_recommendation_target
+          expr: >-
+            (vpa_recommendation_uncappedtarget > vpa_recommendation_target)
+            unless on (exported_namespace, verticalpodautoscaler, container, resource)
+            vpa_recommendation_target{exported_namespace="downloads",
+                                      verticalpodautoscaler="nzbget",
+                                      container="nzbget",
+                                      resource="memory"}
           for: 24h
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
             summary: >-
               VPA {{ $labels.exported_namespace }}/{{ $labels.verticalpodautoscaler }}
               recommendation capped at maxAllowed
@@ -533,24 +600,43 @@ spec:
         # label_replace rewrites the KSM series' namespace label with the VPA's
         # target namespace so the join lands and the alert routes on the
         # workload. Containers with no memory limit are skipped by design.
+        #
+        # The join is per-WORKLOAD, not per-(namespace, container): four
+        # flux-system controllers all expose a container named `manager` at
+        # different limits, and a namespace-wide max would compare every one of
+        # them against the largest — silently unfirable for the rest.
+        # `target_name` (emitted by the KSM customResourceState VPA config) is
+        # the VPA's targetRef name; namespace_workload_pod:kube_pod_owner:relabel
+        # maps each pod to its workload. The trailing label_replace strips the
+        # prometheus-operator's `<kind>-` StatefulSet prefix so the Prometheus
+        # and Alertmanager VPAs (targetRef kind Prometheus/Alertmanager, name
+        # without the prefix) still join.
         - alert: VPARecommendationExceedsLimit
           expr: >-
-            max by (namespace, verticalpodautoscaler, container) (
+            max by (namespace, verticalpodautoscaler, workload, container) (
               label_replace(
-                vpa_recommendation_target{resource="memory", update_mode=~"Off|Initial"}
-                or
-                vpa_recommendation_target{resource="memory", controlled_values="RequestsOnly"},
-                "namespace", "$1", "exported_namespace", "(.*)")
+                label_replace(
+                  vpa_recommendation_target{resource="memory", update_mode=~"Off|Initial"}
+                  or
+                  vpa_recommendation_target{resource="memory", controlled_values="RequestsOnly"},
+                  "namespace", "$1", "exported_namespace", "(.*)"),
+                "workload", "$1", "target_name", "(.*)")
             )
-            > on (namespace, container) group_left ()
-            max by (namespace, container) (
-              kube_pod_container_resource_limits{resource="memory"}
-            )
+            > on (namespace, workload, container) group_left ()
+            label_replace(
+              max by (namespace, workload, container) (
+                kube_pod_container_resource_limits{resource="memory"}
+                * on (namespace, pod) group_left (workload)
+                max by (namespace, workload, pod) (
+                  namespace_workload_pod:kube_pod_owner:relabel
+                )
+              ),
+              "workload", "$1", "workload", "^(?:prometheus|alertmanager)-(.+)$")
           for: 6h
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/33-autoscaling.md'
+            runbook_url: '${cluster_runbook_base_url}/33-autoscaling.md'
             summary: >-
               VPA {{ $labels.namespace }}/{{ $labels.verticalpodautoscaler }}
               recommends more memory than container
@@ -561,4 +647,78 @@ spec:
               above the container's configured memory limit — the workload
               is sized below its own measured need and will OOMKill on the
               next burst. Apply the recommendation in git (docs/33
+              "Applying an Off-tier recommendation").
+
+        # The same drift one band earlier. The REQUEST is what the scheduler
+        # places on and what the kubelet's eviction ranking compares against, so
+        # a workload whose recommendation has outgrown its request is already in
+        # the first-to-be-evicted group while its limit still looks generous —
+        # and nothing watched that band. Same workload-scoped join and same
+        # Off/Initial/RequestsOnly scope as the limit rule above; 1.25x and 24h
+        # keep it clear of ordinary daily swing, and info tier makes it a
+        # right-sizing notice rather than a fault.
+        #
+        # The 128Mi absolute floor alongside the ratio is what keeps this a
+        # worklist instead of standing noise: a 32Mi sidecar recommended 128Mi is
+        # 4x but costs nothing to leave alone, while the cases worth acting on
+        # (the TSDB a gigabyte under its need) clear both tests. Info routes to
+        # Discord on a 24h repeat, so a permanently-firing member would ping
+        # daily forever.
+        - alert: VPARecommendationExceedsRequest
+          expr: >-
+            (
+              max by (namespace, verticalpodautoscaler, workload, container) (
+                label_replace(
+                  label_replace(
+                    vpa_recommendation_target{resource="memory", update_mode=~"Off|Initial"}
+                    or
+                    vpa_recommendation_target{resource="memory", controlled_values="RequestsOnly"},
+                    "namespace", "$1", "exported_namespace", "(.*)"),
+                  "workload", "$1", "target_name", "(.*)")
+              )
+              - on (namespace, workload, container) group_left ()
+              label_replace(
+                max by (namespace, workload, container) (
+                  kube_pod_container_resource_requests{resource="memory"}
+                  * on (namespace, pod) group_left (workload)
+                  max by (namespace, workload, pod) (
+                    namespace_workload_pod:kube_pod_owner:relabel
+                  )
+                ),
+                "workload", "$1", "workload", "^(?:prometheus|alertmanager)-(.+)$")
+            ) > 134217728
+            and
+            max by (namespace, verticalpodautoscaler, workload, container) (
+              label_replace(
+                label_replace(
+                  vpa_recommendation_target{resource="memory", update_mode=~"Off|Initial"}
+                  or
+                  vpa_recommendation_target{resource="memory", controlled_values="RequestsOnly"},
+                  "namespace", "$1", "exported_namespace", "(.*)"),
+                "workload", "$1", "target_name", "(.*)")
+            )
+            > on (namespace, workload, container) group_left () 1.25 *
+            label_replace(
+              max by (namespace, workload, container) (
+                kube_pod_container_resource_requests{resource="memory"}
+                * on (namespace, pod) group_left (workload)
+                max by (namespace, workload, pod) (
+                  namespace_workload_pod:kube_pod_owner:relabel
+                )
+              ),
+              "workload", "$1", "workload", "^(?:prometheus|alertmanager)-(.+)$")
+          for: 24h
+          labels:
+            severity: info
+          annotations:
+            runbook_url: '${cluster_runbook_base_url}/33-autoscaling.md'
+            summary: >-
+              VPA {{ $labels.namespace }}/{{ $labels.verticalpodautoscaler }}
+              recommends over 1.25x container {{ $labels.container }}'s request
+            description: >-
+              The VPA memory target for container {{ $labels.container }}
+              in {{ $labels.namespace }} exceeds its configured request by
+              {{ $value | humanize1024 }}B (and by more than 1.25x). Nothing
+              rescales the request on this tier, so the workload sits low in the
+              eviction ranking until the number is applied in git (docs/33
               "Applying an Off-tier recommendation").

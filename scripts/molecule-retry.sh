@@ -43,7 +43,6 @@ until molecule $MOL_BASE test $MOL_SCEN; do
     fi
     # shellcheck disable=SC2086  # intentional word-split of MOL_BASE/MOL_SCEN
     molecule $MOL_BASE destroy $MOL_SCEN || true
-    # $RANDOM is per-shell and runner-pod start times differ, so 20-65s of
-    # jitter genuinely spreads simultaneous restarts across the fan-out.
+    # 20-65s jitter so simultaneous retries across the fan-out do not re-collide.
     sleep $(((RANDOM % 46) + 20))
 done

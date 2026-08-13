@@ -33,16 +33,17 @@ def test_module_exists():
 
 
 def test_records_cover_the_four_wan_names(ddns):
+    # ZONE is the ${cluster_external_domain} placeholder in the raw file (Flux
+    # substitutes it at reconcile), so assert the record SHAPE around it rather
+    # than a hard-coded zone — which is also what keeps this test honest if the
+    # site's external domain changes.
+    zone = ddns.ZONE
+    assert zone == "${cluster_external_domain}"
     names = {name for name, _ in ddns.RECORDS}
-    assert names == {
-        "ericsweiss.com",
-        "direct.ericsweiss.com",
-        "git.ericsweiss.com",
-        "vpn.ericsweiss.com",
-    }
+    assert names == {zone, f"direct.{zone}", f"git.{zone}", f"vpn.{zone}"}
     # Only the apex is proxied on create; the rest need a direct origin.
-    assert dict(ddns.RECORDS)["ericsweiss.com"] is True
-    assert not any(proxied for name, proxied in ddns.RECORDS if name != "ericsweiss.com")
+    assert dict(ddns.RECORDS)[zone] is True
+    assert not any(proxied for name, proxied in ddns.RECORDS if name != zone)
 
 
 def test_get_public_ip_skips_non_global_and_non_ipv4(ddns, monkeypatch):
@@ -115,3 +116,44 @@ def test_update_record_posts_when_the_record_is_absent(ddns, monkeypatch):
 def test_main_fails_without_a_token(ddns, monkeypatch):
     monkeypatch.delenv("CF_API_TOKEN", raising=False)
     assert ddns.main() == 1
+
+
+def test_zone_guard_rejects_the_raw_placeholder(ddns):
+    # The file on disk carries the placeholder, so this is the exact value a
+    # failed Flux substitution would leave behind.
+    assert ddns.zone_is_substituted(ddns.ZONE) is False
+    assert ddns.zone_is_substituted("") is False
+    assert ddns.zone_is_substituted("nodots") is False
+    assert ddns.zone_is_substituted("ericsweiss.com") is True
+
+
+def test_main_refuses_to_touch_dns_with_an_unsubstituted_zone(ddns, monkeypatch):
+    """Empty/placeholder zone -> `GET /zones?name=` is unfiltered; fail before that."""
+    monkeypatch.setenv("CF_API_TOKEN", "tok")
+    called = []
+    monkeypatch.setattr(ddns, "get_public_ip", lambda *a, **k: called.append("ip") or "1.2.3.4")
+    monkeypatch.setattr(ddns, "api_request", lambda *a, **k: called.append("api"))
+    assert ddns.main() == 1
+    assert called == []
+
+
+def test_get_zone_id_rejects_a_zone_the_api_did_not_actually_match(ddns, monkeypatch):
+    """The unfiltered-list shape: rows come back, none of them ours."""
+    monkeypatch.setattr(
+        ddns,
+        "api_request",
+        lambda *a, **k: {"success": True, "result": [{"id": "other", "name": "not-ours.com"}]},
+    )
+    assert ddns.get_zone_id("tok", "ericsweiss.com") is None
+
+
+def test_get_zone_id_returns_the_matching_zone(ddns, monkeypatch):
+    monkeypatch.setattr(
+        ddns,
+        "api_request",
+        lambda *a, **k: {
+            "success": True,
+            "result": [{"id": "other", "name": "not-ours.com"}, {"id": "z1", "name": "ericsweiss.com"}],
+        },
+    )
+    assert ddns.get_zone_id("tok", "ericsweiss.com") == "z1"

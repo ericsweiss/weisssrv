@@ -53,7 +53,8 @@ zfs_encryption_pools:
 #         zfs-mount-encrypted has unlocked the ssd pool. onboot=1 would fail
 #         against a locked pool; this list is the working equivalent, applied
 #         after the unlock. See docs/32, 39.
-#   152 = plex LXC (mp0 /config on ssd)
+#   152 = plex LXC (rootfs + mp0 /config on ssd)
+#   158 = immich-ml LXC (rootfs on ssd)
 # Order mirrors the per-guest startup order (proxmox_startup_order on VMs,
 # proxmox_lxc_startup_order on the LXC): the k3s agent (202, order 40) before the
 # gitlab app (153, order 50), nextcloud (156, order 55), immich (157, order 56)
@@ -63,7 +64,7 @@ zfs_encryption_pools:
 # starts. Windows is LAST: it is the least critical guest here and the slowest to
 # settle, so it claims its memory after the services have theirs.
 zfs_encryption_guest_vmids: [202, 153, 156, 157, 155]
-zfs_encryption_guest_ctids: [152]
+zfs_encryption_guest_ctids: [152, 158]
 
 # NFS bind sources that live on ENCRYPTED datasets. nas_storage anchors their
 # /export/* fstab binds (and the nfs-server drop-in) on the late
@@ -258,7 +259,12 @@ nas_storage_backup_artifact_apps:
   - name: nextcloud
     pattern: "nextcloud-db-*.sql.gz"
   - name: home-assistant
-    pattern: "*.tar"
+    # Automatic_backup_* only: a bare "*.tar" also matched the add-on tars HAOS
+    # writes here (34 MB, and they outlive a full rotation of the real 300+ MB
+    # backups), so a stopped full backup kept both the staleness and zero-byte
+    # arms green. Trade-off: a hand-triggered MANUAL full backup no longer
+    # counts, so the metric reads stale until the next automatic one lands.
+    pattern: "Automatic_backup_*.tar"
   - name: pve-cluster
     pattern: "etc-pve-*.tar.gz"
 
@@ -366,10 +372,11 @@ nas_storage_mergerfs_mounts:
 # the server-side TLS handshake for the client lines that require xprtsec=tls —
 # the k3s exports (/export/{appdata,share,media}) AND the app-VM backup exports
 # (/export/backups-apps/{gitlab,immich,nextcloud} .153/.157/.156, whose VMs now
-# run tlshd via the nfs_tls role in their deploy plays). tlshd is live on this
-# server, all six k3s agents, and those three app VMs. The always-plaintext lines
-# (HAOS .154 backups-apps + media, the fsid=0 root, tank-proxmox) carry no
-# xprtsec and are unaffected.
+# run tlshd via the nfs_tls role in their deploy plays) AND the six Proxmox hosts'
+# /export/tank-proxmox. tlshd is live on this server, all six k3s agents, the six
+# Proxmox hosts (nfs_tls_enabled in group_vars/proxmox.yml) and those three app
+# VMs. The always-plaintext lines (HAOS .154 backups-apps + media, the fsid=0
+# root) carry no xprtsec and are unaffected.
 nfs_tls_enabled: true
 # This host is the NFS server, so tlshd needs the [authenticate.server]
 # block (cert + private key) to answer the server-side TLS handshake. The
@@ -490,6 +497,10 @@ nas_storage_exports:
   # NFS) and docs/07 (Transport Security).
   - path: /export/media
     bind_source: /mnt/media
+    # Explicit: /mnt/media is the MergerFS union target, not a ZFS dataset, so
+    # the mounted-dataset guard and the zfs-mount fstab ordering do not apply
+    # here (the union's own branches carry them).
+    zfs: false
     owner: 1000  # eric
     group: 2000  # media
     mode: "02775"  # rwxrwsr-x (setgid for group inheritance)
@@ -622,12 +633,16 @@ nas_storage_exports:
       - spec: "192.168.0.154/32"
         options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=22"
 
-  # Proxmox backup target (requires no_root_squash)
+  # Proxmox backup target (requires no_root_squash). REQUIRES TLS: every PVE host
+  # already mounts it with xprtsec=tls via the tank-proxmox storage entry below,
+  # so this only enforces what the clients do — ~12.5 TiB of VM dumps otherwise
+  # travel plaintext with no_root_squash.
   - path: /export/tank-proxmox
     bind_source: /mnt/tank/proxmox
     owner: 1000  # eric
     group: 2000  # media
     mode: "02775"  # rwxrwsr-x (setgid for group inheritance)
+    xprtsec: "tls"
     clients:
       - spec: "192.168.0.102/32"
         options: "rw,sync,no_subtree_check,no_root_squash,fsid=14"
@@ -701,6 +716,40 @@ proxmox_backup_storage:
     content: "snippets,backup,vztmpl,iso"
     path: /mnt/pve/tank-proxmox
     options: "vers=4.2,xprtsec=tls"
+  # zfspool ids. `pool` is create-fixed and asserted, which is the point: the
+  # `ssd` id maps to ssd/pve, the ENCRYPTION ROOT (aes-256-gcm) that carries the
+  # GitLab/Windows/Nextcloud/Immich root disks. An id recreated by hand against
+  # the pool ROOT (`ssd`, encryption=off) would land every new guest disk in
+  # plaintext with no other signal. postflight.yml asserts ssd/pve's encryption
+  # property alongside this.
+  #
+  # mountpoint/nodes/sparse are declared here (unlike tank/nvme below) and are
+  # SYNCED FROM THE LIVE storage.cfg — `pvesh get /storage` reports exactly
+  # /mnt/ssd/pve, pve-nas-01, sparse 0. The role reconciles all three on drift,
+  # so declaring an unverified value would rewrite live state; `sparse` in
+  # particular reads as 0 when PVE omits it, and asserting `false` against a
+  # thin store would silently flip it to thick for every future guest disk.
+  # Re-verify against `pvesh get /storage --output-format json` before editing.
+  - id: ssd
+    type: zfspool
+    pool: ssd/pve
+    content: "images,rootdir"
+    mountpoint: /mnt/ssd/pve
+    nodes: pve-nas-01
+    sparse: false
+  # tank/nvme carry no guest disks today and both datasets are plaintext (they
+  # are not encryption roots); they are declared so the id -> dataset mapping is
+  # codified. Only pool + content are pinned — mountpoint/nodes/sparse are
+  # omitted so the reconcile inherits the live values rather than asserting
+  # values this repo has never captured.
+  - id: tank
+    type: zfspool
+    pool: tank/pve
+    content: "images,rootdir"
+  - id: nvme
+    type: zfspool
+    pool: nvme/pve
+    content: "images,rootdir"
 
 # Proxmox backup job (jobs.cfg via /cluster/backup) — reconciled by the
 # proxmox_backup role. IMPORTANT: `id` must match the live jobs.cfg id or the
@@ -741,37 +790,14 @@ proxmox_backup_vzdump_jobs:
     # Sweep them by hand in the same change:
     #   sudo ls -lt /mnt/tank/proxmox/dump/vzdump-qemu-<vmid>-*
     #   sudo rm -f  /mnt/tank/proxmox/dump/vzdump-{qemu,lxc}-<vmid>-*
-    # then let archsync retention age the archive copy out. Measured 2026-07-25:
-    # the 9 VMIDs below had accumulated 2.8 T of orphaned dumps against a 4.00 T
-    # tank/proxmox refer — ~70% dead weight, faithfully replicated to archive.
+    # then let archsync retention age the archive copy out.
     exclude: [202, 203, 204, 205, 206, 207, 222, 223, 227]
-    # bwlimit caps per-node backup I/O (KiB/s). Because this is a cluster-wide
-    # `all` job it fires on EVERY node at 03:30 and they all write their guests
-    # to THIS host's tank-proxmox NFS target at once. Unthrottled, that combined
-    # write saturated the (spinning) tank pool and froze pve-nas-01 on 2026-07-13
-    # (I/O-pressure PSI 0.59, load 26, KVM guest page-fault hang, ~12h outage).
-    #
-    # RAISED 30720 -> 61440 (30 -> 60 MiB/s): the 07-20 window measured every
-    # progress line read-pinned at ~29.9 MiB/s, proving 30 was the BINDING
-    # constraint, not pool capability; and the incident's real drivers (CI DinD
-    # on the NAS k3s agent, since moved off; memory/swap thrash, since fixed by the
-    # 4G ARC cap + swappiness=1 + right-sized k3s VMs) are resolved, so 30 is now
-    # over-conservative. 60 is a deliberate 2x step (80+ explicitly REJECTED for
-    # now — honoring the I/O-incident history): with the k3s VMs excluded above
-    # removing the concurrent writers, aggregate write to the 6x ST22000 RAIDZ
-    # (sequential >> 360 MB/s) stays well under saturation, windows 155 drops 38G
-    # 2h23m -> ~11m, and the pve-nas-01 slice clears ~03:30->~04:45 — comfortably
-    # before media-mover (06:00) and the archive-backup timer (06:30), so
-    # tank/proxmox is no longer deferred by archive-backupctl's vzdump-quiesce
-    # guard. Reversible; guarded by ProxmoxHostIOPressure.
-    #
-    # RE-MEASURE CHECKLIST after deploy (do ONE full 03:30 window):
-    #   1. pve-nas-01 slice completes by ~04:45 with ProxmoxHostIOPressure quiet.
-    #   2. archive_backup_dataset_deferred_runs{dataset="tank/proxmox"} back to 0
-    #      (ArchiveBackupChronicallyDeferred clears).
-    #   3. Only THEN consider a further raise (>60); keep media-mover/archive
-    #      schedules in mind. VM 155 (windows, 250G on ssd/pve) is start-on-demand
-    #      but still dumps when running — re-check the slice still ends before 06:00.
+    # Per-node backup I/O cap (KiB/s). This is a cluster-wide `all` job, so every
+    # node writes to THIS host's tank-proxmox NFS target at 03:30 at once;
+    # unthrottled that saturates the spinning tank pool (docs/12). 60 MiB/s keeps
+    # the pve-nas-01 slice (~03:30-04:45) clear of media-mover (06:00) and the
+    # archive-backup timer (06:30), so tank/proxmox is not deferred by
+    # archive-backupctl's vzdump-quiesce guard. Guarded by ProxmoxHostIOPressure.
     bwlimit: 61440
     prune_backups: "keep-daily=7,keep-weekly=4,keep-monthly=6"
     notification_mode: notification-system
@@ -828,13 +854,6 @@ nic_tuning_overrides:
 # Applied live + persisted via nic_tuning's sysctl.d drop-in.
 nic_tuning_vm_swappiness: 1
 
-# Host egress filtering: pve-nas-01 now inherits the cluster-wide default
-# (proxmox_firewall_egress_filtering: true in group_vars/proxmox.yml). It was
-# rolled out here last, after the 5 compute hosts, and validated 2026-07-05:
-# quorum held, NFS server (16 nfsd threads / 22 exports / 15 k3s PVs bound)
-# unaffected, Tailscale + SSH-jump access preserved (with opt-01/opt-02 as
-# fallback jumps), and zero legitimate OUT-DROP log entries.
-
 # Nightly offsite backup to Backblaze B2 (docs/42). The bind sources are the
 # archsync-quiesced datasets; the two zvol sources are clone-mounted read-only
 # so the Immich/Nextcloud bulk data (which lives INSIDE a guest filesystem, not
@@ -855,6 +874,11 @@ restic_offsite_sources:
     mountpoint: /mnt/ssd/databases
   - name: k3s-etcd    # ssd/k3s-etcd: off-node etcd snapshot copies (DR chain)
     mountpoint: /mnt/ssd/k3s-etcd
+# Restore-drill spread: prove at least 3 of the 5 file sources per drill, so a
+# drill that silently narrows to one source fails instead of passing. Only 4 can
+# ever yield a candidate (ssd/databases is empty), so 3 is the practical ceiling.
+# The role's own max_bytes default already rose to 16 MiB to pay for the spread.
+restic_offsite_restore_drill_min_sources: 3
 restic_offsite_zvol_sources:
   - name: immich-data
     zvol: tank/immich-data/disk

@@ -59,8 +59,8 @@ spec:
               cpu: 25m
               memory: 32Mi
             limits:
-              # No CPU limit: redis_exporter polls Redis every scrape window;
-              # CFS throttling at 250m fired CPUThrottlingHigh.
+              # No CPU limit (docs/33): CFS throttling on a bursty scrape
+              # trips CPUThrottlingHigh.
               memory: 64Mi
 ---
 apiVersion: v1

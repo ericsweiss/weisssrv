@@ -548,6 +548,20 @@ tests:
         alertname: GitLabBackupFailed
         exp_alerts: []
 
+  # The firing arm of GitLabBackupFailed. Without it the alert was only ever
+  # asserted NOT to fire, which a permanently-silent expr would also satisfy.
+  - interval: 1m
+    input_series:
+      - series: 'gitlab_backup_last_run_success{instance="192.168.0.153:9101"}'
+        values: '0+0x70'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: GitLabBackupFailed
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: 192.168.0.153:9101
+
   # present=1 with size 0 is reachable: the wrapper stats whatever it copied, so
   # a truncated copy reports present. The size arm catches it.
   - interval: 1m
@@ -692,6 +706,98 @@ tests:
     alert_rule_test:
       - eval_time: 27h
         alertname: BackupRestoreDrillNeverRan
+        exp_alerts: []
+
+  # BackupRestoreDrillFailing: the gap between the two clocks. A drill that ran
+  # and failed leaves _last_run_seconds ahead of _last_success_seconds, and
+  # nothing else notices for the remaining ~99 days of the staleness window.
+  - interval: 5m
+    input_series:
+      - series: 'backup_restore_drill_last_run_seconds{instance="192.168.0.102:9101"}'
+        values: '900000+0x60'
+      - series: 'backup_restore_drill_last_success_seconds{instance="192.168.0.102:9101"}'
+        values: '0+0x60'
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: BackupRestoreDrillFailing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: 192.168.0.102:9101
+  # A drill that passed writes both clocks in the same textfile flush, so the
+  # difference is zero and the alert must stay silent.
+  - interval: 5m
+    input_series:
+      - series: 'backup_restore_drill_last_run_seconds{instance="192.168.0.102:9101"}'
+        values: '900000+0x60'
+      - series: 'backup_restore_drill_last_success_seconds{instance="192.168.0.102:9101"}'
+        values: '900000+0x60'
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: BackupRestoreDrillFailing
+        exp_alerts: []
+  # Never passed at all: the success series is absent, the subtraction yields
+  # nothing, and BackupRestoreDrillNeverRan owns that state instead.
+  - interval: 5m
+    input_series:
+      - series: 'backup_restore_drill_last_run_seconds{instance="192.168.0.102:9101"}'
+        values: '900000+0x60'
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: BackupRestoreDrillFailing
+        exp_alerts: []
+
+  # BackupRestoreDrillProvedTooLittle: the coverage floor. The pre-rebuild drill
+  # restored five 1-byte files drawn from two of seven sources and reported a
+  # clean pass; with a per-source floor a passing drill compares at least 3.
+  - interval: 5m
+    input_series:
+      - series: 'backup_restore_drill_files_compared{instance="192.168.0.102:9101"}'
+        values: '1+0x60'
+      - series: 'backup_restore_drill_last_run_seconds{instance="192.168.0.102:9101"}'
+        values: '900000+0x60'
+      - series: 'backup_restore_drill_last_success_seconds{instance="192.168.0.102:9101"}'
+        values: '900000+0x60'
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: BackupRestoreDrillProvedTooLittle
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: 192.168.0.102:9101
+  # A drill that FAILED writes files_compared 0, which would otherwise look like
+  # the thinnest possible pass. The run/success guard keeps it out of scope so
+  # only BackupRestoreDrillFailing reports it.
+  - interval: 5m
+    input_series:
+      - series: 'backup_restore_drill_files_compared{instance="192.168.0.102:9101"}'
+        values: '0+0x60'
+      - series: 'backup_restore_drill_last_run_seconds{instance="192.168.0.102:9101"}'
+        values: '900000+0x60'
+      - series: 'backup_restore_drill_last_success_seconds{instance="192.168.0.102:9101"}'
+        values: '0+0x60'
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: BackupRestoreDrillProvedTooLittle
+        exp_alerts: []
+      - eval_time: 2h
+        alertname: BackupRestoreDrillFailing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: 192.168.0.102:9101
+  # The current live shape — 5 files compared on a passing drill — must be quiet.
+  - interval: 5m
+    input_series:
+      - series: 'backup_restore_drill_files_compared{instance="192.168.0.102:9101"}'
+        values: '5+0x60'
+      - series: 'backup_restore_drill_last_run_seconds{instance="192.168.0.102:9101"}'
+        values: '900000+0x60'
+      - series: 'backup_restore_drill_last_success_seconds{instance="192.168.0.102:9101"}'
+        values: '900000+0x60'
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: BackupRestoreDrillProvedTooLittle
         exp_alerts: []
 
   # ResticOffsiteVerifyStale: last successful `restic check` older than 8d.

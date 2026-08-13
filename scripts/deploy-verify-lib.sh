@@ -28,6 +28,25 @@ count_not_ready() {
   jq "[.items[] | $JQ_NOT_READY] | length" 2>/dev/null || echo "999"
 }
 
+# without_items "<ns>/<name> ...": read a `kubectl get ... -o json` list on stdin
+# and print it back with those items removed, so a KNOWN-transitional object can
+# be carved out of a readiness gate without weakening that gate for anything
+# else. Matched on namespace/name, not kind: kubectl strips per-item TypeMeta
+# from a single-kind list, so `.kind` is null there and present only in the
+# multi-kind `v1 List`. An empty/absent spec is a pass-through.
+without_items() {
+  if [ -z "${1:-}" ]; then cat; return 0; fi
+  jq --arg spec "$1" '
+    ($spec | split(" ") | map(select(length > 0))) as $drop
+    | .items |= map(
+        select(
+          (((.metadata.namespace // "") + "/" + (.metadata.name // "")) as $id
+           | $drop | index($id) | not)
+        )
+      )
+  '
+}
+
 # not_ready_ns_names: read a list on stdin, print "  <namespace>/<name>" for each
 # not-Ready item (used to enumerate non-Ready ExternalSecrets).
 not_ready_ns_names() {

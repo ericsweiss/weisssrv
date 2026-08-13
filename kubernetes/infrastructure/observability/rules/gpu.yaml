@@ -22,7 +22,7 @@ spec:
             severity: warning
             component: gpu
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/43-gpu-passthrough.md'
+            runbook_url: '${cluster_runbook_base_url}/43-gpu-passthrough.md'
             summary: 'DCGM GPU exporter is down — no GPU telemetry'
             description: >-
               The dcgm-exporter target has been down for 15m; GPU
@@ -37,7 +37,7 @@ spec:
             severity: warning
             component: gpu
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/43-gpu-passthrough.md'
+            runbook_url: '${cluster_runbook_base_url}/43-gpu-passthrough.md'
             summary: 'GPU at {{ $value | printf "%.0f" }}C (warn 80C)'
             description: >-
               The 1660 Ti has been at {{ $value | printf "%.0f" }}C for
@@ -50,7 +50,7 @@ spec:
             severity: critical
             component: gpu
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/43-gpu-passthrough.md'
+            runbook_url: '${cluster_runbook_base_url}/43-gpu-passthrough.md'
             summary: 'GPU at {{ $value | printf "%.0f" }}C (critical 85C)'
             description: >-
               The 1660 Ti is at {{ $value | printf "%.0f" }}C — above its
@@ -69,7 +69,7 @@ spec:
             severity: warning
             component: gpu
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/43-gpu-passthrough.md'
+            runbook_url: '${cluster_runbook_base_url}/43-gpu-passthrough.md'
             summary: 'Hindsight up but GPU VRAM ~empty — offload may be broken'
             description: >-
               Hindsight is available but the GPU is holding < 500 MiB VRAM
@@ -90,7 +90,7 @@ spec:
             severity: warning
             component: gpu
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/43-gpu-passthrough.md'
+            runbook_url: '${cluster_runbook_base_url}/43-gpu-passthrough.md'
             summary: 'DCGM exporter up but exporting no GPU metrics'
             description: >-
               The dcgm-exporter target is up and scraped, but no

@@ -1,13 +1,18 @@
 ---
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-# Single-namespace dir: set the namespace so the shared default-deny-ingress
-# component (added below) lands in reloader.
+# Single-namespace dir: set the namespace so the shared NetworkPolicy components
+# (added below) land in reloader.
 namespace: reloader
 resources:
   - namespace.yaml
   - release.yaml
   - networkpolicy.yaml
 
+# Reloader watches ConfigMaps cluster-wide and patches Deployments, so its reach
+# is bounded to exactly DNS + the kube-apiserver: no public component here, and
+# the two egress components ARE the namespace's default-deny-egress.
 components:
   - ../../../components/netpol-baseline
+  - ../../../components/netpol-egress-dns
+  - ../../../components/netpol-egress-apiserver

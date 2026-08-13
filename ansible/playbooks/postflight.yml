@@ -105,18 +105,11 @@
     # the real cert push would — accept-new would mask that. Loops over every
     # cert_distribution_target rather than two hardcoded hosts.
     #
-    # The payload is NOT an arbitrary command. Every sudo target pins the
-    # distribution pubkey with command="sudo /usr/local/sbin/cert-receive",restrict,
-    # so the remote command is REPLACED by the receiver: the previous
-    # `'echo success'` + `failed_when: 'success' not in stdout` could never pass
-    # (the receiver answers "FAIL: empty bundle" on stderr and exits 3), leaving
-    # `task infra:verify` permanently red on this check.
-    #
-    # Instead, assert the forced command's own refusal: `ssh -n` (empty stdin)
-    # must produce rc 3 and "FAIL: empty bundle". Reaching that message proves
-    # host-key pin + key auth + forced command + sudoers + receiver install all
-    # at once — strictly more than `echo success` ever did. ssh's own failures
-    # (255 host-key/auth) and any other receiver rc are still errors.
+    # The payload is NOT an arbitrary command: every sudo target pins the key
+    # with command="sudo /usr/local/sbin/cert-receive",restrict, so the receiver
+    # replaces it. Assert its refusal — `ssh -n` must give rc 3 + "FAIL: empty
+    # bundle", which proves host-key pin + key auth + forced command + sudoers +
+    # receiver install. ssh's own 255 and any other receiver rc stay errors.
     #
     # ssh_no_sudo targets (HAOS) have no receiver and no forced command — their
     # authorized_keys is pasted by hand — so there the payload really does run
@@ -224,21 +217,23 @@
       loop_control:
         label: "{{ item }}"
 
-    - name: Display ZFS pool status (tank)
+    - name: Display ZFS pool status
       ansible.builtin.debug:
-        msg: "{{ zpool_health.results[0].stdout_lines }}"
+        msg: "{{ item.stdout_lines }}"
+      loop: "{{ zpool_health.results }}"
+      loop_control:
+        label: "{{ item.item }}"
 
-    - name: Display ZFS pool status (ssd)
-      ansible.builtin.debug:
-        msg: "{{ zpool_health.results[1].stdout_lines }}"
-
-    - name: Display ZFS pool status (nvme)
-      ansible.builtin.debug:
-        msg: "{{ zpool_health.results[2].stdout_lines }}"
-
-    - name: Display ZFS pool status (archive)
-      ansible.builtin.debug:
-        msg: "{{ zpool_health.results[3].stdout_lines }}"
+    # ssd/pve is the encryption root under the `ssd` Proxmox storage id: every
+    # guest root disk created there inherits its encryption. An id recreated
+    # against the pool root (encryption=off) would silently land new disks in
+    # plaintext, which is why proxmox_backup_storage pins `pool: ssd/pve`
+    # (create-fixed) and this asserts the property itself.
+    - name: Check ssd/pve is encrypted
+      ansible.builtin.command: zfs get -H -o value encryption ssd/pve
+      changed_when: false
+      register: postflight_ssd_pve_encryption
+      failed_when: postflight_ssd_pve_encryption.stdout | trim != 'aes-256-gcm'
 
     - name: Verify ZFS datasets are mounted
       ansible.builtin.command: zfs list -H -o name,mounted,canmount
@@ -468,7 +463,7 @@
     # grep rc=1 (no match) is tolerated so the assert loop is simply empty.
     - name: Gather live NFS mounts to pve-nas-01
       ansible.builtin.command:
-        cmd: "grep pve-nas-01.esweiss.com: /proc/mounts"
+        cmd: "grep pve-nas-01.{{ internal_domain }}: /proc/mounts"
       changed_when: false
       failed_when: false
       register: nas_nfs_mounts

@@ -1,0 +1,49 @@
+---
+# Flux Kustomization: metrics-server, deliberately its OWN stage rather than a
+# member of infrastructure-controllers.
+#
+# Why it is carved out: infrastructure-controllers runs `wait: true`, so every
+# object it applies is health-checked and a single failing HelmRelease makes the
+# whole stage not-Ready — which requeues infrastructure-configs and, behind it,
+# observability and apps. metrics-server is the one release whose install is
+# EXPECTED to fail for a while: k3s ships it as a static AddOn whose objects
+# Helm cannot adopt, and the `--disable=metrics-server` flag that removes them
+# lands from Ansible (`task k3s:deploy` / the manual `maintenance-k3s-provision`
+# job), never from the merge pipeline. Leaving it in the controllers stage would
+# freeze the entire tree below it for as long as that operator step is pending.
+#
+# It is also a leaf in every other sense: nothing in the cluster needs the
+# Resource Metrics API to be served before it can be APPLIED (HPAs and the VPA
+# recommender consume metrics.k8s.io at runtime), so no stage should ever
+# dependsOn it.
+#
+# dependsOn sources only: the metrics-server HelmRepository and both
+# substitution ConfigMaps live there. wait: true is kept ON PURPOSE — this
+# stage's readiness is the loud signal that the cutover is still open, and
+# scripts/deploy-verify.sh reports it by name (the list is derived from this
+# directory by scripts/flux-child-kustomizations.py).
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: infrastructure-metrics-server
+  namespace: flux-system
+spec:
+  interval: 10m
+  retryInterval: 1m
+  timeout: 10m
+  dependsOn:
+    - name: infrastructure-sources
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./kubernetes/infrastructure/controllers/metrics-server
+  prune: true
+  wait: true
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: cluster-versions
+        optional: false
+      - kind: ConfigMap
+        name: cluster-config
+        optional: false

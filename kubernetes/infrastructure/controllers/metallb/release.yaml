@@ -46,9 +46,12 @@ spec:
       serviceAccount: kube-prometheus-stack-prometheus
       namespace: observability
     speaker:
+      # `platform` (sources/priorityclasses.yaml). The chart has no global key,
+      # so controller and speaker are set separately.
+      priorityClassName: platform
       # Only run speakers on nodes labeled for ingress traffic.
       nodeSelector:
-        esweiss.com/ingress: "true"
+        ${cluster_node_label_domain}/ingress: "true"
       tolerations: []
       resources:
         requests:
@@ -64,6 +67,7 @@ spec:
           limits:
             memory: 256Mi
     controller:
+      priorityClassName: platform
       # Controller can run anywhere (doesn't handle traffic directly).
       nodeSelector: {}
       tolerations: []

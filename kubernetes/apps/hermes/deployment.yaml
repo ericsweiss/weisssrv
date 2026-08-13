@@ -35,8 +35,8 @@ spec:
       # general set) on the roomiest eligible node. modern CPU: the image
       # bundles a Node/Chromium/uv toolchain, so keep it off the Core2-era nodes.
       nodeSelector:
-        esweiss.com/general: "true"
-        esweiss.com/cpu: "modern"
+        ${cluster_node_label_domain}/general: "true"
+        ${cluster_node_label_domain}/cpu: "modern"
       imagePullSecrets:
         - name: hermes-registry-pull
       # This is an s6-overlay image (like the LinuxServer.io *arr images in the
@@ -116,7 +116,7 @@ spec:
             # egress rule in networkpolicy.yaml); that route carries no
             # forward-auth middleware, so bearer-token API calls reach HA.
             - name: HASS_URL
-              value: https://home.esweiss.com
+              value: https://home.${cluster_internal_domain}
             - name: HASS_TOKEN
               valueFrom:
                 secretKeyRef:
@@ -146,7 +146,7 @@ spec:
         - name: gateway
           # (hermes_version); built by the build-hermes-agent CI job. Pulled
           # from the internal registry host (AdGuard rewrite -> Traefik .101).
-          image: registry.git.esweiss.com/eric/weisssrv/hermes-agent:${hermes_image_version}
+          image: registry.git.${cluster_internal_domain}/eric/weisssrv/hermes-agent:${hermes_image_version}
           imagePullPolicy: IfNotPresent
           args: ["gateway", "run"]
           env:
@@ -263,7 +263,7 @@ spec:
               mountPath: /opt/data
         # ── Dashboard: user-facing FastAPI web UI on :9119 ───────────────
         - name: dashboard
-          image: registry.git.esweiss.com/eric/weisssrv/hermes-agent:${hermes_image_version}
+          image: registry.git.${cluster_internal_domain}/eric/weisssrv/hermes-agent:${hermes_image_version}
           imagePullPolicy: IfNotPresent
           # Bind 0.0.0.0 (upstream's compose defaults to 127.0.0.1) so Traefik
           # can reach the dashboard through the Service. Binding to a
@@ -314,7 +314,7 @@ spec:
             # evaluation, so discovery/token/JWKS calls ride the
             # traefik-namespace egress rule, not a public-internet one.
             - name: HERMES_DASHBOARD_OIDC_ISSUER
-              value: https://auth.ericsweiss.com/application/o/agent/
+              value: https://auth.${cluster_external_domain}/application/o/agent/
             - name: HERMES_DASHBOARD_OIDC_CLIENT_ID
               value: hermes-dashboard
             # Non-empty secret => confidential client (PKCE stays on either
@@ -369,7 +369,7 @@ spec:
         # as root because Xvfb and the Camoufox binary live under /root, and NFS
         # writes are all_squash'd to 1000:2000 anyway.
         - name: camofox
-          image: registry.git.esweiss.com/eric/weisssrv/camofox-browser:${hermes_camofox_version}
+          image: registry.git.${cluster_internal_domain}/eric/weisssrv/camofox-browser:${hermes_camofox_version}
           imagePullPolicy: IfNotPresent
           env:
             - name: TZ

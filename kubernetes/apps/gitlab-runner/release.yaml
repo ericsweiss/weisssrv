@@ -52,7 +52,7 @@ spec:
       config: |
         [[runners]]
           # Keep clones on the LAN path too (see gitlabUrl above).
-          clone_url = "https://git.esweiss.com"
+          clone_url = "https://git.${cluster_internal_domain}"
 
           # Non-root job containers may lack an /etc/passwd entry, leaving HOME
           # unset so git writes to //.gitconfig and fails. Pin both explicitly.
@@ -71,6 +71,13 @@ spec:
             image = "debian:trixie@sha256:d07d1b51c39f51188e60be9b64e6bf769fa94e187f092bc32b91305cfa34ba5a"
             privileged = false
 
+            # Rank job pods below every unclassed workload and never preempt
+            # (sources/priorityclasses.yaml). The namespace quotas admit more
+            # CPU requests than the cluster has allocatable, so a CI burst used
+            # to compete with platform pods on arrival order alone. A scalar key
+            # — must stay above the first sub-table.
+            priority_class_name = "ci-jobs"
+
             # CPU/Memory for job pods. No cpu_limit (docs/33, repo-wide): CPU
             # is compressible, so a limit only adds CFS throttling — cpu_request
             # sets the contention share and the namespace ResourceQuota's
@@ -83,8 +90,7 @@ spec:
             # the defaults, so an override can only shrink a pod, never grow
             # it (this runner also serves tenant projects). A lint pod
             # declaring KUBERNETES_MEMORY_LIMIT=1Gi stops a 12-job fan-out
-            # from bursting the namespace quota at pod creation —
-            # weisssrv-lib pipelines 929/931/932/934 failed exactly there.
+            # from bursting the namespace quota at pod creation.
             memory_limit_overwrite_max_allowed = "4Gi"
             memory_request_overwrite_max_allowed = "1Gi"
 
@@ -103,19 +109,11 @@ spec:
             # NetworkPolicy selector: shared job pods get internet-only
             # egress (no RFC1918) — see networkpolicy.yaml.
             [runners.kubernetes.pod_labels]
-              "esweiss.com/runner-class" = "shared"
+              "${cluster_node_label_domain}/runner-class" = "shared"
 
-            # Pod security context - secure by default (non-root)
-            # Non-root execution is appropriate for this shared runner:
-            #   - kubectl apply, helm upgrade (k8s deployments)
-            #   - Basic linting and validation
-            #
-            # This runner does NOT have:
-            #   - SSH access to infrastructure hosts
-            #   - Docker-in-Docker capability
-            #   - Privileged container execution
-            #
-            # For those capabilities, use the infrastructure runner (tags: infrastructure)
+            # Non-root, no DinD — the untrusted shared tier. Privileged work
+            # goes to the infrastructure runner (tags: infrastructure); the
+            # two-tier model is docs/13-ci-cd.md.
             [runners.kubernetes.pod_security_context]
               run_as_non_root = true
               run_as_user = 1000

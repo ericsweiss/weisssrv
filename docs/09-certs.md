@@ -380,7 +380,10 @@ If DNS-01 challenge fails:
    - Zone: Zone: Read
 
 2. **Check rate limits**:
-   - Let's Encrypt: 5 certs/domain/week
+   - Let's Encrypt: 5 **duplicate** certificates (identical SAN set) per week —
+     this deployment issues one cert, so re-issuing `esweiss.com` +
+     `*.esweiss.com` more than 5 times in a week is the limit you will hit.
+     50 certificates per registered domain per week is the other ceiling
    - Cloudflare: No strict rate limits for API
 
 3. **Use staging for testing**:
@@ -424,6 +427,13 @@ secrets:
 ```
 
 ## Related documentation
+
+- [docs/08 — DNS](08-dns.md) (the Cloudflare DNS-01 zone)
+- [docs/15 — Credential rotation](15-credential-rotation.md) (the Cloudflare token and the wildcard key)
+- [docs/12 — Runbooks](12-runbooks.md) § Certificate Renewal Issues
+- [docs/07 — File services](07-fileservices.md) (the cert NFS-over-TLS depends on)
+
+## External references
 
 - [acme.sh Documentation](https://github.com/acmesh-official/acme.sh)
 - [Cloudflare DNS-01](https://github.com/acmesh-official/acme.sh/wiki/dnsapi#dns_cf)

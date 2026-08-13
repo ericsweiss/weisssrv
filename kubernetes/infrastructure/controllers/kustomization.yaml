@@ -1,4 +1,9 @@
 ---
+# metrics-server is a platform controller but is NOT listed here: it has its own
+# Flux Kustomization (clusters/weisssrv/infrastructure-metrics-server.yaml) so
+# that its expected-to-fail cutover install cannot make this `wait: true` stage
+# not-Ready and freeze configs/observability/apps behind it. See that file's
+# header for the full rationale.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:

@@ -20,7 +20,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#smtp-relay-postfix-alerts'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#smtp-relay-postfix-alerts'
             summary: 'Postfix queue backing up on {{ $labels.instance }}'
             description: >-
               The Postfix relay has held more than 5 messages queued for
@@ -36,7 +36,7 @@ spec:
           labels:
             severity: critical
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#smtp-relay-postfix-alerts'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#smtp-relay-postfix-alerts'
             summary: 'Postfix service is not active on {{ $labels.instance }}'
             description: >-
               postfix_up has been 0 for 10 minutes — the SMTP relay's
@@ -54,7 +54,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#smtp-relay-postfix-alerts'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#smtp-relay-postfix-alerts'
             summary: 'postfix-queue collector is degraded or missing on smtp-relay'
             description: >-
               postfix_queue_collector_last_success_seconds is stale (>15m)

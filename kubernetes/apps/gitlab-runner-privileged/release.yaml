@@ -50,16 +50,13 @@ spec:
 
       config: |
         # TOML sections are POSITIONAL: every key after a [section] header
-        # belongs to that section until the next header. All scalar
-        # [runners.kubernetes] keys must therefore come BEFORE any
-        # sub-table. A past mid-section [runners.kubernetes.pod_labels]
-        # sub-table swallowed every key after it — pull_policy (a list)
-        # then failed pod_labels' string-map decode and the runner
-        # crash-looped on first render.
+        # belongs to that section until the next header, so all scalar
+        # [runners.kubernetes] keys must precede any sub-table or they are
+        # silently swallowed by it.
         [[runners]]
           # Keep clones on the LAN path too (see gitlabUrl above). A [[runners]]
           # scalar — must precede the [runners.kubernetes] sub-table.
-          clone_url = "https://git.esweiss.com"
+          clone_url = "https://git.${cluster_internal_domain}"
 
           [runners.kubernetes]
             namespace = "gitlab-runner-privileged"
@@ -72,6 +69,13 @@ spec:
             # Refresh with: docker buildx imagetools inspect python:3.11
             image = "python:3.11@sha256:9800957d2a88867f853ce6072ae1669e37fa269cc6f76009fa1aef4757f62212"
             privileged = true
+
+            # Rank job pods below every unclassed workload and never preempt
+            # (sources/priorityclasses.yaml). The namespace quotas admit more
+            # CPU requests than the cluster has allocatable, so a CI burst used
+            # to compete with platform pods on arrival order alone. A scalar key
+            # — must stay above the first sub-table.
+            priority_class_name = "ci-jobs"
 
             # Build container: ansible control + molecule, not the test workload.
             # cpu_request is the scheduler's per-node reservation and must match
@@ -120,7 +124,7 @@ spec:
                   topology_key = "kubernetes.io/hostname"
                   [runners.kubernetes.affinity.pod_anti_affinity.preferred_during_scheduling_ignored_during_execution.pod_affinity_term.label_selector]
                     [[runners.kubernetes.affinity.pod_anti_affinity.preferred_during_scheduling_ignored_during_execution.pod_affinity_term.label_selector.match_expressions]]
-                      key = "esweiss.com/runner-class"
+                      key = "${cluster_node_label_domain}/runner-class"
                       operator = "In"
                       values = ["infrastructure"]
 
@@ -128,7 +132,7 @@ spec:
             # (ansible/SSH to the whole LAN) — see ./networkpolicy.yaml.
             # Must stay LAST (TOML positionality).
             [runners.kubernetes.pod_labels]
-              "esweiss.com/runner-class" = "infrastructure"
+              "${cluster_node_label_domain}/runner-class" = "infrastructure"
 
     # Manager ServiceAccount (chart-created). Job pods use the token-less
     # gitlab-runner-privileged-jobs SA instead — see serviceaccount.yaml.

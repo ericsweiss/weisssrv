@@ -30,13 +30,17 @@ gotchas that bite. Copy an existing app rather than inventing a shape.
    **except** the private ranges `[10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16,
    100.64.0.0/10, 169.254.0.0/16]`. Add a **scrape-allow** from the observability
    namespace. Copy the egress shape from `authentik/networkpolicy.yaml` or
-   `recipes/networkpolicy.yaml`.
+   `recipes/networkpolicy.yaml`. If an allow really is namespace-wide (every pod
+   gets it), take the shared component instead — `netpol-egress-dns`,
+   `netpol-egress-apiserver`, `netpol-egress-public`; each ships one
+   `podSelector: {}` policy, so it is wrong for a per-app rule. Addresses here
+   stay LITERAL: the parity gate reads NetworkPolicies straight from git.
 4. **VPA** (`vpa.yaml`, required): `Initial` for stateless; `Off` for
    DB/stateful; memory-only when an HPA owns CPU. See `docs/33-autoscaling.md`.
 5. **Certificate** per host (`certificate.yaml`): `issuerRef` ClusterIssuer
    `letsencrypt-prod`, `renewBefore: 720h`.
 6. **IngressRoutes**: public → `external-dns.alpha.kubernetes.io/target:
-   ericsweiss.com` annotation + `hsts-header` middleware; internal →
+   ${cluster_external_domain}` annotation + `hsts-header` middleware; internal →
    `lan-tailscale-only` + `hsts-header`. Reference platform middlewares from the
    `traefik` namespace.
 7. **Secrets** (`externalsecret.yaml`): store `onepassword-homelab`,
@@ -46,17 +50,43 @@ gotchas that bite. Copy an existing app rather than inventing a shape.
    `task flux:sync-versions`, commit both files. New Helm chart → add a
    `HelmRepository` under `kubernetes/infrastructure/sources/`.
 9. **Observability** (mandatory): ServiceMonitor/PodMonitor in the right place +
-   scrape NetworkPolicy; a down/stale alert rule added to the appropriate
-   `homelab.*` group in
-   `kubernetes/infrastructure/observability/kube-prometheus-stack/release.yaml`
-   (match existing `for`/`severity`/`runbook` style); a blackbox probe for
-   user-facing endpoints where no exporter covers reachability. Grafana dashboard
-   only if a good upstream one exists (ConfigMap sidecar via `configMapGenerator`
-   in `observability/dashboards/`).
+   scrape NetworkPolicy; a down/stale alert rule (§ Alert rules below); a
+   blackbox probe for user-facing endpoints where no exporter covers
+   reachability. Grafana dashboard only if a good upstream one exists (ConfigMap
+   sidecar via `configMapGenerator` in `observability/dashboards/`).
 10. **DNS**: internal = `adguard_home_rewrites` entry in `group_vars/dns.yml` (answer
     `192.168.0.101` for Traefik-fronted). External = the external-dns annotation
     above (no Terraform edit) unless it needs a nested subdomain / DNS-only
-    record (then `terraform/cloudflare/dns.tf`).
+    record — then one entry in `local.dns_records` in `terraform/cloudflare/dns.tf`
+    (`protected = true`; the resources themselves live in the library module).
+11. **Docs**: a `docs/NN-*.md` deployment page (next free number) + its row in the
+    `README.md` docs index and the application table in `CLAUDE.md`, the per-app
+    `kubernetes/apps/<app>/README.md` (required by
+    `kubernetes/apps/kustomization.yaml`), and `docs/16-next-steps.md` updated
+    (mark done / remove from planned).
+
+## Alert rules
+
+Custom alerts are **standalone `PrometheusRule` CRs** under
+`kubernetes/infrastructure/observability/rules/` — one file per area, each
+holding `spec.groups[].name: homelab.<area>`, all registered in
+`rules/kustomization.yaml`. The kube-prometheus-stack HelmRelease carries no
+`additionalPrometheusRules`; it only *disables* upstream default rules.
+
+For a new alert:
+
+1. Add it to the existing `rules/<area>.yaml` whose `homelab.<area>` group it
+   belongs to, or add a new file **and** register it in
+   `rules/kustomization.yaml`.
+2. `annotations.runbook_url` is **required** — point at the `docs/` section that
+   says what to do, matching the `for`/`severity`/`summary` style of the
+   neighbouring rules.
+3. Ship a **promtool unit test** in `scripts/prometheus-rule-tests/` (one
+   `*.test.yaml` per area, mirroring the rule file) and prove it with
+   `task lint:prometheus-config` — that task extracts the live corpus via
+   `scripts/extract-prometheus-config.py` and runs promtool + amtool over it.
+   `scripts/test_prometheus_rule_coverage.py` fails if a new alert has neither a
+   unit test nor an entry in its `UNTESTED` dict.
 
 ## Storage gotchas
 
@@ -77,6 +107,14 @@ gotchas that bite. Copy an existing app rather than inventing a shape.
   "true"` (+`esweiss.com/cpu: modern|legacy` if the workload needs it).
 - **NAS-pin** (needs NFS-local or AVX): required hostname `k3s-agt-nas-01` +
   toleration `esweiss.com/nas=true:PreferNoSchedule`.
+- **GPU**: `nodeSelector esweiss.com/gpu: "nvidia"` plus an
+  `nvidia.com/gpu` resource request (the device plugin is time-sliced, so a
+  request of 1 is a slice, not exclusivity) — `docs/43-gpu-passthrough.md`.
+- **Priority**: leave `priorityClassName` unset for an ordinary app — priority 0
+  already outranks CI job pods. The two repo classes in
+  `kubernetes/infrastructure/sources/priorityclasses.yaml` are `platform` (must
+  win against apps and CI) and `ci-jobs` (negative, never preempts; set via
+  `[runners.kubernetes] priority_class_name` in the runner TOMLs).
 
 ## SSO
 
@@ -84,7 +122,9 @@ gotchas that bite. Copy an existing app rather than inventing a shape.
 - Authentik applications/providers/group-bindings are **codified in
   `terraform/authentik/`** (`applications.tf`, `providers_oauth2.tf`,
   `providers_proxy.tf`, `providers_saml.tf`, `groups.tf`,
-  `policy_bindings.tf`). Edit the `.tf` files, review the plan line-by-line,
+  `policy_bindings.tf`) — each file is a `locals` MAP fed to the weisssrv-lib
+  `authentik-sso` module, not a set of resources, so adding an app is a map
+  entry. Edit the `.tf` files, review the plan line-by-line,
   then run a supervised `op run -- terraform apply` — **never the UI** (UI-created
   objects drift out of state). Its add-an-app recipe and day-2 ops are in
   `terraform/authentik/README.md` + `docs/40-authentik-terraform.md`. Record the

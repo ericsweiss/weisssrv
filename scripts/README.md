@@ -9,8 +9,19 @@ point, and CI calls the same commands.
 | Origin | Meaning |
 |---|---|
 | local | Maintained here; the library ships nothing equivalent. |
-| vendored | A byte-identical copy of weisssrv-lib's file, gated by `test_vendored_byte_identity.py`. Fix it upstream, tag, re-vendor — a local edit is reverted by the next re-vendor, and site data belongs in the script's config file. |
-| forked | A vendored file this cluster had to diverge from, declared with its reason in `test_vendored_byte_identity.FORKED`. Re-converge by getting the difference upstream. |
+| vendored | A byte-identical copy of a weisssrv-lib file. Fix it upstream, tag, re-vendor — a local edit is reverted by the next re-vendor, and site data belongs in the script's config file. |
+| forked | A vendored file this cluster had to diverge from, declared with its reason in the registry. Re-converge by getting the difference upstream; a library change to a forked file must be ABSORBED, not ignored. |
+
+The **inventory of record is the library's registry**,
+`weisssrv-lib/scripts/vendored-paths.yml`, enforced here by
+`test_vendored_byte_identity.py` (which drives the library's
+`scripts/check-vendored-copies.py`). The Origin columns below are the readable
+view of it; when the two disagree, the registry wins. List what is registered
+with:
+
+```bash
+python3 ../weisssrv-lib/scripts/check-vendored-copies.py --consumer weisssrv --list
+```
 
 ## Policy gates (run by `task lint` and the CI lint stage)
 
@@ -23,6 +34,8 @@ point, and CI calls the same commands.
 | `check-deploy-host-coverage.py` | Each CI-deployed playbook's roles really reach every host it claims | local |
 | `check-doc-links.py` | Every relative Markdown link in every tracked `*.md` resolves | vendored |
 | `check-alertmanager-behaviour.py` | Each alert reaches the receiver it should, and every inhibit pair still binds | local |
+| `check-cluster-literals.py` | The substituted trees spell cluster identity as `cluster-config` placeholders, and that ConfigMap agrees with the Ansible inventory | local |
+| `check-default-deny-coverage.py` | Every workload-owning namespace carries an ingress default-deny (reasoned exemptions in the script) | local |
 | `check-hpa-vpa-invariant.py` | No workload has both an HPA and a CPU-controlling VPA | vendored |
 | `check-integration-matrix-coverage.sh` | Every integration-test dir has a CI matrix entry | local |
 | `check-kubectl-version-pin.py` | The CI kubectl pin stays within ±1 minor of `k3s_version` | vendored |
@@ -51,7 +64,8 @@ point, and CI calls the same commands.
 | `generate-versions-configmap.py` | `kubernetes/infrastructure/sources/versions-configmap.yaml` from `all.yml` (`task flux:sync-versions`) | vendored |
 | `generate-hosts-env.py` | `scripts/hosts.env` from `hosts.yml` (`task hosts:sync`) | vendored |
 | `extract-prometheus-config.py` | Standalone rule + Alertmanager files for promtool/amtool — unions the HelmRelease with `observability/rules/` | forked |
-| `flux-render.sh` | The substitution exports + schema version for a Flux render | vendored |
+| `flux-render.sh` | The substitution exports + schema version for a Flux render (ONE ConfigMap) | vendored |
+| `flux-env.sh` | The same entry point over BOTH substitution ConfigMaps — what `task flux:lint` and the CI flux-lint job call | vendored |
 | `flux-child-kustomizations.py` | The cluster's child Kustomizations in `dependsOn` order | local |
 
 ## Version tracking
@@ -107,17 +121,37 @@ re-vendor never has to be re-edited. Each is covered by `test_site_configs.py`.
 | `helm-values-releases.yaml` | `validate-helm-values.py` | Which HelmReleases get `helm template`d |
 | `hosts-env-map.yml` | `generate-hosts-env.py` | Inventory group → `hosts.env` variable |
 | `b2-bucket.json` | `b2-bucket-drift.py` | Bucket identity + its declared settings |
+| `netpol-except.yaml` | `check-netpol-except-parity.py` | The reserved-CIDR except-list + the peer-less egress policies allowed to omit it |
+| `alertmanager-behaviour.yaml` | `check-alertmanager-behaviour.py` | The alert→receiver route cases and the upstream alerts that must stay routable |
+
+## Vendored files outside `scripts/`
+
+The registry covers more than this directory — the shared lint profiles live at
+the repo root, discovered there by the tools' conventional names. They are gated
+by the same test, so a library bump that tightens a shared profile cannot
+silently not apply here.
+
+| File | Library path | Origin |
+|---|---|---|
+| `../ruff.toml` | `lint/ruff.toml` | vendored |
+| `../.gitleaks.toml` | `lint/gitleaks.toml` | forked (per-repo path exclusions + fixture anchors) |
+| `../.gitlab/secret-detection-ruleset.toml` | `lint/secret-detection-ruleset.toml` | forked (names this repo's scanned paths) |
+| `../.editorconfig` | `lint/editorconfig` | forked (per-repo file-type sections) |
+| `../.pre-commit-config.yaml` | `lint/pre-commit-config.yaml` | forked (per-repo hook set) |
 
 ## Tests and data
 
 `test_*.py` are pytest unit tests — `task scripts:test`, also the CI
 `python-tests` job. The exhaustive suites for the vendored scripts live in
 weisssrv-lib next to the code; what runs here is `test_vendored_smoke.py` (the
-copies are runnable), `test_vendored_byte_identity.py` (they are unmodified,
-compared against a weisssrv-lib checkout at the pinned ref) and
+copies are runnable), `test_vendored_byte_identity.py` (they are unmodified —
+it drives the library's `check-vendored-copies.py` against a weisssrv-lib
+checkout at the pinned ref, and never skips when that checkout is missing),
+`test_scripts_have_tests.py` (every local script is exercised by some suite) and
 `test_site_configs.py` (the config files above). `prometheus-rule-tests/` holds
-the promtool rule unit tests consumed by `lint-prometheus-config.sh`.
-`hosts.env` is generated, not edited (`task hosts:sync`).
+the promtool rule unit tests consumed by `lint-prometheus-config.sh`, with
+`test_prometheus_rule_coverage.py` asserting every alert has one or a declared
+exemption. `hosts.env` is generated, not edited (`task hosts:sync`).
 
 ## Related documentation
 

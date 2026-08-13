@@ -46,6 +46,9 @@ spec:
       # from the pre-existing op-credentials Secret (default credentialsName).
       credentials_base64: ""
       serviceType: ClusterIP
+      # `platform` (sources/priorityclasses.yaml). Only the connect key is set:
+      # operator.create is false below, so the operator pod never renders.
+      priorityClassName: platform
       # HA: the ZFS-encryption boot path depends on Connect, so a single node
       # drain must not take it offline. Keep this equal to the HPA floor below,
       # or the chart's static count flaps against the HPA.
@@ -60,12 +63,12 @@ spec:
         avgCpuUtilization: 80
         avgMemoryUtilization: 0
       nodeSelector:
-        esweiss.com/cpu: "modern"
+        ${cluster_node_label_domain}/cpu: "modern"
       tolerations:
-        - key: esweiss.com/nas
+        - key: ${cluster_node_label_domain}/nas
           operator: Exists
           effect: PreferNoSchedule
-        - key: esweiss.com/compute
+        - key: ${cluster_node_label_domain}/compute
           operator: Exists
           effect: PreferNoSchedule
       # PREFERRED, not required: with only 3 modern-CPU nodes a hard one-per-host
@@ -80,6 +83,11 @@ spec:
                   matchLabels:
                     app: onepassword-connect
                 topologyKey: kubernetes.io/hostname
+      # Hand-set limits, matched by the paired VPA's maxAllowed; that VPA is
+      # RequestsOnly so nothing rewrites them at runtime. Deliberately above the
+      # peak+60% rule the other platform controllers use (30d peaks are ~36Mi
+      # api / ~28Mi sync): Connect is on the ZFS-encryption boot path and its
+      # working set tracks vault size, so the ceiling is kept generous.
       api:
         resources:
           requests:

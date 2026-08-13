@@ -42,6 +42,10 @@ spec:
       retries: 3
       remediateLastFailure: true
   values:
+    # `platform` (sources/priorityclasses.yaml). The chart has no global key —
+    # the controller reads the top-level one and webhook/certController each
+    # read their own, so all three are set below.
+    priorityClassName: platform
     serviceMonitor:
       enabled: true
     installCRDs: true
@@ -57,12 +61,12 @@ spec:
     replicaCount: 2
     leaderElect: true
     nodeSelector:
-      esweiss.com/cpu: modern
+      ${cluster_node_label_domain}/cpu: modern
     tolerations:
-      - key: esweiss.com/nas
+      - key: ${cluster_node_label_domain}/nas
         operator: Exists
         effect: PreferNoSchedule
-      - key: esweiss.com/compute
+      - key: ${cluster_node_label_domain}/compute
         operator: Exists
         effect: PreferNoSchedule
     topologySpreadConstraints:
@@ -76,19 +80,24 @@ spec:
             app.kubernetes.io/name: external-secrets
     webhook:
       replicaCount: 2
+      priorityClassName: platform
+      # Memory limits across the three ESO components are hand-set at the 30d
+      # working-set peak +60% and matched by the paired VPAs' maxAllowed; the
+      # VPAs are RequestsOnly, so nothing rewrites them at runtime. Peaks:
+      # webhook ~152Mi, certController ~193Mi, controller ~148Mi.
       resources:
         requests:
           cpu: 25m
           memory: 64Mi
         limits:
-          memory: 128Mi
+          memory: 256Mi
       nodeSelector:
-        esweiss.com/cpu: modern
+        ${cluster_node_label_domain}/cpu: modern
       tolerations:
-        - key: esweiss.com/nas
+        - key: ${cluster_node_label_domain}/nas
           operator: Exists
           effect: PreferNoSchedule
-        - key: esweiss.com/compute
+        - key: ${cluster_node_label_domain}/compute
           operator: Exists
           effect: PreferNoSchedule
       topologySpreadConstraints:
@@ -102,19 +111,20 @@ spec:
               app.kubernetes.io/name: external-secrets-webhook
     certController:
       replicaCount: 2
+      priorityClassName: platform
       resources:
         requests:
           cpu: 25m
           memory: 64Mi
         limits:
-          memory: 128Mi
+          memory: 320Mi
       nodeSelector:
-        esweiss.com/cpu: modern
+        ${cluster_node_label_domain}/cpu: modern
       tolerations:
-        - key: esweiss.com/nas
+        - key: ${cluster_node_label_domain}/nas
           operator: Exists
           effect: PreferNoSchedule
-        - key: esweiss.com/compute
+        - key: ${cluster_node_label_domain}/compute
           operator: Exists
           effect: PreferNoSchedule
       topologySpreadConstraints:

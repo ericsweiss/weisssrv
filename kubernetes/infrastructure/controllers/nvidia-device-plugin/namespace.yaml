@@ -4,10 +4,9 @@
 #
 # pod-security enforce=privileged: the plugin mounts the host device tree and
 # talks to the kubelet device-plugin socket, which baseline/restricted forbid.
-# It ran that way already (an unlabelled namespace defaults to privileged) — the
-# labels make it an explicit, reviewable decision scoped to this namespace, and
-# restore the warn/audit signal for anything else that lands here. Matches the
-# tailscale namespace, the other privileged platform component.
+# The explicit labels scope the elevation to this namespace and keep the
+# warn/audit signal for anything else that lands here. Matches the tailscale
+# namespace, the other privileged platform component.
 apiVersion: v1
 kind: Namespace
 metadata:

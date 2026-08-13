@@ -220,15 +220,26 @@
         success_msg: "Client is in null client mode"
       when: "'mail_clients' in group_names"
 
-    - name: Check relay mynetworks includes Docker network
+    - name: Check relay mynetworks (expected loopback-only)
       ansible.builtin.command: postconf -h mynetworks
       register: relay_mynetworks
       changed_when: false
       when: "'relay_servers' in group_names"
 
-    - name: Log relay mynetworks
-      ansible.builtin.debug:
-        msg: "Relay mynetworks: {{ relay_mynetworks.stdout }}"
+    # Load-bearing, not informational: the scenario relays through 587 on SASL
+    # alone (molecule.yml keeps the role's loopback-only mynetworks and drops
+    # permit_mynetworks). If mynetworks ever widened, a relayed message would
+    # prove a network exemption instead of a real handshake and the mail-stack
+    # assertions above would pass for the wrong reason.
+    - name: Assert relay mynetworks grants no network exemption
+      ansible.builtin.assert:
+        that:
+          - relay_mynetworks.stdout | trim == '127.0.0.0/8'
+        fail_msg: >-
+          Relay mynetworks is not loopback-only
+          ({{ relay_mynetworks.stdout }}) — the 587 relay assertions no longer
+          prove SASL authentication.
+        success_msg: "Relay mynetworks is loopback-only: {{ relay_mynetworks.stdout }}"
       when: "'relay_servers' in group_names"
 
     # Final Summary

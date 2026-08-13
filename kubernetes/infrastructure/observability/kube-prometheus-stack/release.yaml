@@ -41,6 +41,14 @@ spec:
       enabled: false
     prometheus:
       prometheusSpec:
+        # `platform` (sources/priorityclasses.yaml). The chart has no global
+        # key: the operator, Prometheus and Alertmanager each read their own
+        # (prometheusOperator.priorityClassName below,
+        # prometheus.prometheusSpec / alertmanager.alertmanagerSpec here).
+        # Grafana, kube-state-metrics and node-exporter are subcharts and stay
+        # unclassed — losing one costs a dashboard, not the platform.
+        priorityClassName: platform
+
         # Prometheus runs as nobody (65534); fsGroup ensures the PVC is writable
         securityContext:
           runAsNonRoot: true
@@ -48,16 +56,15 @@ spec:
           runAsGroup: 65534
           fsGroup: 65534
 
-        # Pin to NAS node for local ZFS zvol storage
+        # NAS-pinned: the TSDB PV is node-local on k3s-agt-nas-01.
         nodeSelector:
-          esweiss.com/nas: "true"
+          ${cluster_node_label_domain}/nas: "true"
         tolerations:
-          - key: esweiss.com/nas
+          - key: ${cluster_node_label_domain}/nas
             operator: Equal
             value: "true"
             effect: PreferNoSchedule
 
-        # Use existing PVC backed by ZFS zvol on k3s-agt-nas-01
         storageSpec:
           volumeClaimTemplate:
             spec:
@@ -102,12 +109,17 @@ spec:
         resources:
           requests:
             cpu: 200m
-            memory: 3Gi
+            # Tracks the recorded Off-tier target (4524Mi). The request is what
+            # the scheduler and the eviction ranking see, so leaving it a
+            # gigabyte below the measured need put the TSDB in the
+            # first-to-be-evicted band while the limit still looked generous.
+            memory: 4608Mi
           limits:
             memory: 6Gi
 
     alertmanager:
       alertmanagerSpec:
+        priorityClassName: platform
         configSecret: alertmanager-config
         # Two gossiping replicas over an emptyDir. No volumeClaimTemplate on
         # purpose: the only dynamic class is local-path (node-local, would pin
@@ -130,7 +142,6 @@ spec:
         minAvailable: 1
 
     grafana:
-      # Ingress handled by Traefik IngressRoute
       ingress:
         enabled: false
 
@@ -170,7 +181,7 @@ spec:
 
       grafana.ini:
         server:
-          root_url: https://grafana.esweiss.com
+          root_url: https://grafana.${cluster_internal_domain}
         auth:
           disable_login_form: true
         analytics:
@@ -187,9 +198,9 @@ spec:
         GF_AUTH_GENERIC_OAUTH_NAME: "Authentik"
         GF_AUTH_GENERIC_OAUTH_ALLOW_SIGN_UP: "true"
         GF_AUTH_GENERIC_OAUTH_SCOPES: "openid profile email"
-        GF_AUTH_GENERIC_OAUTH_AUTH_URL: "https://auth.esweiss.com/application/o/authorize/"
-        GF_AUTH_GENERIC_OAUTH_TOKEN_URL: "https://auth.esweiss.com/application/o/token/"
-        GF_AUTH_GENERIC_OAUTH_API_URL: "https://auth.esweiss.com/application/o/userinfo/"
+        GF_AUTH_GENERIC_OAUTH_AUTH_URL: "https://auth.${cluster_internal_domain}/application/o/authorize/"
+        GF_AUTH_GENERIC_OAUTH_TOKEN_URL: "https://auth.${cluster_internal_domain}/application/o/token/"
+        GF_AUTH_GENERIC_OAUTH_API_URL: "https://auth.${cluster_internal_domain}/application/o/userinfo/"
         GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH: "contains(groups, 'grafana-admins') && 'Admin' || contains(groups, 'grafana-users') && 'Viewer' || ''"
         GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_STRICT: "true"
 
@@ -229,7 +240,6 @@ spec:
               mountPath: /var/run/secrets/kubernetes.io/serviceaccount
               readOnly: true
 
-      # Additional datasource: Loki for log queries
       additionalDataSources:
         - name: Loki
           type: loki
@@ -238,7 +248,6 @@ spec:
           access: proxy
           isDefault: false
 
-      # Persistent storage for Grafana's SQLite DB (service accounts, prefs)
       persistence:
         enabled: true
         type: pvc
@@ -272,11 +281,10 @@ spec:
 
       # SQLite on NFS cannot tolerate two writers; RollingUpdate would run
       # old+new pods against the same DB during every upgrade.
-      # rollingUpdate must be explicitly nulled: the live Deployment
-      # carries rollingUpdate defaults from its RollingUpdate days, and
-      # a patch that only sets type=Recreate leaves them in place — the
-      # API rejects the combination ("rollingUpdate: Forbidden ... when
-      # strategy type is 'Recreate'").
+      # rollingUpdate must be explicitly nulled: a patch that only sets
+      # type=Recreate leaves any existing rollingUpdate fields in place, and
+      # the API rejects that combination ("rollingUpdate: Forbidden ... when
+      # strategy type is 'Recreate').
       deploymentStrategy:
         type: Recreate
         rollingUpdate: null
@@ -292,7 +300,6 @@ spec:
       enabled: true
 
     prometheus-node-exporter:
-      # Tolerate ALL taints so node-exporter runs on every node in the cluster
       tolerations:
         - operator: Exists
       # The processes collector is off by default; node_processes_* gives
@@ -509,6 +516,9 @@ spec:
                         valueFrom: [uncappedTarget, memory]
 
     prometheusOperator:
+      # Templated by the chart but absent from its values.yaml, so it is spelled
+      # here rather than inherited — confirmed against the rendered Deployment.
+      priorityClassName: platform
       # The chart ships `resources: {}`, so without this the operator has no OOM
       # ceiling at all — its paired VPA (Auto) can set requests but cannot
       # introduce a limit where the pod has none.
@@ -580,6 +590,12 @@ spec:
         # tripping the "cluster can't tolerate one node failure" check for the
         # 15-30m a burst runs. Replaced by the CI-namespace-excluding copy in
         # rules/kubernetes-resources.yaml.
+        #
+        # KubeMemoryOvercommit stays ENABLED on the same bursts, deliberately:
+        # memory is incompressible, so a CI burst that overcommits it can
+        # OOMKill platform workloads rather than just slowing everything down.
+        # The CPU rule's exclusion buys quiet on a compressible resource; the
+        # memory rule's noise is the signal (docs/33).
         KubeCPUOvercommit: true
         # Both select job="node-exporter", the in-cluster DaemonSet, which runs
         # without the systemd collector and exports zero node_systemd_* series.

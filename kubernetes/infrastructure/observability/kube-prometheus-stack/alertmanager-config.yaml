@@ -22,8 +22,8 @@ spec:
       data:
         alertmanager.yaml: |
           global:
-            smtp_smarthost: "smtp-relay.esweiss.com:587"
-            smtp_from: "Alertmanager <alertmanager@esweiss.com>"
+            smtp_smarthost: "smtp-relay.${cluster_internal_domain}:587"
+            smtp_from: "Alertmanager <alertmanager@${cluster_internal_domain}>"
             smtp_require_tls: true
             smtp_auth_username: relayuser
             smtp_auth_password: {{ .smtpPassword | quote }}
@@ -149,11 +149,7 @@ spec:
             # Every name here must resolve to a rule in observability/rules/ or
             # to scripts/check-alertmanager-behaviour.py's UPSTREAM_ALERTS —
             # an unmatched member of an alternation is an inert matcher that
-            # nothing surfaces at runtime. KubeletInstanceUnreachable was one:
-            # it matches no chart rule (upstream ships KubeNodeUnreachable /
-            # KubeletDown / KubeNodeNotReady, all node-level truths that must
-            # stay visible during an outage), so it was dropped rather than
-            # remapped.
+            # nothing surfaces at runtime.
             - source_matchers:
                 - alertname="NodeOutageStormControl"
               target_matchers:

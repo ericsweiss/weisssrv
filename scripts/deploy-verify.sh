@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 # Post-deployment cluster verification, invoked by the deploy-verify CI job
-# (.gitlab-ci.yml) as `bash scripts/deploy-verify.sh`. Extracted from the inline
-# job body so this ~400-line script lands under shellcheck coverage (the job's
-# scripts/*.sh glob) instead of living unlinted inside YAML.
+# (.gitlab-ci.yml) as `bash scripts/deploy-verify.sh`.
 #
 # Contract: runs after .k3s-deploy-base (kubectl + jq) provisioned the runner
 # and the inline flux-install step put `flux` on PATH. Reads KUSTOMIZE_VERSION,
@@ -166,6 +164,48 @@ print(doc.get('spec',{}).get('path','') or '')
   done
 fi
 
+# --- Known-transitional carve-out: the metrics-server AddOn cutover ---------
+#
+# `infrastructure-metrics-server` is the one Flux stage whose Ready=False is a
+# DESIGNED, operator-paced state rather than a fault: the HelmRelease cannot
+# install while k3s's packaged AddOn still owns v1beta1.metrics.k8s.io, and the
+# `--disable=metrics-server` that removes it lands from Ansible, never from the
+# merge pipeline (docs/33 § metrics-server).
+#
+# Without this carve-out that one stage poisons STEADY_STATE below, which
+# silently DOWNGRADES six unrelated failure classes to WARNING (non-Ready
+# ExternalSecrets, an empty observability namespace, failing/unready
+# observability pods, missing/failing observability HelmReleases) and collapses
+# their wait budgets — on every main pipeline, for as long as the window is
+# open. So the two known objects are excluded by name, loudly, and NOTHING else
+# changes: every other resource keeps its normal severity and the job still
+# fails on it.
+#
+# The carve-out is keyed to LIVE evidence that the cutover is still open — the
+# AddOn stamps its objects with Rancher objectset annotations — so it expires by
+# itself the moment the k3s deploy lands. While the window is open, ANY fault in
+# these two objects (cutover-related or not) is deferred to a NOTICE; the gates
+# re-arm when the APIService loses its objectset stamp, so a masked defect
+# surfaces at cutover close rather than being lost.
+CUTOVER_KS="flux-system/infrastructure-metrics-server"
+CUTOVER_HR="kube-system/metrics-server"
+CUTOVER_EXCLUDE=""
+metrics_server_addon_owned() {
+  kubectl get apiservice v1beta1.metrics.k8s.io -o json 2>/dev/null \
+    | jq -e '[((.metadata.annotations // {}) + (.metadata.labels // {}) | keys[])
+             | select(startswith("objectset.rio.cattle.io/"))] | length > 0' >/dev/null 2>&1
+}
+if metrics_server_addon_owned; then
+  CUTOVER_EXCLUDE="$CUTOVER_KS $CUTOVER_HR"
+  echo ""
+  echo "NOTICE: metrics-server AddOn cutover is OPEN — v1beta1.metrics.k8s.io is still"
+  echo "        owned by the k3s packaged AddOn (objectset.rio.cattle.io/* present)."
+  echo "        $CUTOVER_KS and $CUTOVER_HR are Ready=False BY DESIGN"
+  echo "        and are excluded from the readiness gates below. Close the window with"
+  echo "        \`task k3s:deploy\` (docs/33 § metrics-server; docs/16 § Open follow-ups)."
+  echo "        Every other resource keeps its normal severity."
+fi
+
 # Snapshot pre-reconcile state to distinguish steady-state from bootstrap.
 # If all Kustomizations are already Ready, this is a steady-state push and
 # non-Ready ExternalSecrets should be treated as failures. During bootstrap
@@ -175,7 +215,7 @@ fi
 # kubectl failure would otherwise propagate out of the substitution and
 # set -e would kill the script — the guard degrades to bootstrap mode instead.
 PRE_KS_NOT_READY=$(kubectl get kustomizations.kustomize.toolkit.fluxcd.io -A -o json 2>/dev/null \
-  | count_not_ready || echo "999")
+  | without_items "$CUTOVER_EXCLUDE" | count_not_ready || echo "999")
 STEADY_STATE=$(steady_state "$PRE_KS_NOT_READY")
 if [ "$STEADY_STATE" = "true" ]; then
   echo "Cluster is steady-state (all Kustomizations were Ready pre-reconcile)"
@@ -246,14 +286,15 @@ echo "Checking for non-Ready Flux resources..."
 FLUX_KINDS="kustomizations.kustomize.toolkit.fluxcd.io,helmreleases.helm.toolkit.fluxcd.io,gitrepositories.source.toolkit.fluxcd.io,helmrepositories.source.toolkit.fluxcd.io,ocirepositories.source.toolkit.fluxcd.io"
 check_flux_resources_ready() {
   FLUX_ALL=$(kubectl get "$FLUX_KINDS" -A -o json 2>/dev/null) || return 1
-  NOT_READY=$(echo "$FLUX_ALL" | count_not_ready)
+  NOT_READY=$(echo "$FLUX_ALL" | without_items "$CUTOVER_EXCLUDE" | count_not_ready)
   [ "$NOT_READY" -eq 0 ]
 }
 # 5 min headroom — major chart bumps (kube-prometheus-stack, Loki) can
 # take 2-4 min to reconcile through HelmRelease + child CRD updates +
 # rollout, and verify runs immediately after `git push` of those bumps.
 if ! wait_for "Flux resources ready" 300 10 check_flux_resources_ready; then
-  FLUX_ALL=$(kubectl get "$FLUX_KINDS" -A -o json 2>/dev/null || echo '{"items":[]}')
+  FLUX_ALL=$(kubectl get "$FLUX_KINDS" -A -o json 2>/dev/null | without_items "$CUTOVER_EXCLUDE" \
+    || echo '{"items":[]}')
   NOT_READY_COUNT=$(echo "$FLUX_ALL" | count_not_ready)
   echo "ERROR: $NOT_READY_COUNT Flux resource(s) not Ready:"
   echo "$FLUX_ALL" | jq -r ".items[] | $JQ_NOT_READY | \"  \(.kind)/\(.metadata.namespace)/\(.metadata.name): \((.status.conditions // []) | map(select(.type == \"Ready\")) | .[0].message // \"no Ready condition\")\""
@@ -266,24 +307,35 @@ fi
 # stuck (any child HelmRelease failing), the above broad check catches
 # it too, but naming them explicitly yields clear failure signals in
 # the pipeline output.
-# The names are DERIVED from kubernetes/clusters/weisssrv/*.yaml, not
-# hand-listed: the previous hand-written list omitted infrastructure-crds, so a
-# wedged CRD stage produced no named failure signal here.
+# Children derived from kubernetes/clusters/weisssrv/*.yaml in dependsOn order,
+# never hand-listed — a missing stage (e.g. infrastructure-crds) would leave a
+# wedged CRD stage with no named failure signal here.
 TOP_KUSTOMIZATIONS=$(python3 "$_SCRIPT_DIR/flux-child-kustomizations.py")
 if [ -z "$TOP_KUSTOMIZATIONS" ]; then
   echo "ERROR: could not derive the child Kustomization list from kubernetes/clusters/weisssrv/"
   exit 1
 fi
-echo "Top-level Kustomizations under gate: $(echo "$TOP_KUSTOMIZATIONS" | tr '\n' ' ')"
-check_top_kustomizations_ready() {
+# The open metrics-server cutover (above) is the one excluded name; it is still
+# printed, as a NOTICE, so it never disappears from the pipeline output.
+gated_kustomizations() {
   for ks_name in $TOP_KUSTOMIZATIONS; do
+    case " $CUTOVER_EXCLUDE " in
+      *" flux-system/$ks_name "*) continue ;;
+    esac
+    echo "$ks_name"
+  done
+}
+GATED_KUSTOMIZATIONS=$(gated_kustomizations)
+echo "Top-level Kustomizations under gate: $(echo "$GATED_KUSTOMIZATIONS" | tr '\n' ' ')"
+check_top_kustomizations_ready() {
+  for ks_name in $GATED_KUSTOMIZATIONS; do
     KS_READY=$(kubectl -n flux-system get kustomization "$ks_name" \
       -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
     if [ "$KS_READY" != "True" ]; then return 1; fi
   done
 }
 if ! wait_for "top-level Kustomizations ready" 180 5 check_top_kustomizations_ready; then
-  for ks_name in $TOP_KUSTOMIZATIONS; do
+  for ks_name in $GATED_KUSTOMIZATIONS; do
     KS_READY=$(kubectl -n flux-system get kustomization "$ks_name" \
       -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
     if [ "$KS_READY" != "True" ]; then
@@ -294,6 +346,15 @@ if ! wait_for "top-level Kustomizations ready" 180 5 check_top_kustomizations_re
 else
   echo "All top-level Kustomizations ready"
 fi
+for ks_name in $TOP_KUSTOMIZATIONS; do
+  case " $CUTOVER_EXCLUDE " in
+    *" flux-system/$ks_name "*)
+      KS_READY=$(kubectl -n flux-system get kustomization "$ks_name" \
+        -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
+      echo "NOTICE: flux-system/$ks_name not Ready (status=$KS_READY) — expected: metrics-server cutover open"
+      ;;
+  esac
+done
 
 echo ""
 echo "=== Observability Stack ==="

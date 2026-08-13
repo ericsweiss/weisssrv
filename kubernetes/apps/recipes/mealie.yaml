@@ -46,7 +46,7 @@ spec:
                     values:
                       - k3s-agt-nas-01
       tolerations:
-        - key: esweiss.com/nas
+        - key: ${cluster_node_label_domain}/nas
           operator: Equal
           value: "true"
           effect: PreferNoSchedule
@@ -197,11 +197,11 @@ spec:
             - weight: 100
               preference:
                 matchExpressions:
-                  - key: esweiss.com/nas
+                  - key: ${cluster_node_label_domain}/nas
                     operator: DoesNotExist
       nodeSelector:
-        esweiss.com/general: "true"
-        esweiss.com/cpu: "modern"
+        ${cluster_node_label_domain}/general: "true"
+        ${cluster_node_label_domain}/cpu: "modern"
       # Mealie does not use the kube-API, so the SA token is dropped. drop-ALL /
       # runAsNonRoot are not set: the image starts as root under s6 and drops to
       # PUID/PGID itself.
@@ -219,7 +219,6 @@ spec:
           image: ghcr.io/mealie-recipes/mealie:${mealie_version}
           imagePullPolicy: IfNotPresent
           env:
-            # General settings
             - name: TZ
               value: America/Los_Angeles
             - name: PUID
@@ -231,7 +230,6 @@ spec:
             # callback to one origin. Trade-off: links built without a request
             # context fall back to the default. See docs/22.
 
-            # Database configuration
             - name: DB_ENGINE
               value: postgres
             - name: POSTGRES_USER
@@ -247,9 +245,9 @@ spec:
               value: "5432"
             - name: POSTGRES_DB
               value: mealie
-            # SMTP configuration (SASL-authenticated relay via smtp-relay.esweiss.com)
+            # SASL-authenticated relay, port 587
             - name: SMTP_HOST
-              value: smtp-relay.esweiss.com
+              value: smtp-relay.${cluster_internal_domain}
             - name: SMTP_PORT
               value: "587"
             - name: SMTP_AUTH_STRATEGY
@@ -265,7 +263,7 @@ spec:
                   name: recipes-secrets
                   key: smtp-password
             - name: SMTP_FROM_EMAIL
-              value: mealie@esweiss.com
+              value: mealie@${cluster_internal_domain}
             - name: SMTP_FROM_NAME
               value: Mealie
             # OIDC/SSO configuration (Authentik)
@@ -274,7 +272,7 @@ spec:
             - name: OIDC_PROVIDER_NAME
               value: authentik
             - name: OIDC_CONFIGURATION_URL
-              value: https://auth.ericsweiss.com/application/o/food/.well-known/openid-configuration
+              value: https://auth.${cluster_external_domain}/application/o/food/.well-known/openid-configuration
             - name: OIDC_CLIENT_ID
               valueFrom:
                 secretKeyRef:
@@ -295,17 +293,14 @@ spec:
               value: "false"
             - name: OIDC_REMEMBER_ME
               value: "true"
-            # Disable password-based login (SSO only)
             - name: ALLOW_PASSWORD_LOGIN
               value: "false"
             # OpenAI is configured in-app since Mealie 3.x — the legacy
             # OPENAI_* env vars are no longer read at runtime (config now
             # lives in the ai_providers DB table). Set the API key under
             # Settings > AI (1Password item "OpenAI API Key").
-            # Security settings
             - name: ALLOW_SIGNUP
               value: "false"
-            # Performance
             - name: MAX_WORKERS
               value: "1"
             - name: WEB_CONCURRENCY

@@ -311,10 +311,8 @@
         tailscale_installed: "{{ current_tailscale_version.stdout_lines[0] | default('') }}"
       when: current_tailscale_version.rc == 0
 
-    # NOTE: We compare the version from `tailscale version` (e.g., "1.94.1")
-    # against our pinned tailscale_version. Tailscale's official apt packages
-    # use the base version directly without Debian revision suffixes, so this
-    # comparison works correctly for determining when upgrades are needed.
+    # Tailscale's apt packages carry no Debian revision suffix, so `tailscale
+    # version` output compares directly against tailscale_version.
     - name: Display version info
       ansible.builtin.debug:
         msg: "Current: {{ tailscale_installed | default('not detected') }}, Target: {{ tailscale_version }}"
@@ -456,13 +454,17 @@
   vars:
     ansible_become: false
   tasks:
-    - name: Update Galaxy collections
-      ansible.builtin.command: ansible-galaxy collection install -r requirements.yml --upgrade
+    # --force, not --upgrade: requirements.yml is a PIN, and bumping it is an MR,
+    # never a maintenance action. This only re-materializes the pinned versions
+    # on the controller (ansible-galaxy will not refresh an already-installed
+    # collection without --force), so it is never a "change".
+    - name: Reinstall the pinned Galaxy collections on the controller
+      ansible.builtin.command: ansible-galaxy collection install -r requirements.yml --force
       args:
         chdir: "{{ playbook_dir }}/../.."  # Go up to ansible/ directory
       become: false
       register: collection_update
-      changed_when: "'was installed successfully' in collection_update.stdout or 'Upgrading' in collection_update.stdout"
+      changed_when: false
 
     - name: Display collection update results
       ansible.builtin.debug:

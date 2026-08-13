@@ -764,12 +764,80 @@ if [ -d /mnt/tank/proxmox/dump ]; then
     cat /var/lib/node_exporter/restic_offsite.prom 2>/dev/null | cs_emit "  No restic-offsite metrics"
     echo "restic-offsite verify metrics:"
     cat /var/lib/node_exporter/restic_offsite_verify.prom 2>/dev/null | cs_emit "  No restic-offsite verify metrics"
+    echo "vzdump metrics:"
+    cat /var/lib/node_exporter/vzdump_backup.prom 2>/dev/null | cs_emit "  No vzdump metrics"
+    echo "pve-cluster backup metrics:"
+    cat /var/lib/node_exporter/pve_cluster_backup.prom 2>/dev/null | cs_emit "  No pve-cluster backup metrics"
+    # A restore that has never been PROVEN is not a backup. These are the only
+    # series that say a drill ran and what it compared.
+    echo "restore-drill metrics:"
+    cat /var/lib/node_exporter/backup_restore_drill.prom 2>/dev/null | cs_emit "  No restore-drill metrics"
     echo "backup artifact freshness (per-app landing zone):"
     cat /var/lib/node_exporter/backup_artifact_mtime.prom 2>/dev/null | cs_emit "  No backup-artifact metrics"
-    echo "newest artifact per app (names, not just mtimes — a config-file copy"
-    echo "  satisfies the mtime collector but is not a restorable dump):"
-    sudo sh -c 'for d in /mnt/tank/backups/apps/*/; do [ -d "$d" ] || continue; n=$(ls -t "$d" 2>/dev/null | head -1); echo "  $(basename "$d"): ${n:-<empty>}"; done' 2>/dev/null \
+    # Newest RESTORABLE artifact per app, driven by the same inventory-rendered
+    # patterns the collector uses, so a config-file copy sitting next to a dump
+    # can never be reported as the artifact. Companions are listed separately.
+    echo "newest restorable artifact per app (pattern-matched, with size + mtime):"
+    sudo sh -c '
+      collector=/usr/local/sbin/backup-artifact-mtime-collector.sh
+      base=/mnt/tank/backups/apps
+      [ -d "$base" ] || exit 0
+      # The rendered collector carries the inventory patterns in two heredocs;
+      # the awk toggle prints the lines between each pair of delimiters.
+      if [ -r "$collector" ]; then
+        pats=$(awk "/APP_PATTERNS_EOF/{f=!f; next} f" "$collector")
+        comps=$(awk "/APP_COMPANIONS_EOF/{f=!f; next} f" "$collector")
+      else
+        echo "  collector absent — patterns unknown, reporting newest file per dir"
+        pats=""; comps=""
+      fi
+      for d in "$base"/*/; do
+        [ -d "$d" ] || continue
+        app=$(basename "$d")
+        pat=$(echo "$pats" | awk -F"\t" -v a="$app" "\$1==a{print \$2}")
+        if [ -n "$pat" ]; then
+          # The collector walk, reproduced exactly: recursive, three temp-file
+          # exclusions. A narrower walk here would report NO ARTIFACT for a dump
+          # that lands one directory deeper while
+          # backup_artifact_last_mtime_seconds reads fresh — the metric-vs-truth
+          # disagreement this block exists to expose, inverted.
+          newest=$(find "$d" -type f -name "$pat" ! -name "*.tmp" ! -name "*.partial" ! -name "*.part" -printf "%T@\t%s\t%f\n" 2>/dev/null | sort -n | tail -1)
+        else
+          newest=$(find "$d" -maxdepth 1 -type f -printf "%T@\t%s\t%f\n" 2>/dev/null | sort -n | tail -1)
+        fi
+        if [ -z "$newest" ]; then
+          echo "  $app: NO ARTIFACT matching ${pat:-<any file>}"
+        else
+          ts=$(echo "$newest" | cut -f1 | cut -d. -f1)
+          when=$(date -d "@$ts" "+%Y-%m-%d %H:%M" 2>/dev/null || echo "@$ts")
+          echo "  $app: $(echo "$newest" | cut -f3) ($(echo "$newest" | cut -f2) bytes, $when)"
+        fi
+        echo "$comps" | awk -F"\t" -v a="$app" "\$1==a{print \$2}" | while read -r glob; do
+          [ -n "$glob" ] || continue
+          c=$(find "$d" -maxdepth 1 -type f -name "$glob" -printf "%s\n" 2>/dev/null | sort -n | tail -1)
+          if [ -n "$c" ]; then echo "      companion $glob: $c bytes"; else echo "      companion $glob: MISSING"; fi
+        done
+      done' 2>/dev/null \
         | cs_emit "  No per-app backup landing dirs"
+    # Recovery depth: the retention policy states the INTENT, this states the
+    # truth (docs/42 § Effective restore depth). Read-only (restic_ro passes
+    # --no-lock) but it reaches B2, so a slow or failed list must degrade to a
+    # marker rather than hang the unattended run.
+    echo "restic recovery points (oldest/newest of the offsite repo):"
+    # Capture-and-test rather than piping straight into cs_capped: the fallback
+    # must describe the EMPTY case only (collect-state-lib.sh), and an offsite
+    # repo holding ZERO snapshots is a DR emergency that must not read the same
+    # as a B2 blip or a missing binary. The timeout still bounds an unattended
+    # run; it just gets its own wording now.
+    snaps=$(sudo timeout 90 restic-offsitectl snapshots 2>&1); rc=$?
+    if [ "$rc" -eq 124 ]; then
+      echo "  Snapshot listing TIMED OUT after 90s (B2 slow or unreachable) — repository state UNKNOWN"
+    elif [ "$rc" -ne 0 ]; then
+      echo "  restic-offsitectl snapshots FAILED (rc=$rc) — repository state UNKNOWN"
+      echo "$snaps" | head -1 | sed "s/^/    /"
+    else
+      printf '%s\n' "$snaps" | cs_capped 12 "  Repository holds NO snapshots — nothing is restorable"
+    fi
 else
     echo "Not the NAS (no /mnt/tank/proxmox/dump); skipped"
 fi
@@ -962,8 +1030,8 @@ if systemctl is-active k3s &>/dev/null; then
     sudo k3s kubectl get nodes -o wide 2>/dev/null || echo "Cannot get nodes"
     echo ""
     echo "--- Pod Status ---"
-    # Uncapped: a head cap silently cut namespaces (reloader, vpa-system)
-    # that appear in no later per-namespace section.
+    # Uncapped: namespaces not covered by a later per-namespace section would
+    # be silently cut.
     sudo k3s kubectl get pods -A 2>/dev/null || echo "Cannot get pods"
     echo ""
     echo "--- Pods not Running/Completed ---"
@@ -1144,9 +1212,8 @@ if systemctl is-active k3s &>/dev/null; then
     sudo k3s kubectl get prometheusrules -n observability 2>/dev/null || echo "Cannot get PrometheusRules"
     echo ""
     echo "--- Grafana Dashboards ---"
-    # Capture-and-test rather than `... | wc -l | xargs echo`: a kubectl failure
-    # in that pipeline printed "Dashboard ConfigMaps: 0", indistinguishable from
-    # a genuine zero.
+    # Capture-and-test, not `| wc -l`: a kubectl failure would otherwise render
+    # as a genuine zero.
     dashboards=$(sudo k3s kubectl get configmap -n observability -l grafana_dashboard --no-headers 2>/dev/null)
     if [ -n "$dashboards" ]; then
         echo "Dashboard ConfigMaps: $(printf '%s\n' "$dashboards" | wc -l | tr -d ' ')"
@@ -1351,10 +1418,9 @@ if [ -n "$backup_list" ]; then
 else
     echo "  No backup files found"
 fi
-# Configured vs EFFECTIVE backup path. gitlab.rb only takes effect after
-# `gitlab-ctl reconfigure`; a missed handler left the tarballs on the VM OS
-# disk for days while every backup metric stayed green. Both values in the
-# artifact make that divergence visible at a glance.
+# Configured vs EFFECTIVE backup path: gitlab.rb only takes effect after
+# `gitlab-ctl reconfigure`, so print both — a divergence is invisible to the
+# backup metrics.
 echo "Backup path (gitlab.rb):"
 sudo grep -E "^gitlab_rails\['backup_path'\]" /etc/gitlab/gitlab.rb 2>/dev/null | cs_emit "  not set (default /var/opt/gitlab/backups)"
 echo "Backup path (effective, gitlab.yml):"
@@ -1467,10 +1533,8 @@ if [[ ",${COMPOSE_SECTIONS}," == *,nginx,* ]]; then
 fi
 if [[ ",${COMPOSE_SECTIONS}," == *,backup,* ]]; then
     echo "--- ${APP_LABEL} Backup Freshness ---"
-    # Cap 5: list-timers for a single unit is 4 lines (header + timer + blank +
-    # "N timers listed."), so 3 clipped the summary and emitted a false
-    # "truncated" marker on a complete section — see the archive-backup timer
-    # above.
+    # Cap 5: list-timers for one unit renders 4 lines (see the archive-backup
+    # timer above).
     systemctl list-timers "${BACKUP_TIMER}" --all --no-pager 2>/dev/null | cs_capped 5 "  No ${BACKUP_TIMER}"
     # Dump dir is root-owned; the glob + ls must run under root (an unprivileged
     # glob passes the literal pattern through). Capture-and-test because a
@@ -1707,8 +1771,7 @@ if [ "$STATUS" = "FAILED" ]; then
 fi
 
 # Update CLUSTER_STATUS.txt with latest state (OK or PARTIAL only).
-# Anchored to the repo root, not CWD: running ./scripts/collect-state.sh from
-# anywhere else silently updated a different (or no) file.
+# Anchored to the repo root, not CWD.
 REPO_ROOT="$(cd "$_SCRIPT_DIR/.." && pwd)"
 if cp "$OUTPUT_FILE" "$REPO_ROOT/CLUSTER_STATUS.txt" 2>/dev/null; then
     echo "Updated $REPO_ROOT/CLUSTER_STATUS.txt"

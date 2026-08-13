@@ -96,6 +96,13 @@ also **deletes any rewrite not in the codified list**, so UI-added entries
 (Filters → DNS rewrites) are reverted on the next deploy. To add a permanent
 rewrite, edit dns.yml and redeploy.
 
+One boundary: an **empty** `adguard_home_rewrites` (or `adguard_home_user_rules`)
+means "manage none", not "delete everything" — the role leaves live state alone.
+Removing the *last* codified entry therefore does not prune it; set
+`adguard_home_prune_rewrites: true` / `adguard_home_prune_user_rules: true` to
+make the empty list authoritative. Both lists are non-empty today, so pruning is
+already in effect for everything they name.
+
 The codified list covers (see dns.yml for the authoritative entries):
 
 - All six Proxmox hosts (`pve-*.esweiss.com` → .102–.107)

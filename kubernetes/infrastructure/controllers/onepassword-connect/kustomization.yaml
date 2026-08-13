@@ -1,10 +1,8 @@
 ---
-# release.yaml + the k8s-stdlib hardening (NetworkPolicy, PDB) live in
-# the controllers stage because they're tied to the running deployment
-# this HelmRelease produces. The Connect Certificate + IngressRoute
-# moved to infrastructure/configs/onepassword-connect-{certificate,ingress}.yaml
-# so they're same-stage as the ClusterIssuer + Traefik middlewares they
-# reference.
+# The HelmRelease + its deployment-tied hardening (NetworkPolicy, PDB). The
+# Connect Certificate and IngressRoute live in
+# infrastructure/configs/onepassword-connect-{certificate,ingress}.yaml, same
+# stage as the ClusterIssuer and Traefik middlewares they reference.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:

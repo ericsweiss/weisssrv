@@ -62,4 +62,4 @@ spec:
       # without a caFile or insecureSkipVerify.
       scheme: https
       tlsConfig:
-        serverName: home.esweiss.com
+        serverName: home.${cluster_internal_domain}

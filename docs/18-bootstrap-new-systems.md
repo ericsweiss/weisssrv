@@ -2,16 +2,6 @@
 
 This guide covers preparing new LXC containers and VMs for Ansible automation. Follow these procedures to bring a fresh system from initial creation to fully automated management.
 
-## Table of Contents
-
-1. [Overview](#overview)
-2. [Prerequisites](#prerequisites)
-3. [LXC Container Bootstrap](#lxc-container-bootstrap)
-4. [VM Bootstrap](#vm-bootstrap)
-5. [What the Base Role Expects](#what-the-base-role-expects)
-6. [Validation](#validation)
-7. [Troubleshooting](#troubleshooting)
-
 ---
 
 ## Overview
@@ -77,13 +67,22 @@ Before bootstrapping any system, ensure you have:
 
 On the Proxmox host where you'll create the container:
 
-```bash
-# Download Debian 13 (trixie) template
-pveam update
-pveam available | grep debian-13
+`<proxmox_lxc_template>` throughout this doc is the value of
+`proxmox_lxc_template` in `ansible/inventories/prod/group_vars/all.yml` — the
+single pin, never a literal copied into a runbook. Upstream silently rotates the
+point release (a 13.1-2 → 13.6-1 rotation once broke a cached-template
+recreate), so a hardcoded name goes stale and the download fails outright; see
+docs/12 for the rotation warning.
 
-# Download the template
-pveam download local debian-13-standard_13.0-1_amd64.tar.zst
+```bash
+# Resolve the pin, then download it
+grep proxmox_lxc_template ansible/inventories/prod/group_vars/all.yml
+
+# On the Proxmox host
+pveam update
+pveam available --section system | grep debian-13
+
+pveam download local <proxmox_lxc_template>
 ```
 
 Verify download:
@@ -102,17 +101,28 @@ Check what is live:
 pct list
 ```
 
+`<storage>` is the Proxmox storage id for the host you are creating on, derived
+the same way the `proxmox_lxc` / `proxmox_vm` roles derive it: **`local-ssd` on
+the five compute hosts, `ssd` on pve-nas-01** (which has no `local-ssd` pool).
+Both are ZFS, so the guest gets snapshots, replication and — on `ssd` — at-rest
+encryption. Do **not** use `local-lvm`: it is an LVM-thin pool outside ZFS
+entirely, so a guest there has no snapshots, no replication and no encryption.
+Four guests do sit on pve-nas-01's `local-lvm` deliberately (the two NAS k3s VMs
+plus the plex and immich-ml LXC rootfs — see docs/32); that is a documented
+exception for guests that must never wait on an unlock, not the default for a
+new guest.
+
 **Create unprivileged container** (recommended for security):
 
 ```bash
 pct create <VMID> \
-  local:vztmpl/debian-13-standard_13.0-1_amd64.tar.zst \
+  local:vztmpl/<proxmox_lxc_template> \
   --hostname <hostname> \
   --net0 name=eth0,bridge=vmbr0,ip=<IP>/24,gw=192.168.0.1 \
   --nameserver 192.168.0.150 \
   --nameserver 192.168.0.160 \
-  --storage local-lvm \
-  --rootfs local-lvm:8 \
+  --storage <storage> \
+  --rootfs <storage>:8 \
   --cores 2 \
   --memory 2048 \
   --swap 512 \
@@ -127,7 +137,7 @@ pct create <VMID> \
 - `<hostname>`: DNS name (e.g. app-01)
 - `<IP>`: Static IP (e.g. 192.168.0.240 — outside the allocated `.99-.161`,
   `.202-.207` and `.222/.223/.227` bands; see docs/01 for the full map)
-- `--rootfs local-lvm:8`: 8GB root filesystem (adjust as needed)
+- `--rootfs <storage>:8`: 8GB root filesystem (adjust as needed)
 - `--unprivileged 1`: Run as unprivileged (security best practice)
 - `--features nesting=1`: Enable nested containers (required for Docker/K8s)
 - `--onboot 1`: Start on Proxmox boot
@@ -136,13 +146,13 @@ pct create <VMID> \
 **Example**:
 ```bash
 pct create 240 \
-  local:vztmpl/debian-13-standard_13.0-1_amd64.tar.zst \
+  local:vztmpl/<proxmox_lxc_template> \
   --hostname app-01 \
   --net0 name=eth0,bridge=vmbr0,ip=192.168.0.240/24,gw=192.168.0.1 \
   --nameserver 192.168.0.150 \
   --nameserver 192.168.0.160 \
-  --storage local-lvm \
-  --rootfs local-lvm:16 \
+  --storage <storage> \
+  --rootfs <storage>:16 \
   --cores 4 \
   --memory 4096 \
   --swap 1024 \
@@ -370,18 +380,21 @@ for bootstrapping a VM outside that flow; prefer the automated path for k3s node
 
 ### Cloud-Init Method (Recommended)
 
+`<storage>` follows the same rule as the LXC section above: `local-ssd` on the
+compute hosts, `ssd` on pve-nas-01 — never `local-lvm`.
+
 1. **Prepare Cloud Image**:
    ```bash
    # Download Debian cloud image
    wget https://cloud.debian.org/images/cloud/trixie/latest/debian-13-generic-amd64.qcow2
 
    # Move to Proxmox storage
-   qm importdisk <VMID> debian-13-generic-amd64.qcow2 local-lvm
+   qm importdisk <VMID> debian-13-generic-amd64.qcow2 <storage>
    ```
 
 2. **Configure Cloud-Init**:
    ```bash
-   qm set <VMID> --ide2 local-lvm:cloudinit
+   qm set <VMID> --ide2 <storage>:cloudinit
    qm set <VMID> --boot c --bootdisk scsi0
    qm set <VMID> --serial0 socket --vga serial0
 
@@ -515,9 +528,12 @@ ansible <hostname> -m shell -a "which htop neovim git"
 # 5. Verify timezone
 ansible <hostname> -m shell -a "timedatectl | grep 'Los_Angeles'"
 
-# 6. Check SSH hardening
-ansible <hostname> -m shell -a "grep PasswordAuthentication /etc/ssh/sshd_config"
-# Should show: PasswordAuthentication no
+# 6. Check SSH hardening — ask sshd for its effective config, not the monolithic
+#    file: the base role writes a drop-in at /etc/ssh/sshd_config.d/00-hardening.conf
+#    and never edits /etc/ssh/sshd_config (docs/03).
+ansible <hostname> -b -m shell -a "sshd -T | grep -E 'passwordauthentication|permitrootlogin'"
+# Should show: passwordauthentication no / permitrootlogin no
+# (Proxmox hosts set prohibit-password, which sshd -T prints as without-password.)
 
 # 7. Run full verification
 ansible-playbook ansible/playbooks/postflight.yml --limit <hostname>
@@ -698,11 +714,14 @@ sudo whoami  # Should return 'root'
 
 ## Quick Reference
 
+`<proxmox_lxc_template>` is the pin in `group_vars/all.yml`; `<storage>` is
+`local-ssd` on the compute hosts and `ssd` on pve-nas-01 (never `local-lvm`).
+
 ### LXC Bootstrap (Minimal Steps)
 
 ```bash
 # 1. Create container
-pct create <VMID> local:vztmpl/debian-13-standard_13.0-1_amd64.tar.zst \
+pct create <VMID> local:vztmpl/<proxmox_lxc_template> \
   --hostname <name> --net0 name=eth0,bridge=vmbr0,ip=<IP>/24,gw=192.168.0.1 \
   --nameserver 192.168.0.150 --unprivileged 1 --start 1
 
@@ -733,11 +752,11 @@ ansible-playbook ansible/playbooks/base.yml --limit <hostname>
 ```bash
 # 1. Import cloud image
 qm create <VMID> --name <hostname> --memory 2048 --cores 2 --net0 virtio,bridge=vmbr0
-qm importdisk <VMID> debian-13-generic-amd64.qcow2 local-lvm
-qm set <VMID> --scsihw virtio-scsi-pci --scsi0 local-lvm:vm-<VMID>-disk-0
+qm importdisk <VMID> debian-13-generic-amd64.qcow2 <storage>
+qm set <VMID> --scsihw virtio-scsi-pci --scsi0 <storage>:vm-<VMID>-disk-0
 
 # 2. Configure cloud-init
-qm set <VMID> --ide2 local-lvm:cloudinit
+qm set <VMID> --ide2 <storage>:cloudinit
 qm set <VMID> --boot c --bootdisk scsi0
 qm set <VMID> --ipconfig0 ip=<IP>/24,gw=192.168.0.1
 qm set <VMID> --sshkey ~/.ssh/id_ed25519.pub
@@ -779,10 +798,15 @@ After successfully bootstrapping and deploying base configuration:
 
 ---
 
-## References
+## Related documentation
+
+- [docs/03 — SSH and users](03-ssh-users.md) (what the base role hardens, and how to verify it)
+- [docs/12 — Runbooks](12-runbooks.md) (operational procedures, incl. the LXC template rotation warning)
+- [docs/01 — Overview](01-overview.md) (IP allocation before you pick an address)
+- [docs/32 — ZFS encryption](32-zfs-encryption.md) (why guest storage choice matters)
+
+## External references
 
 - [Proxmox LXC Documentation](https://pve.proxmox.com/wiki/Linux_Container)
 - [Proxmox Cloud-Init Support](https://pve.proxmox.com/wiki/Cloud-Init_Support)
 - [Ansible Connection Methods](https://docs.ansible.com/ansible/latest/user_guide/connection_details.html)
-- [docs/03-ssh-users.md](03-ssh-users.md) - SSH and user management details
-- [docs/12-runbooks.md](12-runbooks.md) - Operational procedures

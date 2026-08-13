@@ -1,16 +1,16 @@
 # Python dependencies for Ansible and Molecule testing.
 #
-# Exact pins, not lower bounds: this file is COPYed and pip-installed to build
-# the molecule-ci CI image (docker/molecule-ci/Dockerfile), so a rebuild must be
-# reproducible and must not silently pull a new major. The ansible/ansible-lint
-# pins are kept in step with the inline pins in .gitlab-ci.yml (ANSIBLE_VERSION
-# + the lint job) so the molecule and lint jobs agree on those versions.
+# Exact pins, not lower bounds: a local checkout and CI must resolve the same
+# toolchain, and a lower bound would silently pull a new major. The molecule
+# test/CI images are built in weisssrv-lib (docker/molecule-ci/) from their own
+# pins — this file is the LOCAL toolchain plus the source of `ansible`, which
+# `.gitlab-ci.yml`'s `variables.ANSIBLE_VERSION` repeats for the jobs that
+# pip-install it directly. scripts/test_site_configs.py asserts those two agree.
 ansible==11.6.0
 ansible-lint==25.12.2
 # black is a transitive dep (ansible-lint's jinja rule imports it); the black
 # 26.5.x wheels ship a broken mypyc extension that makes ansible-lint fail to
-# load. Kept in step with the same guard in the .gitlab-ci.yml lint job; lift
-# once 26.5.x is fixed.
+# load. Lift once 26.5.x is fixed.
 black<26.5.0
 molecule==26.4.0
 molecule-plugins[docker]==25.8.12

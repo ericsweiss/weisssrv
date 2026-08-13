@@ -57,4 +57,4 @@ spec:
       path: /-/metrics
       scheme: https
       tlsConfig:
-        serverName: git.esweiss.com
+        serverName: git.${cluster_internal_domain}

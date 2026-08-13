@@ -2,17 +2,6 @@
 
 This guide walks you through setting up bare metal hardware to a production-ready Proxmox cluster, ready for Ansible automation.
 
-## Table of Contents
-
-1. [Hardware Requirements](#hardware-requirements)
-2. [Hardware Inventory](#hardware-inventory)
-3. [UEFI/BIOS Configuration](#uefibios-configuration)
-4. [Proxmox VE Installation](#proxmox-ve-installation)
-5. [Initial Proxmox Configuration](#initial-proxmox-configuration)
-6. [Storage Pool Setup](#storage-pool-setup)
-7. [Pre-Ansible Checklist](#pre-ansible-checklist)
-8. [Next Steps](#next-steps)
-
 ## Hardware Requirements
 
 ### Minimum Requirements (per node)
@@ -562,3 +551,10 @@ Once all nodes pass the pre-Ansible checklist:
 4. Configure Proxmox firewall and Tailscale VPN
 
 Your bare metal hardware is now ready for full GitOps automation.
+
+## Related documentation
+
+- [docs/02 — Installation](02-install.md) (the Ansible deployment that follows)
+- [docs/06 — ZFS](06-zfs.md) (exact pool creation commands, incl. the boot-disk partition trap)
+- [docs/44 — Storage bootstrap](44-storage-bootstrap.md) (datasets a rebuilt NAS needs)
+- [docs/01 — Overview](01-overview.md) (host/IP topology)

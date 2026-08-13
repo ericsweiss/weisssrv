@@ -40,9 +40,9 @@ spec:
                     values:
                       - k3s-agt-prec-01
       nodeSelector:
-        esweiss.com/general: "true"
-        esweiss.com/cpu: "modern"
-        esweiss.com/gpu: "nvidia"
+        ${cluster_node_label_domain}/general: "true"
+        ${cluster_node_label_domain}/cpu: "modern"
+        ${cluster_node_label_domain}/gpu: "nvidia"
       # nvidia containerd runtime (RuntimeClass in controllers/nvidia-device-plugin):
       # injects the driver + card into the container that requests nvidia.com/gpu.
       runtimeClassName: nvidia

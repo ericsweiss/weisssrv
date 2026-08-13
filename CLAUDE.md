@@ -8,6 +8,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Complete GitOps repository for a Proxmox-based homelab using Ansible, Terraform, and Kubernetes.
 
+**Tech stack**: Proxmox VE + Debian 13 (trixie), Ansible (roles come from the
+`weisssrv.infra` collection in `eric/weisssrv-lib`), Terraform (Cloudflare,
+Tailscale, Authentik), k3s + Flux CD GitOps, External Secrets Operator with
+1Password Connect, ZFS.
+
 ## Agents: start here
 
 Before making ANY change in this repo, invoke the `weisssrv-development` skill
@@ -33,19 +38,19 @@ weisssrv/
 │   ├── tailscale/              # Tailnet ACL policy-as-code
 │   └── authentik/              # Authentik SSO state as code (apps/providers/groups — docs/40)
 ├── kubernetes/                 # Flux-managed k8s state (GitOps source of truth)
-│   ├── clusters/weisssrv/      # Flux entrypoint (flux-system, infrastructure-{sources,crds,controllers,configs,observability}.yaml, apps.yaml, tenants/)
+│   ├── clusters/weisssrv/      # Flux entrypoint (flux-system, infrastructure-{sources,crds,controllers,configs,observability}.yaml, infrastructure-metrics-server.yaml, apps.yaml, tenants/)
 │   ├── infrastructure/         # Platform — five sibling stages reconciled in dependsOn order (sources -> crds -> controllers -> configs, which fans out to observability and apps in parallel)
-│   │   ├── sources/            # HelmRepository CRs + versions-configmap.yaml (runs first, no deps)
+│   │   ├── sources/            # HelmRepository CRs + versions-configmap.yaml (generated) + cluster-config.yaml (hand-edited cluster identity) + the PriorityClasses (must exist before controllers/ schedules a pod naming one) — runs first, no deps
 │   │   ├── crds/               # prometheus-operator CRDs ahead of the controllers that reference them (dependsOn sources) — fixes the fresh-bootstrap ordering
-│   │   ├── controllers/        # platform HelmReleases (dependsOn crds) — see the dir for the current set
-│   │   ├── configs/            # CRs that require the controllers' CRDs (dependsOn controllers) — see the dir for the current set
+│   │   ├── controllers/        # platform HelmReleases (dependsOn crds) — see the dir for the current set; metrics-server/ is inside it but is reconciled by its OWN Kustomization, off the chain (see that file's header)
+│   │   ├── configs/            # CRs requiring the controllers' CRDs, plus the built-in-kind NetworkPolicy sets that fence namespaces this repo does not otherwise own (dependsOn controllers) — see the dir for the current set
 │   │   └── observability/      # kube-prometheus-stack, loki, alloy, exporters, dashboards, ingress (dependsOn configs) — see the dir
-│   ├── components/             # reusable Kustomize components — netpol-baseline (default-deny-ingress) + gitlab-runner-common
+│   ├── components/             # reusable Kustomize components — netpol-baseline, the three netpol-egress-*, gitlab-runner-common; see kubernetes/components/README.md
 │   └── apps/                   # one dir per app — either a HelmRelease (release.yaml) or raw Deployments/CRs, plus an externalsecret.yaml where the app needs ESO secrets (dependsOn infrastructure-configs — parallel to observability) — see the dir for the current set
 ├── docs/                       # Documentation
-├── .gitlab/                    # GitLab agent config (agents/weisssrv-k3s/), the molecule child-pipeline include (ci/), secret-detection ruleset
+├── .gitlab/                    # GitLab agent config (agents/weisssrv-k3s/), child-pipeline job includes (ci/), secret-detection ruleset
 ├── scripts/                    # Utility scripts
-├── docker/                     # Molecule test/CI images + app build images (hermes-agent, camofox-browser)
+├── docker/                     # App build images only (hermes-agent, camofox-browser) — the molecule test/CI images ship from weisssrv-lib
 ├── .gitlab-ci.yml              # CI/CD pipeline (canonical) — but see "Repo family" below: many jobs come from weisssrv-lib
 └── .github/workflows/          # Single inert stub (ci-disabled.yml) — CI runs on GitLab
 ```
@@ -55,11 +60,11 @@ weisssrv/
 | Repo | Role |
 |---|---|
 | `eric/weisssrv` | this repo — the cluster instance (site data: inventory, manifests, docs) |
-| `eric/weisssrv-lib` | the shared building blocks: CI job templates, the **`weisssrv.infra` Ansible collection** (every role), the `weisssrv` CLI, Terraform modules, and the lint profiles |
+| `eric/weisssrv-lib` | the shared building blocks: CI job templates, the **`weisssrv.infra` Ansible collection** (every role), the `weisssrv-lib-cli` template renderer, Terraform modules, and the lint profiles |
 | `eric/weisssrv-cluster-template` | copier template that generates a whole new cluster repo shaped like this one; also consumes weisssrv-lib at a pinned tag |
-| `eric/weisssrv-app-template` | tenant scaffold for repos that deploy *into* this cluster (docs/30); also consumes weisssrv-lib at a pinned tag |
+| `eric/weisssrv-app-template` | copier template for tenant repos that deploy *into* this cluster (docs/30); also consumes weisssrv-lib at a pinned tag |
 
-This repo consumes three things from the library, all pinned:
+This repo consumes four things from the library, all pinned:
 
 1. **CI templates**, `include:`d at a literal `ref:`. The `include:` block in
    `.gitlab-ci.yml` is the source of truth for which ones — do not keep a count
@@ -69,9 +74,23 @@ This repo consumes three things from the library, all pinned:
 2. **The `weisssrv.infra` collection**, pinned in `ansible/requirements.yml`.
    Playbooks reference roles as `weisssrv.infra.<role>`; there is no
    `ansible/roles/` here any more.
-3. **Vendored scripts** — `scripts/check-lib-pins.py` and
-   `scripts/version-bump-mr.py` are byte-identical copies. Fix them upstream and
-   re-vendor; a local edit is reverted by the next re-vendor.
+3. **Vendored files** — byte-identical copies of library files, and they are
+   **many more than the two an agent usually assumes**. Never keep a list or a
+   count here: `scripts/README.md`'s **Origin** column is the human inventory
+   and the library's `scripts/vendored-paths.yml` registry — enforced here by
+   `scripts/test_vendored_byte_identity.py` under `task lint` — is the
+   machine-checked one, covering the copies outside `scripts/` and the declared
+   forks that are deliberately allowed to differ. Fix a vendored file upstream
+   and re-vendor; a local edit is reverted by the next re-vendor and reds the
+   gate meanwhile.
+4. **Terraform modules** — all three roots (`terraform/cloudflare`,
+   `terraform/tailscale`, `terraform/authentik`) are thin callers of
+   `weisssrv-lib//terraform/modules/{cloudflare-zone,tailscale-acl,authentik-sso}`
+   at a `?ref=` pin, holding only site data. All three pin the same release
+   as `WEISSSRV_LIB_REF` (v0.7.0). Those `?ref=`
+   pins are bumped **by hand** — `scripts/check-lib-pins.py` reads only the
+   `include:` block and `ansible/requirements.yml` — but a missed one fails
+   `scripts/test_site_configs.py` (the refs must equal `WEISSSRV_LIB_REF`).
 
 Consequences an agent must not miss:
 
@@ -142,11 +161,20 @@ The k3s layer is `docs/19-k3s-deployment.md`; Flux day-2 ops are
   there — docs/43-gpu-passthrough.md
 - Network policy: an **ingress default-deny is mandatory in every namespace**.
   The `netpol-baseline` component is the standard mechanism, with two documented
-  exceptions that ship their own equivalent — `download-clients` (its local
-  policy covers ingress *and* egress) and `flux-system` (upstream gotk
-  manifests). Egress allowlists are per-app, and
+  exceptions — `downloads` (its local policy covers ingress *and* egress) and
+  `flux-system` (upstream gotk manifests); docs/29 § Network policy exceptions is
+  the canonical list. `kube-system` is fenced like everything else, with its deny
+  and its complete allow set (CoreDNS :53/:9153, metrics-server :10250, kured
+  :8080) kept together in
+  `kubernetes/infrastructure/configs/kube-system-policies/`. Egress allowlists are
+  per-app, three `netpol-egress-*` components ship the recurring ones
+  (`kubernetes/components/README.md`), and
   `scripts/check-netpol-except-parity.py` keeps their reserved-CIDR except-lists
   identical
+- Cluster identity: domains, CIDRs and VIPs are `${cluster_*}` placeholders
+  substituted from `kubernetes/infrastructure/sources/cluster-config.yaml`, not
+  literals — the invariant, its four literal-allowed exceptions and the
+  `check-cluster-literals.py` gate are in the Task Runner bullet list below
 - Node/workload ops: kured (coordinated reboots) and Reloader, which watches
   ConfigMaps only (`ignoreSecrets: true`) — rotating a credential Secret is a
   manual restart. Current controller set:
@@ -216,6 +244,20 @@ Workflow facts an agent must know (not obvious from `task --list`):
   all.yml by `task flux:sync-versions`; wired in the Flux Kustomizations, e.g.
   `kubernetes/clusters/weisssrv/apps.yaml`). See docs/29-flux-operations.md
   (Version pinning / Substitution Not Applied) for details.
+  **Every stage after `sources` substitutes from TWO ConfigMaps**, both
+  `optional: false`: `cluster-versions` *and* `cluster-config` (below). A new
+  Flux Kustomization that lists only one ships unsubstituted `${...}` into a
+  live manifest.
+- **Cluster identity is single-sourced** in the sibling
+  `kubernetes/infrastructure/sources/cluster-config.yaml` — hand-edited, not
+  generated. Manifests spell domains, CIDRs and VIPs as `${cluster_*}`
+  placeholders (`app.${cluster_internal_domain}`,
+  `${cluster_metallb_internal_vip}`), and `scripts/check-cluster-literals.py`
+  (`task lint:cluster-literals`) fails a hard-coded value as well as drift
+  between the ConfigMap and the Ansible inventory. Literals stay ONLY where a
+  tool parses the manifest before Flux substitutes: NetworkPolicy `ipBlock`
+  CIDRs, `observability/rules/`, backslash-escaped (regex) domain spellings,
+  and per-guest/per-node addresses. The ConfigMap's own header is canonical.
 - **Local Flux iteration**: `task flux:dev-apply -- <path>` previews a change
   in-cluster but is reverted on the next reconcile unless committed.
 - `task lint` mirrors the CI lint stage. The `lint:` task's own command list in
@@ -263,7 +305,8 @@ terraform apply
 
 Three consumers pull from the same 1Password "Homelab" vault: Ansible/Terraform
 and the Task wrapper (`op run --` resolving `op://Homelab/<Item>/<field>`
-references from the `secrets:` dict in `group_vars/all.yml`), External Secrets
+references declared in each task's `env:` block, mirrored by the matching CI
+job's `variables:`), External Secrets
 Operator in-cluster (`onepassword-homelab` ClusterSecretStore, 1Password Connect
 provider, `remoteRef.key` = item **title** and `remoteRef.property` = **field**),
 and CI (`OP_SERVICE_ACCOUNT_TOKEN`). The canonical description of the model —

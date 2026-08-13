@@ -14,9 +14,9 @@ spec:
   issuerRef:
     name: letsencrypt-prod
     kind: ClusterIssuer
-  commonName: "agent.ericsweiss.com"
+  commonName: "agent.${cluster_external_domain}"
   dnsNames:
-    - "agent.ericsweiss.com"
+    - "agent.${cluster_external_domain}"
   renewBefore: 720h
 
 ---
@@ -31,9 +31,9 @@ spec:
   issuerRef:
     name: letsencrypt-prod
     kind: ClusterIssuer
-  commonName: "agent.esweiss.com"
+  commonName: "agent.${cluster_internal_domain}"
   dnsNames:
-    - "agent.esweiss.com"
+    - "agent.${cluster_internal_domain}"
   renewBefore: 720h
 
 ---
@@ -49,7 +49,7 @@ spec:
   issuerRef:
     name: letsencrypt-prod
     kind: ClusterIssuer
-  commonName: "agent-api.esweiss.com"
+  commonName: "agent-api.${cluster_internal_domain}"
   dnsNames:
-    - "agent-api.esweiss.com"
+    - "agent-api.${cluster_internal_domain}"
   renewBefore: 720h

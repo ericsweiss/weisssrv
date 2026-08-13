@@ -47,13 +47,19 @@ job clones the repo at `hermes_version` and builds *their* Dockerfile, then
 layers a thin wrapper ([`docker/hermes-agent/Dockerfile.codex`](../docker/hermes-agent/Dockerfile.codex))
 that bakes in the pinned **OpenAI Codex CLI** (`hermes_codex_version`,
 `npm i -g @openai/codex`) — Hermes' LLM engine is the Codex app-server runtime
-(see §LLM engine below), so the `codex` CLI must be on the image's PATH. Node 22
-+ npm are already in the base, so the wrapper only adds the CLI. Full build
+(see §LLM engine below), so the `codex` CLI must be on the image's PATH — plus
+the **Claude Code CLI** (`hermes_claude_version`) for the coding-delegate path
+and the **1Password CLI** (`hermes_op_version`) for the 1Password skill. Node 22
++ npm are already in the base, so the wrapper only adds the CLIs. Full build
 details in [`docker/hermes-agent/README.md`](../docker/hermes-agent/README.md).
+
 The in-cluster image ref is
-`registry.git.esweiss.com/eric/weisssrv/hermes-agent:${hermes_version}` (the
+`registry.git.esweiss.com/eric/weisssrv/hermes-agent:${hermes_image_version}` (the
 **internal** registry host — AdGuard rewrite → Traefik `.101` → GitLab VM
-registry, no hairpin NAT).
+registry, no hairpin NAT). Note the pulled tag is `hermes_image_version`
+(`<hermes_version>-r<N>`), **not** `hermes_version`: the image is upstream plus
+this repo's reviewed patches, so a patch-only change still needs a fresh tag to
+defeat the nodes' `IfNotPresent` cache. CI fails the build if the two drift.
 
 ### Runtime user / security context
 
@@ -618,14 +624,18 @@ kube-state alert — see `kubernetes/apps/hindsight/README.md`.)
 1. Pick a newer release tag from
    <https://github.com/NousResearch/hermes-agent/releases> and note the commit it
    points at (the tag page shows the SHA, or read it from a prior CI build log).
-2. Set both `hermes_version` and `hermes_git_sha` (the tag's commit) in
+2. Set `hermes_version`, `hermes_git_sha` (the tag's commit) **and**
+   `hermes_image_version` (`<new hermes_version>-r1`) in
    `ansible/inventories/prod/group_vars/all.yml`, run `task flux:sync-versions`.
-   The two must move together: `build-hermes-agent` refuses to build if the tag
-   resolves to any other commit, so a stale or mismatched `hermes_git_sha` fails
-   the pipeline loudly rather than building a moved/compromised tag.
+   All three must move together: `build-hermes-agent` refuses to build if the tag
+   resolves to any other commit — so a stale or mismatched `hermes_git_sha` fails
+   the pipeline loudly rather than building a moved/compromised tag — and it also
+   hard-fails unless `hermes_image_version` is exactly `${hermes_version}-r<N>`.
+   A patches-only change bumps just the `-rN`.
 3. Commit both files on a branch → MR → merge.
-4. On `main`, `build-hermes-agent` verifies the tag→SHA, rebuilds the image, and
-   pushes the new tag (MR pipelines are build-only and publish nothing); Flux then
+4. On `main`, `build-hermes-agent` verifies the tag→SHA, rebuilds the image,
+   pushes the new tags and then verifies the registry resolves
+   `:${hermes_image_version}` (MR pipelines are build-only and publish nothing); Flux then
    rolls the Deployment. `/opt/data` is preserved (config migrations run
    automatically via the image's s6 boot hook). The Codex OAuth token in
    `CODEX_HOME=/opt/data/.codex` persists across the roll — no re-login needed.
@@ -648,7 +658,9 @@ reports both pins.
   `registry.git.esweiss.com` (internal `.101`) but the Docker v2 **token realm**
   lives on `git.ericsweiss.com`, which resolves only over the node's public
   egress. Sanity-check the whole dance from a k3s agent before blaming Flux:
-  `crictl pull --creds '<deploy-token-user>:<deploy-token>' registry.git.esweiss.com/eric/weisssrv/hermes-agent:<hermes_version>`.
+  `crictl pull --creds '<deploy-token-user>:<deploy-token>' registry.git.esweiss.com/eric/weisssrv/hermes-agent:<hermes_image_version>`
+  — use the `-rN` tag the Deployment actually references; `:<hermes_version>` is
+  pushed too but is not what the pod pulls.
 - **Pod stuck `ContainerCreating` with an NFS mount error**: `/appdata/hermes`
   does not exist on the NAS yet. It is created by the `nas_storage` role
   (`nas_storage_appdata_dirs`) — run `task storage:deploy` (or let the `deploy-storage`

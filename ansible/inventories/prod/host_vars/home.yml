@@ -2,10 +2,6 @@
 # Home Assistant VM configuration
 # Running Home Assistant OS on pve-prec-01 (192.168.0.154)
 # Primary on pve-prec-01, HA-managed with multi-node replication
-#
-# IMPORTANT: Home Assistant OS is NOT a standard Linux distribution
-# It cannot be managed by Ansible like other VMs/LXCs
-# This file documents operational configuration for reference
 
 # Proxmox host for this VM (primary node for HA-managed resource)
 proxmox_host: pve-prec-01
@@ -36,50 +32,14 @@ haos_type: "qcow2"    # Image format
 # Gateway: 192.168.0.1
 # DNS: 192.168.0.150
 
-# SMTP Configuration
-# HAOS does not use postfix (not a traditional Linux system)
-# Configure SMTP notifications via Home Assistant's built-in integration:
-#   - Host: smtp-relay.esweiss.com
-#   - Port: 587
-#   - Encryption: STARTTLS
-#   - Username: <from 1Password: SMTP Relay Auth/username>
-#   - Password: <from 1Password: SMTP Relay Auth/password>
-#   - Sender: home-assistant@esweiss.com
-# See: docs/24-home-assistant-deployment.md for setup instructions
-
-# Backup Strategy
-# HAOS has built-in backup system (Settings > System > Backups)
-# Recommended:
-#   - Enable automatic backups (daily)
-#   - Store backups on NFS mount: /mnt/ssd/appdata/home-assistant/backups
-#   - Keep last 7 days locally, archive monthly to /mnt/tank/archive/home-assistant
-# See: docs/24-home-assistant-deployment.md for NFS mount configuration
-
-# SSH Access
-# Install "SSH & Web Terminal" or "Terminal & SSH" add-on from Add-on Store
-# Access: ssh root@192.168.0.154 -p 22222
-# Or use: task home-assistant:console
-
-# Updates
-# HAOS updates managed via UI: Settings > System > Updates
-# Update strategy: Manual review before applying
-# Backup before major version updates
-
-# Monitoring
-# Scraped by Prometheus via /api/prometheus (token: 1P 'Home Assistant API
-# Token'; firewall sg-metrics opens 8123 to k3s nodes)
-
-# SSO Integration
-# Authentik SSO via hass-openid custom integration (OIDC method)
-# Users must be pre-created in HA with matching Authentik username
-# block_login: true (SSO is sole login method)
-# See: docs/24-home-assistant-deployment.md Phase 6
-
-# API Bypass Access
-# Download/media apps accessible without Authentik SSO via ClientIP bypass routes
-# Standard hostnames with high-priority IngressRoutes matching HA's IP (192.168.0.154)
-# See: kubernetes/apps/download-clients/ingress-routes-ha-bypass.yaml
-# See: docs/24-home-assistant-deployment.md Phase 4
+# HAOS is not Ansible-managed beyond the config push below (the proxmox_vm
+# values above document the live VM). Setup, SMTP, SSO, SSH access, updates,
+# monitoring and the HA-bypass ingress routes: docs/24-home-assistant-deployment.md.
+#
+# Backups: HAOS scheduled backups write to the NFS export
+# pve-nas-01:/backups-apps/home-assistant (plaintext — HAOS cannot do
+# xprtsec=tls). One-time HA UI step; the artifact staleness/size arms watch it
+# via nas_storage_backup_artifact_apps in host_vars/pve-nas-01.yml.
 
 # SSH/SCP target for the config push (the HAOS add-on listens on 22222 as root).
 # The play runs on localhost and loads this file via vars_files, so ansible_host

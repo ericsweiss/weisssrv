@@ -325,6 +325,57 @@ class TestHelmValuesReleases:
                 )
         assert not problems, problems
 
+    # HelmReleases deliberately NOT rendered, each with the reason. An entry is
+    # a claim a reviewer can check; the alternative — a chart quietly absent
+    # from the list — is invisible.
+    EXEMPT = {
+        "kubernetes/infrastructure/crds/release.yaml": (
+            "prometheus-operator-crds ships CRD manifests and no configurable "
+            "values surface; rendering it also trips the validator's single-doc "
+            "yaml load on the CRD stream"
+        ),
+        "kubernetes/apps/gitlab-runner/release.yaml": (
+            "chart identity (chart, version, sourceRef) is merged in from the "
+            "kubernetes/components/gitlab-runner-common component, so the "
+            "manifest this gate would read names no chart"
+        ),
+        "kubernetes/apps/gitlab-runner-privileged/release.yaml": (
+            "same shared-component chart spec as gitlab-runner"
+        ),
+    }
+
+    def test_every_helmrelease_is_rendered_or_exempt(self):
+        """A new or edited HelmRelease must land in the list or in EXEMPT.
+
+        `helm template` is the only gate that sees inside `.spec.values`; a
+        chart that is on neither list has its values completely unvalidated,
+        and nothing says so.
+        """
+        listed = {rel["manifest"] for rel in self._entries()}
+        found: set[str] = set()
+        for path in sorted((REPO / "kubernetes").rglob("*.yaml")):
+            text = path.read_text()
+            if "kind: HelmRelease" not in text:
+                continue
+            try:
+                docs = list(yaml.safe_load_all(text))
+            except yaml.YAMLError:
+                continue
+            if any(isinstance(d, dict) and d.get("kind") == "HelmRelease" for d in docs):
+                found.add(str(path.relative_to(REPO)))
+        uncovered = sorted(found - listed - set(self.EXEMPT))
+        assert not uncovered, (
+            "HelmRelease manifests with no `helm template` coverage: "
+            f"{uncovered}. Add each to scripts/helm-values-releases.yaml, or to "
+            "TestHelmValuesReleases.EXEMPT with the reason it cannot be rendered."
+        )
+        stale = sorted(set(self.EXEMPT) - found)
+        assert not stale, f"EXEMPT names manifests that no longer hold a HelmRelease: {stale}"
+
+    def test_every_exemption_carries_a_reason(self):
+        for manifest, reason in self.EXEMPT.items():
+            assert reason.strip(), f"{manifest} is exempt with no reason"
+
     def test_repo_urls_match_the_helmrepository_flux_uses(self):
         repos = self._helmrepositories()
         problems = []
@@ -513,3 +564,71 @@ def test_the_collection_pin_matches_the_ci_lib_ref():
         f"at {lib_ref!r}. They are one pin — bump both, or the deploy jobs run "
         f"roles from a different library revision than CI validated."
     )
+
+
+def test_the_ansible_pin_matches_the_ci_variable():
+    """requirements.txt and `variables.ANSIBLE_VERSION` install the same
+    interpreter-side Ansible.
+
+    Several CI jobs `pip install "ansible==${ANSIBLE_VERSION}"` directly rather
+    than through requirements.txt, so the two are copies of one pin. A drift
+    means a local run and a pipeline run resolve different collection
+    behaviour — which is exactly the class of difference that makes a local
+    reproduction disagree with CI.
+    """
+    ci = yaml.load((REPO / ".gitlab-ci.yml").read_text(), Loader=_CILoader) or {}
+    ci_pin = (ci.get("variables") or {}).get("ANSIBLE_VERSION")
+    assert ci_pin, "variables.ANSIBLE_VERSION is where the CI jobs read the pin"
+
+    match = re.search(
+        r"^ansible==([^\s#]+)", (REPO / "requirements.txt").read_text(), re.MULTILINE
+    )
+    assert match, "requirements.txt no longer pins `ansible==`"
+    assert match.group(1) == str(ci_pin), (
+        f"requirements.txt pins ansible=={match.group(1)} but .gitlab-ci.yml's "
+        f"ANSIBLE_VERSION is {ci_pin!r}. They are one pin — bump both."
+    )
+
+
+def test_terraform_module_refs_match_the_ci_variable():
+    """The three terraform roots pin `weisssrv-lib//terraform/modules/...` at a
+    `?ref=` that is coupled to the library release but written by hand —
+    check-lib-pins.py reads only the include block and requirements.yml, so
+    this is the gate for the one pin class it cannot see. A stale ref means a
+    root plans against module behaviour (and guardrails) a different library
+    revision shipped.
+    """
+    ci = yaml.load((REPO / ".gitlab-ci.yml").read_text(), Loader=_CILoader) or {}
+    lib_ref = (ci.get("variables") or {}).get("WEISSSRV_LIB_REF")
+    assert lib_ref, "variables.WEISSSRV_LIB_REF is the library pin"
+
+    for root in ("authentik", "cloudflare", "tailscale"):
+        body = (REPO / "terraform" / root / "main.tf").read_text()
+        refs = re.findall(r"weisssrv-lib\.git//terraform/modules/[^?\"]+\?ref=([^\"\s]+)", body)
+        assert refs, f"terraform/{root}/main.tf no longer pins a lib module ref"
+        for ref in refs:
+            assert ref == str(lib_ref), (
+                f"terraform/{root}/main.tf pins ?ref={ref} but "
+                f"WEISSSRV_LIB_REF is {lib_ref!r}. The terraform refs move "
+                f"with the library pin — bump them together."
+            )
+
+
+def test_the_gitlab_backup_companions_are_what_the_wrapper_copies():
+    """`gitlab-backup-run.sh` drops `gitlab-secrets.json` and `gitlab.rb` beside
+    the tarball, and the collector's `companions:` globs are what emit
+    `backup_artifact_companion_present`. A glob naming anything else reports
+    present=0 forever, so BackupArtifactCompanionMissing would fire on a healthy
+    backup.
+
+    check-backup-artifact-apps.py (vendored, suite upstream) proves the
+    declared/alerted pairing; only this repo knows which filenames the wrapper
+    actually writes.
+    """
+    data = yaml.safe_load(
+        (REPO / "ansible/inventories/prod/host_vars/pve-nas-01.yml").read_text()
+    )
+    entry = next(
+        a for a in data["nas_storage_backup_artifact_apps"] if a["name"] == "gitlab"
+    )
+    assert entry["companions"] == ["gitlab-secrets.json", "gitlab.rb"]

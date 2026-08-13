@@ -3,17 +3,19 @@
 Each external repo that deploys workloads to this cluster gets a single YAML
 file in this folder AND a matching entry in `kustomization.yaml` (the file
 itself is not auto-discovered — Kustomize requires explicit resource
-listings). The tenant file defines the tenant's `ClusterSecretStore` (1P)
-or `SecretStore` (GitLab variables), Flux `GitRepository` source, and
+listings). The tenant file defines the tenant's `ClusterSecretStore` (1P or
+GitLab variables — namespace-scoped by `spec.conditions`), Flux `GitRepository` source, and
 top-level `Kustomization`. One file per tenant keeps ownership clear and
 makes removal trivial (delete the file, remove the entry from
 `kustomization.yaml`, push — Flux prunes the resources it created).
 
-For the tenant-side repo scaffold (lint + kubeconform + secret-scan CI; deploys
-happen cluster-side via Flux, not CI), fork the `weisssrv-app-template`
-GitLab project (`git.ericsweiss.com/eric/weisssrv-app-template`) — see
-`docs/16-next-steps.md`. Tenants can instead hand-author their `kubernetes/`
-tree following the patterns in this repo.
+The tenant-side repo is generated from the **copier template**
+`eric/weisssrv-app-template` (`copier copy https://git.ericsweiss.com/eric/weisssrv-app-template <dir>`)
+— it ships the lint/kubeconform/secret-scan pipeline and, in its own
+`docs/ONBOARDING.md`, a pre-rendered copy of the wiring file below with the
+tenant's real slug and namespace. Deploys happen cluster-side via Flux, not CI.
+Tenants can instead hand-author their `kubernetes/` tree following the patterns
+in this repo.
 
 See `docs/30-multi-repo-onboarding.md` for the full onboarding procedure.
 
@@ -187,7 +189,25 @@ spec:
   prune: true
   targetNamespace: example-app
   wait: true
+  # Optional, and only if the tenant's manifests use `${...}` placeholders:
+  # substituting from cluster-config lets a tenant spell this cluster's domains
+  # and VIPs without hard-coding them, exactly as the platform Kustomizations do.
+  # cluster-versions is deliberately NOT listed: a tenant pins its own image
+  # versions rather than tracking this cluster's.
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: cluster-config
+        optional: false
 ```
+
+`cluster-config` lives in `flux-system`, the same namespace a tenant
+Kustomization is created in, so the reference resolves. kustomize-controller
+reads them with its own client — `serviceAccountName` governs what the tenant may
+APPLY, not what it may substitute from — so a tenant can read this cluster's
+identity even though its SA is confined to its own namespace. Exposing that is a
+deliberate choice: the values are hostnames and VIPs the tenant's own routes
+already carry.
 
 ## Example: GitLab-variables-backed tenant (friends without 1P)
 
@@ -281,6 +301,13 @@ other tenants' namespaces or platform namespaces (`flux-system`,
 Enforcement is cooperative today (small group of trusted tenants). A future
 admission controller (Kyverno/OPA) could block cross-namespace writes
 automatically — tracked in `docs/16-next-steps.md`.
+
+**A tenant PrometheusRule must scope its own expressions.** Prometheus runs
+without `enforcedNamespaceLabel` — deliberately, because the platform's own rules
+span namespaces — so a tenant `expr` selecting only on `deployment="x"` evaluates
+cluster-wide. That mis-fires on any like-named workload, and it silently DISABLES
+an `absent()` arm the moment any other namespace has a match. Every tenant rule
+carries `namespace="<slug>"` in the selector, not only in the alert labels.
 
 ## Removal
 

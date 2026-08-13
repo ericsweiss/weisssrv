@@ -15,7 +15,7 @@ patches:
         value: radarr
       - op: replace
         path: /spec/routes/0/match
-        value: Host(`movies.esweiss.com`)
+        value: Host(`movies.${cluster_internal_domain}`)
       - op: replace
         path: /spec/routes/0/services/0/name
         value: radarr

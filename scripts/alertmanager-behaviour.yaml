@@ -1,0 +1,49 @@
+---
+# Site data for scripts/check-alertmanager-behaviour.py (--config).
+#
+# The script is vendored from weisssrv-lib and requires this file: the route
+# cases, the synthetic alertnames and the upstream alert inventory are all
+# cluster-specific.
+
+# One case per receiver the config is supposed to reach, plus the ordering the
+# config itself calls load-bearing. `amtool config routes test` prints every
+# matching receiver in tree order and only the first delivers, so `receiver` is
+# compared against the first line.
+route_cases:
+  # Watchdog carries severity=none and MUST beat the severity=none null route.
+  - receiver: watchdog-heartbeat
+    labels: [alertname=Watchdog, severity=none]
+  - receiver: "null"
+    labels: [alertname=InfoInhibitor, severity=none]
+  - receiver: email-and-discord
+    labels: [alertname=EtcdQuorumAtRisk, severity=critical]
+  - receiver: discord-default
+    labels: [alertname=DiskUsageWarning, severity=warning]
+  # severity=info matches no child route and falls through to the root.
+  - receiver: discord-default
+    labels: [alertname=SwapCleanStoppedGuests, severity=info]
+  - receiver: discord-default
+    labels: [alertname=SomeUnlabelledAlert]
+
+# Route-case alertnames that deliberately name no rule. Only the fall-through
+# case, whose point is that an alert matching no child route still reaches the
+# root receiver.
+synthetic_route_alerts:
+  - SomeUnlabelledAlert
+
+# Alerts shipped by the kube-prometheus-stack chart's own rule groups. The
+# extractor only sees this repo's PrometheusRules, so a chart alertname named in
+# an inhibit rule would otherwise read as dead. An entry claims the name exists
+# upstream AND is not in defaultRules.disabled — verify against the chart before
+# adding one, because a typo'd entry recreates the blind spot.
+upstream_alerts:
+  - InfoInhibitor
+  - KubeAggregatedAPIDown
+  - KubeContainerWaiting
+  - KubeDaemonSetMisScheduled
+  - KubeDaemonSetRolloutStuck
+  - KubeDeploymentReplicasMismatch
+  - KubePodNotReady
+  - KubeStatefulSetReplicasMismatch
+  - NodeSystemSaturation
+  - Watchdog

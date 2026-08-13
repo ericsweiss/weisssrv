@@ -1,0 +1,60 @@
+---
+# Site data for scripts/check-netpol-except-parity.py (--config).
+#
+# The script itself is vendored from weisssrv-lib and its built-in
+# `unrestricted_egress_ok` allowlist is EMPTY (fail-closed), so the two
+# deliberately peer-less egress rules below MUST be declared here or the gate
+# fails them. The canonical lists and fence networks match the library defaults
+# and are spelled out so the whole policy is readable in one place — declaring
+# `canonical_except_lists` REPLACES the built-ins wholesale, so both sets are
+# present.
+
+canonical_except_lists:
+  # Used by app policies that need broad internet egress and only have to be
+  # kept off the LAN, Tailscale and the metadata address.
+  lan-fence:
+    - 10.0.0.0/8
+    - 172.16.0.0/12
+    - 192.168.0.0/16
+    - 100.64.0.0/10
+    - 169.254.0.0/16
+  # Used by the platform policies whose egress is a narrow public-API call
+  # (Cloudflare, ACME, 1Password cloud).
+  reserved-full:
+    - 10.0.0.0/8
+    - 172.16.0.0/12
+    - 192.168.0.0/16
+    - 0.0.0.0/8
+    - 127.0.0.0/8
+    - 169.254.0.0/16
+    - 100.64.0.0/10
+    - 192.0.0.0/24
+    - 192.0.2.0/24
+    - 198.51.100.0/24
+    - 203.0.113.0/24
+    - 198.18.0.0/15
+    - 224.0.0.0/4
+    - 240.0.0.0/4
+
+# Ranges no egress rule may reach IN FULL, whatever CIDR arithmetic spells them.
+# The v4 half is exactly what every canonical list fences off; the v6 entries are
+# its analogue, so an `::/0` egress in a future policy cannot slip past.
+fence_networks:
+  - 10.0.0.0/8
+  - 172.16.0.0/12
+  - 192.168.0.0/16
+  - 100.64.0.0/10
+  - 169.254.0.0/16
+  - fc00::/7
+  - fe80::/10
+
+unrestricted_egress_ok:
+  gitlab-runner-privileged/infrastructure-jobs-egress: >-
+    infrastructure job pods deploy the homelab itself (ansible over SSH,
+    kubectl, 1Password) — unrestricted egress is the point of the privileged
+    runner class, and the namespace's default-deny-egress makes every pod
+    WITHOUT the runner-class label fail closed
+  flux-system/allow-egress: >-
+    shipped verbatim inside the upstream gotk-components manifest; Flux's
+    controllers reach arbitrary git/OCI/Helm origins. Editing it here would be
+    reverted by the next `flux install` regeneration

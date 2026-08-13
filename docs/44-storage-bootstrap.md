@@ -1,6 +1,7 @@
 # NAS Storage Bootstrap
 
-This is the operator manual for `ansible/playbooks/storage-bootstrap.yml`, the
+This is the operator manual for
+`ansible/playbooks/bootstrap/storage-bootstrap.yml`, the
 interactive playbook that lays out ZFS datasets, the export tree, and the file
 services on pve-nas-01. It is one leg of disaster recovery — see
 [docs/17](17-disaster-recovery.md) for the full DR picture, and
@@ -70,6 +71,17 @@ The real `tank` pool is `raidz2` **plus** a `special mirror` (2x NVMe metadata)
 **and** an L2ARC `cache` vdev; a `zpool create ... tank raidz2 <disks>` without
 those two vdevs would rebuild a materially different, slower pool. docs/06 is the
 single source of truth for every pool's exact geometry and by-id device list.
+
+> **DANGER — `nvme` lives on partition 4 of the Proxmox BOOT disk.** On
+> pve-nas-01 the Samsung 990 PRO 4TB carries the BIOS boot partition, the ESP,
+> and the `pve` LVM volume group (root, swap, and the local-lvm guest disks) on
+> `p1`-`p3`; only `p4` is the ZFS member. `zpool create ... nvme
+> /dev/disk/by-id/nvme-Samsung_SSD_990_PRO_4TB_<serial>` against the **whole
+> device** destroys the hypervisor you just installed. Use the `-part4` suffix,
+> exactly as docs/06 § NVMe Pool Creation writes it, and confirm with
+> `zpool status nvme` that the vdev reads `...-part4`. This matters most in the
+> DR path, where docs/17 § Total site loss installs Proxmox onto this same disk
+> immediately before pool creation.
 
 **Required Pools for pve-nas-01:**
 - `tank` - Main storage pool (HDDs in raidz2)

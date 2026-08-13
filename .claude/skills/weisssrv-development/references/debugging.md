@@ -11,9 +11,11 @@ ops — Flux owns `kubernetes/`. Full day-2 procedures: `docs/29-flux-operations
   managed resources). Chase a failing Kustomization/HelmRelease with
   `flux get kustomizations -A` / `flux get helmreleases -A` and
   `flux logs --level error`.
-- Unsubstituted `${var}` in a rendered manifest → the pin is missing from
-  `versions-configmap.yaml`; fix `all.yml` + `task flux:sync-versions`, commit
-  both. See `docs/29-flux-operations.md` (Version pinning / Substitution Not Applied).
+- Unsubstituted `${var}` in a rendered manifest → the key is missing from one of
+  the two substitution ConfigMaps. A `${*_version}` pin: fix `all.yml` +
+  `task flux:sync-versions`, commit both. A `${cluster_*}` identity key: add it
+  to `kubernetes/infrastructure/sources/cluster-config.yaml` by hand. See
+  `docs/29-flux-operations.md` (Version pinning / Substitution Not Applied).
 - Force a cycle with `task flux:reconcile` (push-trigger is the normal path;
   ~1-min git poll is the fallback).
 

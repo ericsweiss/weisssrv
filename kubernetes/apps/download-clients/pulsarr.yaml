@@ -27,8 +27,8 @@ spec:
       # agents, so esweiss.com/cpu=modern is load-bearing (docs/33) and must
       # survive any selector change.
       nodeSelector:
-        esweiss.com/general: "true"
-        esweiss.com/cpu: "modern"
+        ${cluster_node_label_domain}/general: "true"
+        ${cluster_node_label_domain}/cpu: "modern"
       # Pulsarr does not talk to the kube-API, so the SA token is dropped.
       # Container-level drop-ALL / allowPrivilegeEscalation:false are omitted:
       # the image still needs PUID/PGID handling at startup.
@@ -80,7 +80,11 @@ spec:
               # a cold start gets when VPA admission is unavailable.
               memory: 512Mi
             limits:
-              memory: 1Gi
+              # 30d working-set peak 903Mi +60%, rounded to the VPA's maxAllowed
+              # (vpa.yaml) so a capped recommendation can never exceed the
+              # ceiling it is admitted against. Hand-set and stays hand-set —
+              # the VPA is RequestsOnly.
+              memory: 1536Mi
           livenessProbe:
             httpGet:
               # Pulsarr's `/` is a 302 redirect to /login; Fastify's /health

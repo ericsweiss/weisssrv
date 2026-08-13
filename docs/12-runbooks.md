@@ -2,27 +2,6 @@
 
 This document provides step-by-step procedures for common operational tasks.
 
-## Table of Contents
-
-1. [Adding a New Proxmox Host](#adding-a-new-proxmox-host)
-2. [Deploying a New LXC Container](#deploying-a-new-lxc-container)
-3. [Handling Disk Failure (ZFS)](#handling-disk-failure-zfs)
-4. [Updating DNS Records](#updating-dns-records)
-5. [Certificate Renewal Issues](#certificate-renewal-issues)
-6. [Network Connectivity Issues](#network-connectivity-issues)
-7. [NFS Server Recovery (pve-nas-01)](#nfs-server-recovery-pve-nas-01)
-8. [SMTP Relay (Postfix) Alerts](#smtp-relay-postfix-alerts)
-9. [Ansible Deployment Failures](#ansible-deployment-failures)
-10. [Backup and Recovery](#backup-and-recovery)
-11. [Performance Investigation](#performance-investigation)
-12. [System Maintenance](#system-maintenance)
-13. [K3s Cluster Maintenance](#k3s-cluster-maintenance)
-14. [Understanding Skipped Tasks](#understanding-skipped-tasks)
-15. [Proxmox HA Post-Failover Reconciliation](#proxmox-ha-post-failover-reconciliation)
-16. [Observability Stack](#observability-stack)
-17. [Emergency Contact / Escalation](#emergency-contact--escalation)
-18. [Related documentation](#related-documentation)
-
 ---
 
 ## Adding a New Proxmox Host
@@ -273,22 +252,32 @@ list. Codify in `group_vars/dns.yml` (Option 1) for anything permanent.
 
 Managed via Terraform + Cloudflare.
 
+Most service records are owned by external-dns from the k3s IngressRoutes.
+`dns.tf` holds only what external-dns cannot express (apex, DDNS-tracked A
+records, CAA, SPF/DMARC, nested wildcards). This layer is a caller of the
+library `cloudflare-zone` module, so a record is a map **entry**, not a resource:
+
 1. **Edit Terraform**:
    ```hcl
-   # terraform/cloudflare/dns.tf
-   resource "cloudflare_record" "new_service" {
-     zone_id = data.cloudflare_zone.external.id
-     name    = "new-service"
-     content = "192.168.0.XXX"  # Or public IP
-     type    = "A"
-     ttl     = 3600
+   # terraform/cloudflare/dns.tf — inside local.dns_records
+   new-service = {
+     name      = "new-service"
+     type      = "A"
+     content   = "192.168.0.XXX" # or the public IP
+     ttl       = 3600
+     proxied   = false
+     comment   = "Managed by Terraform"
+     protected = true # every record here carries it — see the file header
    }
    ```
+   No `zone_id`: the module supplies it. The map key is the record's state
+   address, and `protected` selects the module lifecycle class, so it appears as
+   `module.zone.cloudflare_record.protected["new-service"]` in the plan.
 
 2. **Plan and Apply**:
    ```bash
-   task terraform:plan
-   task terraform:apply
+   task terraform:cloudflare-plan
+   task terraform:cloudflare-apply
    ```
 
 ---
@@ -783,15 +772,12 @@ sudo qmrestore /path/to/backup.vma.zst 100 --storage local-ssd
 
 2. **Measure Response Time**:
    ```bash
-   curl -w "@curl-format.txt" -o /dev/null -s http://service/
+   curl -o /dev/null -s -w \
+     'dns=%{time_namelookup} connect=%{time_connect} tls=%{time_appconnect} ttfb=%{time_starttransfer} total=%{time_total}\n' \
+     https://<service>.esweiss.com/
    ```
 
-3. **Database Performance** (if applicable):
-   ```bash
-   # Check slow queries, connections, etc.
-   ```
-
-4. **Review Recent Changes**:
+3. **Review Recent Changes**:
    ```bash
    git log --since="1 day ago"
    ```
@@ -1527,7 +1513,7 @@ After a failover, you have two options:
 
 Use this when the original node is offline for extended maintenance or has failed permanently.
 
-1. **Edit `/Users/eric/src/weisssrv/ansible/inventories/prod/group_vars/all.yml`:**
+1. **Edit `ansible/inventories/prod/group_vars/all.yml`:**
    ```yaml
    # Find the proxmox_ha_replication_jobs section
    # Update source_node for all jobs of the affected VMID
@@ -1655,34 +1641,23 @@ sudo zfs destroy local-ssd/data/images/<vmid>  # ON TARGET NODE ONLY
 
 ## Observability Stack
 
-### Prometheus Disk Full
+The in-cluster procedures live in
+[docs/31-observability.md § Troubleshooting](./31-observability.md#troubleshooting)
+— that copy is canonical and carries the caveats (notably: `retentionSize` must
+be set **below** its current `110GB`, never above). Go straight there:
 
-**Symptoms:** Prometheus pod in CrashLoopBackOff, logs show "no space left on device" or WAL write failures.
+| Symptom | Go to |
+|---|---|
+| Prometheus CrashLoopBackOff, "no space left on device", WAL write failures | [docs/31 § Prometheus Disk Full](./31-observability.md#prometheus-disk-full) |
+| Need a bigger Prometheus/Loki zvol (and the two manifest sizes that must follow) | [docs/31 § Storage Expansion](./31-observability.md#storage-expansion) |
+| Loki restarts, ingestion stops, WAL errors | [docs/31 § Loki WAL Issues](./31-observability.md#loki-wal-issues) |
+| `up == 0` for a scrape target, dashboard gaps | [docs/31 § Exporter Down](./31-observability.md#exporter-down) |
+| Alerts not arriving on Discord or email | [docs/31 § Alert Routing Debug](./31-observability.md#alert-routing-debug) |
+| Grafana login fails / redirect loops via Authentik | [docs/31 § Grafana OIDC Issues](./31-observability.md#grafana-oidc-issues) |
+| Locked out of Grafana entirely (Authentik down) | [docs/31 § Grafana Break-Glass Access](./31-observability.md#grafana-break-glass-access-authentikoidc-down) |
 
-1. **Check disk usage:**
-   ```bash
-   ssh k3s-agt-nas-01
-   df -h /mnt/prometheus-data
-   ```
-
-2. **Reduce retention temporarily** (edit `release.yaml`, set `retentionSize` lower):
-   ```bash
-   task flux:dev-apply -- kubernetes/infrastructure/observability
-   ```
-
-3. **Force compaction** by restarting Prometheus:
-   ```bash
-   kubectl delete pod -n observability -l app.kubernetes.io/name=prometheus
-   ```
-
-4. **Expand the zvol** if needed:
-   ```bash
-   ssh pve-nas-01
-   sudo zfs set volsize=200G ssd/appdata/prometheus/data
-   ssh k3s-agt-nas-01
-   sudo resize2fs /dev/sdX   # device for prometheus zvol
-   ```
-   Then update sizes in two places: PV capacity in `.../kube-prometheus-stack/storage.yaml` and VolumeClaimTemplate request in `.../kube-prometheus-stack/release.yaml` (under `prometheusSpec.storageSpec`).
+The two procedures below are host-side and have no home in docs/31, so they stay
+here.
 
 ### Recovering Space on the Prometheus / Loki zvols
 
@@ -1729,27 +1704,6 @@ host pool. Auto-snapshots are now disabled at the dataset level (see
    sudo zfs list -o name,used,referenced,usedbysnapshots \
      ssd/appdata/prometheus ssd/appdata/loki
    ```
-
-### Loki WAL Issues
-
-**Symptoms:** Loki pod restarts, log ingestion stops, WAL errors in logs.
-
-1. **Check logs and disk:**
-   ```bash
-   kubectl logs -n observability -l app.kubernetes.io/name=loki --tail=200
-   ssh k3s-agt-nas-01
-   df -h /mnt/loki-data
-   ```
-
-2. **If WAL is corrupted**, delete and restart (loses in-flight data):
-   ```bash
-   kubectl scale statefulset -n observability loki --replicas=0
-   ssh k3s-agt-nas-01
-   sudo rm -rf /mnt/loki-data/wal
-   kubectl scale statefulset -n observability loki --replicas=1
-   ```
-
-3. **If disk is full**, reduce retention in `loki/release.yaml` (`retention_period`) or expand the zvol.
 
 ### Loki break-glass NodePort (host log shipping when the ingress is down)
 
@@ -1801,109 +1755,14 @@ kubectl delete service -n observability loki-external
 Flux never reconciles this Service (it is in no kustomization), so nothing
 removes it for you.
 
-### Exporter Down
-
-**Symptoms:** `up == 0` in Prometheus for a scrape target, gaps in dashboards.
-
-1. **Identify the down target** (PromQL: `up == 0`).
-
-2. **In-cluster exporters** (Proxmox, AdGuard, Exportarr):
-   ```bash
-   kubectl get pods -n observability -l app.kubernetes.io/name=<exporter>
-   kubectl logs -n observability -l app.kubernetes.io/name=<exporter>
-   ```
-
-3. **External exporters** (ZFS on pve-nas-01, Unbound on dns-01/dns-02).
-   Service names may vary by installation method -- check with `systemctl list-units '*exporter*'`:
-   ```bash
-   # ZFS exporter on pve-nas-01
-   ssh pve-nas-01
-   sudo systemctl status zfs_exporter
-   sudo journalctl -u zfs_exporter -n 50
-
-   # Unbound exporter on dns-01 / dns-02
-   ssh dns-01  # or dns-02
-   sudo systemctl status unbound_exporter
-   sudo journalctl -u unbound_exporter -n 50
-   ```
-
-4. **Test connectivity** from cluster to external target:
-   ```bash
-   kubectl run -it --rm debug --image=busybox -- wget -q -O- http://<host-ip>:<port>/metrics
-   ```
-
-### Alert Routing Debug
-
-**Symptoms:** Alerts not arriving on Discord or email.
-
-1. **Check Alertmanager** has pending/firing alerts:
-   ```bash
-   kubectl port-forward -n observability svc/kube-prometheus-stack-alertmanager 9093:9093
-   # Open http://localhost:9093
-   ```
-
-2. **Verify secrets synced:**
-   ```bash
-   kubectl get externalsecret -n observability observability-secrets
-   ```
-
-3. **Check Alertmanager logs** for delivery errors:
-   ```bash
-   kubectl logs -n observability -l app.kubernetes.io/name=alertmanager --tail=100
-   ```
-
-4. **SMTP connectivity:**
-   ```bash
-   kubectl run -it --rm debug --image=busybox -- nc -zv 192.168.0.151 587
-   ```
-
-**Dead-man's switch (Watchdog → healthchecks.io)**: the chart's `Watchdog`
-alert always fires and Alertmanager continuously POSTs it to a
-healthchecks.io check (ping URL from the `Healthchecks Watchdog` 1Password
-item via the alertmanager-config ExternalSecret). healthchecks.io alarms
-when the pings **stop** — i.e. when Prometheus/Alertmanager/delivery is down
-and no in-cluster alert could tell you. If healthchecks.io fires, debug the
-alerting pipeline itself (Prometheus up? Alertmanager up? egress blocked?),
-not a workload.
-
-### Grafana OIDC Issues
-
-**Symptoms:** "Login failed" or redirect loop when logging in via Authentik.
-
-1. **Verify OIDC credentials exist:**
-   ```bash
-   kubectl get secret -n observability observability-secrets -o jsonpath='{.data.grafana-oidc-client-id}' | base64 -d
-   ```
-
-2. **Check Grafana logs:**
-   ```bash
-   kubectl logs -n observability -l app.kubernetes.io/name=grafana --tail=100
-   ```
-
-3. **Verify Authentik config:**
-   - Redirect URI: `https://grafana.esweiss.com/login/generic_oauth`
-   - Client type: Confidential
-   - Scopes: `openid`, `profile`, `email`
-
-4. **Test DNS** from inside the cluster:
-   ```bash
-   kubectl run -it --rm debug --image=busybox -- nslookup auth.esweiss.com
-   ```
-
-See [docs/31-observability.md](./31-observability.md) for the full observability guide.
-
 ---
 
-## Emergency Contact / Escalation
+## Reading collect-state status
 
-For critical issues:
-
-1. Review logs: `sudo journalctl -xe`
-2. Check cluster status: `sudo pvecm status`
-3. Review firewall: `sudo pve-firewall status`
-4. Collect state: `task collect-state`
-
-### Reading collect-state status
+`task collect-state` is the first thing to run on any unexplained estate-wide
+symptom; the classifier below is how to read its verdict. (Single-subsystem
+entry points: `sudo journalctl -xe`, `sudo pvecm status`,
+`sudo pve-firewall status`, and the per-subsystem sections above.)
 
 Both modes share one tri-state classifier (`scripts/collect-state.sh`
 header documents the invariant):
@@ -1929,6 +1788,14 @@ the LAN).
 ---
 
 ## Related documentation
+
+- [docs/17 — Disaster recovery](17-disaster-recovery.md) and [docs/42 — Offsite backup](42-offsite-backup.md)
+- [docs/29 — Flux operations](29-flux-operations.md) (in-cluster day-2)
+- [docs/31 — Observability](31-observability.md) (the canonical observability troubleshooting)
+- [docs/32 — ZFS encryption](32-zfs-encryption.md) and [docs/34 — Bond MAC flapping](34-bond-mac-flapping.md)
+- [docs/16 — Next steps](16-next-steps.md) (accepted risks and open work)
+
+## External references
 
 - [Proxmox VE Documentation](https://pve.proxmox.com/pve-docs/)
 - [ZFS Administration Guide](https://openzfs.github.io/openzfs-docs/)

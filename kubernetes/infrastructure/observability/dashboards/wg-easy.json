@@ -435,7 +435,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max(probe_success{instance=\"https://vpn.esweiss.com\"})",
+          "expr": "max(probe_success{instance=\"https://vpn.${cluster_internal_domain}\"})",
           "refId": "A",
           "legendFormat": "wg-easy"
         }

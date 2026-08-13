@@ -29,7 +29,8 @@
 
     // Rule 2 — owner devices -> the LAN via subnet routing. Ports are
     // proto-agnostic (tcp+udp, which DNS needs) and ICMP is auto-allowed.
-    // Port-to-service/security-group table: README.md.
+    // Port-to-service list: README.md. Which host-firewall security group each
+    // port lands in: docs/11-firewall.md, which owns that mapping.
     {
       "action": "accept",
       "src": ["group:admins"],

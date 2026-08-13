@@ -38,16 +38,19 @@ Flux runs in the `flux-system` namespace. Four controllers:
 - **source-controller** — polls the Git repository, produces `GitRepository` artifacts for other controllers to read.
 - **kustomize-controller** — reconciles `Kustomization` CRs (server-side apply of rendered manifests, with drift correction and prune).
 - **helm-controller** — reconciles `HelmRelease` CRs (renders chart + values, installs/upgrades, tracks history).
-- **notification-controller** — dispatches events/alerts and hosts webhook `Receiver`s (none deployed — push triggering comes from the GitLab agent instead, see [Push-Triggered Reconciliation](#push-triggered-reconciliation)).
+- **notification-controller** — dispatches events/alerts and hosts webhook `Receiver`s. The one Receiver in the cluster is created **by the GitLab agent**, not by git — see [Push-Triggered Reconciliation](#push-triggered-reconciliation).
 
 Top-level Kustomizations that Flux owns (all in `flux-system` namespace), reconciled in `dependsOn` order. Each stage's `kustomization.yaml` is the authoritative membership list; the summaries below are indicative:
 
-1. `infrastructure-sources` → `kubernetes/infrastructure/sources/` (HelmRepository CRs + `cluster-versions` ConfigMap). No dependencies. No postBuild substitution (no placeholders).
-2. `infrastructure-crds` → `kubernetes/infrastructure/crds/` (the `prometheus-operator-crds` HelmRelease — the `monitoring.coreos.com` CRDs). `dependsOn: infrastructure-sources`. `wait: true` so controllers do not start until the CRDs are Established. Substitutes the chart version from `cluster-versions`.
-3. `infrastructure-controllers` → `kubernetes/infrastructure/controllers/` (HelmReleases for ESO, 1Password Connect, MetalLB, cert-manager, Traefik, external-dns, VPA, kured, reloader, tailscale-operator). `dependsOn: infrastructure-sources` **and** `infrastructure-crds` (so a controller ServiceMonitor renders against existing CRDs). Substitutes chart versions from `cluster-versions`.
-4. `infrastructure-configs` → `kubernetes/infrastructure/configs/` (ClusterSecretStore, ClusterIssuer, MetalLB IP pools, wildcard certs, CoreDNS override, DDNS CronJob, shared Cloudflare secrets, Traefik middlewares + TLS options, VPA policies, 1Password Connect certificate + ingress, default-namespace config). `dependsOn: infrastructure-controllers` (CRDs must exist). Substitutes from `cluster-versions`.
-5. `infrastructure-observability` → `kubernetes/infrastructure/observability/` (kube-prometheus-stack, Loki, Alloy, exporters, service monitors, dashboards, ingress). `dependsOn: infrastructure-configs`. Substitutes from `cluster-versions`. kube-prometheus-stack runs with `crds.enabled: false` + `install/upgrade.crds: Skip` — the monitoring CRDs are owned by the `infrastructure-crds` stage, not this chart.
-6. `apps` → `kubernetes/apps/` (Authentik, download-clients, hermes, homarr, hindsight, recipes, gitlab-runner, gitlab-runner-privileged, gitlab-runner-reaper, gitlab-agent, registry-cache, tailnet-dns, vm-ingress, wg-easy). `dependsOn: infrastructure-configs` — deliberately parallel to observability, so a failed observability upgrade cannot freeze app reconciliation. Substitutes image/chart versions from `cluster-versions`.
+1. `infrastructure-sources` → `kubernetes/infrastructure/sources/` (HelmRepository CRs + the `cluster-versions` and `cluster-config` ConfigMaps). No dependencies. No postBuild substitution (it defines the ConfigMaps and has no placeholders).
+2. `infrastructure-crds` → `kubernetes/infrastructure/crds/` (the `prometheus-operator-crds` HelmRelease — the `monitoring.coreos.com` CRDs). `dependsOn: infrastructure-sources`. `wait: true` so controllers do not start until the CRDs are Established. Substitutes the chart version from `cluster-versions` (+ `cluster-config`).
+3. `infrastructure-controllers` → `kubernetes/infrastructure/controllers/` (HelmReleases for ESO, 1Password Connect, MetalLB, cert-manager, Traefik, external-dns, VPA, kured, reloader, tailscale-operator). `dependsOn: infrastructure-sources` **and** `infrastructure-crds` (so a controller ServiceMonitor renders against existing CRDs). Substitutes chart versions from `cluster-versions` and cluster identity from `cluster-config`.
+4. `infrastructure-configs` → `kubernetes/infrastructure/configs/` (ClusterSecretStore, ClusterIssuer, MetalLB IP pools, wildcard certs, CoreDNS override, DDNS CronJob, shared Cloudflare secrets, Traefik middlewares + TLS options, VPA policies, 1Password Connect certificate + ingress, default-namespace config). `dependsOn: infrastructure-controllers` (CRDs must exist). Substitutes from `cluster-versions` + `cluster-config`.
+5. `infrastructure-observability` → `kubernetes/infrastructure/observability/` (kube-prometheus-stack, Loki, Alloy, exporters, service monitors, dashboards, ingress). `dependsOn: infrastructure-configs`. Substitutes from `cluster-versions` + `cluster-config`. kube-prometheus-stack runs with `crds.enabled: false` + `install/upgrade.crds: Skip` — the monitoring CRDs are owned by the `infrastructure-crds` stage, not this chart.
+6. `apps` → `kubernetes/apps/` (Authentik, download-clients, hermes, homarr, hindsight, recipes, gitlab-runner, gitlab-runner-privileged, gitlab-runner-reaper, gitlab-agent, registry-cache, tailnet-dns, vm-ingress, wg-easy). `dependsOn: infrastructure-configs` — deliberately parallel to observability, so a failed observability upgrade cannot freeze app reconciliation. Substitutes image/chart versions from `cluster-versions` and cluster identity from `cluster-config`.
+7. `infrastructure-metrics-server` → `kubernetes/infrastructure/controllers/metrics-server/` — **off the chain**: `dependsOn: infrastructure-sources` only, and nothing dependsOn it. It sits inside the controllers directory but is reconciled separately because its install is expected to fail until the Ansible-side `--disable=metrics-server` lands, and a failing HelmRelease inside the `wait: true` controllers stage would freeze configs, observability and apps behind it. Nothing needs `metrics.k8s.io` to be *served* before it can be applied — HPAs and the VPA recommender read it at runtime. See the file's header and docs/33 § metrics-server.
+
+`scripts/flux-child-kustomizations.py` prints this list in `dependsOn` order, derived from `kubernetes/clusters/weisssrv/*.yaml`; `task flux:reconcile` and `scripts/deploy-verify.sh` both consume it, so adding a stage is a one-file change.
 
 The five-way infrastructure split ensures the monitoring CRDs (`infrastructure-crds`) exist before any controller renders a ServiceMonitor, and CRD-dependent configs run after the controllers that install their CRDs. Apps branch off `infrastructure-configs` in parallel with observability: with the monitoring CRDs now installed up-front by `infrastructure-crds`, the monitoring CRs under `apps/` and observability render cleanly on a fresh bootstrap, and in steady state observability failures no longer block apps.
 
@@ -393,6 +396,9 @@ The canonical app pattern is `kubernetes/apps/authentik/` — copy its structure
      100.64.0.0/10, 169.254.0.0/16]`. Add a scrape-allow from the
      `observability` namespace. Copy the shape from
      `authentik/networkpolicy.yaml` or `recipes/networkpolicy.yaml`.
+
+     Two namespaces are exempt from the ingress default-deny, and only two
+     — see § Network policy exceptions at the end of this section.
    - **Certificate**: one per host, `issuerRef` ClusterIssuer
      `letsencrypt-prod`, `renewBefore: 720h`.
    - **IngressRoutes**: public → `external-dns.alpha.kubernetes.io/target:
@@ -479,6 +485,19 @@ The canonical app pattern is `kubernetes/apps/authentik/` — copy its structure
    task flux:sync-versions   # regenerates versions-configmap.yaml
    ```
 
+   **Cluster identity comes from the OTHER ConfigMap.** Hostnames, CIDRs and VIPs
+   are placeholders too — `app.${cluster_internal_domain}`,
+   `${cluster_metallb_internal_vip}` — resolved from `cluster-config`
+   (`kubernetes/infrastructure/sources/cluster-config.yaml`), which every stage
+   after `sources` substitutes from alongside `cluster-versions`. That file is
+   hand-edited, not generated. `scripts/check-cluster-literals.py` (in
+   `task lint`) fails a manifest that hard-codes an adopted value, and
+   cross-checks the ConfigMap against the Ansible inventory. Four things stay
+   literal on purpose — NetworkPolicy `ipBlock` CIDRs, everything under
+   `observability/rules/`, backslash-escaped regex spellings, and per-guest or
+   per-node addresses — because a tool parses them BEFORE Flux substitutes; the
+   ConfigMap's own header carries the full reasoning.
+
 5. **Commit, push, verify**:
 
    ```bash
@@ -491,6 +510,84 @@ The canonical app pattern is `kubernetes/apps/authentik/` — copy its structure
    task flux:status
    kubectl get pods -n <name>
    ```
+
+### Network policy exceptions
+
+This is the canonical list — CLAUDE.md and `kubernetes/components/README.md`
+both point here.
+
+Two namespaces are documented exceptions to the "ingress default-deny in every
+namespace" rule:
+
+| Namespace | Why |
+|---|---|
+| `downloads` (dir `kubernetes/apps/download-clients/`) | Ships its own default-deny covering ingress **and** egress, so the component would be redundant |
+| `flux-system` | Upstream gotk manifests ship their own policies; we do not patch them |
+
+A *third* unfenced namespace is a bug, not a precedent, and
+`scripts/check-default-deny-coverage.py` (in `task flux:lint` and the CI
+flux-lint job) is what fails it: over the same rendered corpus it collects every
+namespace that owns a workload — including the ones a HelmRelease targets, whose
+pods never appear in a kustomize build — and requires each to carry a
+namespace-wide NetworkPolicy with `Ingress` in `policyTypes`. The exceptions
+above live in that script as a reasoned map, so adding one is a code change with
+a written justification. `downloads` needs no entry: its own policy is
+namespace-wide and satisfies the invariant outright.
+
+`scripts/check-scrape-netpol.py` cannot cover this and is not the place to try:
+it only inspects namespaces that already run an ingress-deny policy, so an
+unfenced one is invisible to it — an `--exempt` for such a namespace would be
+inert today (the flag only suppresses a namespace that is already restricted)
+while masking a real regression later.
+
+#### kube-system is fenced, not excepted
+
+It used to be the third exception. It is not any more: it carries the same
+`netpol-baseline` default-deny as everything else, plus an enumerated allow set,
+all in `kubernetes/infrastructure/configs/kube-system-policies/`. That directory
+is deliberately the *only* place kube-system policies live — a deny is only safe
+if its allow set is complete, so the two must be reviewed together and land in
+the same reconcile, even though kured and metrics-server are reconciled by other
+Kustomizations.
+
+| Resident | Ingress allowed | Notes |
+|---|---|---|
+| CoreDNS (`k8s-app: kube-dns`) | 53/UDP+TCP from `namespaceSelector: {}`, the pod CIDR and the LAN CIDR; 9153/TCP from `observability` | The pod-CIDR peer is not redundant: a query aimed at the kube-dns ClusterIP from outside the pod network is DNAT'd **and masqueraded**, so it can arrive as the sending node's flannel gateway address. The LAN peer is defence in depth with no evidenced consumer today — the hostNetwork DaemonSets (kube-vip, node-exporter, metallb-speaker) run `dnsPolicy: ClusterFirst`, which the kubelet demotes to `Default` under hostNetwork, so they resolve via the node's resolv.conf (AdGuard), not CoreDNS. It is kept so host-netns resolution cannot silently break, and is safe because neither pod IPs nor the ClusterIP are LAN-routable |
+| metrics-server | 10250/TCP, no source peer | Same trade as the cert-manager / vpa-system / metallb-system webhook policies: the aggregation-layer call arrives post-DNAT from whichever server is active, so no source IP is pinnable, and the component's own TLS is the gate. **Two** label-scoped policies, not one namespace-wide one — the k3s AddOn (`k8s-app: metrics-server`) and the chart (`app.kubernetes.io/name: metrics-server`) label differently and both are live through the cutover window; one podSelector cannot OR across two keys, but policies are additive. Drop the AddOn one when the cutover closes |
+| kured | 8080/TCP from `observability` | Its ServiceMonitor is chart-native via `metrics.create`, which `check-scrape-netpol.py` cannot see (it matches `serviceMonitor.enabled` only), so this allow is pinned by `scripts/test_check_default_deny_coverage.py` instead (teaching the gate the `metrics.create` spelling is a weisssrv-lib change) |
+| kube-vip | n/a | hostNetwork — NetworkPolicy never gates a hostNetwork pod as a target |
+
+`kube-public` and `kube-node-lease` also carry a fail-closed `default-deny-all`
+(`configs/builtin-namespace-policies.yaml`). Both are pod-free, so this changes
+no traffic; it exists so a pod created there by hand is not unguarded.
+
+Verification after a reconcile that touches any of this:
+
+```bash
+kubectl get netpol -n kube-system
+
+# DNS still resolves — exec into an existing workload, do NOT `kubectl run` a
+# throwaway pod. A bare `kubectl run` lands in `default`, which is PSA
+# `enforce: restricted` (a stock busybox is rejected at admission) AND carries
+# its own `default-deny-all` with policyTypes [Ingress, Egress] — so the probe
+# fails for two reasons that have nothing to do with kube-system, and reads as
+# a false "DNS is broken". Grafana's image is alpine, so busybox nslookup/wget
+# are already there; ask for the FQDN, since busybox does not walk the search
+# list. Expect an answer from 10.43.0.10.
+kubectl -n observability exec deploy/kube-prometheus-stack-grafana -c grafana \
+  -- nslookup kubernetes.default.svc.cluster.local
+
+# The two kube-system scrape allows still work. `up == 1` per target is the
+# proof; an empty result vector or a 0 means the 9153 (CoreDNS) or 8080 (kured)
+# allow is wrong, and TargetDown follows a few minutes later.
+kubectl -n observability exec deploy/kube-prometheus-stack-grafana -c grafana \
+  -- wget -qO- 'http://prometheus-operated:9090/api/v1/query?query=up{job=~"coredns|kured"}'
+```
+
+Rollback, if DNS breaks: `flux suspend kustomization infrastructure-configs`
+then `kubectl delete netpol default-deny-ingress -n kube-system`. Deleting the
+deny restores the previous (unfenced) behaviour immediately; the allows are
+additive and harmless on their own.
 
 ---
 
@@ -646,7 +743,7 @@ flux reconcile helmrelease <name> -n <ns> --with-source
 
 ### Kustomization stuck `Reconciling`
 
-A Kustomization (`apps`, `infrastructure-sources`, `infrastructure-crds`, `infrastructure-controllers`, `infrastructure-configs`, or `infrastructure-observability`) is in progress but never reaches Ready.
+A Kustomization (`apps`, `infrastructure-sources`, `infrastructure-crds`, `infrastructure-controllers`, `infrastructure-configs`, `infrastructure-observability`, or `infrastructure-metrics-server`) is in progress but never reaches Ready. `scripts/flux-child-kustomizations.py` prints the current set in `dependsOn` order — it derives them from `kubernetes/clusters/weisssrv/*.yaml`, so it is never stale.
 
 ```bash
 kubectl describe kustomization <name> -n flux-system
@@ -667,9 +764,10 @@ Most common cause: `wait: true` + a health check failing. The Kustomization wait
 
 A placeholder like `${authentik_version}` is showing up as a literal string in a deployed resource.
 
-- **ConfigMap missing or key typo**: `kubectl get configmap cluster-versions -n flux-system -o yaml` — confirm the key exists.
-- **`substituteFrom` missing on the Kustomization**: check `kubernetes/clusters/weisssrv/{apps,infrastructure-crds,infrastructure-controllers,infrastructure-configs,infrastructure-observability}.yaml` all have the `postBuild.substituteFrom` block referencing `cluster-versions`. (`infrastructure-sources.yaml` intentionally does NOT — sources/ defines the ConfigMap itself and has no placeholders.)
-- **ConfigMap not yet reconciled**: the ConfigMap lives in `kubernetes/infrastructure/sources/versions-configmap.yaml` and is created by the `infrastructure-sources` Flux Kustomization. On a cold bootstrap, if that Kustomization hasn't reconciled yet, controllers/configs substitution fails loudly (`optional: false`) — check `flux get ks infrastructure-sources -n flux-system`.
+- **Which ConfigMap**: version pins live in `cluster-versions`, cluster identity (domains, CIDRs, VIPs) in `cluster-config`. Both are substituted by every stage after `sources`.
+- **ConfigMap missing or key typo**: `kubectl get configmap cluster-versions cluster-config -n flux-system -o yaml` — confirm the key exists.
+- **`substituteFrom` missing on the Kustomization**: check `kubernetes/clusters/weisssrv/{apps,infrastructure-crds,infrastructure-controllers,infrastructure-configs,infrastructure-observability}.yaml` all have the `postBuild.substituteFrom` block referencing BOTH ConfigMaps. (`infrastructure-sources.yaml` intentionally does NOT — sources/ defines them and has no placeholders.)
+- **ConfigMap not yet reconciled**: both live in `kubernetes/infrastructure/sources/` and are created by the `infrastructure-sources` Flux Kustomization. On a cold bootstrap, if that Kustomization hasn't reconciled yet, controllers/configs substitution fails loudly (`optional: false`) — check `flux get ks infrastructure-sources -n flux-system`.
 
 Regenerate from scratch if in doubt:
 
@@ -721,8 +819,19 @@ from the GitLab agent (`kubernetes/apps/gitlab-agent/`), whose built-in
 `flux-system` `GitRepository` (over the agent's existing KAS connection) and
 triggers an immediate reconcile. Properties:
 
-- No inbound webhook endpoint, Flux `Receiver`, or `flux:webhook-register`
-  step exists or is needed — the agent's KAS connection is outbound-only.
+- **The agent creates its own in-cluster `Receiver` and HMAC Secret**, and they
+  are deliberately **not in git**: `flux-system/gitlab-flux-system` (type
+  `generic-hmac`, annotated `app.kubernetes.io/managed-by: gitlab`) plus the
+  `gitlab-receiver-flux-system` Secret holding the KAS-minted trigger token.
+  Declaring either in git would fight the agent for the same objects and the
+  token is not ours to store, so ownership stays with GitLab (recorded in
+  docs/15 and in `scripts/check-unmanaged-secrets.py`'s ALLOWLIST). Removing the
+  agent removes them.
+- Still **no inbound webhook endpoint** and no `flux:webhook-register` step: the
+  Receiver has no Ingress/IngressRoute in front of it (`kubectl -n flux-system
+  get ingressroute,ingress` is empty) and the agent's KAS connection is
+  outbound-only. The trigger arrives over that connection, not from the
+  internet.
 - If the agent is down (or before the `apps` stage first converges on a
   fresh bootstrap), the 1-minute GitRepository poll is the fallback latency
   floor.

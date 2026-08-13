@@ -11,6 +11,10 @@ metadata:
 spec:
   interval: 30m
   releaseName: blackbox-exporter
+  # Correct out-of-band edits to chart-rendered objects — see the rationale on
+  # controllers/traefik/release.yaml. Safe here: no webhook, no autoscaler.
+  driftDetection:
+    mode: enabled
   chart:
     spec:
       chart: prometheus-blackbox-exporter
@@ -53,7 +57,7 @@ spec:
           prober: dns
           timeout: 5s
           dns:
-            query_name: esweiss.com
+            query_name: ${cluster_internal_domain}
             query_type: A
             valid_rcodes:
               - NOERROR
@@ -69,87 +73,87 @@ spec:
         interval: 60s
       targets:
         - name: grafana
-          url: https://grafana.esweiss.com
+          url: https://grafana.${cluster_internal_domain}
           module: http_2xx
         - name: authentik
-          url: https://auth.esweiss.com
+          url: https://auth.${cluster_internal_domain}
           module: http_2xx
         - name: traefik
-          url: https://traefik.esweiss.com
+          url: https://traefik.${cluster_internal_domain}
           module: http_2xx
         - name: sonarr
-          url: https://tv.esweiss.com
+          url: https://tv.${cluster_internal_domain}
           module: http_sso
         - name: radarr
-          url: https://movies.esweiss.com
+          url: https://movies.${cluster_internal_domain}
           module: http_sso
         - name: lidarr
-          url: https://music.esweiss.com
+          url: https://music.${cluster_internal_domain}
           module: http_sso
         - name: prowlarr
-          url: https://prowlarr.esweiss.com
+          url: https://prowlarr.${cluster_internal_domain}
           module: http_sso
         - name: nzbget
-          url: https://nzbget.esweiss.com
+          url: https://nzbget.${cluster_internal_domain}
           module: http_sso
         - name: qbittorrent
-          url: https://qbittorrent.esweiss.com
+          url: https://qbittorrent.${cluster_internal_domain}
           module: http_sso
         - name: mealie
-          url: https://food.esweiss.com
+          url: https://food.${cluster_internal_domain}
           module: http_sso
         - name: bar-assistant
-          url: https://bar.esweiss.com
+          url: https://bar.${cluster_internal_domain}
           module: http_sso
         # Hermes dashboard: an unauthenticated probe is answered by its OIDC
         # gate with a 302, which http_sso accepts (docs/37 §SSO).
         - name: hermes
-          url: https://agent.esweiss.com
+          url: https://agent.${cluster_internal_domain}
           module: http_sso
         # The gateway API is a separate Traefik router from the dashboard above
         # and is the path the agent itself serves on. `/` is a 404, so the probe
         # targets its health endpoint.
         - name: hermes-api
-          url: https://agent-api.esweiss.com/health
+          url: https://agent-api.${cluster_internal_domain}/health
           module: http_2xx
         # Homarr answers an unauthenticated probe with a 302 to its OIDC login.
         - name: homarr
-          url: https://dashboard.esweiss.com
+          url: https://dashboard.${cluster_internal_domain}
           module: http_sso
         - name: plex
-          url: https://plex.esweiss.com
+          url: https://plex.${cluster_internal_domain}
           module: http_sso
         - name: home-assistant
-          url: https://home.esweiss.com
+          url: https://home.${cluster_internal_domain}
           module: http_sso
         - name: gitlab
-          url: https://git.esweiss.com
+          url: https://git.${cluster_internal_domain}
           module: http_2xx
         # SSO-only: the root redirects to Authentik (302). Like every http_sso
         # target here, the probe verifies ingress + TLS + backend reachability,
         # not an authenticated session.
         - name: nextcloud
-          url: https://cloud.esweiss.com
+          url: https://cloud.${cluster_internal_domain}
           module: http_sso
         # Immich answers 200 directly today (the SPA redirects client-side);
         # http_sso keeps the probe correct if a server-side SSO gate ever lands.
         - name: immich
-          url: https://photos.esweiss.com
+          url: https://photos.${cluster_internal_domain}
           module: http_sso
         - name: pulsarr
-          url: https://pulsarr.esweiss.com
+          url: https://pulsarr.${cluster_internal_domain}
           module: http_sso
         # wg-easy ADMIN UI only — behind authentik-auth ForwardAuth, so the
         # probe verifies the ingress + TLS + ForwardAuth hop. The WAN WireGuard
         # endpoint itself is UDP and unprobeable here; WgEasyEndpointVipMissing
         # (rules/infrastructure.yaml) watches that datapath instead.
         - name: wg-easy
-          url: https://vpn.esweiss.com
+          url: https://vpn.${cluster_internal_domain}
           module: http_sso
         # Host-side Alloy's log-shipping path: loki-push-auth returns 401
         # without credentials, which http_sso accepts.
         - name: loki-push
-          url: https://loki.esweiss.com
+          url: https://loki.${cluster_internal_domain}
           module: http_sso
         # 1Password Connect is the secrets backend for every ExternalSecret AND
         # the ZFS key-load path at boot. OnePasswordConnectDown watches the
@@ -159,7 +163,7 @@ spec:
         # 403 to the exporter's source — http_sso accepts 200/401/403 (Traefik +
         # TLS reachable), while a real outage still returns 502/503 and fires.
         - name: onepassword-connect
-          url: https://connect.esweiss.com/health
+          url: https://connect.${cluster_internal_domain}/health
           module: http_sso
         # AdGuard UIs. adguard*/dns-0* are two router pairs onto the same two
         # resolvers: the adguard* names sit behind Authentik ForwardAuth (302 to
@@ -167,16 +171,16 @@ spec:
         # Resolver FUNCTION is covered by the DNS probes below; these cover the
         # management path.
         - name: adguard-dns-01
-          url: https://adguard.esweiss.com
+          url: https://adguard.${cluster_internal_domain}
           module: http_sso
         - name: adguard-dns-02
-          url: https://adguard-02.esweiss.com
+          url: https://adguard-02.${cluster_internal_domain}
           module: http_sso
         - name: adguard-ui-dns-01
-          url: https://dns-01.esweiss.com
+          url: https://dns-01.${cluster_internal_domain}
           module: http_sso
         - name: adguard-ui-dns-02
-          url: https://dns-02.esweiss.com
+          url: https://dns-02.${cluster_internal_domain}
           module: http_sso
         - name: dns-01
           url: 192.168.0.150:53
@@ -185,7 +189,7 @@ spec:
           url: 192.168.0.160:53
           module: dns_resolution
         - name: smtp-relay
-          url: smtp-relay.esweiss.com:587
+          url: smtp-relay.${cluster_internal_domain}:587
           module: tcp_connect
         - name: k3s-api-vip
           url: 192.168.0.161:6443
@@ -207,7 +211,7 @@ spec:
         # Unauthenticated GET / answers 200 today; http_sso also tolerates the
         # 401 the registry API returns if that ever changes.
         - name: gitlab-registry
-          url: https://registry.git.esweiss.com
+          url: https://registry.git.${cluster_internal_domain}
           module: http_sso
         # External path (Cloudflare -> WAN -> MetalLB .100): catches DDNS drift
         # and public-ingress breakage the internal probes cannot see. AdGuard
@@ -216,13 +220,13 @@ spec:
         # Each externally-published app is probed on BOTH names, with modules
         # mirroring its internal probe.
         - name: home-assistant-external
-          url: https://home.ericsweiss.com
+          url: https://home.${cluster_external_domain}
           module: http_2xx
         - name: gitlab-external
-          url: https://git.ericsweiss.com
+          url: https://git.${cluster_external_domain}
           module: http_2xx
         - name: gitlab-registry-external
-          url: https://registry.git.ericsweiss.com
+          url: https://registry.git.${cluster_external_domain}
           module: http_sso
         # NOT an external probe despite the hostname: auth.ericsweiss.com is the
         # AdGuard split-horizon exception (group_vars/dns.yml), so this pod
@@ -231,37 +235,37 @@ spec:
         # certificate from the auth.esweiss.com probe. The genuinely public front
         # door cannot be probed from in-cluster while the rewrite stands.
         - name: authentik-oidc-issuer
-          url: https://auth.ericsweiss.com
+          url: https://auth.${cluster_external_domain}
           module: http_2xx
         - name: nextcloud-external
-          url: https://cloud.ericsweiss.com
+          url: https://cloud.${cluster_external_domain}
           module: http_sso
         # photos.ericsweiss.com is a DNS-only (proxy-bypassed) CNAME so large
         # uploads skip Cloudflare — which also means it is the hostname most
         # exposed to DDNS drift and the one with no proxy in front to mask it.
         - name: immich-external
-          url: https://photos.ericsweiss.com
+          url: https://photos.${cluster_external_domain}
           module: http_sso
         - name: hermes-external
-          url: https://agent.ericsweiss.com
+          url: https://agent.${cluster_external_domain}
           module: http_sso
         - name: homarr-external
-          url: https://dashboard.ericsweiss.com
+          url: https://dashboard.${cluster_external_domain}
           module: http_sso
         - name: mealie-external
-          url: https://food.ericsweiss.com
+          url: https://food.${cluster_external_domain}
           module: http_sso
         - name: bar-assistant-external
-          url: https://bar.ericsweiss.com
+          url: https://bar.${cluster_external_domain}
           module: http_sso
         - name: plex-external
-          url: https://plex.ericsweiss.com
+          url: https://plex.${cluster_external_domain}
           module: http_sso
         # Web IDE extension host — a separate router and origin from
         # git.ericsweiss.com, and the SOP isolation it provides is load-bearing
         # (docs/27). Answers 302 to GitLab's sign-in unauthenticated.
         - name: gitlab-webide-external
-          url: https://ide.git.ericsweiss.com
+          url: https://ide.git.${cluster_external_domain}
           module: http_sso
     resources:
       requests:

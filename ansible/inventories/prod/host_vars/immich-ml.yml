@@ -15,7 +15,10 @@ proxmox_lxc_swap: 2048
 # 64G rootfs: the OpenVINO model cache is multi-GB and lives in the rootfs
 # (named docker volume) — it is re-downloadable cache, not state.
 proxmox_lxc_disk_size: 64G
-proxmox_lxc_storage: local-lvm
+# ssd (encrypted): the role only places NEW containers — the live rootfs was
+# created on local-lvm and is migrated once with
+# `pct move-volume 158 rootfs ssd --delete` (stopped, at a deploy window).
+proxmox_lxc_storage: ssd
 
 # Docker runs inside the container (compose stack). keyctl is required
 # alongside nesting for Docker in an unprivileged LXC.
@@ -25,14 +28,13 @@ proxmox_lxc_keyctl: true
 # Container startup configuration
 # Boot order strategy: DNS (10) -> SMTP (20) -> k3s servers (30) -> k3s agents (40) -> apps (50+)
 #
-# onboot=1 — UNLIKE plex: this LXC has NO encrypted-pool bind mounts. Its
-# rootfs is on (unencrypted) local-lvm and the only bulk data is the
-# re-downloadable model cache, so nothing here waits on the ZFS unlock and
-# pve-guests starts it unattended at boot. (plex is onboot=0 and coupled to
-# pve-start-encrypted-guests because its /config bind mount lives on the
-# encrypted ssd pool — see host_vars/plex.yml and docs/32-zfs-encryption.md.)
+# onboot=0: the rootfs lives on the ENCRYPTED ssd pool, so pct start fails
+# until ssd unlocks. Like plex, this CT is started by
+# pve-start-encrypted-guests.service AFTER zfs-mount-encrypted.service unlocks
+# ssd — NOT by pve-guests at boot (zfs_encryption_guest_ctids in
+# host_vars/pve-nas-01.yml; docs/32-zfs-encryption.md).
 # Order 57 places it after the other apps (nextcloud 55, immich 56).
-proxmox_lxc_onboot: true
+proxmox_lxc_onboot: false
 proxmox_lxc_startup_order: 57
 proxmox_lxc_startup_delay: 10
 

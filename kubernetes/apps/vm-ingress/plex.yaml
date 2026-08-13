@@ -6,12 +6,12 @@ metadata:
   name: plex
   namespace: default
   annotations:
-    external-dns.alpha.kubernetes.io/target: ericsweiss.com
+    external-dns.alpha.kubernetes.io/target: ${cluster_external_domain}
 spec:
   entryPoints:
     - websecure
   routes:
-    - match: Host(`plex.ericsweiss.com`)
+    - match: Host(`plex.${cluster_external_domain}`)
       kind: Rule
       middlewares:
         - name: hsts-header
@@ -34,7 +34,7 @@ spec:
   entryPoints:
     - websecure
   routes:
-    - match: Host(`plex.esweiss.com`)
+    - match: Host(`plex.${cluster_internal_domain}`)
       kind: Rule
       middlewares:
         - name: lan-tailscale-only

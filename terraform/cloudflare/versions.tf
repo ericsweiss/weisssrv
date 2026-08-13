@@ -16,15 +16,15 @@ terraform {
       # schema/deprecation changes). v5 is a breaking rewrite — migrate explicitly.
       #
       # KNOWN MIGRATION DEBT (v4 -> v5): the v5 provider removed/renamed the
-      # resources this config relies on:
-      #   - cloudflare_zone_settings_override (main.tf) -> per-setting
+      # resources the library `cloudflare-zone` module relies on:
+      #   - cloudflare_zone_settings_override -> per-setting
       #     cloudflare_zone_setting resources
-      #   - cloudflare_record (dns.tf, all records) -> cloudflare_dns_record
+      #   - cloudflare_record (every record in dns.tf) -> cloudflare_dns_record
       #     (different argument schema; `data {}` blocks for CAA become a
       #     typed `data` object)
-      # Migrating means rewriting every resource above AND `terraform state mv`
-      # for each, so the ~> 4.52.0 pin defers it deliberately. Do NOT bump to v5
-      # incidentally — schedule it as its own change.
+      # Migrating means a module rewrite in weisssrv-lib AND `terraform state mv`
+      # per record here, so the ~> 4.52.0 pin defers it deliberately. Do NOT bump
+      # to v5 incidentally — schedule it as its own change, module first.
       version = "~> 4.52.0"
     }
   }

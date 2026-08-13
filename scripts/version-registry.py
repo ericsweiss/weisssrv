@@ -402,6 +402,14 @@ _SERVICES: list[dict] = [
         ),
     },
     {
+        "name": "metrics-server",
+        "var_name": "helm_chart_versions.metrics_server",
+        "category": "helm",
+        "helm_repo": "https://kubernetes-sigs.github.io/metrics-server",
+        "helm_chart": "metrics-server",
+        "source_url": "https://github.com/kubernetes-sigs/metrics-server/releases",
+    },
+    {
         "name": "Traefik",
         "var_name": "helm_chart_versions.traefik",
         "category": "helm",
@@ -723,19 +731,26 @@ _SERVICES: list[dict] = [
         "tag_filter": r"^\d+\.\d+\.\d+$",
         "source_url": "https://github.com/xperimental/nextcloud-exporter/releases",
     },
-    # CI tooling images (pinned in .gitlab-ci.yml, not all.yml)
+    # CI tooling images
     {
-        # The pr-agent AI reviewer image, pinned by tag+digest in the
-        # pr-agent-review job. Tracked here so `check-versions` flags a stale
-        # reviewer (the kind of version/model drift that prompted adding this).
-        # Its update is a guided manual step — see update_version_in_file: the
-        # @sha256 supply-chain pin is not auto-rewritten.
+        # The pr-agent AI reviewer image. The tag+digest pin lives in
+        # weisssrv-lib's ci/review/pr-agent.yml, which this repo includes at
+        # WEISSSRV_LIB_REF and passes no `image:` input to — so there is no
+        # local pin to read and `current` reads as unknown. Kept tracked, and
+        # held, so the credential-handling reviewer still shows an upstream
+        # release stream: a bump is a library MR + a ref bump here, never an
+        # edit in this repo. `codiumai/` is the frozen pre-rename namespace
+        # (tags stop at 0.34) and would report an update that does not exist.
         "name": "pr-agent (CI reviewer)",
         "var_name": "pr_agent_version",
         "category": "dockerhub",
-        "docker_image": "codiumai/pr-agent",
+        "docker_image": "pragent/pr-agent",
         "tag_regex": r"^(\d+\.\d+(?:\.\d+)?)$",
-        "version_file": "ci",
+        "held": True,
+        "notes": (
+            "pinned by tag+digest in weisssrv-lib ci/review/pr-agent.yml; bump "
+            "it there, tag, then move WEISSSRV_LIB_REF"
+        ),
         "source_url": "https://github.com/qodo-ai/pr-agent/releases",
     },
     # Manifest-pinned container images (kubernetes/, not all.yml)
@@ -820,13 +835,15 @@ _SERVICES: list[dict] = [
         "tag_filter": r"^v\d+\.\d+\.\d+$",
     },
     {
-        # Vim plugin manager cloned at a tag by the qol role.
+        # Vim plugin manager cloned at a tag by the qol role. Upstream is
+        # ARCHIVED at v0.10.2 — there will never be another release, so any
+        # live query is permanent noise (its Releases endpoint 404s: tags
+        # only). `manual` performs no network call; the pin is final.
         "name": "Vundle.vim",
         "var_name": "qol_vundle_version",
-        "category": "github",
-        "github_repo": "VundleVim/Vundle.vim",
-        "version_prefix": "v",
-        "strip_prefix": False,
+        "category": "manual",
+        "source_url": "https://github.com/VundleVim/Vundle.vim",
+        "notes": "upstream archived at v0.10.2 — final pin, no query to run",
     },
 ]
 
@@ -910,6 +927,9 @@ def _deploy_command(svc: dict) -> str | None:
 CONFIG = {
     "vars_file": "ansible/inventories/prod/group_vars/all.yml",
     "cache_dir": ".version-cache",
+    # The vendored checker's own default heading is the library's; this is the
+    # consumer's report.
+    "report_title": "Homelab Version Check Report",
     # Everything with no more specific rollout path.
     "default_deploy_command": "task infra:deploy",
     # Digest-locked `image:` pins that live outside the vars file.

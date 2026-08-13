@@ -30,7 +30,7 @@ spec:
     # Hostname, not IP: xprtsec=tls verifies the server cert (SAN *.esweiss.com).
     # The IP fails cert verification; pve-nas-01.esweiss.com resolves to .102 via
     # AdGuard and matches the wildcard. See docs/07 Transport Security.
-    server: pve-nas-01.esweiss.com
+    server: pve-nas-01.${cluster_internal_domain}
     path: /appdata/grafana
   mountOptions:
     - nfsvers=4.2
@@ -40,7 +40,7 @@ spec:
     # /appdata k3s client lines require TLS (xprtsec=tls); this option
     # completes the encrypted mount. Changing server: on a bound PV is
     # immutable — the force annotation above lets Flux delete+recreate this
-    # PV (Retain → data safe) instead of stalling. See docs/16.
+    # PV (Retain → data safe) instead of stalling.
     - xprtsec=tls
 ---
 apiVersion: v1

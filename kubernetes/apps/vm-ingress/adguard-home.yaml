@@ -19,7 +19,7 @@ spec:
   entryPoints:
     - websecure
   routes:
-    - match: Host(`dns-01.esweiss.com`)
+    - match: Host(`dns-01.${cluster_internal_domain}`)
       kind: Rule
       middlewares:
         - name: lan-tailscale-strict
@@ -44,7 +44,7 @@ spec:
   entryPoints:
     - websecure
   routes:
-    - match: Host(`dns-02.esweiss.com`)
+    - match: Host(`dns-02.${cluster_internal_domain}`)
       kind: Rule
       middlewares:
         - name: lan-tailscale-strict
@@ -69,7 +69,7 @@ spec:
   entryPoints:
     - websecure
   routes:
-    - match: Host(`adguard.esweiss.com`)
+    - match: Host(`adguard.${cluster_internal_domain}`)
       kind: Rule
       middlewares:
         - name: lan-tailscale-only
@@ -96,7 +96,7 @@ spec:
   entryPoints:
     - websecure
   routes:
-    - match: Host(`adguard-02.esweiss.com`)
+    - match: Host(`adguard-02.${cluster_internal_domain}`)
       kind: Rule
       middlewares:
         - name: lan-tailscale-only

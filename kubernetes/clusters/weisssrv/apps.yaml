@@ -7,9 +7,9 @@
 # ServiceMonitor/PodMonitor. Deliberately NOT dependent on observability health:
 # a failed observability chart upgrade must not freeze every business app.
 #
-# optional: false — cluster-versions comes from infrastructure-sources, so a
-# missing ConfigMap here is a real fault and must fail loudly rather than render
-# empty chart/image versions.
+# optional: false on both — cluster-versions and cluster-config come from
+# infrastructure-sources, so a missing ConfigMap here is a real fault and must
+# fail loudly rather than render empty chart/image versions or empty hostnames.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -33,4 +33,7 @@ spec:
     substituteFrom:
       - kind: ConfigMap
         name: cluster-versions
+        optional: false
+      - kind: ConfigMap
+        name: cluster-config
         optional: false

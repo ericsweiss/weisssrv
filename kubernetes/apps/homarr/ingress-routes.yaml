@@ -18,12 +18,12 @@ metadata:
   annotations:
     # external-dns auto-creates the Cloudflare record — no terraform/cloudflare
     # edit (same as hermes).
-    external-dns.alpha.kubernetes.io/target: ericsweiss.com
+    external-dns.alpha.kubernetes.io/target: ${cluster_external_domain}
 spec:
   entryPoints:
     - websecure
   routes:
-    - match: Host(`dashboard.ericsweiss.com`)
+    - match: Host(`dashboard.${cluster_external_domain}`)
       kind: Rule
       middlewares:
         - name: hsts-header
@@ -45,7 +45,7 @@ spec:
   entryPoints:
     - websecure
   routes:
-    - match: Host(`dashboard.esweiss.com`)
+    - match: Host(`dashboard.${cluster_internal_domain}`)
       kind: Rule
       middlewares:
         - name: lan-tailscale-only

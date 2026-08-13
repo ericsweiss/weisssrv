@@ -5,16 +5,10 @@
 # Nesting required for systemd 257+ (Debian 13) to function correctly
 proxmox_lxc_nesting: true
 
-# Write the SAME key base deploys (ssh_authorized_keys, from=-restricted), not the
-# plain SSH_PUBLIC_KEY the role defaults to. This LXC is base_managed AND
-# proxmox_lxc-managed, so both roles reconcile authorized_keys every run; with
-# different content they overwrite each other and every deploy reports changed.
-# Aligning the content makes the reconcile idempotent (base runs last, so the file
-# already ends each run in the from= state either way — this just stops the churn).
-# Guarded on SSH_PUBLIC_KEY: ssh_authorized_keys hard-fails (undef) when that env
-# var is absent, so a per-role deploy job that does not inject it must SKIP the
-# reconcile (length 0), not error. The ternary short-circuits — ssh_authorized_keys
-# is evaluated only when the key is actually present.
+# Write the SAME key base deploys (from=-restricted), not the plain
+# SSH_PUBLIC_KEY the role defaults to: this LXC is base_managed AND
+# proxmox_lxc-managed, so mismatched content makes every deploy report changed.
+# The ternary short-circuits so a job without SSH_PUBLIC_KEY skips (not errors).
 proxmox_lxc_ssh_public_keys: >-
   {{ ssh_authorized_keys | join("\n")
      if lookup('ansible.builtin.env', 'SSH_PUBLIC_KEY', default='') else '' }}
@@ -30,17 +24,15 @@ smtp_relay_upstream: "[smtp.gmail.com]:587"
 # protocol lists, both SASL halves, cert paths, mydestination, inet_*) is the
 # role default and is deliberately NOT restated, so a hardening default added
 # upstream actually reaches this relay.
+#
+# mynetworks and smtpd_relay_restrictions are among those NOT restated: the role
+# default is loopback-only + SASL-only, which is what this relay actually serves.
+# Every sender — the host null clients and every in-cluster one (Alertmanager,
+# Mealie, Bar Assistant, Authentik) — authenticates on 587; three days of logs
+# showed 9,770 connects on 587 and zero on :25, including from localhost. Adding
+# permit_mynetworks back with the LAN in mynetworks would restore unauthenticated
+# relay from the whole flat /24.
 smtp_relay_config:
   # /etc/mailname rather than the bare domain: the Debian package keeps the FQDN
   # there and postfix reads it at start, so the two cannot drift.
   myorigin: "/etc/mailname"
-  # Loopback + host LAN. The k3s pod CIDR (10.42.0.0/16) is deliberately absent:
-  # it never matched anyway (pods reaching this LXC are SNAT'd to their node IP,
-  # which is in 192.168.0.0/24), and every in-cluster sender (Alertmanager,
-  # Mealie, Bar Assistant, Authentik) relays via SASL on 587
-  # (permit_sasl_authenticated), not permit_mynetworks on 25.
-  mynetworks: "127.0.0.0/8,192.168.0.0/24"
-  # permit_mynetworks is added back on top of the role's SASL-only default so
-  # LAN hosts can relay on 25; the guest firewall admits :25 from core-cluster
-  # only (sg-smtp-relay).
-  smtpd_relay_restrictions: "permit_mynetworks,permit_sasl_authenticated,reject_unauth_destination"

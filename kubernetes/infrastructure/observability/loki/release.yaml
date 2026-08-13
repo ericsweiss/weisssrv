@@ -11,6 +11,10 @@ metadata:
 spec:
   interval: 30m
   releaseName: loki
+  # Correct out-of-band edits to chart-rendered objects — see the rationale on
+  # controllers/traefik/release.yaml. Safe here: no webhook, no autoscaler.
+  driftDetection:
+    mode: enabled
   timeout: 10m
   chart:
     spec:
@@ -29,6 +33,14 @@ spec:
       retries: 3
       remediateLastFailure: true
   values:
+    global:
+      # `platform` (sources/priorityclasses.yaml). global is the chart's
+      # documented all-pods override; it reaches the singleBinary StatefulSet
+      # (the only component enabled here) and the gateway if it is ever turned
+      # on. The canary and the two caches carry their own keys — all three are
+      # disabled below.
+      priorityClassName: platform
+
     deploymentMode: Monolithic  # Renamed from SingleBinary in chart 12.0.0; singleBinary: values block name unchanged
 
     loki:
@@ -52,11 +64,10 @@ spec:
       limits_config:
         retention_period: 720h
         max_query_length: 720h
-        # Ingestion caps. Sized to absorb a fleet-wide WAL replay after an
-        # outage, not just steady-state volume: the previous 8MB/s global and
-        # 4MB/s per-stream caps rejected lines during exactly the bursts that
-        # matter, and a rejected line is lost (RF=1, senders do not retry a 4xx).
-        # Retention, not these caps, is what bounds the 75Gi zvol.
+        # Ingestion caps, sized to absorb a fleet-wide WAL replay after an
+        # outage rather than steady-state volume — a rejected line is lost
+        # (RF=1, senders do not retry a 4xx). Retention, not these caps, is
+        # what bounds the 75Gi zvol.
         ingestion_rate_mb: 16
         ingestion_burst_size_mb: 32
         per_stream_rate_limit: 8MB
@@ -80,8 +91,10 @@ spec:
       # 12h (a 6h window) covers a multi-hour Loki outage instead of only the
       # replay itself. Cost is bounded: a busy stream's chunk is cut on
       # chunk_target_size long before this age, so only idle streams hold memory
-      # longer. alloy_host_journal_max_age must stay inside the window —
-      # scripts/test_alloy_journal_pipeline.py enforces the pair.
+      # longer. alloy_host_journal_max_age (3h by default) must stay inside the
+      # 6h window. Nothing enforces the pair — it is a hand-maintained
+      # convention, stated on both halves: see the alloy_host role README
+      # ("Sender/receiver pair") in the weisssrv.infra collection.
       ingester:
         max_chunk_age: 12h
       compactor:
@@ -131,18 +144,18 @@ spec:
         # (docs/29), not something this manifest can fix.
         storageClass: "-"
       nodeSelector:
-        esweiss.com/nas: "true"
+        ${cluster_node_label_domain}/nas: "true"
       tolerations:
-        - key: esweiss.com/nas
+        - key: ${cluster_node_label_domain}/nas
           operator: Equal
           value: "true"
           effect: PreferNoSchedule
-      # Request tracks the VPA's recorded Off-tier target (docs/33 §Applying an
-      # Off-tier recommendation); the limit stays 1Gi.
+      # Request tracks the VPA's recorded Off-tier target (729Mi — docs/33
+      # §Applying an Off-tier recommendation); the limit stays 1Gi.
       resources:
         requests:
           cpu: 100m
-          memory: 640Mi
+          memory: 768Mi
         limits:
           memory: 1Gi
 

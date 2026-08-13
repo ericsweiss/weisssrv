@@ -52,7 +52,7 @@ In addition to the built-in scrape targets, custom ServiceMonitors collect metri
 | Nextcloud (VM exporter) | observability (external endpoint) | `/metrics` | 60s |
 | wg-easy | wg-easy | `/metrics/prometheus` | 30s |
 | Hindsight | hindsight | `/metrics` | 30s |
-| Blackbox exporter (33 HTTP + 2 DNS + 3 TCP probes) | observability | `/probe` | 60s |
+| Blackbox exporter (HTTP + DNS + TCP probes — `observability/exporters/blackbox-exporter.yaml` `serviceMonitor.targets` is the list) | observability | `/probe` | 60s |
 | cert-manager | cert-manager | `/metrics` | (chart default) |
 | Traefik | traefik | `/metrics` | (chart default) |
 | MetalLB | metallb-system | `/metrics` | (chart default) |
@@ -155,9 +155,12 @@ Grafana uses an NFS-backed PV for its SQLite database (user preferences, service
 **In-cluster:** Alloy runs as a DaemonSet on all 9 k8s nodes (tolerates all taints). It tails pod logs from `/var/log/pods` and ships them to Loki's ClusterIP service.
 
 **Host-side:** The `alloy_host` Ansible role installs Alloy from the Grafana APT
-repository on all non-k8s hosts and k3s VMs. This includes 6 Proxmox hosts, 2
-DNS containers, smtp-relay, GitLab VM, Plex LXC, and all 9 k3s VMs (3 servers +
-6 agents). It reads from systemd journald and ships to Loki over the TLS ingress
+repository on every non-k8s host and k3s VM — the Proxmox hosts, the DNS
+containers, smtp-relay, and the app guests (GitLab, Plex, Nextcloud, Immich,
+immich-ml) plus all 9 k3s VMs. The play's host pattern in
+`ansible/playbooks/site.yml` is the list; the Loki ruler below carries one
+staleness alert per host on it, so the two move together. It reads from systemd
+journald and ships to Loki over the TLS ingress
 at `https://loki.esweiss.com/loki/api/v1/push` (lan-tailscale-only + basic-auth
 middleware; credentials from the "Loki Push Auth" 1Password item, injected at
 deploy time). There is no NodePort Service in git: the `:31100` break-glass path
@@ -915,13 +918,11 @@ Limits are set in `kubernetes/infrastructure/observability/loki/release.yaml`
 under `loki.limits_config`; raising them is the usual fix once a discard alert
 fires, after confirming the volume is legitimate rather than a runaway logger.
 
-### PostgreSQL metrics coverage
+### PostgreSQL metrics
 
-There is **no** PostgreSQL exporter on any of the five databases (Authentik,
-Mealie, Nextcloud, Immich, GitLab). Database health is currently inferred from
-app-level probes and the backup-freshness alerts, so connection saturation,
-replication-free bloat and long-running transactions are invisible. Adding
-`postgres_exporter` is tracked in docs/16.
+All five databases export `postgres_exporter` on 9187 — the shapes, targets and
+the netpol requirement each one carries are in [PostgreSQL
+coverage](#postgresql-coverage) above.
 
 ### Flux Metrics
 
@@ -1113,6 +1114,8 @@ When Authentik or the OIDC flow is down and you need Grafana:
    # If the form is still hidden: flip grafana.ini auth.disable_login_form to
    # false via task flux:dev-apply (reverted on the next reconcile).
    ```
+
+## Task Commands
 
 ```bash
 task observability:status    # Show pods, services, PVCs, HelmReleases, ExternalSecrets, ServiceMonitors

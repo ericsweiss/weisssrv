@@ -4,10 +4,12 @@
 # namespace comes from that kustomization's `namespace:` transformer, or from a
 # per-inclusion patch where it deliberately has none.
 #
-# Scope: whole resources only. The recurring egress SUB-rules (kube-apiserver
-# server IPs, the RFC-reserved except-list, kube-dns) live inside each app's own
-# policy and cannot be a component; scripts/check-netpol-except-parity.py is
-# what keeps the except-lists from drifting apart.
+# Scope: whole resources only. The three recurring egress rules (kube-dns, the
+# kube-apiserver server IPs, the RFC-reserved except-list) ship as their own
+# namespace-wide components alongside this one — netpol-egress-{dns,apiserver,public}.
+# An egress SUB-rule inside an app-scoped policy still cannot be a component, so
+# those copies remain and scripts/check-netpol-except-parity.py is what keeps
+# them from drifting apart. README.md has the split.
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 resources:

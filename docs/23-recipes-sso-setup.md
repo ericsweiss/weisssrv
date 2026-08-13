@@ -325,21 +325,29 @@ Mealie's OpenAI integration uses the following features:
 
 ### Rotating OAuth2 Client Secrets
 
-If you need to rotate secrets:
+The providers are Terraform-managed ([docs/40](40-authentik-terraform.md)), so
+**do not regenerate the secret in the Authentik UI** — the next supervised apply
+would overwrite it, and login breaks in the meantime. 1Password is the source;
+Terraform pushes it to Authentik and ESO pushes it to the app.
 
-1. **In Authentik:**
-   - Go to the provider (Mealie or Bar Assistant)
-   - Edit and generate new Client Secret
-   - Copy the new secret
+1. **Generate a new value** (`openssl rand -base64 48` or the 1Password
+   generator).
 
-2. **In 1Password:**
-   - Update the appropriate secret field
-   - Save the item
+2. **In 1Password:** update the field on the item (Mealie SSO
+   `oidc-client-secret` / Bar Assistant SSO `authentik-client-secret`) and save.
 
-3. **Refresh ExternalSecret + restart consumers:**
+3. **Apply it to Authentik** — supervised, with the plan reviewed:
+   ```bash
+   task terraform:authentik-apply
+   ```
+
+4. **Refresh ExternalSecret + restart consumers:**
    ```bash
    task flux:rotate-secret -- recipes
    ```
+
+   Order matters: Authentik must have the new secret before the apps restart
+   with it, and both sides read the same 1Password field.
 
 ### Updating OpenAI API Key
 

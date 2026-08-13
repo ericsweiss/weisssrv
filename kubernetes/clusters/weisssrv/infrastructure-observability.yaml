@@ -8,7 +8,8 @@
 # upgrade blocks only this stage.
 #
 # optional: false — same rationale as the other stages: a missing
-# cluster-versions ConfigMap here is a real fault, not a reason to render empty.
+# cluster-versions or cluster-config here is a real fault, not a reason to
+# render empty.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -32,4 +33,7 @@ spec:
     substituteFrom:
       - kind: ConfigMap
         name: cluster-versions
+        optional: false
+      - kind: ConfigMap
+        name: cluster-config
         optional: false

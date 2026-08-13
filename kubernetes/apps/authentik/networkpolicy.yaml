@@ -157,9 +157,6 @@ spec:
 # - smtp-relay (192.168.0.151) for password reset / notification emails
 # - Public HTTPS (image pulls happen at kubelet, but the worker fetches
 #   Authentik blueprints + GeoIP DBs over TCP/443 from the internet).
-#
-# Redis was deprecated by Authentik 2025.10 (release.yaml: redis.enabled=false);
-# the bundled Redis ingress + egress rules were removed accordingly.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

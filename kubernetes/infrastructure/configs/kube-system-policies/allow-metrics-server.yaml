@@ -1,0 +1,54 @@
+---
+# metrics-server's aggregated API (metrics.k8s.io), served on :10250 — the
+# chart's `https` container port and the k3s AddOn's `--secure-port` alike, both
+# confirmed against the rendered chart and the live Deployment.
+#
+# The peer is deliberately unrestricted, matching the three existing
+# apiserver-path policies in this repo (cert-manager, vpa-system,
+# metallb-system): the aggregation-layer call is DNAT'd — and masqueraded — from
+# whichever server is active before it reaches the pod, so no source IP is
+# pinnable. metrics-server's own TLS and delegated authn/authz is the gate, the
+# same trade those three policies already make for their webhooks.
+#
+# TWO policies, not one namespace-wide policy. The k3s AddOn copy labels its
+# pods `k8s-app: metrics-server`; the chart labels its
+# `app.kubernetes.io/name: metrics-server`, and both are live for as long as the
+# AddOn cutover window stays open (docs/33 § metrics-server). A single
+# podSelector cannot OR across two label keys — but NetworkPolicies are purely
+# additive, so two label-scoped objects cover both label sets at once and are
+# strictly narrower than `podSelector: {}`. That matters for what comes later,
+# not for today: nothing else in kube-system listens on 10250 (the kubelet's
+# 10250 is in the host netns, which NetworkPolicy never gates), so a namespace-
+# wide selector would open a port with no listener — until some future workload
+# lands here and binds it, silently and with no policy change.
+#
+# Delete the AddOn policy once the cutover closes and the AddOn copy is gone.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-metrics-server-addon-ingress
+spec:
+  podSelector:
+    matchLabels:
+      k8s-app: metrics-server
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: 10250
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-metrics-server-chart-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: metrics-server
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: 10250

@@ -5,7 +5,7 @@
 
 # External - photos.ericsweiss.com
 # NO external-dns annotation: the record is a DNS-only CNAME managed in Terraform
-# (terraform/cloudflare/dns.tf cloudflare_record.photos) so it bypasses the
+# (terraform/cloudflare/dns.tf, local.dns_records["photos"]) so it bypasses the
 # Cloudflare proxy's 100 MB body cap for large mobile uploads. Traffic still
 # lands on MetalLB .100 via the router :443 forward.
 apiVersion: traefik.io/v1alpha1
@@ -17,7 +17,7 @@ spec:
   entryPoints:
     - websecure
   routes:
-    - match: Host(`photos.ericsweiss.com`)
+    - match: Host(`photos.${cluster_external_domain}`)
       kind: Rule
       middlewares:
         - name: hsts-header
@@ -41,7 +41,7 @@ spec:
   entryPoints:
     - websecure
   routes:
-    - match: Host(`photos.esweiss.com`)
+    - match: Host(`photos.${cluster_internal_domain}`)
       kind: Rule
       middlewares:
         - name: lan-tailscale-only

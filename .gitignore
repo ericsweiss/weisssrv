@@ -42,7 +42,16 @@ sasl_passwd.db
 **/.terraform/
 *.tfstate
 *.tfstate.*
+# Plan files hold every resolved variable, so a terraform/authentik plan is a
+# binary blob carrying the OIDC client secrets and the basic-auth passwords.
+# `-out=tfplan` writes a bare name that `*.tfplan` does not match, so both
+# shapes are listed; scripts/test_repo_hygiene.py fails the gate if one is ever
+# tracked despite this.
 *.tfplan
+*.tfplan.json
+tfplan
+tfplan.json
+plan.out
 crash.log
 override.tf
 override.tf.json

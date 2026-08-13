@@ -20,7 +20,7 @@ driver:
 platforms:
   # NAS Server - runs nas_storage role
   - name: nas-server
-    image: "${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:v0.6.0}"
+    image: "${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:v0.7.2}"
     pre_build_image: true
     privileged: true
     cgroupns_mode: host
@@ -43,7 +43,7 @@ platforms:
   # SMB Client - tests Samba connectivity (listing shares)
   # NFS client removed: mounting NFS shares doesn't work in Docker containers
   - name: smb-client-01
-    image: "${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:v0.6.0}"
+    image: "${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:v0.7.2}"
     pre_build_image: true
     privileged: true
     cgroupns_mode: host
@@ -107,11 +107,16 @@ provisioner:
 
         # NFS exports configuration (templates will be generated)
         nas_storage_exports:
+          # 1777: the SMB write test proves the share layer is writable; the
+          # fixture dirs stay sticky-world-writable so no unix user plumbing
+          # is needed in the container.
           - path: /tank/media
+            mode: "1777"
             clients:
               - spec: "172.16.0.0/12"
                 options: "rw,sync,no_subtree_check,no_root_squash"
           - path: /tank/share
+            mode: "1777"
             clients:
               - spec: "172.16.0.0/12"
                 options: "rw,sync,no_subtree_check,no_root_squash"

@@ -2,9 +2,18 @@
 # One exporter per DNS instance (distroless, no shell): dns-01 and dns-02 have
 # independent metrics even though adguard_sync replicates their config.
 #
-# Each sends the AdGuard admin credential as HTTP Basic over plaintext to :3000 —
-# an accepted LAN risk: the admin API serves no TLS, has no read-only role, and
-# the one encrypted path sits behind SSO middleware that rejects basic auth.
+# Each sends the AdGuard admin credential as HTTP Basic, so the hop is HTTPS to
+# AdGuard's own TLS listener on :443 (AdGuardHome.yaml tls.enabled, the
+# distributed *.esweiss.com wildcard). There is still no read-only role, so the
+# credential is the full admin one — encrypting the hop is the mitigation.
+#
+# hostAliases, not DNS: the AdGuard rewrite points dns-0X.esweiss.com at the
+# Traefik internal VIP, whose route chains lan-tailscale-strict and deliberately
+# drops the pod CIDR (apps/vm-ingress/adguard-home.yaml). Pinning the name to the
+# host IP in /etc/hosts reaches AdGuard directly while still presenting a name
+# the wildcard cert covers — the bare IP cannot be used, the cert has no IP SAN.
+# The image is FROM scratch with ca-certificates.crt baked in, so the public
+# Let's Encrypt chain validates without a mounted CA bundle.
 
 # ── dns-01 ──────────────────────────────────────────────────────────────
 apiVersion: apps/v1
@@ -29,6 +38,9 @@ spec:
     spec:
       # Distroless static binary (USER 65532, FROM scratch); no runtime writes.
       automountServiceAccountToken: false
+      hostAliases:
+        - ip: "192.168.0.150"
+          hostnames: ["dns-01.${cluster_internal_domain}"]
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
@@ -45,7 +57,7 @@ spec:
               drop: [ALL]
           env:
             - name: ADGUARD_SERVERS
-              value: "http://192.168.0.150:3000"
+              value: "https://dns-01.${cluster_internal_domain}"
             - name: ADGUARD_USERNAMES
               valueFrom:
                 secretKeyRef:
@@ -76,8 +88,8 @@ spec:
               cpu: 10m
               memory: 32Mi
             limits:
-              # No CPU limit: bursty AdGuard API scrape; CFS throttling at 300m
-              # was firing CPUThrottlingHigh on every scrape window.
+              # No CPU limit (docs/33): CFS throttling on a bursty scrape
+              # trips CPUThrottlingHigh.
               memory: 64Mi
 
 ---
@@ -121,6 +133,9 @@ spec:
     spec:
       # Distroless static binary (USER 65532, FROM scratch); no runtime writes.
       automountServiceAccountToken: false
+      hostAliases:
+        - ip: "192.168.0.160"
+          hostnames: ["dns-02.${cluster_internal_domain}"]
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
@@ -137,7 +152,7 @@ spec:
               drop: [ALL]
           env:
             - name: ADGUARD_SERVERS
-              value: "http://192.168.0.160:3000"
+              value: "https://dns-02.${cluster_internal_domain}"
             - name: ADGUARD_USERNAMES
               valueFrom:
                 secretKeyRef:
@@ -168,8 +183,8 @@ spec:
               cpu: 10m
               memory: 32Mi
             limits:
-              # No CPU limit: bursty AdGuard API scrape; CFS throttling at 300m
-              # was firing CPUThrottlingHigh on every scrape window.
+              # No CPU limit (docs/33): CFS throttling on a bursty scrape
+              # trips CPUThrottlingHigh.
               memory: 64Mi
 
 ---

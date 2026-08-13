@@ -1,11 +1,7 @@
 ---
-# Shared Molecule prepare step: stop + disable the apt background timers so
-# unattended-upgrades can't race a role's own apt tasks on the dpkg lock.
-# Imported after prepare-base.yml by scenarios whose role installs apt packages,
-# via
-#   ansible.builtin.import_tasks: ../../../../molecule/tasks/prepare-apt-disable.yml
-# Render-only scenarios that never touch apt (home_assistant, resolv_conf)
-# deliberately skip it.
+# Stop + disable the apt background timers so unattended-upgrades cannot race a
+# role's apt tasks on the dpkg lock. Imported after prepare-base.yml by
+# prepare-common.yml, which every integration-test scenario runs.
 - name: Disable apt background services
   ansible.builtin.raw: |
     systemctl stop apt-daily.timer 2>/dev/null || true

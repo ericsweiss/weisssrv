@@ -10,19 +10,24 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - namespace.yaml
-  - networkpolicy.yaml
   - rbac.yaml
   - cronjob.yaml
 
+# The reaper is a single-purpose CronJob that only talks to the kube-API (it
+# lists/deletes leaked job pods in the two runner namespaces), so kube-dns +
+# apiserver is its whole egress and the two components ARE its default-deny-egress.
+# Nothing serves traffic, hence the baseline ingress deny.
 components:
   - ../../components/netpol-baseline
+  - ../../components/netpol-egress-dns
+  - ../../components/netpol-egress-apiserver
 patches:
   # This kustomization deliberately sets no top-level namespace (its
-  # RoleBindings target other namespaces), so namespace the shared
-  # default-deny-ingress here instead of via a namespace transformer.
+  # RoleBindings target other namespaces), so namespace the component-shipped
+  # policies here instead of via a namespace transformer. `name` is a regex.
   - target:
       kind: NetworkPolicy
-      name: default-deny-ingress
+      name: (default-deny-ingress|allow-egress-dns|allow-egress-apiserver)
     patch: |
       - op: add
         path: /metadata/namespace

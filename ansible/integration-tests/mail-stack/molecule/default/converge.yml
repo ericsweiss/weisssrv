@@ -59,15 +59,12 @@
       when: "'relay_servers' in group_names"
 
   tasks:
-    # Deploy SMTP relay server
-    # Vars come from molecule.yml inventory and all.yml vars_files
+    # Vars come from the molecule.yml inventory and the all.yml vars_files above.
     - name: Apply smtp_relay role
       ansible.builtin.include_role:
         name: weisssrv.infra.smtp_relay
       when: "'relay_servers' in group_names"
 
-    # Deploy postfix null clients
-    # Vars come from molecule.yml inventory and all.yml vars_files
     - name: Apply postfix_null_client role
       ansible.builtin.include_role:
         name: weisssrv.infra.postfix_null_client

@@ -15,7 +15,7 @@ patches:
         value: sonarr
       - op: replace
         path: /spec/routes/0/match
-        value: Host(`tv.esweiss.com`)
+        value: Host(`tv.${cluster_internal_domain}`)
       - op: replace
         path: /spec/routes/0/services/0/name
         value: sonarr

@@ -25,9 +25,9 @@ metadata:
 data:
   Corefile: |
     # Override zone: names that must resolve to their real LAN IP, not Traefik.
-    dns.esweiss.com smtp-relay.esweiss.com plex-direct.esweiss.com gitlab.esweiss.com nextcloud.esweiss.com home-direct.esweiss.com windows.esweiss.com immich.esweiss.com vip-public.esweiss.com k3s.esweiss.com pve-nas-01.esweiss.com pve-laptop-01.esweiss.com pve-opt-01.esweiss.com pve-opt-02.esweiss.com pve-opt-03.esweiss.com pve-prec-01.esweiss.com k3s-srv-nas-01.esweiss.com k3s-srv-laptop-01.esweiss.com k3s-srv-prec-01.esweiss.com k3s-agt-nas-01.esweiss.com k3s-agt-laptop-01.esweiss.com k3s-agt-opt-01.esweiss.com k3s-agt-opt-02.esweiss.com k3s-agt-opt-03.esweiss.com k3s-agt-prec-01.esweiss.com {
+    dns.${cluster_internal_domain} smtp-relay.${cluster_internal_domain} plex-direct.${cluster_internal_domain} gitlab.${cluster_internal_domain} nextcloud.${cluster_internal_domain} home-direct.${cluster_internal_domain} windows.${cluster_internal_domain} immich.${cluster_internal_domain} vip-public.${cluster_internal_domain} k3s.${cluster_internal_domain} pve-nas-01.${cluster_internal_domain} pve-laptop-01.${cluster_internal_domain} pve-opt-01.${cluster_internal_domain} pve-opt-02.${cluster_internal_domain} pve-opt-03.${cluster_internal_domain} pve-prec-01.${cluster_internal_domain} k3s-srv-nas-01.${cluster_internal_domain} k3s-srv-laptop-01.${cluster_internal_domain} k3s-srv-prec-01.${cluster_internal_domain} k3s-agt-nas-01.${cluster_internal_domain} k3s-agt-laptop-01.${cluster_internal_domain} k3s-agt-opt-01.${cluster_internal_domain} k3s-agt-opt-02.${cluster_internal_domain} k3s-agt-opt-03.${cluster_internal_domain} k3s-agt-prec-01.${cluster_internal_domain} {
         errors
-        forward . 192.168.0.150 192.168.0.160
+        forward . ${cluster_upstream_dns_servers}
         cache 30
     }
 
@@ -35,15 +35,15 @@ data:
     # Traefik device. A/AAAA are answered with the CNAME (the client's MagicDNS
     # resolves the ts.net target to the device's 100.x); other qtypes fall
     # through to AdGuard.
-    esweiss.com {
+    ${cluster_internal_domain} {
         errors
-        template IN A esweiss.com {
+        template IN A ${cluster_internal_domain} {
             answer "{{ .Name }} 60 IN CNAME traefik-tailnet.taile792d8.ts.net."
         }
-        template IN AAAA esweiss.com {
+        template IN AAAA ${cluster_internal_domain} {
             answer "{{ .Name }} 60 IN CNAME traefik-tailnet.taile792d8.ts.net."
         }
-        forward . 192.168.0.150 192.168.0.160
+        forward . ${cluster_upstream_dns_servers}
         cache 30
     }
 
@@ -51,7 +51,7 @@ data:
     # braces) + server-level health/readiness/metrics endpoints.
     .:53 {
         errors
-        forward . 192.168.0.150 192.168.0.160
+        forward . ${cluster_upstream_dns_servers}
         cache 30
         health :8080
         ready :8181

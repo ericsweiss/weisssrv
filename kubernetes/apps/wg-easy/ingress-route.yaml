@@ -5,11 +5,10 @@
 #   1. lan-tailscale-only — reachable only from the LAN / tailnet / pod CIDR.
 #   2. authentik-auth      — ForwardAuth SSO; only members of the vpn-admins
 #                            group (bound in the Authentik provider) get through.
-#                            The pinned wg-easy 15.3.0 has no native OIDC
-#                            (OAUTH_PROVIDERS landed on upstream master ~4 weeks
-#                            after the 15.3.0 release, so it is not in this tag),
-#                            so SSO is enforced at the proxy; wg-easy keeps its
-#                            own admin login too.
+#                            The pinned wg-easy release has no native OIDC
+#                            (OAUTH_PROVIDERS landed on upstream master after
+#                            it — re-check on a bump), so SSO is enforced at the
+#                            proxy; wg-easy keeps its own admin login too.
 #   3. hsts-header.
 #
 # There is intentionally NO public IngressRoute — the UI must never be reachable
@@ -23,7 +22,7 @@ spec:
   entryPoints:
     - websecure
   routes:
-    - match: Host(`vpn.esweiss.com`)
+    - match: Host(`vpn.${cluster_internal_domain}`)
       kind: Rule
       middlewares:
         - name: lan-tailscale-only

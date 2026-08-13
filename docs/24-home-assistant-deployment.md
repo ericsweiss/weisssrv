@@ -485,24 +485,26 @@ mount.
 
 **Step 1: Where backups live**
 
-HAOS backups are written to its own `/backup` on the VM disk, which is itself
-HA-managed and ZFS-replicated across nodes (Proxmox HA), so they survive a host
-loss. For off-site durability, download full backups from the UI (Step 2) or use
-HA's built-in remote-backup integrations.
+HAOS's scheduled backups are written to the NAS, not to the VM disk. The
+codified target is the per-app export
+`/export/backups-apps/home-assistant` on pve-nas-01 — a bind of
+`/mnt/tank/backups/apps/home-assistant`, declared in
+`host_vars/pve-nas-01.yml` (`nas_storage_exports`) and registered in
+`nas_storage_backup_artifact_apps`. HAOS mounts it as
+`192.168.0.102:/backups-apps/home-assistant` (the fsid-relative path under the
+`fsid=0` root).
 
-> **NAS-backed HAOS backups are now supported (and offsite-eligible).** The
-> `/export/backups-apps` export (`host_vars/pve-nas-01.yml`, bound to
-> `/mnt/tank/backups/apps`) carries a **plaintext `192.168.0.154/32` client line**
-> (`all_squash` → 1000:2000, no `xprtsec` — HAOS ships no `tlshd`), and
-> `nas_storage` creates the `home-assistant` subdir. Point HAOS's native
-> scheduled backup at NFS `192.168.0.102:/backups-apps/home-assistant` (the
-> fsid-relative path under the `fsid=0` root) via **Settings → System → Storage →
-> Add network storage** (see the step-by-step in `docs/42-offsite-backup.md`).
-> Because it lands on `tank/backups/apps`, it then rides the archsync file walk
-> into the restic B2 copy, and its freshness is covered by the NAS-side
-> `BackupArtifactStale{app="home-assistant"}` alert. The whole-VM vzdump image
-> remains the bare-metal DR path; the `/export/appdata` export (k3s-only,
-> `xprtsec=tls`) is still NOT usable by HAOS.
+That export is the estate's **one plaintext-on-the-wire backup flow**: its
+client line for `192.168.0.154/32` carries no `xprtsec`, because the HAOS
+Supervisor hard-codes its NFS mount and ships no `tlshd`, so it can never
+request TLS. The k3s-facing `/export/appdata` export (TLS-required) is
+therefore not usable by HAOS. `all_squash` maps writes to 1000:2000.
+
+Because the files land on `tank/backups/apps`, they ride the
+`tank/backups → archive` replication and the restic B2 walk, and their
+freshness is watched by `BackupArtifactStale{app="home-assistant"}`
+([docs/42](42-offsite-backup.md)). The nightly whole-VM vzdump remains the
+bare-metal DR path.
 
 **Step 2: Configure Automatic Backups**
 
@@ -518,9 +520,8 @@ HA's built-in remote-backup integrations.
    Automatic backups are `protected: true` — **without that key the offsite tars
    are undecryptable**.
 
-Backups written there ride `tank/backups → archive` and the restic B2 walk, and
-their freshness is watched by `BackupArtifactStale{app="home-assistant"}`
-([docs/42](42-offsite-backup.md)).
+This is a one-time UI step per rebuild: the NAS side is Ansible-managed, but
+HAOS's own storage/backup settings are not (docs/42 has the same walkthrough).
 
 **Step 3: Manual Backup**
 
@@ -859,16 +860,22 @@ Check for updates via HACS:
 
 #### Rotating OIDC Credentials
 
-To rotate the client secret:
+The `Home Assistant` OAuth2 provider is Terraform-managed
+([docs/40](40-authentik-terraform.md)) — `client_secret` comes from the same
+1Password field this VM reads — so **do not regenerate it in the Authentik UI**:
+the next supervised apply reverts it and logins break until then. Rotate from
+1Password outwards:
 
-1. In Authentik, navigate to the `Home Assistant` provider
-2. Click **Regenerate Secret**
-3. Copy the new secret
-4. Update 1Password:
+1. Generate a new value (`openssl rand -base64 48` or the 1Password generator).
+2. Update 1Password:
    ```bash
    op item edit "Home Assistant SSO" authentik-client-secret="<new-secret>"
    ```
-5. Redeploy configuration:
+3. Push it to Authentik — supervised, review the plan:
+   ```bash
+   task terraform:authentik-apply
+   ```
+4. Redeploy configuration (reads the same 1Password field):
    ```bash
    task home-assistant:deploy-config
    task home-assistant:restart-after-config

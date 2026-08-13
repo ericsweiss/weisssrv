@@ -26,8 +26,12 @@ read-only mirror. `CLAUDE.md` is the top-level fact source; `README.md` owns the
 docs index and the repo map; `task --list` owns the command set.
 
 **This repo is the cluster instance, not the whole system.** The Ansible roles,
-the CI job templates, and two vendored scripts come from `eric/weisssrv-lib` at
-pinned refs (`CLAUDE.md` § Repo family). Changing any of them is a two-repo flow.
+the CI job templates, and a set of vendored files come from `eric/weisssrv-lib`
+at pinned refs (`CLAUDE.md` § Repo family). Changing any of them is a two-repo
+flow. Never assume a file is repo-owned: `scripts/README.md`'s **Origin** column
+and the library's `scripts/vendored-paths.yml` registry (enforced here by
+`scripts/test_vendored_byte_identity.py`) are the inventory of record — never a
+list or a count written anywhere else.
 
 ## Invariants (violating any breaks prod or fails review)
 
@@ -36,7 +40,9 @@ pinned refs (`CLAUDE.md` § Repo family). Changing any of them is a two-repo flo
 - **Keep feature branches local until the MR is ready, and confirm with the user
   before pushing.** Do not open an MR unprompted.
 - **No secrets in git.** Host tooling: `op://Homelab/<Item>/<field>` refs in the
-  `secrets:` dict of `group_vars/all.yml`. In-cluster: `ExternalSecret` with
+  Taskfile's per-task `env:` blocks (and the equivalent CI job variables), with
+  `docs/15-credential-rotation.md` as the item inventory. In-cluster:
+  `ExternalSecret` with
   `remoteRef.key` = 1Password item **title**, `remoteRef.property` = **field**,
   store `onepassword-homelab`. New 1P items go in
   `docs/15-credential-rotation.md`.
@@ -53,24 +59,47 @@ pinned refs (`CLAUDE.md` § Repo family). Changing any of them is a two-repo flo
 - **Bumping weisssrv-lib is one atomic set of edits**, all in the same MR:
   `variables.WEISSSRV_LIB_REF` in `.gitlab-ci.yml` → `scripts/check-lib-pins.py
   --fix` (rewrites every literal `ref:`) → the collection `version:` in
-  `ansible/requirements.yml` → re-vendor the byte-identical copies
-  (`scripts/check-lib-pins.py`, `scripts/version-bump-mr.py`) → any inventory
-  change the collection's `MIGRATING.md` requires for renamed or emptied
-  variables. Never patch a vendored script or a role locally: the next re-vendor
-  reverts it. Never re-add an included CI job inline — a same-named local job
-  silently overrides the include.
+  `ansible/requirements.yml` → re-vendor **every** file the library's
+  `scripts/vendored-paths.yml` registers for this consumer (never a
+  hand-remembered subset; `python3 <lib>/scripts/check-vendored-copies.py
+  --consumer weisssrv` lists and gates them) → any inventory change the
+  collection's `MIGRATING.md` requires for renamed or emptied variables. Never
+  patch a vendored file or a role locally: the next re-vendor reverts it. Never
+  re-add an included CI job inline — a same-named local job silently overrides
+  the include.
 - **Never automate ZFS pool create/destroy** — pools are manual. Ansible sets
   properties, creates zvols and mounts only.
 - **Versions are single-sourced** in `group_vars/all.yml`. After editing a pin,
   run `task flux:sync-versions` and commit **both** `all.yml` and
   `kubernetes/infrastructure/sources/versions-configmap.yaml`. Never hand-edit
   the ConfigMap. Manifests reference `${snake_case_version}` placeholders.
+- **Cluster identity is single-sourced too**, in the sibling
+  `kubernetes/infrastructure/sources/cluster-config.yaml` (hand-edited, not
+  generated). Manifests spell domains, CIDRs and VIPs as `${cluster_*}`
+  placeholders — `app.${cluster_internal_domain}`,
+  `${cluster_metallb_internal_vip}` — and every stage after `sources`
+  substitutes from BOTH ConfigMaps. `scripts/check-cluster-literals.py` fails a
+  hard-coded value and cross-checks the ConfigMap against the Ansible inventory.
+  Literals stay ONLY where a tool parses them before Flux substitutes:
+  NetworkPolicy `ipBlock` CIDRs, `observability/rules/`, escaped regex
+  spellings, and per-guest/per-node addresses. The ConfigMap header is canonical.
 - **Every namespace carries an ingress default-deny.** The
   `kubernetes/components/netpol-baseline` component is the standard mechanism;
-  the two exceptions (`download-clients`, whose local policy covers ingress and
-  egress, and `flux-system`, whose upstream manifests ship their own) are
-  documented where they occur. Egress allowlists are per-app and their
-  reserved-CIDR except-lists must stay identical.
+  the two exceptions (`downloads`, whose local policy covers ingress
+  and egress; `flux-system`, whose upstream manifests ship their own) are listed
+  canonically in `docs/29-flux-operations.md`
+  § Network policy exceptions and encoded, with their reasons, in
+  `scripts/check-default-deny-coverage.py` — the `flux:lint` gate that fails a
+  THIRD unfenced namespace. `kube-system` is NOT an exception: its deny and its
+  whole allow set live together in
+  `kubernetes/infrastructure/configs/kube-system-policies/`, and a new
+  kube-system workload must add its allow there in the same commit. Three sibling components
+  ship the recurring EGRESS rules — `netpol-egress-{dns,apiserver,public}` — but
+  each is a whole policy selecting the whole namespace, so use one only where the
+  rule really is namespace-wide; an app-scoped policy keeps its rule inline
+  (`kubernetes/components/README.md`). The remaining copies of the reserved-CIDR
+  except-lists must stay identical, which
+  `scripts/check-netpol-except-parity.py` enforces.
 - **Ansible conventions** (FQCN, snake_case + role-prefixed vars, `no_log: true`
   on any secret-touching task, handler + service patterns, the `--tags` caveat)
   are canonical in `ansible/README.md` § "Code conventions".
@@ -89,13 +118,17 @@ pinned refs (`CLAUDE.md` § Repo family). Changing any of them is a two-repo flo
 | Change type | Read first | Canonical docs |
 |---|---|---|
 | Kubernetes app (dir under `kubernetes/apps/`) | `references/add-k8s-app.md` | `docs/29-flux-operations.md` (Adding a New App), `docs/33-autoscaling.md` |
+| Platform piece under `kubernetes/infrastructure/` | the sibling stage's dir — stage by dependency, not by kind: `sources/` (HelmRepository + the versions ConfigMap), `crds/` (CRDs the controllers below reference), `controllers/` (platform HelmReleases), `configs/` (CRs needing those CRDs), `observability/` | `docs/29-flux-operations.md`, `docs/31-observability.md`; `kubernetes/clusters/weisssrv/infrastructure-*.yaml` owns the `dependsOn` order |
+| Tenant onboarding (`kubernetes/clusters/weisssrv/tenants/`) | `docs/30-multi-repo-onboarding.md` | the tenant repo is GENERATED with `copier copy` from `eric/weisssrv-app-template` (never forked), and ships its own pre-rendered `docs/ONBOARDING.md` — ask for that page |
+| k3s layer itself (nodes, kube-vip, etcd, VM sizing) | `references/add-vm-app.md` (guest mechanics) + `hosts.yml` | `docs/19-k3s-deployment.md`, `docs/25-multi-node-expansion.md` |
+| GPU workload / passthrough | `references/add-k8s-app.md` § Scheduling | `docs/43-gpu-passthrough.md` |
 | New Proxmox VM / LXC app | `references/add-vm-app.md` | `docs/27-gitlab-deployment.md` (worked example), `docs/06-zfs.md`, `docs/11-firewall.md`, `docs/17-disaster-recovery.md`, `docs/18-bootstrap-new-systems.md` |
 | **Ansible role behaviour** (tasks, templates, defaults) | the role in `weisssrv-lib` — **not here** | the collection README + `MIGRATING.md`; back here for the pin bump (§ Invariants) |
 | Inventory / playbook / host or guest sizing | `ansible/README.md` (layout + conventions) + `CLAUDE.md` § Ansible roles | `docs/01-overview.md`, `docs/18-bootstrap-new-systems.md`, the role's README in the collection |
-| Terraform (Cloudflare DNS / Tailscale ACL / Authentik SSO) | `terraform/<module>/README.md` + neighbours | `docs/08-dns.md`, `docs/05-tailscale.md`, `docs/40-authentik-terraform.md` (Authentik apply is a supervised manual `op run -- terraform apply`) |
+| Terraform | `terraform/<module>/README.md` + neighbours — the three modules deploy differently: **cloudflare AUTO-APPLIES on merge** (`deploy-terraform`, `-auto-approve`), **tailscale** is plan-in-CI + supervised manual apply, **authentik** is supervised manual apply only. **all three** are thin callers of `weisssrv-lib//terraform/modules/{cloudflare-zone,tailscale-acl,authentik-sso}` at a hand-bumped `?ref=` holding only site data, and `check-lib-pins.py` does not cover module sources — `scripts/test_site_configs.py` holds the refs equal to `WEISSSRV_LIB_REF`. All three refs pin the same release as `WEISSSRV_LIB_REF`. `prevent_destroy` and the unbound-application precondition are **module-side** and a consumer cannot remove them: a rename needs a `moved {}` block, a removal needs `terraform state rm` first | `docs/08-dns.md`, `docs/05-tailscale.md`, `docs/40-authentik-terraform.md` |
 | CI pipeline (`.gitlab-ci.yml`, `.gitlab/ci/`) | `CLAUDE.md` § Repo family — check whether the job is included from the library before editing | `docs/13-ci-cd.md` (§ Shared CI library), the library's `docs/INCLUDE-CONTRACT.md` |
-| `scripts/` | `scripts/README.md` — it marks which scripts are vendored or dual-maintained with the library | `docs/13-ci-cd.md` |
-| `docker/` images (molecule + app builds) | the image's own directory | `docs/13-ci-cd.md`, `ansible/TESTING.md` |
+| `scripts/` | `scripts/README.md` — its **Origin** column says whether the file is local, vendored, or a declared fork | `docs/13-ci-cd.md` |
+| `docker/` app build images (hermes-agent, camofox-browser) | the image's own directory — the molecule test/CI images ship from weisssrv-lib, not here | `docs/13-ci-cd.md`, `ansible/TESTING.md` |
 | Version bump / upgrade / maintenance | `references/maintenance-upgrades.md` | `docs/12-runbooks.md`, `docs/16-next-steps.md` |
 | Debug / incident response | `references/debugging.md` | `docs/29-flux-operations.md`, `docs/12-runbooks.md`, `docs/32-zfs-encryption.md`, `docs/34-bond-mac-flapping.md` |
 | Cluster access / secrets / kubeconfig | `references/cluster-access.md` | `docs/15-credential-rotation.md`, `docs/29-flux-operations.md` |
@@ -130,11 +163,30 @@ out the per-change-type checklist.
   amtool must be on PATH; it also runs inside `task lint`).
 - A new guest or deploy target needs its `deploy-*` CI job wiring; the
   coverage-check scripts inside `task lint` fail when it is missing.
+- `task lint`'s script tests need a **weisssrv-lib checkout** (sibling
+  `../weisssrv-lib`, or `$WEISSSRV_LIB_PATH`) — the vendored-copy gate never
+  skips. `references/cluster-access.md` § Local toolchain has the full list.
+- `pre-commit install` once per clone wires the local backstop (gitleaks,
+  yamllint, `check-taskfile.sh`, `check-doc-links.py`) — the hook set is
+  `.pre-commit-config.yaml`.
 
 ## CI, review loop, and merge
 
+- **Commit subjects are Conventional Commits** — `type(scope): summary`, types in
+  use `feat|fix|chore|docs|refactor|ci|test`, with the merge commit carrying the
+  `(#eric/weisssrv!NNN)` MR reference GitLab appends. Nothing enforces this
+  (there is no commitlint); the history is the contract. No AI attribution in any
+  commit or MR text.
+- **MRs are opened on GitLab**, against `main`, from a pushed feature branch —
+  `glab mr create` or the web UI. The MR description carries the change summary,
+  the deploy plan, and a test section describing what WAS run.
 - An MR pipeline runs the **path-filtered** lint/validate/test/security/ai-review
-  gates only — **no deploy on MRs**. A gate runs only if its paths changed.
+  gates only — **no deploy on MRs**. A gate runs only if its paths changed. The
+  closest thing to a pre-merge deploy signal is `deploy-preflight`: it is
+  credential-free by construction (an MR job must never hold prod credentials),
+  so it proves the collection pin installs, every deploy
+  job's playbook exists and every `--tags` selection reaches a real task —
+  nothing that needs a live host.
 - `pr-agent-review` (advisory, `allow_failure`) posts findings within minutes of
   the lint jobs finishing; it is not created on tokenless/fork MRs (expected, not
   a failure). `version-check` is soft-fail and only comments when it has a token.
@@ -143,8 +195,11 @@ out the per-change-type checklist.
   until no valid findings remain. Then push and confirm before opening the MR.
 - After merge to `main`: Flux reconciles `kubernetes/` (~1 min; `task
   flux:reconcile` forces it) and the `deploy-*` jobs run behind the main-only
-  validation gate. Verify with `task flux:status` / `task flux:verify` (k8s),
-  `task infra:verify` (base), `task k3s:status`.
+  validation gate, followed by a separate **`verify` stage** that runs
+  `when: always` — a failed deploy job no longer skips verification, so read
+  `deploy-verify` even (especially) on a red pipeline. Verify locally with
+  `task flux:status` / `task flux:verify` (k8s), `task infra:verify` (base),
+  `task k3s:status`.
 
 ## Reference files
 

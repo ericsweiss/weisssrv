@@ -7,8 +7,9 @@
 # allow. Pod selectors use the `app.kubernetes.io/name` label set on each
 # Deployment's pod template.
 #
-# k3s ships with the Flannel-based kube-router NetworkPolicy controller enabled
-# by default, so these policies are enforced without additional CNI work.
+# k3s enables its embedded kube-router NetworkPolicy controller by default
+# (alongside the Flannel pod network), so these policies are enforced with no
+# additional CNI work.
 #
 # IMPORTANT: qbittorrent and nzbget run with a Gluetun sidecar that shares the
 # pod network namespace. NetworkPolicy is evaluated per-pod, not per-container,
@@ -189,10 +190,10 @@ spec:
                 values: [sonarr, radarr, lidarr, prowlarr, pulsarr, qbittorrent, nzbget]
 
 ---
-# 5. DNS egress. nzbget/qbittorrent (VPN-sidecar pods) set `dnsPolicy: None`
-#    with explicit nameservers 192.168.0.150 / .160; the *arr pods use
-#    kube-dns in the kube-system namespace. Allow both paths so behavior is
-#    correct regardless of which mode a pod is in.
+# 5. LAN DNS egress. nzbget/qbittorrent (VPN-sidecar pods) set `dnsPolicy: None`
+#    with explicit nameservers 192.168.0.150 / .160. The *arr pods use kube-dns
+#    instead, which the shared netpol-egress-dns component allows (kustomization.yaml)
+#    — both paths stay open so behavior is correct whichever mode a pod is in.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -205,16 +206,6 @@ spec:
     - to:
         - ipBlock: { cidr: 192.168.0.150/32 }
         - ipBlock: { cidr: 192.168.0.160/32 }
-      ports:
-        - { protocol: UDP, port: 53 }
-        - { protocol: TCP, port: 53 }
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
-          podSelector:
-            matchLabels:
-              k8s-app: kube-dns
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
@@ -345,7 +336,7 @@ spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/name: qbittorrent
-      esweiss.com/vpn: disabled
+      ${cluster_node_label_domain}/vpn: disabled
   policyTypes: [Egress]
   egress:
     - to:

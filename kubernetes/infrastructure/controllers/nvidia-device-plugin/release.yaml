@@ -41,14 +41,14 @@ spec:
     runtimeClassName: nvidia
     # Only the labelled GPU node runs the plugin (single-GPU cluster).
     nodeSelector:
-      esweiss.com/gpu: nvidia
+      ${cluster_node_label_domain}/gpu: nvidia
     # Tolerate the node's soft compute taint (PreferNoSchedule) so the plugin is
     # not penalised there, plus the conventional GPU taint the chart expects.
     tolerations:
       - key: nvidia.com/gpu
         operator: Exists
         effect: NoSchedule
-      - key: esweiss.com/compute
+      - key: ${cluster_node_label_domain}/compute
         operator: Equal
         value: "true"
         effect: PreferNoSchedule

@@ -8,30 +8,42 @@
 # - Machine reboots: manual approval required (maintenance jobs auto-reboot when triggered)
 #
 # Required CI/CD Variables (Settings > CI/CD > Variables):
-# - OP_SERVICE_ACCOUNT_TOKEN (masked) - 1Password service account. NOT protected
-#   today; see the credential-scope note on terraform-plan before changing that.
+# - OP_SERVICE_ACCOUNT_TOKEN (must be masked AND PROTECTED) - 1Password service
+#   account. Protection is a project setting this file cannot assert; the whole
+#   pipeline is written for it, so verify it in Settings > CI/CD > Variables.
+#   Protected means it is absent on merge-request refs, so no MR job can read
+#   the vault with a branch's own code: every op:// consumer here is main-only.
+#   The cost, accepted deliberately, is that terraform-plan no longer previews
+#   on MRs — see the credential-scope note on that job (and docs/13).
 #
 # Optional CI/CD Variables:
 # - GH_API_TOKEN (masked) - For version checker API rate limits
 #
 # Pipeline triggers — what each pipeline source runs:
 #
-#   merge_request_event  lint + validate + test + AI review, and terraform-plan.
-#                        Never deploys; the drift plans do not run either.
-#   main                 the same checks, then validation-gate and the deploy
-#                        jobs each path-gated on its own inputs.
-#   schedule             version-check, secret detection and the four drift
-#                        plans. Everything else is when: never, except two
+#   merge_request_event  lint + validate + test + security + AI review,
+#                        including the credential-free deploy-preflight and the
+#                        advisory version-check. Never deploys; the drift plans
+#                        do not run, and terraform-plan's MR rule is inert while
+#                        OP_SERVICE_ACCOUNT_TOKEN is protected.
+#   main                 the same checks, then validation-gate, the deploy jobs
+#                        each path-gated on its own inputs, and the verify stage
+#                        (which runs even when a deploy failed).
+#   schedule             version-check, secret detection and the three drift
+#                        plans (tailscale, authentik, b2 — docs/13 § Validate
+#                        Stage). Everything else is when: never, except two
 #                        typed schedules:
 #                          SCHEDULE_TYPE=full-test    integration tests,
 #                                                     unfiltered, as an
 #                                                     external-dependency canary
 #                          SCHEDULE_TYPE=version-bump version-bump-bot
-#   web                  lint/validate/test/security only — the cheap jobs run,
-#                        the expensive ones (image builds, integration tests,
-#                        repo-policy-checks) are manual buttons. Deploy, gate
-#                        and maintenance stages are excluded; the maintenance
-#                        ops are manual buttons on main.
+#   web                  lint + validate + test only — the cheap jobs run, the
+#                        expensive ones (image builds, integration tests,
+#                        repo-policy-checks, version-check) are manual buttons.
+#                        secret_detection has no web rule, so the security stage
+#                        is empty. Deploy, gate, verify and maintenance stages
+#                        are excluded; the maintenance ops are manual buttons on
+#                        main.
 #
 # Roles live in the weisssrv.infra collection (weisssrv-lib), so this pipeline
 # has no molecule matrix: the library tests the roles, ansible/requirements.yml
@@ -47,6 +59,16 @@ stages:
   - ai-review
   - gate
   - deploy
+  # Post-deploy verification. A SEPARATE stage after deploy, not a deploy-stage
+  # job with `needs:` on the deploys: in GitLab a job that declares ANY `needs:`
+  # starts as soon as those needs complete and ignores stage order, and a need
+  # that was CREATED and then FAILED blocks the dependent job (`optional: true`
+  # only tolerates a need that was never created). Both jobs here therefore
+  # carry NO `needs:` — stage ordering alone sequences them — plus
+  # `when: always`, so a failed deploy stage still gets verified. Three of six
+  # main pipelines in one 6h window previously deployed a partial change set
+  # with zero verification because one deploy job failed.
+  - verify
   # All maintenance jobs (6 ops, maintenance-run-all wrapper, and the
   # ad-hoc maintenance-verify cluster-health button) are in this single
   # stage. Each maintenance op embeds the verify script as its final
@@ -72,7 +94,7 @@ variables:
   # as a literal and scripts/check-lib-pins.py enforces that they all equal this
   # value and that it is a release tag. Bump here, then `--fix`. See the comment
   # on the include block.
-  WEISSSRV_LIB_REF: "v0.6.2"
+  WEISSSRV_LIB_REF: "v0.7.2"
   # Single source for the Ansible pin the deploy jobs (.deploy-base) pip-install.
   # Keep in step with requirements.txt's ansible pin.
   ANSIBLE_VERSION: "11.6.0"
@@ -112,12 +134,17 @@ workflow:
   # re-covered by the second pipeline. Rapid merges instead QUEUE at the deploy
   # jobs' resource_groups.
   #
-  # Those groups are PER TARGET and oldest_first: one target is never deployed by
-  # two pipelines at once, and always in merge order. That is not whole-pipeline
-  # atomicity — two pipelines' Ansible runs can still meet on one host once the
-  # earlier one frees a group — which is why "serialize merges" is an operating
-  # rule (docs/13). A single repo-wide group would close it at the cost of
-  # serialising the app-deploy fan-out inside every pipeline.
+  # Those groups are PER TARGET, so one target is never deployed by two
+  # pipelines at once. Merge ORDER additionally depends on each group's process
+  # mode being `oldest_first`, which is an out-of-band project setting (Resource
+  # Groups API), not codified here — a project restore resets every group to
+  # `unordered`, so re-apply it as part of the DR checklist (docs/17). None of
+  # this is whole-pipeline atomicity either — two pipelines' Ansible runs can
+  # still meet on one host once the earlier one frees a group, and the
+  # maintenance ops sit in their own group so a maintenance run can overlap a
+  # deploy against the same hosts — which is why "serialize merges" is an
+  # operating rule (docs/13). A single repo-wide group would close it at the
+  # cost of serialising the app-deploy fan-out inside every pipeline.
   auto_cancel:
     on_new_commit: interruptible
   rules:
@@ -209,11 +236,16 @@ workflow:
     - ansible/requirements.yml
     - scripts/**/*
     - .gitlab-ci.yml
+    # integration-matrix-coverage reads the matrix out of this file.
+    - .gitlab/ci/**/*
     # netpol-except-parity reads every NetworkPolicy; backup-artifact-apps reads
     # BackupArtifactStale's absent() arms out of the kube-prometheus-stack
-    # release. Both live under kubernetes/.
+    # release; cluster-literals reads every substituted manifest plus
+    # cluster-config.yaml. All live under kubernetes/.
     - kubernetes/**/*
     - Taskfile.yml
+    # tailscale-policy-syntax's subject: the ACL the supervised apply pushes.
+    - terraform/tailscale/policy.hujson
 # Cloudflare-only jobs (terraform-plan, deploy-terraform) gate on just the
 # cloudflare module so an unrelated tailscale change can't fire a Cloudflare
 # plan+apply. (terraform-fmt / terraform-validate come from the shared CI
@@ -244,8 +276,23 @@ workflow:
     - scripts/extract-prometheus-config.py
     - scripts/lint-prometheus-config.sh
     - scripts/check-alertmanager-behaviour.py
+    # Its route cases / alert inventory — the site data the gate asserts against.
+    - scripts/alertmanager-behaviour.yaml
     # promtool unit tests + vendored upstream rules run by the lint script.
     - scripts/prometheus-rule-tests/**/*
+    # The job's own definition — the promtool/amtool image and the script argv
+    # live here, so an MR that changes how the gate runs must re-run the gate.
+    - .gitlab-ci.yml
+.paths-deploy-preflight:
+  # Everything deploy-preflight's answer depends on: the playbooks and tags it
+  # walks, the inventory `--list-tasks` parses, the collection pin it installs,
+  # and the deploy jobs it reads the invocations out of.
+  changes:
+    - ansible/playbooks/**/*
+    - ansible/inventories/prod/**/*
+    - ansible/requirements.yml
+    - ansible/ansible.cfg
+    - .gitlab-ci.yml
 .paths-integration:
   changes:
     - ansible/integration-tests/**/*
@@ -259,15 +306,39 @@ workflow:
     - ansible/inventories/prod/group_vars/all.yml
     # The shared in-job retry wrapper the suite runs through.
     - scripts/molecule-retry.sh
-    - .gitlab-ci.yml
+    # The matrix's own definition. NOT `.gitlab-ci.yml`: this is a ~14-minute
+    # privileged-DinD fan-out on the critical path to validation-gate, and
+    # naming the whole pipeline file fired it on every CI-only edit.
+    - .gitlab/ci/integration-jobs.yml
 
+# LOCAL COPY OF A LIBRARY TEMPLATE — keep it that way.
+#
+# This fragment is the render of weisssrv-lib `/ci/deploy/deploy-base.yml` with
+# op_vault=Homelab, ansible_version=${ANSIBLE_VERSION}, apt_packages=git,
+# ansible_dir=ansible, hosts_env=scripts/hosts.env. It is kept here only until
+# the library tag that ships that file is pinned; at the next WEISSSRV_LIB_REF
+# bump this whole block is DELETED and replaced by an include entry, and the
+# swap must stay mechanical — so any behaviour change belongs in the library
+# first (the cluster template carries the same fragment and had already drifted
+# from this one on the git install and the LOKI_PUSH_* hoist).
+#
+# .dep-cache (shared CI library fragment): reuse pip wheels + the galaxy
+# collections across deploy jobs — every job extending this pip-installs ansible
+# and galaxy-installs weisssrv.infra + its dependencies. Its
+# ANSIBLE_COLLECTIONS_PATH is where the roles the playbooks address by FQCN are
+# resolved from — that variable, not the caching, is what this repo depends on:
+# the k3s runner configures no distributed cache backend, so the cache itself is
+# a measured no-op (a pod-local archive of ~5,500 files, discarded with the pod).
+# Dropping the fragment would silently move collection resolution to the galaxy
+# default, so it stays until a baked `ansible-deploy` image (a library
+# follow-up) sets the path explicitly.
 .deploy-base:
-  # .dep-cache (shared CI library fragment): reuse pip wheels + the galaxy
-  # collections across deploy jobs — every job extending this pip-installs
-  # ansible and galaxy-installs weisssrv.infra + its dependencies. Its
-  # ANSIBLE_COLLECTIONS_PATH is where the roles the playbooks address by FQCN
-  # are resolved from.
   extends: [.install-1password, .dep-cache]
+  # A deploy needs the privileged infrastructure runner: an untagged job lands
+  # on the shared non-root runner, where the apt install and the SSH reach to
+  # the hosts both fail. Same value as the pipeline default, stated explicitly
+  # because the library template makes it an input.
+  tags: [infrastructure]
   # Deploys touch shared infrastructure; never cancel a running deploy when a new
   # pipeline starts — wait for it to complete instead.
   interruptible: false
@@ -321,6 +392,13 @@ workflow:
 # Pulled into .maintenance-base and .k3s-deploy-base via
 # `- !reference [.kubectl-setup, before_script]` so the version, checksum, and
 # kubeconfig logic live in one place.
+#
+# Also a local copy of a library template — the render of weisssrv-lib
+# `/ci/deploy/kubectl-setup.yml` with op_vault=Homelab and the pinned
+# kubectl_version/kubectl_sha256 below. Same rule as .deploy-base above: change
+# it in the library, then swap this block for the include at the next
+# WEISSSRV_LIB_REF bump. check-kubectl-version-pin.py reads the version literal
+# out of this block, so the pin must survive the swap as an include input.
 .kubectl-setup:
   before_script:
     - |
@@ -334,7 +412,7 @@ workflow:
       mkdir -p ~/.kube
       KUBECONFIG_B64=$(op read "op://Homelab/K3s Kubeconfig/kubeconfig")
       if [ -z "$KUBECONFIG_B64" ]; then
-        echo "ERROR: op read returned empty kubeconfig. Is OP_SERVICE_ACCOUNT_TOKEN set?"
+        echo "ERROR: op read returned an empty kubeconfig. Is OP_SERVICE_ACCOUNT_TOKEN set?" >&2
         exit 1
       fi
       # umask 077 subshell: never create the kubeconfig world-readable.
@@ -373,6 +451,10 @@ workflow:
     - bash scripts/maintenance-rearm-self-reboot.sh || true
 
 .k3s-deploy-base:
+  # The `extends` and the `!reference` below are BOTH required and neither is
+  # redundant: a job-level before_script REPLACES the extended one, so the
+  # !reference is what actually runs the op install, while the extends keeps any
+  # non-before_script key the fragment grows. Do not "clean up" either.
   extends: .install-1password
   # Use Debian-based image (Alpine musl resolver has issues with k8s ndots:5)
   image: python:3.11-slim
@@ -393,17 +475,35 @@ workflow:
 # BUILD STAGE - Container images
 
 # The two app images (hermes-agent, camofox-browser) share this base: the
-# pinned static docker CLI install, the dind-ready wait, registry login, and a
-# build_and_push helper with registry-backed BuildKit layer caching + a bounded
-# in-script build retry. The molecule CI/test images are published by
-# weisssrv-lib and consumed from its registry (see the integration jobs).
+# pinned static docker CLI + buildx plugin installs, the dind-ready wait, and
+# registry login. Each job owns its own build/tag/push block — they differ in
+# build-args, tag sets and upstream verification. The molecule CI/test images
+# are published by weisssrv-lib and consumed from its registry (see the
+# integration jobs).
+#
+# KNOWN RACE, not closed here. The image pin and the versions ConfigMap that
+# Flux substitutes it from are the SAME file (group_vars/all.yml), so the merge
+# that bumps a pin both triggers the build and tells Flux to roll. Flux
+# reconciles from git in ~1 minute; a multi-stage DinD build takes several. The
+# Deployment therefore rolls to a tag that is still building, and the pods sit
+# in ImagePullBackOff until the push lands.
+#
+# It is self-healing (the pin is `-rN`-suffixed and immutable per bump, so
+# kubelet's next pull attempt succeeds) and CI cannot order itself against Flux
+# — Flux polls git, not the pipeline. What IS enforced: the publish verify at
+# the end of each build job proves the tag the cluster pulls actually reached
+# the registry, so the non-self-healing variant (a tag that is never published
+# at all) fails the pipeline red. Closing the race itself needs Flux
+# ImagePolicy/ImageUpdateAutomation or a digest pin written by the build; until
+# then, expect a few minutes of ImagePullBackOff on a hermes/camofox pin bump
+# and do not roll it back on sight (docs/37).
 .build-image-base:
   # Pushes images consumed by later jobs in this pipeline; do not interrupt.
   interruptible: false
   # Infra-class retries only. NOT script_failure: a genuinely broken Dockerfile
   # must fail fast, not burn three full image builds — transient external-dep
-  # pulls (base image, apt, pip, galaxy) are handled cheaply by the in-script
-  # build_and_push retry below, which reuses cached layers on a re-attempt.
+  # pulls (base image, apt, pip, npm) are handled cheaply by each job's own
+  # bounded build retry, which reuses cached layers on a re-attempt.
   retry:
     max: 2
     when:
@@ -447,43 +547,26 @@ workflow:
       # "Cannot connect to the Docker daemon at tcp://docker:2375".
       for i in $(seq 1 30); do docker info >/dev/null 2>&1 && break; echo "waiting for docker daemon ($i/30)..."; sleep 2; done
       docker info >/dev/null 2>&1 || { echo "docker daemon did not become ready"; exit 1; }
-    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
     - |
-      # build_and_push <image-short-name> <docker-build-args...>
-      # Builds ${CI_REGISTRY_IMAGE}/<image>:<sha>, pushing it (and :latest on
-      # main). Seeds a registry layer cache from the previous :latest and embeds
-      # inline cache metadata for the next run — EXCEPT on the full-test schedule
-      # canary, which must rebuild from scratch to exercise fresh external deps.
-      # The build+push is wrapped in a bounded retry so a transient dep pull /
-      # registry blip re-attempts (cheap: cached layers) while a real build error
-      # still fails after the attempts (job-level retry omits script_failure).
-      build_and_push() {
-        img="$1"; shift
-        ref="${CI_REGISTRY_IMAGE}/${img}"
-        cache_args=""
-        if [ "$CI_PIPELINE_SOURCE" != "schedule" ]; then
-          cache_args="--cache-from ${ref}:latest --build-arg BUILDKIT_INLINE_CACHE=1"
-        fi
-        attempt=1; max=3
-        # shellcheck disable=SC2086  # word-split cache_args + trailing build args
-        until docker build $cache_args -t "${ref}:${CI_COMMIT_SHORT_SHA}" "$@" \
-              && docker push "${ref}:${CI_COMMIT_SHORT_SHA}"; do
-          attempt=$((attempt+1))
-          if [ "$attempt" -gt "$max" ]; then
-            echo "docker build/push of ${img} failed after ${max} attempts"; return 1
-          fi
-          echo "build/push ${img} attempt $((attempt-1)) failed; retrying (${attempt}/${max})..."
-          sleep $(( (RANDOM % 20) + 10 ))
-        done
-        # :latest only on main — MR pipelines use SHA tags so they never
-        # overwrite :latest with unmerged branch images. The SHA tag (and, for
-        # molecule-ci, its digest dotenv) is the load-bearing reference; :latest
-        # is the fallback for pipelines where the build didn't run.
-        if [ "$CI_COMMIT_BRANCH" = "main" ]; then
-          docker tag "${ref}:${CI_COMMIT_SHORT_SHA}" "${ref}:latest"
-          docker push "${ref}:latest"
-        fi
-      }
+      # Docker buildx CLI plugin (pinned + sha256, same discipline as the static
+      # CLI above). Required by BOTH builds: the base exports DOCKER_BUILDKIT=1,
+      # so every `docker build` routes through the daemon's embedded BuildKit and
+      # fails with "buildx component is missing" without the plugin — hermes also
+      # needs it for upstream's BuildKit-only COPY --link/--chmod.
+      BUILDX_ARCH=$(dpkg --print-architecture)
+      BUILDX_VERSION=v0.35.0
+      case "$BUILDX_ARCH" in
+        amd64) BUILDX_SHA256=d41ece72044243b4f58b343441ae37446d9c29a7d6b5e11c61847bbcf8f7dfda ;;
+        arm64) BUILDX_SHA256=c4248d6cbc4a619a7e0b4609c11e509ad4ac0b475e1c64817c0ac20c5d90c766 ;;
+        *) echo "unsupported arch: $BUILDX_ARCH"; exit 1 ;;
+      esac
+      curl -fsSL "https://github.com/docker/buildx/releases/download/${BUILDX_VERSION}/buildx-${BUILDX_VERSION}.linux-${BUILDX_ARCH}" -o /tmp/docker-buildx
+      echo "${BUILDX_SHA256}  /tmp/docker-buildx" | sha256sum -c -
+      mkdir -p "$HOME/.docker/cli-plugins"
+      install -m 0755 /tmp/docker-buildx "$HOME/.docker/cli-plugins/docker-buildx"
+      rm /tmp/docker-buildx
+      docker buildx version
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
 
 # build-hermes-agent: NousResearch Hermes Agent publishes no container image, so
 # we build our own into the GitLab registry. The job clones the upstream repo at
@@ -507,27 +590,6 @@ build-hermes-agent:
     # modern-CPU nodes, same invariant as secret_detection's gitleaks pin.
     KUBERNETES_NODE_SELECTOR_CPU: "esweiss.com/cpu=modern"
   script:
-    - |
-      # Install the Docker buildx CLI plugin (pinned + sha256, matching the
-      # checksum discipline used for the static docker CLI in .build-image-base).
-      # The static docker binary ships no buildx plugin, and upstream Hermes's
-      # Dockerfile uses BuildKit-only features (COPY --link / --chmod), so the
-      # classic builder cannot build it and DOCKER_BUILDKIT=1 `docker build`
-      # fails with "buildx component is missing". Installing the plugin lets
-      # `docker build` route through the daemon's embedded BuildKit.
-      BUILDX_ARCH=$(dpkg --print-architecture)
-      BUILDX_VERSION=v0.35.0
-      case "$BUILDX_ARCH" in
-        amd64) BUILDX_SHA256=d41ece72044243b4f58b343441ae37446d9c29a7d6b5e11c61847bbcf8f7dfda ;;
-        arm64) BUILDX_SHA256=c4248d6cbc4a619a7e0b4609c11e509ad4ac0b475e1c64817c0ac20c5d90c766 ;;
-        *) echo "unsupported arch: $BUILDX_ARCH"; exit 1 ;;
-      esac
-      curl -fsSL "https://github.com/docker/buildx/releases/download/${BUILDX_VERSION}/buildx-${BUILDX_VERSION}.linux-${BUILDX_ARCH}" -o /tmp/docker-buildx
-      echo "${BUILDX_SHA256}  /tmp/docker-buildx" | sha256sum -c -
-      mkdir -p "$HOME/.docker/cli-plugins"
-      install -m 0755 /tmp/docker-buildx "$HOME/.docker/cli-plugins/docker-buildx"
-      rm /tmp/docker-buildx
-      docker buildx version
     - |
       # Read the pinned tag from all.yml (same single-source pattern the other
       # version-gated jobs use). No YAML lib in this image — grep the scalar.
@@ -618,15 +680,19 @@ build-hermes-agent:
         docker push "${ref}:${CI_COMMIT_SHORT_SHA}"
         docker push "${ref}:${HERMES_VERSION}"
         # The tag the cluster actually pulls (<version>-rN local patch
-        # revision) — without this push the deployment's tag never exists and
-        # hermes ImagePullBackOffs (observed on the v2026.7.20-r1 rollout,
-        # unblocked live by a server-side crane retag of :<sha>). The build
-        # already -t's this tag; the explicit re-tag is belt-and-braces against
-        # the build's tag list drifting.
+        # revision). The build already -t's it; the explicit re-tag guards
+        # against the build's tag list drifting.
         docker tag "${ref}:${CI_COMMIT_SHORT_SHA}" "${ref}:${HERMES_IMAGE_VERSION}"
         docker push "${ref}:${HERMES_IMAGE_VERSION}"
         docker tag "${ref}:${CI_COMMIT_SHORT_SHA}" "${ref}:latest"
         docker push "${ref}:latest"
+        # Read the tag back from the REGISTRY. The Deployment pulls exactly
+        # ${hermes_image_version}, so this turns "the tag the cluster needs was
+        # never published" into a red build job instead of an ImagePullBackOff
+        # an operator has to diagnose in-cluster. buildx is installed above.
+        docker buildx imagetools inspect "${ref}:${HERMES_IMAGE_VERSION}" >/dev/null \
+          || { echo "PUBLISH VERIFY FAILED: ${ref}:${HERMES_IMAGE_VERSION} is not resolvable in the registry"; exit 1; }
+        echo "Registry serves ${ref}:${HERMES_IMAGE_VERSION}"
       fi
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
@@ -646,35 +712,17 @@ build-hermes-agent:
 # tag (v<hermes_camofox_version> in all.yml), verify the tag resolves to the
 # pinned immutable commit (hermes_camofox_git_sha), then build THEIR Dockerfile
 # unmodified — no wrapper layer (the image is complete as shipped: Camoufox
-# binary + yt-dlp + plugins are baked at build time). Unlike hermes-agent's
-# Dockerfile, camofox's uses no BuildKit-only syntax, so the base's builder
-# path suffices and no buildx CLI plugin install is needed (same as the
-# molecule image builds). Build on every pipeline (proves it builds); the
-# load-bearing :<version>/:latest tags push only on main so an unmerged branch
-# can't repoint a running deployment.
+# binary + yt-dlp + plugins are baked at build time). Its Dockerfile uses no
+# BuildKit-only syntax, but the base still routes through BuildKit
+# (DOCKER_BUILDKIT=1), so the buildx plugin the base installs is required here
+# too. Build on every pipeline (proves it builds); the load-bearing
+# :<version>/:latest tags push only on main so an unmerged branch can't repoint
+# a running deployment.
 build-camofox-browser:
   extends: .build-image-base
   variables:
     CAMOFOX_UPSTREAM_REPO: "https://github.com/jo-inc/camofox-browser.git"
   script:
-    - |
-      # Install the Docker buildx CLI plugin (pinned + sha256). The base
-      # template exports DOCKER_BUILDKIT=1 globally, so EVERY `docker build`
-      # here requires the buildx component even for a Dockerfile with no
-      # BuildKit-only syntax — same reason build-hermes-agent installs it.
-      BUILDX_ARCH=$(dpkg --print-architecture)
-      BUILDX_VERSION=v0.35.0
-      case "$BUILDX_ARCH" in
-        amd64) BUILDX_SHA256=d41ece72044243b4f58b343441ae37446d9c29a7d6b5e11c61847bbcf8f7dfda ;;
-        arm64) BUILDX_SHA256=c4248d6cbc4a619a7e0b4609c11e509ad4ac0b475e1c64817c0ac20c5d90c766 ;;
-        *) echo "unsupported arch: $BUILDX_ARCH"; exit 1 ;;
-      esac
-      curl -fsSL "https://github.com/docker/buildx/releases/download/${BUILDX_VERSION}/buildx-${BUILDX_VERSION}.linux-${BUILDX_ARCH}" -o /tmp/docker-buildx
-      echo "${BUILDX_SHA256}  /tmp/docker-buildx" | sha256sum -c -
-      mkdir -p "$HOME/.docker/cli-plugins"
-      install -m 0755 /tmp/docker-buildx "$HOME/.docker/cli-plugins/docker-buildx"
-      rm /tmp/docker-buildx
-      docker buildx version
     - |
       # Read the pins from all.yml (same single-source pattern as
       # build-hermes-agent; no YAML lib in this image — grep the scalars).
@@ -725,6 +773,12 @@ build-camofox-browser:
         docker push "${ref}:${CAMOFOX_VERSION}"
         docker tag "${ref}:${CI_COMMIT_SHORT_SHA}" "${ref}:latest"
         docker push "${ref}:latest"
+        # Read the tag back from the registry — same rationale as
+        # build-hermes-agent's publish verify: the Deployment pulls exactly
+        # ${hermes_camofox_version}.
+        docker buildx imagetools inspect "${ref}:${CAMOFOX_VERSION}" >/dev/null \
+          || { echo "PUBLISH VERIFY FAILED: ${ref}:${CAMOFOX_VERSION} is not resolvable in the registry"; exit 1; }
+        echo "Registry serves ${ref}:${CAMOFOX_VERSION}"
       fi
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
@@ -817,9 +871,8 @@ repo-sync-checks:
 repo-policy-checks:
   needs: []
   stage: lint
-  # python:3.11-slim (not alpine): apk installs from dl-cdn.alpinelinux.org
-  # returned DNS lookup errors mid-pipeline; the Debian image ships bash +
-  # coreutils + python3.
+  # python:3.11-slim (not alpine): ships bash + coreutils + python3, which these
+  # checks need.
   image: python:3.11-slim
   variables:
     # check-deploy-coverage.sh's `git merge-base --is-ancestor` guard rejects
@@ -896,16 +949,28 @@ repo-policy-checks:
 
       check_taskfile() { task --list >/dev/null && bash scripts/check-taskfile.sh; }
 
+      # policy.hujson is read with terraform's file(), so fmt/validate never
+      # parse it and the only other reader is the Tailscale API during the
+      # SUPERVISED apply. Run through `task` so the gate has one implementation.
+      check_tailscale_policy() { task lint:tailscale-policy; }
+
       run_check deploy-coverage bash scripts/check-deploy-coverage.sh
       run_check deploy-host-coverage python3 scripts/check-deploy-host-coverage.py
       run_check collection-pin-trigger python3 scripts/check-collection-pin-trigger.py
-      run_check integration-matrix-coverage bash scripts/check-integration-matrix-coverage.sh
-      run_check backup-artifact-apps python3 scripts/check-backup-artifact-apps.py
-      run_check netpol-except-parity python3 scripts/check-netpol-except-parity.py
+      # CI_FILE: the matrix lives in its own included file (see .paths-integration).
+      run_check integration-matrix-coverage env CI_FILE=.gitlab/ci/integration-jobs.yml bash scripts/check-integration-matrix-coverage.sh
+      # --host-vars/--rules: vendored from weisssrv-lib, so which file holds
+      # each side of the pair is site layout rather than a script default.
+      run_check backup-artifact-apps python3 scripts/check-backup-artifact-apps.py --host-vars ansible/inventories/prod/host_vars/pve-nas-01.yml --rules kubernetes/infrastructure/observability/rules/scripts.yaml
+      # --config: the script is vendored from weisssrv-lib; its canonical
+      # except-lists and peer-less-egress allowlist are site data.
+      run_check netpol-except-parity python3 scripts/check-netpol-except-parity.py --config scripts/netpol-except.yaml
+      run_check cluster-literals python3 scripts/check-cluster-literals.py
       run_check kubectl-version-pin python3 scripts/check-kubectl-version-pin.py
       run_check flux-version-pin check_flux_version_pin
       run_check busybox-version-pin check_busybox_version_pin
       run_check ci-pin-parity bash scripts/check-ci-pin-parity.sh
+      run_check tailscale-policy-syntax check_tailscale_policy
       run_check taskfile-smoke check_taskfile
       [ "$overall" -eq 0 ] || echo "Failed policy checks:$failed"
       exit "$overall"
@@ -965,16 +1030,18 @@ terraform-plan:
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
-    # CREDENTIAL SCOPE, accepted deliberately. This is the ONLY job that reads
-    # 1Password secrets on a merge_request_event ref, and it keeps that rule
-    # because it is the only pre-merge preview of a change deploy-terraform
-    # auto-applies on main. OP_SERVICE_ACCOUNT_TOKEN is a project variable, so
-    # it is in every MR job's environment regardless — the exposure closes by
-    # marking it PROTECTED in project settings, which also removes this plan
-    # from MRs and needs pr-agent-review's gate switched to $OPENAI__KEY in the
-    # same change (docs/13). The token guard means a tokenless pipeline gets NO
-    # plan; that is an expected skip, not a clean plan, and validation-gate
-    # needs this job optionally so it cannot mask drift on a real run.
+    # CREDENTIAL SCOPE. This assumes OP_SERVICE_ACCOUNT_TOKEN is masked AND
+    # protected — a GitLab project setting this file cannot assert (docs/13 §
+    # the credential note). Under that posture the token is absent on a
+    # merge_request_event ref and this rule cannot match — no job in this
+    # pipeline reads 1Password with code from the branch under review. The rule
+    # is kept, not deleted, so the MR preview returns by itself if the variable
+    # is ever unprotected; treat it as INERT while the protection stands. The
+    # accepted cost is that a Cloudflare change gets no pre-merge plan and is
+    # first seen in deploy-terraform's apply on main — `task terraform:plan` is
+    # the local substitute. The token guard also means a tokenless main pipeline
+    # gets NO plan; that is an expected skip, not a clean plan, and
+    # validation-gate needs this job optionally so it cannot mask drift.
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes: !reference [.paths-terraform-cloudflare, changes]
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
@@ -1167,7 +1234,7 @@ prometheus-config-lint:
     # Behavioural half of the gate: amtool check-config accepts a route reorder
     # that silences Watchdog and a one-sided alertname rename that unbinds an
     # inhibit pair. Same pairing as `task lint:prometheus-config`.
-    - python3 scripts/check-alertmanager-behaviour.py
+    - python3 scripts/check-alertmanager-behaviour.py --config scripts/alertmanager-behaviour.yaml
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
@@ -1175,146 +1242,215 @@ prometheus-config-lint:
       changes: !reference [.paths-prometheus-config, changes]
     - if: '$CI_COMMIT_BRANCH == "main"'
       changes: !reference [.paths-prometheus-config, changes]
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+
+# Pre-merge dry run of what the deploy jobs will do. The Ansible deploys are
+# main-only, so a deploy-breaking change used to be first observed against live
+# infrastructure — three of six main pipelines in one 6h window failed in the
+# deploy stage and needed a four-MR hotfix chain (!215 -> !216 -> !217 -> !219).
+#
+# CREDENTIAL-FREE BY DESIGN. The obvious version of this job — the same
+# playbooks under `op run` with `--check --diff` — is deliberately NOT what runs
+# here, for three reasons: it would materialize the 1Password service-account
+# token and the deploy SSH private key into a job whose CI config and playbook
+# code come from the branch under review; that token is PROTECTED, so such a job
+# would never be created on an MR ref anyway; and `--check` fidelity is poor
+# against the collection's roles, where command/shell/API tasks largely skip
+# under check_mode, so a green run would be weak evidence.
+#
+# What it does check, offline: the collection pin resolves and installs (the
+# !213/!218 class), every playbook a deploy job names exists, and every `--tags`
+# selection those jobs pass reaches a real task. That last one is the hazard
+# this file documents but nothing enforced: a tag that matches nothing makes
+# ansible-playbook exit 0 having done nothing, so the deploy job stays green
+# while deploying nothing at all.
+#
+# It also asserts its own COMPLETENESS: every `ansible-playbook` occurrence in a
+# candidate job's script must be parsed into an invocation. Coverage that shrinks
+# because the parser cannot read a job's shape is the failure this gate would
+# otherwise reproduce — the thing it exists to prevent.
+#
+# NOT covered, and worth stating plainly:
+#   * an op:// variable a job forgets to declare (the !216/!217 class) —
+#     inventory vars are templated lazily, so only a real run evaluates them;
+#   * invocations a job DELEGATES to a wrapper script. The parser reads
+#     `job['script']` only, so `maintenance-run-all` (whose whole script is
+#     `bash scripts/maintenance-run-with-verify.sh bash scripts/maintenance-all-ops.sh`)
+#     contributes zero invocations and its completeness assertion passes
+#     vacuously at 0-of-0. The six `ansible-playbook` calls inside
+#     maintenance-all-ops.sh duplicate the individual maintenance jobs today, so
+#     coverage is not actually lost — but a playbook or `--tags` added ONLY
+#     there would go unchecked. Closing it means following `bash scripts/*.sh`
+#     targets, which would also make that 0-of-0 assertion meaningful.
+deploy-preflight:
+  needs: []
+  stage: validate
+  # Full image, not slim: ansible-galaxy installs weisssrv.infra from a git+ URL.
+  image: python:3.13
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq --no-install-recommends git
+    - pip install --quiet "ansible==${ANSIBLE_VERSION}" "pyyaml==${PYYAML_VERSION}"
+    - ansible-galaxy collection install -r ansible/requirements.yml
+  script:
+    - |
+      python3 - <<'PREFLIGHT'
+      import re
+      import shlex
+      import subprocess
+      import sys
+      from pathlib import Path
+
+      import yaml
+
+      class Loader(yaml.SafeLoader):
+          pass
+
+      # The pipeline uses !reference throughout; resolve every unknown tag to None.
+      Loader.add_multi_constructor("!", lambda *_: None)
+
+      ANSIBLE_DIR = Path("ansible")
+      pipeline = yaml.load(Path(".gitlab-ci.yml").read_text(), Loader=Loader)
+
+      VALUE_FLAGS = ("-i", "--inventory", "--inventory-file", "-e", "--extra-vars")
+
+      def invocations(text):
+          """Every `ansible-playbook` call in a job's script -> (inventory, playbook, argv).
+
+          Split on the binary name and read the argv, rather than matching a
+          fixed argument ORDER: the old positional regex required the playbook
+          to be the token straight after `-i <inv>`, so it skipped
+          `-i <inv> -e "..." <playbook>` entirely, and its `[^\\n]*` tail
+          swallowed a second invocation whenever a YAML flow scalar folded two
+          `op run --` calls onto one line. Both shapes are in this file.
+          """
+          found = []
+          for segment in text.split("ansible-playbook")[1:]:
+              # The next shell command is not part of this argv.
+              segment = re.split(r"[;&|\n]", segment, maxsplit=1)[0]
+              try:
+                  tokens = shlex.split(segment)
+              except ValueError:
+                  # An unbalanced quote is the tail of the enclosing `bash -c '...'`.
+                  tokens = segment.replace('"', " ").replace("'", " ").split()
+              inventory = None
+              playbook = None
+              index = 0
+              while index < len(tokens):
+                  token = tokens[index]
+                  if token in VALUE_FLAGS:
+                      if token.startswith("-i") or token.startswith("--inventory"):
+                          inventory = tokens[index + 1] if index + 1 < len(tokens) else None
+                      index += 2
+                      continue
+                  if playbook is None and not token.startswith("-") and token.endswith(".yml"):
+                      playbook = token
+                  index += 1
+              if playbook:
+                  found.append((inventory, playbook, " ".join(tokens)))
+          return found
+
+      TAGS = re.compile(r"--(?:skip-)?tags[= ]+(?P<tags>[A-Za-z0-9_,.-]+)")
+      # `--list-tasks` prints one `TAGS: [a, b]` per selected task. `always`
+      # tasks are printed for ANY selection, so presence of output proves
+      # nothing — the requested tag must appear in a task's own tag list.
+      TASK_TAGS = re.compile(r"TAGS: \[([^\]]*)\]")
+
+      failures = []
+      playbooks = set()
+      selections = 0
+
+      for name, job in pipeline.items():
+          if not isinstance(job, dict) or name.startswith("."):
+              continue
+          # extends is a string OR a list; a job naming several parents must
+          # not slip the preflight.
+          parents = job.get("extends") or []
+          if isinstance(parents, str):
+              parents = [parents]
+          if not {".deploy-base", ".maintenance-base"}.intersection(parents):
+              continue
+          script = "\n".join(str(line) for line in job.get("script") or [])
+          parsed = invocations(script)
+          # Refuse to shrink silently. A shape the parser cannot read used to
+          # cost coverage with no output at all — the headline assertion (a
+          # `--tags` selection that reaches no task) simply went unchecked for
+          # that job while the summary line still printed a count.
+          written = script.count("ansible-playbook")
+          if len(parsed) < written:
+              failures.append(
+                  f"{name}: parsed {len(parsed)} of {written} `ansible-playbook` "
+                  "invocation(s) — this job is written in a shape the preflight "
+                  "parser does not understand, so its playbook/tag checks were "
+                  "skipped. Fix invocations() rather than the job."
+              )
+          for inventory, playbook, argv in parsed:
+              if not (ANSIBLE_DIR / playbook).is_file():
+                  failures.append(f"{name}: playbook ansible/{playbook} does not exist")
+                  continue
+              playbooks.add(playbook)
+              tags = sorted({
+                  t
+                  for m in TAGS.finditer(argv)
+                  for t in m.group("tags").split(",")
+                  if t
+              })
+              for tag in tags:
+                  selections += 1
+                  proc = subprocess.run(
+                      ["ansible-playbook", "-i", inventory, playbook,
+                       "--list-tasks", "--tags", tag],
+                      cwd=ANSIBLE_DIR, capture_output=True, text=True,
+                  )
+                  if proc.returncode != 0:
+                      failures.append(
+                          f"{name}: --list-tasks failed for {playbook} --tags {tag}\n"
+                          f"{proc.stderr.strip()}"
+                      )
+                      continue
+                  selected = any(
+                      tag in [t.strip() for t in m.group(1).split(",")]
+                      for m in TASK_TAGS.finditer(proc.stdout)
+                  )
+                  if selected:
+                      print(f"OK   {name}: {playbook} --tags {tag}")
+                  else:
+                      failures.append(
+                          f"{name}: `--tags {tag}` on {playbook} selects NO task — "
+                          "that deploy step is a silent no-op"
+                      )
+
+      if not playbooks:
+          failures.append(
+              "preflight resolved 0 playbooks — candidate-job selection or "
+              "invocation parsing is no longer inspecting the deploy jobs"
+          )
+      if selections == 0:
+          failures.append(
+              "preflight resolved 0 tag selections — the silent-no-op tag "
+              "guard inspected nothing"
+          )
+
+      print(f"\n{len(playbooks)} playbook(s), {selections} tag selection(s) checked")
+      if failures:
+          print("", file=sys.stderr)
+          for f in failures:
+              print(f"FAIL {f}", file=sys.stderr)
+          sys.exit(1)
+      PREFLIGHT
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes: !reference [.paths-deploy-preflight, changes]
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes: !reference [.paths-deploy-preflight, changes]
     - if: '$CI_PIPELINE_SOURCE == "web"'
 
 # TEST STAGE - Integration tests
-
-# The role molecule matrix lives in weisssrv-lib, which owns the roles. What
-# stays here are the five multi-container stack tests: they exercise ROLE
-# COMBINATIONS against this repo's prod group_vars, which is a weisssrv
-# property the library cannot test.
 #
-# They need Docker-in-Docker, so they run on the privileged infrastructure
-# runner (gitlab-runner-privileged Helm release, tags: infrastructure). That
-# runner is Flux-managed: edit kubernetes/apps/gitlab-runner-privileged/
-# release.yaml and push.
-.integration-test-job:
-  stage: test
-  # Backstop for infra-class scheduling failures (a job pod that can't be placed
-  # during transition churn surfaces as runner_system_failure). Deliberately NOT
-  # script_failure (a failing test must not be masked — transient container
-  # start storms are handled by the in-job destroy+jitter loop in
-  # scripts/molecule-retry.sh) and NOT stuck_or_timeout_failure (a hung test
-  # should fail fast, not burn another full timeout).
-  retry:
-    max: 2
-    when:
-      - runner_system_failure
-      - scheduler_failure
-  needs:
-    # Gate the expensive privileged-DinD fan-out behind the two fastest
-    # correctness lints, so an MR with a syntax/lint error doesn't burn the
-    # suite on the scarce privileged runner. optional: both are path-gated.
-    - job: ansible-lint
-      optional: true
-    - job: yaml-lint
-      optional: true
-  # The library's pre-built CI runner image (docker-cli + molecule + ansible +
-  # its dependency collections baked in), pinned to the same tag as every other
-  # library include. `image:` expands $VAR but not bash defaults, so the ref
-  # lives in the variables block below.
-  image: $MOLECULE_CI_IMAGE
-  services:
-    # Digest-pinned (multi-arch index), matching the library's molecule jobs.
-    #
-    # --insecure-registry: the in-cluster pull-through cache (kubernetes/apps/
-    # registry-cache, docs/27) is plaintext HTTP, network-fenced to this
-    # namespace; every fresh DinD daemon needs the flag to pull from it.
-    - name: docker:27.5.1-dind@sha256:aa3df78ecf320f5fafdce71c659f1629e96e9de0968305fe1de670e0ca9176ce
-      # Explicit: the runner derives a service alias from the image name, and a
-      # digest-bearing name must still answer at the `docker` host DOCKER_HOST
-      # points at.
-      alias: docker
-      command: ["--insecure-registry=registry-cache.registry-cache.svc.cluster.local:5000"]
-  variables:
-    DOCKER_HOST: tcp://docker:2375
-    DOCKER_TLS_CERTDIR: ""
-    ANSIBLE_FORCE_COLOR: "1"
-    PY_COLORS: "1"
-    ANSIBLE_CALLBACKS_ENABLED: junit
-    JUNIT_OUTPUT_DIR: "$CI_PROJECT_DIR/junit"
-    # Both images are published by weisssrv-lib's release pipeline under the
-    # release tag; weisssrv must stay on that project's CI/CD job-token
-    # allowlist for these cross-project pulls to authenticate.
-    MOLECULE_CI_IMAGE: "$CI_REGISTRY/eric/weisssrv-lib/molecule-ci:$WEISSSRV_LIB_REF"
-    # Read by the scenarios' `platforms[].image` (they carry the same tag as a
-    # fallback default for a local run), so this job's pull and the containers
-    # molecule starts are the same build.
-    MOLECULE_TEST_IMAGE: "$CI_REGISTRY/eric/weisssrv-lib/molecule-test:$WEISSSRV_LIB_REF"
-    # In-cluster pull-through registry cache: the first job's fresh DinD
-    # cold-pulls the test image, the rest hit the LAN cache.
-    REGISTRY_CACHE: "registry-cache.registry-cache.svc.cluster.local:5000"
-  before_script:
-    # Wait for the DinD sidecar — with a pre-built CI image the script starts
-    # before DinD is ready (no apt-get delay to absorb its startup).
-    - |
-      for i in $(seq 1 30); do
-        docker info >/dev/null 2>&1 && break
-        echo "Waiting for DinD... ($i)"
-        sleep 1
-      done
-    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
-    # Pre-pull the test image into this job's DinD so the scenarios
-    # (pre_build_image: true) start containers without pulling. Cache first,
-    # timeout-bounded, falling back to the direct registry — a cache outage only
-    # loses the warm hit.
-    - |
-      cref="${REGISTRY_CACHE}/${MOLECULE_TEST_IMAGE#"${CI_REGISTRY}"/}"
-      if timeout 25 docker pull "$cref" 2>/dev/null; then
-        docker tag "$cref" "$MOLECULE_TEST_IMAGE"
-      else
-        docker pull "$MOLECULE_TEST_IMAGE"
-      fi
-    # weisssrv.infra itself is installed by molecule's own `dependency` step
-    # (each scenario points it at ansible/requirements.yml) — deliberately not
-    # duplicated here, so the pin has one installer.
-    - mkdir -p "$CI_PROJECT_DIR/junit"
-  artifacts:
-    when: always
-    reports:
-      junit: junit/*.xml
-  # Multi-container scenarios run 2-3 systemd containers through full role
-  # stacks; base-infrastructure alone is ~12m idle, and the in-job wrapper
-  # retries molecule up to 4 attempts.
-  timeout: 35m
-  script:
-    - cd "ansible/integration-tests/$TEST"
-    # Shared destroy+jitter retry (scripts/molecule-retry.sh) — multi-container
-    # scenarios are the most start-storm-prone. No base/scenario opts: each
-    # integration test has a single molecule.yml.
-    - bash "$CI_PROJECT_DIR/scripts/molecule-retry.sh"
-    # Downgrade the scenario's DECLARED negative-path failures in the junit
-    # report so a green job uploads a green report (no stack declares any
-    # today — the absent file is a no-op). Runs only on success; a failed job
-    # never reaches this line and keeps its raw report.
-    - python3 "$CI_PROJECT_DIR/scripts/sanitize-junit-expected-failures.py"
-      --junit-dir "$CI_PROJECT_DIR/junit"
-      --expectations "$CI_PROJECT_DIR/ansible/integration-tests/$TEST/molecule/default/expected-junit-failures.txt"
-
-integration-tests:
-  extends: .integration-test-job
-  parallel:
-    matrix:
-      - TEST:
-          - base-infrastructure
-          - cert-distribution
-          - dns-stack
-          - mail-stack
-          - storage-stack
-  rules:
-    # full-test schedule canary (must precede the schedule when:never rule —
-    # first match wins): catches external-dependency rot (apt/galaxy/upstream
-    # installers) without waiting for an unrelated MR to turn red.
-    - if: '$CI_PIPELINE_SOURCE == "schedule" && $SCHEDULE_TYPE == "full-test"'
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      changes: !reference [.paths-integration, changes]
-    - if: '$CI_COMMIT_BRANCH == "main"'
-      changes: !reference [.paths-integration, changes]
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-      when: manual
-      allow_failure: true
+# The matrix itself lives in .gitlab/ci/integration-jobs.yml (included
+# below) so `.paths-integration` can trigger on that file instead of this
+# one — see the header there.
 
 # SHARED CI LIBRARY (eric/weisssrv-lib)
 #
@@ -1336,11 +1472,15 @@ integration-tests:
 # secret-detection component, which overrides that job — including it directly
 # here as well would be redundant.
 include:
+  # Local: the integration-test matrix, split out so its `changes:` trigger can
+  # name a file that only it lives in (see the header there).
+  - local: .gitlab/ci/integration-jobs.yml
+
   # Reusable fragments, no jobs of their own. terraform-http-backend's defaults
   # already describe this instance and the cloudflare state; the two drift-plan
   # jobs override the three TF_HTTP_*ADDRESS vars for their own state names.
   - project: eric/weisssrv-lib
-    ref: v0.6.2
+    ref: v0.7.2
     file:
       - /ci/templates/dep-cache.yml
       - /ci/templates/install-1password.yml
@@ -1355,15 +1495,15 @@ include:
   #     selector, allow_failure, MR/main/schedule rules); the hard block comes
   #     from validation-gate needing this job non-optionally.
   - project: eric/weisssrv-lib
-    ref: v0.6.2
+    ref: v0.7.2
     file:
       - /ci/validate/terraform.yml
       - /ci/security/secret-detection.yml
 
-  # yaml-lint: the library default targets `.gitlab/ci/`, which this repo no
-  # longer has; lint all of `.gitlab/` (the GitLab agent config) instead.
+  # yaml-lint: the library default targets `.gitlab/ci/` only; lint all of
+  # `.gitlab/` so the agent config is covered alongside the CI fragments.
   - project: eric/weisssrv-lib
-    ref: v0.6.2
+    ref: v0.7.2
     file: /ci/lint/yaml-lint.yml
     inputs:
       targets: "ansible/ kubernetes/ .gitlab-ci.yml .gitlab/"
@@ -1378,7 +1518,7 @@ include:
   # where the library's own pipeline shellchecks it. What is left is scripts/
   # plus the terraform helper scripts the default set missed.
   - project: eric/weisssrv-lib
-    ref: v0.6.2
+    ref: v0.7.2
     file: /ci/lint/shellcheck.yml
     inputs:
       direct_globs: "scripts/*.sh terraform/*/*.sh"
@@ -1392,12 +1532,11 @@ include:
   # first (galaxy_requirements). ansible-lint's own syntax-check rule runs
   # `ansible-playbook --syntax-check` per playbook, so no separate loop.
   #
-  # No `config:` input: the job runs from the repo root, and ansible-lint only
-  # walks UP from its cwd, so the config lives at ./.ansible-lint (moved there
-  # from ansible/, where a root-cwd run never saw it). It is in `changes:` so an
-  # edit to the profile re-runs the job.
+  # No `config:` input: the job runs from the repo root and ansible-lint only
+  # walks UP from its cwd, so the config is ./.ansible-lint. It is in `changes:`
+  # so a profile edit re-runs the job.
   - project: eric/weisssrv-lib
-    ref: v0.6.2
+    ref: v0.7.2
     file: /ci/lint/ansible-lint.yml
     inputs:
       targets: "ansible/"
@@ -1413,7 +1552,7 @@ include:
   # python-lint: ruff over the helper scripts, using the library's shared
   # profile vendored to this repo's root as ruff.toml.
   - project: eric/weisssrv-lib
-    ref: v0.6.2
+    ref: v0.7.2
     file: /ci/lint/python-lint.yml
     inputs:
       targets: "scripts"
@@ -1428,13 +1567,12 @@ include:
   # trigger list has to be `**/*.md`-wide — the library default only covers
   # docs/ + the top-level READMEs.
   - project: eric/weisssrv-lib
-    ref: v0.6.2
+    ref: v0.7.2
     file: /ci/lint/docs-link-check.yml
     inputs:
       changes:
         - "**/*.md"
         - "scripts/check-doc-links.py"
-        - "scripts/test_check_doc_links.py"
 
   # version-check: reports available pin updates and changes nothing — the
   # read-only half of the pair whose other half is version-bump-bot (a local job
@@ -1455,7 +1593,7 @@ include:
   # its admin PAT from GITLAB_ADMIN_API_TOKEN (see the deploy-gitlab job) to avoid
   # being silently shadowed by this project token.
   - project: eric/weisssrv-lib
-    ref: v0.6.2
+    ref: v0.7.2
     file: /ci/maintenance/version-check.yml
     inputs:
       setup_command: 'pip install --quiet "pyyaml==${PYYAML_VERSION}" requests==2.34.2'
@@ -1482,7 +1620,7 @@ include:
   # copies against it and never skips, so the checkout is a hard requirement of
   # the job (WEISSSRV_LIB_PATH points at it — see the job override below).
   - project: eric/weisssrv-lib
-    ref: v0.6.2
+    ref: v0.7.2
     file: /ci/test/python-tests.yml
     inputs:
       pytest_version: "9.1.1"
@@ -1519,15 +1657,18 @@ include:
   # flux-lint: substitute mode (postBuild var substitution from the cluster
   # versions ConfigMap; needs a root runner for gettext-base). Version pins +
   # cluster paths are passed explicitly. extra_validation carries weisssrv's HPA/VPA invariant,
-  # scrape/NetworkPolicy invariant, secret-store scoping, PVC storage class and
-  # helm-values checks, which call weisssrv-local scripts (kept in scripts/),
-  # running with $RENDER_ALL / $FAILED in scope. The site data those two gates
+  # scrape/NetworkPolicy invariant, ingress default-deny coverage, secret-store
+  # scoping, PVC storage class and helm-values checks, which call weisssrv-local scripts (kept in scripts/),
+  # running with $RENDER_ALL / $FAILED in scope. It also appends the tenants
+  # tree to $RENDER_ALL first: the template's loop renders Flux Kustomizations
+  # by spec.path, and tenants/ is a plain Kustomize aggregator, so a tenant's
+  # own SecretStore/NetworkPolicy would otherwise never reach the corpus gates. The site data those two gates
   # read lives outside them (scripts/helm-values-releases.yaml,
   # scripts/autoscaling-policy.yaml), so both paths must be passed here exactly
   # as `task flux:lint` passes them — an omitted --releases is a FileNotFoundError
   # and an omitted --policy-config silently asserts zero chart-native targets.
   - project: eric/weisssrv-lib
-    ref: v0.6.2
+    ref: v0.7.2
     file: /ci/validate/flux-lint.yml
     inputs:
       substitute: true
@@ -1540,7 +1681,12 @@ include:
       pyyaml_version: "6.0.2"
       cluster_dir: "kubernetes/clusters/weisssrv"
       versions_configmap: "kubernetes/infrastructure/sources/versions-configmap.yaml"
-      flux_render_script: "scripts/flux-render.sh"
+      # flux-env.sh, not the vendored flux-render.sh directly: this cluster
+      # substitutes from TWO ConfigMaps (cluster-versions + cluster-config) and
+      # the library template calls a single `<script> export-versions <cm>`
+      # entry point. flux-env.sh is that entry point and reads the sibling
+      # cluster-config.yaml alongside whatever versions_configmap names.
+      flux_render_script: "scripts/flux-env.sh"
       skipped_script: "scripts/kubeconform-skipped.py"
       # The library default is the first two entries only. Everything after them
       # is a file this job's behaviour is DEFINED by but which lives outside
@@ -1559,12 +1705,24 @@ include:
         - "scripts/helm-values-releases.yaml"
         - "scripts/check-hpa-vpa-invariant.py"
         - "scripts/check-scrape-netpol.py"
+        - "scripts/check-default-deny-coverage.py"
         - "scripts/check-secretstore-scope.py"
         - "scripts/check-pvc-storageclass.py"
         - "scripts/validate-helm-values.py"
         - "scripts/flux-render.sh"
+        # The two-ConfigMap wrapper the job actually calls, and the vendored
+        # parser underneath it.
+        - "scripts/flux-env.sh"
         - "scripts/kubeconform-skipped.py"
-      extra_validation: 'echo "=== Checking HPA/VPA invariant ==="; python3 scripts/check-hpa-vpa-invariant.py --require-chart-native-vpas --policy-config scripts/autoscaling-policy.yaml < "$RENDER_ALL" || FAILED=1; echo "=== Checking scrape/NetworkPolicy invariant ==="; python3 scripts/check-scrape-netpol.py < "$RENDER_ALL" || FAILED=1; echo "=== Checking ClusterSecretStore scoping ==="; python3 scripts/check-secretstore-scope.py < "$RENDER_ALL" || FAILED=1; echo "=== Checking PVC storageClassName ==="; python3 scripts/check-pvc-storageclass.py < "$RENDER_ALL" || FAILED=1; echo "=== Schema-validating HelmRelease values blocks (helm template) ==="; python3 scripts/validate-helm-values.py --kubeconform --releases scripts/helm-values-releases.yaml --policy-config scripts/autoscaling-policy.yaml || FAILED=1'
+        # The job's own inputs live in this file: the extra_validation argv and
+        # the kubeconform/kustomize/helm pins. Without this an MR that changes
+        # flux-lint's configuration never re-runs flux-lint to prove the changed
+        # gate still passes, and validation-gate's optional need lets it merge
+        # green. (check-ci-pin-parity.sh covers the kustomize pin only; the
+        # kubeconform and helm pins have no other guard.) yaml-lint,
+        # ansible-lint, python-lint and python-tests already list it.
+        - ".gitlab-ci.yml"
+      extra_validation: 'echo "=== Adding the tenants tree to the corpus ==="; kustomize build kubernetes/clusters/weisssrv/tenants >> "$RENDER_ALL" || FAILED=1; printf "\n---\n" >> "$RENDER_ALL"; echo "=== Checking HPA/VPA invariant ==="; python3 scripts/check-hpa-vpa-invariant.py --require-chart-native-vpas --policy-config scripts/autoscaling-policy.yaml < "$RENDER_ALL" || FAILED=1; echo "=== Checking scrape/NetworkPolicy invariant ==="; python3 scripts/check-scrape-netpol.py < "$RENDER_ALL" || FAILED=1; echo "=== Checking ingress default-deny coverage ==="; python3 scripts/check-default-deny-coverage.py < "$RENDER_ALL" || FAILED=1; echo "=== Checking ClusterSecretStore scoping ==="; python3 scripts/check-secretstore-scope.py < "$RENDER_ALL" || FAILED=1; echo "=== Checking PVC storageClassName ==="; python3 scripts/check-pvc-storageclass.py < "$RENDER_ALL" || FAILED=1; echo "=== Schema-validating HelmRelease values blocks (helm template) ==="; MERGED_CM=$(mktemp); scripts/flux-env.sh merged-configmap "$VERSIONS_CONFIGMAP" > "$MERGED_CM" && python3 scripts/validate-helm-values.py --kubeconform --releases scripts/helm-values-releases.yaml --versions-configmap "$MERGED_CM" --policy-config scripts/autoscaling-policy.yaml || FAILED=1; rm -f "$MERGED_CM"'
 
   # pr-agent-review (ai-review stage): advisory AI review of the MR. Both
   # credentials are masked CI variables (OPENAI__KEY, the
@@ -1573,17 +1731,19 @@ include:
   # job whose CI config comes from the branch under review.
   #
   # `gate` decides whether the job is CREATED at all; an absent review on a
-  # gate-less pipeline is expected, not a regression. It stays
-  # $OP_SERVICE_ACCOUNT_TOKEN (the "trusted pipeline" marker this repo already
-  # uses); if that variable is ever marked protected it must move to
-  # $OPENAI__KEY in the same change or the reviewer disappears from MRs.
-  # Model, reasoning effort and both timeouts are the library defaults.
+  # gate-less pipeline is expected, not a regression. It is $OPENAI__KEY — the
+  # job's own credential, so the gate now tracks whether the review can actually
+  # run. It used to be $OP_SERVICE_ACCOUNT_TOKEN as a "trusted pipeline" marker;
+  # that variable is PROTECTED, so it is absent on merge-request refs and would
+  # delete the reviewer from every MR (docs/13 § Vault reads on merge-request
+  # pipelines). Model, reasoning effort and both timeouts are the library
+  # defaults.
   - project: eric/weisssrv-lib
-    ref: v0.6.2
+    ref: v0.7.2
     file: /ci/review/pr-agent.yml
     inputs:
       secrets_source: "env"
-      gate: "$OP_SERVICE_ACCOUNT_TOKEN"
+      gate: "$OPENAI__KEY"
       # Lint + secret detection only: AI review benefits from knowing the code
       # is lint-clean and secret-safe, and must not wait on the DinD suite.
       needs:
@@ -1683,6 +1843,8 @@ validation-gate:
     - job: flux-lint
       optional: true
     - job: prometheus-config-lint
+      optional: true
+    - job: deploy-preflight
       optional: true
     - job: repo-policy-checks
       optional: true
@@ -1840,12 +2002,10 @@ deploy-ansible-proxmox:
   script:
     - cd ansible
     # Deploy qol, postfix_null_client, tailscale, zfs_arc_cap, vfio_passthrough,
-    # nfs_tls to proxmox hosts. nfs_tls was missing from this tag list while
-    # group_vars/proxmox.yml enables it fleet-wide: site.yml applies it to the
-    # five non-NAS hosts (pve-nas-01 gets the server-mode setup from
-    # storage.yml), and no job ran that tag, so tlshd went unmanaged on five of
-    # six hosts while the path-level coverage gate stayed green off the storage
-    # job. Same shape as the encrypted_swap gap noted on deploy-ansible-base.
+    # nfs_tls to the proxmox hosts. Every role enabled for this host set must
+    # stay in the tag list or it deploys nowhere while the job stays green
+    # (deploy-preflight asserts each tag reaches a real task). nfs_tls here
+    # covers the five non-NAS hosts; pve-nas-01 gets server mode from storage.yml.
     - op run -- ansible-playbook -i inventories/prod playbooks/site.yml --limit proxmox --tags qol,postfix_null_client,tailscale,zfs_arc_cap,vfio_passthrough,nfs_tls
   environment:
     name: production/ansible-proxmox
@@ -1971,8 +2131,9 @@ deploy-ansible-storage:
     SSH_PUBLIC_KEY: "op://Homelab/SSH Key/public key"
     SAMBA_NAS_PASSWORD: "op://Homelab/Samba NAS User/password"
     # B2 offsite backup (restic_offsite role, runs on pve-nas-01 via storage.yml).
-    # The role reads these from env via the secrets: dict / lookup('ansible.builtin.env');
-    # restic_repo_password doubles as the restic repo password.
+    # The role reads these from env via lookup('ansible.builtin.env') in
+    # host_vars/pve-nas-01.yml; restic_repo_password doubles as the restic repo
+    # password.
     # restic_* fields = the RESTRICTED hide-only key (no deleteFiles). The
     # b2_key_id/b2_application_key fields on the same item stay the FULL
     # bucket-settings key for scripts/b2-bucket-drift.py (lifecycle/SSE +
@@ -2051,11 +2212,9 @@ deploy-ansible-certs:
   extends: .deploy-base
   resource_group: deploy-ansible-certs
   variables:
-    # acme_certs asserts acme_certs_email on dns-01, and that resolves from
-    # admin_email <- ROOT_EMAIL_ALIAS. Every other deploy job injects this op:// ref; it was
-    # missing here, so `op run` left admin_email undefined and the play failed
-    # the "Validate required acme.sh variables" assert (the SSH-key fields, by
-    # contrast, are handled via `op read` in script below).
+    # acme_certs asserts acme_certs_email on dns-01, resolved from admin_email
+    # <- ROOT_EMAIL_ALIAS. The SSH-key fields cannot come through op run (see
+    # the `op read` block in script: below).
     ROOT_EMAIL_ALIAS: "op://Homelab/Email Config/root_alias"
   needs:
     - job: validation-gate
@@ -2356,7 +2515,11 @@ deploy-home-assistant-config:
         - ansible/inventories/prod/hosts.yml
 
 deploy-gitlab-verify:
-  stage: deploy
+  # verify stage, no `needs:` and `when: always` — see the stages block. A
+  # `needs:` on deploy-gitlab would skip this job whenever that deploy failed,
+  # i.e. exactly when its output matters most.
+  stage: verify
+  when: always
   # The verify script only runs curl + /dev/tcp checks — it needs no Ansible,
   # SSH key, kubeconfig, or 1Password, so it deliberately does NOT extend the
   # heavy .deploy-base (which pip-installs Ansible + collections and materializes
@@ -2366,12 +2529,9 @@ deploy-gitlab-verify:
   interruptible: false
   before_script:
     - apt-get update -qq && apt-get install -y -qq --no-install-recommends curl ca-certificates
-  needs:
-    - job: validation-gate
-    - job: deploy-gitlab
-      optional: true
-    # Ingress/runner deploys are now Flux-managed; reconciliation typically
-    # completes within 1-2 minutes of the push that triggered this pipeline.
+  # Ingress/runner deploys are Flux-managed; reconciliation typically completes
+  # within 1-2 minutes of the push that triggered this pipeline, which the
+  # deploy stage ahead of this one comfortably covers.
   script:
     - |
       echo "=== GitLab Verification ==="
@@ -2422,44 +2582,25 @@ deploy-gitlab-verify:
 # Post-Deploy Verification
 
 deploy-verify:
-  stage: deploy
+  # verify stage, no `needs:` and `when: always` — see the stages block. This
+  # job used to sit in the deploy stage behind 15 optional needs, which meant a
+  # single failed deploy job skipped ALL post-deploy verification.
+  #
+  # `when: always` is relative to the WHOLE pipeline, not just the deploy stage:
+  # on a main pipeline that matches the rules below but fails at lint/validate/
+  # test, validation-gate blocks the deploys and this job still runs, verifying
+  # a deploy that was never attempted. It is read-only, so that is a second
+  # failure surface on an already-red pipeline, not a risk. Nothing in `rules:`
+  # can see gate status — narrowing it would need a dotenv artifact from the
+  # deploy jobs (docs/13 § Verify Stage).
+  #
+  # Kubernetes workloads (k3s platform, Authentik, downloads, recipes, ingress
+  # routes, runners) are Flux-managed; Flux typically reconciles within 1-2
+  # minutes of this push. This job checks cluster health below and reports Flux
+  # reconciliation state via `flux get all -A`.
+  stage: verify
+  when: always
   extends: .k3s-deploy-base
-  needs:
-    - job: validation-gate
-    - job: deploy-terraform
-      optional: true
-    - job: deploy-ansible-base
-      optional: true
-    - job: deploy-ansible-proxmox
-      optional: true
-    - job: deploy-ansible-firewall
-      optional: true
-    - job: deploy-ansible-dns
-      optional: true
-    - job: deploy-ansible-storage
-      optional: true
-    - job: deploy-ansible-mail
-      optional: true
-    - job: deploy-ansible-certs
-      optional: true
-    - job: deploy-plex
-      optional: true
-    - job: deploy-gitlab
-      optional: true
-    - job: deploy-nextcloud
-      optional: true
-    - job: deploy-immich
-      optional: true
-    - job: deploy-immich-ml
-      optional: true
-    - job: deploy-home-assistant-config
-      optional: true
-    - job: deploy-gitlab-verify
-      optional: true
-    # Kubernetes workloads (k3s platform, Authentik, downloads, recipes,
-    # ingress routes, runners) are Flux-managed; Flux typically reconciles
-    # within 1-2 minutes of this push. deploy-verify checks cluster health
-    # below and reports Flux reconciliation state via `flux get all -A`.
   script:
     - |
       # Install flux CLI alongside the kubectl already provisioned by
@@ -2514,17 +2655,12 @@ deploy-verify:
   # were Ready pre-reconcile) and a warning during bootstrap/recovery.
 
 # MAINTENANCE STAGE - Manual approval required
-# All maintenance jobs use resource_group to prevent concurrent execution.
-# Only one maintenance job can run at a time across the entire infrastructure.
+# All maintenance jobs share one resource_group, so only one maintenance job
+# runs at a time. That group is disjoint from the deploy jobs' per-target groups
+# (a job may declare only one), so a maintenance op CAN overlap a deploy against
+# the same hosts — do not play one while a deploy pipeline is in flight.
 #
-# Recommended execution order (when running multiple):
-#   1. update-packages       — OS packages on all hosts (may reboot)
-#   2. update-applications   — App upgrades (needs clean OS)
-#   3. update-k3s-nodes      — k3s binary upgrade (needs stable OS)
-#   4. k3s-provision         — Only when adding new VMs
-#   5. proxmox-ha            — HA rules (rarely changes)
-#   6. home-assistant-restart — Only when needed
-#   7. verify                — Always last
+# Ordering guidance when running several ops: docs/12-runbooks.md.
 
 # 1. OS package updates - MANUAL (all hosts, auto-reboot in CI)
 # For interactive mode, use: task maintenance:update-packages
@@ -2547,6 +2683,10 @@ maintenance-update-applications:
   stage: maintenance
   extends: .maintenance-base
   resource_group: infrastructure-maintenance
+  # Must stay equal to the `&base_app_env` anchor on `task
+  # maintenance:update-applications` — same playbook, and an op:// ref present
+  # on only one path resolves a different branch of the LXC authorized_keys
+  # guard (group_vars/dns.yml, mail.yml) than the other.
   variables:
     ROOT_EMAIL_ALIAS: "op://Homelab/Email Config/root_alias"
     SSH_PUBLIC_KEY: "op://Homelab/SSH Key/public key"
@@ -2554,6 +2694,8 @@ maintenance-update-applications:
     SMTP_RELAY_PASSWORD: "op://Homelab/SMTP Relay Auth/password"
     ADGUARD_ADMIN_PASSWORD: "op://Homelab/AdGuard Home/password"
     TAILSCALE_AUTH_KEY: "op://Homelab/Tailscale Auth Key/credential"
+    DNS01_SSH_PRIVATE_KEY: "op://Homelab/DNS-01 SSH Key/private key"
+    DNS01_SSH_PUBLIC_KEY: "op://Homelab/DNS-01 SSH Key/public key"
   script:
     - cd ansible
     - bash ../scripts/maintenance-run-with-verify.sh
@@ -2611,10 +2753,6 @@ maintenance-k3s-provision:
     action: prepare
   rules:
     - !reference [.maintenance-manual-rules, rules]
-
-# NOTE: maintenance-update-full removed from CI — superseded by:
-#   maintenance-update-packages (broader host coverage) + maintenance-update-applications
-# The Taskfile still has task maintenance:update-full for local use.
 
 # 5. Proxmox HA - MANUAL (affects VM placement)
 maintenance-proxmox-ha:
@@ -2692,6 +2830,16 @@ maintenance-verify:
   rules:
     - !reference [.maintenance-manual-rules, rules]
 
+# DELIBERATE FORK of weisssrv-lib's ci/maintenance/version-bump-bot.yml, and the
+# only library job this repo defines locally. The divergence is the rc!=0 branch
+# documented on STEP 1 below: a partially-failed check must still ship the pins
+# that resolved, which requires regenerating the versions ConfigMap after the
+# checker aborted, and must re-raise when it wrote no bumps. That is a
+# three-way outcome, not the template's binary check_command, so no combination
+# of setup_command/check_command expresses it. Converging upstream means the
+# template growing a post-bump command plus a tri-state exit contract; until
+# then this stays forked while its read-only twin (version-check) is still the
+# library's. See docs/13 § Version bump bot.
 version-bump-bot:
   # Consumes no artifacts (every input comes from the repo + 1Password at
   # runtime), so it starts immediately instead of waiting out the build stage.

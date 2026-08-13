@@ -15,7 +15,7 @@ patches:
         value: pulsarr
       - op: replace
         path: /spec/routes/0/match
-        value: Host(`pulsarr.esweiss.com`)
+        value: Host(`pulsarr.${cluster_internal_domain}`)
       - op: replace
         path: /spec/routes/0/services/0/name
         value: pulsarr

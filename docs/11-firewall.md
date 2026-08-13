@@ -42,16 +42,11 @@ IPSets define groups of IPs for use in rules. IPSets are **dynamically generated
 192.168.0.207  # k3s-agt-prec-01
 
 [IPSET nfs_clients]
-# Hosts allowed NFS access
-192.168.0.102
-192.168.0.103
-192.168.0.104
-192.168.0.105
-192.168.0.106
-192.168.0.107
-192.168.0.154
-192.168.0.200/29
-192.168.0.220/29
+# Hosts allowed NFS access — every inventory host carrying nfs_clients in its
+# firewall_ipsets, as individual /32s (the six Proxmox hosts, the app VMs
+# .153/.154/.156/.157, and all nine k3s nodes). Read the live set rather than
+# trusting a copy:
+#   ssh pve-nas-01 "sudo sed -n '/IPSET nfs_clients/,/^\[/p' /etc/pve/firewall/cluster.fw"
 
 [IPSET smb_clients]
 # Hosts allowed SMB access
@@ -101,11 +96,18 @@ IN ACCEPT -source +dc/admin_lan -p icmp -log nolog
 [group sg-pve-cluster]
 
 IN ACCEPT -source +dc/pve_hosts -p tcp -dport 8006 -log nolog      # Web UI
-IN ACCEPT -source +dc/pve_hosts -p tcp -dport 60000:60050 -log nolog # Migration
 IN ACCEPT -source +dc/pve_hosts -p tcp -dport 22 -log nolog        # SSH
 IN ACCEPT -source +dc/pve_hosts -p udp -dport 5406 -log nolog      # Corosync
 IN ACCEPT -source +dc/pve_hosts -p udp -dport 5405 -log nolog      # Corosync
 ```
+
+The cleartext live-migration range (TCP 60000-60050) is deliberately **not**
+opened, in or out. `proxmox_ha` pins `migration: type=secure` in
+`datacenter.cfg`, so migration rides the SSH tunnel; pre-authorising the range
+would make a flip to `insecure` — guest RAM on the wire in the clear —
+invisible at the packet filter. `proxmox_firewall_insecure_migration_ports:
+true` renders the rules again, and should only ever be set alongside a
+deliberate `proxmox_ha_migration_type: insecure`.
 
 #### Service-Specific Security Groups
 
@@ -227,7 +229,6 @@ OUT ACCEPT -p udp -dport 111 -log nolog         # rpcbind (NFS)
 OUT ACCEPT -p tcp -dport 31100 -log nolog       # Loki push NodePort fallback (alloy_host_loki_url)
 OUT ACCEPT -p udp -dport 5404:5412 -log nolog   # corosync cluster membership
 OUT ACCEPT -p tcp -dport 8006 -log nolog        # Proxmox API (cluster/migration)
-OUT ACCEPT -p tcp -dport 60000:60050 -log nolog # Proxmox live migration (insecure channel)
 OUT ACCEPT -p icmp -log nolog                   # ping/diagnostics
 ```
 
@@ -360,8 +361,6 @@ duplication is **intentional and is kept as-is**:
   explicitly auditable. We keep the granular per-pod policies; re-IPing a server
   node is the only maintenance cost, and that is rare and caught at deploy time.
 
-(Reviewed as DUP-7 / k8s-infra-03 / RV-SIMP-5; decision: keep granular.)
-
 ## Ansible Role
 
 Deploy with: the `weisssrv.infra.proxmox_firewall` role (`ansible/playbooks/site.yml --tags proxmox_firewall`)
@@ -467,7 +466,7 @@ k3s_agents:
 | `sg-immich-ml` | ML inference 3003 from the Immich VM **only** (the API is authless — this rule is the security boundary) | immich-ml LXC (.158) |
 | `sg-haos` | Home Assistant Web UI + mDNS | Home Assistant VM |
 | `sg-windows` | Windows RDP | Windows VMs |
-| `sg-metrics` | Prometheus exporter scrape ports from k3s_nodes (9100/9101/9134/9167/8123/32400/3000/7472/7473) + Loki NodePort 31100 from core-cluster | **All hosts and guests** |
+| `sg-metrics` | Prometheus exporter scrape ports from k3s_nodes: the collection's built-ins (9100/9101/9134/9167) plus whatever `proxmox_firewall_metrics_scrape_ports` in `group_vars/all.yml` declares (today 8123/32400/7472/7473, and the Loki push NodePort 31100 from core-cluster) | **All hosts and guests** |
 
 Five more groups are rendered by `cluster.fw.j2` but are **host-only**: they
 attach to Proxmox hosts via `host.fw`, never to a guest's

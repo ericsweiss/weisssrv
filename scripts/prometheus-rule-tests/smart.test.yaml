@@ -1,0 +1,85 @@
+---
+# promtool unit tests for the SMART growth arms (homelab.storage group).
+# rule_files resolves relative to this file's runtime location; the lint script
+# copies the tests next to the extracted rules.yaml before running them.
+#
+# All three arms are windowed comparisons over a counter that is NORMALLY
+# non-zero and constant — a drive with a lifetime reallocation count sits at
+# that value forever. So the property under test is that a STANDING value is
+# silent and only GROWTH within the window fires. A rule rewritten as a bare
+# `> 0` would pass a naive smoke test and alert permanently on every disk in the
+# estate.
+rule_files:
+  - rules.yaml
+evaluation_interval: 1m
+tests:
+  # Reallocated sectors: 24h max-min. A constant historical count is silent.
+  - interval: 5m
+    input_series:
+      - series: 'smartmon_reallocated_sector_count{instance="192.168.0.102:9101", disk="sda"}'
+        values: '8+0x300'
+    alert_rule_test:
+      - eval_time: 24h
+        alertname: SMARTReallocatedSectorsGrowing
+        exp_alerts: []
+
+  # The same drive gaining one sector inside the window fires.
+  - interval: 5m
+    input_series:
+      - series: 'smartmon_reallocated_sector_count{instance="192.168.0.102:9101", disk="sda"}'
+        values: '8+0x200 9+0x100'
+    alert_rule_test:
+      - eval_time: 24h
+        alertname: SMARTReallocatedSectorsGrowing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: 192.168.0.102:9101
+              disk: sda
+
+  # Offline-uncorrectable is an absolute 6h window: any non-zero reading fires,
+  # because the counter is reset-on-clean rather than lifetime-cumulative.
+  - interval: 5m
+    input_series:
+      - series: 'smartmon_offline_uncorrectable_count{instance="192.168.0.102:9101", disk="sdb"}'
+        values: '0+0x100'
+    alert_rule_test:
+      - eval_time: 6h
+        alertname: SMARTOfflineUncorrectable
+        exp_alerts: []
+
+  - interval: 5m
+    input_series:
+      - series: 'smartmon_offline_uncorrectable_count{instance="192.168.0.102:9101", disk="sdb"}'
+        values: '0+0x50 2+0x50'
+    alert_rule_test:
+      - eval_time: 6h
+        alertname: SMARTOfflineUncorrectable
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: 192.168.0.102:9101
+              disk: sdb
+
+  # Media errors, same shape, on the NVMe attribute set.
+  - interval: 5m
+    input_series:
+      - series: 'smartmon_media_errors_count{instance="192.168.0.102:9101", disk="nvme0"}'
+        values: '0+0x100'
+    alert_rule_test:
+      - eval_time: 6h
+        alertname: SMARTMediaErrors
+        exp_alerts: []
+
+  - interval: 5m
+    input_series:
+      - series: 'smartmon_media_errors_count{instance="192.168.0.102:9101", disk="nvme0"}'
+        values: '0+0x50 1+0x50'
+    alert_rule_test:
+      - eval_time: 6h
+        alertname: SMARTMediaErrors
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: 192.168.0.102:9101
+              disk: nvme0

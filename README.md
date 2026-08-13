@@ -74,6 +74,12 @@ Canonical host/node/VIP topology reference: [docs/01-overview.md](docs/01-overvi
 - [1Password CLI](https://developer.1password.com/docs/cli/) (`op`)
 - Python 3 with `pip` (for the lint/test tooling in `requirements.txt`)
 - Ansible and Terraform
+- **A `weisssrv-lib` checkout beside this one** (`../weisssrv-lib`, or point
+  `$WEISSSRV_LIB_PATH` at it). `task lint` runs the vendored-copy gate, which
+  compares this repo's vendored scripts against the library and **never skips**
+  — without a checkout the gate fails rather than passing quietly. This is
+  distinct from `$WEISSSRV_COLLECTION_PATH`, which only makes `task
+  ansible:lint` use an untagged local collection and does not satisfy the gate.
 
 ### Setup
 
@@ -168,12 +174,13 @@ weisssrv/
 │   ├── clusters/weisssrv/    # Flux bootstrap + top-level Kustomizations
 │   ├── infrastructure/       # Platform — five subdirectories (sources, crds, controllers, configs, observability)
 │   │                         #   reconciled in dependsOn order; configs fans out to observability and apps:
-│   │                         #     infrastructure-sources       (HelmRepository CRs + versions-configmap)
+│   │                         #     infrastructure-sources       (HelmRepository CRs + versions-configmap + cluster-config)
 │   │                         #     infrastructure-crds          (prometheus-operator CRDs, wait:true — fresh-bootstrap ordering)
 │   │                         #     infrastructure-controllers   (platform HelmReleases — see the dir for the current set)
 │   │                         #     infrastructure-configs       (CRs requiring controller CRDs — see the dir for the current set)
 │   │                         #     infrastructure-observability (kube-prometheus-stack, Loki, Alloy, exporters, dashboards)
-│   ├── components/           # Reusable Kustomize components (netpol-baseline, gitlab-runner-common)
+│   │                         #     infrastructure-metrics-server (own stage off the chain: dependsOn sources only — docs/33)
+│   ├── components/           # Reusable Kustomize components — see kubernetes/components/README.md
 │   └── apps/                 # Sibling top-level Kustomization (dependsOn infrastructure-configs,
 │                             #   parallel to observability so its health can't freeze app reconciliation):
 │                             #   one dir per app — see kubernetes/apps/ for the current set
@@ -188,14 +195,14 @@ This repo is one instance of a four-repo family:
 
 ```
 eric/weisssrv-lib     CI job templates · the weisssrv.infra Ansible collection
-   │                  (all 40 roles) · the weisssrv CLI · Terraform modules ·
-   │                  lint profiles
+   │                  (all 40 roles) · the weisssrv-lib-cli template renderer
+   │                  (`weisssrv-new-project`) · Terraform modules · lint profiles
    │
    ├── eric/weisssrv                    this repo — the running cluster
    ├── eric/weisssrv-cluster-template   copier template that generates a NEW
    │                                    cluster repo shaped like this one
-   └── eric/weisssrv-app-template       scaffold for tenant repos that deploy
-                                        INTO this cluster (docs/30)
+   └── eric/weisssrv-app-template       copier template for tenant repos that
+                                        deploy INTO this cluster (docs/30)
 ```
 
 Every arrow is a pinned dependency: this repo pins the library tag in
@@ -220,19 +227,37 @@ Ansible tree here: [ansible/README.md](ansible/README.md).
 
 ## Secrets Management
 
-All secrets stored in 1Password, injected at runtime:
+All secrets stay in 1Password and are injected at runtime — never in the
+inventory. Host-side tooling gets them from the invoking `Taskfile.yml` task's
+own `env:` block, mirrored by the matching CI job's `variables:`, both resolved
+by `op run --`:
 
 ```yaml
-# group_vars/all.yml
-secrets:
-  smtp_gmail_password: "op://Homelab/SMTP Relay Gmail/password"
+# Taskfile.yml — the task that runs the playbook owns the reference
+  infra:deploy:
+    env:
+      SMTP_GMAIL_PASSWORD: op://Homelab/SMTP Relay Gmail/password
 ```
+
+```yaml
+# .gitlab-ci.yml — the matching deploy job repeats it verbatim
+deploy-ansible-mail:
+  variables:
+    SMTP_GMAIL_PASSWORD: "op://Homelab/SMTP Relay Gmail/password"
+```
+
+The inventory reads them back with `lookup('ansible.builtin.env', ...)`; there is
+no `secrets:` dict in `group_vars/all.yml`. `task secrets:show` prints the live
+set of references.
 
 In-cluster Kubernetes Secrets are produced by External Secrets Operator from
 `ExternalSecret` manifests. The `remoteRef` key/property format is specified in
 [docs/29-flux-operations.md](docs/29-flux-operations.md) ("1Password Connect
-Provider Reference Format"); the multi-consumer overview (Ansible/Terraform,
-ESO, CI) lives in the Secrets Management section of `CLAUDE.md`.
+Provider Reference Format").
+
+[docs/15-credential-rotation.md](docs/15-credential-rotation.md) § Secrets model
+is canonical for all three consumers (Ansible/Terraform + Task, ESO, CI) and for
+the required-item inventory.
 
 **Never commit secrets to git.**
 
@@ -250,7 +275,8 @@ Split-horizon DNS:
 - **Traefik**: Ingress controller (TLS served from cert-manager wildcard certs)
 - **external-dns**: Automatic Cloudflare DNS management
 - **cert-manager**: Let's Encrypt certificate automation
-- **Authentik**: SSO/OIDC identity provider (auth.esweiss.com)
+- **Authentik**: SSO/OIDC identity provider — auth.esweiss.com (internal) /
+  auth.ericsweiss.com (external, and always the OIDC issuer host)
 - **Flux**: Reconciles all Kubernetes manifests from this repo
 - **External Secrets Operator**: Syncs k8s Secrets from 1Password (Connect provider, vault `Homelab`)
 - **Autoscaling + node ops**: VPA, Reloader, kured (coordinated reboots) — full
@@ -267,9 +293,10 @@ and [docs/30-multi-repo-onboarding.md](docs/30-multi-repo-onboarding.md)
 
 Identity provider for Single Sign-On across all applications:
 
-- **URL**: auth.esweiss.com
+- **URL**: auth.esweiss.com (internal) / auth.ericsweiss.com (external — always
+  the OIDC issuer host, even for internal-only apps)
 - **Features**:
-  - OIDC/OAuth2 provider for Mealie, Bar Assistant, Home Assistant
+  - OIDC/OAuth2 provider for every user-facing app (see the per-app docs)
   - SAML provider for GitLab
   - PostgreSQL data on persistent ZFS zvol
 - **Documentation**: [kubernetes/apps/authentik/README.md](kubernetes/apps/authentik/README.md)
@@ -515,7 +542,7 @@ Homelab dashboard/launcher for every service in the cluster:
 | [ansible/TESTING](ansible/TESTING.md) | Integration-test scenarios: coverage, how to run, how to add one |
 | [kubernetes/README](kubernetes/README.md) | Flux tree layout, reconcile order, namespace ownership |
 | [kubernetes/clusters/weisssrv/tenants/README](kubernetes/clusters/weisssrv/tenants/README.md) | Onboarding a tenant repo's Flux Kustomization (walkthrough: docs/30) |
-| `kubernetes/apps/<app>/README.md` (nine of them) | Per-app notes; [authentik](kubernetes/apps/authentik/README.md) is the **canonical** Authentik doc (its Terraform layer is docs/40) |
+| `kubernetes/apps/<app>/README.md` (one per app that has notes — see `kubernetes/apps/`) | Per-app notes; [authentik](kubernetes/apps/authentik/README.md) is the **canonical** Authentik doc (its Terraform layer is docs/40) |
 | [terraform/cloudflare/README](terraform/cloudflare/README.md), [terraform/tailscale/README](terraform/tailscale/README.md), [terraform/authentik/README](terraform/authentik/README.md) | Per-module ownership, plan/apply rules, import + DR recipes |
 | [scripts/README](scripts/README.md) | Every script, grouped by purpose, with its origin (local / dual-maintained / vendored) |
 | [docker/hermes-agent/README](docker/hermes-agent/README.md), [docker/camofox-browser/README](docker/camofox-browser/README.md) | The two app images this repo builds |
@@ -540,7 +567,10 @@ Homelab dashboard/launcher for every service in the cluster:
 - **No table of contents.** The heading structure is the navigation; a hand-kept
   TOC only adds a second thing to drift.
 - **Cross-links go in a `## Related documentation` section at the foot** of the
-  doc — one name for it everywhere, so it is greppable.
+  doc — one name for it everywhere, so it is greppable. It holds **internal**
+  links only; third-party reading material goes in a separate
+  `## External references` list below it, so grepping the first name returns a
+  usable map of the doc set.
 - **Wrap prose at about 100 columns.** Tables, code blocks, and URLs are exempt.
 - **Superseded docs keep their number** and gain a status banner in the H1 plus a
   row in the Historical table above; they are never silently deleted, because

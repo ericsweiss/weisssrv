@@ -4,15 +4,10 @@
 # LXC container settings
 proxmox_lxc_nesting: true  # Required for systemd 257+
 
-# Write the SAME key base deploys (ssh_authorized_keys, from=-restricted), not the
-# plain SSH_PUBLIC_KEY the role defaults to. These LXCs are base_managed AND
-# proxmox_lxc-managed, so both roles reconcile authorized_keys every run; with
-# different content they overwrite each other and every deploy reports changed.
-# Aligning the content makes the reconcile idempotent.
-# Guarded on SSH_PUBLIC_KEY: ssh_authorized_keys hard-fails (undef) when that env
-# var is absent, so a per-role deploy job that does not inject it must SKIP the
-# reconcile (length 0), not error. The ternary short-circuits — ssh_authorized_keys
-# is evaluated only when the key is actually present.
+# Write the SAME key base deploys (from=-restricted), not the plain
+# SSH_PUBLIC_KEY the role defaults to: these LXCs are base_managed AND
+# proxmox_lxc-managed, so mismatched content makes every deploy report changed.
+# The ternary short-circuits so a job without SSH_PUBLIC_KEY skips (not errors).
 proxmox_lxc_ssh_public_keys: >-
   {{ ssh_authorized_keys | join("\n")
      if lookup('ansible.builtin.env', 'SSH_PUBLIC_KEY', default='') else '' }}
@@ -45,8 +40,14 @@ adguard_home_admin_password: >-
      or undef(hint='ADGUARD_ADMIN_PASSWORD env var must be set (run via op run)') }}
 
 # TLS/Encryption configuration
-# TLS enabled for DoT (853) and DoQ (853) - AdGuard Home handles these directly
-# Web UI and DoH accessed via HTTP on port 3000 - Traefik Internal (.101) handles TLS termination
+# AdGuard terminates the wildcard cert itself on every user-facing listener: the
+# web UI + DoH on :443, DoT/DoQ on :853. The acme_certs push keeps
+# adguard_home_cert_path current. Traefik's vm-ingress does NOT terminate for it
+# — it re-originates to :443 (scheme: https + the vm-tls-wildcard
+# ServersTransport, kubernetes/apps/vm-ingress/adguard-home.yaml), and the
+# adguard-exporter scrapes the same :443 name. :3000 stays HTTP and is the
+# plaintext admin API only — human break-glass, firewalled to admin_ts/admin_lan
+# (proxmox_firewall_dns_admin_ports in group_vars/all.yml).
 adguard_home_tls_enabled: true
 adguard_home_tls_server_name: "dns.{{ internal_domain }}"
 adguard_home_cert_path: "{{ adguard_home_install_path }}/certs"
@@ -76,7 +77,9 @@ adguard_home_cache_optimistic: false
 adguard_home_ratelimit: 20
 adguard_home_ratelimit_whitelist: []
 
-# DNS rewrites for internal services
+# DNS rewrites for internal services. Codified removal of the LAST rewrite (or
+# the last entry in adguard_home_user_rules) needs adguard_home_prune_rewrites /
+# _prune_user_rules true — an empty list means "manage none", not "delete all".
 adguard_home_rewrites:
   # DNS web UIs accessed via Traefik Internal for HTTPS and DoH
   - domain: "dns-01.{{ internal_domain }}"

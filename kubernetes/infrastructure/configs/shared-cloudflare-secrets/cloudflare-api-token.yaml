@@ -11,7 +11,7 @@ metadata:
 spec:
   namespaceSelectors:
     - matchLabels:
-        esweiss.com/cloudflare-api-token: "true"
+        ${cluster_node_label_domain}/cloudflare-api-token: "true"
   externalSecretName: cloudflare-api-token
   externalSecretSpec:
     refreshInterval: 24h

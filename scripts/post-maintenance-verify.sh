@@ -109,10 +109,8 @@ fi
 echo ""
 echo "Checking for unhealthy pods..."
 # Report genuinely-unhealthy pods only. A single snapshot false-alarms on
-# transient pods — a just-spawned CronJob pod (ContainerCreating/Pending) or a
-# Completed batch pod — which is what failed a maintenance verify once (a 0s
-# cloudflare-ddns CronJob pod). Exclude Completed/Succeeded, then re-check after
-# a grace window so only pods STILL unhealthy afterwards are flagged.
+# transients (a just-spawned CronJob pod, a Completed batch pod), so exclude
+# Completed/Succeeded and re-check after a grace window.
 # `set -o pipefail` is active: a kubectl failure surfaces as a non-zero return
 # that the `|| {...}` guard turns into a counted error instead of aborting verify.
 # One awk catches both non-running ($4 != Running) and Running-but-not-ready
@@ -262,11 +260,9 @@ echo "Checking for failed Jobs..."
 # the pods-already-TTL-cleaned case is ambiguous and WARNs, backstopped by the
 # KubeJobFailed Prometheus alert.
 KURED_NOW=$(kured_rebooting_nodes)
-# Split the kubectl query from the awk filter so a query FAILURE (API/RBAC/token)
-# is counted as an ERROR, not silently read as "no failed Jobs". A plain
-# VAR=$(...) assignment does not trip `set -e`, and the old `... | awk ... || true`
-# masked a failed `kubectl get jobs` as empty output -> false green. Mirrors the
-# node/pod/deployment checks, which all count an ERROR on query failure.
+# Query and filter are split so a query FAILURE (API/RBAC/token) counts as an
+# ERROR rather than reading as "no failed Jobs" — a plain VAR=$(...) does not
+# trip `set -e`. Mirrors the node/pod/deployment checks.
 jobs_query_failed=false
 if JOBS_RAW=$(kubectl get jobs -A --request-timeout=15s \
   -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\t"}{.metadata.ownerReferences[0].kind}{"\t"}{range .status.conditions[*]}{.type}={.status},{end}{"\n"}{end}' \
@@ -357,7 +353,14 @@ echo "Checking cluster DNS (internal service resolution)..."
 # fast-completing pod and loses its stdout. Create, poll for a terminal phase,
 # read with `kubectl logs`, delete. Every kubectl call carries
 # --request-timeout so API degradation cannot hang the verify.
+#
+# Pinned to kube-system, NOT the kubeconfig's context namespace: `default` is
+# PSA `enforce: restricted` (a stock busybox is rejected at admission) and
+# carries a default-deny on Egress too, so a probe landing there fails for
+# reasons that are not DNS. kube-system has no PSA labels and its deny is
+# ingress-only.
 kctl_timeout="--request-timeout=15s"
+dns_ns="kube-system"
 dns_ok=false
 dns_saw_fail=false
 dns_last_output=""
@@ -365,18 +368,18 @@ for dns_attempt in 1 2 3 4 5; do
   dns_pod="dns-verify-${CI_JOB_ID:-$$}-${dns_attempt}"
   # Clear any leftover pod of the same name (e.g. from an interrupted run) so we
   # cannot read a stale pod's logs and return a wrong verdict.
-  kubectl delete pod "$dns_pod" "$kctl_timeout" --ignore-not-found --wait=true >/dev/null 2>&1 || true
+  kubectl delete pod "$dns_pod" -n "$dns_ns" "$kctl_timeout" --ignore-not-found --wait=true >/dev/null 2>&1 || true
   # A creation failure is recorded, not swallowed: without the pod a later
   # `kubectl logs` could read a same-named stale one.
   # busybox pin is gated against busybox_version in group_vars/all.yml by
   # `task lint:busybox-version-pin`; bump both together.
-  if ! kubectl run "$dns_pod" "$kctl_timeout" --restart=Never --image=busybox:1.38 --command -- \
+  if ! kubectl run "$dns_pod" -n "$dns_ns" "$kctl_timeout" --restart=Never --image=busybox:1.38 --command -- \
       sh -c "nslookup kubernetes.default.svc.cluster.local >/dev/null 2>&1 && echo DNS_PASS || echo DNS_FAIL" \
       >/dev/null 2>&1; then
     dns_last_output="failed to create DNS probe pod $dns_pod"
     # A client-side timeout can report failure even though the pod was created on
     # the API server — best-effort delete so we don't leak an orphan probe pod.
-    kubectl delete pod "$dns_pod" "$kctl_timeout" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+    kubectl delete pod "$dns_pod" -n "$dns_ns" "$kctl_timeout" --ignore-not-found --wait=false >/dev/null 2>&1 || true
     sleep 5
     continue
   fi
@@ -384,7 +387,7 @@ for dns_attempt in 1 2 3 4 5; do
   # covers image pull. Avoids `kubectl wait --for=jsonpath` version dependencies.
   dns_phase=""
   for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
-    dns_phase=$(kubectl get pod "$dns_pod" "$kctl_timeout" -o jsonpath='{.status.phase}' 2>/dev/null || true)
+    dns_phase=$(kubectl get pod "$dns_pod" -n "$dns_ns" "$kctl_timeout" -o jsonpath='{.status.phase}' 2>/dev/null || true)
     case "$dns_phase" in Succeeded | Failed) break ;; esac
     sleep 2
   done
@@ -392,18 +395,18 @@ for dns_attempt in 1 2 3 4 5; do
     # Never finished -> scheduling/runtime delay, not a DNS verdict. Don't read
     # logs (would be empty and masquerade as a result); clean up and retry.
     dns_last_output="DNS probe pod did not finish (last phase: ${dns_phase:-unknown})"
-    kubectl delete pod "$dns_pod" "$kctl_timeout" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+    kubectl delete pod "$dns_pod" -n "$dns_ns" "$kctl_timeout" --ignore-not-found --wait=false >/dev/null 2>&1 || true
     sleep 5
     continue
   fi
   # Read the verdict; retry briefly since log publication can lag pod completion.
   DNS_OUTPUT=""
   for _ in 1 2 3 4 5; do
-    DNS_OUTPUT=$(kubectl logs "$dns_pod" "$kctl_timeout" 2>&1 || true)
+    DNS_OUTPUT=$(kubectl logs "$dns_pod" -n "$dns_ns" "$kctl_timeout" 2>&1 || true)
     if echo "$DNS_OUTPUT" | grep -qE "DNS_PASS|DNS_FAIL"; then break; fi
     sleep 1
   done
-  kubectl delete pod "$dns_pod" "$kctl_timeout" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+  kubectl delete pod "$dns_pod" -n "$dns_ns" "$kctl_timeout" --ignore-not-found --wait=false >/dev/null 2>&1 || true
   # Distinguish three outcomes so the error below attributes the failure honestly
   # instead of always blaming DNS:
   #   DNS_PASS         -> resolution succeeded

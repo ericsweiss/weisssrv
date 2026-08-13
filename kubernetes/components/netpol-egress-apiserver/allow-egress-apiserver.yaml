@@ -1,0 +1,28 @@
+---
+# kube-proxy DNATs the in-cluster API VIP (10.43.0.1:443) to a real server node
+# IP BEFORE NetworkPolicy evaluation, so this allowlists the three k3s SERVER
+# node IPs on 6443 — a rule naming the VIP never matches the post-DNAT packet.
+#
+# The addresses stay literal here, not ${...} placeholders: this list is the one
+# the reserved-CIDR gate (scripts/check-netpol-except-parity.py) parses straight
+# from git, before any Flux substitution exists. Re-address a server and this
+# file changes with hosts.yml.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-apiserver
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 192.168.0.222/32
+        - ipBlock:
+            cidr: 192.168.0.223/32
+        - ipBlock:
+            cidr: 192.168.0.227/32
+      ports:
+        - protocol: TCP
+          port: 6443

@@ -1,40 +1,22 @@
 ---
-# Egress allowlist: kube-dns + external HTTPS only.
-# The CronJob calls api.cloudflare.com plus a public IPv4-detection provider
-# (api.ipify.org, with ipv4.icanhazip.com / checkip.amazonaws.com as fallbacks) —
-# all public TCP/443. No private-LAN egress is needed; deny it explicitly via
-# `except` blocks on RFC1918 ranges.
+# Public-unicast HTTPS egress. The except list is the RFC-reserved and private
+# IPv4 space — a standards constant, NOT this cluster's LAN — and this is the
+# single copy for every namespace-wide policy in the repo. It stops a
+# compromised platform pod from reaching the LAN, loopback, cloud-metadata or
+# CGNAT/tailnet space. scripts/check-netpol-except-parity.py calls it
+# "reserved-full" and fails any copy that drifts from it.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: allow-external-https-and-dns
-  namespace: cloudflare-ddns
+  name: allow-egress-public
 spec:
   podSelector: {}
   policyTypes:
     - Egress
   egress:
-    # kube-dns
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
-          podSelector:
-            matchLabels:
-              k8s-app: kube-dns
-      ports:
-        - protocol: UDP
-          port: 53
-        - protocol: TCP
-          port: 53
-    # External HTTPS (api.cloudflare.com + public IPv4-detection providers)
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0
-            # Public unicast HTTPS only (api.cloudflare.com + the IPv4-detection
-            # providers). Every non-public / reserved IPv4 block is excepted, so a
-            # compromised pod cannot reach the LAN, loopback or cloud-metadata.
-            # "reserved-full" set — scripts/check-netpol-except-parity.py guards it.
             except:
               # RFC1918 private LAN.
               - 10.0.0.0/8

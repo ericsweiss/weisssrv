@@ -1,26 +1,34 @@
 ---
-# promtool unit tests for the two memory-sizing alerts added after the
-# 2026-07-25 authentik-postgresql OOMKill: VPARecommendationExceedsLimit (the
-# VPA knows the workload needs more than its limit allows) and
-# ContainerOOMKilled (the kill itself, which no upstream rule reports for a
-# container that restarts cleanly). Separate file from autoscaling.test.yaml
-# because that one evaluates at 6h ticks for VPARecommendationCapped's 24h hold;
-# these need 1m granularity. Numbers are the real ones from the incident.
+# promtool unit tests for the three memory-sizing alerts:
+# VPARecommendationExceedsLimit (the VPA knows the workload needs more than its
+# limit allows), ContainerMemoryNearLimit (the live working set approaching the
+# same ceiling, hours earlier) and ContainerOOMKilled (the kill itself, which no
+# upstream rule reports for a container that restarts cleanly). Separate file
+# from autoscaling.test.yaml because that one evaluates at 6h ticks for
+# VPARecommendationCapped's 24h hold; these need 1m granularity.
+#
+# VPARecommendationExceedsLimit joins per WORKLOAD, so every case carries three
+# series: the VPA recommendation (whose target_name is the workload), the
+# container's limit, and namespace_workload_pod:kube_pod_owner:relabel, the
+# kube-prometheus-stack recording rule that maps a pod to its workload.
 rule_files:
   - rules.yaml
 evaluation_interval: 1m
 tests:
-  # Off-tier drift, replayed: a 684Mi (716711186 B) recommendation against the
-  # 512Mi limit the container actually had. The kube-state-metrics series
-  # carries its OWN namespace label (observability, where KSM runs), so the
-  # rule's label_replace must rewrite it to the VPA's target namespace both for
-  # the join to land and for the alert to route on the workload's namespace.
+  # Off-tier drift, replayed from the 2026-07-25 authentik-postgresql OOMKill: a
+  # 684Mi (716711186 B) recommendation against the 512Mi limit the container
+  # actually had. The kube-state-metrics series carries its OWN namespace label
+  # (observability, where KSM runs), so the rule's label_replace must rewrite it
+  # to the VPA's target namespace both for the join to land and for the alert to
+  # route on the workload's namespace.
   - interval: 1m
     input_series:
-      - series: 'vpa_recommendation_target{exported_namespace="authentik", namespace="observability", verticalpodautoscaler="authentik-postgresql", container="postgresql", resource="memory", unit="byte", update_mode="Off"}'
+      - series: 'vpa_recommendation_target{exported_namespace="authentik", namespace="observability", verticalpodautoscaler="authentik-postgresql", target_name="authentik-postgresql", target_kind="StatefulSet", container="postgresql", resource="memory", unit="byte", update_mode="Off"}'
         values: '716711186+0x480'
       - series: 'kube_pod_container_resource_limits{namespace="authentik", pod="authentik-postgresql-0", container="postgresql", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
         values: '536870912+0x480'
+      - series: 'namespace_workload_pod:kube_pod_owner:relabel{namespace="authentik", workload="authentik-postgresql", workload_type="statefulset", pod="authentik-postgresql-0"}'
+        values: '1+0x480'
     alert_rule_test:
       - eval_time: 7h
         alertname: VPARecommendationExceedsLimit
@@ -28,6 +36,7 @@ tests:
           - exp_labels:
               severity: warning
               namespace: authentik
+              workload: authentik-postgresql
               verticalpodautoscaler: authentik-postgresql
               container: postgresql
       # Still inside the 6h hold: pending, not firing.
@@ -39,23 +48,80 @@ tests:
   # the recommendation now fits inside the limit, so the alert stays silent.
   - interval: 1m
     input_series:
-      - series: 'vpa_recommendation_target{exported_namespace="authentik", namespace="observability", verticalpodautoscaler="authentik-postgresql", container="postgresql", resource="memory", unit="byte", update_mode="Off"}'
+      - series: 'vpa_recommendation_target{exported_namespace="authentik", namespace="observability", verticalpodautoscaler="authentik-postgresql", target_name="authentik-postgresql", target_kind="StatefulSet", container="postgresql", resource="memory", unit="byte", update_mode="Off"}'
         values: '716711186+0x480'
       - series: 'kube_pod_container_resource_limits{namespace="authentik", pod="authentik-postgresql-0", container="postgresql", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
         values: '1073741824+0x480'
+      - series: 'namespace_workload_pod:kube_pod_owner:relabel{namespace="authentik", workload="authentik-postgresql", workload_type="statefulset", pod="authentik-postgresql-0"}'
+        values: '1+0x480'
     alert_rule_test:
       - eval_time: 7h
         alertname: VPARecommendationExceedsLimit
         exp_alerts: []
 
+  # The collision this rule was rewritten for: two DIFFERENT workloads in one
+  # namespace expose a container with the SAME name at different limits (the
+  # four flux-system controllers all call theirs `manager`). Joining on
+  # (namespace, container) compared both against the LARGEST limit, so the
+  # under-sized one could never fire. Only kustomize-controller must alert here.
+  - interval: 1m
+    input_series:
+      - series: 'vpa_recommendation_target{exported_namespace="flux-system", namespace="observability", verticalpodautoscaler="kustomize-controller", target_name="kustomize-controller", target_kind="Deployment", container="manager", resource="memory", unit="byte", update_mode="Initial"}'
+        values: '1073741824+0x480'
+      - series: 'vpa_recommendation_target{exported_namespace="flux-system", namespace="observability", verticalpodautoscaler="helm-controller", target_name="helm-controller", target_kind="Deployment", container="manager", resource="memory", unit="byte", update_mode="Initial"}'
+        values: '297164212+0x480'
+      - series: 'kube_pod_container_resource_limits{namespace="flux-system", pod="kustomize-controller-59fb4bcd94-qf22l", container="manager", resource="memory", unit="byte", node="k3s-agt-prec-01"}'
+        values: '901537064+0x480'
+      - series: 'kube_pod_container_resource_limits{namespace="flux-system", pod="helm-controller-7c856f9ff6-s8jsx", container="manager", resource="memory", unit="byte", node="k3s-agt-prec-01"}'
+        values: '1771239856+0x480'
+      - series: 'namespace_workload_pod:kube_pod_owner:relabel{namespace="flux-system", workload="kustomize-controller", workload_type="deployment", pod="kustomize-controller-59fb4bcd94-qf22l"}'
+        values: '1+0x480'
+      - series: 'namespace_workload_pod:kube_pod_owner:relabel{namespace="flux-system", workload="helm-controller", workload_type="deployment", pod="helm-controller-7c856f9ff6-s8jsx"}'
+        values: '1+0x480'
+    alert_rule_test:
+      - eval_time: 7h
+        alertname: VPARecommendationExceedsLimit
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: flux-system
+              workload: kustomize-controller
+              verticalpodautoscaler: kustomize-controller
+              container: manager
+
+  # The prometheus-operator names its StatefulSets `<kind>-<CR name>` while the
+  # VPA targets the CR, so the workload join needs the prefix stripped. Without
+  # that arm the Prometheus and Alertmanager VPAs — both Off-tier, exactly the
+  # shape this alert exists for — silently drop out of scope.
+  - interval: 1m
+    input_series:
+      - series: 'vpa_recommendation_target{exported_namespace="observability", namespace="observability", verticalpodautoscaler="prometheus", target_name="kube-prometheus-stack-prometheus", target_kind="Prometheus", container="prometheus", resource="memory", unit="byte", update_mode="Off"}'
+        values: '7516192768+0x480'
+      - series: 'kube_pod_container_resource_limits{namespace="observability", pod="prometheus-kube-prometheus-stack-prometheus-0", container="prometheus", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
+        values: '6442450944+0x480'
+      - series: 'namespace_workload_pod:kube_pod_owner:relabel{namespace="observability", workload="prometheus-kube-prometheus-stack-prometheus", workload_type="statefulset", pod="prometheus-kube-prometheus-stack-prometheus-0"}'
+        values: '1+0x480'
+    alert_rule_test:
+      - eval_time: 7h
+        alertname: VPARecommendationExceedsLimit
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: observability
+              workload: kube-prometheus-stack-prometheus
+              verticalpodautoscaler: prometheus
+              container: prometheus
+
   # An Initial VPA only sets resources at admission, so a limit it never revisits
   # can sit below the recommendation indefinitely — in scope, must fire.
   - interval: 1m
     input_series:
-      - series: 'vpa_recommendation_target{exported_namespace="downloads", namespace="observability", verticalpodautoscaler="pulsarr", container="pulsarr", resource="memory", unit="byte", update_mode="Initial"}'
+      - series: 'vpa_recommendation_target{exported_namespace="downloads", namespace="observability", verticalpodautoscaler="pulsarr", target_name="pulsarr", target_kind="StatefulSet", container="pulsarr", resource="memory", unit="byte", update_mode="Initial"}'
         values: '1073741824+0x480'
       - series: 'kube_pod_container_resource_limits{namespace="downloads", pod="pulsarr-0", container="pulsarr", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
         values: '953155584+0x480'
+      - series: 'namespace_workload_pod:kube_pod_owner:relabel{namespace="downloads", workload="pulsarr", workload_type="statefulset", pod="pulsarr-0"}'
+        values: '1+0x480'
     alert_rule_test:
       - eval_time: 7h
         alertname: VPARecommendationExceedsLimit
@@ -63,6 +129,7 @@ tests:
           - exp_labels:
               severity: warning
               namespace: downloads
+              workload: pulsarr
               verticalpodautoscaler: pulsarr
               container: pulsarr
 
@@ -70,10 +137,12 @@ tests:
   # limit alongside the request, so the same shape self-heals and must NOT page.
   - interval: 1m
     input_series:
-      - series: 'vpa_recommendation_target{exported_namespace="downloads", namespace="observability", verticalpodautoscaler="sonarr", container="sonarr", resource="memory", unit="byte", update_mode="Auto"}'
+      - series: 'vpa_recommendation_target{exported_namespace="downloads", namespace="observability", verticalpodautoscaler="sonarr", target_name="sonarr", target_kind="StatefulSet", container="sonarr", resource="memory", unit="byte", update_mode="Auto"}'
         values: '1073741824+0x480'
       - series: 'kube_pod_container_resource_limits{namespace="downloads", pod="sonarr-0", container="sonarr", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
         values: '953155584+0x480'
+      - series: 'namespace_workload_pod:kube_pod_owner:relabel{namespace="downloads", workload="sonarr", workload_type="statefulset", pod="sonarr-0"}'
+        values: '1+0x480'
     alert_rule_test:
       - eval_time: 7h
         alertname: VPARecommendationExceedsLimit
@@ -81,13 +150,16 @@ tests:
 
   # The other in-scope shape: a MUTATING VPA pinned to RequestsOnly, whose limit
   # never moves either (authentik-server, node-exporter, dcgm-exporter, the
-  # RequestsOnly *arr tier). Must fire.
+  # RequestsOnly *arr tier, and the platform controllers in configs/vpa). Must
+  # fire.
   - interval: 1m
     input_series:
-      - series: 'vpa_recommendation_target{exported_namespace="authentik", namespace="observability", verticalpodautoscaler="authentik-server", container="server", resource="memory", unit="byte", update_mode="Initial", controlled_values="RequestsOnly"}'
+      - series: 'vpa_recommendation_target{exported_namespace="authentik", namespace="observability", verticalpodautoscaler="authentik-server", target_name="authentik-server", target_kind="StatefulSet", container="server", resource="memory", unit="byte", update_mode="Initial", controlled_values="RequestsOnly"}'
         values: '1610612736+0x480'
       - series: 'kube_pod_container_resource_limits{namespace="authentik", pod="authentik-server-0", container="server", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
         values: '1610612735+0x480'
+      - series: 'namespace_workload_pod:kube_pod_owner:relabel{namespace="authentik", workload="authentik-server", workload_type="statefulset", pod="authentik-server-0"}'
+        values: '1+0x480'
     alert_rule_test:
       - eval_time: 7h
         alertname: VPARecommendationExceedsLimit
@@ -95,6 +167,7 @@ tests:
           - exp_labels:
               severity: warning
               namespace: authentik
+              workload: authentik-server
               verticalpodautoscaler: authentik-server
               container: server
 
@@ -103,13 +176,145 @@ tests:
   # selector must drop these even when the numbers would otherwise match.
   - interval: 1m
     input_series:
-      - series: 'vpa_recommendation_target{exported_namespace="authentik", namespace="observability", verticalpodautoscaler="authentik-postgresql", container="postgresql", resource="cpu", unit="core", update_mode="Off"}'
+      - series: 'vpa_recommendation_target{exported_namespace="authentik", namespace="observability", verticalpodautoscaler="authentik-postgresql", target_name="authentik-postgresql", target_kind="StatefulSet", container="postgresql", resource="cpu", unit="core", update_mode="Off"}'
         values: '2+0x480'
       - series: 'kube_pod_container_resource_limits{namespace="authentik", pod="authentik-postgresql-0", container="postgresql", resource="cpu", unit="core", node="k3s-agt-nas-01"}'
+        values: '1+0x480'
+      - series: 'namespace_workload_pod:kube_pod_owner:relabel{namespace="authentik", workload="authentik-postgresql", workload_type="statefulset", pod="authentik-postgresql-0"}'
         values: '1+0x480'
     alert_rule_test:
       - eval_time: 7h
         alertname: VPARecommendationExceedsLimit
+        exp_alerts: []
+
+  # VPARecommendationExceedsRequest: the same drift one band earlier, on the
+  # REQUEST. Prometheus at a 4524Mi recommendation against a 3Gi request — the
+  # shape that had the TSDB sitting in the eviction-ranked band with nothing
+  # watching. Both tests must pass: >1.25x AND >128Mi absolute.
+  - interval: 1m
+    input_series:
+      - series: 'vpa_recommendation_target{exported_namespace="observability", namespace="observability", verticalpodautoscaler="prometheus", target_name="kube-prometheus-stack-prometheus", target_kind="Prometheus", container="prometheus", resource="memory", unit="byte", update_mode="Off"}'
+        values: '4744052736+0x2000'
+      - series: 'kube_pod_container_resource_requests{namespace="observability", pod="prometheus-kube-prometheus-stack-prometheus-0", container="prometheus", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
+        values: '3221225472+0x2000'
+      - series: 'namespace_workload_pod:kube_pod_owner:relabel{namespace="observability", workload="prometheus-kube-prometheus-stack-prometheus", workload_type="statefulset", pod="prometheus-kube-prometheus-stack-prometheus-0"}'
+        values: '1+0x2000'
+    alert_rule_test:
+      - eval_time: 25h
+        alertname: VPARecommendationExceedsRequest
+        exp_alerts:
+          - exp_labels:
+              severity: info
+              namespace: observability
+              workload: kube-prometheus-stack-prometheus
+              verticalpodautoscaler: prometheus
+              container: prometheus
+      # Inside the 24h hold.
+      - eval_time: 20h
+        alertname: VPARecommendationExceedsRequest
+        exp_alerts: []
+
+  # A 32Mi sidecar recommended 128Mi is 4x its request but only 96Mi of real
+  # memory — the ratio artifact the absolute floor exists to drop. Must be
+  # silent, or this alert becomes a daily Discord ping that never clears.
+  - interval: 1m
+    input_series:
+      - series: 'vpa_recommendation_target{exported_namespace="authentik", namespace="observability", verticalpodautoscaler="authentik-postgresql", target_name="authentik-postgresql", target_kind="StatefulSet", container="metrics", resource="memory", unit="byte", update_mode="Off"}'
+        values: '134217728+0x2000'
+      - series: 'kube_pod_container_resource_requests{namespace="authentik", pod="authentik-postgresql-0", container="metrics", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
+        values: '33554432+0x2000'
+      - series: 'namespace_workload_pod:kube_pod_owner:relabel{namespace="authentik", workload="authentik-postgresql", workload_type="statefulset", pod="authentik-postgresql-0"}'
+        values: '1+0x2000'
+    alert_rule_test:
+      - eval_time: 25h
+        alertname: VPARecommendationExceedsRequest
+        exp_alerts: []
+
+  # The mirror case: a large gap in bytes that is under 1.25x. Both tests are
+  # required, so a 4Gi-request workload recommended 4.2Gi stays silent.
+  - interval: 1m
+    input_series:
+      - series: 'vpa_recommendation_target{exported_namespace="observability", namespace="observability", verticalpodautoscaler="prometheus", target_name="kube-prometheus-stack-prometheus", target_kind="Prometheus", container="prometheus", resource="memory", unit="byte", update_mode="Off"}'
+        values: '4617089024+0x2000'
+      - series: 'kube_pod_container_resource_requests{namespace="observability", pod="prometheus-kube-prometheus-stack-prometheus-0", container="prometheus", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
+        values: '4294967296+0x2000'
+      - series: 'namespace_workload_pod:kube_pod_owner:relabel{namespace="observability", workload="prometheus-kube-prometheus-stack-prometheus", workload_type="statefulset", pod="prometheus-kube-prometheus-stack-prometheus-0"}'
+        values: '1+0x2000'
+    alert_rule_test:
+      - eval_time: 25h
+        alertname: VPARecommendationExceedsRequest
+        exp_alerts: []
+
+  # ContainerMemoryNearLimit: the leading indicator. 0.93 of the limit held past
+  # the 15m hold on a workload with no exclusion.
+  - interval: 1m
+    input_series:
+      - series: 'container_memory_working_set_bytes{namespace="downloads", pod="pulsarr-0", container="pulsarr", node="k3s-agt-nas-01"}'
+        values: '1000000000+0x60'
+      - series: 'kube_pod_container_resource_limits{namespace="downloads", pod="pulsarr-0", container="pulsarr", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
+        values: '1073741824+0x60'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: ContainerMemoryNearLimit
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: downloads
+              pod: pulsarr-0
+              container: pulsarr
+      # Inside the 15m hold — a transient spike must not page.
+      - eval_time: 10m
+        alertname: ContainerMemoryNearLimit
+        exp_alerts: []
+
+  # hindsight/llama is GPU/model-pinned with a deliberate Off VPA and sits above
+  # 0.9 for ~15% of any month. Excluded by name — left in, it would fire
+  # near-continuously and erode the rule's credibility.
+  - interval: 1m
+    input_series:
+      - series: 'container_memory_working_set_bytes{namespace="hindsight", pod="llama-0", container="llama", node="k3s-agt-prec-01"}'
+        values: '1000000000+0x60'
+      - series: 'kube_pod_container_resource_limits{namespace="hindsight", pod="llama-0", container="llama", resource="memory", unit="byte", node="k3s-agt-prec-01"}'
+        values: '1073741824+0x60'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: ContainerMemoryNearLimit
+        exp_alerts: []
+
+  # Prometheus and Loki count reclaimable page cache in their working set, so
+  # they live near the ceiling by design. Same exclusion, different namespace —
+  # and the exclusion is (namespace, container), so a container named
+  # `prometheus` elsewhere is NOT excluded.
+  - interval: 1m
+    input_series:
+      - series: 'container_memory_working_set_bytes{namespace="observability", pod="prometheus-kube-prometheus-stack-prometheus-0", container="prometheus", node="k3s-agt-nas-01"}'
+        values: '6000000000+0x60'
+      - series: 'kube_pod_container_resource_limits{namespace="observability", pod="prometheus-kube-prometheus-stack-prometheus-0", container="prometheus", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
+        values: '6442450944+0x60'
+      - series: 'container_memory_working_set_bytes{namespace="hermes", pod="hermes-0", container="prometheus", node="k3s-agt-prec-01"}'
+        values: '1000000000+0x60'
+      - series: 'kube_pod_container_resource_limits{namespace="hermes", pod="hermes-0", container="prometheus", resource="memory", unit="byte", node="k3s-agt-prec-01"}'
+        values: '1073741824+0x60'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: ContainerMemoryNearLimit
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: hermes
+              pod: hermes-0
+              container: prometheus
+
+  # A container comfortably inside its limit must stay silent.
+  - interval: 1m
+    input_series:
+      - series: 'container_memory_working_set_bytes{namespace="downloads", pod="sonarr-0", container="sonarr", node="k3s-agt-nas-01"}'
+        values: '500000000+0x60'
+      - series: 'kube_pod_container_resource_limits{namespace="downloads", pod="sonarr-0", container="sonarr", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
+        values: '1073741824+0x60'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: ContainerMemoryNearLimit
         exp_alerts: []
 
   # ContainerOOMKilled: a restart whose last-terminated reason is OOMKilled.

@@ -319,9 +319,7 @@
 # Hard-bounded so this gate can never wedge the whole serial sweep. Rebooting a
 # control-plane host fails the kube-vip API VIP (.161) over to another server;
 # during that window a `kubectl wait` issued (on the delegate) against the VIP
-# could block on a dead TCP session far past its own --timeout. That is exactly
-# what stalled the 2026-07-14 maintenance run — this gate sat ~42 min until the
-# CI job deadline killed it, having rebooted 0 further hosts. Nested bounds,
+# could block on a dead TCP session far past its own --timeout. Nested bounds,
 # smallest first, so a slow-but-healthy rejoin is never cut short:
 #   - --timeout=180s is the LOGICAL budget — how long the node has to go Ready;
 #   - --request-timeout=190s bounds a hung API call, set ABOVE --timeout so it

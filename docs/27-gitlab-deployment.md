@@ -79,7 +79,7 @@ VM Root Disk (100GB on ssd pool)
 Repository Disk (200GB zvol: ssd/appdata/gitlab/repos)
 ├── /mnt/gitlab-repos/git-data/ # Git repositories
 │   └── repositories/           # Bare git repos (@hashed/)
-└── /mnt/gitlab-repos/registry/ # Container Registry blob store (~7.5G)
+└── /mnt/gitlab-repos/registry/ # Container Registry blob store (tens of GB)
 ```
 
 **Note:** Gitaly repository storage **and** the Container Registry blob store use
@@ -88,8 +88,9 @@ root disk - they are typically much smaller than repos/registry, and keeping the
 on root disk simplifies configuration while the separate disk isolates the two
 largest, fastest-growing consumers.
 
-The registry blob store (~7.5G) was the single largest component and the
-`DiskUsageCritical` culprit on the OS disk. It is relocated via
+The registry blob store was the single largest component and the
+`DiskUsageCritical` culprit on the OS disk — 43G as of 2026-08, which is why it
+no longer shares a disk with the OS. It is relocated via
 `gitlab_registry_data_dir` (role default: the Omnibus path
 `/var/opt/gitlab/gitlab-rails/shared/registry`; prod override:
 `/mnt/gitlab-repos/registry`), which renders `gitlab_rails['registry_path']` in
@@ -192,7 +193,8 @@ to `direct.ericsweiss.com`) and is being changed to an A record, verify the tran
 ```bash
 # 1. Preview the change
 task terraform:plan
-# Look for: cloudflare_record.git changing type from CNAME to A
+# Look for: module.zone.cloudflare_record.protected_external_content["git"]
+#           changing type from CNAME to A (edit local.dns_records["git"] in dns.tf)
 
 # 2. Apply the change
 task terraform:apply
@@ -494,8 +496,10 @@ task gitlab:reconfigure     # Reconfigure GitLab after changes
 
 ## Backups
 
-GitLab backups run daily at 2:00 AM via cron. The cron entry calls
-`/usr/local/sbin/gitlab-backup-run.sh` (deployed by the gitlab role), which
+GitLab backups run daily at 2:00 AM from the `gitlab-backup.timer` systemd timer
+(`gitlab_backup_oncalendar`; the role removes the legacy root cron job, so
+`systemctl list-timers gitlab-backup` is the check, not `crontab -l`). Its
+service calls `/usr/local/sbin/gitlab-backup-run.sh` (deployed by the gitlab role), which
 runs `gitlab-backup create CRON=1`, copies `gitlab-secrets.json` + `gitlab.rb`
 into the backup path on success (a restore needs them to decrypt CI variables,
 2FA, and runner tokens), and emits backup-freshness metrics.
@@ -504,12 +508,19 @@ into the backup path on success (a restore needs them to decrypt CI variables,
 excludes the container registry (rebuildable CI images, by far the largest
 component) and CI artifacts (ephemeral job output) via
 `gitlab_backup_skip: "registry,artifacts"`, so a backup is DB + repos +
-config, not multi-GB. **Restore caveat:** `gitlab-backup restore` from these
-tarballs does NOT bring back registry images or artifacts — registry data
-lives at the Omnibus default path on the VM's OS disk (covered by the nightly
-vzdump of the VM) and is re-pushable from CI; artifacts regenerate on the
-next pipeline run. For a registry-inclusive restore, restore the VM from
-vzdump instead (docs/17).
+config, not multi-GB.
+
+**Restore caveat:** `gitlab-backup restore` from these tarballs does NOT bring
+back registry images or artifacts, and **vzdump does not cover the registry
+either** — the blobs live on the `gitlab-repos` zvol (`/mnt/gitlab-repos/registry`),
+which `hosts.yml` declares `vzdump_backup: false` precisely because it is
+already covered elsewhere. A vzdump restore therefore returns the OS disk and an
+empty registry. The registry's actual copy is the nightly raw-encrypted
+`ssd/appdata → archive` ZFS replication, so restoring it means receiving that
+dataset and `zfs load-key`-ing it before the data is readable (procedures in
+[docs/17](17-disaster-recovery.md)). In practice most images are also
+re-pushable from CI, which is why the blob store is not in the tarball; CI
+artifacts regenerate on the next pipeline run.
 
 ```bash
 # Manual backup (also re-seeds the freshness metric)

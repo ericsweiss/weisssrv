@@ -10,9 +10,9 @@ spec:
   issuerRef:
     name: letsencrypt-prod
     kind: ClusterIssuer
-  commonName: "grafana.esweiss.com"
+  commonName: "grafana.${cluster_internal_domain}"
   dnsNames:
-    - "grafana.esweiss.com"
+    - "grafana.${cluster_internal_domain}"
   renewBefore: 720h
 ---
 # TLS certificate for loki.esweiss.com (internal only).
@@ -27,7 +27,7 @@ spec:
   issuerRef:
     name: letsencrypt-prod
     kind: ClusterIssuer
-  commonName: "loki.esweiss.com"
+  commonName: "loki.${cluster_internal_domain}"
   dnsNames:
-    - "loki.esweiss.com"
+    - "loki.${cluster_internal_domain}"
   renewBefore: 720h

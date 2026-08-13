@@ -38,7 +38,7 @@ metadata:
   annotations:
     # Human-readable marker only (not scraped). nzbget carries no
     # gluetun-exporter, so it has no VPN metrics.
-    esweiss.com/vpn-mode: "sidecar"
+    ${cluster_node_label_domain}/vpn-mode: "sidecar"
     # Reloader rolls this Deployment when the nzbget-vpn-config ConfigMap
     # changes, so a vpn_enabled/vpn_provider edit needs no manual restart.
     reloader.stakater.com/auto: "true"
@@ -56,9 +56,9 @@ spec:
         app.kubernetes.io/component: download-client
     spec:
       nodeSelector:
-        esweiss.com/nas: "true"
+        ${cluster_node_label_domain}/nas: "true"
       tolerations:
-        - key: esweiss.com/nas
+        - key: ${cluster_node_label_domain}/nas
           operator: Equal
           value: "true"
           effect: PreferNoSchedule

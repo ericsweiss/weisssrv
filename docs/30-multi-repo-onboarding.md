@@ -19,13 +19,20 @@ How to attach an external Git repository to the weisssrv k3s cluster so Flux rec
 
 Each external repo that deploys to this cluster gets **one wiring file** in `kubernetes/clusters/weisssrv/tenants/<repo-slug>.yaml`. That file defines three things:
 
-1. **Secret backend** — a `ClusterSecretStore` (1Password) or `SecretStore` (GitLab variables) scoped to the tenant.
+1. **Secret backend** — a `ClusterSecretStore` (1Password or GitLab variables) scoped to the tenant's namespace with `spec.conditions`. Omit that block and any namespace in the cluster can read the store.
 2. **Git source** — a Flux `GitRepository` pointing at the tenant's repo and branch.
 3. **Top-level Kustomization** — reconciles the tenant's `kubernetes/flux/` path into a dedicated namespace.
 
 The tenant's repo contains its own `kubernetes/flux/` tree with workloads, ExternalSecrets (referencing their own store), etc. The wiring file stays in this repo.
 
 See `kubernetes/clusters/weisssrv/tenants/README.md` for the canonical templates.
+
+The tenant repo itself is generated with `copier copy` from
+`eric/weisssrv-app-template` — see
+[weisssrv-app-template Repo](#weisssrv-app-template-repo) below. That generated
+repo ships a `docs/ONBOARDING.md` rendered with its own slug and namespace,
+which is the fastest way to get the wiring file right; the sections here are the
+cluster-side reference and cover hand-authored tenants too.
 
 ### Choosing a Backend
 
@@ -352,7 +359,9 @@ reconcile.
 
 ### 5. Build Out the Tenant Repo
 
-In the tenant's own repo, create `kubernetes/flux/` with:
+A repo generated from the app template already has all of this — the tenant's
+work is replacing the placeholder image and hostnames. For a hand-authored
+tenant, create `kubernetes/flux/` with:
 
 - Workload manifests (Deployments, HelmReleases, etc.).
 - `ExternalSecret` CRs that reference `ClusterSecretStore/onepassword-<repo-slug>`.
@@ -668,34 +677,53 @@ PVCs have `pvc-protection` finalizers and aren't deleted during tenant removal u
 
 ## weisssrv-app-template Repo
 
-The tenant-side scaffold lives in its own repo:
-`https://git.ericsweiss.com/eric/weisssrv-app-template`. New tenant repos are
-generated from it.
+The tenant-side repo is **generated**, not forked:
+`eric/weisssrv-app-template` is a [copier](https://copier.readthedocs.io/)
+template.
 
-**The template's own README and `docs/` are the canonical description of its
-contents** — this page deliberately does not restate the file list, because that
-duplication is what goes stale. Read the template's `README.md`,
-`docs/ARCHITECTURE.md`, `docs/CI-SHAPES.md` and `docs/VERSIONING.md` for what it
-ships and how to configure it.
+```bash
+pipx install copier
+copier copy https://git.ericsweiss.com/eric/weisssrv-app-template my-service
+```
 
-Two facts that matter from the cluster side:
+Copier asks for the app's identity (slug, namespace, port, replicas), the
+cluster it targets (external/internal domain, node-label domain, internal VIP,
+registry hosts, runbook URL), the pipeline shape, the secret backend, and which
+optional components to render. It writes the answers to `.copier-answers.yml`,
+so a later `copier update` replays them against a newer template tag and lands
+as a reviewable diff — the reason there is no fork and no rename script.
 
-- The template's CI is `include:`d from `eric/weisssrv-lib` at a **pinned tag**,
-  the same shared library this repo consumes (docs/13 § Shared CI library). A
-  library tag bump fans out across the family — the library's `docs/VERSIONING.md`
-  enumerates every pin site.
-- The template **does not deploy**. Its CI lints and (optionally) builds an
-  image; the deploy happens cluster-side via Flux from the wiring file this
-  document's paths create. A tenant that builds a container image must push it to
-  a registry this cluster can pull from, and its namespace needs an
-  `imagePullSecret` — that is a tenant-side step, covered by the template docs.
+**The template's own README and `docs/` are canonical for its contents** — this
+page deliberately does not restate the file list, because that duplication is
+what goes stale. `docs/CONSUMING.md` is the answer reference, `docs/CI-SHAPES.md`
+the pipeline table, `docs/ARCHITECTURE.md` the construction, `docs/VERSIONING.md`
+the update contract.
+
+What matters from the cluster side:
+
+- **The generated repo carries its own `docs/ONBOARDING.md`, already rendered
+  with the tenant's real slug and namespace** — including a copy of the wiring
+  file this page describes. Ask the tenant for that page rather than
+  transcribing values out of a chat.
+- **Pipelines vary; the deploy path does not.** `ci_shape` picks self-hosted
+  GitLab (jobs `include:`d from `eric/weisssrv-lib` at a pinned release tag,
+  the same library this repo consumes — docs/13 § Shared CI library), GitHub
+  Actions (vendored workflows), or no pipeline at all. In every shape CI only
+  checks and optionally builds an image: Flux does the deploying, from the
+  wiring file in `kubernetes/clusters/weisssrv/tenants/`.
+- **A private image needs a pull credential in the tenant namespace.** The
+  template renders the `imagePullSecret` wiring when
+  `enable_registry_pull_secret` is on; the credential itself (a `read_registry`
+  deploy token plus its generated username) is an operator/tenant step, covered
+  in the generated ONBOARDING.
 - There is **no** Renovate anywhere in the family; image tags are bumped by hand.
 
 Onboarding is therefore:
 
-1. Tenant generates their repo from the template.
-2. Tenant fills in their workloads.
-3. Operator adds the wiring file to this repo (paths above).
+1. Tenant runs `copier copy` and answers for this cluster.
+2. Tenant fills in their workloads and follows the generated tenant checklist.
+3. Operator does the cluster-side steps on this page — the tenant's rendered
+   ONBOARDING lists exactly which ones that repo needs.
 4. Push — running.
 
 ---

@@ -1,0 +1,14 @@
+---
+# Cluster-DNS egress, shared instead of copy-pasted into every namespace.
+#
+# Adding ANY egress policy makes egress default-deny for the pods it selects, so
+# a namespace that includes this component must also include (or hand-write)
+# every other egress path its pods need.
+#
+# The policy this ships selects the WHOLE namespace (podSelector {}), so it
+# replaces a hand-written rule only where that rule already selected every pod.
+# An app-scoped policy keeps its own kube-dns rule — see the README.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - allow-egress-dns.yaml

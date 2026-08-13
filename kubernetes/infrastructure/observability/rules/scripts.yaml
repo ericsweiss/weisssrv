@@ -25,7 +25,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#backup-and-recovery'
             summary: 'Archive backup hit a replication error'
             description: >-
               The nightly archive backup exited with a zfs send/receive
@@ -40,7 +40,7 @@ spec:
           labels:
             severity: critical
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#backup-and-recovery'
             summary: 'Archive backup has been failing for a full day'
             description: >-
               The nightly archive replication has exited with a zfs
@@ -54,7 +54,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#backup-and-recovery'
             summary: 'Archive backup has not run in over 2 days'
             description: 'No successful archive backup has been recorded for more than 48 hours, or the metric is missing.'
 
@@ -67,7 +67,7 @@ spec:
           labels:
             severity: critical
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#backup-and-recovery'
             summary: 'Archive backup has not succeeded in over 4 days'
             description: >-
               No successful archive replication for more than 4 days. The local
@@ -84,7 +84,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#backup-and-recovery'
             summary: 'Archive dataset {{ $labels.dataset }} has not replicated in over 2 days'
             description: >-
               Dataset {{ $labels.dataset }} has had no successful archive
@@ -101,7 +101,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#backup-and-recovery'
             summary: 'Archive dataset {{ $labels.dataset }} deferred {{ $value | printf "%.0f" }} runs in a row'
             description: >-
               Dataset {{ $labels.dataset }} has been deferred (vzdump not
@@ -116,7 +116,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
             summary: 'Media mover failed'
             description: 'The media mover script has not completed successfully.'
 
@@ -126,7 +126,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
             summary: 'Media mover has not run in over 2 days'
             description: 'No successful media mover run has been recorded for more than 48 hours, or the metric is missing.'
 
@@ -138,7 +138,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#network-connectivity-issues'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#network-connectivity-issues'
             summary: 'AdGuard Home sync (dns-01 -> dns-02) is failing'
             description: >-
               adguardhome-sync on dns-01 has recorded failed runs for 15
@@ -154,7 +154,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#network-connectivity-issues'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#network-connectivity-issues'
             summary: 'AdGuard Home sync has not succeeded in over 30 minutes'
             description: >-
               No successful adguardhome-sync run (dns-01 -> dns-02) in over 30
@@ -168,7 +168,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#certificate-renewal-issues'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#certificate-renewal-issues'
             summary: 'Certificate renewal failed'
             description: 'The certificate renewal and distribution script has not completed successfully.'
 
@@ -181,7 +181,7 @@ spec:
           labels:
             severity: critical
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#certificate-renewal-issues'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#certificate-renewal-issues'
             summary: 'Certificate renewal has been failing for over 3 days'
             description: >-
               acme.sh renewal/distribution on {{ $labels.instance }} has failed
@@ -195,10 +195,10 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#certificate-renewal-issues'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#certificate-renewal-issues'
             summary: 'Host-distributed wildcard cert expires in under 14 days'
             description: >-
-              The acme.sh-distributed *.esweiss.com cert is within 14 days
+              The acme.sh-distributed *.${cluster_internal_domain} cert is within 14 days
               of its notAfter (so acme.sh renewal/distribution has stopped
               working), or the metric is missing (host off inventory).
               Tracks real expiry, not time-since-renewal — acme.sh renews
@@ -215,10 +215,10 @@ spec:
           labels:
             severity: critical
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#certificate-renewal-issues'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#certificate-renewal-issues'
             summary: 'Host-distributed wildcard cert expires in under 3 days'
             description: >-
-              The acme.sh-distributed *.esweiss.com cert on
+              The acme.sh-distributed *.${cluster_internal_domain} cert on
               {{ $labels.instance }} expires in
               {{ $value | humanizeDuration }}. NFS-over-TLS (k3s PV
               mounts), AdGuard TLS, and the Loki ingress all break at
@@ -230,7 +230,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#backup-and-recovery'
             summary: 'GitLab backup failed'
             description: 'The nightly gitlab-backup run did not complete successfully.'
 
@@ -250,7 +250,7 @@ spec:
           labels:
             severity: critical
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#backup-and-recovery'
             summary: '{{ $labels.metric }} is 0 on {{ $labels.instance }} — the backup run reported success but produced no artefact'
             description: >-
               A backup wrapper reported success while its most recent artefact
@@ -267,7 +267,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#backup-and-recovery'
             summary: 'GitLab backup has not succeeded in over 2 days'
             description: >-
               No successful GitLab backup has been recorded for more than
@@ -284,7 +284,7 @@ spec:
           labels:
             severity: critical
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#backup-and-recovery'
             summary: 'GitLab backup has not succeeded in over 4 days'
             description: >-
               No successful GitLab backup for more than 4 days. GitLab
@@ -306,7 +306,7 @@ spec:
           labels:
             severity: critical
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#backup-and-recovery'
             summary: 'gitlab-secrets.json is missing or empty in the GitLab backup landing zone'
             description: >-
               gitlab-secrets.json is absent from, or 0 bytes in, the GitLab
@@ -324,7 +324,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/35-nextcloud.md'
+            runbook_url: '${cluster_runbook_base_url}/35-nextcloud.md'
             summary: 'Nextcloud database backup failed'
             description: >-
               The nightly Nextcloud pg_dump did not complete successfully.
@@ -337,7 +337,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/35-nextcloud.md'
+            runbook_url: '${cluster_runbook_base_url}/35-nextcloud.md'
             summary: 'Nextcloud database backup has not succeeded in over 2 days'
             description: >-
               No successful Nextcloud pg_dump has been recorded for more
@@ -352,7 +352,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#backup-and-recovery'
             summary: 'Immich database backup failed'
             description: 'The nightly Immich pg_dumpall did not complete successfully.'
 
@@ -362,7 +362,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#backup-and-recovery'
             summary: 'Immich database backup has not succeeded in over 2 days'
             description: >-
               No successful Immich database backup has been recorded for
@@ -383,7 +383,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#backup-and-recovery'
             summary: 'Authentik database backup has not succeeded in over 26 hours'
             description: >-
               The nightly authentik-pg-dump CronJob has had no successful
@@ -401,7 +401,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#backup-and-recovery'
             summary: 'Mealie database backup has not succeeded in over 26 hours'
             description: >-
               The nightly mealie-pg-dump CronJob (recipes namespace) has had
@@ -419,7 +419,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#backup-and-recovery'
             summary: 'etcd snapshot off-node copy is stale'
             description: >-
               The newest etcd snapshot copied to pve-nas-01 is more than
@@ -436,7 +436,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#backup-and-recovery'
             summary: 'Proxmox vzdump backup failed'
             description: >-
               The nightly Proxmox vzdump job (guest images -> tank-proxmox)
@@ -455,7 +455,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#backup-and-recovery'
             summary: 'Proxmox /etc/pve cluster-config backup failed'
             description: >-
               The nightly /etc/pve tar (cluster CA, corosync config and
@@ -472,7 +472,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#backup-and-recovery'
             summary: 'Proxmox /etc/pve cluster-config backup has not succeeded in over 36 hours'
             description: >-
               No successful /etc/pve tar in more than 36 hours — the
@@ -480,15 +480,15 @@ spec:
               cluster CA, node certs, authkey and API tokens; docs/17 makes
               restoring it the first step of total-site recovery.
 
-        # 36h, not 26h: a single nightly run deferred by planned host
-        # maintenance used to page reliably. Two missed nights still detect.
+        # 36h, not 26h: tolerates one nightly run deferred by planned host
+        # maintenance; two missed nights still detect.
         - alert: VzdumpBackupStale
           expr: (time() - vzdump_backup_last_success_timestamp_seconds > 129600) or absent(vzdump_backup_last_success_timestamp_seconds)
           for: 1h
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#backup-and-recovery'
             summary: 'Proxmox vzdump backup has not succeeded in over 36 hours'
             description: >-
               No successful Proxmox vzdump backup has been recorded for more
@@ -505,7 +505,7 @@ spec:
           labels:
             severity: critical
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#backup-and-recovery'
             summary: 'Proxmox vzdump backup has not succeeded in over 3 days'
             description: >-
               No successful vzdump on {{ $labels.instance }} for more than 3
@@ -529,7 +529,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#backup-and-recovery'
             summary: 'Offsite B2 backup (restic) failed'
             description: >-
               The nightly restic-offsite upload to B2 exited unsuccessfully
@@ -539,16 +539,37 @@ spec:
               on pve-nas-01.
 
         # B2 is the only offsite copy, so a full day of failed uploads emails.
+        #
+        # The day is measured against the metric's own timestamp, not a 24h
+        # `for:`. A pending timer lives in the alert manager's memory and is
+        # discarded on a Prometheus restart, and this Prometheus is NAS-pinned:
+        # kured reboots, chart upgrades, VPA evictions and NAS incidents all
+        # reset it, so the escalation could never elapse during exactly the
+        # multi-day outage it exists for. Same restart-proof idiom as
+        # ResticOffsiteStaleCritical.
+        #
+        # A repository that has NEVER had a successful backup emits no
+        # _timestamp_ series, so neither arm fires — that state is
+        # ResticOffsiteStale's absent() arm, deliberately at warning, so a
+        # collector that has not shipped yet cannot page critical on merge day.
         - alert: ResticOffsiteFailedProlonged
           expr: >-
-            restic_offsite_last_backup_success == 0
-            or (restic_offsite_last_run_success == 0
-                unless on (instance) restic_offsite_last_backup_success)
-          for: 24h
+            (
+              restic_offsite_last_backup_success == 0
+              and on (instance)
+              (time() - restic_offsite_last_backup_timestamp_seconds > 86400)
+            )
+            or (
+              (restic_offsite_last_run_success == 0
+               unless on (instance) restic_offsite_last_backup_success)
+              and on (instance)
+              (time() - restic_offsite_last_success_timestamp_seconds > 86400)
+            )
+          for: 1h
           labels:
             severity: critical
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#backup-and-recovery'
             summary: 'Offsite B2 backup has been failing for a full day'
             description: >-
               Every restic-offsite upload has failed for 24 hours. B2 is the
@@ -558,13 +579,25 @@ spec:
         # Retention that cannot run leaves the repo growing without bound and the
         # WORM restore floor frozen. The ceiling guard is self-latching: once it
         # refuses, the delete set grows every night until a human raises it.
+        # The two days are read out of the TSDB rather than held in a 48h
+        # `for:`, for the reason on ResticOffsiteFailedProlonged above. There is
+        # no prune-side timestamp gauge, so the history itself is the clock:
+        # min_over_time == 1 means every sample in the window was blocked, and
+        # the offset arm proves the window actually HAS ~48h of history — a
+        # freshly-deployed collector would otherwise satisfy min_over_time on its
+        # first few samples and fire two days early.
         - alert: ResticOffsitePruneBlocked
-          expr: restic_offsite_retention_blocked == 1
-          for: 48h
+          expr: >-
+            restic_offsite_retention_blocked == 1
+            and on (instance)
+            (min_over_time(restic_offsite_retention_blocked[48h]) == 1)
+            and on (instance)
+            (restic_offsite_retention_blocked offset 47h == 1)
+          for: 1h
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/42-offsite-backup.md'
+            runbook_url: '${cluster_runbook_base_url}/42-offsite-backup.md'
             summary: 'Offsite B2 retention has been refusing to prune for 2 days'
             description: >-
               restic-offsitectl has hit its forget-ceiling guard on every run
@@ -580,15 +613,25 @@ spec:
         # own 48h grace above, so it is subtracted here — otherwise the ceiling
         # guard always announces itself 24h early under the wrong diagnosis and
         # ResticOffsitePruneBlocked never gets to fire.
+        #
+        # The day is read out of the TSDB, same idiom as PruneBlocked above:
+        # max_over_time == 0 means no retention pass applied in 24h, and the
+        # offset arm proves the window has the history to say so.
         - alert: ResticOffsitePruneFailed
           expr: >-
-            restic_offsite_last_prune_success == 0
+            (
+              restic_offsite_last_prune_success == 0
+              and on (instance)
+              (max_over_time(restic_offsite_last_prune_success[24h]) == 0)
+              and on (instance)
+              (restic_offsite_last_prune_success offset 23h == 0)
+            )
             unless on (instance) restic_offsite_retention_blocked == 1
-          for: 24h
+          for: 1h
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/42-offsite-backup.md'
+            runbook_url: '${cluster_runbook_base_url}/42-offsite-backup.md'
             summary: 'Offsite B2 prune/forget has been erroring for a day'
             description: >-
               The retention stage of restic-offsitectl has errored for 24 hours
@@ -621,7 +664,7 @@ spec:
           labels:
             severity: critical
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/42-offsite-backup.md'
+            runbook_url: '${cluster_runbook_base_url}/42-offsite-backup.md'
             summary: 'Offsite B2 repo shrank by more than 20% in 2 days'
             description: >-
               restic_offsite_repo_size_bytes dropped
@@ -637,7 +680,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#backup-and-recovery'
             summary: 'Offsite B2 backup has not succeeded in over 50 hours'
             description: >-
               No successful restic-offsite run to B2 in more than 50 hours
@@ -654,7 +697,7 @@ spec:
           labels:
             severity: critical
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/42-offsite-backup.md'
+            runbook_url: '${cluster_runbook_base_url}/42-offsite-backup.md'
             summary: 'Offsite B2 backup has not succeeded in over 4 days'
             description: >-
               No successful restic-offsite run to B2 for more than 4 days. The
@@ -672,7 +715,7 @@ spec:
           labels:
             severity: critical
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/42-offsite-backup.md'
+            runbook_url: '${cluster_runbook_base_url}/42-offsite-backup.md'
             summary: 'Offsite B2 repo verify FAILED'
             description: >-
               The last `restic check` against the B2 repository failed — the
@@ -686,7 +729,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/42-offsite-backup.md'
+            runbook_url: '${cluster_runbook_base_url}/42-offsite-backup.md'
             summary: 'Offsite B2 repo verify is stale (>8d)'
             description: >-
               No successful `restic check` against the B2 repository in over 8
@@ -701,7 +744,7 @@ spec:
           labels:
             severity: critical
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/42-offsite-backup.md'
+            runbook_url: '${cluster_runbook_base_url}/42-offsite-backup.md'
             summary: 'Offsite B2 repo has not been verified in over 14 days'
             description: >-
               No successful `restic check` in more than 14 days. Restore-verify
@@ -735,7 +778,7 @@ spec:
           labels:
             severity: critical
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/42-offsite-backup.md'
+            runbook_url: '${cluster_runbook_base_url}/42-offsite-backup.md'
             summary: 'Offsite restore drill has not passed in over 100 days'
             description: >-
               No restore drill has compared a restored file byte-for-byte
@@ -759,7 +802,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/42-offsite-backup.md'
+            runbook_url: '${cluster_runbook_base_url}/42-offsite-backup.md'
             summary: 'No offsite restore drill has ever passed'
             description: >-
               backup_restore_drill_last_success_seconds does not exist anywhere:
@@ -769,6 +812,58 @@ spec:
               advances on failure), or restic_offsite is not deployed. Run
               `systemctl start backup-restore-drill.service` on pve-nas-01 and
               read `journalctl -t backup-restore-drill` (docs/42).
+
+        # A drill that ran and did NOT pass is invisible for a full quarter
+        # otherwise: BackupRestoreDrillStale measures 100 days and NeverRan only
+        # covers the case where nothing ever passed. write_drill_metrics advances
+        # _last_run_seconds on failure while preserving _last_success_seconds, so
+        # the gap between them IS the failure signal. The effective window is
+        # 25h (the 24h expr threshold plus `for: 1h`), which absorbs the textfile
+        # collector cycle around a drill that started before midnight.
+        - alert: BackupRestoreDrillFailing
+          expr: >-
+            backup_restore_drill_last_run_seconds
+            - backup_restore_drill_last_success_seconds > 86400
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: '${cluster_runbook_base_url}/42-offsite-backup.md'
+            summary: 'The most recent offsite restore drill did not pass'
+            description: >-
+              A restore drill has been attempted since the last one that passed,
+              and it failed — restic restore returned non-zero, a restored file
+              did not match its source, or the drill covered fewer sources than
+              its floor. Read `journalctl -t backup-restore-drill` on pve-nas-01
+              (docs/42). The staleness clock stays green for 100 days, so this is
+              the only timely signal.
+
+        # Coverage floor. A drill can pass on a handful of files drawn from one
+        # dataset and look identical to one that spanned the estate — the
+        # failure mode this drill was rebuilt to close (restic_offsite's
+        # round-robin selection + restic_offsite_restore_drill_min_sources). The
+        # role emits no per-source gauge, so files_compared is the proxy: with a
+        # min_sources floor of 3 a passing drill compares at least that many.
+        # Guarded on run == success so a failed drill (which writes 0) reports
+        # through BackupRestoreDrillFailing above instead of firing twice.
+        - alert: BackupRestoreDrillProvedTooLittle
+          expr: >-
+            backup_restore_drill_files_compared < 3
+            and on (instance)
+            (backup_restore_drill_last_run_seconds
+             == backup_restore_drill_last_success_seconds)
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: '${cluster_runbook_base_url}/42-offsite-backup.md'
+            summary: 'Offsite restore drill passed on fewer than 3 files'
+            description: >-
+              The last restore drill passed but byte-compared only
+              {{ $value }} file(s), below the per-source floor the drill is
+              configured for. The pass proves that narrow slice and nothing
+              else — check restic_offsite_restore_drill_min_sources and the
+              per-source breakdown in `journalctl -t backup-restore-drill`.
 
         # NAS-side independent freshness: the VM wrappers write their _last_*
         # metrics from INSIDE the VM, so those go green even when the file never
@@ -796,7 +891,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#backup-and-recovery'
             summary: 'Backup artifact for {{ $labels.app }} has not landed on tank/backups in over 50 hours'
             description: >-
               The newest dump under tank/backups/apps/{{ $labels.app }} is
@@ -815,7 +910,7 @@ spec:
           labels:
             severity: critical
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#backup-and-recovery'
             summary: 'Backup artifact for {{ $labels.app }} has not landed on tank/backups in over 4 days'
             description: >-
               The newest dump under tank/backups/apps/{{ $labels.app }} is more
@@ -837,7 +932,7 @@ spec:
           labels:
             severity: critical
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#backup-and-recovery'
             summary: 'Backup artifact for {{ $labels.app }} landed 0 bytes on tank/backups'
             description: >-
               The newest file matching {{ $labels.app }}'s artefact glob under
@@ -862,7 +957,7 @@ spec:
           labels:
             severity: critical
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/42-offsite-backup.md'
+            runbook_url: '${cluster_runbook_base_url}/42-offsite-backup.md'
             summary: '{{ $labels.file }} is missing or empty in tank/backups/apps/{{ $labels.app }}'
             description: >-
               A file required to RESTORE {{ $labels.app }}'s backup
@@ -884,7 +979,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#backup-and-recovery'
             summary: 'backup-artifact mtime collector is degraded or missing on {{ $labels.instance }}'
             description: >-
               backup_artifact_collector_last_success_seconds is stale (>2h) or

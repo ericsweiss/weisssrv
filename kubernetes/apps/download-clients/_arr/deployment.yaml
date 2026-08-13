@@ -30,10 +30,10 @@ spec:
             - weight: 100
               preference:
                 matchExpressions:
-                  - key: esweiss.com/nas
+                  - key: ${cluster_node_label_domain}/nas
                     operator: DoesNotExist
       nodeSelector:
-        esweiss.com/general: "true"
+        ${cluster_node_label_domain}/general: "true"
       # Pod hardening: these *arr apps do not talk to the kube-API. Only the
       # universally-safe subset is applied — this is a LinuxServer.io image
       # (s6 + PUID/PGID) that MUST start as root to drop privileges, so

@@ -18,7 +18,7 @@ spec:
           labels:
             severity: critical
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
             summary: 'Proxmox host {{ $labels.id }} is down'
             description: >-
               Proxmox host {{ $labels.id }} has been unreachable for 5 minutes.
@@ -33,7 +33,7 @@ spec:
           labels:
             severity: critical
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
             summary: 'HA infrastructure guest {{ $labels.id }} is stopped'
             description: >-
               Proxmox guest {{ $labels.id }} (a DNS resolver, the SMTP
@@ -52,7 +52,7 @@ spec:
           labels:
             severity: critical
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#nfs-server-recovery-pve-nas-01'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#nfs-server-recovery-pve-nas-01'
             summary: 'NFS server on pve-nas-01 is not serving'
             description: >-
               node_nfsd_server_threads on 192.168.0.102 has been 0 (or
@@ -71,7 +71,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
             summary: 'Node {{ $labels.node }} cordoned (unschedulable) for 30m'
             description: >-
               Node {{ $labels.node }} has been SchedulingDisabled for 30
@@ -88,7 +88,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
             summary: 'Host {{ $labels.host }} has a maintenance-deferred reboot pending'
             description: >-
               Maintenance deferred a kernel reboot of {{ $labels.host }} to an
@@ -107,7 +107,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
             summary: 'kured reboot for {{ $labels.node }} pending over 3h (stuck cycle)'
             description: >-
               Node {{ $labels.node }} has held the kured reboot sentinel for
@@ -127,7 +127,7 @@ spec:
           labels:
             severity: critical
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
             summary: 'corosync stuck at high CPU on {{ $labels.instance }}'
             description: >-
               corosync on {{ $labels.instance }}
@@ -152,7 +152,7 @@ spec:
           labels:
             severity: critical
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
             summary: 'pmxcfs on {{ $labels.instance }} appears stale (split-brain)'
             description: >-
               /etc/pve/ha/manager_status on {{ $labels.instance }}
@@ -172,11 +172,16 @@ spec:
         - alert: ProxmoxHostIOPressure
           expr: >-
             rate(node_pressure_io_waiting_seconds_total{job="node-exporter-host", instance=~"192\\.168\\.0\\.10[2-7]:9101"}[5m]) > 0.20
-          for: 5m
+          # 15m, not 5m: pve-nas-01's nightly media-mover/archive/restic chain
+          # crosses the threshold in a single ~6-minute band around 06:45 most
+          # days. That is the chain working, not a fault, and the failure this
+          # rule exists for (a writeback -> reclaim -> host freeze) holds the
+          # stall for far longer than a quarter of an hour.
+          for: 15m
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
             summary: 'Proxmox host {{ $labels.instance }} is I/O-pressure stalled'
             description: >-
               {{ $labels.instance }} has spent
@@ -190,11 +195,13 @@ spec:
         - alert: ProxmoxHostMemoryPressure
           expr: >-
             rate(node_pressure_memory_waiting_seconds_total{job="node-exporter-host", instance=~"192\\.168\\.0\\.10[2-7]:9101"}[5m]) > 0.10
-          for: 5m
+          # 15m for the same reason as ProxmoxHostIOPressure above — this one
+          # cascades from it and shows the same nightly single-sample blip.
+          for: 15m
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
             summary: 'Proxmox host {{ $labels.instance }} is under memory-reclaim pressure'
             description: >-
               {{ $labels.instance }} has spent
@@ -215,7 +222,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
             summary: 'corosync-health-collector textfile script is degraded on {{ $labels.instance }}'
             description: >-
               proxmox_corosync_health_collector_last_success_seconds
@@ -237,7 +244,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#handling-disk-failure-zfs'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#handling-disk-failure-zfs'
             summary: 'ZFS pool {{ $labels.pool }} on {{ $labels.instance }} has device errors'
             description: >-
               zpool status reports {{ $value | printf "%.0f" }}
@@ -254,7 +261,7 @@ spec:
           labels:
             severity: critical
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#handling-disk-failure-zfs'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#handling-disk-failure-zfs'
             summary: 'ZFS pool {{ $labels.pool }} on {{ $labels.instance }} has permanent data errors'
             description: >-
               zpool status -v lists {{ $value | printf "%.0f" }}
@@ -269,7 +276,7 @@ spec:
           labels:
             severity: critical
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#handling-disk-failure-zfs'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#handling-disk-failure-zfs'
             summary: 'ZFS pool {{ $labels.pool }} on {{ $labels.instance }} is not ONLINE'
             description: >-
               Pool {{ $labels.pool }} on {{ $labels.instance }}
@@ -290,7 +297,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#handling-disk-failure-zfs'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#handling-disk-failure-zfs'
             summary: 'ZFS pool {{ $labels.pool }} on {{ $labels.instance }} has no recent completed scrub'
             description: >-
               Pool {{ $labels.pool }} on {{ $labels.instance }}
@@ -314,7 +321,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#handling-disk-failure-zfs'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#handling-disk-failure-zfs'
             summary: 'zpool-status-collector is degraded or missing on {{ $labels.instance }}'
             description: >-
               zfs_pool_status_collector_last_success_seconds on
@@ -335,7 +342,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#handling-disk-failure-zfs'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#handling-disk-failure-zfs'
             summary: 'ZFS pool {{ $labels.pool }} on {{ $labels.instance }} above 80% capacity'
             description: 'ZFS pool {{ $labels.pool }} on {{ $labels.instance }} is at {{ $value | printf "%.1f" }}% capacity.'
 
@@ -345,7 +352,7 @@ spec:
           labels:
             severity: critical
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#handling-disk-failure-zfs'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#handling-disk-failure-zfs'
             summary: 'ZFS pool {{ $labels.pool }} on {{ $labels.instance }} above 90% capacity'
             description: 'ZFS pool {{ $labels.pool }} on {{ $labels.instance }} is at {{ $value | printf "%.1f" }}% capacity.'
 
@@ -363,7 +370,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#network-connectivity-issues'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#network-connectivity-issues'
             summary: 'Endpoint {{ $labels.instance }} is down'
             description: 'Blackbox probe for {{ $labels.instance }} has failed for 10 minutes.'
 
@@ -376,7 +383,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/36-immich.md'
+            runbook_url: '${cluster_runbook_base_url}/36-immich.md'
             summary: 'Immich is down'
             description: >-
               Prometheus has been unable to scrape Immich's native metrics
@@ -396,7 +403,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/39-windows-vm.md'
+            runbook_url: '${cluster_runbook_base_url}/39-windows-vm.md'
             summary: 'Windows VM RDP (192.168.0.155:3389) unreachable while VM is running'
             description: >-
               The Windows 11 VM is powered on (pve_up qemu/155 == 1) but has
@@ -417,7 +424,7 @@ spec:
           labels:
             severity: critical
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#network-connectivity-issues'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#network-connectivity-issues'
             summary: 'Key endpoint {{ $labels.instance }} is down'
             description: >-
               Blackbox probe for {{ $labels.instance }} has failed for 5
@@ -433,7 +440,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/35-nextcloud.md'
+            runbook_url: '${cluster_runbook_base_url}/35-nextcloud.md'
             summary: 'Nextcloud is unreachable'
             description: >-
               The nextcloud-exporter reports Nextcloud unreachable
@@ -458,7 +465,7 @@ spec:
           labels:
             severity: critical
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#network-connectivity-issues'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#network-connectivity-issues'
             summary: 'All DNS resolvers are failing to answer'
             description: >-
               Every probed AdGuard resolver (192.168.0.150 /
@@ -475,7 +482,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#network-connectivity-issues'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#network-connectivity-issues'
             summary: 'DNS resolver probe for {{ $labels.instance }} is missing'
             description: >-
               No probe_success series for {{ $labels.instance }} — its
@@ -489,7 +496,7 @@ spec:
           labels:
             severity: critical
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#network-connectivity-issues'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#network-connectivity-issues'
             summary: 'Blackbox exporter is down'
             description: 'All endpoint monitoring is blind — blackbox exporter has been down for 5 minutes.'
 
@@ -510,7 +517,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#certificate-renewal-issues'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#certificate-renewal-issues'
             summary: 'Edge TLS cert for {{ $labels.instance }} expires in under 14 days'
             description: >-
               The TLS certificate presented by {{ $labels.instance }}
@@ -518,13 +525,50 @@ spec:
               {{ $value | humanizeDuration }}. Cloudflare normally auto-renews;
               investigate if this does not clear.
 
+        # The in-cluster twin of HostLogShippingStale (loki/host-log-staleness.yaml,
+        # which covers the alloy_host journald path only). If the DaemonSet's
+        # log pipeline stops forwarding while the pod stays Running and scraped,
+        # container logs vanish silently — TargetDown covers the pod going away,
+        # this covers it staying up and shipping nothing.
+        #
+        # The uptime arm is what makes `== 0` safe: a freshly-started Alloy pod
+        # legitimately reports no entries for its first minutes, which is the
+        # only way this expression hit zero in the last 7 days.
+        #
+        # Selected by namespace+pod rather than the `job` label: pod identity
+        # comes from the operator's standard relabeling, while `job` is
+        # whatever the chart's ServiceMonitor derives (today "alloy") — a
+        # chart bump changing that derivation would silently empty both arms.
+        - alert: PodLogShippingStale
+          expr: >-
+            sum by (instance) (
+              increase(loki_write_sent_entries_total{namespace="observability", pod=~"alloy-.*"}[45m])
+            ) == 0
+            and on (instance)
+            (
+              time() - max by (instance) (
+                process_start_time_seconds{namespace="observability", pod=~"alloy-.*"}
+              )
+            ) > 3600
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: '${cluster_runbook_base_url}/31-observability.md'
+            summary: 'Alloy {{ $labels.instance }} has shipped no container logs in 45m'
+            description: >-
+              The in-cluster Alloy pod at {{ $labels.instance }} has been up for
+              over an hour and has pushed no log entries to Loki in 45 minutes.
+              Its node's container logs are missing. Check the pod's own logs
+              and the loki.write endpoint, then the Loki pod.
+
         - alert: NodeMemoryPressure
           expr: kube_node_status_condition{condition="MemoryPressure", status="true"} == 1
           for: 5m
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
             summary: 'Node {{ $labels.node }} is under memory pressure'
             description: 'Kubelet on {{ $labels.node }} has been reporting memory pressure for 5 minutes. Pods may be evicted.'
 
@@ -541,7 +585,7 @@ spec:
           labels:
             severity: none
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
             summary: 'Node {{ $labels.node }} NotReady — workload alerts inhibited'
             description: >-
               {{ $labels.node }} has been NotReady for under 6 hours; per-pod and
@@ -555,7 +599,7 @@ spec:
           labels:
             severity: critical
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
             summary: 'Node {{ $labels.node }} has been NotReady for over 6 hours'
             description: >-
               {{ $labels.node }} has been NotReady for more than 6 hours. Its
@@ -576,7 +620,7 @@ spec:
           labels:
             severity: critical
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/19-k3s-deployment.md'
+            runbook_url: '${cluster_runbook_base_url}/19-k3s-deployment.md'
             summary: 'k3s etcd has been running without fault tolerance for 6h'
             description: >-
               Fewer than 3 etcd members have been reachable for 6 hours. The

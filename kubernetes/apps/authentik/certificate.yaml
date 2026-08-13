@@ -13,9 +13,9 @@ spec:
   issuerRef:
     name: letsencrypt-prod
     kind: ClusterIssuer
-  commonName: "auth.ericsweiss.com"
+  commonName: "auth.${cluster_external_domain}"
   dnsNames:
-    - "auth.ericsweiss.com"
+    - "auth.${cluster_external_domain}"
   renewBefore: 720h
 
 ---
@@ -30,7 +30,7 @@ spec:
   issuerRef:
     name: letsencrypt-prod
     kind: ClusterIssuer
-  commonName: "auth.esweiss.com"
+  commonName: "auth.${cluster_internal_domain}"
   dnsNames:
-    - "auth.esweiss.com"
+    - "auth.${cluster_internal_domain}"
   renewBefore: 720h

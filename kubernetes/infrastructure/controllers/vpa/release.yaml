@@ -33,6 +33,10 @@ spec:
       retries: 3
       remediateLastFailure: true
   values:
+    # `platform` (sources/priorityclasses.yaml). The chart's top-level key
+    # covers all three controllers (recommender, updater, admissionController);
+    # the certgen Jobs are one-off and stay unclassed.
+    priorityClassName: platform
     recommender:
       enabled: true
       # Defaults (25m / 250Mi) would floor every recommendation above what
@@ -41,7 +45,7 @@ spec:
         pod-recommendation-min-cpu-millicores: 10
         pod-recommendation-min-memory-mb: 32
       nodeSelector:
-        esweiss.com/cpu: modern
+        ${cluster_node_label_domain}/cpu: modern
       resources:
         requests:
           cpu: 50m
@@ -56,7 +60,7 @@ spec:
       extraArgs:
         min-replicas: "1"
       nodeSelector:
-        esweiss.com/cpu: modern
+        ${cluster_node_label_domain}/cpu: modern
       resources:
         requests:
           cpu: 50m
@@ -68,9 +72,9 @@ spec:
       # certgen Jobs need the same CPU constraint as the controllers.
       certGen:
         nodeSelector:
-          esweiss.com/cpu: modern
+          ${cluster_node_label_domain}/cpu: modern
       nodeSelector:
-        esweiss.com/cpu: modern
+        ${cluster_node_label_domain}/cpu: modern
       resources:
         requests:
           cpu: 25m

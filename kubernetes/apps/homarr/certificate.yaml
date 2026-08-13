@@ -14,9 +14,9 @@ spec:
   issuerRef:
     name: letsencrypt-prod
     kind: ClusterIssuer
-  commonName: "dashboard.ericsweiss.com"
+  commonName: "dashboard.${cluster_external_domain}"
   dnsNames:
-    - "dashboard.ericsweiss.com"
+    - "dashboard.${cluster_external_domain}"
   renewBefore: 720h
 
 ---
@@ -31,7 +31,7 @@ spec:
   issuerRef:
     name: letsencrypt-prod
     kind: ClusterIssuer
-  commonName: "dashboard.esweiss.com"
+  commonName: "dashboard.${cluster_internal_domain}"
   dnsNames:
-    - "dashboard.esweiss.com"
+    - "dashboard.${cluster_internal_domain}"
   renewBefore: 720h

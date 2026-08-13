@@ -66,6 +66,15 @@ class TestRedactSecrets:
             ("WIREGUARD_PRIVATE_KEY=wOOfoo42=", "wOOfoo42"),
             ("WIREGUARD_PRESHARED_KEY=pskvalue42=", "pskvalue42"),
             ("runner token glrt-AbC_123-xyz", "glrt-AbC_123-xyz"),
+            ("pat glpat-" + "aB1" * 8, "glpat-" + "aB1" * 8),
+            ("deploy gldt-" + "cD2" * 8, "gldt-" + "cD2" * 8),
+            ("build glcbt-" + "eF3" * 8, "glcbt-" + "eF3" * 8),
+            ("openai sk-" + "a1B2" * 8, "sk-" + "a1B2" * 8),
+            ("anthropic sk-ant-" + "a1B2" * 8, "sk-ant-" + "a1B2" * 8),
+            ("openai sk-proj-" + "a1B2" * 8, "sk-proj-" + "a1B2" * 8),
+            ("aws AKIA" + "A1B2C3D4E5F6G7H8"[:16], "AKIA" + "A1B2C3D4E5F6G7H8"[:16]),
+            ("b2_application_key=fakekey_K005LongB2Value", "fakekey_K005LongB2Value"),
+            ("b2_key_id: 0051a2b3c4d5e6f0000000001", "0051a2b3c4d5e6f0000000001"),
             ("gh token ghp_" + "a1" * 20, "ghp_" + "a1" * 20),
             ("op sa ops_" + "b2" * 25, "ops_" + "b2" * 25),
             (
@@ -424,12 +433,9 @@ class TestFirewallGuestFwList:
 
 
 # cs_capped / cs_emit: remote section emitters
-# These replace the `producer | head -N || echo "none"` idiom the remote bodies
-# used to carry. That idiom is broken twice over: a pipeline exits with head's
-# status so the fallback is unreachable (a failed probe rendered as an EMPTY
-# section), and the cap was applied with no marker (pve-nas-01's ZFS dataset
-# list was silently clipped at exactly 50 rows). Both properties are asserted
-# here because both were live defects.
+# These replace `producer | head -N || echo msg`: that pipeline exits with
+# head's status (so the fallback is unreachable) and caps with no marker. Both
+# properties are asserted here.
 
 def _capped(cap: int, fallback: str, stdin: str) -> list[str]:
     res = _run(f"cs_capped {cap} '{fallback}'", stdin=stdin)
@@ -445,8 +451,7 @@ def _emit(fallback: str, stdin: str) -> list[str]:
 
 class TestCsEmit:
     def test_empty_producer_prints_fallback(self):
-        # The regression: `systemctl --failed | head -20 || echo none` printed
-        # NOTHING here, so 16 of 22 host blocks had a blank Failed Units section.
+        # A failed producer must render the fallback, not an empty section.
         assert _emit("none", "") == ["none"]
 
     def test_output_passes_through_unchanged(self):
@@ -494,7 +499,7 @@ class TestCsCapped:
 # The helpers above only help if the remote bodies actually use them. This is
 # the regression gate on collect-state.sh itself: `producer | head -N || echo
 # "msg"` (or tail/wc) can never print msg, because the pipeline exits with
-# head's status. 14 sites shipped with that shape.
+# head's status.
 
 COLLECT_STATE = Path(__file__).resolve().parent / "collect-state.sh"
 
@@ -532,6 +537,70 @@ class TestNoDeadPipelineFallbacks:
             'sudo pct list 2>/dev/null || echo "No LXC containers"',
         ):
             assert not DEAD_FALLBACK_RE.search(ok), ok
+
+
+# DR coverage of the NAS backup section
+# CLUSTER_STATUS.txt is the artifact a restore is planned from, so "a backup
+# ran" is not enough: it has to show that a restore was PROVEN and how deep
+# recovery goes. These pin the sections whose absence is invisible in the
+# output.
+
+class TestBackupSectionCoverage:
+    SRC = COLLECT_STATE.read_text()
+
+    @pytest.mark.parametrize(
+        "prom",
+        [
+            "archive_backup.prom",
+            "restic_offsite.prom",
+            "restic_offsite_verify.prom",
+            "backup_artifact_mtime.prom",
+            "backup_restore_drill.prom",
+            "pve_cluster_backup.prom",
+            "vzdump_backup.prom",
+        ],
+    )
+    def test_every_backup_textfile_is_collected(self, prom):
+        assert prom in self.SRC, f"{prom} is produced on the NAS but never collected"
+
+    def test_restic_snapshot_inventory_is_listed_and_bounded(self):
+        assert "restic-offsitectl snapshots" in self.SRC, (
+            "retention states the INTENT; only the snapshot list states the real "
+            "recovery depth (docs/42 § Effective restore depth)"
+        )
+        line = next(
+            ln for ln in self.SRC.splitlines() if "restic-offsitectl snapshots" in ln
+        )
+        assert "timeout" in line, "the listing reaches B2; an unattended run must not hang"
+        # The producer is captured and its status tested, so cs_capped bounds the
+        # output on the SUCCESS branch a few lines below rather than on this one.
+        block = self.SRC.split("restic-offsitectl snapshots", 1)[1].split("\nfi\n", 1)[0]
+        assert "cs_capped" in block, "an unbounded snapshot table would swamp the artifact"
+
+    def test_a_failed_snapshot_listing_does_not_read_as_an_empty_repository(self):
+        """collect-state-lib's rule: a fallback describes the EMPTY case only.
+
+        A B2 timeout, a missing binary and a repository holding zero recovery
+        points are three different states, and the last one is a DR emergency —
+        the artifact must not render them identically.
+        """
+        block = self.SRC.split("restic-offsitectl snapshots", 1)[1].split("\nfi\n", 1)[0]
+        assert "rc=$?" in block, "the producer's exit status must be captured, not discarded"
+        assert "124" in block, "a timeout needs its own wording"
+        assert "NO snapshots" in block, "the empty-repository case must say so explicitly"
+
+    def test_artifact_listing_is_pattern_driven_not_newest_file(self):
+        """`ls -t | head -1` reports the newest file of ANY kind, so the
+        companion copies written after a dump win — which is exactly the
+        failure the section exists to detect."""
+        assert "APP_PATTERNS_EOF" in self.SRC, (
+            "the per-app artifact listing must read the rendered collector's "
+            "inventory patterns, not re-declare them"
+        )
+        assert "NO ARTIFACT matching" in self.SRC, (
+            "an app dir holding no pattern-matching file must say so explicitly"
+        )
+        assert "companion" in self.SRC, "companions belong in their own line, not the artifact slot"
 
 
 if __name__ == "__main__":

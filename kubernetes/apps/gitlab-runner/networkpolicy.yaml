@@ -58,9 +58,7 @@ spec:
     # kube-apiserver access. kube-proxy DNATs the in-cluster VIP
     # (10.43.0.1:443) to the real endpoints BEFORE NetworkPolicy
     # evaluation, so the policy must allowlist the server node IPs on
-    # 6443 — a 10.43.0.1/32 rule never matches the post-DNAT packet
-    # (it blocked both runner managers when this policy first applied;
-    # only conntrack grace masked it for a while).
+    # 6443 — a 10.43.0.1/32 rule never matches the post-DNAT packet.
     - to:
         - ipBlock:
             cidr: 192.168.0.222/32
@@ -108,7 +106,7 @@ metadata:
 spec:
   podSelector:
     matchLabels:
-      esweiss.com/runner-class: shared
+      ${cluster_node_label_domain}/runner-class: shared
   policyTypes:
     - Egress
   egress:
@@ -127,9 +125,7 @@ spec:
     # kube-apiserver access. kube-proxy DNATs the in-cluster VIP
     # (10.43.0.1:443) to the real endpoints BEFORE NetworkPolicy
     # evaluation, so the policy must allowlist the server node IPs on
-    # 6443 — a 10.43.0.1/32 rule never matches the post-DNAT packet
-    # (it blocked both runner managers when this policy first applied;
-    # only conntrack grace masked it for a while).
+    # 6443 — a 10.43.0.1/32 rule never matches the post-DNAT packet.
     - to:
         - ipBlock:
             cidr: 192.168.0.222/32

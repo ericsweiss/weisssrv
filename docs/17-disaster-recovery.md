@@ -190,7 +190,7 @@ flood).
 |---|---|---|---|
 | 1 | Install Proxmox on the replacement hosts, restore `/etc/pve` from the `pve-cluster` archive once B2 is readable (or rebuild the cluster and re-add nodes) | hardware | 2–4 h |
 | 2 | Clone the IaC from the **GitHub mirror**; sign in to 1Password; restore the offline `restic_repo_password` | GitHub + 1Password | 15 min |
-| 3 | Create the ZFS pools by hand (never automated — docs/06), then run the [storage bootstrap](44-storage-bootstrap.md) | 1, 2 | 1–2 h |
+| 3 | Create the ZFS pools by hand (never automated — docs/06), then run the [storage bootstrap](44-storage-bootstrap.md). **`nvme` lives on partition 4 of the Proxmox boot disk you installed in step 1** — create it against `...-part4`, never the whole device | 1, 2 | 1–2 h |
 | 4 | Restore from B2: `restic-offsitectl restore <source>` for `backups`, `share`, `appdata`, `k3s-etcd`, and the two data zvol trees | 3 | hours–days (data-volume bound; 621 GB raw at review time) |
 | 5 | Rebuild the k3s VMs + cluster (`task k3s:deploy`), restoring etcd from the off-node snapshot if a same-identity cluster is wanted. **Never `qmrestore` a k3s guest** — no image exists, and a stale server image corrupts etcd quorum | 3, 4 | 1–2 h |
 | 6 | Bootstrap Flux + ESO (the two manual secrets — `docs/29-flux-operations.md`), let Flux reconcile everything in `kubernetes/` | 5 | 30–60 min |

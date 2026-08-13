@@ -28,12 +28,15 @@
           - smartmontools
         state: present
 
-    # Create mock ZFS mount points (since ZFS doesn't work in containers)
+    # Create mock ZFS mount points (since ZFS doesn't work in containers).
+    # Mode matches the nas_storage_exports entries for these paths: the role
+    # asserts that mode on the same dirs, so any other value here flip-flops
+    # ownership of it between converge and the role and fails idempotence.
     - name: Create mock ZFS mount points
       ansible.builtin.file:
         path: "{{ item }}"
         state: directory
-        mode: '0755'
+        mode: '1777'
         owner: root
         group: root
       loop: "{{ mock_zfs_mounts }}"

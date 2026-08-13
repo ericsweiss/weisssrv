@@ -41,7 +41,7 @@ metadata:
   annotations:
     # Human-readable marker only (not scraped): this pod runs the Gluetun VPN
     # sidecar. Actual VPN metrics come from the gluetun-exporter sidecar below.
-    esweiss.com/vpn-mode: "sidecar"
+    ${cluster_node_label_domain}/vpn-mode: "sidecar"
     # Reloader rolls this Deployment when the qbittorrent-vpn-config ConfigMap
     # changes, so a vpn_enabled/vpn_provider edit needs no manual restart.
     reloader.stakater.com/auto: "true"
@@ -59,9 +59,9 @@ spec:
         app.kubernetes.io/component: download-client
     spec:
       nodeSelector:
-        esweiss.com/nas: "true"
+        ${cluster_node_label_domain}/nas: "true"
       tolerations:
-        - key: esweiss.com/nas
+        - key: ${cluster_node_label_domain}/nas
           operator: Equal
           value: "true"
           effect: PreferNoSchedule
@@ -119,7 +119,7 @@ spec:
                 echo "[seed-webui-bypass] no config yet (fresh install); applies on next start"
                 exit 0
               fi
-              wl="10.42.0.0/16, 192.168.0.0/24, 100.64.0.0/10"
+              wl="${cluster_pod_cidr}, ${cluster_lan_cidr}, ${cluster_tailnet_cidr}"
               tmp="$conf.seed-tmp"
               awk -v wl="$wl" '
                 BEGIN { en=0; wl_set=0; in_pref=0 }

@@ -199,7 +199,9 @@ WireGuard rule.)
 
 ### 3. Terraform — external DNS record
 ```bash
-task terraform:plan      # review the new cloudflare_record.vpn (A, DNS-only)
+# review the new module.zone.cloudflare_record.protected_external_content["vpn"]
+# (A, DNS-only) — the entry itself is local.dns_records["vpn"] in dns.tf
+task terraform:plan
 task terraform:apply
 # seed the live IP immediately (record is created at the placeholder until the
 # next DDNS run):

@@ -38,6 +38,13 @@ resources:
   # the netpol-baseline component every other app pulls in.
   - networkpolicy.yaml
   - vpa.yaml
+
+# kube-dns egress for the whole namespace — the one recurring rule here that is
+# namespace-wide rather than per-app, so it comes from the shared component.
+# netpol-baseline is deliberately absent: networkpolicy.yaml's local default-deny
+# covers ingress AND egress (see the note above).
+components:
+  - ../../components/netpol-egress-dns
 # Use 'labels' instead of 'commonLabels' to avoid modifying deployment selectors.
 # commonLabels injects labels into spec.selector.matchLabels, which is immutable
 # after deployment creation, causing idempotency issues on re-deploy.

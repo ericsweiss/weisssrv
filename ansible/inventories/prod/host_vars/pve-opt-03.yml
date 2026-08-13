@@ -1,12 +1,8 @@
 ---
-# Disable TX/segmentation + receive offloads on the onboard Intel e1000e NIC
-# (nic0, 00:19.0). Its TX unit intermittently wedges ("e1000e ... Detected
-# Hardware Unit Hang"); the driver cannot reset it and the link stays up, so the
-# active-backup bond never fails over — the host loses all network, drops off the
-# Proxmox cluster, and needs a power-cycle. Hit all three OptiPlex opt nodes
-# (opt-01 + opt-02 crashed 2026-07-25; opt-03 had an episode 2026-07-24).
-# tso/gso/gro off is the standard e1000e cure; nic_tuning applies it live and
-# persists it via an ethtool ifup drop-in.
+# e1000e (nic0, 00:19.0): a wedged TX unit is not driver-recoverable and the link
+# stays up, so the bond never fails over and the host drops off the Proxmox
+# cluster until it is power-cycled. tso/gso/gro off is the cure — docs/34.
+# nic_tuning applies it live and persists it via an ethtool ifup drop-in.
 nic_tuning_overrides:
   - interface: nic0
     options:
@@ -17,16 +13,8 @@ nic_tuning_overrides:
       - feature: gro
         value: "off"
 
-# ZFS ARC cap (bytes) = 2 GiB, overriding the 8 GiB group default.
-#
-# This host has 14-15 GiB total and runs a 6 GiB k3s guest, so an ARC that grows
-# toward its ~half-RAM default competes directly with guest memory and the host
-# pages guest RAM out to swap. Measured on pve-opt-02: ARC 4.3 GiB with only
-# 2 GiB available and 1.7 GiB swapped, of which 612 MiB was KVM.
-#
-# 2 GiB sits above the working set these hosts actually reach when memory is
-# tight (opt-01 and opt-03 both self-limit near 1.0 GiB) while removing the
-# headroom for the opportunistic growth that costs guest RAM. local-ssd here
-# backs VM disks rather than a media library, so the cache has little to win
-# from being large.
+# ZFS ARC cap = 2 GiB, overriding the 8 GiB group default: a 14-15 GiB host
+# running a 6 GiB k3s guest — a larger ARC competes with guest RAM and pushes it
+# to swap. local-ssd here backs VM disks, not a media library, so a large cache
+# wins little.
 zfs_arc_cap_max_bytes: 2147483648

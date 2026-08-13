@@ -1,0 +1,252 @@
+---
+# promtool unit tests for the thermal ladder (homelab.temperature group).
+# rule_files resolves relative to this file's runtime location; the lint script
+# copies the tests next to the extracted rules.yaml before running them.
+#
+# Every arm in this group is a threshold on a hwmon series JOINED to
+# node_hwmon_chip_names by (instance, chip). That join is the whole reason these
+# need tests: a chip_name filter that stops matching makes the alert silently
+# unfireable, and a threshold alert that can never fire looks exactly like a
+# healthy fleet. Each case therefore supplies BOTH series.
+rule_files:
+  - rules.yaml
+evaluation_interval: 1m
+tests:
+  # CPU: the warn/critical ladder. 91C is above warn (90) and below critical
+  # (95), so exactly one arm may fire.
+  - interval: 1m
+    input_series:
+      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="192.168.0.105:9101", chip="platform_coretemp_0"}'
+        values: '91+0x30'
+      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="192.168.0.105:9101", chip="platform_coretemp_0", chip_name="coretemp"}'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: CPUTempWarning
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: cpu
+              instance: 192.168.0.105:9101
+      - eval_time: 20m
+        alertname: CPUTempCritical
+        exp_alerts: []
+
+  # 96C crosses both thresholds: the ladder is deliberately non-exclusive, so
+  # the critical arm must fire (and inhibition, not the rule, suppresses warn).
+  - interval: 1m
+    input_series:
+      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="192.168.0.105:9101", chip="platform_coretemp_0"}'
+        values: '96+0x30'
+      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="192.168.0.105:9101", chip="platform_coretemp_0", chip_name="coretemp"}'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: CPUTempCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              component: cpu
+              instance: 192.168.0.105:9101
+
+  # The retuned floor: 88C bursts are normal on the laptop node and must not
+  # alert (the incident retune moved warn to 90/15m).
+  - interval: 1m
+    input_series:
+      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="192.168.0.107:9101", chip="platform_coretemp_0"}'
+        values: '88+0x30'
+      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="192.168.0.107:9101", chip="platform_coretemp_0", chip_name="coretemp"}'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: CPUTempWarning
+        exp_alerts: []
+
+  # A hot CPU on a chip that is NOT coretemp must not fire the CPU arm — this is
+  # the join, not the threshold.
+  - interval: 1m
+    input_series:
+      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="192.168.0.105:9101", chip="hwmon3"}'
+        values: '99+0x30'
+      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="192.168.0.105:9101", chip="hwmon3", chip_name="acpitz"}'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: CPUTempWarning
+        exp_alerts: []
+
+  # NVMe: warn at 65C, and the alert carries the chip so the drive is
+  # identifiable.
+  - interval: 1m
+    input_series:
+      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="192.168.0.102:9101", chip="nvme_nvme0"}'
+        values: '66+0x30'
+      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="192.168.0.102:9101", chip="nvme_nvme0", chip_name="nvme"}'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: NVMeDriveTempWarning
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: storage
+              instance: 192.168.0.102:9101
+              chip: nvme_nvme0
+
+  - interval: 1m
+    input_series:
+      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="192.168.0.102:9101", chip="nvme_nvme0"}'
+        values: '55+0x30'
+      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="192.168.0.102:9101", chip="nvme_nvme0", chip_name="nvme"}'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: NVMeDriveTempWarning
+        exp_alerts: []
+
+  # SATA: scoped to the NAS (.102) only, because drivetemp is the archive-pool
+  # over-temp signal. 51C is over the 50C floor.
+  - interval: 1m
+    input_series:
+      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="192.168.0.102:9101", chip="platform_drivetemp_1"}'
+        values: '51+0x30'
+      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="192.168.0.102:9101", chip="platform_drivetemp_1", chip_name="drivetemp"}'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: SATADriveTempWarning
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: storage
+              instance: 192.168.0.102:9101
+              chip: platform_drivetemp_1
+
+  # A hot SATA drive on a NON-NAS host is outside the instance selector.
+  - interval: 1m
+    input_series:
+      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="192.168.0.104:9101", chip="platform_drivetemp_1"}'
+        values: '58+0x30'
+      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="192.168.0.104:9101", chip="platform_drivetemp_1", chip_name="drivetemp"}'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: SATADriveTempWarning
+        exp_alerts: []
+
+  # The critical twins of the two drive arms, each at its own floor.
+  - interval: 1m
+    input_series:
+      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="192.168.0.102:9101", chip="nvme_nvme0"}'
+        values: '76+0x30'
+      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="192.168.0.102:9101", chip="nvme_nvme0", chip_name="nvme"}'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: NVMeDriveTempCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              component: storage
+              instance: 192.168.0.102:9101
+              chip: nvme_nvme0
+
+  - interval: 1m
+    input_series:
+      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="192.168.0.102:9101", chip="platform_drivetemp_1"}'
+        values: '56+0x30'
+      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="192.168.0.102:9101", chip="platform_drivetemp_1", chip_name="drivetemp"}'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: SATADriveTempCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              component: storage
+              instance: 192.168.0.102:9101
+              chip: platform_drivetemp_1
+
+  # Host-side GPU hwmon: the chip_name alternation is what selects a GPU sensor,
+  # so a driver rename (xe -> i915 and back) silently retires this arm.
+  - interval: 1m
+    input_series:
+      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="192.168.0.106:9101", chip="pci0000:00_0000:01:00:0"}'
+        values: '86+0x30'
+      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="192.168.0.106:9101", chip="pci0000:00_0000:01:00:0", chip_name="nouveau"}'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: HostGpuTempWarning
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: gpu
+              instance: 192.168.0.106:9101
+              chip_name: nouveau
+      - eval_time: 20m
+        alertname: HostGpuTempCritical
+        exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="192.168.0.106:9101", chip="pci0000:00_0000:01:00:0"}'
+        values: '96+0x30'
+      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="192.168.0.106:9101", chip="pci0000:00_0000:01:00:0", chip_name="nouveau"}'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: HostGpuTempCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              component: gpu
+              instance: 192.168.0.106:9101
+              chip_name: nouveau
+
+  # In-cluster DCGM ladder: no join, a plain aggregate, so the labels are the
+  # rule's own only.
+  - interval: 1m
+    input_series:
+      - series: 'DCGM_FI_DEV_GPU_TEMP{job="dcgm-exporter", gpu="0"}'
+        values: '81+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: GpuTempWarning
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: gpu
+      - eval_time: 20m
+        alertname: GpuTempCritical
+        exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      - series: 'DCGM_FI_DEV_GPU_TEMP{job="dcgm-exporter", gpu="0"}'
+        values: '86+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: GpuTempCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              component: gpu
+
+  # NIC: the chip_name is a prefix match, so the label carries chip_name rather
+  # than chip.
+  - interval: 1m
+    input_series:
+      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="192.168.0.103:9101", chip="pci0000:00_0000:00:1f:6"}'
+        values: '92+0x30'
+      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="192.168.0.103:9101", chip="pci0000:00_0000:00:1f:6", chip_name="nic_temp"}'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: NICTempWarning
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: network
+              instance: 192.168.0.103:9101
+              chip_name: nic_temp

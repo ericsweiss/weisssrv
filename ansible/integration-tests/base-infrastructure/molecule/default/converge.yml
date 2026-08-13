@@ -14,21 +14,16 @@
       ansible.builtin.include_tasks: ../../../../molecule/tasks/container-warmup.yml
 
   tasks:
-    # 1. Base role - Foundation (packages, user, timezone)
-    # Vars come from molecule.yml inventory and all.yml vars_files
+    # Vars come from the molecule.yml inventory and the all.yml vars_files above.
     - name: Apply base role
       ansible.builtin.include_role:
         name: weisssrv.infra.base
 
-    # 2. QoL role - Developer tools (zsh, neovim, fzf, ripgrep)
-    # Vars come from molecule.yml inventory and all.yml vars_files
     - name: Apply qol role
       ansible.builtin.include_role:
         name: weisssrv.infra.qol
       when: "'qol_enabled' in group_names"
 
-    # 3. Tailscale role - VPN connectivity
-    # Vars come from molecule.yml inventory and all.yml vars_files
     - name: Apply tailscale role
       ansible.builtin.include_role:
         name: weisssrv.infra.tailscale

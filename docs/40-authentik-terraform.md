@@ -11,6 +11,22 @@ supervised apply. The module README is the reference for what is
 managed vs deliberately unmanaged, the secret-injection table, provider
 quirks, and the add-an-app recipe; this page covers day-2 operations.
 
+The resource **shape** now comes from the weisssrv-lib `authentik-sso` module at
+the `?ref=` pinned in `main.tf` (v0.7.0); the files here hold this site's data as
+one map per object class. Nothing about the workflow below changed with that
+move — plan is still read-only, apply is still supervised, and no live object is
+touched: `moved.tf` re-addresses all 78 resource instances, so the first plan
+after the merge is moves and nothing else.
+
+**Ordering, until the adoption apply lands.** `moved` blocks reach state only
+through `apply`, so between the merge and the supervised
+`task terraform:authentik-apply` that persists them, state still carries the
+pre-move root addresses. Two consequences while that window is open: the
+read-only `authentik-drift-plan` job is **expectedly yellow** (it exits 2 on the
+78 pending moves — see § Drift handling), and `import.sh` must not be read as
+"state is already migrated" (it isn't; the script's own guard handles it — see
+`terraform/authentik/README.md` § Import methodology).
+
 **Ground rules** (same posture as `terraform/tailscale`):
 
 - **Apply is a supervised manual step.** `task terraform:authentik-apply`
@@ -19,6 +35,22 @@ quirks, and the add-an-app recipe; this page covers day-2 operations.
   read the plan line by line, then apply and type `yes`.
 - **Plan is always safe.** `task terraform:authentik-plan` is read-only
   against the API and the GitLab-hosted state (`terraform/state/authentik`).
+
+## Renaming, removing, and the library ref
+
+Two consequences of the module adoption an operator meets first:
+
+- **`prevent_destroy` is module-side.** Every application, provider, group, the
+  custom scope mapping and the embedded outpost carries it, and no edit in
+  `terraform/authentik/` can drop it. Removing an object is
+  `terraform state rm 'module.sso.<resource>.this["<key>"]'`, then the map entry,
+  then the object in authentik. Renaming a map key is a destroy+create in
+  disguise — add a `moved {}` block instead.
+- **Bumping the module `?ref=` is a supervised change like any other.** The pin
+  is not gated by `scripts/check-lib-pins.py`; bump it by hand, run
+  `terraform init -upgrade`, and read the plan — a library default change lands
+  as a live provider diff, which is why this root passes the flow slugs, signing
+  key name, grant types and mapping lists explicitly.
 
 ## Routine change flow
 
@@ -42,7 +74,11 @@ groups + per-app bindings — docs/37 § SSO) is the worked example of this flow
 ## Drift handling (Admin-UI edits)
 
 The scheduled `authentik-drift-plan` job exits 2 (yellow) when the live
-objects differ from the code. On drift:
+objects differ from the code — **or** when state owes a pending `moved` block,
+which Terraform also counts as a non-empty change. The second case is the one
+documented expected-yellow: until the supervised apply persists `moved.tf`, the
+plan is the 78 moves and nothing else, and any line that is *not* a move is real
+drift. It closes with that apply. On real drift:
 
 - **Intended UI hot-fix** → codify it: mirror the change in the module,
   MR it, and the next plan is clean. Do NOT apply first — apply would revert
@@ -51,11 +87,15 @@ objects differ from the code. On drift:
   besides you); inspect authentik's event log, then either codify or
   supervised-apply to revert.
 
-Objects outside the module (flows, stages, brand, mappings) are invisible to
-the plan — UI changes there never surface as drift. The embedded outpost is
-half-in: its **provider list** is managed (`outpost.tf`, drift surfaces), but
-its settings JSON (`config`) is deliberately unconfigured and stays
-invisible.
+Objects outside the module (flows, stages, brand, and the stock scope mappings,
+which the module reads as `data` sources by managed id) are invisible to the
+plan — UI changes there never surface as drift. **One mapping is the exception**:
+the authored `custom:email_verified` scope mapping
+(`local.custom_scope_mappings["email_verified"]`) IS a module-managed resource,
+so drift on it is real, and losing it breaks Mealie login entirely — never
+dismiss that signal as "just a mapping". The embedded outpost is half-in: its
+**provider list** is managed (`outpost.tf`, drift surfaces), but its settings
+JSON (`config`) is deliberately unconfigured and stays invisible.
 
 ## Credentials
 
@@ -83,7 +123,9 @@ The full runbook (import the adopted set, enumerate the rest from the API and
 import each, then verify a clean plan) lives in
 [`terraform/authentik/README.md`](../terraform/authentik/README.md)
 § "Import methodology and disaster recovery". Follow it there rather than
-re-deriving it here.
+re-deriving it here. Import addresses are module-qualified
+(`module.sso.authentik_group.this["grafana-users"]`); `import.sh` refuses to run
+if its table and `imports.tf` disagree.
 
 If **authentik itself** is rebuilt from scratch, the module recreates every
 managed object (`terraform plan` will show all-create) — but the unmanaged

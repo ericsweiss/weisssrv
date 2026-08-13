@@ -112,6 +112,8 @@ All labels use the `esweiss.com/` prefix:
 | `esweiss.com/ingress=true` | Ingress controller eligible | k3s-agt-laptop-01, k3s-agt-opt-01, k3s-agt-opt-02, k3s-agt-opt-03, k3s-agt-prec-01 |
 | `esweiss.com/compute=true` | High-computation tasks (ML, transcoding) | k3s-agt-prec-01 |
 | `esweiss.com/control-plane=true` | Informational: control plane node | All servers |
+| `esweiss.com/cpu=modern\|legacy` | CPU instruction-set tier. `legacy` = the Core 2 Quad OptiPlex agents, which lack the AVX/SSE4 baseline several Go/Bun/Rust images assume — anything that SIGILLs there selects `modern` (docs/33) | modern: k3s-agt-nas-01, -laptop-01, -prec-01; legacy: the three k3s-agt-opt-* |
+| `esweiss.com/gpu=nvidia` | Node with the VFIO-passed GTX 1660 Ti; gates the device plugin, DCGM and Hindsight's llama.cpp (docs/43) | k3s-agt-prec-01 |
 
 ### Taints
 
@@ -540,15 +542,16 @@ Services are distributed across 5 nodes with `local-ssd` storage (excluding pve-
 
 | Service | VMID | Primary Node | Replication Targets |
 |---------|------|---------------------|---------------------|
-| dns-01 | 150 | pve-opt-01 [†] | pve-laptop-01, pve-opt-02, pve-opt-03, pve-prec-01 |
+| dns-01 | 150 | pve-prec-01 | pve-laptop-01, pve-opt-01, pve-opt-02, pve-opt-03 |
 | smtp-relay | 151 | pve-opt-01 | pve-laptop-01, pve-opt-02, pve-opt-03, pve-prec-01 |
 | dns-02 | 160 | pve-opt-03 | pve-laptop-01, pve-opt-01, pve-opt-02, pve-prec-01 |
 | home-assistant | 154 | pve-prec-01 | pve-laptop-01, pve-opt-01, pve-opt-02, pve-opt-03 |
 
-[†] dns-01's primary moved off pve-laptop-01 (memtest-confirmed dead RAM cell);
-pve-laptop-01 is a replication target and priority-1 HA fallback only until the
-DIMM is replaced. `proxmox_ha_replication_jobs` / `proxmox_ha_rules` in
-`ansible/inventories/prod/group_vars/all.yml` are the source of truth.
+A service's primary node is one unit spanning three places:
+`proxmox_ha_rules` (the priority-2 "home" entry), the matching
+`proxmox_ha_replication_jobs` `source_node`, and the guest's `proxmox_host` in
+`hosts.yml`. All three live in `ansible/inventories/prod/` and are the source of
+truth — move them together or the role cannot manage the replication jobs.
 
 Each service replicates every 15 minutes to ALL 4 other nodes. When any node fails, HA can restart the service on ANY surviving node that has replicated data.
 
@@ -571,12 +574,16 @@ task proxmox:ha-status
 
 **Manual CLI commands** (for reference):
 
+Run these ON the source node — `pvesr create-local-job` creates the job where the
+guest currently runs, and the source node can never also be a target. dns-01
+sources from pve-prec-01, so its four targets are the other local-ssd nodes:
+
 ```bash
 # Create a multi-target replication job (repeat for each target)
-sudo pvesr create-local-job 150-0 pve-opt-01 --schedule '*/15' --comment 'dns-01 -> pve-opt-01'
-sudo pvesr create-local-job 150-1 pve-opt-02 --schedule '*/15' --comment 'dns-01 -> pve-opt-02'
-sudo pvesr create-local-job 150-2 pve-opt-03 --schedule '*/15' --comment 'dns-01 -> pve-opt-03'
-sudo pvesr create-local-job 150-3 pve-prec-01 --schedule '*/15' --comment 'dns-01 -> pve-prec-01'
+sudo pvesr create-local-job 150-0 pve-opt-01 --schedule '0,15,30,45' --comment 'dns-01 -> pve-opt-01'
+sudo pvesr create-local-job 150-1 pve-opt-02 --schedule '0,15,30,45' --comment 'dns-01 -> pve-opt-02'
+sudo pvesr create-local-job 150-2 pve-opt-03 --schedule '0,15,30,45' --comment 'dns-01 -> pve-opt-03'
+sudo pvesr create-local-job 150-3 pve-laptop-01 --schedule '0,15,30,45' --comment 'dns-01 -> pve-laptop-01'
 
 # Check replication status
 sudo pvesr status
@@ -769,8 +776,8 @@ sudo ha-manager fence pve-nas-01
 # Before test: Note which node dns-01 is on
 sudo ha-manager status | grep 150
 
-# Trigger migration of dns-01 to another fallback node (not pve-laptop-01 —
-# bad RAM, see the primary-node table above; never pve-nas-01 — no local-ssd)
+# Trigger migration of dns-01 to a fallback node (any of the four priority-1
+# nodes; never pve-nas-01 — no local-ssd, so no replicated data there)
 sudo ha-manager migrate ct:150 pve-opt-02
 
 # Wait for migration to complete (monitor in web UI or:)
@@ -780,8 +787,8 @@ watch 'sudo ha-manager status'
 dig google.com @192.168.0.150
 # Should still resolve (same IP, different host)
 
-# Migrate back to the home node
-sudo ha-manager migrate ct:150 pve-opt-01
+# Migrate back to the home node (priority 2 in affinity-dns-01)
+sudo ha-manager migrate ct:150 pve-prec-01
 ```
 
 #### Test 3: Verify Service IP Persistence

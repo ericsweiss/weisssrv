@@ -30,7 +30,7 @@ spec:
             severity: warning
             component: storage
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
             summary: >-
               SATA drive on {{ $labels.instance }}
               ({{ $labels.chip }}) at
@@ -52,7 +52,7 @@ spec:
             severity: critical
             component: storage
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
             summary: >-
               SATA drive on {{ $labels.instance }}
               ({{ $labels.chip }}) at
@@ -77,7 +77,7 @@ spec:
             severity: warning
             component: storage
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
             summary: >-
               NVMe drive on {{ $labels.instance }}
               ({{ $labels.chip }}) at
@@ -100,7 +100,7 @@ spec:
             severity: critical
             component: storage
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
             summary: >-
               NVMe drive on {{ $labels.instance }}
               ({{ $labels.chip }}) at
@@ -112,11 +112,8 @@ spec:
 
         # CPU package + per-core temps via coretemp. These are consumer CPUs
         # (laptop, OptiPlex, Precision) that briefly spike toward their ~100C
-        # TJunction under load — normal and harmless — so the thresholds target
-        # SUSTAINED heat, not peaks. Observed 24h peaks are 91C (laptop, avg 65C,
-        # ~11% of the day >=88C in bursts) and 82C (prec); both are bursty, so a
-        # long `for:` rides them out and only a genuine cooling failure that pins
-        # the CPU hot for many minutes trips the alert.
+        # TJunction under load, so the thresholds and the long `for:` target
+        # SUSTAINED heat — only a genuine cooling failure trips the alert.
         - alert: CPUTempWarning
           expr: >-
             max by (instance) (
@@ -129,7 +126,7 @@ spec:
             severity: warning
             component: cpu
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
             summary: 'CPU on {{ $labels.instance }} sustained {{ $value | printf "%.0f" }}C'
             description: >-
               CPU on {{ $labels.instance }} has been at or above
@@ -148,7 +145,7 @@ spec:
             severity: critical
             component: cpu
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
             summary: 'CPU on {{ $labels.instance }} at {{ $value | printf "%.0f" }}C'
             description: >-
               CPU on {{ $labels.instance }} hit
@@ -170,7 +167,7 @@ spec:
             severity: warning
             component: gpu
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
             summary: >-
               GPU ({{ $labels.chip_name }}) on
               {{ $labels.instance }} at
@@ -191,7 +188,7 @@ spec:
             severity: critical
             component: gpu
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
             summary: >-
               GPU ({{ $labels.chip_name }}) on
               {{ $labels.instance }} at
@@ -214,7 +211,7 @@ spec:
             severity: warning
             component: network
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
             summary: 'NIC on {{ $labels.instance }} at {{ $value | printf "%.0f" }}C'
             description: >-
               NIC {{ $labels.chip_name }} on {{ $labels.instance }}

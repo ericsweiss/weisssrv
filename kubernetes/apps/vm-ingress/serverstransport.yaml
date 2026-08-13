@@ -15,7 +15,7 @@ metadata:
 spec:
   # Wildcard SAN: server presents *.esweiss.com, valid for any
   # single-label subdomain. Sentinel name; never resolved.
-  serverName: vm.esweiss.com
+  serverName: vm.${cluster_internal_domain}
   maxIdleConnsPerHost: 32
   forwardingTimeouts:
     dialTimeout: 10s
@@ -30,7 +30,7 @@ metadata:
   name: vm-tls-wildcard
   namespace: gitlab
 spec:
-  serverName: vm.esweiss.com
+  serverName: vm.${cluster_internal_domain}
   maxIdleConnsPerHost: 32
   forwardingTimeouts:
     dialTimeout: 10s

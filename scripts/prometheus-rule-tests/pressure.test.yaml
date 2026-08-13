@@ -1,23 +1,25 @@
 ---
 # promtool unit tests for the PSI (pressure-stall) host alerts. These assert
-# both the firing threshold AND the instance rescope: only the six bare-metal
-# Proxmox hosts (192.168.0.102-107) may fire; the node-exporter-host job also
-# scrapes DNS LXCs, smtp-relay, the GitLab VM, and the 3 k3s server VMs, which
-# must NOT trip a "Proxmox host" alert.
+# three things: the firing threshold, the 15m hold that keeps the nightly
+# backup-chain burst out of the alert stream, and the instance rescope — only
+# the six bare-metal Proxmox hosts (192.168.0.102-107) may fire; the
+# node-exporter-host job also scrapes DNS LXCs, smtp-relay, the GitLab VM, and
+# the 3 k3s server VMs, which must NOT trip a "Proxmox host" alert.
 rule_files:
   - rules.yaml
 evaluation_interval: 1m
 tests:
-  # IO pressure rising at 0.5/s > 0.20 threshold on a Proxmox host fires; the
-  # same load on the GitLab VM (.153) is excluded by the instance filter.
+  # IO pressure rising at 0.5/s > 0.20 threshold on a Proxmox host fires once
+  # past the 15m hold; the same load on the GitLab VM (.153) is excluded by the
+  # instance filter.
   - interval: 1m
     input_series:
       - series: 'node_pressure_io_waiting_seconds_total{job="node-exporter-host", instance="192.168.0.102:9101"}'
-        values: '0+30x20'
+        values: '0+30x40'
       - series: 'node_pressure_io_waiting_seconds_total{job="node-exporter-host", instance="192.168.0.153:9101"}'
-        values: '0+30x20'
+        values: '0+30x40'
     alert_rule_test:
-      - eval_time: 15m
+      - eval_time: 25m
         alertname: ProxmoxHostIOPressure
         exp_alerts:
           - exp_labels:
@@ -25,19 +27,43 @@ tests:
               job: node-exporter-host
               instance: '192.168.0.102:9101'
 
+  # THE BURST CASE. pve-nas-01's nightly media-mover/archive/restic chain
+  # crosses the threshold in a single ~6-minute band most days — the chain
+  # working, not a fault. Six minutes of stall then back to idle must stay
+  # silent, which is the whole reason the hold is 15m and not 5m.
+  - interval: 1m
+    input_series:
+      - series: 'node_pressure_io_waiting_seconds_total{job="node-exporter-host", instance="192.168.0.102:9101"}'
+        values: '0+0x10 0+30x6 180+0x40'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: ProxmoxHostIOPressure
+        exp_alerts: []
+
   # Memory pressure at 0.5/s > 0.10 threshold on a Proxmox host fires; the same
   # load on a k3s server VM (.222) is excluded by the instance filter.
   - interval: 1m
     input_series:
       - series: 'node_pressure_memory_waiting_seconds_total{job="node-exporter-host", instance="192.168.0.103:9101"}'
-        values: '0+30x20'
+        values: '0+30x40'
       - series: 'node_pressure_memory_waiting_seconds_total{job="node-exporter-host", instance="192.168.0.222:9101"}'
-        values: '0+30x20'
+        values: '0+30x40'
     alert_rule_test:
-      - eval_time: 15m
+      - eval_time: 25m
         alertname: ProxmoxHostMemoryPressure
         exp_alerts:
           - exp_labels:
               severity: warning
               job: node-exporter-host
               instance: '192.168.0.103:9101'
+
+  # The memory rule cascades from the IO one and shows the same nightly blip,
+  # so it carries the same burst case.
+  - interval: 1m
+    input_series:
+      - series: 'node_pressure_memory_waiting_seconds_total{job="node-exporter-host", instance="192.168.0.102:9101"}'
+        values: '0+0x10 0+30x6 180+0x40'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: ProxmoxHostMemoryPressure
+        exp_alerts: []

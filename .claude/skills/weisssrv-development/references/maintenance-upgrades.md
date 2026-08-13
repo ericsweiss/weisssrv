@@ -64,8 +64,22 @@ minus the not-yet-tagged git entry) into `.ansible-home/collections` and lints
 `ansible/` exactly as CI does. Unset it once the tag is cut; the cached copy in
 `.ansible-home/` is refreshed by deleting that directory.
 
-Then: re-vendor the byte-identical scripts (`scripts/check-lib-pins.py`,
-`scripts/version-bump-mr.py`) from the new tag, work the collection's
+Then: re-vendor every file the library registers for this consumer. The
+registry is `weisssrv-lib/scripts/vendored-paths.yml` and it covers more than
+`scripts/` (the shared lint profiles at the repo root are in it too) — never
+work from a remembered list:
+
+```bash
+python3 ../weisssrv-lib/scripts/check-vendored-copies.py \
+  --consumer weisssrv --repo-root . --list        # what to copy
+python3 ../weisssrv-lib/scripts/check-vendored-copies.py \
+  --consumer weisssrv --repo-root . --ref <new-tag>   # what still drifts
+```
+
+`scripts/README.md`'s Origin column is the human-readable view of the same set;
+declared forks are listed there too, and a fork must ABSORB the library's change
+rather than ignore it (the gate compares the library side against the fork's
+recorded `reconciled_sha256`). Then work the collection's
 `MIGRATING.md` for any variable renamed or emptied in that release and land the
 inventory edits in the same MR, and run the full gate set. Read the library's
 `docs/VERSIONING.md` before assuming a bump is behaviour-neutral — a changed

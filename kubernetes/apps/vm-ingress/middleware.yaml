@@ -1,12 +1,6 @@
 ---
-# App-side middlewares (consumers all live in apps stage).
-#
-# The platform-level middlewares lan-tailscale-only and hsts-header
-# moved to kubernetes/infrastructure/configs/traefik-middlewares.yaml
-# because they are referenced from outside the apps stage (Connect
-# IngressRoute in configs, Loki IngressRoute in observability,
-# Traefik dashboard in controllers). See that file for the full
-# rationale.
+# App-side middlewares only. Middlewares referenced from outside the apps stage
+# live in kubernetes/infrastructure/configs/traefik-middlewares.yaml.
 
 # Home Assistant specific headers for reverse proxy
 apiVersion: traefik.io/v1alpha1

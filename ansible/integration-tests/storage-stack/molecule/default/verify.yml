@@ -298,6 +298,8 @@
         fail_msg: "Cannot read from share"
         success_msg: "Can read from share"
 
+    # The media share is read-write for `nas`, so a failed put is a regression,
+    # not an expected outcome — assert it rather than tolerating any rc.
     - name: Test writing to media share
       ansible.builtin.command: >
         smbclient //nas-server/media -U nas -c "put /etc/hostname client_test.txt"
@@ -305,11 +307,6 @@
         PASSWD: "{{ lookup('ansible.builtin.env', 'SAMBA_NAS_PASSWORD') }}"
       register: smb_write_test
       changed_when: false
-      failed_when: false
-
-    - name: Log write test result
-      ansible.builtin.debug:
-        msg: "Write test: {{ 'SUCCESS' if smb_write_test.rc == 0 else 'FAILED (may be expected in some configs)' }}"
 
     - name: Verify written file exists
       ansible.builtin.command: smbclient //nas-server/media -U nas -c "ls client_test.txt"
@@ -317,15 +314,14 @@
         PASSWD: "{{ lookup('ansible.builtin.env', 'SAMBA_NAS_PASSWORD') }}"
       register: smb_verify_write
       changed_when: false
-      when: smb_write_test.rc == 0
 
     - name: Assert write was successful
       ansible.builtin.assert:
         that:
-          - smb_verify_write.rc == 0
+          - smb_write_test.rc == 0
+          - "'client_test.txt' in smb_verify_write.stdout"
         fail_msg: "Write verification failed"
         success_msg: "Write verification successful"
-      when: smb_write_test.rc == 0
 
 - name: Integration Test Summary
   hosts: all

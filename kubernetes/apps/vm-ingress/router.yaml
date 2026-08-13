@@ -16,7 +16,7 @@ spec:
   entryPoints:
     - websecure
   routes:
-    - match: Host(`router.esweiss.com`)
+    - match: Host(`router.${cluster_internal_domain}`)
       kind: Rule
       middlewares:
         - name: lan-tailscale-strict

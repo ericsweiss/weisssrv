@@ -17,7 +17,7 @@ spec:
   entryPoints:
     - websecure
   routes:
-    - match: Host(`tv.esweiss.com`) && ClientIP(`192.168.0.154/32`)
+    - match: Host(`tv.${cluster_internal_domain}`) && ClientIP(`192.168.0.154/32`)
       kind: Rule
       priority: 100  # Higher priority than default SSO route
       middlewares:
@@ -40,7 +40,7 @@ spec:
   entryPoints:
     - websecure
   routes:
-    - match: Host(`movies.esweiss.com`) && ClientIP(`192.168.0.154/32`)
+    - match: Host(`movies.${cluster_internal_domain}`) && ClientIP(`192.168.0.154/32`)
       kind: Rule
       priority: 100
       middlewares:
@@ -63,7 +63,7 @@ spec:
   entryPoints:
     - websecure
   routes:
-    - match: Host(`nzbget.esweiss.com`) && ClientIP(`192.168.0.154/32`)
+    - match: Host(`nzbget.${cluster_internal_domain}`) && ClientIP(`192.168.0.154/32`)
       kind: Rule
       priority: 100
       middlewares:
@@ -86,7 +86,7 @@ spec:
   entryPoints:
     - websecure
   routes:
-    - match: Host(`qbittorrent.esweiss.com`) && ClientIP(`192.168.0.154/32`)
+    - match: Host(`qbittorrent.${cluster_internal_domain}`) && ClientIP(`192.168.0.154/32`)
       kind: Rule
       priority: 100
       middlewares:
@@ -109,7 +109,7 @@ spec:
   entryPoints:
     - websecure
   routes:
-    - match: Host(`music.esweiss.com`) && ClientIP(`192.168.0.154/32`)
+    - match: Host(`music.${cluster_internal_domain}`) && ClientIP(`192.168.0.154/32`)
       kind: Rule
       priority: 100
       middlewares:

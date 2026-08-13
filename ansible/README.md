@@ -13,7 +13,7 @@ composition, and the integration tests that exercise the roles together.
 |---|---|
 | `requirements.yml` | The `weisssrv.infra` pin (a release tag) + the galaxy collections it needs. Bumping the platform is a bump of `version:` here |
 | `inventories/prod/hosts.yml` | Host definitions, groups, VM/LXC sizing, `vm_additional_disks` (zvols) |
-| `inventories/prod/group_vars/all.yml` | Single source of truth for every version pin + the `secrets:` `op://` references |
+| `inventories/prod/group_vars/all.yml` | Single source of truth for every version pin |
 | `inventories/prod/group_vars/<group>.yml`, `host_vars/<host>.yml` | Group/host overrides — and, since the roles are generic, all the site data they used to default to |
 | `playbooks/` | Entry points (`site.yml` is the fan-out; per-area playbooks mirror the `deploy-*` CI jobs) |
 | `integration-tests/` | Multi-role molecule stacks (DNS, mail, base, storage, certs) |
@@ -66,7 +66,10 @@ here rather than restating them.
   file, passes a credential, …). `ansible-lint` does **not** fully catch this —
   it matches known password module params, not the template-writes-a-secret
   pattern — so apply it by hand. Secrets themselves are `op://Homelab/...`
-  references in the `secrets:` dict; never literals.
+  references in the invoking `Taskfile.yml` task's `env:` block, mirrored by the
+  matching CI job's `variables:` (`task secrets:show` prints the live set);
+  never literals, and never in the inventory. See
+  `docs/15-credential-rotation.md` § Secrets model.
 - **Tags**: playbooks tag roles at the `roles:` level (see `site.yml`); a task may
   add finer tags (the `base` role tags its SSH/user tasks `ssh` / `users`).
   `--tags <x>` silently matches nothing and exits 0 when `<x>` is not a declared

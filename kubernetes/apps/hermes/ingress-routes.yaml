@@ -18,12 +18,12 @@ metadata:
   name: hermes
   namespace: hermes
   annotations:
-    external-dns.alpha.kubernetes.io/target: ericsweiss.com
+    external-dns.alpha.kubernetes.io/target: ${cluster_external_domain}
 spec:
   entryPoints:
     - websecure
   routes:
-    - match: Host(`agent.ericsweiss.com`)
+    - match: Host(`agent.${cluster_external_domain}`)
       kind: Rule
       middlewares:
         - name: hsts-header
@@ -45,7 +45,7 @@ spec:
   entryPoints:
     - websecure
   routes:
-    - match: Host(`agent.esweiss.com`)
+    - match: Host(`agent.${cluster_internal_domain}`)
       kind: Rule
       middlewares:
         - name: lan-tailscale-only
@@ -80,7 +80,7 @@ spec:
   entryPoints:
     - websecure
   routes:
-    - match: Host(`agent-api.esweiss.com`)
+    - match: Host(`agent-api.${cluster_internal_domain}`)
       kind: Rule
       middlewares:
         - name: lan-tailscale-only

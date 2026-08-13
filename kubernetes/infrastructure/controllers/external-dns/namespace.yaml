@@ -8,7 +8,7 @@ metadata:
     app.kubernetes.io/managed-by: flux
     # Receives the shared Cloudflare token via the cloudflare-api-token
     # ClusterExternalSecret (configs/shared-cloudflare-secrets/).
-    esweiss.com/cloudflare-api-token: "true"
+    ${cluster_node_label_domain}/cloudflare-api-token: "true"
     pod-security.kubernetes.io/enforce: restricted
     pod-security.kubernetes.io/warn: restricted
     pod-security.kubernetes.io/audit: restricted

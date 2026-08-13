@@ -18,9 +18,9 @@ metadata:
 spec:
   ipAllowList:
     sourceRange:
-      - 192.168.0.0/24     # Local LAN
-      - 100.64.0.0/10      # Tailscale CGNAT range
-      - 10.42.0.0/16       # K3s pod CIDR (see k3s_cluster_cidr in group_vars)
+      - ${cluster_lan_cidr}     # Local LAN
+      - ${cluster_tailnet_cidr}      # Tailscale CGNAT range
+      - ${cluster_pod_cidr}       # K3s pod CIDR (see k3s_cluster_cidr in group_vars)
 
 ---
 # Stricter allowlist: lan-tailscale-only without the pod CIDR. For routes whose
@@ -35,8 +35,8 @@ metadata:
 spec:
   ipAllowList:
     sourceRange:
-      - 192.168.0.0/24     # Local LAN
-      - 100.64.0.0/10      # Tailscale CGNAT range
+      - ${cluster_lan_cidr}     # Local LAN
+      - ${cluster_tailnet_cidr}      # Tailscale CGNAT range
 
 ---
 # HSTS for public services. Chain security-headers alongside it on WAN routes.

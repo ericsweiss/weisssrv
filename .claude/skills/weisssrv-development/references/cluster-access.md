@@ -4,10 +4,27 @@
 
 - `pip install -r requirements.txt` (Ansible, Molecule, ansible-lint, yamllint)
   plus `pytest` + `pyyaml` for the script tests.
+- **A weisssrv-lib checkout is required for `task lint`**, not optional: a
+  sibling `../weisssrv-lib`, or `$WEISSSRV_LIB_PATH` pointing at one. The
+  vendored-copy gate (`scripts/test_vendored_byte_identity.py`, run by
+  `task scripts:test` inside `task lint`) **never skips** — a gate that
+  disables itself when it cannot find its comparison source is not a gate — so a
+  single-repo clone fails it with an actionable AssertionError rather than a
+  green pass. It compares at the ref `.gitlab-ci.yml` pins and falls back to the
+  checkout's working tree when that tag has not been cut yet, announcing the
+  fallback.
 - `ansible-galaxy install -r ansible/requirements.yml` pulls the `weisssrv.infra`
   collection at the pinned tag — nothing Ansible-side resolves without it, and it
   needs read access to `git.ericsweiss.com/eric/weisssrv-lib`. Re-run with
-  `--force` after a pin bump.
+  `--force` after a pin bump. While a new tag is being prepared,
+  `WEISSSRV_COLLECTION_PATH=../weisssrv-lib task ansible:lint` lints against the
+  checkout instead (`references/maintenance-upgrades.md`).
+- `pre-commit install` once per clone — gitleaks, yamllint, whitespace/EOF,
+  `check-taskfile.sh` and `check-doc-links.py` then run on every commit. The
+  hook set and its pinned revs are `.pre-commit-config.yaml`.
+- The binary toolchain the heavier gates need (kustomize, kubeconform, helm,
+  flux, promtool, amtool, shellcheck, terraform) is listed in `README.md` §
+  Prerequisites; each task fails fast naming the tool it could not find.
 - `op` (1Password CLI) signed in; `task op:check` confirms the session.
 
 ## kubeconfig
@@ -31,16 +48,23 @@
 ## Secrets — three consumers, one Homelab vault
 
 1. **Host tooling (Ansible/Terraform/Task)** — `op run --` injects
-   `op://Homelab/<Item Title>/<field>` references at runtime. The references live
-   in the `secrets:` dict of `group_vars/all.yml`; Taskfile env anchors thread
-   them into commands. Never print a value; `task secrets:show` lists refs only.
+   `op://Homelab/<Item Title>/<field>` references at runtime. The references are
+   the literal op:// strings in the Taskfile's per-task `env:` blocks (and the
+   equivalent CI job variables); `docs/15-credential-rotation.md` is the
+   authoritative item inventory. Never print a value; `task secrets:show` lists
+   refs only.
 2. **In-cluster (ESO)** — `ExternalSecret` against ClusterSecretStore
    `onepassword-homelab` (1Password Connect, in-cluster, reads a local cache not
    the cloud). `remoteRef.key` = 1P item **title**, `remoteRef.property` =
    **field**. No `op://`, no item IDs.
 3. **CI** — `.gitlab-ci.yml` uses `op read` / `op run` with
-   `OP_SERVICE_ACCOUNT_TOKEN`. Token-guarded jobs (AI review, deploy, maintenance)
-   are simply not created without it.
+   `OP_SERVICE_ACCOUNT_TOKEN`, which **must be masked and protected** (a GitLab
+   project setting — docs/13 § the credential note): protected means it is
+   absent on merge-request refs, so no MR job can read the vault with a
+   branch's own code and every op:// consumer is main-only. Token-guarded jobs (deploy,
+   maintenance, the drift plans) are simply not created without it — including
+   `terraform-plan`, whose MR rule is therefore inert. `pr-agent-review` gates
+   on `$OPENAI__KEY` instead, which is why it still runs on MRs.
 
 The canonical, authoritative inventory of every expected 1P item (titles +
 fields) is `docs/15-credential-rotation.md` → "Required 1Password Items". Add new

@@ -13,40 +13,29 @@ proxmox_lxc_cores: 4
 proxmox_lxc_memory: 8192
 proxmox_lxc_swap: 2048
 proxmox_lxc_disk_size: 64G
-proxmox_lxc_storage: local-lvm
+# ssd (encrypted): the role only places NEW containers — the live rootfs was
+# created on local-lvm and is migrated once with
+# `pct move-volume 152 rootfs ssd --delete` (stopped, at a deploy window).
+proxmox_lxc_storage: ssd
 
-# Enable nesting for potential Docker support in the future
+# Nesting required for systemd 257+ (Debian 13).
 proxmox_lxc_nesting: true
 
 # Container startup configuration
 # Boot order strategy: DNS (10) -> SMTP (20) -> k3s servers (30) -> k3s agents (40) -> apps (50)
 #
-# onboot=0: mp0 /config binds /mnt/ssd/appdata/plex on the ENCRYPTED ssd pool,
-# so pct start fails until ssd unlocks. This CT is started by
-# pve-start-encrypted-guests.service AFTER zfs-mount-encrypted.service unlocks
-# ssd — NOT by pve-guests at boot. See the zfs_encryption role and
-# docs/32-zfs-encryption.md.
+# onboot=0: the rootfs and the mp0 /config bind (/mnt/ssd/appdata/plex) both
+# live on the ENCRYPTED ssd pool, so pct start fails until ssd unlocks. This CT
+# is started by pve-start-encrypted-guests.service AFTER
+# zfs-mount-encrypted.service unlocks ssd — NOT by pve-guests at boot. See the
+# zfs_encryption role and docs/32-zfs-encryption.md.
 proxmox_lxc_onboot: false
 proxmox_lxc_startup_order: 50
 proxmox_lxc_startup_delay: 10
 
-# UID/GID mapping for unprivileged container
-# The container needs access to host files with eric:media (1000:2000) permissions
-#
-# Unprivileged LXC containers map UIDs:
-#   Container UID 0 -> Host UID 100000
-#   Container UID 1000 -> Host UID 101000
-#   Container GID 2000 -> Host GID 102000
-#
-# We configure bind mounts with the correct host UIDs so the plex user
-# (which we add to the media group) can access the files.
-#
-# The host directories should be owned by:
-#   - eric:media (1000:2000) on the host
-#   - Inside container, plex user is added to media group (GID 2000 mapped)
-#
-# LXC bind mounts — applied by the proxmox_lxc role via `pct set --mpN`
-# at container-creation time
+# Unprivileged LXC: host dirs are eric:media (1000:2000) and the in-container
+# plex user is in the mapped media group (GID 2000). Bind mounts are applied by
+# the proxmox_lxc role via `pct set --mpN` at container-creation time.
 proxmox_lxc_bind_mounts:
   # Plex configuration/database. Already backed up via ssd/appdata -> archive
   # (raw ZFS), so backup=0 excludes it from vzdump to avoid double-storing it

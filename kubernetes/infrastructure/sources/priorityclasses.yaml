@@ -1,0 +1,54 @@
+---
+# Scheduling priority for the two workload classes this cluster actually has to
+# separate. Everything ran at priority 0 before, so a CI burst — the runner
+# quotas admit 46 cores of requests against 31 allocatable — competed with
+# platform workloads on nothing but arrival order, and the one alert that would
+# have caught it (KubeCPUOvercommit) excludes the CI namespaces by design.
+#
+# Two classes, not a ladder: system-cluster-critical / system-node-critical
+# already cover the pieces whose loss takes the cluster with them (kube-vip,
+# CoreDNS, metrics-server, the tailnet DNS proxy), and inventing tiers between
+# them adds preemption paths nobody reasons about.
+#
+# `ci-jobs` at a NEGATIVE value is the load-bearing half: every unclassed pod
+# sits at 0 and therefore outranks a CI job pod without any of them needing a
+# class. preemptionPolicy Never means a CI pod waits for room instead of
+# evicting anything — CI should queue, never displace.
+#
+# `platform` is APPLIED, via the `priorityClassName` value of each platform
+# HelmRelease — cert-manager, external-dns, external-secrets (all three
+# components), onepassword-connect, Traefik, MetalLB (controller + speaker),
+# VPA, Reloader, Alloy, Loki, and the kube-prometheus-stack operator/Prometheus/
+# Alertmanager. docs/33 § Scheduling priority is the canonical list, with the
+# per-chart value path each one uses. Deliberately NOT applied to metrics-server
+# or kured: both already carry a HIGHER built-in class
+# (system-cluster-critical / system-node-critical), so setting this would be a
+# downgrade. App tenants and CI job pods keep their own classes.
+#
+# WHY THIS FILE IS IN sources/ AND NOT configs/: the Priority admission plugin
+# rejects a pod naming a PriorityClass that does not exist. The controllers
+# stage creates such pods and runs BEFORE configs, and it is `wait: true` — so a
+# class defined in configs would never be reached on a cold bootstrap. sources
+# is the one stage everything else dependsOn.
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: platform
+value: 100000
+globalDefault: false
+preemptionPolicy: PreemptLowerPriority
+description: >-
+  Platform workloads that must win scheduling against ordinary apps and CI job
+  pods. Applied per workload — nothing inherits it.
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: ci-jobs
+value: -10
+globalDefault: false
+preemptionPolicy: Never
+description: >-
+  GitLab CI job pods. Ranked below every unclassed workload and never preempts —
+  a burst queues rather than displacing running workloads. Set via
+  [runners.kubernetes] priority_class_name in the runner TOMLs.

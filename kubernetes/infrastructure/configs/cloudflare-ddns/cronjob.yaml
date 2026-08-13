@@ -15,9 +15,8 @@ spec:
   concurrencyPolicy: Forbid  # Don't start new job if previous is still running
   jobTemplate:
     spec:
-      # Jobs timeout after 5 minutes (should complete in seconds)
+      # Bounded well above the few seconds a run takes.
       activeDeadlineSeconds: 300
-      # Automatically delete completed/failed jobs after 1 hour
       ttlSecondsAfterFinished: 3600
       # Default backoffLimit is 6, which is far too many retries for a 5-min
       # CronJob — a transient Cloudflare API outage would quickly queue 6

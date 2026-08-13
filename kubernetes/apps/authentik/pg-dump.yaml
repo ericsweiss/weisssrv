@@ -71,11 +71,9 @@ spec:
                 - |
                   set -o pipefail
                   # NetworkPolicy ipset propagation to remote nodes lags pod
-                  # creation by ~5-15s (measured 2026-07-22: the fresh job
-                  # pod's first SYN is silently dropped at the postgres node;
-                  # a retry connects at ~10s). A job that dials the instant it
-                  # starts loses that race on every backoff attempt, so wait —
-                  # bounded — until the server is actually reachable.
+                  # creation by ~5-15s, so a job that dials the instant it
+                  # starts loses that race on every backoff attempt. Wait,
+                  # bounded, until the server is actually reachable.
                   for i in $(seq 1 30); do
                     if pg_isready -q; then break; fi
                     if [ "$i" = 30 ]; then echo "postgres unreachable after 150s" >&2; exit 1; fi

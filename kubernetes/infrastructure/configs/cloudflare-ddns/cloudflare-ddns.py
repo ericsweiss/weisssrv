@@ -23,7 +23,12 @@ import urllib.error
 import urllib.request
 
 API_BASE = "https://api.cloudflare.com/client/v4"
-ZONE = "ericsweiss.com"
+# Flux substitutes this from the cluster-config ConfigMap when the
+# configMapGenerator output is reconciled — the same placeholder every manifest
+# in a substituted tree uses, and what scripts/check-cluster-literals.py
+# enforces. The raw file (what pytest imports) therefore carries the
+# placeholder, not the zone.
+ZONE = "${cluster_external_domain}"
 
 # IPv4-preferred detection endpoints. Only ipv4.icanhazip.com is strictly v4;
 # the others can answer over IPv6, which the per-reply IPv4 check rejects.
@@ -108,6 +113,21 @@ def get_public_ip(services=IP_SERVICES, attempts=IP_ATTEMPTS, sleep=time.sleep):
     return None
 
 
+def zone_is_substituted(zone=ZONE):
+    """True once Flux has replaced the ${cluster_external_domain} placeholder.
+
+    The zone stopped being a literal when it became a substituted placeholder,
+    and an unsubstituted one is not a harmless no-op: Flux renders an unknown key
+    as an EMPTY STRING, `GET /zones?name=` is an UNFILTERED list, and the run
+    would then create/update records named ``, `direct.`, `git.` and `vpn.` in
+    whichever zone the API happened to return first. So the value is checked
+    before any DNS call, and the check lives in a function rather than at module
+    scope because the raw file (what pytest imports, and what
+    check-cluster-literals.py requires) legitimately carries the placeholder.
+    """
+    return bool(zone) and "${" not in zone and "." in zone
+
+
 def get_zone_id(token, zone=ZONE):
     """Return the Cloudflare zone id for `zone`, or None."""
     data = api_request(token, f"{API_BASE}/zones?name={zone}")
@@ -115,10 +135,14 @@ def get_zone_id(token, zone=ZONE):
         print("ERROR: Failed to get zone ID")
         return None
     zones = data.get("result") or []
-    if not zones:
-        print("ERROR: Zone not found")
+    # Match by NAME, never `zones[0]`: with a name filter that returns one or
+    # zero rows the index was safe, but any request that degrades to an
+    # unfiltered list would otherwise hand back an arbitrary zone.
+    match = next((z for z in zones if z.get("name") == zone), None)
+    if match is None:
+        print(f"ERROR: Cloudflare returned {len(zones)} zone(s), none named {zone!r}")
         return None
-    return zones[0].get("id")
+    return match.get("id")
 
 
 def build_record_body(record_name, current_ip, proxied, existing=None):
@@ -176,6 +200,14 @@ def main(argv=None):
     token = os.environ.get("CF_API_TOKEN")
     if not token:
         print("ERROR: CF_API_TOKEN not set")
+        return 1
+
+    if not zone_is_substituted():
+        print(
+            f"ERROR: ZONE is unsubstituted or malformed ({ZONE!r}) — the cluster-config "
+            "postBuild substitution did not run. Refusing to touch DNS.",
+            file=sys.stderr,
+        )
         return 1
 
     current_ip = get_public_ip()

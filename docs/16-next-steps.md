@@ -8,17 +8,6 @@ deferred-refactor backlog. Completed work is summarised at the end under
 Per-area detail lives in the numbered docs; this page carries only what is not
 done.
 
-## Contents
-
-- [Decisions needed](#decisions-needed)
-- [Pending supervised steps](#pending-supervised-steps)
-- [Accepted risks](#accepted-risks)
-- [Planned work](#planned-work)
-- [Deferred refactors and durability work](#deferred-refactors-and-durability-work)
-- [Review backlog](#review-backlog)
-- [Infrastructure Improvements](#infrastructure-improvements)
-- [Shipped (historical)](#shipped-historical)
-
 ---
 
 ## Decisions needed
@@ -67,9 +56,11 @@ a hardware spend or a posture change — rather than an implementation task.
 
 ## Pending supervised steps
 
-Codified in the repo, not yet applied to the live estate.
+Live steps that need a human at the console — a botched one severs access, so
+none of them rides a pipeline. Some are codified but unapplied; others (like the
+Tailscale host tagging below) are the remaining half of something already applied.
 
-### Tailscale ACL least-privilege lockdown (codified, apply pending)
+### Tailscale ACL least-privilege lockdown (applied; host tagging pending)
 
 - **Codified**: `terraform/tailscale/policy.hujson` defines `group:admins`
   (`= [ericsweiss1@gmail.com]`, the `src` of every rule instead of
@@ -84,13 +75,17 @@ Codified in the repo, not yet applied to the live estate.
   its best-effort `tailscale set --advertise-tags` reconcile (strict under
   `tailscale_tags_require_adoption=true` for the supervised step). No host
   carries the tag yet — see [docs/05](05-tailscale.md).
-- **Remaining step (supervised)**: the first `terraform apply` + tagging the six
-  hosts is a supervised maintenance-window cutover — a botched ACL push can sever
-  tailnet/SSH. Follow the staged runbook in
+- **Applied**: the supervised `terraform apply` has landed — the live tailnet ACL
+  matches `policy.hujson` and `tailscale-drift-plan` is clean (empty plan). From
+  here the job is a **drift signal**: any non-empty plan means someone hot-fixed
+  the policy in the Admin console, and it should be reviewed with a supervised
+  `task terraform:tailscale-plan` before applying.
+- **Remaining step (supervised)**: tagging the six hosts. No host carries
+  `tag:subnet-router` yet, so routes are still auto-approved via the owner entry.
+  Follow the staged runbook in
   [terraform/tailscale/README.md](../terraform/tailscale/README.md): pre-apply
-  nonroot-SSH checklist on all six hosts, apply the ACL, run the tailscale role to
-  adopt the tag, verify route approval + SSH + kube-API, break-glass ready. Until
-  applied, `tailscale-drift-plan` reports the full policy diff (advisory yellow).
+  nonroot-SSH checklist on all six hosts, run the tailscale role to adopt the
+  tag, verify route approval + SSH + kube-API, break-glass ready.
 - **Follow-up tightening (post-migration)**: remove the owner entry from
   `autoApprovers.routes` once all six hosts are tagged; revisit the host firewall
   `admin_ts` set now that tag-scoped tailnet ACLs exist.
@@ -141,26 +136,23 @@ convenience rather than a dependency. The Windows VM (155) is the one guest whos
 state is not IaC-reproducible; see [docs/17](17-disaster-recovery.md) § What
 vzdump does and does not cover.
 
-### Two residual plaintext Traefik → backend hops
+### Residual plaintext LAN hops
 
-GitLab, HAOS, and Plex now terminate TLS themselves and Traefik
-connects via `scheme: https` + the `vm-tls-wildcard` ServersTransport.
-The remaining plaintext Traefik->VM hops are:
+GitLab, HAOS, Plex and AdGuard all terminate TLS themselves and Traefik connects
+via `scheme: https` + the `vm-tls-wildcard` ServersTransport, so no
+Traefik → backend hop is plaintext any more. What remains:
 
-- **AdGuard admin** (port 3000 on dns-01 and dns-02). The IngressRoute
-  is `lan-tailscale-only`. AdGuard's admin web UI doesn't natively
-  support TLS on its own port. Workable approaches:
-    1. Front the admin port with `stunnel` on dns-01 / dns-02 (LAN-only),
-       pointing the IngressRoute at the stunnel listener.
-    2. Set `force_https: true` + `tls_listen_addresses: [:443]` in
-       AdGuard's `encryption` block via the AdGuard UI / sync config
-       (this also affects DoH on :443).
-- **Router** — hardware/firmware-dependent. Configure manually if
-  the router exposes a HTTPS UI; otherwise leave plain HTTP behind
-  Traefik (lan-only).
+- **Immich VM (.157) → Immich ML LXC (.158) :3003** — every photo byte, plain
+  HTTP, scoped to the one source by `sg-immich-ml` (docs/36).
+- **Router** — hardware/firmware-dependent. Configure manually if the router
+  exposes an HTTPS UI; otherwise leave plain HTTP behind Traefik (lan-only).
 
-Both are acceptable residual LAN-trust hops: they sit behind
-`lan-tailscale-only` and the user-facing edge is HTTPS.
+The adguard-exporter hop is closed: it scrapes `https://dns-0X.esweiss.com` via
+`hostAliases`, and `k3s_nodes` no longer appears on AdGuard's :3000 rule, which
+now serves `admin_ts`/`admin_lan` break-glass only.
+
+Both remaining hops are acceptable residual LAN-trust hops; the user-facing edge
+is HTTPS throughout. The posture table is docs/06 § In Transit.
 
 ---
 
@@ -198,20 +190,15 @@ The Ansible layer now consumes roles from the `weisssrv.infra` collection in
 - [ ] Re-home any molecule scenario still expecting an in-tree role path.
 - [ ] Re-check role-README links from `docs/` after the move.
 
-### NFS
-
-- [ ] Tighten `/export/tank-proxmox` to **require** TLS (`xprtsec: tls`) the way
-  the k3s export lines do. Every Proxmox host already mounts it with
-  `xprtsec=tls`; the export merely permits plaintext today.
-
 ### Storage
 
-- [ ] **Codify the Proxmox storage entries.** `proxmox_backup_storage` in
-  `host_vars/pve-nas-01.yml` declares only `tank-proxmox`. The `ssd`, `nvme` and
-  `local-ssd` storage ids are hand-created in `storage.cfg`, and the at-rest
-  posture of the GitLab / Nextcloud / Immich root disks depends on the `ssd` id
-  pointing at the encrypted `ssd/pve` dataset rather than the plaintext pool root
-  (docs/06 § At Rest). Add them so `proxmox_backup` reconciles them.
+- [ ] **Codify the per-host `local-ssd` storage ids.** `proxmox_backup_storage`
+  now declares pve-nas-01's `ssd`, `tank` and `nvme` zfspool ids (and
+  `tank-proxmox`), so the at-rest posture of the GitLab / Nextcloud / Immich root
+  disks is asserted rather than assumed. The five compute hosts' `local-ssd` ids
+  are still hand-created in `storage.cfg`; they carry only k3s VM and HA-guest
+  disks, which are plaintext by design (docs/06 § At Rest), so this is a
+  reproducibility gap rather than a security one.
 
 ---
 
@@ -232,10 +219,6 @@ deserves its own focused change.
   or trust-manager) is deployed, and consolidation requires adding one. Keep
   the staggered `renewBefore` (720h/600h/480h) workaround until a controller
   is intentionally introduced.
-- **metrics-server HA.** metrics-server is the single-replica SPOF the whole
-  HPA/VPA subsystem depends on. Raise it to 2 replicas and add a memory limit
-  via a k3s `HelmChartConfig` override (an Ansible/k3s-manifest change). A
-  recommend-only VPA is already in place; this is the durability follow-up.
 - **DUP-11 — express the `*arr` overlay rename patches via a kustomize labels
   transformer** instead of per-overlay name/label patches.
 - **k8s-apps-08 — split the `downloads` namespace** into a privileged tier
@@ -244,16 +227,17 @@ deserves its own focused change.
 - **Molecule test build-outs** — ANS-A-08 (SSH-hardening path), ANS-C-10 (zvol
   data-safety cases), and ANS-INV-13 (health-verify resilience) need a runnable
   molecule environment to author and validate, so they are deferred from this MR.
-- **Tailscale ACL apply.** The tailnet policy-as-code landed
-  (`terraform/tailscale/`) and is now a **least-privilege lockdown** (tag/port
-  scoped, root SSH dropped — see the section above), but the first `terraform
-  apply` + host tagging remains a supervised live step (a botched ACL push can
-  sever tailnet/SSH access) — follow `terraform/tailscale/README.md` in a
-  maintenance window. Host egress filtering, staged alongside it, is
+- **Tailscale host tagging.** The tailnet policy-as-code landed
+  (`terraform/tailscale/`), is a **least-privilege lockdown** (tag/port scoped,
+  root SSH dropped) and is **applied** — see the section above. What remains is
+  adopting `tag:subnet-router` on the six hosts, a supervised live step (a
+  botched change can sever tailnet/SSH access) — follow
+  `terraform/tailscale/README.md` in a maintenance window. Host egress
+  filtering, staged alongside it, is
   **enabled on all six Proxmox hosts** (`proxmox_firewall_egress_filtering:
   true`, docs/11) and the smtp-relay guest enforces default-deny egress
   (`guest_firewall_policy_out: DROP`).
-- **ARCH-4 — split `.gitlab-ci.yml` into `include:` files.** The ~3,200-line
+- **ARCH-4 — split `.gitlab-ci.yml` into `include:` files.** The single-file
   pipeline is anchor-free (extends/!reference only), so a split is safe in
   principle, but `local:` includes can only be validated by pushing and
   iterating on the live pipeline, and the template/job sections are interleaved.
@@ -264,8 +248,9 @@ deserves its own focused change.
   `gitlab-runner/release.yaml`, `python:3.11` in
   `gitlab-runner-privileged/release.yaml`), and the molecule-test/molecule-ci
   base images are pinned by manifest-list digest. Still open: the mutable-tag
-  CI *job* images in `.gitlab-ci.yml` (`python:3.11-slim`, `docker:24.0-dind`,
-  `alpine:3.23`, `hashicorp/terraform:1.15`, `koalaman/shellcheck-alpine`) and
+  CI *job* images in `.gitlab-ci.yml` (`python:3.11-slim`, `alpine:3.23`,
+  `hashicorp/terraform:1.15`, `koalaman/shellcheck-alpine` — `docker:24.0-dind`
+  is already digest-pinned) and
   the unpinned apt packages in the molecule-test image.
 - **CI optimizations** — `ci-gitlab-broad-trigger` (move `gitlab_version` to a
   dedicated group_vars file so only it triggers a GitLab reconfigure) and
@@ -296,6 +281,11 @@ deserves its own focused change.
 Findings from full-repo reviews that were deliberately deferred: refactors, test
 debt, and follow-ups that deserve their own changes. Grouped by the files that
 own them.
+
+The bracketed codes (`DUP-n`, `ARCH-n`, `k8s-apps-n`, `ANS-*`, `ci-*`) are the
+review session's own item ids, kept only so a finding can be traced back to the
+review that raised it. They are not tracked anywhere else — each item stands on
+its own text.
 
 **weisssrv-lib (from the !11 review tail — valid, deferred as follow-ups):**
 
@@ -369,9 +359,7 @@ own them.
   vm_additional_disks positional-slot lifecycle; nic_tuning per-NIC
   persistence via if-up.d + stale drop-in cleanup when list empties
 - proxmox_ha: groups.yml legacy path; rule-comment removal never converges;
-  cluster.fw: confirm 9345 (RKE2 supervisor, not k3s) can drop. (sg-xmrig was
-  never an actual security group — the only reference was a phantom row in
-  docs/11, now removed.)
+  cluster.fw: confirm 9345 (RKE2 supervisor, not k3s) can drop.
 - base: requirements.yml >= floors vs pinning philosophy; alloy apt package
   unpinned (ssh hardening now lives in a validated `sshd_config.d/00-hardening.conf`
   drop-in with an `sshd -T` effectiveness assert — docs/03)
@@ -389,14 +377,64 @@ own them.
 - CI: host_vars changes don't trigger consuming deploy jobs; version-check
   schedule hard-fails on routine "updates available" and its MR-comment path
   never gets GITLAB_API_TOKEN; prefer the GitLab agent context over the
-  static kubeconfig in .k3s-deploy-base; audit whether
-  OP_SERVICE_ACCOUNT_TOKEN is "protected" (would skip MR pipelines)
+  static kubeconfig in .k3s-deploy-base
+  (`OP_SERVICE_ACCOUNT_TOKEN` protection: **done** — it is protected, and
+  docs/13 § Validate Stage carries the accepted costs)
 - k8s: add helm.sh/resource-policy=keep annotations for MetalLB/ESO CRDs;
   consider a staging ClusterIssuer for cert iteration; gotk-sync.yaml carries
   an obsolete migration comment block
 - Alertmanager: AlertmanagerClusterFailedToSendAlerts fires critical at tiny
   failure ratios during storms (1 failed Discord post in a 5m window) —
   consider routing it warning-severity or raising the threshold
+
+**Open follow-ups from the R4 mega-review hardening MR** (carried out of that
+MR's deploy runbook, which is not tracked in git):
+
+- [ ] **Complete the metrics-server cutover: run `task k3s:deploy`** (or play the
+  manual `maintenance-k3s-provision` job) so the k3s servers pick up
+  `--disable=metrics-server` and the HelmRelease can finally install. There is
+  **no automatic deploy job for `group_vars/k3s.yml`**, so nothing closes this
+  window but an operator. Until it lands, all of the following are expected and
+  none of them is a regression:
+  - `infrastructure-metrics-server` is not-Ready by design;
+    `scripts/deploy-verify.sh` detects the open cutover live (the AddOn's
+    objectset stamp on the APIService), prints it as a NOTICE, and excludes
+    only those two resources from its readiness gates — so `deploy-verify`
+    stays green and a red job during the window is a real, unrelated failure;
+  - `FluxResourceNotReady` fires for both the `infrastructure-metrics-server`
+    Kustomization and the `kube-system/metrics-server` HelmRelease — warning,
+    Discord, 12h repeat;
+  - `task collect-state` cannot return a green verdict (it requires zero firing
+    alerts), and `task flux:reconcile` reports that one stage as failed while
+    still reconciling every other stage.
+
+  Silence for a long window with
+  `amtool silence add alertname=FluxResourceNotReady name=~"metrics-server|infrastructure-metrics-server" --duration=…`
+  (the silence mutes those two names entirely, cutover-related or not — keep it
+  no longer than the planned window; docs/33 § metrics-server has the caveat).
+  Design detail: [docs/33](33-autoscaling.md) § metrics-server.
+- **Promote `scripts/flux-env.sh` into weisssrv-lib.** It is a byte copy of the
+  cluster-template's file but is *not* in the library's vendored registry, so
+  nothing keeps the two in step. Alternative: fold multi-ConfigMap support into
+  `flux-render.sh` and retire the wrapper.
+- **`sg-smtp-relay` :25 has no inventory seam** — the rule is hardcoded in the
+  library template. Postfix now refuses unauthenticated relay on it, so the
+  exposure is closed at the application layer; the firewall half is a lib MR.
+- **`backup_restore_drill_sources_covered` gauge is not built.** It is the
+  prerequisite for any drill *coverage* alert.
+- **No archive-restore-drill unit in `nas_storage`** — there is no restore-side
+  metric, which is why the matching alerts were skipped rather than written.
+- **No parity gate for the two secret environments.** The Taskfile task `env:`
+  blocks and the matching CI job `variables:` were reconciled by hand; the
+  pytest asserting set equality was never written, so nothing prevents re-drift.
+- **`deploy-preflight` cannot catch a job that forgot an `op://` variable.**
+  Stated in the job header; closing it needs a different check.
+- **13 hand-maintained `molecule-test:<tag>` fallbacks** in the integration
+  scenarios have no gate and must be re-bumped alongside `WEISSSRV_LIB_REF`. CI
+  overrides them via `MOLECULE_TEST_IMAGE`, so only local molecule runs break.
+- **Nothing enforces a yamllint config for `ansible/`** since `ansible/.yamllint`
+  was deleted (nothing read it). Wants either a repo-root `.yamllint` or a
+  `yamllint -c` change in `Taskfile.yml`.
 
 ## Infrastructure Improvements
 
@@ -405,6 +443,21 @@ own them.
 - [ ] Network segmentation with VLANs (IoT, guest, management) — detail and the
   interim admin-IPSet option are under
   [Network segmentation](#network-segmentation--admin-ipset-tightening) above.
+- [ ] **Agent guardrails: add the cluster-mutating verbs to `deny` in the tracked
+  `.claude/settings.json`.** Its 17 deny rules already cover the irreversible
+  verbs (delete ns/pvc/pv, `helm uninstall`, `terraform destroy`,
+  `terraform apply -auto-approve`, `ssh * sudo rm|dd`, force-push, hard reset).
+  What is still missing is the set the development skill declares
+  non-negotiable: `kubectl apply -k`, `kubectl patch`, `kubectl annotate`,
+  `kubectl label`, `kubectl rollout restart` (which the skill's `debugging.md`
+  says never to use on a Flux-managed workload — kustomize-controller reverts
+  it), plus `git push * main`. Deny wins over a local allow, which is the point:
+  the gitignored `.claude/settings.local.json` currently allows all of them.
+  Keep the rule scoped to `kubectl apply -k` — denying bare `kubectl apply`
+  would break `task flux:dev-apply`, the one sanctioned in-cluster write path.
+  Applying settings changes is an operator action; an agent cannot edit its own
+  permission configuration. (The companion `pre-commit install` half of this
+  item has landed — SKILL.md § Pre-MR gates and `references/cluster-access.md`.)
 
 ### GitOps / Flux bootstrap robustness
 
@@ -463,7 +516,7 @@ implementation story.
 | K3s platform | 9 nodes (3 servers + 6 agents), kube-vip API VIP, MetalLB, Traefik, external-dns, ESO | [19](19-k3s-deployment.md) |
 | Proxmox HA | HA groups + storage replication for dns-01/dns-02/smtp-relay/HAOS | [12](12-runbooks.md), [25](25-multi-node-expansion.md) |
 | GitLab | Self-hosted EE on a NAS-pinned VM; registry, Pages, runners, agent, SAML SSO | [27](27-gitlab-deployment.md) |
-| GitOps | Flux CD reconciles all of `kubernetes/`; five infrastructure stages + apps | [29](29-flux-operations.md) |
+| GitOps | Flux CD reconciles all of `kubernetes/`; five chained infrastructure stages + apps, plus the off-chain metrics-server stage | [29](29-flux-operations.md) |
 | Observability | Prometheus + Grafana + Loki + Alloy, exporters, dashboards, alert routing | [31](31-observability.md) |
 | Autoscaling | VPA tiers, HPAs, CoreDNS pin, lint invariants | [33](33-autoscaling.md) |
 | Applications | Plex, download/media stack, recipes, Home Assistant, Hermes, Homarr, wg-easy, Immich, Nextcloud, Windows VM | per-app docs 20-24, 35-41 |
@@ -472,7 +525,8 @@ implementation story.
 | Offsite backups | Nightly restic → Backblaze B2, GFS retention, client-side encryption | [42](42-offsite-backup.md) |
 | GPU | GTX 1660 Ti VFIO passthrough to the k3s GPU agent, time-sliced device plugin | [43](43-gpu-passthrough.md) |
 | k3s secrets encryption | Enabled cluster-wide; rotation stage `reencrypt_finished` | [17](17-disaster-recovery.md) |
-| NFS over TLS | Every k3s export line requires `xprtsec=tls`; PVs mount by hostname | [07](07-fileservices.md) |
+| NFS over TLS | Every k3s export line and `/export/tank-proxmox` require `xprtsec=tls`; PVs mount by hostname | [07](07-fileservices.md) |
+| metrics-server HA | Moved off the k3s static AddOn to a Flux HelmRelease: 2 replicas, PDB, anti-affinity, pinned limits (manifests shipped; the live cutover stays the open checkbox above until `task k3s:deploy` lands) | [33](33-autoscaling.md) |
 | Off-node etcd snapshots | `k3s_etcd_snapshot_offnode_enabled` copies each server's snapshots to the NAS | [17](17-disaster-recovery.md) |
 | Multi-repo tenants | Tenant onboarding via `weisssrv-app-template` + wiring under `kubernetes/clusters/weisssrv/tenants/` | [30](30-multi-repo-onboarding.md) |
 

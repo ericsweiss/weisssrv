@@ -83,10 +83,10 @@ spec:
               cpu: 50m
               memory: 64Mi
             limits:
-              # No CPU limit: pve-exporter bursts during scrape (Python parses
-              # the cluster-wide /pve API response) and CFS throttling at 500m
-              # caused sustained CPUThrottlingHigh false-positives. Memory
-              # limit kept since OOM is a real failure mode.
+              # No CPU limit (docs/33): pve-exporter bursts during scrape
+              # (Python parsing the cluster-wide /pve API response) and CFS
+              # throttling trips CPUThrottlingHigh. The memory limit stays —
+              # OOM is a real failure mode.
               memory: 256Mi
       volumes:
         - name: tmp

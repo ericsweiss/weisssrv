@@ -19,10 +19,10 @@ spec:
   issuerRef:
     name: letsencrypt-prod
     kind: ClusterIssuer
-  commonName: "*.ericsweiss.com"
+  commonName: "*.${cluster_external_domain}"
   dnsNames:
-    - "*.ericsweiss.com"
-    - ericsweiss.com
+    - "*.${cluster_external_domain}"
+    - ${cluster_external_domain}
   renewBefore: 720h   # 30 days
 ---
 apiVersion: cert-manager.io/v1
@@ -35,10 +35,10 @@ spec:
   issuerRef:
     name: letsencrypt-prod
     kind: ClusterIssuer
-  commonName: "*.esweiss.com"
+  commonName: "*.${cluster_internal_domain}"
   dnsNames:
-    - "*.esweiss.com"
-    - esweiss.com
+    - "*.${cluster_internal_domain}"
+    - ${cluster_internal_domain}
   # CANONICAL stagger note (the other two legs point here). The three identical
   # *.esweiss.com wildcards live in separate namespaces because Traefik only
   # reads TLS Secrets from the IngressRoute's own namespace, so each fires its

@@ -3,19 +3,21 @@
 # This is consumed by GitLab's secret_detection job (which uses gitleaks under
 # the hood) via the passthrough in `.gitlab/secret-detection-ruleset.toml`.
 #
+# A declared fork of weisssrv-lib's `lint/gitleaks.toml` (registered in that
+# repo's `scripts/vendored-paths.yml`, which is what gates the divergence):
+# the shared rules and the shared false-positive shapes come from there, the
+# path exclusions and the fixture anchors below are this repo's.
+#
 # Scope of exclusions:
 #   - `docs/*.md` is scanned normally — the `regexes` content allowlist below
 #     covers the placeholder shapes docs use (1Password op:// refs, doc
 #     placeholders like `[your-...]`), so a real secret committed under docs/ is
 #     still caught.
-#   - The molecule trees (`ansible/roles/*/molecule/*`,
-#     `ansible/integration-tests/*/molecule/*`) are NOT excluded wholesale.
-#     Several scenarios inline THROWAWAY PEM private keys (acme_certs, nfs_tls,
-#     the cert/mail integration tests) that trip only gitleaks's `private-key`
-#     rule, so the rule-scoped allowlist below suppresses ONLY that rule under
-#     those paths. Every OTHER rule — cloud keys, provider tokens, high-entropy
-#     strings — still scans the molecule trees, so a real secret pasted into a
-#     `secrets:` fixture (the most likely place) is still caught.
+#   - No test or fixture PATH is excluded. The synthetic key material this repo
+#     ships (the cert-distribution molecule scenario's mock acme.sh keys, the
+#     redaction fixtures in `scripts/test_collect_state_lib.py`) is allowlisted
+#     by CONTENT, anchored on each fixture's own distinctive body — so those
+#     files stay fully in scope and a real secret added to either is caught.
 #
 # `useDefault = true` is REQUIRED — without it gitleaks loads only the rules
 # defined in this file (which has none), disabling all detection.
@@ -35,26 +37,56 @@ regexes = [
   # Test/fixture tokens — anchored at start of token so a real secret prefixed
   # with "prodtestkey_…" or similar can't be silenced.
   '''^(test|fake|dummy|example)[-_]?(password|token|key|secret)[A-Za-z0-9_-]*''',
+  # Published supply-chain pins the shared CI templates verify downloaded key
+  # material against (1Password's apt GPG fingerprint and its apk public key's
+  # sha256). Both are public by construction but trip the generic-api-key
+  # entropy rule. Listed as exact values, so rotating a pinned key forces this
+  # allowlist to be reviewed alongside it.
+  '''^3FEF9748469ADBE15DA7CA80AC2D62742012EA22$''',
+  '''^0e88171d9f8b7630763f70cbf69f2a01b4ba8ea1d8e79487f59c162db255eb84$''',
 ]
 
 paths = [
   # Generated cluster snapshots (gitignored, but never trip on a stray copy).
   '''CLUSTER_STATUS\.txt''',
   '''cluster-state-.*\.txt''',
+  # Vendored galaxy dependency collections (gitignored; installed into the tree
+  # by the ansible-lint flow) — third-party test fixtures are full of dummy
+  # keys and are not ours to scan.
+  '''\.ansible-home/''',
+  # Terraform's downloaded module/provider cache (gitignored) — third-party
+  # trees, not ours to scan.
+  '''\.terraform/''',
+  # Byte-compiled copies of the fixtures anchored below; the compiled form does
+  # not preserve the source shape the content anchors match.
+  '''__pycache__/''',
 ]
 
-# Rule-scoped allowlist: suppress ONLY the default `private-key` rule under the
-# molecule trees (the throwaway PEM fixtures), not the whole path. A global
-# allowlist with `targetRules` never redefines the default rule (re-declaring
-# `[[rules]] id = "private-key"` merges on current gitleaks but would silently
-# DISABLE the detector on any version with replace semantics — fail-open),
-# and if a runner's gitleaks were too old for targetRules the fixtures would
-# fail the job loudly instead (fail-closed). Every other rule still scans the
-# molecule trees, and private-key still fires everywhere else.
+# Synthetic key material shipped by this repo's own tests, matched by CONTENT
+# (each anchored on its own distinctive body) rather than by path, so the files
+# holding it stay in scope for every rule.
 [[allowlists]]
-description = "molecule throwaway PEM private keys"
-targetRules = ["private-key"]
-paths = [
-  '''ansible/roles/.*/molecule/.*''',
-  '''ansible/integration-tests/.*/molecule/.*''',
+description = "weisssrv synthetic test fixtures"
+regexes = [
+  # ansible/integration-tests/cert-distribution — mock acme.sh private keys,
+  # written per domain by the converge play.
+  '''MIIEvgIBADANBgkqhkiGTestPrivateKey''',
+  # scripts/test_collect_state_lib.py — the redaction suite's input shapes. The
+  # suite asserts each is redacted OUT of CLUSTER_STATUS.txt; they are the
+  # patterns, not credentials.
+  '''^glpat-abc123def456$''',
+  '''^glrt-AbC_123-xyz$''',
+  '''7the8keymaterial''',
+]
+
+# Tracked strings that name a thing rather than hold one. Each is listed as an
+# exact value so a real secret in the same position still fires.
+[[allowlists]]
+description = "identifiers the default rules misread as values"
+regexes = [
+  # terraform/authentik — Authentik ATTRIBUTE names the proxy provider reads the
+  # basic-auth password from; the value itself is a `var.basic_auth_*_password`.
+  '''^"(nzbget|adguard)_password"$''',
+  # docs/42 — a dm-crypt cipher spec.
+  '''^aes-xts-plain64$''',
 ]

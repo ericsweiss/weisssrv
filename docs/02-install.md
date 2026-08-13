@@ -2,16 +2,6 @@
 
 This guide covers setting up your development environment and deploying the homelab infrastructure from a fresh clone to production.
 
-## Table of Contents
-
-1. [Prerequisites](#prerequisites)
-2. [Laptop/Workstation Setup](#laptopworkstation-setup)
-3. [1Password Configuration](#1password-configuration)
-4. [Homelab Node Preparation](#homelab-node-preparation)
-5. [Installation Steps](#installation-steps)
-6. [Testing and Validation](#testing-and-validation)
-7. [Troubleshooting](#troubleshooting)
-
 ## Prerequisites
 
 ### Hardware
@@ -133,8 +123,9 @@ installed copy).
 For local development and CI/CD validation:
 
 ```bash
-# Install Python linting tools
-pip3 install ansible-lint yamllint
+# Install the pinned lint/test toolchain (requirements.txt carries exact pins so
+# a local run matches CI — never install these unpinned)
+pip install -r requirements.txt
 
 # Verify installation
 ansible-lint --version
@@ -188,103 +179,24 @@ eval $(op signin)
 
 ### 3. Create Required Items in "Homelab" Vault
 
-Create these items (if they don't exist):
+**[docs/15-credential-rotation.md](./15-credential-rotation.md) §
+"Required 1Password Items" is the canonical inventory** — item titles, types and
+field names all live there, and a field change must land in that one place.
+Create the following items before starting the phases in this guide (the rest of
+the inventory — k3s, applications, observability, encryption — is needed later):
 
-**Cloudflare DNS Token** (in-cluster ESO consumers + acme_certs; scope the
-token to Zone:Read + DNS:Edit only):
-```
-Title: Cloudflare DNS Token
-Type: API Credential
-Fields:
-  - credential: [your-cloudflare-api-token]
-  - username: [your-cloudflare-account-id]
-```
-
-**Cloudflare Terraform Token** (Terraform only — needs the extra Zone
-Settings:Edit scope because `terraform/cloudflare` manages
-`cloudflare_zone_settings_override`; kept separate so the in-cluster token
-cannot change zone-wide TLS posture):
-```
-Title: Cloudflare Terraform Token
-Type: API Credential
-Fields:
-  - credential: [token with Zone:Read + DNS:Edit + Zone Settings:Edit]
-  - username: [your-cloudflare-account-id]
-```
-
-**SMTP Relay Gmail**:
-```
-Title: SMTP Relay Gmail
-Type: Login
-Fields:
-  - username: your-email@gmail.com
-  - password: [gmail-app-password]
-```
-
-**SMTP Relay Auth**:
-```
-Title: SMTP Relay Auth
-Type: Login
-Fields:
-  - username: relayuser (or your chosen relay username)
-  - password: [secure-password-for-null-clients]
-```
-
-**Email Config**:
-```
-Title: Email Config
-Type: Secure Note
-Fields:
-  - root_alias: ericsweiss1@gmail.com
-```
-
-**AdGuard Home**:
-```
-Title: AdGuard Home
-Type: Login
-Fields:
-  - username: eric
-  - password: [your-adguard-password]
-```
-
-**Tailscale Auth Key**:
-```
-Title: Tailscale Auth Key
-Type: API Credential
-Fields:
-  - credential: [your-tailscale-auth-key]
-```
-
-**SSH Key**:
-```
-Title: SSH Key
-Type: SSH Key
-Fields:
-  - public key: ssh-ed25519 AAAA... eric@MacBookPro.esweiss.com
-  - private key: [optional, for automation]
-```
-
-**Samba NAS User** (needed by `task storage:deploy`, Phase 5):
-```
-Title: Samba NAS User
-Type: Login
-Fields:
-  - password: [password for the nas Samba user]
-```
-
-**DNS-01 SSH Key** (needed by `task dns:deploy`, Phase 6 — cert distribution):
-```
-Title: DNS-01 SSH Key
-Type: SSH Key
-Fields:
-  - private key: [ed25519 private key]
-  - public key: ssh-ed25519 AAAA... acme@dns-01
-```
-
-This is the minimum set for the deployment phases in this guide. The complete
-item list (k3s, applications, observability, encryption) is in
-[docs/15-credential-rotation.md](./15-credential-rotation.md) under
-"Required 1Password Items".
+| Item | Needed by |
+|---|---|
+| `Cloudflare DNS Token` | acme_certs + the in-cluster ESO consumers (Zone:Read + DNS:Edit only) |
+| `Cloudflare Terraform Token` | `terraform/cloudflare` only — kept separate because it also needs Zone Settings:Edit |
+| `SMTP Relay Gmail` | Phase: mail relay (Gmail app password) |
+| `SMTP Relay Auth` | Phase: mail relay (null-client credential) |
+| `Email Config` | Phase: mail relay (root alias) |
+| `AdGuard Home` | Phase: DNS |
+| `Tailscale Auth Key` | Phase: base (Tailscale enrolment) |
+| `SSH Key` | Phase: base (the fleet's authorized key) |
+| `Samba NAS User` | Phase 5, `task storage:deploy` |
+| `DNS-01 SSH Key` | Phase 6, `task dns:deploy` (cert distribution) |
 
 ### 4. Test 1Password CLI Access
 
@@ -392,7 +304,7 @@ ssh eric@pve-nas-01.<tailnet>.ts.net  # replace <tailnet> with your tailnet name
 ### Phase 1: Connectivity
 
 ```bash
-cd /Users/eric/src/weisssrv
+# From the repo root (every command in this doc is repo-relative)
 
 # Test Ansible can reach all hosts
 task ansible:ping
@@ -791,3 +703,10 @@ After successful deployment:
    [14-post-base-plan.md](14-post-base-plan.md) is the superseded historical plan)
 
 Your homelab is now fully operational and managed via GitOps.
+
+## Related documentation
+
+- [docs/00 — Hardware setup](00-hardware-setup.md) (the state this guide assumes)
+- [docs/15 — Credential rotation](15-credential-rotation.md) (canonical 1Password item inventory)
+- [docs/12 — Runbooks](12-runbooks.md) (day-2 operations)
+- [docs/19 — K3s deployment](19-k3s-deployment.md) (the platform layer)

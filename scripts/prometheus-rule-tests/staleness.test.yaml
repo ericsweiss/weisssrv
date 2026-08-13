@@ -1,0 +1,145 @@
+---
+# promtool unit tests for the collector/shipper staleness arms.
+# rule_files resolves relative to this file's runtime location; the lint script
+# copies the tests next to the extracted rules.yaml before running them.
+#
+# These are the alerts whose failure mode is SILENCE: each watches a
+# last-success timestamp or an absent() of a series that only exists while the
+# producer is healthy. If the metric name drifts, an absent()-shaped rule fires
+# forever (visible) but a `time() - <gauge> > N` rule goes quiet forever
+# (invisible) — so both directions are pinned here.
+rule_files:
+  - rules.yaml
+evaluation_interval: 1m
+tests:
+  # pmxcfs: the mtime gauge must be advanced by the collector. Fresh = silent.
+  - interval: 1m
+    input_series:
+      - series: 'proxmox_pmxcfs_manager_status_mtime_seconds{instance="192.168.0.102:9101"}'
+        values: '0+60x60'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: PmxcfsStale
+        exp_alerts: []
+
+  # A frozen gauge crosses the 600s floor and must fire.
+  - interval: 1m
+    input_series:
+      - series: 'proxmox_pmxcfs_manager_status_mtime_seconds{instance="192.168.0.102:9101"}'
+        values: '0+0x60'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: PmxcfsStale
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              instance: 192.168.0.102:9101
+
+  # corosync health collector: 300s floor, warning severity.
+  - interval: 1m
+    input_series:
+      - series: 'proxmox_corosync_health_collector_last_success_seconds{instance="192.168.0.102:9101"}'
+        values: '0+60x60'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: CorosyncHealthCollectorStale
+        exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      - series: 'proxmox_corosync_health_collector_last_success_seconds{instance="192.168.0.102:9101"}'
+        values: '0+0x60'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: CorosyncHealthCollectorStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: 192.168.0.102:9101
+
+  # ZFS pool collector: the second arm is the one worth pinning — a host that
+  # reports corosync health but has NO zfs collector series at all is a
+  # collector that never ran, which a `time() - gauge` arm alone cannot see.
+  - interval: 1m
+    input_series:
+      - series: 'proxmox_corosync_health_collector_last_success_seconds{instance="192.168.0.102:9101"}'
+        values: '0+60x60'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: ZFSPoolCollectorStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: 192.168.0.102:9101
+
+  # Both present and fresh -> silent.
+  - interval: 1m
+    input_series:
+      - series: 'proxmox_corosync_health_collector_last_success_seconds{instance="192.168.0.102:9101"}'
+        values: '0+60x60'
+      - series: 'zfs_pool_status_collector_last_success_seconds{instance="192.168.0.102:9101"}'
+        values: '0+60x60'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: ZFSPoolCollectorStale
+        exp_alerts: []
+
+  # wg-easy: an absent() arm. Present -> silent; gone -> fires after 30m.
+  - interval: 1m
+    input_series:
+      - series: 'wireguard_configured_peers{instance="wg-easy:51821"}'
+        values: '4+0x90'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: WgEasyMetricsMissing
+        exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      - series: 'wireguard_configured_peers{instance="wg-easy:51821"}'
+        values: '4 stale'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: WgEasyMetricsMissing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+
+  # DCGM: the guard is what makes this arm honest — the exporter being UP with
+  # no temperature series is a broken exporter, while the exporter being DOWN is
+  # GpuExporterDown's job and must NOT also fire here.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="dcgm-exporter", instance="k3s-agt-prec-01:9400"}'
+        values: '1+0x60'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: GpuTelemetryMissing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: gpu
+              job: dcgm-exporter
+
+  - interval: 1m
+    input_series:
+      - series: 'up{job="dcgm-exporter", instance="k3s-agt-prec-01:9400"}'
+        values: '0+0x60'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: GpuTelemetryMissing
+        exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      - series: 'up{job="dcgm-exporter", instance="k3s-agt-prec-01:9400"}'
+        values: '1+0x60'
+      - series: 'DCGM_FI_DEV_GPU_TEMP{job="dcgm-exporter", gpu="0"}'
+        values: '55+0x60'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: GpuTelemetryMissing
+        exp_alerts: []
+
+  # PodLogShippingStale is covered by log-shipping.test.yaml, which owns the
+  # Alloy arm end to end.

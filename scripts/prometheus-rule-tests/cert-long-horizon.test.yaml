@@ -1,0 +1,50 @@
+---
+# promtool unit tests for the ONE cert alert whose `for:` spans days:
+# CertRenewalFailedProlonged (72h). Its warning sibling CertRenewalFailed (1h)
+# and the healthy-series case live in durability.test.yaml at the 1m interval
+# that suite needs.
+#
+# Split out for the same reason as backup-long-horizon.test.yaml: promtool
+# re-evaluates EVERY rule in the corpus once per evaluation_interval for the
+# whole eval_time horizon, so a 73h horizon at 1m would cost ~4400 evaluations
+# of 150+ rules. At 30m it is two orders of magnitude cheaper and still lands
+# well inside the 72h window. The input interval matches evaluation_interval so
+# every evaluation sees a fresh sample — a sparser input goes stale past the 5m
+# lookback and resets the `for:` window mid-test.
+#
+# rule_files is resolved relative to this file's runtime location; the lint
+# script copies the tests next to the extracted rules.yaml before running them.
+rule_files:
+  - rules.yaml
+evaluation_interval: 30m
+tests:
+  # A renewal pipeline that has been failing continuously: silent through the
+  # first three days (CertRenewalFailed already owns that window), critical
+  # after 72h. This is the FIRING arm — the alert previously appeared only in
+  # `exp_alerts: []` assertions, which a permanently-silent expr satisfies just
+  # as well as a correct one.
+  - interval: 30m
+    input_series:
+      - series: 'cert_renewal_last_run_success{instance="192.168.0.150:9101"}'
+        values: '0+0x160'
+    alert_rule_test:
+      - eval_time: 71h
+        alertname: CertRenewalFailedProlonged
+        exp_alerts: []
+      - eval_time: 73h
+        alertname: CertRenewalFailedProlonged
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              instance: '192.168.0.150:9101'
+
+  # A renewal that recovers before the third day must reset the timer, not
+  # escalate: 60h failing, then success.
+  - interval: 30m
+    input_series:
+      - series: 'cert_renewal_last_run_success{instance="192.168.0.150:9101"}'
+        values: '0+0x120 1+0x40'
+    alert_rule_test:
+      - eval_time: 73h
+        alertname: CertRenewalFailedProlonged
+        exp_alerts: []

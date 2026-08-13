@@ -116,14 +116,15 @@ Tailscale SSH rules, tag owners, and subnet-route auto-approvers — as
 `policy.hujson`, mirroring the `terraform/cloudflare` pattern (GitLab HTTP state
 backend, 1Password-injected credentials).
 
-**Least-privilege lockdown — codified, not yet applied.** `policy.hujson`
-carries the tag/port-scoped policy below, which replaces the earlier
-non-breaking baseline (`autogroup:member -> *:*` full mesh + root SSH). The
-supervised apply and the host tagging that goes with it have not landed: no
-Proxmox host reports `tag:subnet-router` yet (`tailscale status --json` shows
-`Self.Tags: null`). Until they do, the live tailnet still runs the permissive
-baseline, and everything in this section describes intended state. See
-`terraform/tailscale/README.md` for the apply procedure and docs/16 for status.
+**Least-privilege lockdown — applied.** `policy.hujson` carries the tag/port-scoped
+policy below, which replaced the earlier non-breaking baseline
+(`autogroup:member -> *:*` full mesh + root SSH). The supervised apply has
+landed: the live tailnet ACL matches `policy.hujson` and `tailscale-drift-plan`
+runs clean. What remains is the **host tagging** half — no Proxmox host reports
+`tag:subnet-router` yet (`tailscale status --json` shows `Self.Tags: null`), so
+routes are still approved via the owner entry in `autoApprovers.routes` rather
+than the tag. See `terraform/tailscale/README.md` for the procedure and docs/16
+for status.
 
 In outline: `group:admins` (not `autogroup:member`) is the `src` of every rule;
 `tag:subnet-router` is the Proxmox hosts' tag; three rules cover the hosts' own
@@ -292,6 +293,13 @@ If DNS resolution doesn't work over Tailscale:
   before any supervised apply (see `terraform/tailscale/README.md`)
 
 ## Related documentation
+
+- [terraform/tailscale/README](../terraform/tailscale/README.md) — the authoritative rule-by-rule ACL reference
+- [docs/16 — Next steps](16-next-steps.md) (host-tagging status)
+- [docs/11 — Firewall](11-firewall.md) (`admin_ts` IPSet)
+- [docs/08 — DNS](08-dns.md) (tailnet split DNS)
+
+## External references
 
 - [Tailscale Documentation](https://tailscale.com/kb/)
 - [Tailscale on Debian](https://tailscale.com/kb/1039/install-debian-trixie/)

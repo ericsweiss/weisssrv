@@ -47,35 +47,35 @@ Redis is not required as of Authentik 2025.10 - all state is in PostgreSQL.
 
 Create the following items in your 1Password "Homelab" vault:
 
-**Item: "Authentik Secrets"**
-| Field | Description | Generation |
-|-------|-------------|------------|
-| `secret-key` | JWT signing key (50+ chars) | `openssl rand -base64 50` |
-| `postgresql-password` | PostgreSQL user password | `openssl rand -base64 32` |
-| `postgresql-admin-password` | PostgreSQL admin password | `openssl rand -base64 32` |
-
-Generate secrets:
-```bash
-# Generate all secrets at once
-echo "secret-key: $(openssl rand -base64 50)"
-echo "postgresql-password: $(openssl rand -base64 32)"
-echo "postgresql-admin-password: $(openssl rand -base64 32)"
-```
-
-**SMTP Authentication (uses existing 1Password item)**
-
-SMTP credentials are sourced from the existing "SMTP Relay Auth" item in 1Password.
-No additional secrets need to be created - the deployment task automatically includes
-`smtp-username` and `smtp-password` from this item in the authentik-secrets.
+The **Authentik Secrets** and **SMTP Relay Auth** items, with the exact fields
+this app's ExternalSecret reads, are listed in
+[docs/15-credential-rotation.md](../../../docs/15-credential-rotation.md)
+§ Required 1Password Items — that table is canonical, and rotation procedures
+live there too. `externalsecret.yaml` is the second source of truth: every
+`remoteRef` in it must exist in the item, or the whole Secret fails to sync.
 
 ### 2. DNS Configuration
 
-**Cloudflare (external-dns handles this automatically)**:
-- `auth.ericsweiss.com` -> Traefik LB (192.168.0.100)
+Both sides are codified. **Never edit AdGuard by hand** — the role reconciles
+the rewrite list, so a hand-added entry is either reverted or silently diverges.
 
-**AdGuard Home (manual configuration required)**:
-Add DNS rewrite in AdGuard Home:
-- `auth.esweiss.com` -> `192.168.0.100`
+**Internal (AdGuard Home)** — `ansible/inventories/prod/group_vars/dns.yml`,
+shipped by `task dns:deploy`:
+
+- `auth.esweiss.com` → `192.168.0.101` (the **internal** Traefik VIP, like every
+  other Traefik-fronted internal host).
+- `auth.ericsweiss.com` → `192.168.0.101` as well. This is a deliberate,
+  documented exception to the "no rewrite for the external domain" rule:
+  server-side OIDC backends (hermes, immich, nextcloud, grafana) fetch
+  discovery/JWKS from the **issuer host**, which must stay the external name for
+  browsers — and over the WAN hairpin those non-browser fetches hit Cloudflare's
+  UA-keyed bot filter (a live 403 on 2026-07-19). The rewrite moves only the
+  fetch path inside; the reasoning lives next to the entry in `dns.yml`.
+
+**External (Cloudflare)** — created by external-dns from the IngressRoute's
+`external-dns.alpha.kubernetes.io/target` annotation
+(`ingress-route.yaml`), which points `auth.ericsweiss.com` at the apex rather
+than a literal VIP. Nothing to add by hand.
 
 ## Deployment
 
@@ -139,9 +139,9 @@ See `docs/29-flux-operations.md` for the full Flux workflow.
    - Navigate to: https://auth.esweiss.com/if/flow/initial-setup/
    - Create the default `akadmin` user and set password
 
-3. **Store admin password in 1Password**:
-   Add to "Authentik Secrets" item:
-   - `admin-password`: The password you set for akadmin
+3. **Store the akadmin password in 1Password** as a break-glass credential.
+   Nothing in-cluster reads it: it is not an ExternalSecret field and does not
+   appear in the docs/15 field list for `Authentik Secrets`.
 
 ## Integrating SSO with Services
 

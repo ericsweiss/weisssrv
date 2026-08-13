@@ -3,6 +3,14 @@
 # defined by a CRD that controllers/ installs (ClusterSecretStore needs ESO,
 # ClusterIssuer + Certificates need cert-manager, IPAddressPool needs MetalLB,
 # ExternalSecrets need ESO + ClusterSecretStore, Middlewares need Traefik).
+# Two entries are built-in kinds needing no CRD — the NetworkPolicy sets
+# (builtin-namespace-policies.yaml, kube-system-policies/), which fence
+# namespaces this repo does not otherwise own. They sit here rather than earlier
+# because nothing renders or schedules against them.
+#
+# priorityclasses.yaml used to live here and now lives under sources/: pods in
+# the controllers stage name `platform`, and a pod whose PriorityClass does not
+# exist yet is rejected at admission (see that stage's header).
 #
 # The versions-configmap.yaml lives under sources/ (not here) because it must
 # exist before controllers/ renders HelmReleases with ${var} placeholders.
@@ -10,6 +18,8 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - default-namespace.yaml
+  - builtin-namespace-policies.yaml
+  - kube-system-policies
   - cluster-secret-store.yaml
   - cluster-issuer.yaml
   - metallb-ip-pools.yaml

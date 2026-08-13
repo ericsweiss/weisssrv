@@ -13,12 +13,13 @@ This is the canonical description of the model; other pages (README.md,
 CLAUDE.md, `ansible/README.md`, `docs/29-flux-operations.md`) point here.
 
 1. **Ansible / Terraform / the Task wrapper** — `op run --` resolves
-   `op://Homelab/<Item Title>/<field>` references at run time. The references
-   live in the `secrets:` dict of
-   `ansible/inventories/prod/group_vars/all.yml` (that file, not this one, holds
-   the real reference strings). Item titles with spaces are fine — `op run`
-   parses the full path. Rotate by updating 1Password, then re-running the
-   relevant playbook (per-credential procedures below).
+   `op://Homelab/<Item Title>/<field>` references at run time. The reference
+   strings live next to the thing that needs them: each `Taskfile.yml` task's
+   `env:` block, mirrored by the `variables:` of the CI job that runs the same
+   playbook. `task secrets:show` prints the set actually in use. Item titles
+   with spaces are fine — `op run` parses the full path. Rotate by updating
+   1Password, then re-running the relevant playbook (per-credential procedures
+   below).
 2. **External Secrets Operator, in-cluster** — the `onepassword-homelab`
    `ClusterSecretStore` (namespace `external-secrets`, 1Password **Connect**
    provider) syncs `ExternalSecret` resources into Kubernetes `Secret`s. Connect
@@ -32,10 +33,19 @@ CLAUDE.md, `ansible/README.md`, `docs/29-flux-operations.md`) point here.
    The bootstrap Secrets `op-credentials` and `onepassword-connect-token` in the
    `external-secrets` namespace are the **only** manually created Kubernetes
    Secrets (`task flux:bootstrap-onepassword`); every other in-cluster Secret is
-   produced by ESO from a manifest Flux reconciles.
+   produced by ESO from a manifest Flux reconciles — with one credential this
+   estate does not own at all (below).
 3. **CI pipelines** — `.gitlab-ci.yml` uses `op run` / `op read` with
    `OP_SERVICE_ACCOUNT_TOKEN` (a service-account token, not Connect) to inject
    secrets into jobs at run time.
+
+**One in-cluster Secret is owned by GitLab, not by us.** The GitLab agent's Flux
+module creates the `gitlab-flux-system` `Receiver` and its
+`gitlab-receiver-flux-system` HMAC Secret in `flux-system` out of band (docs/29
+§ Push-Triggered Reconciliation). The token is minted by KAS, has no 1Password
+item, and is **not rotated from this repo** — re-minting it means re-creating
+the agent registration in GitLab. It is allowlisted in
+`scripts/check-unmanaged-secrets.py` so its owner is on the record.
 
 **The `weisssrv.infra` collection adds no fourth consumer.** The roles ship no
 credentials and no `op://` references of their own — every secret still arrives

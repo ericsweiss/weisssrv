@@ -20,8 +20,9 @@ metadata:
 spec:
   interval: 30m
   # Revert out-of-band edits (see traefik/release.yaml for the repo rule). Safe:
-  # chart 1.98.9 renders no webhook, and the proxy StatefulSets the operator
-  # creates at runtime are not chart-rendered, so drift never touches them.
+  # the pinned chart renders no webhook (re-verify on a bump), and the proxy
+  # StatefulSets the operator creates at runtime are not chart-rendered, so
+  # drift never touches them.
   driftDetection:
     mode: enabled
   chart:

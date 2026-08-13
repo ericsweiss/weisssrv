@@ -19,12 +19,17 @@ from pathlib import Path
 
 import pytest
 
-from test_vendored_byte_identity import VENDORED
+from test_vendored_byte_identity import registered_consumer_paths
 
 SCRIPTS = Path(__file__).resolve().parent
 
-PY_SCRIPTS = sorted(n for n in VENDORED if n.endswith(".py"))
-SH_SCRIPTS = sorted(n for n in VENDORED if n.endswith(".sh"))
+# Derived from the library's registry, never re-listed here — a newly vendored
+# script is smoke-tested the moment it is registered.
+_VENDORED = sorted(
+    Path(p).name for p in registered_consumer_paths() if p.startswith("scripts/")
+)
+PY_SCRIPTS = [n for n in _VENDORED if n.endswith(".py")]
+SH_SCRIPTS = [n for n in _VENDORED if n.endswith(".sh")]
 
 # The vendored CLIs whose --help must render: an argparse script that raises on
 # import of its own parser is otherwise only caught in CI.
@@ -40,6 +45,14 @@ HELP_SCRIPTS = [
     "version-bump-mr.py",
     "version-check-ci.py",
 ]
+
+
+def test_the_registry_was_readable():
+    """An empty parametrisation would silently pass every case below."""
+    assert _VENDORED, (
+        "no vendored scripts/ entries resolved from the weisssrv-lib registry — see "
+        "test_vendored_byte_identity.py for the checkout requirement"
+    )
 
 
 @pytest.mark.parametrize("name", PY_SCRIPTS)

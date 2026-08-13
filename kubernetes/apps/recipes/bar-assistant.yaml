@@ -55,7 +55,7 @@ spec:
                     values:
                       - k3s-agt-nas-01
       tolerations:
-        - key: esweiss.com/nas
+        - key: ${cluster_node_label_domain}/nas
           operator: Equal
           value: "true"
           effect: PreferNoSchedule
@@ -78,19 +78,12 @@ spec:
           # (needs CAP_SETUID). Pod-level seccomp + automount:false are the safe
           # hardening; deeper container hardening needs per-image testing first.
           env:
-            # Match official docker-compose: ALLOW_EMPTY_PASSWORD=yes.
-            # Accepted tradeoff: this cache is unauthenticated (and stores
-            # sessions, since bar-assistant sets SESSION_DRIVER=redis below), but
-            # it is network-contained:
-            #   - recipes namespace is default-deny ingress AND egress
-            #   - allow-bar-assistant-redis ingress on 6379 admits ONLY the
-            #     bar-assistant pod (plus the observability redis-exporter for
-            #     read-only metric scraping) — see networkpolicy.yaml
-            #   - allow-egress-recipes-data-plane limits this pod's egress to
-            #     kube-dns only (no inbound/outbound LAN reach)
-            # So exposure is bar-assistant-only, in-namespace. If any other
-            # workload ever lands in recipes, switch to a REDIS_PASSWORD sourced
-            # from recipes-secrets (ExternalSecret) before relying on the policy
+            # Match official docker-compose: ALLOW_EMPTY_PASSWORD=yes. Accepted
+            # tradeoff — this cache holds sessions (bar-assistant sets
+            # SESSION_DRIVER=redis below) but is reachable only from the
+            # bar-assistant pod (+ the observability redis-exporter) per
+            # networkpolicy.yaml. If any other workload lands in `recipes`, switch
+            # to a REDIS_PASSWORD from recipes-secrets before relying on policy
             # alone.
             - name: ALLOW_EMPTY_PASSWORD
               value: "yes"
@@ -184,7 +177,7 @@ spec:
                     values:
                       - k3s-agt-nas-01
       tolerations:
-        - key: esweiss.com/nas
+        - key: ${cluster_node_label_domain}/nas
           operator: Equal
           value: "true"
           effect: PreferNoSchedule
@@ -303,7 +296,7 @@ spec:
                     values:
                       - k3s-agt-nas-01
       tolerations:
-        - key: esweiss.com/nas
+        - key: ${cluster_node_label_domain}/nas
           operator: Equal
           value: "true"
           effect: PreferNoSchedule
@@ -318,7 +311,7 @@ spec:
           env:
             # Application URL - matches official docker-compose APP_URL=$API_URL
             - name: APP_URL
-              value: https://bar.ericsweiss.com
+              value: https://bar.${cluster_external_domain}
             # Meilisearch configuration - matches official docker-compose
             - name: MEILISEARCH_HOST
               value: http://bar-assistant-meilisearch:7700
@@ -338,7 +331,7 @@ spec:
             - name: MAIL_MAILER
               value: smtp
             - name: MAIL_HOST
-              value: smtp-relay.esweiss.com
+              value: smtp-relay.${cluster_internal_domain}
             - name: MAIL_PORT
               value: "587"
             - name: MAIL_ENCRYPTION
@@ -354,12 +347,12 @@ spec:
                   name: recipes-secrets
                   key: smtp-password
             - name: MAIL_FROM_ADDRESS
-              value: bar-assistant@esweiss.com
+              value: bar-assistant@${cluster_internal_domain}
             - name: MAIL_FROM_NAME
               value: Bar Assistant
             # Authentik SSO configuration
             - name: AUTHENTIK_BASE_URL
-              value: https://auth.ericsweiss.com
+              value: https://auth.${cluster_external_domain}
             - name: AUTHENTIK_CLIENT_ID
               valueFrom:
                 secretKeyRef:
@@ -371,7 +364,7 @@ spec:
                   name: recipes-secrets
                   key: bar-assistant-authentik-client-secret
             - name: AUTHENTIK_REDIRECT_URI
-              value: https://bar.ericsweiss.com/oauth/callback
+              value: https://bar.${cluster_external_domain}/oauth/callback
             # Required so Authentik logins can auto-create/link an account.
             # Who may sign in is gated by the authentik binding on the `bar`
             # application (terraform/authentik/policy_bindings.tf), not here.
@@ -449,7 +442,7 @@ metadata:
 data:
   config.js: |
     window.srConfig = {
-      API_URL: "https://bar.ericsweiss.com",
+      API_URL: "https://bar.${cluster_external_domain}",
       MEILISEARCH_URL: "/search",
       DEFAULT_LOCALE: "en-US"
     };
@@ -491,7 +484,7 @@ spec:
             - weight: 100
               preference:
                 matchExpressions:
-                  - key: esweiss.com/nas
+                  - key: ${cluster_node_label_domain}/nas
                     operator: DoesNotExist
         # Spread the HPA-driven replicas across hosts so a single-node drain
         # doesn't take the UI offline.
@@ -504,7 +497,7 @@ spec:
                     app.kubernetes.io/name: salt-rim
                 topologyKey: kubernetes.io/hostname
       nodeSelector:
-        esweiss.com/general: "true"
+        ${cluster_node_label_domain}/general: "true"
       # Static nginx frontend: no kube-API use, already non-root on :8080, so
       # drop-ALL + aPE:false are safe. runAsUser is not pinned — the image sets
       # uid 33 itself.

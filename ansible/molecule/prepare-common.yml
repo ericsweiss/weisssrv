@@ -1,9 +1,7 @@
 ---
 # Shared Molecule prepare playbook: initialize the container for reliable
-# testing. Wired as the default `provisioner.playbooks.prepare` in
-# ansible/molecule/base.yml, so every default scenario inherits it and only
-# roles needing extra prep ship their own molecule/default/prepare.yml (and
-# re-point playbooks.prepare at it in their molecule.yml).
+# testing. Imported by integration-tests/_shared/prepare.yml, which every
+# integration-test scenario wires as provisioner.playbooks.prepare.
 - name: Prepare
   hosts: all
   gather_facts: false

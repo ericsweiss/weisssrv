@@ -39,7 +39,20 @@ REDACT_PATTERNS=(
     's/client_id:[[:space:]]*[^[:space:]]+/client_id: <REDACTED>/g'
     's/client_secret:[[:space:]]*[^[:space:]]+/client_secret: <REDACTED>/g'
     's/glrt-[A-Za-z0-9_-]+/<GITLAB_RUNNER_TOKEN>/g'
+    # The rest of the GitLab token family (PAT, deploy, CI build) — shaped like
+    # glrt- but distinct prefixes, so the pattern above never matched them.
+    's/gl(pat|dt|cbt|soat|ft|imt)-[A-Za-z0-9_-]{16,}/<GITLAB_TOKEN>/g'
     's/gh[oprsu]_[A-Za-z0-9]{30,}/<GITHUB_TOKEN>/g'
+    # Model-provider API keys. sk-ant- and sk-proj- are longer forms of sk-, so
+    # the alternation is ordered longest-first.
+    's/sk-(ant|proj)-[A-Za-z0-9_-]{20,}/<MODEL_API_KEY>/g'
+    's/sk-[A-Za-z0-9]{20,}/<MODEL_API_KEY>/g'
+    # AWS-shaped access key ids (Backblaze B2 S3-compatible keys included).
+    's/(AKIA|ASIA|AIDA|AROA)[A-Z0-9]{16}/<AWS_ACCESS_KEY_ID>/g'
+    # B2 native credentials, named by key rather than by shape — the master
+    # application key is high-entropy but has no recognisable prefix.
+    's/[A-Za-z_]*application_key[[:space:]]*[:=][[:space:]]*[^[:space:]]+/application_key: <REDACTED>/gi'
+    's/[A-Za-z_]*key_id[[:space:]]*[:=][[:space:]]*[^[:space:]]+/key_id: <REDACTED>/gi'
     's/ops_[A-Za-z0-9_.-]{40,}/<OP_SA_TOKEN>/g'
     's/xox[abprs]-[A-Za-z0-9-]{10,}/<SLACK_TOKEN>/g'
     's/eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/<JWT>/g'
@@ -67,9 +80,9 @@ redact_file() {
 
 # remote section emitters
 # collect-state.sh injects these into every remote body via `declare -f`, so the
-# same unit-tested code renders each section host-side. They replace the
-# `producer | head -N || echo "none"` idiom, whose fallback is dead (the
-# pipeline exits with head's status) and whose cap is silent.
+# same unit-tested code renders each section host-side. They cap with an
+# explicit truncation marker and emit a fallback on empty input — neither of
+# which a `producer | head -N || echo` pipeline can do.
 # NOTE: <fallback> must describe the EMPTY case only. A failed producer is
 # detected by the caller (capture-and-test its exit status), never by wording
 # the fallback as a failure.

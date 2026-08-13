@@ -9,9 +9,8 @@ workload in the `homarr` namespace and exposes it at
 
 - Namespace: `homarr`
 - Manifests: [`kubernetes/apps/homarr/`](../kubernetes/apps/homarr/)
-- Image: `ghcr.io/homarr-labs/homarr` (public; v-prefixed docker tag, e.g.
-  `v1.71.0`), pinned via `homarr_version` in
-  `ansible/inventories/prod/group_vars/all.yml`
+- Image: `ghcr.io/homarr-labs/homarr` (public; v-prefixed docker tag), pinned
+  via `homarr_version` in `ansible/inventories/prod/group_vars/all.yml`
 - Authentik objects: [`terraform/authentik/`](../terraform/authentik/) (docs/40)
 
 ---

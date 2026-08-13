@@ -53,7 +53,9 @@ qol_omz_plugins:
 
 ### Custom Aliases
 
-Located in `~/.alias.zsh` (deployed from `roles/qol/templates/alias.zsh.j2`):
+Located in `~/.alias.zsh`, deployed from weisssrv-lib
+`ansible_collections/weisssrv/infra/roles/qol/templates/alias.zsh.j2` (the source
+of truth — the listing below is a summary and can drift):
 
 ```bash
 export EDITOR="nvim"
@@ -71,9 +73,9 @@ alias @src='cd ~/src'
 alias @repo='cd ~/src/repo'
 
 # Directory navigation
-alias ..='..'          # up one directory
-alias ...='../..'      # up two directories
-alias ....='../../..'  # up three directories
+alias ..='cd ..'           # up one directory
+alias ...='cd ../..'       # up two directories
+alias ....='cd ../../..'   # up three directories
 
 # Applications
 alias v='nvim'
@@ -104,7 +106,8 @@ qol_nvim_plugins:
 
 ### Configuration
 
-Located at `~/.config/nvim/init.vim` (deployed from `roles/qol/templates/init.vim.j2`):
+Located at `~/.config/nvim/init.vim`, deployed from weisssrv-lib
+`ansible_collections/weisssrv/infra/roles/qol/templates/init.vim.j2`:
 
 ```vim
 " Vundle bootstrap
@@ -311,7 +314,12 @@ ansible-playbook ansible/playbooks/site.yml --tags qol --limit pve-nas-01
    nvim +PluginInstall +qall
    ```
 
-## References
+## Related documentation
+
+- [docs/02 — Installation](02-install.md) (where the qol role runs in the deploy)
+- [docs/12 — Runbooks](12-runbooks.md) (day-2 operations that use these aliases)
+
+## External references
 
 - [Oh My Zsh Documentation](https://github.com/ohmyzsh/ohmyzsh/wiki)
 - [Oh My Zsh Plugins](https://github.com/ohmyzsh/ohmyzsh/wiki/Plugins)

@@ -1,13 +1,24 @@
 ---
-# promtool unit tests for the backup alerts whose `for:` is measured in DAYS
-# (ResticOffsite*Prolonged 24h, PruneBlocked 48h, RepoShrank's 2d delta window).
+# promtool unit tests for the backup escalations that measure a DAY or more
+# (ResticOffsiteFailedProlonged, PruneFailed, PruneBlocked, RepoShrank's 2d
+# delta window).
 #
-# Split out of backup.test.yaml for one reason: promtool re-evaluates EVERY rule
-# in the corpus once per evaluation_interval for the whole eval_time horizon, so
-# a 73h test at the 1m interval the other files use costs ~4400 evaluations of
+# None of them use a multi-day `for:` any more: a pending-alert timer lives in
+# Prometheus' memory and is discarded on restart, and this Prometheus is
+# NAS-pinned, so the escalation would reset during exactly the multi-day outage
+# it exists for. They read the elapsed time out of the TSDB instead — a metric
+# timestamp where one exists, min/max_over_time plus an `offset` history guard
+# where it does not — behind a short `for:`. The tests below therefore pin two
+# things per alert: that the escalation fires once the window is genuinely
+# covered, and that it does NOT fire on a freshly-deployed collector whose
+# history is shorter than the window.
+#
+# Split out of backup.test.yaml for cost: promtool re-evaluates EVERY rule in
+# the corpus once per evaluation_interval for the whole eval_time horizon, so a
+# 73h test at the 1m interval the other files use costs ~4400 evaluations of
 # 150+ rules. A 30m interval still lands two evaluations inside the shortest
-# `for:` here (1h) and runs two orders of magnitude cheaper. Input series stay at
-# 5m so they never go stale between evaluations (the 5m lookback delta).
+# `for:` here (1h) and runs two orders of magnitude cheaper. Input series stay
+# at 5m so they never go stale between evaluations (the 5m lookback delta).
 rule_files:
   - rules.yaml
 evaluation_interval: 30m
@@ -15,27 +26,68 @@ tests:
   # ResticOffsiteFailedProlonged: `last_backup_success == 0` OR a failed run
   # with NO backup metric at all (the pre-split emitter, or an abort before the
   # backup stage). The `unless on (instance)` arm is what makes the second case
-  # work and is invisible to review — pinned in all three states below.
+  # work and is invisible to review — pinned in all three states below. Each
+  # arm now also requires its timestamp gauge to be more than a day stale;
+  # promtool starts at unix 0, so a timestamp of 0 is "more than a day ago" for
+  # every eval_time past 24h.
   - interval: 5m
     input_series:
       - series: 'restic_offsite_last_backup_success{instance="192.168.0.102:9101"}'
         values: '0+0x400'
       - series: 'restic_offsite_last_run_success{instance="192.168.0.102:9101"}'
         values: '0+0x400'
+      - series: 'restic_offsite_last_backup_timestamp_seconds{instance="192.168.0.102:9101"}'
+        values: '0+0x400'
     alert_rule_test:
-      - eval_time: 24h5m
+      - eval_time: 26h
         alertname: ResticOffsiteFailedProlonged
         exp_alerts:
           - exp_labels:
               severity: critical
               instance: 192.168.0.102:9101
-  # Failed run, no backup-success series: the `unless` arm carries it.
+  # RESTART PROOF. The same 26h of failure with the series only starting at
+  # hour 20 — the shape a Prometheus restart leaves behind. Under the old 24h
+  # `for:` the pending timer restarted with the process and the escalation
+  # never elapsed; the metric's own timestamp is unaffected, so it still fires.
+  - interval: 5m
+    input_series:
+      - series: 'restic_offsite_last_backup_success{instance="192.168.0.102:9101"}'
+        values: '_x240 0+0x120'
+      - series: 'restic_offsite_last_run_success{instance="192.168.0.102:9101"}'
+        values: '_x240 0+0x120'
+      - series: 'restic_offsite_last_backup_timestamp_seconds{instance="192.168.0.102:9101"}'
+        values: '_x240 0+0x120'
+    alert_rule_test:
+      - eval_time: 26h
+        alertname: ResticOffsiteFailedProlonged
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              instance: 192.168.0.102:9101
+  # A failure whose last successful backup was only an hour ago — one bad
+  # night, not a prolonged loss. ResticOffsiteFailed covers the run itself.
+  - interval: 5m
+    input_series:
+      - series: 'restic_offsite_last_backup_success{instance="192.168.0.102:9101"}'
+        values: '0+0x400'
+      - series: 'restic_offsite_last_run_success{instance="192.168.0.102:9101"}'
+        values: '0+0x400'
+      - series: 'restic_offsite_last_backup_timestamp_seconds{instance="192.168.0.102:9101"}'
+        values: '86400+0x400'
+    alert_rule_test:
+      - eval_time: 26h
+        alertname: ResticOffsiteFailedProlonged
+        exp_alerts: []
+  # Failed run, no backup-success series: the `unless` arm carries it, gated on
+  # the run-level timestamp instead.
   - interval: 5m
     input_series:
       - series: 'restic_offsite_last_run_success{instance="192.168.0.102:9101"}'
         values: '0+0x400'
+      - series: 'restic_offsite_last_success_timestamp_seconds{instance="192.168.0.102:9101"}'
+        values: '0+0x400'
     alert_rule_test:
-      - eval_time: 24h5m
+      - eval_time: 26h
         alertname: ResticOffsiteFailedProlonged
         exp_alerts:
           - exp_labels:
@@ -51,14 +103,29 @@ tests:
         values: '1+0x400'
       - series: 'restic_offsite_last_run_success{instance="192.168.0.102:9101"}'
         values: '0+0x400'
+      - series: 'restic_offsite_last_backup_timestamp_seconds{instance="192.168.0.102:9101"}'
+        values: '0+0x400'
     alert_rule_test:
-      - eval_time: 24h5m
+      - eval_time: 26h
+        alertname: ResticOffsiteFailedProlonged
+        exp_alerts: []
+  # A repository that has never had a successful backup emits no timestamp
+  # series at all. Neither arm may fire — ResticOffsiteStale's absent() arm owns
+  # that state at warning, so an undeployed collector cannot page critical.
+  - interval: 5m
+    input_series:
+      - series: 'restic_offsite_last_backup_success{instance="192.168.0.102:9101"}'
+        values: '0+0x400'
+      - series: 'restic_offsite_last_run_success{instance="192.168.0.102:9101"}'
+        values: '0+0x400'
+    alert_rule_test:
+      - eval_time: 26h
         alertname: ResticOffsiteFailedProlonged
         exp_alerts: []
 
   # The retention pair. A ceiling refusal sets retention_blocked=1 and
   # last_prune_success=0: ONLY ResticOffsitePruneBlocked may fire, with its
-  # own 48h grace. Before the `unless`, PruneFailed announced the same state
+  # own 48h window. Before the `unless`, PruneFailed announced the same state
   # 24h earlier under "usually a stale repository lock".
   - interval: 5m
     input_series:
@@ -67,15 +134,39 @@ tests:
       - series: 'restic_offsite_retention_blocked{instance="192.168.0.102:9101"}'
         values: '1+0x700'
     alert_rule_test:
-      - eval_time: 24h5m
+      - eval_time: 26h
         alertname: ResticOffsitePruneFailed
         exp_alerts: []
-      - eval_time: 48h5m
+      - eval_time: 50h
         alertname: ResticOffsitePruneBlocked
         exp_alerts:
           - exp_labels:
               severity: warning
               instance: 192.168.0.102:9101
+  # HISTORY GUARD. The same blocked state, but the collector only started
+  # shipping 10h ago. min_over_time alone is satisfied by those samples, so
+  # without the `offset` arm a fresh deploy would fire two days early.
+  - interval: 5m
+    input_series:
+      - series: 'restic_offsite_last_prune_success{instance="192.168.0.102:9101"}'
+        values: '_x468 0+0x232'
+      - series: 'restic_offsite_retention_blocked{instance="192.168.0.102:9101"}'
+        values: '_x468 1+0x232'
+    alert_rule_test:
+      - eval_time: 50h
+        alertname: ResticOffsitePruneBlocked
+        exp_alerts: []
+  # A prune that succeeded at some point inside the window clears the blocked
+  # escalation even though the newest sample is 1 — the ceiling guard has to be
+  # continuous to count.
+  - interval: 5m
+    input_series:
+      - series: 'restic_offsite_retention_blocked{instance="192.168.0.102:9101"}'
+        values: '1+0x300 0+0x50 1+0x350'
+    alert_rule_test:
+      - eval_time: 50h
+        alertname: ResticOffsitePruneBlocked
+        exp_alerts: []
 
   # A genuine prune error leaves retention_blocked at 0, so PruneFailed fires
   # and PruneBlocked stays silent.
@@ -86,14 +177,26 @@ tests:
       - series: 'restic_offsite_retention_blocked{instance="192.168.0.102:9101"}'
         values: '0+0x700'
     alert_rule_test:
-      - eval_time: 24h5m
+      - eval_time: 26h
         alertname: ResticOffsitePruneFailed
         exp_alerts:
           - exp_labels:
               severity: warning
               instance: 192.168.0.102:9101
-      - eval_time: 48h5m
+      - eval_time: 50h
         alertname: ResticOffsitePruneBlocked
+        exp_alerts: []
+  # A prune that applied inside the 24h window clears it: max_over_time sees
+  # the 1 even though the newest sample is 0.
+  - interval: 5m
+    input_series:
+      - series: 'restic_offsite_last_prune_success{instance="192.168.0.102:9101"}'
+        values: '0+0x100 1+0x20 0+0x580'
+      - series: 'restic_offsite_retention_blocked{instance="192.168.0.102:9101"}'
+        values: '0+0x700'
+    alert_rule_test:
+      - eval_time: 26h
+        alertname: ResticOffsitePruneFailed
         exp_alerts: []
 
   # ResticOffsiteRepoShrank must ignore the emitter's "0 = unknown" sentinel,

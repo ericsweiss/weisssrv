@@ -11,8 +11,7 @@
 #
 # All xprtsec=tls PVs use server: pve-nas-01.esweiss.com (NOT the IP) so the TLS
 # handshake matches the *.esweiss.com cert. server: is an immutable PV field —
-# the live IP->hostname cutover deletes+recreates each PV (Retain → data safe)
-# and rolls the consuming pod. See docs/16 cutover procedure.
+# the force annotation below lets Flux delete+recreate a PV (Retain → data safe).
 apiVersion: v1
 kind: PersistentVolume
 metadata:
@@ -37,7 +36,7 @@ spec:
     # *.esweiss.com. Mounting by 192.168.0.102 fails the handshake
     # ("Certificate owner unexpected"); pve-nas-01.esweiss.com resolves to
     # .102 via AdGuard and matches the wildcard. See docs/07 Transport Security.
-    server: pve-nas-01.esweiss.com
+    server: pve-nas-01.${cluster_internal_domain}
     path: /media           # NFS export path (exposes /mnt/media mergerfs via bind mount)
   mountOptions:
     - nfsvers=4.2

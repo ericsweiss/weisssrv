@@ -17,6 +17,18 @@ spec:
     - ReadWriteOnce
   persistentVolumeReclaimPolicy: Retain
   storageClassName: ""
+  # Pre-bound, like loki-data and grafana-data: a classless RWO PV is otherwise
+  # claimable by any classless RWO PVC <=150Gi in any namespace during the window
+  # after a PVC delete/recreate, and reclaimPolicy Retain would leave the TSDB
+  # volume Released with no automatic path back.
+  #
+  # The name is the operator's volumeClaimTemplate name joined to the StatefulSet
+  # pod ordinal: <claim>-<statefulset>-0 where the StatefulSet is
+  # prometheus-<Prometheus CR name>. It therefore moves if the release name or
+  # the storage spec's volumeClaimTemplate name changes.
+  claimRef:
+    namespace: observability
+    name: prometheus-kube-prometheus-stack-prometheus-db-prometheus-kube-prometheus-stack-prometheus-0
   hostPath:
     path: /mnt/prometheus-data
     type: Directory

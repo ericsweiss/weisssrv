@@ -1,11 +1,7 @@
 # Cursor Rules for weisssrv
 
-Production Proxmox homelab managed as Infrastructure as Code.
-
-**Tech stack**: Proxmox VE + Debian 13 (trixie), Ansible (roles come from the
-`weisssrv.infra` collection in `eric/weisssrv-lib`), Terraform (Cloudflare,
-Tailscale, Authentik), k3s + Flux CD GitOps, External Secrets Operator with
-1Password Connect, ZFS.
+Production Proxmox homelab managed as Infrastructure as Code. The tech stack is
+described once, in `CLAUDE.md` § Project Overview.
 
 1. Read `CLAUDE.md` first — project overview, architecture, repo family, secrets
    and version management. It names the canonical source for everything owned

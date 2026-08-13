@@ -15,7 +15,7 @@ patches:
         value: prowlarr
       - op: replace
         path: /spec/routes/0/match
-        value: Host(`prowlarr.esweiss.com`)
+        value: Host(`prowlarr.${cluster_internal_domain}`)
       - op: replace
         path: /spec/routes/0/services/0/name
         value: prowlarr

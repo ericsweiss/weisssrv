@@ -88,7 +88,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max(probe_success{instance=\"https://home.esweiss.com\"})",
+          "expr": "max(probe_success{instance=\"https://home.${cluster_internal_domain}\"})",
           "legendFormat": "home-assistant",
           "refId": "A"
         }
@@ -403,7 +403,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max(probe_duration_seconds{instance=\"https://home.esweiss.com\"})",
+          "expr": "max(probe_duration_seconds{instance=\"https://home.${cluster_internal_domain}\"})",
           "legendFormat": "response time",
           "refId": "A"
         }

@@ -1,8 +1,9 @@
 ---
-# Flux Kustomization: infrastructure sources (HelmRepositories + cluster-versions ConfigMap).
+# Flux Kustomization: infrastructure sources (HelmRepositories + the
+# cluster-versions and cluster-config ConfigMaps).
 #
 # Runs first, with no dependencies: the HelmRepository CRs helm-controller pulls
-# charts from, plus the cluster-versions ConfigMap every later stage substitutes
+# charts from, plus the two ConfigMaps every later stage substitutes
 # from. No postBuild here — sources/ contains no placeholders of its own.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization

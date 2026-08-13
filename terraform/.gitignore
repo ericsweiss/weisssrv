@@ -11,6 +11,17 @@
 *.tfvars
 *.tfvars.json
 
+# Saved plans. A plan stores sensitive attribute values in the CLEAR, and the
+# repo-wide pattern is `-out=tfplan` with no extension (CI and every runbook), so
+# `*.tfplan` alone does not match. A plan of terraform/authentik holds every OIDC
+# client secret plus the injected basic-auth passwords, and gitleaks does not
+# pattern-match the binary msgpack form.
+tfplan
+tfplan.json
+*.tfplan
+*.tfplan.json
+plan.out
+
 # Crash log files
 crash.log
 crash.*.log

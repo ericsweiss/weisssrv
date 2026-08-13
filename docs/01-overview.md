@@ -72,11 +72,10 @@ uplink through a **2-NIC active-backup bond** (`nic0`/`nic1`, hand-maintained in
 
 **Note**: K3s VM subnets are allowlisted in NFS exports for secure access to
 storage. Mind the CIDR gotcha: `192.168.0.220/29` masks to .216–.223 and does
-**not** cover server .227 (prec-01). So the RW exports (`/export/{appdata,share,media}`)
-allowlist only the /29 blocks (agents `192.168.0.200/29` + servers .222/.223),
-deliberately excluding .227; the fsid=0 pseudo-root and `/export/k3s-etcd` list
-all three servers (.222/.223/.227) as explicit /32s. This mirrors the wording in
-`host_vars/pve-nas-01.yml` (the source of truth).
+**not** cover server .227 (prec-01), so every export that needs .227 carries an
+explicit `192.168.0.227/32` line alongside the two /29 blocks — the RW exports
+(`/export/{appdata,share,media}`) as well as the fsid=0 pseudo-root and
+`/export/k3s-etcd`. `host_vars/pve-nas-01.yml` is the source of truth.
 
 ## Service Architecture
 

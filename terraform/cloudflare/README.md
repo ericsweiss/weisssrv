@@ -11,13 +11,38 @@ backend + 1Password-injected credentials) with one crucial difference:
 > shows change **counts**, not which records — so review the plan output in the
 > `terraform-plan` job before merging.
 
+## Shape from the library, records from here
+
+`main.tf` is a thin caller of the weisssrv-lib **`cloudflare-zone`** module at a
+pinned `?ref=`: the module owns the zone-settings resource and the four
+per-record lifecycle classes, `dns.tf` owns this site's record inventory
+(`local.dns_records`). This layer is the module's only live consumer, so a
+behavioural module change shows up in a real `terraform plan` here instead of
+only in the cluster template's render check.
+
+Two consequences:
+
+- **The ref is bumped by hand.** `scripts/check-lib-pins.py` gates the
+  `include:` list and `ansible/requirements.yml`; it does not read Terraform
+  module sources. Bump `?ref=` in `main.tf` and `terraform/tailscale/main.tf`
+  in the same MR as `variables.WEISSSRV_LIB_REF`.
+- **`terraform init` clones `weisssrv-lib` over HTTPS.** In CI that is already
+  covered: `.gitlab-ci.yml`'s global `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_0` pair
+  rewrites credential-less `https://$CI_SERVER_HOST/` URLs to the job token (the
+  same mechanism `ansible-galaxy` uses for the collection), so `terraform-plan`,
+  `deploy-terraform` and `terraform-validate` authenticate without extra config.
+  Locally the operator's own git credentials cover it.
+
+`zone_settings` is passed explicitly rather than left to the module defaults, so
+a library default change cannot move this zone's TLS posture on a ref bump.
+
 ## Who owns which record
 
 | Owner | Records | Why |
 |---|---|---|
 | **Terraform** (`dns.tf`) | apex `A`, `git`, `direct`, `vpn` (A); `photos` + the `registry/pages/ide` nested CNAMEs; CAA set; SPF + DMARC TXT | external-dns cannot express wildcards, nested subdomains, CAA/TXT, or the DDNS-tracked A records |
 | **external-dns** (in-cluster) | service CNAMEs derived from IngressRoutes (`auth`, `bar`, `food`, `plex`, `home`, …) | annotation-driven, follows the route |
-| **cloudflare-ddns CronJob** (`kubernetes/apps/cloudflare-ddns`) | the *content* (IP) of the four A records above | the home WAN IP is dynamic; each record carries `ignore_changes = [content]` so Terraform never reverts it. `proxied`/`ttl` stay Terraform-owned — the CronJob preserves the live values on update |
+| **cloudflare-ddns CronJob** (`kubernetes/infrastructure/configs/cloudflare-ddns`) | the *content* (IP) of the four A records above | the home WAN IP is dynamic; each record sets `content_managed_externally`, so the module gives it `ignore_changes = [content]` and Terraform never reverts it. `proxied`/`ttl` stay Terraform-owned — the CronJob preserves the live values on update |
 
 Two zone records are deliberately dashboard-managed and never planned: the null
 `MX` (disables inbound mail) and the `google-site-verification` apex TXT.
@@ -26,18 +51,31 @@ Two zone records are deliberately dashboard-managed and never planned: the null
 HTTPS, `min_tls_version 1.2`, HSTS (1 year, includeSubDomains, no preload),
 HTTP/3, Brotli, cache level.
 
+The DDNS placeholder in `dns.tf` is `192.0.2.1` (RFC 5737 TEST-NET-1), not a real
+address: a fresh apply is *expected* to resolve those four records to something
+unroutable until the CronJob's next `*/5` run. Seeding from the live WAN IP would
+rot in git and eventually publish a lease that belongs to someone else.
+
 ## prevent_destroy policy
 
-Every resource in this module carries `lifecycle { prevent_destroy = true }`,
-because an auto-applying module plus a counts-only MR widget means a deleted or
-renamed resource block (or a `for_each` key) would drop a record from public DNS
-with no confirmation step. Removing one is a deliberate **two-step** change:
+Every record sets `protected = true`, which routes it to a module resource
+carrying `lifecycle { prevent_destroy = true }` — because an auto-applying module
+plus a counts-only MR widget means a deleted or renamed map key would drop a
+record from public DNS with no confirmation step. Removing one is a deliberate
+**two-step** change:
 
-1. delete the `lifecycle` block, commit/merge;
-2. delete the resource, commit/merge.
+1. clear `protected` on the entry, commit/merge;
+2. delete the entry, commit/merge.
 
 `prevent_destroy` does not block in-place updates, and `moved` blocks (state
-renames) are unaffected.
+renames — `moved.tf` holds the ones from the pre-module layout) are unaffected.
+
+One gap the module cannot close: `lifecycle` takes no variables, so the
+zone-settings override does **not** carry `prevent_destroy` (the module's
+`manage_zone_settings` toggle has to stay reversible). Removing the whole
+`module "zone"` block still fails on the records' `prevent_destroy`, so the only
+unguarded path is deliberately setting `manage_zone_settings = false` — which
+reverts `ssl`/HSTS/`min_tls_version` zone-wide. Do not do that casually.
 
 ## Credentials and state backend
 
@@ -68,3 +106,10 @@ task terraform:init     # terraform init (GitLab state backend)
 task terraform:plan     # review the diff vs the live zone
 task terraform:apply    # normally unnecessary — CI applies on merge to main
 ```
+
+> The **unprefixed** `terraform:*` tasks are this (Cloudflare) module; the
+> siblings are `terraform:tailscale-*` and `terraform:authentik-*`. So
+> `task terraform:apply` right after editing `terraform/authentik` applies
+> **Cloudflare** (the task sets its own directory, regardless of `pwd`), against
+> whatever plan is on disk, and unlike the prefixed tasks it carries no
+> `-auto-approve` refusal guard.

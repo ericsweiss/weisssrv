@@ -23,9 +23,9 @@ spec:
     spec:
       # Only the GPU node runs it (single-GPU cluster).
       nodeSelector:
-        esweiss.com/gpu: nvidia
+        ${cluster_node_label_domain}/gpu: nvidia
       tolerations:
-        - key: esweiss.com/compute
+        - key: ${cluster_node_label_domain}/compute
           operator: Equal
           value: "true"
           effect: PreferNoSchedule
@@ -45,10 +45,9 @@ spec:
             - name: DCGM_EXPORTER_KUBERNETES
               value: "true"
             # Monitor every GPU on the node WITHOUT consuming a device-plugin
-            # allocation. NOTE (docs/43): on a single-GPU node with the device
-            # plugin active, the container toolkit may need
-            # accept-nvidia-visible-devices-envvar-when-unprivileged=true for this
-            # to inject the GPU — verify metrics flow in the maintenance window.
+            # allocation. If DCGM exports no DCGM_FI_DEV_* series, the container
+            # toolkit needs accept-nvidia-visible-devices-envvar-when-unprivileged
+            # =true (docs/43); GpuExporterNoMetrics detects that state.
             - name: NVIDIA_VISIBLE_DEVICES
               value: all
             - name: NVIDIA_DRIVER_CAPABILITIES
@@ -78,10 +77,9 @@ spec:
               port: metrics
             initialDelaySeconds: 15
             periodSeconds: 15
-          # Memory limit only — no CPU limit (repo-wide policy, docs/33).
-          # 1Gi limit: DCGM's embedded hostengine + NVML loading the driver libs
-          # spikes past 256Mi during init and gets OOMKilled (exit 137) the instant
-          # it initializes on the real GPU — the exporter never emitted a metric.
+          # Memory limit only — no CPU limit (repo-wide policy, docs/33). 1Gi:
+          # DCGM's hostengine + NVML driver-lib load spikes well past 256Mi
+          # during init.
           resources:
             requests:
               cpu: 50m

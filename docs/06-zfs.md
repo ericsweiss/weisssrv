@@ -10,7 +10,7 @@ The NAS has four ZFS pools with different performance characteristics:
 |------|------|----------|----------|
 | `tank` | raidz2 (6x 22TB) + special device + cache | ~88TB usable (132TB raw) | Bulk media storage |
 | `ssd` | raidz1 (3x 4TB SSD) | ~8TB usable / 10.9TB raw | App data, databases |
-| `nvme` | Single Samsung 990 PRO NVMe | 2.27TB pool (per `zpool list nvme`) | Hot downloads, fast scratch |
+| `nvme` | Partition 4 of the Proxmox boot NVMe (Samsung 990 PRO 4TB — shared device) | 2.27TB pool (per `zpool list nvme`) | Hot downloads, fast scratch |
 | `archive` | raidz1 (4x 6TB) | ~18TB usable (3x 6TB data) | Cold backups |
 
 ## Pool Details
@@ -40,6 +40,64 @@ recordsize: 1M (tank/media), 128K (tank/share, default)
   `tank/immich-data/disk` zvol — the 2 TB **sparse** photo library for the Immich
   VM (.157), ext4, mounted `/mnt/immich-data` on the guest. Inherits the parent's
   aes-256-gcm encryption and rides the existing archive SRC_LIST entry (docs/36).
+
+### ssd (App Data Pool)
+
+**Configuration**:
+- **Data VDEVs**: raidz1 with 3x Samsung 870 EVO 4TB
+
+**Properties**:
+```bash
+atime: off
+compression: lz4 (ssd/appdata; pool default zstd)
+# Databases live on zvols — volblocksize is set at zvol creation, not recordsize
+```
+
+**Datasets**:
+- `ssd/appdata` - Application persistent data (per-app children:
+  authentik, gitlab, loki, mealie, nextcloud, prometheus). The Nextcloud VM
+  (156) adds `ssd/appdata/nextcloud/app` (20G, /mnt/nextcloud-app: compose +
+  html/config + backups) and `ssd/appdata/nextcloud/postgres` (16G, PGDATA).
+  Its bulk user data is a 2T **sparse** zvol `tank/nextcloud-data/disk` under the
+  encrypted `tank/nextcloud-data` root (already in the archive SRC_LIST).
+- `ssd/databases` - Database storage (encryption root; replicated to `archive`)
+- `ssd/pve` - GitLab VM disks (encryption root; intentionally NOT replicated by
+  `archive-backupctl` — the GitLab repos zvol under `ssd/appdata` is the backed-up copy)
+- `ssd/k3s-etcd` - Off-node k3s etcd snapshot copies (encryption root; exported as
+  `/export/k3s-etcd` to the k3s servers over TLS — see docs/07 and docs/17)
+
+### nvme (Fast Scratch Pool)
+
+**Configuration**:
+- **Data VDEVs**: Single Samsung 990 PRO 4TB NVMe
+
+**Properties**:
+```bash
+atime: off
+compression: zstd
+```
+
+**Datasets**:
+- `nvme/media` - MergerFS hot tier for downloads and new media (mounted `/mnt/nvme/media`)
+- `nvme/fast` - Transcode scratch (mounted `/mnt/nvme/fast`)
+- `nvme/pve` - Ephemeral VM/LXC images (mounted `/mnt/nvme/pve`; Proxmox-managed)
+
+### archive (Cold Storage Pool)
+
+**Configuration**:
+- **Data VDEVs**: raidz1 with 4x ST6000NM0024 (6TB enterprise drives)
+
+**Properties**:
+```bash
+atime: off
+compression: zstd
+canmount: off
+com.sun:auto-snapshot: false  # Disable automatic snapshots
+```
+
+**Datasets**:
+- `archive/backups` - Long-term backup retention
+- `archive/proxmox` - Long-term Proxmox VM backup retention
 
 > The canonical dataset inventory is the encryption table (§At Rest) and the
 > backup section below — these per-pool lists are a quick reference.
@@ -122,10 +180,19 @@ zpool list -v ssd
 
 ### NVMe Pool Creation
 
-The nvme pool is a single-device pool using a Samsung 990 PRO 4TB for maximum performance.
+The nvme pool is a single-partition pool on the Samsung 990 PRO 4TB.
+
+> **DANGER — this device is pve-nas-01's Proxmox boot disk. The pool lives on
+> partition 4 only.** `p1` is the BIOS boot partition, `p2` is the 1 GB ESP
+> (`/boot/efi`) and `p3` is the LVM PV carrying the `pve` volume group
+> (`pve-root`, `pve-swap`/cryptswap, and the `pve-data` thin pool with the
+> local-lvm guest disks). Only `p4` (PARTLABEL `nvme-zfs`) is the `zfs_member`.
+> Running `zpool create` against the whole device destroys the hypervisor
+> install — a live hazard during a rebuild, because docs/17 § Total Site Loss
+> installs Proxmox onto this same disk before sending the operator here.
 
 ```bash
-# Create nvme pool (single device, no redundancy)
+# Create nvme pool (single partition, no redundancy)
 zpool create -o ashift=12 \
              -O acltype=posixacl \
              -O compression=zstd \
@@ -134,22 +201,21 @@ zpool create -o ashift=12 \
              -O xattr=sa \
              -m /mnt/nvme \
              nvme \
-             /dev/disk/by-id/nvme-Samsung_SSD_990_PRO_4TB_S7KGNU0YA04137V
+             /dev/disk/by-id/nvme-Samsung_SSD_990_PRO_4TB_S7KGNU0YA04137V-part4
 
-# Verify pool creation
+# Verify pool creation — the vdev must read ...-part4, never the bare device
 zpool status nvme
 zpool list -v nvme
 ```
 
 **Pool Properties**:
-- Single device (no redundancy)
+- Single partition on a shared device (no redundancy)
 - Optimized for hot data and fast scratch space
 - Same base properties as tank pool
 
 **Capacity**: ~2.27TB pool (single-disk, no parity overhead) — the live figure
-per `zpool list nvme`, which is the source of truth. This is below the 4TB
-device's nominal size; if the whole device is expected in the pool, check its
-partitioning/by-id before trusting the label.
+per `zpool list nvme`, which is the source of truth. It is below the 4TB
+device's nominal size because partitions 1-3 hold the Proxmox install (above).
 
 **WARNING**: Single device pool has no redundancy. Suitable for temporary/cache data only.
 
@@ -298,64 +364,6 @@ zpool create -f -o ashift=12 \
   /dev/disk/by-id/ata-Samsung_SSD_870_EVO_1TB_SERIAL2
 ```
 
-### ssd (App Data Pool)
-
-**Configuration**:
-- **Data VDEVs**: raidz1 with 3x Samsung 870 EVO 4TB
-
-**Properties**:
-```bash
-atime: off
-compression: lz4 (ssd/appdata; pool default zstd)
-# Databases live on zvols — volblocksize is set at zvol creation, not recordsize
-```
-
-**Datasets**:
-- `ssd/appdata` - Application persistent data (per-app children:
-  authentik, gitlab, loki, mealie, nextcloud, prometheus). The Nextcloud VM
-  (156) adds `ssd/appdata/nextcloud/app` (20G, /mnt/nextcloud-app: compose +
-  html/config + backups) and `ssd/appdata/nextcloud/postgres` (16G, PGDATA).
-  Its bulk user data is a 2T **sparse** zvol `tank/nextcloud-data/disk` under the
-  encrypted `tank/nextcloud-data` root (already in the archive SRC_LIST).
-- `ssd/databases` - Database storage (encryption root; replicated to `archive`)
-- `ssd/pve` - GitLab VM disks (encryption root; intentionally NOT replicated by
-  `archive-backupctl` — the GitLab repos zvol under `ssd/appdata` is the backed-up copy)
-- `ssd/k3s-etcd` - Off-node k3s etcd snapshot copies (encryption root; exported as
-  `/export/k3s-etcd` to the k3s servers over TLS — see docs/07 and docs/17)
-
-### nvme (Fast Scratch Pool)
-
-**Configuration**:
-- **Data VDEVs**: Single Samsung 990 PRO 4TB NVMe
-
-**Properties**:
-```bash
-atime: off
-compression: zstd
-```
-
-**Datasets**:
-- `nvme/media` - MergerFS hot tier for downloads and new media (mounted `/mnt/nvme/media`)
-- `nvme/fast` - Transcode scratch (mounted `/mnt/nvme/fast`)
-- `nvme/pve` - Ephemeral VM/LXC images (mounted `/mnt/nvme/pve`; Proxmox-managed)
-
-### archive (Cold Storage Pool)
-
-**Configuration**:
-- **Data VDEVs**: raidz1 with 4x ST6000NM0024 (6TB enterprise drives)
-
-**Properties**:
-```bash
-atime: off
-compression: zstd
-canmount: off
-com.sun:auto-snapshot: false  # Disable automatic snapshots
-```
-
-**Datasets**:
-- `archive/backups` - Long-term backup retention
-- `archive/proxmox` - Long-term Proxmox VM backup retention
-
 ## ZFS Scrubs
 
 Regular scrubs verify data integrity and repair any errors.
@@ -465,7 +473,8 @@ sudo zfs set recordsize=16K ssd/appdata/mealie
 
 ### Compression
 
-All pools use `zstd` compression:
+The four NAS pool roots default to `zstd`; `ssd/appdata` and the compute-node
+`local-ssd` pools use `lz4` (see the per-pool sections above for why):
 
 ```bash
 # Check compression ratio
@@ -545,8 +554,9 @@ sudo zpool iostat -v tank 5
 `archive-backupctl` (on pve-nas-01, nightly timer) replicates the source datasets
 to the `archive` pool as **raw, encrypted** `zfs send -w` streams, so the archive
 copies are encrypted at rest under each source's own key — the archive never
-loads a key. Replicated datasets (`SRC_LIST` in `archive-backupctl.sh.j2` is the source of
-truth): `tank/{share,backups,nextcloud-data,proxmox,immich-data}` and
+loads a key. Replicated datasets (`nas_storage_archive_backup_sources` in
+`host_vars/pve-nas-01.yml` is the source of truth; the role renders it as the
+script's `SRC_LIST`): `tank/{share,backups,nextcloud-data,proxmox,immich-data}` and
 `ssd/{appdata,databases,k3s-etcd}`. Retention: the newest few `archsync`
 snapshots plus a grandfather monthly.
 
@@ -702,7 +712,7 @@ sudo /usr/local/sbin/swap-clean.sh
 systemctl status swap-clean.timer; journalctl -t swap-clean --since today
 
 # Permanent changes: edit host_vars (nas_storage_zfs_arc_max_bytes / nic_tuning_vm_swappiness
-# / nas_swap_clean_*) and redeploy
+# / nas_storage_swap_clean_*) and redeploy
 task storage:deploy
 ```
 
@@ -750,17 +760,19 @@ the posture is explicit rather than assumed.
 > `zfs send -w` streams from the encrypted tank/ssd sources (see docs/32).
 > Compute-node `local-ssd` pools stay
 > plaintext on purpose (avoids a chicken-and-egg dependency on the Connect VIP
-> at boot).
+> at boot), and so does pve-nas-01's `local-lvm` thin pool, which is not ZFS at
+> all — it is carved out of the Proxmox boot device and carries four guests.
 
 | Subsystem | Encrypted? | Notes |
 |---|---|---|
 | ZFS pools `tank`, `ssd` | Yes (dataset-level) | Encryption roots `tank/share`, `tank/backups`, `tank/proxmox`, `tank/nextcloud-data`, `tank/immich-data`, `ssd/appdata` (+ children), `ssd/databases`, `ssd/pve`, `ssd/k3s-etcd`; boot unlock via Connect. `tank/media` and `tank/pve` stay plaintext by design. See `docs/32-zfs-encryption.md`. |
 | ZFS pool `nvme` | No | Media domain (hot-tier media, transcode scratch, ephemeral images) — non-sensitive, plaintext by design. See `docs/32-zfs-encryption.md`. |
 | ZFS pool `archive` | Dataset-level (raw) | Plaintext pool; the eight replicated backup datasets arrive as raw `zfs send -w` streams encrypted under their source keys (`archive-backupctl`). See `docs/32-zfs-encryption.md`. |
-| Compute-node `local-ssd` ZFS pools (5 hosts) | No | Intentionally plaintext — see `docs/32-zfs-encryption.md` for the cold-boot rationale. |
+| Compute-node `local-ssd` ZFS pools (5 hosts) | No | Intentionally plaintext — see `docs/32-zfs-encryption.md` for the cold-boot rationale and for what the pools actually hold. |
+| pve-nas-01 `local-lvm` (LVM-thin in VG `pve`) | No | Not ZFS and not dm-crypt: a thin pool on partition 3 of the Proxmox boot NVMe. Carries CT 152 (plex) and CT 158 (immich-ml) rootfs plus VM 202 (k3s-agt-nas-01) and VM 222 (k3s-srv-nas-01, an **etcd quorum member** — its root holds the etcd datastore, the k3s secrets-encryption key, the server token and the cluster CA). Same cold-boot rationale as compute `local-ssd`: VM 222 must never wait on unlock, or quorum would depend on the NAS. VM 202 appears in `zfs_encryption_guest_vmids` because its passthrough data zvols live on the encrypted `ssd/appdata` — that list is start ordering, not a claim about the root disk. See `docs/32-zfs-encryption.md`. |
 | App PVCs — zvol-backed (Authentik PG, Mealie PG, GitLab repos, Prometheus, Loki) | Yes | Each is a zvol under `ssd/appdata/*` → inherits the encrypted parent. |
-| App PVCs — NFS-backed (Grafana) | Yes | Grafana SQLite DB on an NFS PV (`pve-nas-01.esweiss.com:/appdata/grafana`, i.e. `ssd/appdata/grafana`) — not a zvol, but the export lives on the encrypted `ssd/appdata` dataset. |
-| Proxmox VM disks | Mixed | App-data zvols under `ssd/appdata/*` are encrypted, and the NAS app-VM root disks land on `ssd/pve`, which **is** an encryption root (GitLab, Nextcloud, Immich — docs/32, docs/35, docs/36). Guest disks on `local-ssd` (every k3s VM) and `tank/pve` (ephemeral images) are plaintext by design. **The `ssd` Proxmox storage entry that points at `ssd/pve` is not codified** — `proxmox_backup_storage` declares only `tank-proxmox` — so verify `storage.cfg`'s dataset for the `ssd` id after any host rebuild, or the roots silently land plaintext. Tracked in docs/16. |
+| App PVCs — NFS-backed (all of them) | Yes, except the media share | Every app NFS PV resolves under `/appdata` or `/backups-apps` (i.e. `ssd/appdata` / `tank/backups`), both encryption roots — the export, not the PV, carries the encryption. The one exception is the `/media` PV used by the download/media stack, which is the plaintext media domain by design. The PV definitions under `kubernetes/apps/` (plus the Grafana PV in `infrastructure/observability/`) are the inventory of record. |
+| Proxmox VM disks | Mixed | App-data zvols under `ssd/appdata/*` are encrypted, and the NAS app-VM root disks land on `ssd/pve`, which **is** an encryption root (GitLab, Nextcloud, Immich — docs/32, docs/35, docs/36). Guest disks on `local-ssd` (every compute-host k3s VM), pve-nas-01's `local-lvm` (row above) and `tank/pve` (ephemeral images) are plaintext by design. The `ssd` storage id is codified in `proxmox_backup_storage` (host_vars/pve-nas-01.yml) with `pool: ssd/pve`; `pool` is create-fixed and asserted, so an id recreated against the pool root `ssd` (encryption=off) fails the deploy instead of silently landing new guest disks in plaintext. `postflight.yml` additionally asserts `ssd/pve` is still `aes-256-gcm`. |
 | K3s Secrets in etcd | Yes | `secrets-encryption: true` (`reencrypt_finished` confirmed). |
 | 1Password Connect on-disk cache | Yes | Connect server's encrypted SQLite (AES via bootstrap creds). |
 | 1Password vault (cloud + Connect sync source) | Yes | Vendor end-to-end (SRP + secret key). |
@@ -777,7 +789,8 @@ the posture is explicit rather than assumed.
 | LAN/Tailscale client → Traefik | Yes | Wildcard certs + HSTS middleware + TLS 1.3 minimum (same default `TLSOption`). |
 | Traefik → in-cluster app pods | Yes (cross-node) | Plain HTTP at the L7 layer; flannel-wireguard encrypts every cross-node packet (`--flannel-backend=wireguard-native`). Same-node hops stay on the local bridge unencrypted at L3 — acceptable per LAN-trust threat model since the attacker would already need root on the node. |
 | Traefik → VM backends (GitLab web, HAOS, Plex) | Yes | Each backend terminates TLS using the *.esweiss.com wildcard distributed by acme_certs (gitlab nginx :443, HAOS http.ssl_certificate :8123, Plex custom-cert PFX :32400); Traefik connects with `scheme: https` + the shared `vm-tls-wildcard` ServersTransport. Auto-renewal is part of the standard acme.sh post-renewal hook. |
-| Traefik → AdGuard admin (dns-01/dns-02) :3000 | Accepted exception | LAN-only (lan-tailscale-only middleware) plain HTTP. AdGuard's admin UI doesn't natively support TLS on its own port; flipping to AdGuard's :443 (DoH+admin) requires UI/sync config outside Ansible's reach. User-facing hop (browser/Tailscale → Traefik) is HTTPS; only the LAN-internal Traefik → AdGuard hop is plain. Bounded by LAN-trust threat model. |
+| Traefik → AdGuard admin (dns-01/dns-02) :443 | Yes | Both the resolver-hostname routes (`dns-0X`) and the SSO routes (`adguard`/`adguard-02`) target the `adguard-home-0X-backend` Services with `scheme: https`, port 443, `vm-tls-wildcard` ServersTransport — AdGuard terminates TLS itself with the distributed wildcard cert. |
+| adguard-exporter → AdGuard admin API (dns-01/dns-02) :443 | Yes | `ADGUARD_SERVERS: https://dns-0X.esweiss.com` in `infrastructure/observability/exporters/adguard-exporter.yaml`, with a pod-level `hostAliases` pinning each name to the host IP. The name (not a bare IP) is required — the wildcard cert has no IP SAN — and the alias is required because the AdGuard rewrite sends that name to the Traefik internal VIP, whose route drops the pod CIDR. AdGuard's admin credential no longer crosses the LAN in the clear. |
 | Traefik → GitLab Container Registry :5050 | Yes | `registry_nginx['listen_https'] = true` with the distributed wildcard cert; Traefik connects `scheme: https` + `vm-tls-wildcard` ServersTransport. |
 | Traefik → GitLab Pages :8443 | Yes | `pages_nginx` terminates TLS on :8443 (wildcard cert) and proxies to the pages daemon, which binds localhost only; Traefik connects `scheme: https` + `vm-tls-wildcard`. |
 | Traefik → router | No | Hardware-specific; configure router's TLS endpoint manually if/when it's worth the effort. |
@@ -786,7 +799,8 @@ the posture is explicit rather than assumed.
 | Alloy → Loki ingestion | Yes (cross-node) | Plain HTTP at L7; cross-node hops ride flannel-wireguard. Same-node hop on `cni0` is unencrypted. |
 | Host Alloy → Loki | Yes | `alloy_host_loki_url` is set to `https://loki.esweiss.com/loki/api/v1/push` (Traefik IngressRoute, lan-tailscale-only). The plaintext `:31100` NodePort is not in git — it is applied by hand only for the duration of an ingress outage and deleted afterwards (docs/12 § Loki break-glass NodePort). |
 | AdGuard sync (dns-01 → dns-02) | Yes | adguardhome-sync URLs target the Traefik-fronted `dns-{01,02}.esweiss.com` hostnames; TLS terminated by Traefik with the wildcard cert. |
-| Local clients → smtp-relay | Yes | `smtp_tls_security_level: encrypt`. |
+| Local clients → smtp-relay | Yes in practice | The hosts' null-client sets `smtp_tls_security_level = secure` (encrypts **and** verifies the relay's cert), and submission :587 requires TLS (`smtpd_tls_security_level = encrypt` in `master.cf`). The relay's :25 smtpd is opportunistic only (`smtpd_tls_security_level = may`), so plaintext would still be accepted there. No client uses it, and since `mynetworks`/`smtpd_relay_restrictions` dropped back to the role default (loopback-only + SASL-only, `group_vars/mail.yml`) an unauthenticated LAN sender on :25 is refused rather than relayed. The `sg-smtp-relay` :25 firewall rule is still rendered by the library role. |
+| Immich VM (.157) → Immich ML LXC (.158) :3003 | No | Every photo byte crosses the LAN as plain HTTP. Scoped to the one source by the `sg-immich-ml` security group (`IN ACCEPT -source 192.168.0.157 -p tcp -dport 3003`). See docs/36. |
 | smtp-relay → Gmail | Yes | `smtp_tls_security_level: secure` (encrypts AND verifies Gmail's certificate against the system CA bundle). |
 | Unbound → upstream resolvers | Yes | DoT with `tls-cert-bundle`. |
 | LAN clients → AdGuard (port 53) | Partial | Plain UDP/TCP 53; DoT exposed but stub resolvers rarely use it. |
@@ -833,15 +847,15 @@ in `docs/32-zfs-encryption.md`. Scope (post-rollout):
 - **AdGuard sync over HTTPS** — `adguard_sync_origin/replica`
   target the Traefik-fronted `dns-{01,02}.esweiss.com` hostnames.
 
-Earlier guidance was to skip ZFS-native encryption on `tank`/`ssd`. That
-was reversed once 1Password Connect HA + internal exposure removed the
-manual-passphrase boot dependency — passphrase is fetched at boot from
-Connect, with a manual SSH-and-paste fallback for cold-cluster
-recovery. For a single-tenant homelab on a LAN-trusted network, the
-~5% throughput cost of a WireGuard CNI is small relative to the
-encryption-at-rest gain on disk theft / RMA exposure.
-
 ## Related documentation
+
+- [docs/32 — ZFS encryption](32-zfs-encryption.md) (encryption roots, boot unlock, key handling)
+- [docs/44 — Storage bootstrap](44-storage-bootstrap.md) (pool/dataset creation order)
+- [docs/07 — File services](07-fileservices.md) (NFS/Samba exports on these pools)
+- [docs/17 — Disaster recovery](17-disaster-recovery.md) and [docs/42 — Offsite backup](42-offsite-backup.md)
+- [docs/34 — Bond MAC flapping](34-bond-mac-flapping.md) and [docs/43 — GPU passthrough](43-gpu-passthrough.md) (the ARC-cap constraint)
+
+## External references
 
 - [OpenZFS Documentation](https://openzfs.github.io/openzfs-docs/)
 - [ZFS Best Practices](https://pthree.org/2012/12/13/zfs-administration-part-ix-copy-on-write/)

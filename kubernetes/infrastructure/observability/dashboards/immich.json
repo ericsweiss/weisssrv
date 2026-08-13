@@ -88,7 +88,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max(probe_success{instance=\"https://photos.esweiss.com\"})",
+          "expr": "max(probe_success{instance=\"https://photos.${cluster_internal_domain}\"})",
           "refId": "A",
           "legendFormat": "immich"
         }
@@ -655,7 +655,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max(probe_success{instance=\"https://photos.esweiss.com\"})",
+          "expr": "max(probe_success{instance=\"https://photos.${cluster_internal_domain}\"})",
           "refId": "A",
           "legendFormat": "Immich"
         }

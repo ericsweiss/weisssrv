@@ -13,10 +13,10 @@ spec:
   issuerRef:
     name: letsencrypt-prod
     kind: ClusterIssuer
-  commonName: "food.ericsweiss.com"
+  commonName: "food.${cluster_external_domain}"
   dnsNames:
-    - "food.ericsweiss.com"
-    - "bar.ericsweiss.com"
+    - "food.${cluster_external_domain}"
+    - "bar.${cluster_external_domain}"
   renewBefore: 720h
 
 ---
@@ -31,8 +31,8 @@ spec:
   issuerRef:
     name: letsencrypt-prod
     kind: ClusterIssuer
-  commonName: "food.esweiss.com"
+  commonName: "food.${cluster_internal_domain}"
   dnsNames:
-    - "food.esweiss.com"
-    - "bar.esweiss.com"
+    - "food.${cluster_internal_domain}"
+    - "bar.${cluster_internal_domain}"
   renewBefore: 720h

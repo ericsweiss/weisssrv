@@ -13,7 +13,7 @@ through the UI, so a chart adds nothing over these.
   unauthenticated browsers into Authentik (one login, both hostnames). The
   `homarr-admins` Authentik group (matched from the `groups` claim) maps to the
   same-named Homarr admin group — that grants admin. There is **no standing
-  local admin** (the onboarding credentials break-glass was retired in !193). DR
+  local admin**. DR
   for a total Authentik outage: re-enable `credentials` via `task flux:dev-apply`
   + `homarr-cli recreate-admin` (see docs/41 §SSO). Authentik objects live in
   `terraform/authentik` (docs/40).

@@ -195,11 +195,8 @@
           changed_when: true
           no_log: true
 
-        # SAFEGUARD: Ensure k3s.service (server) is disabled and stopped on agent nodes.
-        # This protects against:
-        # 1. Previous incorrect upgrades that installed server mode on agents
-        # 2. Any future bugs that might accidentally install k3s server
-        # The k3s.service file may not exist on clean agent installs, so we check first.
+        # Agents must never run k3s.service (server). The unit may not exist on a
+        # clean agent install, so check before disabling.
         - name: Check if k3s.service exists (server service on agent node)
           ansible.builtin.stat:
             path: /etc/systemd/system/k3s.service

@@ -205,6 +205,30 @@ those leave `retention_blocked 0`, so `ResticOffsitePruneFailed` and
 `ResticOffsiteFailed` are the ones that fire. Inspect with
 `restic-offsitectl snapshots` before raising the ceiling.
 
+### Repository locks (rc=11)
+
+An interrupted run leaves a repository lock in the repo. A **shared** lock lets
+plain backups keep succeeding, so snapshots keep landing while every *exclusive*
+operation — `forget`/`prune` and `check` — fails with **rc=11**, reported as
+`repository lock` in the journal. That is what happened on 2026-07-27: a crashed
+run's lock silently disabled retention and integrity verification for ~14 days
+while backups looked healthy, and the resulting alerts went unactioned for six
+days because "backups are landing" reads as fine.
+
+The durable fix ships in the role: every restic invocation carries
+`--retry-lock` (`restic_offsite_retry_lock`, 15m), and a **pre-flight reaper**
+removes a lock owned by a PID that is dead **on this host** and older than
+`restic_offsite_stale_lock_min_age_h` (6h), logging loudly when it does.
+
+`restic-offsitectl unlock` runs the same reaper on demand and is deliberately
+opinionated: it exits **non-zero when locks remain**, naming why each was
+declined (held by another host, PID still alive here, unparseable timestamp,
+inside the staleness window). A repository it cannot read at all reports that as
+its own verdict rather than "no locks" — an unreachable bucket or a rotated repo
+password must not read as success. So a human still unlocks by hand only when
+the reaper declined and the holder is genuinely gone (e.g. the run died on
+another host).
+
 ### Metrics / alerts
 
 `/var/lib/node_exporter/restic_offsite.prom`: `restic_offsite_last_run_success`,
@@ -275,13 +299,38 @@ restorability, and only a drill closes that gap.
 
 `backup-restore-drill.timer` on pve-nas-01 (shipped by the `restic_offsite`
 role, `Persistent=true`, gated by `restic_offsite_restore_drill_enabled`) runs
-`restic-offsitectl drill`: it restores the **smallest N files** of the newest
-snapshot (default 5, hard-capped at 8 MiB of B2 egress) and byte-compares each
-against the ZFS snapshot subtree it came from. That is a narrow but real
-end-to-end proof — repo → decrypt → restore → identical bytes — at negligible
-cost. Run it on demand with `restic-offsitectl drill` or
+`restic-offsitectl drill`: it samples a handful of files out of the newest
+snapshot, restores just those, and byte-compares each against the ZFS snapshot
+subtree it came from — immutable, so any difference is corruption rather than
+churn. A narrow but real end-to-end proof (repo → decrypt → restore → identical
+bytes) at negligible cost. Run it on demand with `restic-offsitectl drill` or
 `systemctl start backup-restore-drill.service`, and read the journal with
 `journalctl -t backup-restore-drill`.
+
+**What a pass actually proves is decided by the sampler's bounds**, all of them
+role variables (defaults shown; this host overrides one, below):
+
+| Variable | Default | Why it exists |
+|---|---|---|
+| `restic_offsite_restore_drill_sample_files` / `_max_bytes` | 5 files / 16 MiB | egress is billed, and volume proves nothing extra here — repo-wide bit-rot is the rotating deep verify's job |
+| `restic_offsite_restore_drill_min_bytes` | 4096 | size **floor**. Without it the sampler takes the estate's globally smallest files — one- and two-byte marker files — and the drill passes having proven essentially no bytes |
+| `restic_offsite_restore_drill_min_sources` | 1 | **coverage floor**. Candidates are bucketed per file source and drawn **round-robin**, so one source cannot dominate the sample; a drill that covered fewer sources than this **fails** |
+
+Only `restic_offsite_sources` (file sources) count toward coverage: a zvol
+source's filesystem is mounted only during a run, so between runs it has no
+comparand and is never drillable. A requirement above the number of configured
+sources is clamped with a log line rather than wedging the drill permanently.
+The journal prints the per-source breakdown (`sampled <src>=<n> …`, sources
+covered, candidates under the floor), so what a pass proved is readable after
+the fact. A sampled path containing a glob metacharacter is skipped with a
+logged note — restic would treat it as a pattern, and the resulting MISSING
+would be a sampler artefact rather than a real failure.
+
+On this cluster five file sources are declared and this host sets
+`restic_offsite_restore_drill_min_sources: 3` (`host_vars/pve-nas-01.yml`), so a
+drill that quietly narrows to one source fails. Three is the practical ceiling:
+`ssd/databases` is empty and can never yield a candidate, leaving four
+drillable sources.
 
 It writes three gauges to `/var/lib/node_exporter/backup_restore_drill.prom`:
 
@@ -382,12 +431,20 @@ answer and is the recommended next step if the threat model tightens.
 - **bwlimit 61440** (60 MiB/s), raised from 30: measurement showed 30 was the
   binding constraint rather than pool capability, and the drivers of the earlier
   I/O-saturation incident (CI DinD on the NAS agent, memory/swap thrash) are
-  fixed. The pve-nas-01 slice clears ~03:30→~04:45, before media-mover (06:00)
-  and archive (06:30), so `tank/proxmox` is not deferred.
+  fixed.
 
-**Re-measure after deploy** (one full 03:30 window): pve-nas-01 slice done by
-~04:45 with `ProxmoxHostIOPressure` quiet; `archive_backup_dataset_deferred_runs{dataset="tank/proxmox"}`
-back to 0. Only then consider a further raise (80+ deliberately deferred).
+**Measured window (2026-08):** the pve-nas-01 slice runs **03:30 → ~05:36**, not
+the ~04:45 originally projected. Windows 11 (VM 155) is the long pole at ~1h12m,
+with GitLab (153) ~29m and the two photo/cloud VMs ~11m each. That still lands
+before media-mover (06:00) and archive (06:30) and
+`archive_backup_dataset_deferred_runs{dataset="tank/proxmox"}` stays 0, so
+nothing is deferred — but the real headroom is about **24 minutes, not ~75**.
+
+Read the current numbers rather than trusting this paragraph:
+`journalctl -u pvescheduler --since yesterday | grep -E '(Starting|Finished) Backup'`.
+The gate for raising the bwlimit further (a comfortable margin to 06:00) is
+therefore **not met**; a raise would have to be paired with shrinking or
+rescheduling the Windows dump.
 
 ## Encrypted swap (Proxmox hosts)
 
@@ -449,6 +506,31 @@ working throughout — it never issues a real delete.
 > B2's current API, producing a permanent phantom diff, which is why bucket
 > settings are reconciled by `scripts/b2-bucket-drift.py` rather than a
 > `terraform/b2` module. Review `task b2:drift`, then `task b2:apply`.
+
+### Object Lock is deliberately OFF (decision record)
+
+`scripts/b2-bucket.json` declares `defaultRetention: {mode: null, period: null}`
+— the bucket has **no Object Lock**, and that is a decision, not an oversight.
+Ransomware resistance rests on two compensating controls instead:
+
+- The nightly key has **no `deleteFiles`** capability, so a compromised NAS
+  cannot issue a real delete: restic deletes by *hiding*, and the bucket's
+  30-day `daysFromHidingToDeleting` lifecycle is what finally reclaims the
+  bytes. A destructive actor with that key can hide versions; it cannot remove
+  them, and the previous 30 days remain restorable.
+- Bucket settings themselves are drift-checked (`b2-drift-plan` in CI,
+  `task b2:apply` supervised), so silently clearing that lifecycle or flipping
+  the bucket type shows up as a diff.
+
+Why not enable it: Object Lock in governance mode is **irreversible per object**
+for its retention period, which means `forget --prune` cannot reclaim space
+inside the window — restic's GFS retention and the lock would fight, and the
+bucket's cost becomes retention-period-times-churn rather than the ~50 GB steady
+state costed above. Revisit if the key ever gains delete capability or the
+threat model changes; the change would be `defaultRetention` in
+`scripts/b2-bucket.json` plus a retention period at least matching
+`restic_offsite_keep_last`, applied through `task b2:apply` so the drift gate
+enforces it thereafter.
 
 ### Home Assistant native backups
 

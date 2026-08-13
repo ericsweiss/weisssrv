@@ -47,7 +47,7 @@ patches:
           # hairpinning through the WAN record for git.ericsweiss.com. clone_url
           # (in runners.config) must match: GitLab's external_url stays
           # git.ericsweiss.com, so clone URLs would not follow gitlabUrl alone.
-          gitlabUrl: https://git.esweiss.com
+          gitlabUrl: https://git.${cluster_internal_domain}
 
           # Single runner controller pod — concurrent (per-runner) controls actual
           # job parallelism. Pinning to 1 so an out-of-band `kubectl scale
@@ -91,15 +91,15 @@ patches:
                 - weight: 100
                   preference:
                     matchExpressions:
-                      - key: esweiss.com/nas
+                      - key: ${cluster_node_label_domain}/nas
                         operator: DoesNotExist
 
           tolerations:
-            - key: esweiss.com/ingress
+            - key: ${cluster_node_label_domain}/ingress
               operator: Equal
               value: "true"
               effect: PreferNoSchedule
-            - key: esweiss.com/compute
+            - key: ${cluster_node_label_domain}/compute
               operator: Equal
               value: "true"
               effect: PreferNoSchedule

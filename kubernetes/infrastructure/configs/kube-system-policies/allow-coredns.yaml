@@ -1,0 +1,70 @@
+---
+# CoreDNS ingress — the one allow a kube-system default-deny can break
+# cluster-wide, so every clause here is derived from live evidence.
+#
+# podSelector: k3s labels its CoreDNS pods `k8s-app: kube-dns` and nothing else
+# besides the ReplicaSet hash (`kubectl get pods -n kube-system -l
+# k8s-app=kube-dns --show-labels`). It is the same selector the kube-dns Service
+# and kube-prometheus-stack's coredns Service carry, so all three agree.
+#
+# A DNS query reaches those pods three ways, hence three peer shapes on one rule:
+#   * namespaceSelector {} — ordinary pods, in every namespace, present and
+#     future. This is the path essentially all cluster traffic takes.
+#   * the pod CIDR — a query aimed at the kube-dns ClusterIP from outside the pod
+#     network is DNAT'd AND masqueraded by kube-proxy/flannel before it reaches
+#     the pod, so its source can arrive as the sending node's flannel gateway
+#     address rather than as a pod IP. Strictly a superset of what the
+#     namespaceSelector above already admits, so it widens nothing.
+#   * the LAN — deliberate defence in depth for host-netns clients, with NO
+#     currently-evidenced consumer. It is NOT covering the hostNetwork
+#     DaemonSets: kube-vip, node-exporter and metallb-speaker all run
+#     `dnsPolicy: ClusterFirst`, which the kubelet demotes to `Default` under
+#     hostNetwork, so they resolve through the node's /etc/resolv.conf (AdGuard
+#     on .150/.160) and never touch CoreDNS. The peer is kept so that node-side
+#     or future host-netns resolution against the kube-dns ClusterIP cannot
+#     silently break, and it is safe to keep because neither pod IPs nor the
+#     ClusterIP are LAN-routable — no non-node host can reach the pods through
+#     it. Written as the /24 rather than nine /32s so adding or re-addressing a
+#     node needs no policy edit. Before narrowing or deleting it, confirm no
+#     host-side unit queries 10.43.0.10.
+#
+# The addresses stay literal: NetworkPolicy ipBlock CIDRs are exempt from
+# scripts/check-cluster-literals.py by design, because
+# scripts/check-netpol-except-parity.py parses them straight from git before any
+# Flux substitution exists (sources/cluster-config.yaml's header is canonical).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-coredns-ingress
+spec:
+  podSelector:
+    matchLabels:
+      k8s-app: kube-dns
+  policyTypes:
+    - Ingress
+  ingress:
+    # Cluster DNS (container ports `dns` 53/UDP and `dns-tcp` 53/TCP).
+    - from:
+        - namespaceSelector: {}
+        - ipBlock:
+            cidr: 10.42.0.0/16
+        - ipBlock:
+            cidr: 192.168.0.0/24
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Prometheus scrape of the `metrics` container port, via the
+    # kube-prometheus-stack-coredns Service + ServiceMonitor (chart-rendered in
+    # observability, namespaceSelector matchNames kube-system). Chart-rendered
+    # monitors never appear in the flux:lint corpus, so this allow is pinned by
+    # scripts/test_check_default_deny_coverage.py rather than by
+    # scripts/check-scrape-netpol.py.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+      ports:
+        - protocol: TCP
+          port: 9153

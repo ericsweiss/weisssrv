@@ -46,7 +46,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "max(probe_success{instance=\"https://git.esweiss.com\"})",
+          "expr": "max(probe_success{instance=\"https://git.${cluster_internal_domain}\"})",
           "legendFormat": "gitlab",
           "refId": "A"
         }
@@ -83,7 +83,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "max(probe_duration_seconds{instance=\"https://git.esweiss.com\"})",
+          "expr": "max(probe_duration_seconds{instance=\"https://git.${cluster_internal_domain}\"})",
           "legendFormat": "duration",
           "refId": "A"
         }
@@ -121,7 +121,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "max(probe_ssl_earliest_cert_expiry{instance=\"https://git.esweiss.com\"}) - time()",
+          "expr": "max(probe_ssl_earliest_cert_expiry{instance=\"https://git.${cluster_internal_domain}\"}) - time()",
           "legendFormat": "ttl",
           "refId": "A"
         }
@@ -158,7 +158,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "max(probe_http_status_code{instance=\"https://git.esweiss.com\"})",
+          "expr": "max(probe_http_status_code{instance=\"https://git.${cluster_internal_domain}\"})",
           "legendFormat": "status",
           "refId": "A"
         }
@@ -211,25 +211,25 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "max(probe_duration_seconds{instance=\"https://git.esweiss.com\"})",
+          "expr": "max(probe_duration_seconds{instance=\"https://git.${cluster_internal_domain}\"})",
           "legendFormat": "total",
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "max(probe_http_duration_seconds{instance=\"https://git.esweiss.com\", phase=\"connect\"})",
+          "expr": "max(probe_http_duration_seconds{instance=\"https://git.${cluster_internal_domain}\", phase=\"connect\"})",
           "legendFormat": "connect",
           "refId": "B"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "max(probe_http_duration_seconds{instance=\"https://git.esweiss.com\", phase=\"tls\"})",
+          "expr": "max(probe_http_duration_seconds{instance=\"https://git.${cluster_internal_domain}\", phase=\"tls\"})",
           "legendFormat": "tls",
           "refId": "C"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "max(probe_http_duration_seconds{instance=\"https://git.esweiss.com\", phase=\"processing\"})",
+          "expr": "max(probe_http_duration_seconds{instance=\"https://git.${cluster_internal_domain}\", phase=\"processing\"})",
           "legendFormat": "processing",
           "refId": "D"
         }
@@ -278,7 +278,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "max(probe_success{instance=\"https://git.esweiss.com\"})",
+          "expr": "max(probe_success{instance=\"https://git.${cluster_internal_domain}\"})",
           "legendFormat": "gitlab",
           "refId": "A"
         }

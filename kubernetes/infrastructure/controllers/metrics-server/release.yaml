@@ -1,0 +1,131 @@
+---
+# metrics-server — the Resource Metrics API (metrics.k8s.io) behind every HPA and
+# the VPA recommender. Managed here rather than by k3s: k3s ships it as a STATIC
+# AddOn (raw manifests under /var/lib/rancher/k3s/server/manifests/metrics-server/),
+# so a HelmChartConfig cannot patch it and the packaged copy is fixed at one
+# replica with no memory limit — a single point of blindness for the whole
+# autoscaling stack. The k3s servers carry `--disable=metrics-server` (k3s
+# inventory, group_vars/k3s.yml) so this release owns it instead.
+#
+# CUTOVER (one-time, self-healing — docs/33 § metrics-server): the packaged
+# AddOn owns the v1beta1.metrics.k8s.io APIService and the kube-system objects
+# under Rancher's objectset annotations, which Helm cannot adopt, so the first
+# install FAILS on an ownership conflict. That is expected. The k3s `--disable`
+# ships in the same MR but is an ANSIBLE change with no automatic deploy job, so
+# it lands minutes-to-days later from `task k3s:deploy` (or the manual
+# maintenance-k3s-provision job); the AddOn keeps serving metrics.k8s.io in the
+# meantime, so nothing is blind while the conflict persists. Two properties make
+# the gap operator-proof rather than choreographed:
+#   * install.remediation.retries: -1 (below) — unlimited install retries, so
+#     the release installs ITSELF on the first attempt after k3s deletes the
+#     AddOn's objects. No `flux reconcile --reset`, no re-merge. (Impatient?
+#     `flux reconcile helmrelease metrics-server -n kube-system` skips the wait.)
+#   * this directory is its own Flux Kustomization
+#     (clusters/weisssrv/infrastructure-metrics-server.yaml), NOT part of the
+#     `wait: true` controllers stage, so the retry loop cannot make any other
+#     stage not-Ready. It does keep that Kustomization not-Ready, which is the
+#     intended loud reminder: deploy-verify names it until the cutover closes.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: metrics-server
+  namespace: kube-system
+spec:
+  interval: 30m
+  releaseName: metrics-server
+  # Correct out-of-band edits to chart-rendered objects — see the rationale on
+  # controllers/traefik/release.yaml. Safe here: no webhooks, no HPA.
+  driftDetection:
+    mode: enabled
+  chart:
+    spec:
+      chart: metrics-server
+      version: "${helm_chart_versions_metrics_server}"
+      sourceRef:
+        kind: HelmRepository
+        name: metrics-server
+        namespace: flux-system
+      interval: 12h
+  install:
+    remediation:
+      # -1 = unlimited (0 would bail after the first failure, a positive count
+      # after that many). Deliberate, and permanent rather than cutover-only:
+      # the install cannot succeed while the k3s AddOn still owns the
+      # kube-system objects, and the deploy that removes them is operator-paced.
+      # A bounded count would exhaust, mark the release stalled, and require a
+      # manual failure-counter reset at exactly the moment it could have
+      # succeeded on its own.
+      #
+      # Safe to loop: Helm's ownership check runs BEFORE the release is written
+      # to storage, so a conflicted install creates nothing and records nothing —
+      # the uninstall helm-controller performs between attempts finds no release
+      # and therefore cannot touch the AddOn's live objects.
+      retries: -1
+  upgrade:
+    remediation:
+      retries: 3
+      remediateLastFailure: true
+  values:
+    # 2 replicas + a PDB: metrics-server is the sole metric source for every HPA
+    # and the VPA recommender, so losing the one pod blinds both at once. The
+    # replicas are stateless and idempotent scrapers — a second one costs a
+    # duplicate kubelet scrape, nothing else.
+    replicas: 2
+    podDisruptionBudget:
+      enabled: true
+      minAvailable: 1
+    # Cluster-critical, not node-critical: it must outrank ordinary platform
+    # workloads (sources/priorityclasses.yaml) but it is not a per-node daemon.
+    priorityClassName: system-cluster-critical
+    # Hard anti-affinity: two replicas on one node buy nothing against the node
+    # loss they exist for. Six nodes are eligible (below), so this cannot wedge.
+    affinity:
+      podAntiAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app.kubernetes.io/name: metrics-server
+            topologyKey: kubernetes.io/hostname
+      nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+            # Keep off the Core 2 Quad opt nodes, mirroring the modern-CPU rule
+            # on the other Go control-plane components. NotIn also matches the
+            # unlabelled server nodes, which stay eligible.
+            - matchExpressions:
+                - key: ${cluster_node_label_domain}/cpu
+                  operator: NotIn
+                  values: ["legacy"]
+    # Same tolerations the k3s AddOn carried, so the server nodes stay eligible.
+    tolerations:
+      - key: CriticalAddonsOnly
+        operator: Exists
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+      - key: ${cluster_node_label_domain}/nas
+        operator: Exists
+        effect: PreferNoSchedule
+      - key: ${cluster_node_label_domain}/compute
+        operator: Exists
+        effect: PreferNoSchedule
+    # Sized off the 30d working-set peak (~88Mi); the AddOn ran a 70Mi request
+    # with no limit at all. Keep in lockstep with the metrics-server VPA
+    # maxAllowed in configs/vpa/platform.yaml.
+    resources:
+      requests:
+        cpu: 100m
+        memory: 96Mi
+      limits:
+        memory: 192Mi
+    # defaultArgs match what the k3s AddOn passed, so the kubelet connection
+    # keeps verifying against the cluster CA (no --kubelet-insecure-tls) and the
+    # serving side keeps k3s's cipher-suite restriction rather than the chart's
+    # unrestricted Go default.
+    defaultArgs:
+      - --cert-dir=/tmp
+      - --kubelet-preferred-address-types=InternalIP,ExternalIP,Hostname
+      - --kubelet-use-node-status-port
+      - --metric-resolution=15s
+      - >-
+        --tls-cipher-suites=TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305

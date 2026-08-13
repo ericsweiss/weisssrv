@@ -3,8 +3,8 @@
 # default-deny-ingress (via the shared netpol-baseline component).
 #
 # NetworkPolicy: default-deny-ingress via the shared netpol-baseline component.
-# Surface pinned (chart 1.98.9): the operator exposes no container ports, no
-# Service, no ServiceMonitor, and no admission webhook, with apiServerProxyConfig
+# Surface (re-verify on a chart bump): the operator exposes no container ports,
+# no Service, no ServiceMonitor and no admission webhook, with apiServerProxyConfig
 # mode "false"; the ingress proxy pods declare no ports and receive tailnet
 # traffic on their tailscale0 interface (off the CNI path). So a CNI ingress deny
 # cannot break the tailnet data path. Egress is intentionally left open (like the

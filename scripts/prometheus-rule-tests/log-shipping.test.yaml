@@ -1,0 +1,91 @@
+---
+# promtool unit tests for PodLogShippingStale — the in-cluster container-log
+# path. Its host-journald twin (HostLogShippingStale) is evaluated by the LOKI
+# ruler from loki/host-log-staleness.yaml and is covered by
+# scripts/test_host_log_staleness.py instead, so only this rule is here.
+#
+# The rule pairs "no entries in 45m" with "the pod has been up over an hour".
+# The uptime arm is load-bearing: a freshly-started Alloy pod legitimately
+# reports zero for its first minutes, and that startup window was the only thing
+# that drove the counter to zero anywhere in the last 7 days.
+rule_files:
+  - rules.yaml
+evaluation_interval: 5m
+tests:
+  # A long-lived pod that stops shipping: the counter flatlines while the
+  # process start time stays far in the past. Must fire once past the 15m hold.
+  - interval: 5m
+    input_series:
+      - series: 'loki_write_sent_entries_total{namespace="observability", pod="alloy-x7k2p", instance="10.42.0.56:12345"}'
+        values: '1000+0x60'
+      - series: 'process_start_time_seconds{namespace="observability", pod="alloy-x7k2p", instance="10.42.0.56:12345"}'
+        values: '-100000+0x60'
+    alert_rule_test:
+      # 45m of flat counter plus the 15m hold.
+      - eval_time: 65m
+        alertname: PodLogShippingStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: 10.42.0.56:12345
+      # Inside the 15m hold. increase() over a flat counter reads zero as soon
+      # as two samples are in the window, so the pending clock starts early —
+      # the hold is what absorbs a brief quiet window, not the 45m range.
+      - eval_time: 10m
+        alertname: PodLogShippingStale
+        exp_alerts: []
+
+  # The same flat counter on a pod that started 10 minutes ago. This is the
+  # shape that made a bare `== 0` unusable; the uptime arm must suppress it.
+  - interval: 5m
+    input_series:
+      - series: 'loki_write_sent_entries_total{namespace="observability", pod="alloy-x7k2p", instance="10.42.0.56:12345"}'
+        values: '0+0x60'
+      - series: 'process_start_time_seconds{namespace="observability", pod="alloy-x7k2p", instance="10.42.0.56:12345"}'
+        values: '2400+0x60'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: PodLogShippingStale
+        exp_alerts: []
+
+  # A pod shipping normally: the counter advances every scrape, so the increase
+  # is non-zero regardless of uptime.
+  - interval: 5m
+    input_series:
+      - series: 'loki_write_sent_entries_total{namespace="observability", pod="alloy-x7k2p", instance="10.42.0.56:12345"}'
+        values: '0+500x60'
+      - series: 'process_start_time_seconds{namespace="observability", pod="alloy-x7k2p", instance="10.42.0.56:12345"}'
+        values: '-100000+0x60'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: PodLogShippingStale
+        exp_alerts: []
+
+  # The target disappearing entirely yields an empty vector, not an alert —
+  # that case belongs to TargetDown, and the two are complementary by design.
+  - interval: 5m
+    input_series: []
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: PodLogShippingStale
+        exp_alerts: []
+
+  # One quiet node out of several must alert alone: the rule is summed BY
+  # instance, so a busy neighbour cannot mask it.
+  - interval: 5m
+    input_series:
+      - series: 'loki_write_sent_entries_total{namespace="observability", pod="alloy-x7k2p", instance="10.42.0.56:12345"}'
+        values: '1000+0x60'
+      - series: 'process_start_time_seconds{namespace="observability", pod="alloy-x7k2p", instance="10.42.0.56:12345"}'
+        values: '-100000+0x60'
+      - series: 'loki_write_sent_entries_total{namespace="observability", pod="alloy-m4q9r", instance="10.42.8.54:12345"}'
+        values: '0+500x60'
+      - series: 'process_start_time_seconds{namespace="observability", pod="alloy-m4q9r", instance="10.42.8.54:12345"}'
+        values: '-100000+0x60'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: PodLogShippingStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: 10.42.0.56:12345

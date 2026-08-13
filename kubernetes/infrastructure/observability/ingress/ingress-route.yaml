@@ -12,7 +12,7 @@ spec:
   entryPoints:
     - websecure
   routes:
-    - match: Host(`grafana.esweiss.com`)
+    - match: Host(`grafana.${cluster_internal_domain}`)
       kind: Rule
       middlewares:
         - name: lan-tailscale-only
@@ -39,7 +39,7 @@ spec:
   entryPoints:
     - websecure
   routes:
-    - match: Host(`loki.esweiss.com`)
+    - match: Host(`loki.${cluster_internal_domain}`)
       kind: Rule
       middlewares:
         - name: lan-tailscale-only

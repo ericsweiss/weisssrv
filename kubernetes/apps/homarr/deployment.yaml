@@ -41,11 +41,11 @@ spec:
             - weight: 100
               preference:
                 matchExpressions:
-                  - key: esweiss.com/nas
+                  - key: ${cluster_node_label_domain}/nas
                     operator: DoesNotExist
       nodeSelector:
-        esweiss.com/general: "true"
-        esweiss.com/cpu: "modern"
+        ${cluster_node_label_domain}/general: "true"
+        ${cluster_node_label_domain}/cpu: "modern"
       # No in-cluster API access.
       automountServiceAccountToken: false
       # Homarr v1.x is nginx-fronted: run.sh templates /etc/nginx/nginx.conf at
@@ -86,16 +86,13 @@ spec:
                 secretKeyRef:
                   name: homarr-secrets
                   key: secret-encryption-key
-            # SSO-only: OIDC (Authentik) is the sole login provider. The
-            # onboarding-era `credentials` break-glass was retired in !193 —
-            # there is no standing local admin. Admin is granted via the
-            # `homarr-admins` OIDC groups claim (the Authentik group maps to the
-            # same-named Homarr admin group; verified synced before this flip).
-            # homarr-labs#2108: a pure OIDC-only first login doesn't auto-grant
-            # admin — the group mapping does. DR for a total Authentik outage:
-            # re-enable "credentials" via `task flux:dev-apply` + run
-            # `homarr-cli recreate-admin` in the pod, NOT a standing local
-            # admin. See docs/41 §SSO.
+            # SSO-only: OIDC (Authentik) is the sole login provider; there is
+            # no standing local admin. Admin comes from the `homarr-admins` OIDC
+            # groups claim mapping to the same-named Homarr group (homarr-labs#2108:
+            # an OIDC-only first login does not auto-grant admin, the group
+            # mapping does). DR for a total Authentik outage: re-enable
+            # "credentials" via `task flux:dev-apply` + `homarr-cli
+            # recreate-admin` in the pod. See docs/41 §SSO.
             - name: AUTH_PROVIDERS
               value: "oidc"
             - name: AUTH_OIDC_CLIENT_ID
@@ -111,11 +108,11 @@ spec:
             # (split-horizon); the server-side discovery/JWKS/token fetch rides
             # the traefik-namespace :443 egress rule (networkpolicy.yaml).
             - name: AUTH_OIDC_ISSUER
-              value: https://auth.ericsweiss.com/application/o/dashboard/
+              value: https://auth.${cluster_external_domain}/application/o/dashboard/
             # Authorize endpoint, set for parity with the goauthentik integration
             # docs; harmless if v1 ignores it (discovery covers authorize/token/jwks).
             - name: AUTH_OIDC_URI
-              value: https://auth.ericsweiss.com/application/o/authorize/
+              value: https://auth.${cluster_external_domain}/application/o/authorize/
             # Login-button label.
             - name: AUTH_OIDC_CLIENT_NAME
               value: Authentik
@@ -180,9 +177,7 @@ spec:
               # against the live pod: chown data dirs, setuid/setgid so nginx
               # workers drop to the unprivileged user, and DAC_OVERRIDE for
               # nginx's /var/lib/nginx logs/tmp dirs (without it nginx dies at
-              # boot with EACCES and nothing listens on :7575). FOWNER proved
-              # unnecessary (clean start + health without it); KILL likewise
-              # (pod terminates gracefully in ~1s without it).
+              # boot with EACCES and nothing listens on :7575).
               add: ["CHOWN", "SETUID", "SETGID", "DAC_OVERRIDE"]
             # run.sh writes /etc/nginx/nginx.conf + nginx tmp/cache dirs and
             # Next.js writes cache/tmp under the app tree — rootfs must be

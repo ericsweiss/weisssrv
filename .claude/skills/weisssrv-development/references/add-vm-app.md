@@ -35,8 +35,9 @@ there, get a tag cut, then land the pin bump plus everything else in one MR here
    `notify: [Reload systemd, Restart <svc>]` → enable+start), FQCN + snake_case +
    role-prefixed vars + `no_log: true` on secret tasks, with a molecule scenario.
    Mirror a neighbour role; site-specific values are inputs, not defaults.
-6. **Secrets** — `op://Homelab/<Item>/<field>` refs in the `secrets:` dict of
-   `group_vars/all.yml`; add new 1P items to `docs/15-credential-rotation.md`.
+6. **Secrets** — `op://Homelab/<Item>/<field>` refs in the Taskfile task's `env:`
+   block and the matching CI job; add new 1P items to
+   `docs/15-credential-rotation.md`.
 7. **Playbook** — a `ansible/playbooks/<app>.yml` (or extend an existing one)
    referencing `weisssrv.infra.<app>`, wired into `ansible/playbooks/site.yml`.
 8. **Taskfile** — add `<app>:deploy` / `:status` / `:verify` wrappers mirroring
@@ -45,11 +46,14 @@ there, get a tag cut, then land the pin bump plus everything else in one MR here
    `.gitlab-ci.yml` (`scripts/check-deploy-coverage.sh`, run by `task lint`);
    the role's molecule scenario is covered by the library's own matrix, and the
    pin bump is what brings it here.
-10. **Firewall** — a new `[group sg-<app>]` for the `proxmox_firewall` role
-    (security-group definitions come from the inventory) plus
-    `guest_security_groups` on the guest in `hosts.yml` (add `sg-vm-admin` +
-    `sg-metrics`; open Traefik-fronted ports from `+dc/k3s_nodes`, admin ports
-    from `+dc/admin_lan|admin_ts` only — least privilege).
+10. **Firewall** — a new `[group sg-<app>]` in `proxmox_firewall_security_groups`
+    (`group_vars/all.yml`) plus `guest_security_groups` on the guest in
+    `hosts.yml` (add `sg-vm-admin` + `sg-metrics`; open Traefik-fronted ports
+    from `+dc/k3s_nodes`, admin ports from `+dc/admin_lan|admin_ts` only —
+    least privilege). A scrape port that must open on EVERY node instead goes in
+    `proxmox_firewall_metrics_scrape_ports` (`{port, sources[], comment}`, next
+    to `proxmox_firewall_dns_admin_ports` in the same file) — the role builds in
+    only its own exporters' ports.
 11. **Backups** — a NEW top-level ZFS dataset is added to
     `nas_storage_archive_backup_sources` in `host_vars/pve-nas-01.yml`;
     `ssd/appdata/*` children are already auto-enrolled. Anything that must go
@@ -70,8 +74,11 @@ there, get a tag cut, then land the pin bump plus everything else in one MR here
     for a nested/DNS-only record.
 16. **Observability** — logs via the `alloy_host` role on the guest (ships
     journald to Loki over the internal Traefik IngressRoute); metrics via a node
-    exporter / app `/metrics` + ServiceMonitor; a down/stale alert rule in the
-    kube-prometheus-stack groups; a blackbox probe for the user-facing endpoint.
+    exporter / app `/metrics` + ServiceMonitor; a down/stale alert rule as a
+    `PrometheusRule` under
+    `kubernetes/infrastructure/observability/rules/` with a `runbook_url` and a
+    promtool unit test (`references/add-k8s-app.md` § Alert rules is canonical);
+    a blackbox probe for the user-facing endpoint.
 17. **Docs** — a `docs/NN-*.md` deployment page (next free number), its row in the
     `README.md` docs index, the application table in `CLAUDE.md`, and
     `docs/16-next-steps.md` (mark done / remove from planned). The role's own

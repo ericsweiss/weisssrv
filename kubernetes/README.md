@@ -16,21 +16,29 @@ kubernetes/
 │   ├── infrastructure-controllers.yaml   # Flux Kustomization → ../../infrastructure/controllers (dependsOn: sources + crds)
 │   ├── infrastructure-configs.yaml       # Flux Kustomization → ../../infrastructure/configs (dependsOn: controllers)
 │   ├── infrastructure-observability.yaml # Flux Kustomization → ../../infrastructure/observability (dependsOn: configs)
+│   ├── infrastructure-metrics-server.yaml # Flux Kustomization → ../../infrastructure/controllers/metrics-server — OFF the chain: dependsOn sources only, and nothing dependsOn it (see the file header)
 │   ├── apps.yaml                  # Flux Kustomization → ../../apps (dependsOn: infrastructure-configs)
-│   ├── kustomization.yaml         # Lists flux-system + the 6 top-level Kustomizations + tenants/
+│   ├── kustomization.yaml         # Lists flux-system + every top-level Kustomization + tenants/ — `python3 scripts/flux-child-kustomizations.py` prints the current set in dependsOn order (never hand-count them)
 │   └── tenants/                   # One-file-per-tenant wiring (GitRepository + Kustomization + ClusterSecretStore)
 │       └── README.md              # Onboarding examples
 ├── infrastructure/                # Platform (reconciled before apps)
-│   ├── sources/                   # HelmRepository CRs + versions-configmap.yaml (needed by controllers)
+│   ├── sources/                   # HelmRepository CRs + versions-configmap.yaml (generated) + cluster-config.yaml (hand-edited cluster identity) + priorityclasses.yaml (must exist before controllers/ schedules a pod naming one)
 │   ├── crds/                      # prometheus-operator CRDs, installed before any controller renders a ServiceMonitor
 │   ├── controllers/               # Platform HelmReleases — see controllers/kustomization.yaml for the current set
-│   ├── configs/                   # Cluster-wide CRs requiring the controllers' CRDs — see configs/kustomization.yaml
+│   ├── configs/                   # Cluster-wide CRs requiring the controllers' CRDs, plus the built-in-kind NetworkPolicy sets that fence namespaces this repo does not otherwise own — see configs/kustomization.yaml
 │   └── observability/             # kube-prometheus-stack, Loki, Alloy, exporters, ServiceMonitors, dashboards, ingress
-├── components/                    # Reusable Kustomize components pulled in via `components:` in an app's kustomization.yaml
-│   ├── netpol-baseline/           # default-deny-ingress — MANDATORY for every app (docs/29 § Adding a New App)
-│   └── gitlab-runner-common/      # Shared runner values/objects for the two runner releases
+├── components/                    # Reusable Kustomize components pulled in via `components:` in an app's kustomization.yaml — see components/README.md for the current set and the rule for when a rule may become one
 └── apps/                          # Workloads — one dir per app; see apps/kustomization.yaml for the current set
 ```
+
+`netpol-baseline` (ingress default-deny) is mandatory in every namespace bar the
+documented exceptions; `docs/29-flux-operations.md` § Network policy exceptions
+is the canonical list (two today: `downloads`, `flux-system`) and
+`scripts/check-default-deny-coverage.py` is the gate that fails a third.
+`kube-system` is **not** an exception: it carries its own deny plus the complete
+allow set for what runs there in
+`infrastructure/configs/kube-system-policies/`, because this repo does not own
+the k3s AddOn manifests that deploy into it.
 
 ## How it reconciles
 
@@ -41,9 +49,20 @@ kubernetes/
 3. Flux's `kustomize-controller` reconciles in dependency order: `sources` →
    `crds` → `controllers` → `configs`, then `observability` and `apps` in
    parallel (apps deliberately do not gate on observability health).
-4. `postBuild.substituteFrom: cluster-versions` substitutes `${var}`
-   placeholders (e.g., `${authentik_version}`) from the `cluster-versions`
-   ConfigMap, generated from `all.yml` via `task flux:sync-versions`.
+   `infrastructure-metrics-server` hangs off `sources` alone, outside that
+   chain, and nothing `dependsOn` it — so its (deliberately long-lived) install
+   failure during the AddOn cutover cannot freeze any stage behind it. Derive
+   the live list and its order with
+   `python3 scripts/flux-child-kustomizations.py` rather than reading it here.
+4. `postBuild.substituteFrom` substitutes `${var}` placeholders from **two**
+   ConfigMaps, both `optional: false` on every stage after `sources`:
+   - `cluster-versions` — version pins (e.g. `${authentik_version}`), generated
+     from `all.yml` via `task flux:sync-versions`, never hand-edited.
+   - `cluster-config` — cluster identity: domains, CIDRs, VIPs (e.g.
+     `app.${cluster_internal_domain}`, `${cluster_metallb_internal_vip}`).
+     Hand-edited; `scripts/check-cluster-literals.py` fails a manifest that
+     hard-codes a value the ConfigMap owns, and cross-checks the ConfigMap
+     against the Ansible inventory.
 5. Flux's `helm-controller` reconciles `HelmRelease` CRs (adopted or fresh).
 6. External Secrets Operator syncs `ExternalSecret` → k8s `Secret` from
    1Password via the `onepassword-homelab` `ClusterSecretStore`.
@@ -83,7 +102,7 @@ Node-by-node list (3 servers forming the etcd quorum + 6 agents) and the VIPs
 | `external-dns` | Flux (HelmRelease) | external-dns |
 | `vpa-system` | Flux (HelmRelease) | Vertical Pod Autoscaler (docs/33) |
 | `reloader` | Flux (HelmRelease) | Reloader — rolls workloads on ConfigMap changes only (Secrets excluded via `ignoreSecrets: true`) |
-| `kube-system` | k3s (+ Flux HelmRelease for kured) | k3s built-ins + kured reboot coordinator |
+| `kube-system` | k3s (+ Flux HelmReleases: kured, metrics-server) | k3s built-ins, kured reboot coordinator, and metrics-server once the AddOn cutover closes (docs/33 § metrics-server) |
 | `kube-node-lease`, `kube-public` | k3s | Cluster built-ins, nothing deployed into them |
 | `cloudflare-ddns` | Flux (Kustomize) | DDNS CronJob |
 | `authentik` | Flux (HelmRelease) | Authentik SSO + bundled PostgreSQL |

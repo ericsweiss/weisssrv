@@ -1,10 +1,5 @@
 # AGENTS.md
 
-**Tech stack**: Proxmox VE + Debian, Ansible (roles come from the
-`weisssrv.infra` collection in `eric/weisssrv-lib`), Terraform (Cloudflare,
-Tailscale, Authentik), k3s + Flux CD GitOps, External Secrets Operator with
-1Password Connect, ZFS.
-
 1. Read [CLAUDE.md](CLAUDE.md) — the top-level fact source. It points at the
    canonical home of everything else (`README.md`, `docs/`, `Taskfile.yml`,
    `ansible/README.md`); nothing is duplicated here.

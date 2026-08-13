@@ -29,10 +29,10 @@ spec:
             - weight: 100
               preference:
                 matchExpressions:
-                  - key: esweiss.com/nas
+                  - key: ${cluster_node_label_domain}/nas
                     operator: DoesNotExist
       nodeSelector:
-        esweiss.com/general: "true"
+        ${cluster_node_label_domain}/general: "true"
       # Pod hardening: Prowlarr does not talk to the kube-API. Only the universally-
       # safe subset is applied — this is a LinuxServer.io image (s6 + PUID/PGID)
       # that MUST start as root to drop privileges, so runAsNonRoot / drop-ALL /
@@ -84,7 +84,12 @@ spec:
           resources:
             requests:
               cpu: 50m
-              memory: 512Mi
+              # Above the 30d working-set peak (257Mi) but BELOW the limit:
+              # request == limit leaves zero burst headroom, which is how
+              # prowlarr OOMKilled on search/backup spikes. The VPA's
+              # maxAllowed (vpa.yaml) is held under the limit for the same
+              # reason — a capped recommendation must not close the gap.
+              memory: 320Mi
             limits:
               memory: 512Mi
           volumeMounts:

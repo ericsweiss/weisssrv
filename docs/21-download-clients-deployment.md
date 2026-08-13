@@ -576,13 +576,10 @@ Configure *arr apps to use:
 
 > **AVX Requirement**: Pulsarr uses the Bun JavaScript runtime (v0.10.0+) which
 > requires AVX CPU instructions. The three Core 2 Quad opt agents do NOT support
-> AVX and crash it with "Illegal instruction". The precise gate for that is the
-> `esweiss.com/cpu=modern` label (docs/33), carried today by k3s-agt-nas-01,
-> k3s-agt-laptop-01 and k3s-agt-prec-01. Pulsarr's `nodeSelector` predates that
-> label taxonomy and still pins it to the NAS node (`esweiss.com/nas: "true"`) —
-> a strict subset of the modern-CPU nodes, so it is safe but narrower than
-> necessary. If you reschedule it, `esweiss.com/cpu: modern` is the constraint
-> that actually matters.
+> AVX and crash it with "Illegal instruction". Its `nodeSelector` is therefore
+> `esweiss.com/general: "true"` + `esweiss.com/cpu: "modern"` — the cpu label
+> (docs/33) is the constraint that actually matters, and it is carried today by
+> k3s-agt-nas-01, k3s-agt-laptop-01 and k3s-agt-prec-01.
 
 1. Access: https://pulsarr.esweiss.com
 2. Configure:
@@ -597,8 +594,9 @@ All apps are protected by Authentik forward-auth on their IngressRoutes
 (`authentik-auth` middleware; `media-admins` group binding — the providers,
 applications, and bindings are code in `terraform/authentik/`, docs/40). The
 `lan-tailscale-only` middleware scopes the routes to LAN/Tailscale, and the
-namespace NetworkPolicy admits only Traefik to the pods — the middleware
-chain is the only path in.
+namespace NetworkPolicy makes that chain the only path in **from outside the
+cluster** — its in-cluster ingress rules also admit Homarr's widgets and the
+*arrs' own API clients (see § qBittorrent for the full peer list).
 
 Because the *arrs/NZBGet/qBittorrent/Pulsarr have no native OIDC/SAML (a known
 upstream limitation — see [Sonarr #2477](https://github.com/Sonarr/Sonarr/issues/2477)),
@@ -609,8 +607,9 @@ passthrough mechanisms:
 
 Sonarr/Radarr/Lidarr/Prowlarr: Settings > General > Security >
 **Authentication = External**. The app skips its own login entirely and
-trusts the reverse proxy. Safe because the ONLY route to the pod is Traefik
-(NetworkPolicy) and every Traefik route carries forward-auth.
+trusts the reverse proxy. Safe because the only route in from outside the
+cluster is Traefik (NetworkPolicy) and every Traefik route carries
+forward-auth.
 
 ### 2. NZBGet — basic-auth credential injection (codified)
 
@@ -633,43 +632,46 @@ credentials instead:
 In-cluster API clients (the *arrs → `nzbget:6789` via the Service) bypass
 Traefik and keep using their own credentials — unaffected.
 
-### 3. qBittorrent — trusted-subnet bypass (supervised runbook)
+### 3. qBittorrent — trusted-subnet bypass (declarative init container)
 
 qBittorrent's injection-equivalent is `WebUI\AuthSubnetWhitelist`: requests
 from a whitelisted subnet skip the WebUI login. Traefik's forwarded requests
 originate from its pod IP, so whitelisting the pod CIDR gives SSO users a
 direct dashboard while the API credentials keep working everywhere.
 
-**Trust model**: whitelisting the pod CIDR (`10.42.0.0/16`) is acceptable
-because the NetworkPolicy admits ONLY the Traefik namespace to the pod and
-every Traefik route carries forward-auth — identical to the *arr
-`External` precedent. **Residual risk**: the whitelist itself cannot tell
-Traefik from any other pod, so the NetworkPolicy is load-bearing — removing
-it would let any compromised in-cluster pod reach the unauthenticated WebUI.
+The whitelist is runtime state on the config PVC, not git — qBittorrent
+rewrites its conf on shutdown, so a hand-edit is lost. The
+**`seed-webui-bypass` init container** (`qbittorrent/resources.yaml`) applies it
+on every start instead: a busybox `awk` pass that rewrites the two
+`WebUI\AuthSubnetWhitelist*` keys under `[Preferences]`, inserting them if
+absent and no-op'ing on a not-yet-created conf. Three CIDRs are whitelisted,
+substituted from `cluster-config`:
 
-Supervised runbook (config edit while the app is stopped — qBittorrent
-rewrites its conf on shutdown, so live edits are lost):
+| CIDR | Why |
+|---|---|
+| `10.42.0.0/16` (`cluster_pod_cidr`) | the source IP of a Traefik-forwarded request |
+| `192.168.0.0/24` (`cluster_lan_cidr`) | direct LAN access |
+| `100.64.0.0/10` (`cluster_tailnet_cidr`) | Tailscale CGNAT |
 
-```bash
-# 1. Stop qBittorrent (keep the deployment, scale to zero)
-kubectl scale deploy/qbittorrent -n downloads --replicas=0
-kubectl wait --for=delete pod -l app.kubernetes.io/name=qbittorrent -n downloads --timeout=120s
+**Trust model and residual risk.** The bypass is wider than "Traefik's pod IP":
+anything on the LAN or the tailnet that can reach :8080 gets an unauthenticated
+WebUI, and the whitelist cannot tell one pod from another. What bounds it is the
+namespace NetworkPolicy, which is load-bearing — and it admits more than Traefik:
 
-# 2. Edit the conf on the /config volume from a throwaway pod mounting the
-#    same PVC (or via the NFS export on the NAS). In
-#    /config/qBittorrent/qBittorrent.conf, under [Preferences], set:
-#      WebUI\AuthSubnetWhitelistEnabled=true
-#      WebUI\AuthSubnetWhitelist=10.42.0.0/16
+- `allow-traefik-ingress` — the SSO path, forward-auth on every route.
+- `allow-homarr-ingress` — Homarr's widgets reach :8080 directly, deliberately
+  outside the SSO perimeter (docs/41).
+- `allow-intra-namespace-arr` — sonarr/radarr/lidarr/prowlarr/pulsarr reach
+  :8080 as clients; they are inside the pod CIDR, so they too skip the login.
 
-# 3. Start it again and verify
-kubectl scale deploy/qbittorrent -n downloads --replicas=1
-# via SSO: https://qbittorrent.esweiss.com -> dashboard with NO WebUI login
-# direct (port-forward to :8080): the WebUI login must STILL be required
-```
-
-Note: Flux's kustomize-controller reverts the replica count on its next
-reconcile — acceptable here (the edit happens between scale-down and the
-revert; re-check the conf took effect after the pod is back).
+Removing those policies is not the risk; widening them is. Note the LAN and
+tailnet entries mean a `kubectl port-forward` (which arrives from a node IP)
+also lands in a trusted range — the login prompt is only expected from a source
+outside all three CIDRs. Verify after a change that
+`https://qbittorrent.esweiss.com` reaches the dashboard with no WebUI login, and
+that the init container logged `whitelist already current` or
+`AuthSubnetWhitelist now includes the pod CIDR`
+(`kubectl logs -n downloads deploy/qbittorrent -c seed-webui-bypass`).
 
 ### 4. Pulsarr — native auth disabled (declarative env)
 
@@ -684,8 +686,8 @@ every request. It is set right in the Deployment env
   value: disabled
 ```
 
-This is the cleanest of the four patterns — fully declarative, no terraform, no
-1Password item, no middleware swap, no supervised runbook. Pulsarr treats env
+This is the cleanest of the four patterns — one env var, no terraform, no
+1Password item, no middleware swap, no per-start conf rewrite. Pulsarr treats env
 vars as authoritative over its stored DB config on every boot, so the setting is
 durable and the UI cannot silently re-enable the login (toggling auth in the
 Pulsarr UI is a no-op after a restart — the value is env-managed).
@@ -858,11 +860,11 @@ kubectl logs -n downloads -l app.kubernetes.io/name=qbittorrent -c gluetun
 This is the killswitch working correctly. If Gluetun can't establish VPN:
 1. Check VPN provider status
 2. Check credentials in 1Password (rotate if needed, then `task flux:rotate-secret -- downloads`)
-3. Temporarily disable VPN by setting `vpn_enabled: "false"` in the app's
-   per-app ConfigMap (inside `nzbget/resources.yaml` or `qbittorrent/resources.yaml`)
-   and pushing — Reloader rolls the pod automatically once Flux reconciles the
-   ConfigMap (for qBittorrent, include the coupled exporter/PodMonitor edit —
-   see "Per-App VPN Control").
+3. Temporarily disable VPN with `task downloads:vpn -- APP=<app> STATE=off`,
+   which patches the LIVE ConfigMap so Reloader rolls the pod. Editing
+   `vpn_enabled` in git does **not** do this on a running cluster — those
+   ConfigMaps carry `ssa: IfNotPresent` and are only bootstrap defaults (see
+   "Per-App VPN Control").
 
 ### Apps Can't Access Storage
 

@@ -16,14 +16,28 @@ keeps it honest in both directions:
 
 Condition matching mirrors ESO: a namespace is admitted when ANY condition
 matches, and a condition matches on an exact `namespaces` entry, a
-`namespaceRegexes` match, or a `namespaceSelector` label match.
+`namespaceRegexes` match, or a `namespaceSelector` label match. A
+ClusterExternalSecret's fan-out is the UNION of its `namespaceSelectors` (or the
+deprecated singular `namespaceSelector`) and its literal `namespaces` list, the
+way ESO resolves it.
+
+The gate refuses to be vacuous. An EMPTY corpus is an operator error (exit 2),
+not a pass — a broken pipe or a wrong `kustomize build` path would otherwise
+report green — and so is a corpus that HAS documents but holds neither a
+ClusterSecretStore nor a consumer, which is what a render loop that never
+reached the defining stage produces. And a ClusterSecretStore that is REFERENCED
+but not defined in the corpus is a violation, because that is the runtime failure
+the gate exists to catch: the ExternalSecret never syncs and its Secret goes
+stale. A store that genuinely lives outside the linted tree is declared with
+`--external-store NAME`, so the exemption is visible instead of silent.
 
 Usage (wired into flux:lint, on the accumulated full corpus):
   kustomize build <path> | envsubst >> corpus
-  python3 scripts/check-secretstore-scope.py < corpus
+  python3 scripts/check-secretstore-scope.py [--external-store NAME] < corpus
 """
 from __future__ import annotations
 
+import argparse
 import re
 import sys
 
@@ -70,6 +84,10 @@ def _condition_admits(condition: dict, namespace: str, labels: dict) -> bool:
     return False
 
 
+class CorpusError(RuntimeError):
+    """Unparseable input — an operator error (exit 2), not a violation (exit 1)."""
+
+
 def _load(stream) -> list[dict]:
     docs: list[dict] = []
     try:
@@ -82,12 +100,37 @@ def _load(stream) -> list[dict]:
             elif isinstance(raw, list):
                 docs.extend(i for i in raw if isinstance(i, dict))
     except yaml.YAMLError as exc:
-        sys.exit(f"Failed to parse YAML input: {exc}")
+        raise CorpusError(f"Failed to parse YAML input: {exc}") from exc
     return docs
 
 
-def main() -> int:
-    docs = _load(sys.stdin)
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Every ClusterSecretStore is namespace-scoped and covers its consumers.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--external-store",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="ClusterSecretStore defined outside this corpus; referencing it is not a violation",
+    )
+    args = parser.parse_args(argv)
+    external = set(args.external_store)
+
+    try:
+        docs = _load(sys.stdin)
+    except CorpusError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    if not docs:
+        print(
+            "ERROR: empty corpus — no manifests on stdin. A gate that passes on nothing "
+            "is not a gate; check the pipe and the `kustomize build` paths feeding it.",
+            file=sys.stderr,
+        )
+        return 2
 
     ns_labels: dict[str, dict] = {}
     stores: dict[str, list] = {}
@@ -134,22 +177,34 @@ def main() -> int:
             continue
         selectors = spec.get("namespaceSelectors")
         if selectors is None:
+            # ABSENT vs EMPTY: `namespaceSelector: {}` is a label selector with
+            # no terms, which matches EVERY namespace — the widest possible
+            # fan-out. Truthiness would collapse it to "selects nothing" and skip
+            # the one shape that most needs checking.
             single = spec.get("namespaceSelector")
-            selectors = [single] if single else []
-        for ns, labels in ns_labels.items():
-            if any(_selector_matches(sel, labels) for sel in selectors):
-                consumers.append(
-                    (
-                        ref.get("name", "?"),
-                        ns,
-                        f"ClusterExternalSecret {meta.get('name', '?')} -> {ns}",
-                    )
+            selectors = [] if single is None else [single]
+        targets = {
+            ns for ns, labels in ns_labels.items()
+            if any(_selector_matches(sel, labels) for sel in selectors)
+        }
+        # ESO UNIONS the selectors with the literal `spec.namespaces` list, and a
+        # CES written with the list alone matched no selector — so it used to
+        # contribute zero consumers and its fan-out was never checked at all.
+        targets.update(str(ns) for ns in spec.get("namespaces") or [])
+        for ns in sorted(targets):
+            consumers.append(
+                (
+                    ref.get("name", "?"),
+                    ns,
+                    f"ClusterExternalSecret {meta.get('name', '?')} -> {ns}",
                 )
+            )
 
     unknown: set[str] = set()
     for store, namespace, description in consumers:
         if store not in stores:
-            unknown.add(store)
+            if store not in external:
+                unknown.add(store)
             continue
         conditions = stores[store] or []
         if not conditions:
@@ -163,11 +218,13 @@ def main() -> int:
                 f"store's conditions (or point the app at a scoped store)."
             )
 
-    if unknown:
-        print(
-            "note: ClusterSecretStore(s) referenced but not defined in this corpus, "
-            "so their scope was not checked: " + ", ".join(sorted(unknown)),
-            file=sys.stderr,
+    for store in sorted(unknown):
+        violations.append(
+            f"  ClusterSecretStore {store}: referenced but not defined in this corpus, "
+            f"so its scope cannot be checked — and at runtime an ExternalSecret pointing "
+            f"at a store that does not resolve never syncs, leaving a stale Secret. Add "
+            f"the store's manifest to the linted tree, or declare it with "
+            f"--external-store {store} if it is genuinely managed elsewhere."
         )
 
     if violations:
@@ -177,9 +234,23 @@ def main() -> int:
         print("\n".join(sorted(set(violations))), file=sys.stderr)
         return 1
 
+    if not stores and not consumers:
+        # A non-empty corpus that holds neither is the likelier wiring failure:
+        # the render loop produced output but never reached the stage defining
+        # the stores, or the accumulator was stale/truncated.
+        print(
+            f"ERROR: inspected 0 ClusterSecretStores and 0 namespace consumers in "
+            f"{len(docs)} document(s) — a gate that checks nothing is not a gate. "
+            "Check that the `kustomize build` paths feeding stdin cover the stage "
+            "that defines the stores.",
+            file=sys.stderr,
+        )
+        return 2
+
+    external_note = f", {len(external)} declared external" if external else ""
     print(
         f"ClusterSecretStore scoping OK ({len(stores)} cluster stores, "
-        f"{len(consumers)} namespace consumers checked)"
+        f"{len(consumers)} namespace consumers checked{external_note})"
     )
     return 0
 

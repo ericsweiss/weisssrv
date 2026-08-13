@@ -1,7 +1,16 @@
 ---
-# The earliest-reconciling layer: HelmRepository sources plus the
-# cluster-versions ConfigMap. The ConfigMap lives here because it must exist
-# before controllers/ renders any `${...}` placeholder.
+# The earliest-reconciling layer: everything every later stage needs before it
+# can render or schedule. HelmRepository sources; the two substitution
+# ConfigMaps — cluster-versions (pins) and cluster-config (domains, CIDRs, VIPs)
+# — which must exist before controllers/ renders any `${...}` placeholder; and
+# the PriorityClasses, which must exist before controllers/ creates the first
+# pod that names one (the Priority admission plugin REJECTS a pod whose class is
+# missing, so a class defined any later than this deadlocks a cold bootstrap:
+# controllers is `wait: true`, so it would never go Ready and the stage defining
+# the class would never reconcile).
+#
+# This stage is also the one Flux Kustomization with no substituteFrom of its
+# own — nothing here may contain a `${...}` placeholder.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
@@ -21,4 +30,7 @@ resources:
   - stakater.yaml
   - tailscale-operator.yaml
   - nvidia.yaml
+  - metrics-server.yaml
   - versions-configmap.yaml
+  - cluster-config.yaml
+  - priorityclasses.yaml

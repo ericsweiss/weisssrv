@@ -46,6 +46,16 @@
   roles:
     - weisssrv.infra.k3s
 
+# site.yml deploys node_exporter_host to k3s_servers; include it here so a
+# standalone `task k3s:deploy` does not leave the servers' etcd-snapshot
+# textfile metric (EtcdSnapshotStale) unexposed. Agents are covered by the
+# in-cluster node-exporter DaemonSet.
+- name: Deploy host-level metrics on k3s servers
+  hosts: k3s_servers
+  become: true
+  roles:
+    - weisssrv.infra.node_exporter_host
+
 - name: Deploy guest firewall rules
   hosts: k3s
   roles:

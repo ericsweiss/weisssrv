@@ -6,12 +6,12 @@ metadata:
   name: home-assistant
   namespace: default
   annotations:
-    external-dns.alpha.kubernetes.io/target: ericsweiss.com
+    external-dns.alpha.kubernetes.io/target: ${cluster_external_domain}
 spec:
   entryPoints:
     - websecure
   routes:
-    - match: Host(`home.ericsweiss.com`)
+    - match: Host(`home.${cluster_external_domain}`)
       kind: Rule
       middlewares:
         - name: home-assistant-headers
@@ -36,7 +36,7 @@ spec:
   entryPoints:
     - websecure
   routes:
-    - match: Host(`home.esweiss.com`)
+    - match: Host(`home.${cluster_internal_domain}`)
       kind: Rule
       middlewares:
         - name: lan-tailscale-only

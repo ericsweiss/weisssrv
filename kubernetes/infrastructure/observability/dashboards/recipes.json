@@ -46,7 +46,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "max(probe_success{instance=\"https://food.esweiss.com\"})",
+          "expr": "max(probe_success{instance=\"https://food.${cluster_internal_domain}\"})",
           "legendFormat": "mealie",
           "refId": "A"
         }
@@ -84,7 +84,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "max(probe_success{instance=\"https://bar.esweiss.com\"})",
+          "expr": "max(probe_success{instance=\"https://bar.${cluster_internal_domain}\"})",
           "legendFormat": "bar-assistant",
           "refId": "A"
         }
@@ -490,13 +490,13 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "max(probe_success{instance=\"https://food.esweiss.com\"})",
+          "expr": "max(probe_success{instance=\"https://food.${cluster_internal_domain}\"})",
           "legendFormat": "Mealie",
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "max(probe_success{instance=\"https://bar.esweiss.com\"})",
+          "expr": "max(probe_success{instance=\"https://bar.${cluster_internal_domain}\"})",
           "legendFormat": "Bar Assistant",
           "refId": "B"
         }

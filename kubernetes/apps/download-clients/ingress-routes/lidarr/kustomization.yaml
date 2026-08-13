@@ -15,7 +15,7 @@ patches:
         value: lidarr
       - op: replace
         path: /spec/routes/0/match
-        value: Host(`music.esweiss.com`)
+        value: Host(`music.${cluster_internal_domain}`)
       - op: replace
         path: /spec/routes/0/services/0/name
         value: lidarr

@@ -111,7 +111,18 @@ reference, and NFS export path — are unchanged by encryption.
   (servers + agents) and HA-managed LXC subvols. Encrypting these
   would create an unrecoverable cold-boot deadlock: Connect runs in
   k3s, k3s VMs live on `local-ssd`, and `local-ssd` would need
-  Connect to unlock. The controls for the residual **drive theft from a
+  Connect to unlock.
+
+  **What keeps Connect off an encrypted disk is a design rule, not
+  scheduling: no k3s node boots from an encrypted drive — by plan.** Every
+  server and agent root disk sits on an unencrypted pool (`local-ssd` on the
+  five compute hosts, `local-lvm` on pve-nas-01, see below), so wherever the
+  scheduler places Connect — its HelmRelease selects `esweiss.com/cpu: modern`
+  and spreads replicas with a *preferred* anti-affinity (a required one would
+  leave a replica Pending on three eligible nodes) — no placement can land it
+  behind an unlock. Encrypting any node's root pool would re-create the
+  deadlock even though nothing in the manifests would complain, so a new node
+  inherits the rule with its storage. The controls for the residual **drive theft from a
   powered-down host** threat are the drive-wipe SOP in
   `docs/15-credential-rotation.md` (every drive that leaves a compute host is
   wiped or destroyed) plus physical access control; the residual exposure is
@@ -124,6 +135,42 @@ reference, and NFS export path — are unchanged by encryption.
   Its real value is limited to cases where an etcd *snapshot* is separated from
   the key, and those off-node snapshots already sit on the ZFS-encrypted
   `ssd/k3s-etcd` dataset (above).
+
+  **Blast radius of one stolen compute drive** — etcd is not the whole story, and
+  the drive-wipe SOP has to be scoped to all of it:
+
+  | On the pool | What it holds |
+  |---|---|
+  | `subvol-150` / `subvol-160` (dns-01 on pve-prec-01, dns-02 on pve-opt-03) | The `*.esweiss.com` wildcard **private key** at `/opt/AdGuardHome/certs/privkey.pem` — which can impersonate every internal service, the exact reasoning `host_vars/dns-01.yml` uses to keep it off the k3s agents — plus the AdGuard admin credential |
+  | `subvol-151` (smtp-relay on pve-opt-01) | `/etc/postfix/sasl_passwd` with the Gmail app password, and the local sasldb |
+  | `vm-154-disk-0` (Home Assistant OS) | Every home-automation integration token and long-lived access token in `.storage` |
+  | k3s server/agent disks | The etcd datastore, `encryption-config.json`, the server token and the cluster CA (above) |
+
+  Rotating after a lost or unwiped compute drive therefore means the wildcard
+  cert, the Gmail app password and the HA tokens as well as the k3s material —
+  see `docs/15-credential-rotation.md`.
+
+- **pve-nas-01's `local-lvm`** (LVM-thin pool in VG `pve`, carved out of
+  partition 3 of the Proxmox boot NVMe — not ZFS, no dm-crypt layer; only
+  `/dev/pve/swap` is mapped through `cryptswap`). It carries two guests: VM 202
+  (k3s-agt-nas-01) and VM 222
+  (k3s-srv-nas-01). VM 222 is an **etcd quorum member**, so the same cold-boot
+  reasoning as the compute pools applies with more force: it must never sit
+  behind an unlock, or cluster quorum would wait on the NAS. Note pve-nas-01 has
+  no `local-ssd` pool (the storage id is defined for the five compute hosts
+  only), and that VM 202 appears in `zfs_encryption_guest_vmids` because its
+  passthrough data zvols live on the encrypted `ssd/appdata` — that list is
+  start ordering, not a claim about a root disk.
+
+  CT 152 (plex) and CT 158 (immich-ml) carry no quorum constraint, so their
+  rootfs lives on the encrypted `ssd` pool (`proxmox_lxc_storage: ssd` in
+  their host_vars; each migrated off `local-lvm` once with
+  `pct move-volume <id> rootfs ssd --delete`, stopped). The trade accepted
+  with the move is the unlock dependency: both CTs are in
+  `zfs_encryption_guest_ctids`, started by pve-start-encrypted-guests after
+  the unlock rather than by pve-guests at boot. CT 152's sensitive `/config`
+  was already a bind from the encrypted `ssd/appdata/plex`; the move closes
+  the remaining rootfs gap for both.
 
 ## Architecture
 
@@ -154,7 +201,7 @@ encrypted exports, and encrypted-storage guests converge LATE and async.
 │      |                         |                                  │
 │      v                         v                                  │
 │   nfs-server (drop-in:    pve-start-encrypted-guests.service:     │
-│   After=+RequiresMountsFor   qm/pct start 153,202,152 (gated)     │
+│   After=+RequiresMountsFor   qm/pct start the gated guest list    │
 │   encrypted exports)         (VM 222/etcd is NOT gated — early)   │
 └──────────────────────────────────────────────────────────────────┘
                                         │ HTTPS, TLS 1.3, lan-only
@@ -188,8 +235,17 @@ Plus one shared item for the Connect access token used by all hosts:
 |------------|------------|--------|
 | `ZFS Encryption Connect Token` | `credential` | `op connect token create weisssrv-zfs --server <id> --vaults Homelab` |
 
-The token only grants Connect read access for the Homelab vault — same
-exposure as if a Connect server admin role were leaked.
+**Scope caveat.** That token grants Connect read access to the **whole**
+`Homelab` vault, while it only ever needs the two pool-passphrase items — a
+plaintext file at `/etc/onepassword-connect/token` (0400 root) on every
+encryption host, so a host compromise reads the vault, not just the
+passphrases. The role takes the vault as an input
+(`zfs_encryption_connect_vault`, default `Homelab`), so narrowing it is a
+1Password-side change plus that variable: put the passphrase items in their own
+vault, grant the **Connect server** access to it (a token cannot reach a vault
+its server was not granted), mint a token scoped to it, and set the variable.
+Until that is done, treat the token as vault-equivalent — the same exposure as a
+leaked Connect admin credential.
 
 ## Rollout procedure
 
@@ -395,11 +451,30 @@ The chain is:
 5. Keys load → `zfs-mount-encrypted.service` (the late anchor) mounts the
    encrypted datasets on its next retry → nfsd (drop-in, ordered after it)
    serves the real datasets, and `pve-start-encrypted-guests.service` starts
-   the encrypted-storage guests (gitlab 153, k3s-agt-nas-01 202, plex 152).
-   `k3s-srv-nas-01` (VM 222, etcd) is NOT gated — it has no encrypted disk
-   and starts early on its normal onboot path, so cluster quorum never waits
-   on this NAS's unlock. **Boot itself never waits on any of this** — the box
-   reached multi-user (ssh + Tailscale) back at step 4's plaintext mount.
+   the gated guests (below). `k3s-srv-nas-01` (VM 222, etcd) is NOT gated — it
+   has no encrypted disk and starts early on its normal onboot path, so cluster
+   quorum never waits on this NAS's unlock. **Boot itself never waits on any of
+   this** — the box reached multi-user (ssh + Tailscale) back at step 4's
+   plaintext mount.
+
+### The gated guest list
+
+Which guests wait for the unlock is inventory, not code:
+`zfs_encryption_guest_vmids` and `zfs_encryption_guest_ctids` in
+`ansible/inventories/prod/host_vars/pve-nas-01.yml`. Read them there rather than
+from any list in prose — today they are VMs 202 (k3s-agt-nas-01), 153 (gitlab),
+156 (nextcloud), 157 (immich), 155 (windows) and CT 152 (plex).
+
+Two rules govern the list:
+
+- **Membership means "has a disk or passthrough zvol on an encrypted dataset"**,
+  not "has an encrypted root". VM 202's root is on `local-lvm`; it is here
+  because its data zvols live on `ssd/appdata`.
+- **Order is start order, and Windows (155) is deliberately last.** It is also
+  the reason VM 155 carries `onboot=0`: it must not be started by Proxmox before
+  the unlock, and this unit is what starts it afterwards. Removing it from the
+  list stops it auto-starting — do **not** "fix" that by setting `onboot=1`
+  (docs/39).
 
 Recovery is only needed if Connect itself can't come up — e.g. all
 three k3s server VMs are offline, or external-secrets namespace is

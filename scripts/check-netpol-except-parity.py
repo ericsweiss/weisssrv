@@ -40,14 +40,33 @@ the LAN. Rules that legitimately allow a LAN /32 are untouched: a /32 contains n
 fence range, so the coverage arm has nothing to report on them.
 
 Unrestricted egress that IS intended (privileged CI job pods, Flux's own
-upstream-shipped policy) is allowlisted BY NAME in UNRESTRICTED_EGRESS_OK, with
-the reason — an exemption a reviewer can see beats a check that cannot see the
-shape at all.
+upstream-shipped policy) is allowlisted BY NAME, with the reason — an exemption a
+reviewer can see beats a check that cannot see the shape at all. That allowlist
+is site data, so it comes from `--config` (see examples/netpol-except.example.yaml):
 
-Usage: scripts/check-netpol-except-parity.py [path ...]   (default: kubernetes/)
+    canonical_except_lists:      # optional; replaces the built-in sets
+      lan-fence: [10.0.0.0/8, ...]
+    fence_networks: [...]        # optional; the ranges no rule may reach in full
+    unrestricted_egress_ok:      # "<namespace>/<name>": reason
+      ci/job-egress: "job pods deploy the cluster itself"
+
+With no --config the built-in canonical sets apply and the allowlist is EMPTY, so
+a peer-less egress rule fails until it is declared.
+
+The gate refuses to be vacuous: a run that inspects ZERO NetworkPolicy documents,
+or is pointed at a path that does not exist, is an operator error (exit 2), not a
+pass — a renamed manifest subtree must not silently retire the LAN fence. A
+`--config` that is missing, unparseable, or malformed (a bad CIDR in
+`fence_networks`, a reasonless exemption) is the same class: exit 2, never exit 1
+and never a traceback, so "my config is broken" is never read as "the fence
+drifted". A scanned manifest that does not parse is the same class again — it
+says nothing about any except-list.
+
+Usage: check-netpol-except-parity.py [--config FILE] [path ...]  (default: kubernetes/)
 """
 from __future__ import annotations
 
+import argparse
 import ipaddress
 import sys
 from pathlib import Path
@@ -90,31 +109,53 @@ LAN_FENCE = [
 
 CANONICAL = {"reserved-full": RESERVED_FULL, "lan-fence": LAN_FENCE}
 
-# The ranges no egress rule may reach IN FULL. LAN_FENCE is the v4 half (it is
-# exactly what every canonical
-# list fences off); the v6 entries are its analogue, so an `::/0` egress written
-# in a future policy cannot slip past a v4-only test.
+# The ranges no egress rule may reach IN FULL. LAN_FENCE is the v4 half — exactly
+# what every canonical list fences off; the v6 entries are its analogue, so an
+# `::/0` egress cannot slip past a v4-only test.
 FENCE_NETS = [ipaddress.ip_network(c) for c in LAN_FENCE] + [
     ipaddress.ip_network("fc00::/7"),
     ipaddress.ip_network("fe80::/10"),
 ]
 
-# Egress rules that deliberately have no peers, i.e. allow egress everywhere.
-# Keyed "<namespace>/<name>"; the value is why. Anything not listed here that
-# omits `to:` is the accidental version of the same edit.
-UNRESTRICTED_EGRESS_OK = {
-    "gitlab-runner-privileged/infrastructure-jobs-egress": (
-        "infrastructure job pods deploy the homelab itself (ansible over SSH, "
-        "kubectl, 1Password) — unrestricted egress is the point of the "
-        "privileged runner class, and the namespace's default-deny-egress makes "
-        "every pod WITHOUT the runner-class label fail closed"
-    ),
-    "flux-system/allow-egress": (
-        "shipped verbatim inside the upstream gotk-components manifest; Flux's "
-        "controllers reach arbitrary git/OCI/Helm origins. Editing it here would "
-        "be reverted by the next `flux install` regeneration"
-    ),
-}
+# Egress rules that deliberately have no peers, i.e. allow egress everywhere,
+# keyed "<namespace>/<name>" with the reason. Site data: populated from --config.
+UNRESTRICTED_EGRESS_OK: dict[str, str] = {}
+
+
+class ConfigError(ValueError):
+    """A malformed --config file — an operator error (exit 2), not a violation.
+
+    `SystemExit(str)` exits 1, which is the code that means "the LAN fence
+    drifted": a consumer whose config is broken would go looking in kubernetes/.
+    """
+
+
+def load_config(path):
+    """Apply a consumer config file to the module-level policy data."""
+    global CANONICAL, FENCE_NETS, UNRESTRICTED_EGRESS_OK
+    with open(path) as f:
+        doc = yaml.safe_load(f) or {}
+    if not isinstance(doc, dict):
+        raise ConfigError("top-level must be a mapping")
+    lists = doc.get("canonical_except_lists")
+    if lists:
+        if not isinstance(lists, dict) or not all(isinstance(v, list) for v in lists.values()):
+            raise ConfigError("canonical_except_lists must map name -> [cidr]")
+        CANONICAL = {str(k): [str(c) for c in v] for k, v in lists.items()}
+    fences = doc.get("fence_networks")
+    if fences:
+        try:
+            FENCE_NETS = [ipaddress.ip_network(str(c)) for c in fences]
+        except ValueError as exc:
+            raise ConfigError(f"fence_networks: {exc}") from exc
+    allow = doc.get("unrestricted_egress_ok") or {}
+    if not isinstance(allow, dict):
+        raise ConfigError("unrestricted_egress_ok must map key -> reason")
+    for key, reason in allow.items():
+        if not str(reason or "").strip():
+            raise ConfigError(f"unrestricted_egress_ok[{key}] has no reason")
+    UNRESTRICTED_EGRESS_OK = {str(k): str(v) for k, v in allow.items()}
+    return doc
 
 
 def _policy_key(doc) -> str:
@@ -190,11 +231,19 @@ def unfenced_reach(blocks):
         net, _ = _nets([cidr])
         cuts, _ = _nets(excepts)
         allowed.extend(_exclude(net, cuts))
+    # Collapse before the fence check: a fenced range assembled from smaller
+    # peers (two /17s covering a fenced /16) must not slip past a per-block
+    # subnet test.
+    collapsed = []
+    for version in (4, 6):
+        collapsed.extend(
+            ipaddress.collapse_addresses([net for net in allowed if net.version == version])
+        )
     return sorted(
         {
             str(fence)
             for fence in FENCE_NETS
-            for net in allowed
+            for net in collapsed
             if net.version == fence.version and fence.subnet_of(net)
         }
     )
@@ -247,21 +296,47 @@ def classify(except_list):
     return None
 
 
-def check_paths(paths):
-    """Return a list of human-readable violations."""
+def scan_paths(paths):
+    """Return (violations, policies_scanned, errors).
+
+    `policies_scanned` is what stops a renamed manifest subtree from turning the
+    gate vacuously green, and `errors` carries the operator mistakes (a path that
+    does not exist, an unreadable or unparseable file) that must not surface as a
+    traceback or as exit 1.
+    """
     violations = []
+    errors = []
+    scanned = 0
     for root in paths:
         root = Path(root)
         if root.is_dir():
             files = sorted(p for ext in ("*.yaml", "*.yml") for p in root.rglob(ext))
-        else:
+        elif root.is_file():
             files = [root]
+        else:
+            errors.append(f"{root}: no such file or directory")
+            continue
         for path in files:
             try:
-                docs = list(yaml.safe_load_all(path.read_text()))
-            except yaml.YAMLError as e:
-                violations.append(f"{path}: unparseable YAML: {e}")
+                # The handle, not the text: PyYAML names the stream in its mark,
+                # so the parse error points at the file instead of at
+                # "<unicode string>".
+                with path.open() as fh:
+                    docs = list(yaml.safe_load_all(fh))
+            except OSError as e:
+                errors.append(f"{path}: unreadable: {e}")
                 continue
+            except yaml.YAMLError as e:
+                # An operator error, not a violation: exit 1 means the LAN fence
+                # drifted, and a manifest that does not parse says nothing about
+                # any except-list.
+                errors.append(f"{path}: unparseable YAML: {e}")
+                continue
+            scanned += sum(
+                1
+                for doc in docs
+                if isinstance(doc, dict) and doc.get("kind") == "NetworkPolicy"
+            )
             for doc in docs:
                 # (a) A peer-less egress rule allows egress to everything, and
                 # leaves no ipBlock behind for the per-peer arms to inspect.
@@ -274,8 +349,8 @@ def check_paths(paths):
                                 f"egress to EVERY destination, LAN included, "
                                 f"which is strictly more open than a /0 ipBlock "
                                 f"with no except-list. Add peers, or declare the "
-                                f"exemption in UNRESTRICTED_EGRESS_OK with its "
-                                f"reason."
+                                f"exemption under `unrestricted_egress_ok` in the "
+                                f"--config file, with its reason."
                             )
                         continue
                     # (b) The peers may still reach a whole fenced range
@@ -288,14 +363,19 @@ def check_paths(paths):
                                 (block.get("cidr"), list(block.get("except") or []))
                             )
                     cidrs = [cidr for cidr, _ in blocks]
-                    # A rule built only from literal /0 peers is already fully
-                    # owned by the per-peer arm below, which names the offending
-                    # except-list; reporting it twice would just be noise. A
-                    # MIXED rule (a fenced /0 plus a bare half) is not owned by
-                    # either arm alone, so it still runs through the containment
-                    # test.
+                    # The per-peer arm below names any literal-/0 block whose
+                    # except-list is not canonical; the coverage report is
+                    # suppressed only for those, to keep one message per
+                    # defect. A rule whose lists ALL classify as canonical is
+                    # per-peer-silent, so containment is its only guard — the
+                    # canonical lists are config-overridable, and a configured
+                    # list that omits a fence network must not pass on the
+                    # strength of list equality alone.
                     all_default = cidrs and all(is_default_route(c) for c in cidrs)
-                    reachable = [] if all_default else unfenced_reach(blocks)
+                    per_peer_reports = all_default and any(
+                        classify(exc) is None for _, exc in blocks
+                    )
+                    reachable = [] if per_peer_reports else unfenced_reach(blocks)
                     if reachable and key not in UNRESTRICTED_EGRESS_OK:
                         violations.append(
                             f"{path}: NetworkPolicy {key} egress rule [{index}] "
@@ -325,23 +405,60 @@ def check_paths(paths):
                         f"{path}: NetworkPolicy {name} ({direction} ipBlock {cidr}) "
                         f"has a non-canonical except-list: {except_list}"
                     )
-    return violations
+    return violations, scanned, errors
+
+
+def check_paths(paths):
+    """Just the policy violations — the accounting arms belong to `main`."""
+    return scan_paths(paths)[0]
 
 
 def main(argv=None):
-    argv = list(sys.argv[1:] if argv is None else argv)
-    paths = argv or [REPO / "kubernetes"]
-    violations = check_paths(paths)
+    parser = argparse.ArgumentParser(
+        description="Public-egress NetworkPolicies must carry a canonical reserved-CIDR fence.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--config", help="consumer policy data (see module docstring)")
+    parser.add_argument("paths", nargs="*", help="files or directories to scan")
+    args = parser.parse_args(argv)
+
+    if args.config:
+        try:
+            load_config(args.config)
+        except (OSError, ConfigError, yaml.YAMLError) as exc:
+            # Same rule as a missing scan path: an operator error, not a
+            # traceback and not exit 1 (which reads as "the fence drifted").
+            detail = getattr(exc, "strerror", None) or exc
+            print(f"ERROR: --config {args.config}: {detail}", file=sys.stderr)
+            return 2
+    paths = args.paths or [REPO / "kubernetes"]
+    violations, scanned, errors = scan_paths(paths)
+    if errors:
+        print("ERROR: the manifest corpus could not be read:", file=sys.stderr)
+        for e in errors:
+            print(f"  - {e}", file=sys.stderr)
+        return 2
     if violations:
         print("ERROR: NetworkPolicy except-lists have drifted from the canonical sets:")
         for v in violations:
             print(f"  - {v}")
-        print("Canonical sets are defined in scripts/check-netpol-except-parity.py.")
+        print("Canonical sets: " + ", ".join(sorted(CANONICAL)))
         return 1
+    if not scanned:
+        # A renamed or moved manifest subtree would otherwise leave the LAN-fence
+        # gate green with nothing behind it.
+        print(
+            "ERROR: scanned 0 NetworkPolicy manifests under "
+            f"{', '.join(str(p) for p in paths)} — a gate that inspects nothing "
+            "is not a gate. Point it at the manifests, or drop the job.",
+            file=sys.stderr,
+        )
+        return 2
     print(
-        "NetworkPolicy egress is fenced: every /0 peer carries a canonical "
-        "except-list, no egress rule reaches a fenced range in full, "
-        f"and the {len(UNRESTRICTED_EGRESS_OK)} peer-less rule(s) are declared."
+        f"NetworkPolicy egress is fenced across {scanned} policy/policies: every /0 "
+        "peer carries a canonical except-list, no egress rule reaches a fenced "
+        f"range in full, and the {len(UNRESTRICTED_EGRESS_OK)} peer-less rule(s) "
+        "are declared."
     )
     return 0
 

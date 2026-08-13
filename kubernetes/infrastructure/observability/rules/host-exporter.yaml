@@ -33,7 +33,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
             summary: 'Host node_exporter {{ $labels.instance }} is down'
             description: >-
               Prometheus has not scraped node_exporter on
@@ -56,7 +56,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/34-bond-mac-flapping.md'
+            runbook_url: '${cluster_runbook_base_url}/34-bond-mac-flapping.md'
             summary: 'NIC {{ $labels.device }} on {{ $labels.instance }} is dropping transmits'
             description: >-
               {{ $labels.device }} on {{ $labels.instance }} has failed
@@ -75,7 +75,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/34-bond-mac-flapping.md'
+            runbook_url: '${cluster_runbook_base_url}/34-bond-mac-flapping.md'
             summary: 'NIC {{ $labels.device }} on {{ $labels.instance }} is dropping receives'
             description: >-
               {{ $labels.device }} on {{ $labels.instance }} has failed
@@ -94,7 +94,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/34-bond-mac-flapping.md'
+            runbook_url: '${cluster_runbook_base_url}/34-bond-mac-flapping.md'
             summary: 'NIC {{ $labels.device }} on {{ $labels.instance }} is flapping'
             description: >-
               Link state on {{ $labels.device }} ({{ $labels.instance }})
@@ -113,7 +113,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/34-bond-mac-flapping.md'
+            runbook_url: '${cluster_runbook_base_url}/34-bond-mac-flapping.md'
             summary: 'Bond {{ $labels.master }} on {{ $labels.instance }} has a failed slave'
             description: >-
               {{ $labels.master }} on {{ $labels.instance }} has fewer
@@ -130,7 +130,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
             summary: 'node_exporter textfile collector is failing on {{ $labels.instance }}'
             description: >-
               node_exporter on {{ $labels.instance }} could not parse a
@@ -150,7 +150,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
             summary: 'Clock on {{ $labels.instance }} is not synchronising'
             description: >-
               {{ $labels.instance }} has had no NTP sync for 10 minutes
@@ -167,7 +167,7 @@ spec:
           labels:
             severity: critical
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
             summary: '{{ $labels.mountpoint }} on {{ $labels.instance }} is mounted read-only'
             description: >-
               {{ $labels.mountpoint }} ({{ $labels.device }}) on
@@ -183,7 +183,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/11-firewall.md'
+            runbook_url: '${cluster_runbook_base_url}/11-firewall.md'
             summary: 'conntrack table {{ $value | humanizePercentage }} full on {{ $labels.instance }}'
             description: >-
               The netfilter connection-tracking table on
@@ -213,7 +213,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
             summary: 'systemd unit {{ $labels.name }} failed on {{ $labels.instance }}'
             description: >-
               {{ $labels.name }} has been in the failed state on
@@ -228,7 +228,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
             summary: 'systemd unit {{ $labels.name }} is restarting on {{ $labels.instance }}'
             description: >-
               {{ $labels.name }} on {{ $labels.instance }} has restarted more
@@ -253,7 +253,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
             summary: "node_exporter's systemd collector is failing on {{ $labels.instance }}"
             description: >-
               The scrape succeeds (HTTP 200) but the systemd collector errors on
