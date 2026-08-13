@@ -386,7 +386,10 @@ workflow:
       . scripts/hosts.env
       # shellcheck disable=SC2086  # word-split ALL_SSH_IPS into one keyscan
       ssh-keyscan -H $ALL_SSH_IPS >> ~/.ssh/known_hosts 2>/dev/null || true
-    - ansible-galaxy collection install -r ansible/requirements.yml
+    # Retried: the fleet deploy includes a GitLab reconfigure, and a sibling
+    # job cloning the collection through it mid-restart gets a 5xx (live on
+    # pipeline #1307). Matches the library deploy-base at the next ref bump.
+    - for i in 1 2 3; do ansible-galaxy collection install -r ansible/requirements.yml && break; [ "$i" = 3 ] && exit 1; echo "galaxy install failed (attempt $i) — retrying in 20s"; sleep 20; done
 
 # Shared kubectl install (pinned checksum) + kubeconfig fetch from 1Password.
 # Pulled into .maintenance-base and .k3s-deploy-base via
@@ -1290,7 +1293,7 @@ deploy-preflight:
   before_script:
     - apt-get update -qq && apt-get install -y -qq --no-install-recommends git
     - pip install --quiet "ansible==${ANSIBLE_VERSION}" "pyyaml==${PYYAML_VERSION}"
-    - ansible-galaxy collection install -r ansible/requirements.yml
+    - for i in 1 2 3; do ansible-galaxy collection install -r ansible/requirements.yml && break; [ "$i" = 3 ] && exit 1; echo "galaxy install failed (attempt $i) — retrying in 20s"; sleep 20; done
   script:
     - |
       python3 - <<'PREFLIGHT'

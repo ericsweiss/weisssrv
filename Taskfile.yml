@@ -1190,6 +1190,19 @@ tasks:
           # as empty string, so we must validate against the RAW input to catch
           # typos (Flux's kustomize-controller does the same thing silently by
           # default — our lint is intentionally stricter).
+          # Flux's Go envsubst PARSE-errors on `${` followed by anything
+          # that cannot start a variable name, and silently EATS `${1}`-style
+          # refs — while the GNU envsubst below ignores both, which is how a
+          # literal "${" inside a ConfigMap script reached the live configs
+          # stage as a post-build failure (2026-08-13). `$${` is Flux's
+          # escape and is exempt.
+          MALFORMED=$(printf '%s\n' "$RAW" | sed 's/\$\$[{]/__FLUX_ESCAPED__/g' | grep -nE '\$\{[^A-Za-z_]' || true)
+          if [ -n "$MALFORMED" ]; then
+            echo "ERROR: $SRCPATH renders a \${ sequence Flux's envsubst mishandles (escape as \$\${ or assemble at runtime):"
+            echo "$MALFORMED" | head -5 | sed 's/^/  /'
+            FAILED=1
+            continue
+          fi
           MISSING=""
           for ref in $(echo "$RAW" | grep -oE '\$\{[A-Za-z_][A-Za-z0-9_]*\}' | sort -u); do
             varname=${ref#\$\{}

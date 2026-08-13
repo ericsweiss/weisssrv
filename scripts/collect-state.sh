@@ -101,7 +101,8 @@ probe_flux_not_ready() {
     echo "$out"
 }
 
-# Firing Alertmanager alerts, excluding the always-on Watchdog — the strongest
+# Firing Alertmanager alerts, excluding the two always-on by-design alerts
+# (Watchdog, and kube-prometheus-stack's InfoInhibitor) — the strongest
 # health signal here, and one that DOES gate the regular verdict. The pod is
 # resolved by label (not the StatefulSet ordinal) so a rename degrades to
 # "unknown" rather than a false zero. Extra kubectl args pass through via "$@".
@@ -118,7 +119,7 @@ probe_firing_alerts() {
         amtool --alertmanager.url=http://localhost:9093 alert query -o json 2>/dev/null); then
         # `.[]?` tolerates amtool emitting `null` (rather than `[]`) for an
         # empty alert set, which would otherwise abort jq and read as unknown.
-        echo "$out" | jq '[.[]? | select(.labels.alertname != "Watchdog")] | length' 2>/dev/null || echo "unknown"
+        echo "$out" | jq '[.[]? | select(.labels.alertname != "Watchdog" and .labels.alertname != "InfoInhibitor")] | length' 2>/dev/null || echo "unknown"
     else
         echo "unknown"
     fi
@@ -1611,7 +1612,7 @@ ZFS_DEGRADED_REG=$ZFS_DEGRADED_RESULT
 # Recent warning events (last hour). Same field-selector/jq as --json.
 WARNING_EVENTS_REG=$(probe_warning_events --request-timeout=5s)
 
-# Firing (non-Watchdog) Alertmanager alerts. Regular-mode only — unlike the
+# Firing Alertmanager alerts (Watchdog/InfoInhibitor exempt). Regular-mode only — unlike the
 # advisory Warning-event count this DOES gate OK, because an artifact headed
 # "Status: OK" while TargetDown is firing is the exact class of lie this
 # collector exists to prevent. "unknown" when the query could not run.
@@ -1743,7 +1744,7 @@ FAILING_PREDICATES=$(regular_failing_predicates "$PVE_REACHABLE_REG" "$K3S_API_O
     echo "# Flux not reconciling (not-Ready or suspended): $FLUX_NOT_READY_REG"
     echo "# ZFS degraded pools: $ZFS_DEGRADED_REG"
     echo "# GitLab health (/-/health, internal then external): HTTP ${GITLAB_HTTP_REG:-unreachable}"
-    echo "# Firing alerts (non-Watchdog): $ALERTS_FIRING_REG"
+    echo "# Firing alerts (Watchdog/InfoInhibitor exempt): $ALERTS_FIRING_REG"
     echo "# Warning events (last hour): $WARNING_EVENTS_REG"
     echo "# Coverage floor: $COVERAGE_FLOOR_PCT% (run is FAILED below this)"
     echo "# Redacted: Yes"
