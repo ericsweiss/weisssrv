@@ -114,7 +114,7 @@ def get_public_ip(services=IP_SERVICES, attempts=IP_ATTEMPTS, sleep=time.sleep):
 
 
 def zone_is_substituted(zone=ZONE):
-    """True once Flux has replaced the ${cluster_external_domain} placeholder.
+    """True once Flux has replaced the cluster_external_domain placeholder.
 
     The zone stopped being a literal when it became a substituted placeholder,
     and an unsubstituted one is not a harmless no-op: Flux renders an unknown key
@@ -124,8 +124,14 @@ def zone_is_substituted(zone=ZONE):
     before any DNS call, and the check lives in a function rather than at module
     scope because the raw file (what pytest imports, and what
     check-cluster-literals.py requires) legitimately carries the placeholder.
+
+    The marker is assembled at runtime because this file ships inside a
+    ConfigMap that Flux envsubst POST-PROCESSES: a literal dollar-brace in
+    source is a parse error there (its Go envsubst rejects what GNU envsubst
+    ignores), which broke the whole configs stage at reconcile.
     """
-    return bool(zone) and "${" not in zone and "." in zone
+    marker = "$" + "{"
+    return bool(zone) and marker not in zone and "." in zone
 
 
 def get_zone_id(token, zone=ZONE):
