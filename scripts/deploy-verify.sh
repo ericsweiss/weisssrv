@@ -90,9 +90,13 @@ if [ ! -f "$VERSIONS_CONFIGMAP" ]; then
   echo "ERROR: $VERSIONS_CONFIGMAP not found"
   exit 1
 fi
-# Shared extraction (scripts/flux-render.sh) — same block flux-lint uses.
-VARS=$(bash scripts/flux-render.sh export-versions "$VERSIONS_CONFIGMAP") \
-  || { echo "ERROR: failed to extract version keys for dry-run"; exit 1; }
+# Shared extraction via the flux-env.sh wrapper — the same entry point
+# flux-lint uses, which merges EVERY substitution ConfigMap (cluster-versions
+# AND cluster-config). Calling the vendored flux-render.sh directly here left
+# ${cluster_*} placeholders unsubstituted, and the dry-run rejected every PV
+# whose rendered nfs server differed from live only by the placeholder.
+VARS=$(bash scripts/flux-env.sh export-versions "$VERSIONS_CONFIGMAP") \
+  || { echo "ERROR: failed to extract substitution keys for dry-run"; exit 1; }
 eval "$VARS"
 if [ -n "$FLUX_ENVSUBST_VARS" ]; then
   for ks in kubernetes/clusters/weisssrv/*.yaml; do
