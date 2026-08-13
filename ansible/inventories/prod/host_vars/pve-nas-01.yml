@@ -22,6 +22,11 @@
 # zfs-load-key@<pool>.service on a fully plaintext pool (the unit would
 # fail at boot and drag zfs-mount.service down via RequiredBy=). To stage
 # before encryption, leave this list empty.
+# The unlock path reads from the dedicated Homelab-Boot vault: the plaintext
+# token at /etc/onepassword-connect/token can reach ONLY the two pool
+# passphrases, not the whole Homelab vault (docs/32 scope caveat, closed
+# 2026-08-13 — vault created, Connect granted, token minted+rotated).
+zfs_encryption_connect_vault: "Homelab-Boot"
 zfs_encryption_pools:
   - name: tank
     item: "ZFS Pool tank Passphrase"
