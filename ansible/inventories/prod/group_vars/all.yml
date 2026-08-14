@@ -190,12 +190,12 @@ authentik_version: "2026.5.6"
 # PostgreSQL version for Authentik (bundled with Helm chart)
 # Using Debian Trixie base for consistency with homelab standard
 # Available tags: https://hub.docker.com/_/postgres/tags
-postgresql_version: "18.4-trixie"
+postgresql_version: "18.6-trixie"
 
 # PostgreSQL version for Mealie (standalone deployment)
 # Using Alpine base for lighter footprint
 # Available tags: https://hub.docker.com/_/postgres/tags
-mealie_postgresql_version: "18.4-alpine"
+mealie_postgresql_version: "18.6-alpine"
 
 # Download clients and media stack versions
 # Pinned to specific versions for reproducible deployments and controlled updates.
@@ -246,7 +246,7 @@ gitlab_version: "19.2.2-ee.0"
 
 # GitLab Runner version for k3s cluster
 # https://gitlab.com/gitlab-org/charts/gitlab-runner/tags
-gitlab_runner_helm_version: "0.91.0"
+gitlab_runner_helm_version: "0.91.2"
 
 # GitLab Agent for Kubernetes Helm chart version
 # https://gitlab.com/gitlab-org/charts/gitlab-agent/tags
@@ -268,7 +268,7 @@ registry_cache_version: "3.1.1"
 nextcloud_version: "34.0.2"
 # PostgreSQL: PG 18 is Nextcloud-recommended; matches the homelab postgres pin.
 # https://hub.docker.com/_/postgres/tags
-nextcloud_postgres_version: "18.4-trixie"
+nextcloud_postgres_version: "18.6-trixie"
 # Redis (cache + transactional file locking) reuses the shared `redis_version`
 # pin above — same image/tag, tracked once by the "Redis" version-check entry.
 # Nextcloud exporter: https://github.com/xperimental/nextcloud-exporter/releases
@@ -320,19 +320,19 @@ proxmox_vm_virtio_win_checksum: "sha256:e14cf2b94492c3e925f0070ba7fdfedeb2048c91
 # semver whl version (v2026.7.7.2 == release 0.18.2). Bump = pick a newer tag,
 # update hermes_git_sha below to that tag's commit, run task flux:sync-versions,
 # commit — CI verifies the tag→SHA, rebuilds, Flux rolls the pods.
-hermes_version: "v2026.8.3"
+hermes_version: "v2026.8.13"
 # Immutable commit the pinned tag must resolve to. build-hermes-agent refuses to
 # build if `git clone --branch hermes_version` resolves to a different HEAD,
 # defending against a moved/compromised upstream tag. Update in lockstep with
 # hermes_version (get it from the tag on GitHub or the CI build log).
-hermes_git_sha: "3c27eb6234bf91b8ceee9e9071591b31e9b148cb"
+hermes_git_sha: "f80f453ae0679347e38abc917c7f94f717bf96c5"
 # PUBLISHED image tag = <hermes_version>-r<N>. The -rN local revision exists
 # because the image is upstream + our reviewed patches (docker/hermes-agent/
 # patches/): a patch change without an upstream bump must produce a NEW tag or
 # the nodes' IfNotPresent cache would keep serving the unpatched image. Bump
 # -rN when patches change; reset to -r1 on a hermes_version bump. CI asserts
 # the prefix matches hermes_version so the two can never drift.
-hermes_image_version: "v2026.8.3-r1"
+hermes_image_version: "v2026.8.13-r1"
 # OpenAI Codex CLI (https://github.com/openai/codex/releases, npm @openai/codex).
 # Hermes' Codex app-server runtime delegates OpenAI/Codex turns to this CLI over
 # JSON-RPC stdio, authenticated with a ChatGPT subscription (OAuth) — no API
@@ -353,7 +353,7 @@ hermes_codex_version: "0.147.0"
 # Bump = pick a newer stable release, sync-versions, commit — CI rebuilds the
 # wrapper, Flux rolls the pods. Build-time only; rides in the versions
 # ConfigMap as a harmless superset (same as hermes_codex_version).
-hermes_claude_version: "2.1.231"
+hermes_claude_version: "2.1.232"
 # 1Password CLI (op), the official first-party binary. Baked into the hermes
 # image (docker/hermes-agent/Dockerfile.codex) so Hermes' first-party 1Password
 # skill can drive `op` against the isolated Agent vault via a service-account

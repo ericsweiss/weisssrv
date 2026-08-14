@@ -54,6 +54,25 @@ a hardware spend or a posture change — rather than an implementation task.
 
 ---
 
+### UPS for the NAS (planned, with the network-hardware wave)
+
+- **Current state**: no monitored UPS; a power loss hard-stops every host. The
+  cold-boot path is unattended-safe (docs/32), so recovery is clean but
+  unmanaged.
+- **Planned**: a UPS on at least pve-nas-01 with NUT-driven shutdown, alongside
+  the Ubiquiti router/switch purchase (which also unlocks the VLAN and
+  second-corosync-ring items above).
+
+### Authentik user lifecycle as code (small follow-up)
+
+- **Current state**: groups/apps/providers are Terraform
+  (`terraform/authentik`, docs/40), but adding a household member is still
+  manual UI work (create user, set group memberships). Everything a
+  family/friend touches authenticates via Authentik; the one standing
+  exception is a WireGuard peer profile in wg-easy for VPN access.
+- **Proposed**: a `users` map in the lib `authentik-sso` module (invite email +
+  group memberships) so onboarding a person is a one-line MR.
+
 ## Pending supervised steps
 
 Live steps that need a human at the console — a botched one severs access, so
