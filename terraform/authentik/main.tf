@@ -19,7 +19,7 @@
 # for every provider here, and a library default change must never repoint them
 # on a ref bump. Same reasoning as terraform/cloudflare's zone_settings.
 module "sso" {
-  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/authentik-sso?ref=v0.7.3"
+  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/authentik-sso?ref=v0.7.4"
 
   authorization_flow_slug = "default-provider-authorization-implicit-consent"
   invalidation_flow_slug  = "default-provider-invalidation-flow"
