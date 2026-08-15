@@ -252,12 +252,20 @@ spec:
             periodSeconds: 15
             timeoutSeconds: 10
             failureThreshold: 4
+          # Memory is hand-set and binding: the VPA is `controlledValues:
+          # RequestsOnly` (vpa.yaml), so this limit is the ceiling the pod is
+          # admitted against and `maxAllowed` tracks the same number — raising
+          # one means raising both, in the same commit (docs/33 § Limit
+          # oscillation). Sized far above the 475Mi 30d working-set peak
+          # because the gateway forks the Codex and Claude Code CLIs, whose
+          # footprint tracks the task being run rather than usage history.
+          # No CPU limit (docs/33).
           resources:
             requests:
-              cpu: 50m
-              memory: 256Mi
+              cpu: 100m
+              memory: 512Mi
             limits:
-              memory: 1Gi
+              memory: 2Gi
           volumeMounts:
             - name: data
               mountPath: /opt/data
@@ -352,12 +360,21 @@ spec:
             periodSeconds: 30
             timeoutSeconds: 10
             failureThreshold: 5
+          # This is the container that OOMKilled the chat and event feeds: it
+          # holds a flat ~138Mi idle and jumps ~5x on the first active chat, so
+          # the recommender only ever measured the quiet baseline and the
+          # ratio-scaled limit landed under the burst — the exact case docs/33
+          # § Limit oscillation describes. The limit is now hand-set and
+          # binding (vpa.yaml is RequestsOnly, `maxAllowed` tracks this number)
+          # at ~2.4x the 1059Mi 30d working-set peak. The request is floored at
+          # the same 768Mi by `minAllowed` so the scheduler reserves for the
+          # burst rather than for the idle baseline. No CPU limit (docs/33).
           resources:
             requests:
-              cpu: 50m
-              memory: 256Mi
+              cpu: 100m
+              memory: 768Mi
             limits:
-              memory: 1Gi
+              memory: 2560Mi
           volumeMounts:
             - name: data
               mountPath: /opt/data
@@ -416,16 +433,19 @@ spec:
           # No readinessProbe: nothing routes through a Service to :9377 (the
           # gateway calls localhost), so readiness has nothing to gate.
           # Firefox memory scales with open tabs/sessions, not steady-state
-          # history: the request covers the idle server plus one session (~1.25x
-          # the observed peak) and the 2Gi limit caps a MAX_SESSIONS burst. VPA
-          # is Off for this container (vpa.yaml), so the request is hand-measured
-          # and must be revisited when usage changes. No CPU limit (docs/33).
+          # history. The 448Mi request this replaces sat below the ~810Mi the
+          # server holds while merely idle, so the scheduler under-reserved for
+          # it on every placement; 1Gi covers the real idle footprint and the
+          # 3Gi limit (~2.9x the 1054Mi 30d working-set peak) caps a
+          # MAX_SESSIONS burst. VPA is Off for this container (vpa.yaml), so
+          # the request is hand-measured and must be revisited when usage
+          # changes. No CPU limit (docs/33).
           resources:
             requests:
               cpu: 100m
-              memory: 448Mi
+              memory: 1Gi
             limits:
-              memory: 2Gi
+              memory: 3Gi
           # Highest-risk container in the pod (it loads arbitrary web content).
           # Xvfb and the Camoufox sandbox need no capabilities, and this is not
           # an s6 image, so drop: ALL does not fight a privilege-drop init.

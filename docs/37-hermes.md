@@ -460,7 +460,7 @@ pod (self-built image — `build-camofox-browser` CI job,
 - **Guardrails**: `MAX_SESSIONS=5` (upstream default 50 — far more Firefox
   than the pod's memory budget; 5 is plenty for one agent),
   `CAMOFOX_CRASH_REPORT_ENABLED=false` (upstream defaults crash reporting ON —
-  this is a private deployment). Memory: 512Mi request / 2Gi limit,
+  this is a private deployment). Memory: 1Gi request / 3Gi limit,
   VPA-excluded (browser memory tracks open sessions, not history — see
   vpa.yaml).
 - **Egress**: browsing rides the public `:443` egress rule; `:80` is also

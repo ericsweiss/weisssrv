@@ -293,6 +293,18 @@ is `Auto`, each one is an eviction of the cluster's secrets reconciler.
 onepassword-connect, cert-controller and the ESO webhook oscillated 9x/7x/7x in
 the same window.
 
+hermes/dashboard is the case that stopped being theoretical: idle-heavy and
+interactive, it held a flat ~138Mi for 26 hours, so the recommender sized the
+request at 194Mi and the 4:1 manifest ratio pulled the limit down to 777Mi — a
+23% cut to the declared 1Gi. The first active chat session drove it ~5x past
+that and it was OOMKilled twice in five minutes, dropping every open chat and
+event stream. The `Initial` tier makes this worse rather than safer: a
+recommendation applies only at pod admission, but an OOM restarts the
+*container* in place, so the shrunken limit is frozen for the pod's lifetime
+and the workload cannot recover on its own. Any interactive workload whose
+quiet baseline is a small fraction of its working peak belongs in the
+`RequestsOnly` set for this reason, not just one whose limit is seen moving.
+
 The fix is not a bigger cap — it is taking the limit away from the VPA. Where
 `controlledValues: RequestsOnly` is set, the limit is hand-set in the manifest at
 the **30d working-set peak +60%** and `maxAllowed` tracks that same number, so a
@@ -489,6 +501,12 @@ from a 512Mi limit that OOMKilled it — the worked example of applying an
 these baselines but let the VPA right-size them on the next natural restart:
 Grafana 512Mi/1Gi; Flux controllers 256Mi requests (patched in
 `kubernetes/clusters/weisssrv/flux-system/kustomization.yaml`).
+
+A `RequestsOnly` policy keeps its **limit** hand-tuned permanently even though
+its request is still VPA-managed, and `maxAllowed` must equal that limit:
+hermes/dashboard 768Mi request / 2560Mi limit and hermes/gateway 512Mi/2Gi
+(both floored by `minAllowed` at the interactive working set, not the idle
+baseline), alongside the VPA-excluded hermes/camofox at 1Gi/3Gi.
 
 ## Proxmox-level scaling (manual by design)
 
