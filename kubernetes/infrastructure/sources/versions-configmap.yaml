@@ -30,7 +30,7 @@ data:
   helm_chart_versions_external_secrets: 2.9.0
   helm_chart_versions_kube_prometheus_stack: 88.3.0
   helm_chart_versions_kured: 6.1.0
-  helm_chart_versions_loki: 18.8.0
+  helm_chart_versions_loki: 18.9.0
   helm_chart_versions_metallb: 0.15.3
   helm_chart_versions_metrics_server: 3.13.1
   helm_chart_versions_nvidia_device_plugin: 0.19.3
@@ -42,14 +42,14 @@ data:
   helm_chart_versions_traefik: 41.2.0
   helm_chart_versions_vpa: 5.0.0
   hermes_camofox_version: 1.13.0
-  hermes_claude_version: 2.1.232
+  hermes_claude_version: 2.1.233
   hermes_codex_version: 0.147.0
-  hermes_image_version: v2026.8.13-r1
-  hermes_op_version: 2.38.1-1
+  hermes_image_version: v2026.8.13-r2
+  hermes_op_version: 2.39.0-1
   hermes_version: v2026.8.13
   hindsight_llamacpp_version: b10068
-  hindsight_version: 0.9.0
-  homarr_version: v1.74.0
+  hindsight_version: 0.9.1
+  homarr_version: v1.75.0
   immich_postgres_version: 14-vectorchord0.4.3-pgvectors0.2.0
   immich_valkey_version: '9'
   immich_version: v3.1.0
@@ -61,7 +61,7 @@ data:
   meilisearch_version: v1.15.2
   nextcloud_exporter_version: 0.9.1
   nextcloud_postgres_version: 18.6-trixie
-  nextcloud_version: 34.0.2
+  nextcloud_version: 34.0.3
   nvidia_container_toolkit_version: 1.19.1-1
   nvidia_cuda_keyring_version: 1.1-1
   nvidia_driver_version: 610.43.02-1
@@ -85,7 +85,7 @@ data:
   sonarr_version: 4.0.19.2979
   tailscale_version: 1.102.2
   unbound_exporter_version: 0.6.0
-  wg_easy_version: 15.3.0
+  wg_easy_version: 15.4.0
   zfs_exporter_version: 2.4.1
 kind: ConfigMap
 metadata:

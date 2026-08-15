@@ -219,7 +219,7 @@ pulsarr_version: "0.18.0"
 # wg-easy WireGuard VPN (internet-exit VPN for the user + friends/family).
 # Container tag has NO leading "v" (upstream convention: :15.3.0, not :v15.3.0).
 # https://github.com/wg-easy/wg-easy/releases
-wg_easy_version: "15.3.0"
+wg_easy_version: "15.4.0"
 
 # Recipe management stack versions
 # Mealie: https://github.com/mealie-recipes/mealie/releases
@@ -265,7 +265,7 @@ registry_cache_version: "3.1.1"
 # single-source-of-truth convention (they flow harmlessly into the versions
 # ConfigMap; no k8s manifest references them).
 # Nextcloud server: https://github.com/nextcloud/docker/blob/master/versions.json (34 = current stable, PHP 8.5, Debian trixie)
-nextcloud_version: "34.0.2"
+nextcloud_version: "34.0.3"
 # PostgreSQL: PG 18 is Nextcloud-recommended; matches the homelab postgres pin.
 # https://hub.docker.com/_/postgres/tags
 nextcloud_postgres_version: "18.6-trixie"
@@ -332,7 +332,7 @@ hermes_git_sha: "f80f453ae0679347e38abc917c7f94f717bf96c5"
 # the nodes' IfNotPresent cache would keep serving the unpatched image. Bump
 # -rN when patches change; reset to -r1 on a hermes_version bump. CI asserts
 # the prefix matches hermes_version so the two can never drift.
-hermes_image_version: "v2026.8.13-r1"
+hermes_image_version: "v2026.8.13-r2"
 # OpenAI Codex CLI (https://github.com/openai/codex/releases, npm @openai/codex).
 # Hermes' Codex app-server runtime delegates OpenAI/Codex turns to this CLI over
 # JSON-RPC stdio, authenticated with a ChatGPT subscription (OAuth) — no API
@@ -353,23 +353,28 @@ hermes_codex_version: "0.147.0"
 # Bump = pick a newer stable release, sync-versions, commit — CI rebuilds the
 # wrapper, Flux rolls the pods. Build-time only; rides in the versions
 # ConfigMap as a harmless superset (same as hermes_codex_version).
-hermes_claude_version: "2.1.232"
+hermes_claude_version: "2.1.233"
 # 1Password CLI (op), the official first-party binary. Baked into the hermes
 # image (docker/hermes-agent/Dockerfile.codex) so Hermes' first-party 1Password
 # skill can drive `op` against the isolated Agent vault via a service-account
 # token (OP_SERVICE_ACCOUNT_TOKEN — wired in kubernetes/apps/hermes; docs/37
 # §1Password). Value is the full DEB version string (apt pin), not the bare
-# semver `op --version` reports (2.38.1). No release feed to poll — bump by
+# semver `op --version` reports (2.39.0). No release feed to poll — bump by
 # checking `apt-cache madison 1password-cli` against 1Password's signed repo,
 # then sync-versions + commit; CI rebuilds the wrapper. Build-time only (not
 # substituted into any manifest); rides in the versions ConfigMap as a harmless
 # superset like hermes_codex_version.
 #
-# NOT optional maintenance: 1Password PRUNES old versions from the apt repo, so
-# a stale pin FAILS the image build (not merely lags). version-check cannot
-# catch this — no release feed. On a build failure, re-read the repo's Packages
-# index first.
-hermes_op_version: "2.38.1-1"
+# NOT optional maintenance: the repo carries exactly ONE version at a time —
+# 1Password prunes the rest — so a stale pin FAILS the image build outright
+# (not merely lags), and every upstream release invalidates this pin whether or
+# not anything else changed. version-check cannot catch it: there is no release
+# feed. Read the current version straight off the Packages index:
+#   curl -fsSL https://downloads.1password.com/linux/debian/amd64/dists/stable/main/binary-amd64/Packages \
+#     | awk '/^Package: 1password-cli$/{p=1} p&&/^Version:/{print $2; p=0}'
+# 2.38.1-1 was pruned in favour of 2.39.0-1 and broke build-hermes-agent on
+# pipeline 1333 (2026-08-14).
+hermes_op_version: "2.39.0-1"
 # Camofox anti-detection browser server (jo-inc/camofox-browser) — the sidecar
 # behind Hermes' camofox browser tool (CAMOFOX_URL). Upstream publishes no
 # container image; the build-camofox-browser CI job clones the repo at tag
@@ -389,7 +394,7 @@ hermes_camofox_git_sha: "8b5b0959adfadadae38ecce9d7eed706ab102bf1"
 # memory backend (kubernetes/apps/hindsight, docs/37 §Memory backend). The pin
 # is the ghcr.io/vectorize-io/hindsight image tag (bare semver; the git tag
 # carries a leading "v"). https://github.com/vectorize-io/hindsight/releases
-hindsight_version: "0.9.0"
+hindsight_version: "0.9.1"
 # llama.cpp server sidecar for Hindsight's local LLM. The deployment builds the
 # image tag as ghcr.io/ggml-org/llama.cpp:server-cuda-<pin> — the CUDA build,
 # for GPU offload on the pve-prec-01 1660 Ti (docs/43). Upstream tags a build
@@ -437,7 +442,7 @@ dcgm_exporter_version: "4.6.0-4.8.3-distroless"
 # Homarr dashboard (kubernetes/apps/homarr, docs/41) — the ghcr.io/homarr-labs/
 # homarr image tag. The Docker tag is v-PREFIXED (v1.71.0 returns 200; a bare
 # 1.71.0 is 404), so keep the leading "v". https://github.com/homarr-labs/homarr/releases
-homarr_version: "v1.74.0"
+homarr_version: "v1.75.0"
 
 # Offsite backup binaries (restic_offsite role on pve-nas-01, docs/42).
 # restic installs from Debian apt (0.18.x, current); a NON-EMPTY restic_version
@@ -513,7 +518,7 @@ helm_chart_versions:
   # 88.3.0's operator v0.93.0 (CRDs may lead the operator, never trail). COUPLING: bump in lockstep with kube_prometheus_stack so the
   # CRD set stays version-matched to the operator kps deploys (docs/12).
   prometheus_operator_crds: "31.0.1"
-  loki: "18.8.0"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0); 18.0.0 = dashboard-gen only
+  loki: "18.9.0"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0); 18.0.0 = dashboard-gen only
   alloy: "1.11.1"
   prometheus_blackbox_exporter: "11.17.2"
   onepassword_connect: "2.4.1"
