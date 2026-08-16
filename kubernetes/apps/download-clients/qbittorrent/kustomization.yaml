@@ -1,15 +1,11 @@
 ---
-# qBittorrent overlay: qBittorrent-specific resources + the shared Gluetun VPN
-# sidecar. The component injects the gluetun container (containers[0]), the
-# check-vpn-config initContainer (prepended ahead of clean-stale-locks), and the
-# tun/vpn-config volumes (volumes[0]/[1]) + pod dnsConfig. The JSON6902 patches
-# below edit those injected fields IN PLACE (no list reordering) to set the
-# per-app ConfigMap name (qbittorrent-vpn-config) on the two gluetun env refs +
-# the vpn-config volume, and append qBittorrent's ports to the gluetun container
-# (which owns the shared pod network namespace): the WebUI and the BT peer
-# ports. Indices are fixed by the component:
-# gluetun=containers[0], VPN_SERVICE_PROVIDER=env[0], SERVER_COUNTRIES=env[1],
-# vpn-config=volumes[1].
+# qBittorrent overlay: qBittorrent's own resources + the shared _vpn-sidecar
+# component (whose check-vpn-config initContainer is prepended ahead of
+# clean-stale-locks). The JSON6902 patches below edit the injected fields IN
+# PLACE at the indices the component fixes — gluetun=containers[0],
+# VPN_SERVICE_PROVIDER=env[0], SERVER_COUNTRIES=env[1], vpn-config=volumes[1] —
+# to set the per-app ConfigMap name and append the WebUI and BT peer ports to
+# gluetun, which owns the pod netns.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: downloads

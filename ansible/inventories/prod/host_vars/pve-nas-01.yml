@@ -3,29 +3,17 @@
 # Primary NAS/storage server running Proxmox VE
 
 # ZFS native encryption — boot-time passphrase fetch from 1Password Connect.
-# tank and ssd are encrypted (appdata, databases, backups, personal share,
-# VM disks). The media domain is NOT encrypted by design: tank/media (the
-# ~14.5T Plex library) and all of nvme (hot-tier media, transcode scratch,
-# ephemeral VM images). Media is non-sensitive, the only path to encrypt the
-# 14.5T tier is a send/recv that has destabilized this host, and AES would
-# tax the streaming/transcode hot path — see docs/32 "What is encrypted,
-# what isn't". archive is a plaintext raidz1 pool; its sensitive
-# replicated datasets are encrypted at rest via raw `zfs send -w` streams
-# from the encrypted tank/ssd sources (docs/32). local-ssd on the
-# compute hosts is intentionally NOT encrypted — see docs/32 "What is
-# encrypted, what isn't" for the chicken-and-egg rationale (k3s VMs live on
-# local-ssd; Connect runs in k3s; encrypting it deadlocks cold boot). The
-# control there is the drive-wipe SOP in docs/15-credential-rotation.md.
+# tank and ssd are encrypted; media (tank/media + all of nvme) and archive are
+# plaintext by design, and local-ssd on the compute hosts cannot be encrypted
+# without deadlocking cold boot. Which tiers and why: docs/32 "What is
+# encrypted, what isn't".
 #
-# Each listed pool must already have at least one encrypted dataset
-# (docs/32 §2a) — the role asserts this and refuses to activate
-# zfs-load-key@<pool>.service on a fully plaintext pool (the unit would
-# fail at boot and drag zfs-mount.service down via RequiredBy=). To stage
-# before encryption, leave this list empty.
-# The unlock path reads from the dedicated Homelab-Boot vault: the plaintext
-# token at /etc/onepassword-connect/token can reach ONLY the two pool
-# passphrases, not the whole Homelab vault (docs/32 scope caveat, closed
-# 2026-08-13 — vault created, Connect granted, token minted+rotated).
+# Each listed pool must ALREADY have at least one encrypted dataset — the role
+# refuses to activate zfs-load-key@<pool>.service on a fully plaintext pool,
+# where the unit would fail at boot and drag zfs-mount.service down via
+# RequiredBy=. Leave this list empty to stage before encryption.
+# The unlock token at /etc/onepassword-connect/token is scoped to the dedicated
+# Homelab-Boot vault: it can reach the two pool passphrases and nothing else.
 zfs_encryption_connect_vault: "Homelab-Boot"
 zfs_encryption_pools:
   - name: tank
@@ -35,39 +23,17 @@ zfs_encryption_pools:
     item: "ZFS Pool ssd Passphrase"
     field: passphrase
 
-# Proxmox guests on this host whose disks live on the encrypted ssd pool.
-# pve-start-encrypted-guests.service starts these AFTER zfs-mount-encrypted
-# unlocks+mounts ssd (they're onboot=0 in hosts.yml/plex.yml). VM 222
-# (srv-nas-01, etcd) is deliberately ABSENT — it has no encrypted disk and
-# starts early on its normal onboot path so cluster quorum never waits on
-# this NAS's unlock.
-#   202 = k3s-agt-nas-01 (4 data zvols scsi1-4 on ssd: authentik/mealie pg,
-#         prometheus, loki)
-#   153 = gitlab (scsi0 + repos zvol on ssd)
-#   156 = nextcloud (scsi0 + app/postgres zvols on ssd; data zvol on encrypted
-#         tank/nextcloud-data)
-#   157 = immich (scsi0 + app/postgres zvols on ssd; data zvol on encrypted
-#         tank/immich-data)
-#   155 = windows (scsi0 root + EFI/TPM state on ssd). It idles on ~13G it
-#         cannot be reliably ballooned out of, so it is ordered last.
-#
-#         NOTE the mechanism, which is why membership of THIS list — not
-#         onboot — is what makes a guest start at boot: every guest here stays
-#         onboot=0 (VMs in hosts.yml, the plex LXC in host_vars/plex.yml as
-#         proxmox_lxc_onboot), because pve-guests runs before
-#         zfs-mount-encrypted has unlocked the ssd pool. onboot=1 would fail
-#         against a locked pool; this list is the working equivalent, applied
-#         after the unlock. See docs/32, 39.
-#   152 = plex LXC (rootfs + mp0 /config on ssd)
-#   158 = immich-ml LXC (rootfs on ssd)
-# Order mirrors the per-guest startup order (proxmox_startup_order on VMs,
-# proxmox_lxc_startup_order on the LXC): the k3s agent (202, order 40) before the
-# gitlab app (153, order 50), nextcloud (156, order 55), immich (157, order 56)
-# and windows (155, order 60); pve-start-encrypted-guests.sh starts VMs in this
-# list order, then CTs. 157 (immich) has disks on both the ssd pool and
-# tank/immich-data — both unlocked by zfs-mount-encrypted before this cohort
-# starts. Windows is LAST: it is the least critical guest here and the slowest to
-# settle, so it claims its memory after the services have theirs.
+# Guests whose disks live on the encrypted ssd pool (202 k3s-agt-nas-01,
+# 153 gitlab, 156 nextcloud, 157 immich, 155 windows; 152 plex + 158 immich-ml
+# LXCs). MEMBERSHIP OF THIS LIST — not onboot — is what starts them at boot:
+# they all stay onboot=0 because pve-guests runs before zfs-mount-encrypted has
+# unlocked ssd, and onboot=1 would fail against a locked pool.
+# pve-start-encrypted-guests.service starts them after the unlock, VMs in list
+# order then CTs, so the order mirrors each guest's proxmox_startup_order.
+# Windows is last: least critical, slowest to settle, and it claims ~13G it
+# cannot be ballooned out of. VM 222 (srv-nas-01, etcd) is deliberately ABSENT —
+# it has no encrypted disk and starts on its normal onboot path so cluster
+# quorum never waits on this NAS's unlock. docs/32, 39.
 zfs_encryption_guest_vmids: [202, 153, 156, 157, 155]
 zfs_encryption_guest_ctids: [152, 158]
 
@@ -83,10 +49,11 @@ nas_storage_encrypted_bind_sources:
   - /mnt/tank/proxmox
   - /mnt/ssd/k3s-etcd  # off-node k3s etcd snapshot copies (encrypted, ssd pool)
   # Offsite-eligible logical-dump landing zone, now split into per-app exports
-  # (see nas_storage_exports below). Each is a SUBDIR of tank/backups (aes-256-gcm): the
-  # exports set bind_source_check: /mnt/tank/backups so the mounted-dataset guard
-  # checks the parent dataset, and these entries anchor each bind on the late
-  # zfs-mount-encrypted.service.
+  # (see nas_storage_exports below). Each is a SUBDIR of the tank/backups/apps
+  # dataset (encryption inherited from tank/backups): the exports set
+  # bind_source_check: /mnt/tank/backups/apps so the mounted-dataset guard sees
+  # the dataset the subdirs actually live on, and these entries anchor each bind
+  # on the late zfs-mount-encrypted.service.
   - /mnt/tank/backups/apps/authentik
   - /mnt/tank/backups/apps/mealie
   - /mnt/tank/backups/apps/gitlab
@@ -126,19 +93,27 @@ nas_storage_zfs_pools:
           atime: "off"
           compression: zstd
           com.sun:auto-snapshot: "false"
-      # Nextcloud bulk user data. Pre-existing encryption root (created manually
-      # like ssd/k3s-etcd — nas_storage does not create datasets), already in the
-      # nas_storage_archive_backup_sources (raw-encrypted recursive send). The 2T
-      # sparse data zvol tank/nextcloud-data/disk (created by proxmox_vm for VM 156)
-      # is a CHILD and inherits it. The properties below are declared to MATCH
-      # the live dataset exactly (mountpoint/compression/encryption verified on
-      # the NAS) so nas_storage never mutates it — the encryption property is a
-      # guard: `zfs set encryption` errors loudly if the dataset were ever
-      # recreated plaintext.
+      # Nextcloud bulk user data: an encryption root created by hand
+      # (nas_storage does not create datasets); the data zvol is a child and
+      # inherits it. The properties below MATCH the live dataset exactly so
+      # nas_storage never mutates it, and `encryption` is a plaintext-recreation
+      # guard.
       - name: tank/nextcloud-data
         properties:
           mountpoint: /mnt/tank/nextcloud-data
           compression: zstd
+          encryption: aes-256-gcm
+      # Logical-dump landing zone. Its OWN dataset (not a subdir of
+      # tank/backups) so the restic restore drill can sample it as a separate
+      # source — see restic_offsite_sources below. It inherits tank/backups'
+      # encryption root and rides the same recursive `zfs send -w`. Only the
+      # properties this repo can assert are declared; `encryption` is a
+      # plaintext-recreation guard (`zfs set encryption` errors loudly).
+      # CREATE MANUALLY FIRST — nas_storage does not create datasets and
+      # hard-fails DATASET_MISSING on the next NAS deploy.
+      - name: tank/backups/apps
+        properties:
+          mountpoint: /mnt/tank/backups/apps
           encryption: aes-256-gcm
 
   - name: ssd
@@ -170,18 +145,14 @@ nas_storage_zfs_pools:
       - name: ssd/appdata/mealie
         properties:
           canmount: "off"
-      # Off-node etcd snapshot copies from the k3s servers (docs/17). Small, lz4,
-      # no auto-snapshot (snapshotting etcd snapshots is pointless). Its OWN
-      # encryption root — the ssd pool root is plaintext and children do NOT
-      # inherit encryption (docs/32), so it must be created with explicit
-      # encryption flags. CREATE MANUALLY FIRST — nas_storage does not create
-      # datasets (hard-fails DATASET_MISSING on the next NAS deploy):
+      # Off-node etcd snapshot copies from the k3s servers (docs/17). Its OWN
+      # encryption root: the ssd pool root is plaintext and children do NOT
+      # inherit encryption, so it must be created by hand with explicit flags
+      # (nas_storage does not create datasets — it hard-fails DATASET_MISSING):
       #   zfs create -o encryption=aes-256-gcm -o keyformat=passphrase \
       #     -o keylocation=prompt -o mountpoint=/mnt/ssd/k3s-etcd ssd/k3s-etcd
-      # (passphrase from 1P "ZFS Pool ssd Passphrase"; name == encryptionroot so
-      # the zfs-load-key@ssd boot loop unlocks it automatically). The
-      # encryption=aes-256-gcm property below makes nas_storage fail loudly if the
-      # dataset was accidentally created plaintext (zfs set encryption errors).
+      # Passphrase from 1P "ZFS Pool ssd Passphrase"; name == encryptionroot, so
+      # the zfs-load-key@ssd boot loop unlocks it automatically.
       - name: ssd/k3s-etcd
         properties:
           mountpoint: /mnt/ssd/k3s-etcd
@@ -273,13 +244,11 @@ nas_storage_backup_artifact_apps:
   - name: pve-cluster
     pattern: "etc-pve-*.tar.gz"
 
-# Nightly raw-encrypted replication of the sensitive datasets to the archive
-# pool (docs/42). Every source is replicated RECURSIVELY, so children ride
-# along; each lands at archive/<basename>, which must therefore be unique.
-# ssd/pve (the GitLab VM disks) is deliberately absent — those are already in
-# the nightly vzdump this list replicates via tank/proxmox. ssd/k3s-etcd IS
-# here so the etcd DR chain closes (local snapshots + NAS off-node + archive +
-# B2). Each root must be a filesystem; a top-level zvol is rejected on receive.
+# Nightly raw-encrypted replication to the archive pool (docs/42). Sources are
+# replicated RECURSIVELY and each lands at archive/<basename>, so basenames must
+# be unique and every root must be a filesystem (a top-level zvol is rejected on
+# receive). ssd/pve is absent on purpose — the GitLab VM disks already ride the
+# nightly vzdump this list replicates via tank/proxmox.
 nas_storage_archive_backup_enabled: true
 nas_storage_archive_backup_pool: archive
 nas_storage_archive_backup_vzdump_target: tank/proxmox
@@ -293,21 +262,11 @@ nas_storage_archive_backup_sources:
   - ssd/databases
   - ssd/k3s-etcd
 
-# ZFS ARC cap (bytes) = 16 GiB.
-#
-# The cap is a guard, not a performance target: uncapped, ARC takes ~half of RAM
-# (~62 GiB on this host), and a rebuild must never silently revert to that and
-# squeeze the guests.
-#
-# The measured working set is far below the ceiling — ARC runs a 98% hit ratio on
-# a ~2.5 GiB hot set, almost entirely metadata, since the pools are
-# large-but-cold (media is streamed once, not re-cached). 16 GiB therefore leaves
-# room for the metadata cache to grow as the pools fill and as guests are added,
-# rather than pinning it just above today's working set. ARC self-tunes downward
-# under pressure and is instantly reclaimable, so unused ceiling costs nothing.
-#
-# Rendered into /etc/modprobe.d/zfs.conf by nas_storage (with an update-initramfs
-# handler so it applies at early boot).
+# ZFS ARC cap (16 GiB): a guard, not a target — uncapped, ARC takes about half
+# of this host's RAM and squeezes the guests. The working set is far below the
+# ceiling, and unused ceiling costs nothing (ARC self-tunes down under pressure
+# and is instantly reclaimable). Rendered into /etc/modprobe.d/zfs.conf by
+# nas_storage, with an update-initramfs handler so it applies at early boot.
 nas_storage_zfs_arc_max_bytes: 17179869184
 
 # Nightly /etc/pve archive into the offsite-eligible landing zone. pmxcfs is
@@ -318,38 +277,27 @@ nas_storage_zfs_arc_max_bytes: 17179869184
 # the cluster filesystem. docs/17.
 nas_storage_pve_cluster_backup_enabled: true
 
-# Daily swap reset. Paired with vm.swappiness=1 (nic_tuning) + the ARC cap above:
-# those keep steady-state swap ~0, but a real peak (deploys/backups/ML) can still
-# swap, and that swap never self-clears. This timer resets it each night, guarded
-# to abort if a swapoff would risk OOM (nas_storage/templates/swap-clean.sh.j2).
-# Only this host runs it (the compute hosts have headroom + default swappiness).
-#
-# It is a backstop: on a normal night it finds ~0 swap and does nothing, which
-# costs nothing. Retire it only if the guest-shutdown escalation below goes
-# unused across a few months of real peaks.
+# Daily swap reset. vm.swappiness=1 + the ARC cap keep steady-state swap ~0, but
+# a real peak still swaps and that swap never self-clears. The timer aborts if a
+# swapoff would risk OOM (nas_storage/templates/swap-clean.sh.j2). Only this
+# host runs it — the compute hosts have headroom and the default swappiness.
 nas_storage_swap_clean_enabled: true
 # 07:00 — deliberately AFTER the NAS's own overnight jobs (media-mover 06:00,
 # archive-backup 06:30) so it reclaims the swap THEY caused rather than running
 # before/during them. If those ever run long, push this later.
 nas_storage_swap_clean_schedule: "*-*-* 07:00:00"
-# Recovery escalation: when the ARC-shrink headroom alone can't cover the swap,
-# the reset gracefully shuts these guests down (in order, only as many as needed
-# to reach the required headroom), does the swapoff, then restarts every guest it
-# stopped (guaranteed by an EXIT trap, even on failure). "vmid:name:timeout(s)".
-# immich first (~5.5G, smallest/least-critical/fastest restart) usually suffices
-# on its own, so GitLab (heaviest, slowest) is only stopped if immich isn't
-# enough. All are graceful only (qm shutdown) — a guest that won't stop in its
-# timeout aborts the reclaim rather than being force-killed (Postgres-safe). With
-# the right-sized k3s VMs (hosts.yml) the no-downtime ARC-shrink path covers the
-# common case, so a guest stop is the rare-overflow exception, not a nightly event.
+# Escalation when ARC-shrink headroom alone cannot cover the swap: shut these
+# guests down in order, only as many as needed, swapoff, then restart every one
+# stopped (an EXIT trap guarantees it even on failure). "vmid:name:timeout(s)",
+# ordered least- to most-critical. Graceful only (qm shutdown) — a guest that
+# misses its timeout aborts the reclaim rather than being killed (Postgres-safe).
 nas_storage_swap_clean_stop_guests:
   - "157:immich:120"
   - "153:gitlab:300"
   - "156:nextcloud:120"
 
-# MergerFS configuration
-# Merges NVMe (hot tier) + tank (cold tier) media into unified /mnt/media
-# Only downloads/ and library/ are visible - tank's other directories are NOT exposed
+# Merges NVMe (hot tier) + tank (cold tier) media into a unified /mnt/media.
+# Only tank/media is a branch, so tank's other directories are NOT exposed.
 nas_storage_mergerfs_mounts:
   - name: media
     sources:
@@ -391,7 +339,14 @@ nfs_tls_enabled: true
 # nfs_tls_client_cert semantics.
 nfs_tls_is_server: true
 
-# NFS exports
+# NFS exports.
+# Convention for every k3s/app export: owner 1000 (eric), group 2000 (media),
+# mode 02775 (setgid so the group is inherited).
+# k3s client blocks: 192.168.0.200/29 = agents; 192.168.0.220/29 = servers
+# .222/.223 (masks to .216-.223, NOT .227); 192.168.0.227/32 = k3s-srv-prec-01,
+# which sits outside both /29s and must therefore be listed explicitly on every
+# k3s export — pod-mounted PVs must not lose their mount if a pod ever lands on
+# a server.
 nas_storage_exports:
   # NFSv4 pseudo-root (fsid=0): traversal-only, so read-only. NFSv4 clients
   # cross from here into whichever child exports below are explicitly listed
@@ -444,71 +399,51 @@ nas_storage_exports:
       - spec: "192.168.0.227/32"
         options: "ro,sync,hide,no_subtree_check,fsid=0,sec=sys,root_squash"
 
-  # K3s/app RW exports
-  # These directories use UID 1000 (eric) and GID 2000 (media) with setgid for shared access
-  # all_squash + anonuid/anongid: Maps ALL clients (including root) to uid 1000/gid 2000
-  # This allows LinuxServer.io containers to run chmod/chown during init
-  #
-  # k3s node client blocks:
-  #   192.168.0.200/29 (.200-.207) = k3s agents
-  #   192.168.0.220/29 = k3s servers .222/.223 (masks to .216-.223, NOT .227)
-  #   192.168.0.227/32 = k3s-srv-prec-01, which sits outside both /29 blocks.
-  #     Every k3s RW export lists all three. The server taints keep normal pods
-  #     off the servers today, but pod-mounted PVs (e.g. the pg-dump CronJobs)
-  #     must not silently lose their mount if a pod ever lands there — backup
-  #     reliability cannot hinge on taint config.
-  # xprtsec=tls: REQUIRE — these k3s client lines reject plaintext mounts.
-  # The k3s PVs mount with xprtsec=tls by hostname (pve-nas-01.esweiss.com,
-  # so the *.esweiss.com cert verifies; an IP mount fails the handshake).
-  # tlshd is live on the server + every k3s agent (group_vars/k3s.yml
-  # nfs_tls_enabled), so the TLS path always completes.
+  # K3s/app RW exports. all_squash + anonuid/anongid maps every client (root
+  # included) to 1000:2000 so LinuxServer.io containers can chmod/chown at init.
+  # xprtsec=tls REQUIRED: these client lines reject plaintext, and the PVs mount
+  # by hostname because the wildcard cert has no IP SAN.
   - path: /export/appdata
     bind_source: /mnt/ssd/appdata
-    owner: 1000  # eric
-    group: 2000  # media
-    mode: "02775"  # rwxrwsr-x (setgid for group inheritance)
+    owner: 1000
+    group: 2000
+    mode: "02775"
     xprtsec: "tls"
     clients:
       - spec: "192.168.0.200/29"
         options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=11"
       - spec: "192.168.0.220/29"
         options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=11"
-      - spec: "192.168.0.227/32"  # k3s-srv-prec-01 — outside both /29 blocks
+      - spec: "192.168.0.227/32"
         options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=11"
 
   - path: /export/share
     bind_source: /mnt/tank/share
-    owner: 1000  # eric
-    group: 2000  # media
-    mode: "02775"  # rwxrwsr-x (setgid for group inheritance)
+    owner: 1000
+    group: 2000
+    mode: "02775"
     xprtsec: "tls"  # require TLS — see /export/appdata note above
     clients:
       - spec: "192.168.0.200/29"
         options: "rw,sync,no_subtree_check,root_squash,fsid=12"
       - spec: "192.168.0.220/29"
         options: "rw,sync,no_subtree_check,root_squash,fsid=12"
-      - spec: "192.168.0.227/32"  # k3s-srv-prec-01 — outside both /29 blocks
+      - spec: "192.168.0.227/32"
         options: "rw,sync,no_subtree_check,root_squash,fsid=12"
 
-  # Unified media export (mergerfs mount - exposes only downloads/ and library/)
-  # NFS clients mount this as /media, pods mount it as /media
-  # k3s client lines require TLS (per-client xprtsec=tls — reject plaintext);
-  # HAOS (.154) stays fully plaintext on its own client line. HAOS Supervisor
-  # hardcodes its NFS mount options and the appliance ships no tlshd, so it can
-  # never request xprtsec=tls — locking it down would break its media mount.
-  # The k3s pods drive TLS by mounting with xprtsec=tls (by hostname, so the
-  # *.esweiss.com cert verifies). xprtsec is per-client, so the require-TLS k3s
-  # lines and the plaintext .154 line coexist on one export. See docs/24 (HAOS
-  # NFS) and docs/07 (Transport Security).
+  # Unified media export (the mergerfs union). xprtsec is PER CLIENT, so the
+  # require-TLS k3s lines and the plaintext .154 line coexist here: HAOS
+  # hardcodes its NFS mount options and ships no tlshd, so it can never request
+  # xprtsec=tls — docs/24 (HAOS NFS), docs/07 (Transport Security).
   - path: /export/media
     bind_source: /mnt/media
     # Explicit: /mnt/media is the MergerFS union target, not a ZFS dataset, so
     # the mounted-dataset guard and the zfs-mount fstab ordering do not apply
     # here (the union's own branches carry them).
     zfs: false
-    owner: 1000  # eric
-    group: 2000  # media
-    mode: "02775"  # rwxrwsr-x (setgid for group inheritance)
+    owner: 1000
+    group: 2000
+    mode: "02775"
     clients:
       - spec: "192.168.0.200/29"
         options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=20"
@@ -516,7 +451,7 @@ nas_storage_exports:
       - spec: "192.168.0.220/29"
         options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=20"
         xprtsec: "tls"
-      - spec: "192.168.0.227/32"  # k3s-srv-prec-01 — outside both /29 blocks
+      - spec: "192.168.0.227/32"
         options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=20"
         xprtsec: "tls"
       - spec: "192.168.0.154/32"  # HAOS — plaintext (no xprtsec; see comment above)
@@ -542,59 +477,51 @@ nas_storage_exports:
       - spec: "192.168.0.227/32"
         options: "rw,sync,no_subtree_check,no_root_squash,fsid=15"
 
-  # Offsite-eligible logical-dump landing zone (tank/backups/apps -> B2), split
-  # into PER-APP exports each scoped to ONLY its writer (was one shared export
-  # every backup client could read — a cross-app exposure). Each subdir binds
-  # under /export/backups-apps/<app>; bind_source_check points the mounted-dataset
-  # guard at the parent tank/backups dataset (the subdir is never a mountpoint).
-  # all_squash,anonuid=1000,anongid=2000 so each client write lands 1000:2000
-  # (matching the 02775 subdirs) regardless of in-guest UID (git 998, postgres,
-  # HAOS root, etc.). Every flow now runs OVER TLS except HAOS (.154), the one
-  # appliance that cannot speak xprtsec=tls (documented exception, docs/24) — it
-  # is also the only NON-co-resident backup client (HAOS is a separate VM). The
-  # restic offsite walk reads tank/backups LOCALLY, so it needs no export here.
-  # fsids are unique per export (11/12/14/15/20 are taken by other exports).
-  #
-  # authentik + mealie: the k3s pg-dump PVs (agents .200/29 + servers .220/29),
-  # require TLS (mount path=/backups-apps/<app> by hostname with xprtsec=tls).
+  # Offsite-eligible logical-dump landing zone (tank/backups/apps -> B2), one
+  # export PER APP scoped to only its writer, so the apps cannot read each
+  # other's dumps. bind_source_check points the mounted-dataset guard at the
+  # tank/backups/apps dataset (the per-app subdir is never a mountpoint itself).
+  # all_squash lands every write as 1000:2000 whatever the in-guest UID. All flows
+  # are over TLS except HAOS (.154), which cannot speak xprtsec=tls (docs/24).
+  # The restic walk reads tank/backups locally, so it needs no export here.
+  # fsids must stay unique across ALL exports in this file.
   - path: /export/backups-apps/authentik
     bind_source: /mnt/tank/backups/apps/authentik
-    bind_source_check: /mnt/tank/backups
-    owner: 1000  # eric
-    group: 2000  # media
-    mode: "02775"  # rwxrwsr-x (setgid for group inheritance)
+    bind_source_check: /mnt/tank/backups/apps
+    owner: 1000
+    group: 2000
+    mode: "02775"
     xprtsec: "tls"
     clients:
       - spec: "192.168.0.200/29"
         options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=16"
       - spec: "192.168.0.220/29"
         options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=16"
-      - spec: "192.168.0.227/32"  # k3s-srv-prec-01 — outside both /29 blocks
+      - spec: "192.168.0.227/32"
         options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=16"
 
   - path: /export/backups-apps/mealie
     bind_source: /mnt/tank/backups/apps/mealie
-    bind_source_check: /mnt/tank/backups
-    owner: 1000  # eric
-    group: 2000  # media
-    mode: "02775"  # rwxrwsr-x (setgid for group inheritance)
+    bind_source_check: /mnt/tank/backups/apps
+    owner: 1000
+    group: 2000
+    mode: "02775"
     xprtsec: "tls"
     clients:
       - spec: "192.168.0.200/29"
         options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=17"
       - spec: "192.168.0.220/29"
         options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=17"
-      - spec: "192.168.0.227/32"  # k3s-srv-prec-01 — outside both /29 blocks
+      - spec: "192.168.0.227/32"
         options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=17"
 
-  # gitlab (.153) — now REQUIRES TLS on the wire (VM runs tlshd via the nfs_tls
-  # role; mounts /backups-apps/gitlab by hostname with xprtsec=tls).
+  # gitlab (.153) — TLS on the wire (VM runs tlshd via nfs_tls).
   - path: /export/backups-apps/gitlab
     bind_source: /mnt/tank/backups/apps/gitlab
-    bind_source_check: /mnt/tank/backups
-    owner: 1000  # eric
-    group: 2000  # media
-    mode: "02775"  # rwxrwsr-x (setgid for group inheritance)
+    bind_source_check: /mnt/tank/backups/apps
+    owner: 1000
+    group: 2000
+    mode: "02775"
     xprtsec: "tls"
     clients:
       - spec: "192.168.0.153/32"
@@ -603,10 +530,10 @@ nas_storage_exports:
   # immich (.157) — TLS on the wire (VM runs tlshd via nfs_tls).
   - path: /export/backups-apps/immich
     bind_source: /mnt/tank/backups/apps/immich
-    bind_source_check: /mnt/tank/backups
-    owner: 1000  # eric
-    group: 2000  # media
-    mode: "02775"  # rwxrwsr-x (setgid for group inheritance)
+    bind_source_check: /mnt/tank/backups/apps
+    owner: 1000
+    group: 2000
+    mode: "02775"
     xprtsec: "tls"
     clients:
       - spec: "192.168.0.157/32"
@@ -615,10 +542,10 @@ nas_storage_exports:
   # nextcloud (.156) — TLS on the wire (VM runs tlshd via nfs_tls).
   - path: /export/backups-apps/nextcloud
     bind_source: /mnt/tank/backups/apps/nextcloud
-    bind_source_check: /mnt/tank/backups
-    owner: 1000  # eric
-    group: 2000  # media
-    mode: "02775"  # rwxrwsr-x (setgid for group inheritance)
+    bind_source_check: /mnt/tank/backups/apps
+    owner: 1000
+    group: 2000
+    mode: "02775"
     xprtsec: "tls"
     clients:
       - spec: "192.168.0.156/32"
@@ -630,10 +557,10 @@ nas_storage_exports:
   # backup target — one-time HA UI step (docs/24).
   - path: /export/backups-apps/home-assistant
     bind_source: /mnt/tank/backups/apps/home-assistant
-    bind_source_check: /mnt/tank/backups
-    owner: 1000  # eric
-    group: 2000  # media
-    mode: "02775"  # rwxrwsr-x (setgid for group inheritance)
+    bind_source_check: /mnt/tank/backups/apps
+    owner: 1000
+    group: 2000
+    mode: "02775"
     clients:
       - spec: "192.168.0.154/32"
         options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=22"
@@ -644,9 +571,9 @@ nas_storage_exports:
   # travel plaintext with no_root_squash.
   - path: /export/tank-proxmox
     bind_source: /mnt/tank/proxmox
-    owner: 1000  # eric
-    group: 2000  # media
-    mode: "02775"  # rwxrwsr-x (setgid for group inheritance)
+    owner: 1000
+    group: 2000
+    mode: "02775"
     xprtsec: "tls"
     clients:
       - spec: "192.168.0.102/32"
@@ -662,8 +589,7 @@ nas_storage_exports:
       - spec: "192.168.0.107/32"
         options: "rw,sync,no_subtree_check,no_root_squash,fsid=14"
 
-# Samba shares
-# Use "nas" user with "media" group (GID 2000) for shared access
+# Samba shares: the "nas" user with the "media" group (GID 2000).
 nas_storage_samba_shares:
   - name: share
     path: /mnt/tank/share
@@ -687,29 +613,21 @@ nas_storage_samba_shares:
     create_mask: "0664"
     directory_mask: "2775"  # setgid bit for group inheritance
 
-# Media mover configuration
-# Moves old files from NVMe (hot tier) to tank (cold tier) to free up fast storage
+# Moves old files from the NVMe hot tier down to tank.
 nas_storage_media_mover_enabled: true
 nas_storage_media_mover_src: /mnt/nvme/media/library    # Hot tier library
 nas_storage_media_mover_dst: /mnt/tank/media/library    # Cold tier library
-# 06:00: after the cluster-wide vzdump window, before the 06:30 archive
-# replication. vzdump (proxmox_backup_vzdump_jobs below, 03:30 daily) writes into
-# tank/proxmox until ~05:45 now that bwlimit throttles it (measured
-# 2026-07-14; unthrottled it ended ~03:48), and 02:00 carries smartd's daily
-# short tests — stacking the nvme->tank rsync on either thrashed the NAS
-# every night. The mover normally finishes in minutes, so it clears before
-# the archive snapshot; even when it overruns, they touch disjoint datasets
-# (tank/media is not replicated to archive) and both are I/O-deprioritized.
+# 06:00: after the throttled vzdump window (03:30, runs to ~05:45) and clear of
+# smartd's 02:00 short tests, before the 06:30 archive replication — stacking
+# the nvme->tank rsync on any of them thrashed the NAS. An overrun is safe:
+# tank/media is not replicated to archive, so the datasets are disjoint.
 nas_storage_media_mover_schedule: "*-*-* 06:00:00"
 
-# Proxmox storage configuration — reconciled by the proxmox_backup role
-# (storage.yml / site.yml NAS play). Mounted by HOSTNAME with xprtsec=tls
-# (the *.esweiss.com cert has no IP SAN, so an IP mount fails the TLS
-# handshake); the one-time migration off the legacy plaintext-IP entry is
-# complete and the live storage.cfg matches this block. server/export/path
-# are create-fixed in Proxmox — the role fails loud on drift there.
-# Prerequisite: tlshd on every PVE host (nfs_tls_enabled in
-# group_vars/proxmox.yml).
+# Proxmox storage, reconciled by the proxmox_backup role. Mounted by HOSTNAME
+# with xprtsec=tls — the wildcard cert has no IP SAN, so an IP mount fails the
+# handshake — which requires tlshd on every PVE host (nfs_tls_enabled in
+# group_vars/proxmox.yml). server/export/path are create-fixed in Proxmox, so
+# the role fails loud on drift there.
 proxmox_backup_storage:
   - id: tank-proxmox
     type: nfs
@@ -756,19 +674,13 @@ proxmox_backup_storage:
     pool: nvme/pve
     content: "images,rootdir"
 
-# Proxmox backup job (jobs.cfg via /cluster/backup) — reconciled by the
+# Proxmox backup job (jobs.cfg via /cluster/backup), reconciled by the
 # proxmox_backup role. IMPORTANT: `id` must match the live jobs.cfg id or the
-# role CREATES A SECOND job (check with: pvesh get /cluster/backup
-# --output-format json); GUI-created ids look like backup-xxxxxxxx-xxxx.
-# Schedule is a systemd-style calendar event (not cron). Adopted from the live
-# GUI job: 03:30 daily, all guests, keep-daily=7/weekly=4/monthly=6, routed
-# through the modern notification-system (mailnotification/mailto are the
-# deprecated pre-8.x keys and are no longer set).
-# The job's `script` key publishes vzdump_backup_last_run_success +
-# _last_success_timestamp_seconds (the series the VzdumpBackupFailed/Stale
-# alerts consume). The hookscript is deployed to every Proxmox host by
-# node_exporter_host — this is a cluster-wide `all` job, so it runs (and invokes
-# the hook) on each node for that node's local guests, not just here.
+# role CREATES A SECOND job (`pvesh get /cluster/backup --output-format json`).
+# Schedule is a systemd calendar event, not cron.
+# The `script` key publishes the vzdump_backup_* series the VzdumpBackupFailed/
+# Stale alerts consume; node_exporter_host deploys that hookscript to every
+# Proxmox host, since this is a cluster-wide `all` job that runs on each node.
 proxmox_backup_vzdump_jobs:
   - id: backup-10f33360-a177
     storage: tank-proxmox
@@ -776,33 +688,23 @@ proxmox_backup_vzdump_jobs:
     mode: snapshot
     compress: zstd
     all: true
-    # EXCLUDE the 9 k3s VMs from vzdump — the biggest lever, zero restore-value
-    # lost. They are IaC-rebuildable CATTLE (reprovisioned by `task k3s:deploy`);
-    # ALL persistent data lives on zvols already carrying backup=0 (authentik/
-    # mealie pg, prometheus, loki) and is covered by archive replication + the
-    # pg-dumps + restic B2. Beyond wasting ~200G/night of dump I/O, keeping the
-    # OS-disk images is a STALE-MEMBER-RESTORE HAZARD: restoring a weeks-old k3s
-    # server image would rejoin etcd with a stale member and can corrupt quorum —
-    # the supported recovery is reprovision + etcd-snapshot restore, never an
-    # image roll-back. So excluding them removes a footgun as well as the I/O.
+    # The k3s VMs are excluded: they are IaC-rebuildable cattle whose persistent
+    # data lives on zvols already carrying backup=0. Keeping their OS images is a
+    # HAZARD, not a safety net — restoring a stale k3s server image rejoins etcd
+    # with a stale member and can corrupt quorum; the supported recovery is
+    # reprovision + etcd-snapshot restore.
     # (proxmox_backup clears a removed exclude via --delete; `all` stays true.)
     #
-    # CHECKLIST when adding a guest to this exclude list: Proxmox's
-    # prune-backups runs PER GUEST, immediately AFTER that guest's backup — so a
-    # guest that is no longer backed up is never revisited and its existing dumps
-    # are NEVER pruned. Excluding a guest therefore strands its whole dump
-    # history on tank/proxmox (and, via archsync, on archive/proxmox) forever.
-    # Sweep them by hand in the same change:
-    #   sudo ls -lt /mnt/tank/proxmox/dump/vzdump-qemu-<vmid>-*
-    #   sudo rm -f  /mnt/tank/proxmox/dump/vzdump-{qemu,lxc}-<vmid>-*
-    # then let archsync retention age the archive copy out.
+    # Adding a guest here STRANDS its existing dumps: prune-backups runs per
+    # guest right after that guest's backup, so an excluded guest is never
+    # revisited. Sweep its dumps by hand in the same change — docs/17
+    # § Retention gotcha when excluding a guest.
     exclude: [202, 203, 204, 205, 206, 207, 222, 223, 227]
-    # Per-node backup I/O cap (KiB/s). This is a cluster-wide `all` job, so every
-    # node writes to THIS host's tank-proxmox NFS target at 03:30 at once;
-    # unthrottled that saturates the spinning tank pool (docs/12). 60 MiB/s keeps
-    # the pve-nas-01 slice (~03:30-04:45) clear of media-mover (06:00) and the
-    # archive-backup timer (06:30), so tank/proxmox is not deferred by
-    # archive-backupctl's vzdump-quiesce guard. Guarded by ProxmoxHostIOPressure.
+    # Per-node backup I/O cap (KiB/s). Every node writes to this host's
+    # tank-proxmox target at 03:30 at once; unthrottled that saturates the
+    # spinning tank pool (docs/12). The cap keeps the window clear of
+    # media-mover (06:00) and the archive-backup timer (06:30), so tank/proxmox
+    # is not deferred by archive-backupctl's vzdump-quiesce guard.
     bwlimit: 61440
     prune_backups: "keep-daily=7,keep-weekly=4,keep-monthly=6"
     notification_mode: notification-system
@@ -836,26 +738,18 @@ nas_storage_smartd_archive_disks:
   - /dev/disk/by-id/ata-ST6000NM0024-1HT17Z_Z4D1RQSM
   - /dev/disk/by-id/ata-ST6000NM0024-1HT17Z_Z4D1JQBA
 
-# NIC tuning: disable GRO on the Aquantia AQC113 10G NIC (driver deadlocks on a
-# bridged interface with GRO on — caused outages 2026-04-04, 2026-04-07/14).
-# Firmware update 1.5.38 -> 1.5.45 is a separate manual task; see docs/16-next-steps.md.
+# Disable GRO on the Aquantia AQC113 10G NIC: the driver deadlocks on a bridged
+# interface with GRO on. A firmware update is a separate manual task (docs/16).
 nic_tuning_overrides:
   - interface: nic1
     options:
       - feature: gro
         value: "off"
 
-# Swappiness 1 — the only host in the fleet that sets this (the others run
-# neither ZFS ARC nor memory-pinned guests, so they keep the kernel default 60).
-#
-# At higher values the kernel parks cold anon pages to swap OPPORTUNISTICALLY
-# even with free RAM, and since Linux never pages them back in on its own, swap
-# ratchets upward instead of thrashing — measured at 10 on this host: 0 -> 7G+
-# with si~=0. At 1 the kernel reclaims from ZFS ARC, which is instantly
-# reclaimable, and only swaps under genuine near-OOM pressure. Free RAM does not
-# remove that behaviour, it only slows the ratchet, and swapping buys this host
-# nothing it does not already have.
-#
+# Swappiness 1 — the only host that sets it (the others run neither ZFS ARC nor
+# memory-pinned guests). Above 1 the kernel parks cold anon pages to swap even
+# with free RAM and never pages them back in, so swap ratchets upward; at 1 it
+# reclaims from ARC, which is instantly reclaimable, and swaps only near OOM.
 # Applied live + persisted via nic_tuning's sysctl.d drop-in.
 nic_tuning_vm_swappiness: 1
 
@@ -869,8 +763,15 @@ restic_offsite_repo: "rclone:b2:weisssrv-backup/restic"
 # the only cost of this placement is churn of regenerable data (role README).
 restic_offsite_cache_dir: /mnt/ssd/appdata/.restic-cache
 restic_offsite_sources:
-  - name: backups     # tank/backups: legacy machine backups + apps/ logical dumps
+  - name: backups     # tank/backups: legacy machine backups (apps/ is separate)
     mountpoint: /mnt/tank/backups
+  # The app dumps get their OWN source: the restore drill draws round-robin one
+  # file per source, so inside `backups` (with ~500k legacy files) their sampling
+  # odds were ~0. Listed SECOND so it is drawn in the first round. As a child
+  # dataset it appears in the `backups` walk as an empty mountpoint dir — no
+  # double capture, no exclude needed.
+  - name: backups-apps  # tank/backups/apps: per-app logical dumps
+    mountpoint: /mnt/tank/backups/apps
   - name: share       # tank/share
     mountpoint: /mnt/tank/share
   - name: appdata     # ssd/appdata: app /config dirs (zvol children empty in the walk)
@@ -879,11 +780,14 @@ restic_offsite_sources:
     mountpoint: /mnt/ssd/databases
   - name: k3s-etcd    # ssd/k3s-etcd: off-node etcd snapshot copies (DR chain)
     mountpoint: /mnt/ssd/k3s-etcd
-# Restore-drill spread: prove at least 3 of the 5 file sources per drill, so a
-# drill that silently narrows to one source fails instead of passing. Only 4 can
-# ever yield a candidate (ssd/databases is empty), so 3 is the practical ceiling.
-# The role's own max_bytes default already rose to 16 MiB to pay for the spread.
-restic_offsite_restore_drill_min_sources: 3
+# Restore-drill spread: prove at least 4 of the 6 file sources per drill, so a
+# drill that silently narrows to one source fails instead of passing. Only 5 can
+# ever yield a candidate (ssd/databases is empty), so 4 keeps one source of
+# headroom and cannot be met without backups-apps contributing. The gate counts
+# sources, it cannot require a named one (lib follow-up). The 16 MiB per-drill
+# cap keeps the large artefacts out of reach — the point is proving the landing
+# zone restores, not the size of what it draws.
+restic_offsite_restore_drill_min_sources: 4
 restic_offsite_zvol_sources:
   - name: immich-data
     zvol: tank/immich-data/disk
@@ -906,20 +810,22 @@ restic_offsite_excludes:
   - "/mnt/restic-src/appdata/plex/Library/Application Support/Plex Media Server/Cache/**"
   - "/mnt/restic-src/appdata/plex/Library/Application Support/Plex Media Server/Metadata/**"
   - "/mnt/restic-src/appdata/plex/Library/Application Support/Plex Media Server/Media/**"
+  # HAOS also drops PRE-UPDATE ADD-ON backups here; nothing tracks them and HA's
+  # retention never prunes them, so they would ride to B2 and outlive a full
+  # rotation of the real backups. Exclude every tar in that dir, then cancel the
+  # match for the automatic ones (a leading `!` is a restic exception pattern;
+  # the role renders these into one --exclude-file). The automatic backups
+  # already carry the add-ons.
+  - /mnt/restic-src/backups-apps/home-assistant/*.tar
+  - "!/mnt/restic-src/backups-apps/home-assistant/Automatic_backup_*.tar"
 
-# restic_offsite secrets (B2 offsite backup, docs/42)
-# Env -> var mapping for the secrets the storage deploy job (and the Taskfile
-# storage tasks) inject via `op run` from the "B2 Archive Backup" item — the
-# smtp-relay.yml pattern. The role templates consume the snake_case vars;
-# without this mapping a production render fails on undefined variables.
-# no_log protects the render tasks in the role (they already carry it).
+# restic_offsite secrets (B2 offsite backup, docs/42), injected via `op run`
+# from the "B2 Archive Backup" item.
 # NAMING TRAP: these vars are called b2_key_id / b2_application_key but hold the
 # RESTRICTED (hide-only, no deleteFiles) key, sourced from the 1Password fields
 # restic_key_id / restic_application_key. The FULL-capability master key lives on
-# that item's b2_key_id / b2_application_key fields and is used only by
-# scripts/b2-bucket-drift.py (`task b2:drift` / `b2:apply`) — same names, opposite
-# capability. Read the op:// field, not the var name (capability split
-# rationale: docs/42 Step 0).
+# that item's identically-named fields and is used only by
+# scripts/b2-bucket-drift.py. Read the op:// field, not the var name (docs/42).
 restic_offsite_b2_key_id: "{{ lookup('ansible.builtin.env', 'B2_KEY_ID') or undef(hint='B2_KEY_ID env var must be set (run via op run)') }}"
 restic_offsite_b2_application_key: >-
   {{ lookup('ansible.builtin.env', 'B2_APPLICATION_KEY')

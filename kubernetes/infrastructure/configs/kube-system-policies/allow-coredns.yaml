@@ -28,10 +28,8 @@
 #     node needs no policy edit. Before narrowing or deleting it, confirm no
 #     host-side unit queries 10.43.0.10.
 #
-# The addresses stay literal: NetworkPolicy ipBlock CIDRs are exempt from
-# scripts/check-cluster-literals.py by design, because
-# scripts/check-netpol-except-parity.py parses them straight from git before any
-# Flux substitution exists (sources/cluster-config.yaml's header is canonical).
+# Literal addresses: ipBlock CIDRs are a documented placeholder exemption
+# (sources/cluster-config.yaml).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

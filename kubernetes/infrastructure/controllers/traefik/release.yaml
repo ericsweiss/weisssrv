@@ -103,7 +103,19 @@ spec:
         externalTrafficPolicy: Local
         allocateLoadBalancerNodePorts: false
 
-    # Enable dashboard (LAN/Tailscale-only)
+    # Dashboard / api@internal, chained like every other admin UI here:
+    # lan-tailscale-strict (LAN + Tailscale, no pod CIDR) -> authentik-auth ->
+    # hsts-header. It has no backend login of its own and /api/rawdata dumps the
+    # whole router/service/middleware topology (every internal hostname, every
+    # ClientIP bypass), so an in-cluster pod — a GitLab CI job pod included —
+    # reaching it is a real escalation; the strict allowlist is what keeps the
+    # pod CIDR out (configs/traefik-middlewares.yaml) and forward-auth is the
+    # identity gate on top.
+    #
+    # authentik-auth only answers for a host the embedded outpost knows: the
+    # traefik_dashboard proxy provider + `traefik` application + traefik-admins
+    # binding + the outpost key in terraform/authentik. Removing any of those
+    # 404s the forward-auth call and breaks this route.
     ingressRoute:
       dashboard:
         enabled: true
@@ -111,8 +123,10 @@ spec:
         entryPoints:
           - websecure
         middlewares:
-          - name: lan-tailscale-only
+          - name: lan-tailscale-strict
             namespace: traefik
+          - name: authentik-auth
+            namespace: authentik
           - name: hsts-header
             namespace: traefik
 
@@ -161,6 +175,13 @@ spec:
         transport:
           respondingTimeouts:
             readTimeout: 30m
+        # No forwardedHeaders.trustedIPs: Traefik treats every client — the
+        # Cloudflare edge included — as untrusted and OVERWRITES X-Forwarded-*.
+        # Downstream therefore sees the CF edge address rather than the visitor,
+        # but no internet client can inject X-Forwarded-Host/Proto either.
+        # Trusting the CF ranges here only pays off as part of the coordinated
+        # real-client-IP change in docs/16-next-steps.md (CF Transform Rule +
+        # header pinning + the guest nginx/Authentik trust lists).
 
     additionalArguments:
       - "--entrypoints.web.http.redirections.entrypoint.to=websecure"

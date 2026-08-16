@@ -2,23 +2,6 @@
 
 Operator-facing guide for running the Flux GitOps system that reconciles every Kubernetes workload in this cluster. Covers the daily loop (commit → reconcile), secret management via External Secrets Operator (ESO) + 1Password, adding new apps, suspending/resuming, rollback, and troubleshooting.
 
-## Table of Contents
-
-1. [Overview](#overview)
-2. [Daily Operations](#daily-operations)
-3. [Secret Operations](#secret-operations)
-4. [Adding a New App](#adding-a-new-app)
-5. [Suspending and Resuming](#suspending-and-resuming)
-6. [Rollback](#rollback)
-7. [Troubleshooting](#troubleshooting)
-8. [GitLab outage: pointing Flux at the GitHub mirror](#gitlab-outage-pointing-flux-at-the-github-mirror)
-9. [Push-Triggered Reconciliation](#push-triggered-reconciliation)
-10. [Upgrading the Flux Distribution](#upgrading-the-flux-distribution)
-11. [Appendix: completed one-time migrations](#appendix-completed-one-time-migrations)
-12. [Related documentation](#related-documentation)
-
----
-
 ## Overview
 
 ### What Flux Does
@@ -402,9 +385,12 @@ The canonical app pattern is `kubernetes/apps/authentik/` — copy its structure
    - **Certificate**: one per host, `issuerRef` ClusterIssuer
      `letsencrypt-prod`, `renewBefore: 720h`.
    - **IngressRoutes**: public → `external-dns.alpha.kubernetes.io/target:
-     ericsweiss.com` annotation + the `hsts-header` middleware; internal →
-     `lan-tailscale-only` + `hsts-header` (both middlewares live in the
-     `traefik` namespace).
+     ${cluster_external_domain}` annotation + the `hsts-header` middleware;
+     internal → `lan-tailscale-only` + `hsts-header` (both middlewares live in
+     the `traefik` namespace). Domains, CIDRs and VIPs are always `${cluster_*}`
+     placeholders resolved from
+     `kubernetes/infrastructure/sources/cluster-config.yaml` — a literal here
+     reds `scripts/check-cluster-literals.py`.
    - **Observability (mandatory)**: a ServiceMonitor/PodMonitor plus the scrape
      NetworkPolicy above; a down/stale alert rule in the matching `homelab.*`
      group under `kubernetes/infrastructure/observability/rules/` (one
@@ -424,9 +410,9 @@ The canonical app pattern is `kubernetes/apps/authentik/` — copy its structure
      `kustomize.toolkit.fluxcd.io/force: "Enabled"` on PVs with immutable-field
      risk. zvol-backed PVs use `storageClassName: ""` (static binding, no
      provisioner); the zvol itself is created host-side via
-     `vm_additional_disks` (docs/06). A brand-new top-level dataset also needs
-     an `SRC_LIST` edit in
-     weisssrv-lib `ansible_collections/weisssrv/infra/roles/nas_storage/templates/archive-backupctl.sh.j2`.
+     `vm_additional_disks` (docs/06). A brand-new top-level dataset is added to
+     `nas_storage_archive_backup_sources` in `host_vars/pve-nas-01.yml`;
+     `ssd/appdata/*` children are auto-enrolled.
    - **Scheduling**: NAS-avoid is the default for stateless workloads
      (preferred `nodeAffinity` `esweiss.com/nas DoesNotExist` weight 100 +
      `nodeSelector esweiss.com/general: "true"`, plus

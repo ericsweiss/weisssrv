@@ -158,8 +158,10 @@ itself with a TXT registry:
   from k3s Ingresses/Services/IngressRoutes, each stamped with
   `txtOwnerId: k3s-external-dns`. Sync only deletes records carrying that owner
   TXT, so it never touches Terraform/DDNS records.
-- **cloudflare-ddns CronJob** (`configs/cloudflare-ddns`) — keeps the apex public
-  IP current and co-owns the `proxied` flag on those records.
+- **cloudflare-ddns CronJob** (`configs/cloudflare-ddns`) — keeps the *content*
+  (public IP) of four A records current: the apex, `git`, `direct` and `vpn`.
+  `proxied` and `ttl` stay Terraform-owned — the CronJob PUTs a full body but
+  preserves the record's live values on update, seeding them only on creation.
 
 Keep hostnames disjoint across the three owners; a collision would let two
 tools fight over one record.

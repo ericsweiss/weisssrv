@@ -1,40 +1,48 @@
 #!/usr/bin/env python3
 """Assert every namespace that owns a workload carries an ingress default-deny.
 
-CLAUDE.md and docs/29 state the mandate — "an ingress default-deny is mandatory
-in every namespace", normally via the `netpol-baseline` component — but until
-this gate it was enforced by review alone. Its sibling
-`scripts/check-scrape-netpol.py` cannot cover it by construction: that gate only
-inspects namespaces which ALREADY run an ingress-deny policy, so an unfenced
-namespace is invisible to it rather than a failure (which is also why handing it
-an `--exempt` for an unfenced namespace would be inert — that namespace never
-reaches its exempt check).
+The invariant is that no namespace is reachable by every pod in the cluster;
+the usual mechanism is a `netpol-baseline`-style component adding a
+namespace-wide deny. Its sibling `scripts/check-scrape-netpol.py` cannot cover
+it: that gate only inspects namespaces which ALREADY run an ingress-deny policy,
+so an unfenced namespace is invisible to it rather than a failure — which is
+also why handing that gate an `--exempt` for an unfenced namespace is inert.
 
-Reads the rendered corpus `task flux:lint` builds (`kustomize build | envsubst`)
-on stdin.
+Reads the rendered corpus (`kustomize build | envsubst`) on stdin.
 
 A namespace OWNS A WORKLOAD when the corpus puts a Deployment / StatefulSet /
 DaemonSet / ReplicaSet / Job / CronJob / Pod in it, or a HelmRelease targets it
 (a chart's own workloads never appear in a kustomize corpus, so the release is
 the only visible proxy).
 
+A document with NO `metadata.namespace` is read the way the API reads it: it
+lands in the implicit `default` namespace, which is a real namespace and is
+fenced like any other. Treating "absent" as "no namespace" instead would drop
+those documents on the floor — a namespace-less Deployment would own nothing,
+and `default` would be the one namespace the mandate never reached. A
+HelmRelease still honours `spec.targetNamespace`, falling back to that same
+defaulted namespace.
+
 A namespace is FENCED when it carries a NetworkPolicy with `Ingress` in
 policyTypes and an empty/absent podSelector — i.e. one that selects every pod —
-AND no namespace-wide policy that ALLOWS all ingress. An app-scoped policy is
-deliberately not enough: it fences its own pods and leaves every other pod in the
-namespace open. Neither is a namespace-wide policy carrying an empty `ingress:`
-rule (`{}` — neither `from` nor `ports`, the API's "from anywhere, on any port"):
-that shape satisfied the old "has an Ingress policyType" test while granting
-exactly what the mandate forbids. NetworkPolicies are additive, so one such
-policy defeats every default-deny beside it — hence the namespace is reported
-unfenced even when a real `default-deny-ingress` is present too.
+AND no namespace-wide policy that ALLOWS all ingress (see `_allows_all_ingress`).
+An app-scoped policy is deliberately not enough: it fences its own pods and
+leaves every other pod in the namespace open. Neither is a namespace-wide policy
+whose `ingress:` rule names no ports and admits every peer — either by carrying
+neither `from` nor `ports` (`{}`, the API's "from anywhere, on any port") or by
+listing a peer that selects everything (`{}`, `namespaceSelector: {}`,
+`podSelector: {}`). Those shapes satisfy a bare "has an Ingress policyType" test
+while granting exactly what the mandate forbids.
+NetworkPolicies are additive, so one such policy defeats every default-deny
+beside it — hence the namespace is reported unfenced even when a real
+`default-deny-ingress` is present too.
 
-EXEMPT namespaces are declared below with their reason. An exemption is a
-decision, not a default, and each one is a namespace this repo does not fully
-own. Unused exemptions are reported, never fatal: a namespace can drop out of
-the corpus (flux-system's gotk manifests are applied by the bootstrap
-Kustomization, which the render loop does not walk) without the exemption
-becoming wrong.
+EXEMPT namespaces are the ones a repo does not fully own. `flux-system` is the
+one built in, because it is universal to a Flux cluster; everything else is site
+state and comes in through `--exempt NS=REASON`, never through an edit to this
+file (which is vendored, so a local edit is reverted by the next re-vendor).
+Unused exemptions are reported, never fatal: a namespace can drop out of the
+corpus without the exemption becoming wrong.
 
 Exit codes: 0 clean, 1 an unfenced namespace, 2 the gate could not inspect its
 subject (empty corpus, or a corpus with no workload namespace at all — the shape
@@ -63,17 +71,15 @@ WORKLOAD_KINDS = {
     "Pod",
 }
 
-# The sanctioned exceptions, machine-readable so a THIRD one fails this gate
-# instead of passing review. `downloads` is deliberately NOT here: its local
-# policy is namespace-wide and covers ingress as well as egress, so it satisfies
-# the invariant outright. `kube-system` is no longer here either — it carries a
-# real default-deny plus an enumerated allow set
-# (kubernetes/infrastructure/configs/kube-system-policies/).
+# The one exemption every Flux cluster needs, machine-readable so it is visible
+# rather than assumed. A consumer's own exemptions are `--exempt` flags: this
+# file is vendored byte-identical, so an exemption added here would be reverted
+# on the next re-vendor and would leak one repo's policy into every other.
 EXEMPT_NAMESPACES = {
     "flux-system": (
         "the gotk-components manifest ships its own policies and is regenerated "
-        "verbatim by `flux install`; a policy added here would be reverted "
-        "(docs/29 § Network policy exceptions)."
+        "verbatim by Flux's own install/bootstrap; a policy added there would be "
+        "reverted."
     ),
 }
 
@@ -93,19 +99,54 @@ def _policy_types(spec: dict) -> set[str]:
     return types
 
 
+def _peer_selects_everything(peer: object) -> bool:
+    """True when one `from` peer narrows nothing.
+
+    A `NetworkPolicyPeer` narrows either by CIDR (`ipBlock`) or by label
+    selector, and an EMPTY label selector is not an absent one: `{}` matches
+    every object in its scope, so `namespaceSelector: {}` means every namespace
+    and `podSelector: {}` every pod. A peer built only from empty selectors —
+    or the bare `{}` — therefore admits everything the rule could name, exactly
+    like a rule with no `from` at all.
+    """
+    if not isinstance(peer, dict):
+        return False
+    if peer.get("ipBlock") is not None:
+        return False
+    for key in ("namespaceSelector", "podSelector"):
+        selector = peer.get(key)
+        if isinstance(selector, dict) and (
+            selector.get("matchLabels") or selector.get("matchExpressions")
+        ):
+            return False
+    return True
+
+
 def _allows_all_ingress(spec: dict) -> bool:
     """True when an ingress rule admits everything.
 
-    An `ingress:` entry with neither `from` nor `ports` is the API's "allow from
-    any source, on any port" rule. A policy carrying one fences nothing, so it
-    must not be counted as the namespace's default-deny — the gate is named for
-    the mandate, not for the mere presence of an Ingress policyType.
-    A rule that names ports but no `from` is NOT treated as wide open here: it
-    still narrows the surface, and calling it a violation would be a different
-    (port-level) mandate than the one this gate enforces.
+    Two shapes qualify, and a bare "has an Ingress policyType" test counts both
+    as a fence:
+
+    * an `ingress:` entry with neither `from` nor `ports` — the API's "allow
+      from any source, on any port";
+    * an entry with no `ports` whose `from` list holds a peer that selects
+      everything (see `_peer_selects_everything`). Peers within one rule are
+      OR'd, so a single such peer opens the whole rule.
+
+    A policy carrying either fences nothing — the gate is named for the mandate,
+    not for the mere presence of an Ingress policyType.
+    A rule that names ports is NOT treated as wide open here, whatever its
+    peers: it still narrows the surface, and calling it a violation would be a
+    different (port-level) mandate than the one this gate enforces.
     """
     for rule in spec.get("ingress") or []:
-        if isinstance(rule, dict) and not rule.get("from") and not rule.get("ports"):
+        if not isinstance(rule, dict) or rule.get("ports"):
+            continue
+        peers = rule.get("from")
+        if not peers:
+            return True
+        if isinstance(peers, list) and any(_peer_selects_everything(p) for p in peers):
             return True
     return False
 
@@ -138,22 +179,28 @@ def analyze(docs: list[dict]) -> tuple[dict[str, set[str]], set[str]]:
     for doc in docs:
         kind = doc.get("kind")
         meta = doc.get("metadata") or {}
-        ns = meta.get("namespace") or ""
+        # The API's own defaulting: an omitted namespace IS `default`, not
+        # "nowhere". Dropping such documents would exempt a whole namespace.
+        ns = meta.get("namespace") or "default"
         name = meta.get("name", "?")
         spec = doc.get("spec") or {}
 
-        if kind in WORKLOAD_KINDS and ns:
+        if kind in WORKLOAD_KINDS:
             workloads.setdefault(ns, set()).add(f"{kind}/{name}")
         elif kind == "HelmRelease":
             target = spec.get("targetNamespace") or ns
-            if target:
-                workloads.setdefault(target, set()).add(f"HelmRelease/{name}")
-        elif kind == "NetworkPolicy" and ns:
-            if "Ingress" in _policy_types(spec) and not spec.get("podSelector"):
-                if _allows_all_ingress(spec):
-                    wide_open.add(ns)
-                else:
-                    fenced.add(ns)
+            workloads.setdefault(target, set()).add(f"HelmRelease/{name}")
+        elif (
+            kind == "NetworkPolicy"
+            and "Ingress" in _policy_types(spec)
+            and not spec.get("podSelector")
+        ):
+            # Namespace-wide and ingress-typed: either the fence itself, or the
+            # policy that re-opens the namespace despite one.
+            if _allows_all_ingress(spec):
+                wide_open.add(ns)
+            else:
+                fenced.add(ns)
 
     return workloads, fenced - wide_open
 
@@ -219,9 +266,8 @@ def main(argv: list[str] | None = None) -> int:
             f"  {ns}: owns workloads ({owners}) but no namespace-wide NetworkPolicy "
             f"that denies ingress by default — a policy carrying an empty ingress "
             f"rule (`ingress: [{{}}]`) allows everything and does not count. Add the "
-            f"netpol-baseline component to the namespace's kustomization "
-            f"(kubernetes/components/README.md), or declare a reasoned exemption in "
-            f"scripts/check-default-deny-coverage.py."
+            f"netpol-baseline component to the namespace's kustomization, or declare "
+            f"the exemption where this gate is invoked (--exempt {ns}=REASON)."
         )
 
     if violations:
@@ -238,7 +284,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"(exemptions declared but not exercised by this corpus: {', '.join(unused)})")
     print(
         f"Ingress default-deny OK ({len(workloads)} workload namespaces, "
-        f"{len(workloads) - len([n for n in workloads if n in exempt])} fenced, "
+        f"{len([n for n in workloads if n in fenced])} fenced, "
         f"{len([n for n in workloads if n in exempt])} exempt) in {len(docs)} document(s)"
     )
     return 0

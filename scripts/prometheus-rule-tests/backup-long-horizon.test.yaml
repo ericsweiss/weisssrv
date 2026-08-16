@@ -249,3 +249,53 @@ tests:
       - eval_time: 73h
         alertname: ResticOffsiteRepoShrank
         exp_alerts: []
+
+  # ArchiveBackupPruneBlocked: the archive pool's retention half. Replication
+  # keeps reporting success, so only this alert can see snapshots accumulating.
+  # Two days of continuous failure, with the history to prove it -> fires.
+  - interval: 5m
+    input_series:
+      - series: 'archive_backup_last_prune_success{instance="192.168.0.102:9101"}'
+        values: '0+0x700'
+    alert_rule_test:
+      - eval_time: 50h
+        alertname: ArchiveBackupPruneBlocked
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: 192.168.0.102:9101
+  # HISTORY GUARD. Same failing state, but the collector only started shipping
+  # 10h ago: max_over_time alone is satisfied by those samples, so without the
+  # `offset` arm a fresh deploy would fire two days early.
+  - interval: 5m
+    input_series:
+      - series: 'archive_backup_last_prune_success{instance="192.168.0.102:9101"}'
+        values: '_x468 0+0x232'
+    alert_rule_test:
+      - eval_time: 50h
+        alertname: ArchiveBackupPruneBlocked
+        exp_alerts: []
+  # A prune that applied inside the window clears it, even though the newest
+  # sample is 0 — the failure has to be continuous to count.
+  - interval: 5m
+    input_series:
+      - series: 'archive_backup_last_prune_success{instance="192.168.0.102:9101"}'
+        values: '0+0x300 1+0x50 0+0x350'
+    alert_rule_test:
+      - eval_time: 50h
+        alertname: ArchiveBackupPruneBlocked
+        exp_alerts: []
+  # A healthy pruner never fires, and does not drag the replication alerts in.
+  - interval: 5m
+    input_series:
+      - series: 'archive_backup_last_prune_success{instance="192.168.0.102:9101"}'
+        values: '1+0x700'
+      - series: 'archive_backup_last_run_success{instance="192.168.0.102:9101"}'
+        values: '1+0x700'
+    alert_rule_test:
+      - eval_time: 50h
+        alertname: ArchiveBackupPruneBlocked
+        exp_alerts: []
+      - eval_time: 50h
+        alertname: ArchiveBackupFailed
+        exp_alerts: []

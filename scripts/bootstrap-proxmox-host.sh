@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Bootstrap a fresh Proxmox host for Ansible management
 #
 # This script creates user 'eric' with passwordless sudo and deploys
@@ -76,8 +76,8 @@ if [[ -z "$ERIC_PASSWORD" ]]; then
     exit 1
 fi
 
-# Encode password in base64 to safely pass through SSH without shell injection
-# This prevents passwords containing $, `, ', ", \, etc. from being interpreted
+# base64 so a password containing $, `, quotes or backslashes cannot be
+# interpreted as shell by the remote heredoc.
 ERIC_PASSWORD_B64=$(printf '%s' "$ERIC_PASSWORD" | base64)
 
 echo ""
@@ -85,7 +85,6 @@ echo "=== Step 1: Creating user 'eric' on $HOST_IP ==="
 echo "You will be prompted for the root password..."
 echo ""
 
-# Create user and configure sudo
 # The base64-encoded password is embedded directly in the script via unquoted heredoc.
 # This expands $ERIC_PASSWORD_B64 locally before sending, keeping the secret out of
 # process arguments on both machines. All remote variables must be escaped (\$).
@@ -97,7 +96,6 @@ ERIC_PASSWORD_B64="$ERIC_PASSWORD_B64"
 
 echo "Checking for existing user 'eric'..."
 
-# Install sudo if not present (required for Proxmox hosts)
 if ! command -v sudo &>/dev/null; then
     echo "Installing sudo package..."
 
@@ -106,7 +104,6 @@ if ! command -v sudo &>/dev/null; then
     # rather than re-split on whitespace.
     DISABLED_BY_US=()
 
-    # Cleanup function to restore disabled repos on exit (success or failure)
     restore_repos() {
         # DISABLED_BY_US is always declared above, so "\${arr[@]}" expands to
         # nothing when empty under set -u (bash >= 4.4; PVE hosts run bash 5.x).
@@ -120,9 +117,6 @@ if ! command -v sudo &>/dev/null; then
 
     trap restore_repos EXIT
 
-    # Disable enterprise repos temporarily (they require subscription)
-    # Handle both legacy .list format and modern .sources format (Proxmox 9+ / Debian Trixie)
-    #
     # Move a repo file to .disabled, but REFUSE to clobber a pre-existing
     # .disabled (a repo someone disabled before us) — overwriting it would
     # corrupt its content and make restore_repos later restore the wrong file.
@@ -139,6 +133,9 @@ if ! command -v sudo &>/dev/null; then
         fi
     }
 
+    # Enterprise repos need a subscription, so apt-get update fails against
+    # them; disable both the legacy .list and the .sources shapes for the
+    # duration and let restore_repos put them back.
     for repo_file in /etc/apt/sources.list.d/pve-enterprise.list \\
                      /etc/apt/sources.list.d/ceph.list \\
                      /etc/apt/sources.list.d/pve-no-subscription.list; do
@@ -147,21 +144,18 @@ if ! command -v sudo &>/dev/null; then
         fi
     done
 
-    # Also check for any .sources files (new Debian format)
     for sources_file in /etc/apt/sources.list.d/*.sources; do
         if [ -f "\$sources_file" ] && grep -q "enterprise.proxmox.com" "\$sources_file" 2>/dev/null; then
             disable_repo_file "\$sources_file"
         fi
     done
 
-    # Update package lists - capture output to check for real errors
-    # Temporarily disable errexit to capture exit code before it triggers script exit
+    # errexit off so the rc can be inspected instead of ending the script.
     set +e
     APT_OUTPUT=\$(apt-get update 2>&1)
     APT_RC=\$?
     set -e
     if [ \$APT_RC -ne 0 ]; then
-        # Check if failure is only from enterprise repos (expected without subscription)
         if echo "\$APT_OUTPUT" | grep -qE "enterprise.proxmox.com|ceph.com.*enterprise"; then
             echo "Note: Enterprise repos failed (subscription required) - continuing"
         else
@@ -178,7 +172,6 @@ if ! command -v sudo &>/dev/null; then
         exit 1
     fi
 
-    # Note: repos are restored automatically by the EXIT trap (restore_repos function)
 fi
 
 if ! id eric &>/dev/null; then
@@ -194,19 +187,26 @@ echo "eric:\$ERIC_PASSWORD" | chpasswd
 unset ERIC_PASSWORD  # Clear from memory
 echo "Password set for user 'eric'"
 
-# Add to sudo group (create group if needed)
 if ! grep -q "^sudo:" /etc/group; then
     groupadd sudo
 fi
 usermod -aG sudo eric
 
-# Ensure sudo group has proper permissions in sudoers
 if ! grep -q "^%sudo" /etc/sudoers; then
     echo "%sudo   ALL=(ALL:ALL) ALL" >> /etc/sudoers
 fi
 
-echo 'eric ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/eric
-chmod 440 /etc/sudoers.d/eric
+# visudo -cf BEFORE install: a syntax error anywhere in /etc/sudoers.d locks
+# every sudo user out of the host, and this is the only admin path in.
+SUDOERS_TMP=\$(mktemp)
+echo 'eric ALL=(ALL) NOPASSWD: ALL' > "\$SUDOERS_TMP"
+if ! visudo -cf "\$SUDOERS_TMP"; then
+    rm -f "\$SUDOERS_TMP"
+    echo "ERROR: refusing to install an invalid /etc/sudoers.d/eric" >&2
+    exit 1
+fi
+install -m 440 -o root -g root "\$SUDOERS_TMP" /etc/sudoers.d/eric
+rm -f "\$SUDOERS_TMP"
 echo "Configured passwordless sudo for eric"
 
 mkdir -p /home/eric/.ssh
@@ -220,7 +220,6 @@ REMOTE_SCRIPT
 echo ""
 echo "=== Step 2: Deploying SSH public key ==="
 
-# Deploy the SSH key
 # The base64-encoded key is embedded directly in the script via unquoted heredoc.
 # This expands $SSH_KEY_B64 locally before sending, keeping the secret out of
 # process arguments on both machines. All remote variables must be escaped (\$).
@@ -251,10 +250,8 @@ DEPLOY_KEY
 echo ""
 echo "=== Step 3: Verifying SSH access as eric ==="
 
-# Wait a moment for SSH to recognize the key
 sleep 2
 
-# Test SSH as eric (should not prompt for password)
 if ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=10 "eric@${HOST_IP}" "echo 'SSH access as eric: SUCCESS'"; then
     echo ""
     echo "=== Step 4: Verifying sudo access ==="

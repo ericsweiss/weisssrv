@@ -261,8 +261,7 @@ spec:
         # new Ansible-installed target lands (or lands in the same change) before
         # its ServiceMonitor and this list. Without the arm, an exporter silently
         # dropped from the pinned Endpoints produces no alert at all —
-        # TargetDown does cover it, but the two are independent (all three VM
-        # jobs paged for ~2h on 2026-08-11 with pg_up producing nothing).
+        # TargetDown does cover it, but the two are independent.
         - alert: PostgresDown
           expr: >-
             pg_up == 0
@@ -497,10 +496,12 @@ spec:
 
         # Successful cloudflare-ddns runs (every 5m) stopped advancing — a
         # revoked token or a stuck schedule. Does NOT detect an IP that drifted
-        # while a run "succeeded".
+        # while a run "succeeded". `max by (namespace, cronjob)` drops
+        # kube-state-metrics' scrape labels, so the alert does not re-notify as a
+        # new Alertmanager group each time KSM is rescheduled.
         - alert: DDNSStale
           expr: >-
-            (time() - kube_cronjob_status_last_successful_time{namespace="cloudflare-ddns", cronjob="cloudflare-ddns"} > 3600)
+            (time() - max by (namespace, cronjob) (kube_cronjob_status_last_successful_time{namespace="cloudflare-ddns", cronjob="cloudflare-ddns"}) > 3600)
             or absent(kube_cronjob_status_last_successful_time{namespace="cloudflare-ddns", cronjob="cloudflare-ddns"})
           for: 15m
           labels:
@@ -561,19 +562,38 @@ spec:
         # recommendations swing with daily load. Fed by the kube-state-metrics
         # customResourceState VPA config in kube-prometheus-stack/release.yaml.
         #
-        # nzbget memory is excluded: its cap is the deliberate design (docs/33
-        # and apps/download-clients/vpa.yaml — the recommender chases the
-        # unpack-time page cache, so the ceiling is the sizing decision, not a
-        # symptom). Left in, it is a permanently-firing warning on an otherwise
-        # alert-clear cluster.
+        # nzbget and qbittorrent memory are excluded: their caps are the
+        # deliberate sizing decision (the recommender chases reclaimable
+        # unpack-/torrent-time page cache — docs/33, download-clients/vpa.yaml),
+        # so left in they would fire permanently.
+        #
+        # Both sides are aggregated to the recommendation's own identity first.
+        # Raw, they carry kube-state-metrics' scrape labels (job/instance/pod/
+        # endpoint/service), so a KSM reschedule changes the alert's label set
+        # mid-`for:` — the pending alert resolves and the 24h clock restarts,
+        # and it would never fire. `unit` is kept because the description reads
+        # it.
         - alert: VPARecommendationCapped
           expr: >-
-            (vpa_recommendation_uncappedtarget > vpa_recommendation_target)
+            (
+              max by (exported_namespace, verticalpodautoscaler, container, resource, unit)
+                (vpa_recommendation_uncappedtarget)
+              >
+              max by (exported_namespace, verticalpodautoscaler, container, resource, unit)
+                (vpa_recommendation_target)
+            )
             unless on (exported_namespace, verticalpodautoscaler, container, resource)
-            vpa_recommendation_target{exported_namespace="downloads",
-                                      verticalpodautoscaler="nzbget",
-                                      container="nzbget",
-                                      resource="memory"}
+            (
+              vpa_recommendation_target{exported_namespace="downloads",
+                                        verticalpodautoscaler="nzbget",
+                                        container="nzbget",
+                                        resource="memory"}
+              or
+              vpa_recommendation_target{exported_namespace="downloads",
+                                        verticalpodautoscaler="qbittorrent",
+                                        container="qbittorrent",
+                                        resource="memory"}
+            )
           for: 24h
           labels:
             severity: warning
@@ -593,24 +613,18 @@ spec:
         # The recommendation outgrew the manifest's memory limit — the only
         # automated signal that a hand-applied size fell behind (docs/33
         # §Applying an Off-tier recommendation). Scoped to the shapes where
-        # nothing re-scales the limit on its own: update_mode Off or Initial, or
-        # controlledValues RequestsOnly. An Auto VPA on RequestsAndLimits
+        # nothing re-scales the limit on its own (update_mode Off or Initial, or
+        # controlledValues RequestsOnly); an Auto VPA on RequestsAndLimits
         # self-heals at the next eviction and would page for hours.
         #
-        # label_replace rewrites the KSM series' namespace label with the VPA's
-        # target namespace so the join lands and the alert routes on the
-        # workload. Containers with no memory limit are skipped by design.
-        #
-        # The join is per-WORKLOAD, not per-(namespace, container): four
-        # flux-system controllers all expose a container named `manager` at
+        # The join is per-WORKLOAD, not per-(namespace, container): several
+        # flux-system controllers expose a container named `manager` at
         # different limits, and a namespace-wide max would compare every one of
-        # them against the largest — silently unfirable for the rest.
-        # `target_name` (emitted by the KSM customResourceState VPA config) is
-        # the VPA's targetRef name; namespace_workload_pod:kube_pod_owner:relabel
-        # maps each pod to its workload. The trailing label_replace strips the
-        # prometheus-operator's `<kind>-` StatefulSet prefix so the Prometheus
-        # and Alertmanager VPAs (targetRef kind Prometheus/Alertmanager, name
-        # without the prefix) still join.
+        # them against the largest, silently unfirable for the rest. The
+        # label_replaces map exported_namespace->namespace and target_name->
+        # workload so the join lands, and strip the prometheus-operator's
+        # `<kind>-` StatefulSet prefix so those VPAs still join. Containers with
+        # no memory limit are skipped by design.
         - alert: VPARecommendationExceedsLimit
           expr: >-
             max by (namespace, verticalpodautoscaler, workload, container) (
@@ -649,14 +663,12 @@ spec:
               next burst. Apply the recommendation in git (docs/33
               "Applying an Off-tier recommendation").
 
-        # The same drift one band earlier. The REQUEST is what the scheduler
-        # places on and what the kubelet's eviction ranking compares against, so
-        # a workload whose recommendation has outgrown its request is already in
-        # the first-to-be-evicted group while its limit still looks generous —
-        # and nothing watched that band. Same workload-scoped join and same
-        # Off/Initial/RequestsOnly scope as the limit rule above; 1.25x and 24h
-        # keep it clear of ordinary daily swing, and info tier makes it a
-        # right-sizing notice rather than a fault.
+        # The same drift one band earlier: the REQUEST is what the scheduler and
+        # the kubelet's eviction ranking see, so a workload past it is already in
+        # the first-to-be-evicted group while its limit still looks generous.
+        # Same workload-scoped join and Off/Initial/RequestsOnly scope as
+        # VPARecommendationExceedsLimit above; 1.25x and 24h keep it clear of
+        # daily swing, and info tier makes it a right-sizing notice.
         #
         # The 128Mi absolute floor alongside the ratio is what keeps this a
         # worklist instead of standing noise: a 32Mi sidecar recommended 128Mi is

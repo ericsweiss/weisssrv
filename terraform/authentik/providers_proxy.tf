@@ -3,15 +3,9 @@
 # the basic-auth block, below) vary — so they are now ONE map consumed by the
 # library module's `for_each`, where they used to be ten explicit resources.
 #
-# WHY THEY USED TO BE EXPLICIT, and why the map is safe. The recorded rationale
-# was that import.sh walks one address at a time during a DR rebuild, leaving the
-# provider set only PARTIALLY in state, and that indexing a for_each map in that
-# window fails with "Invalid index". That does not hold: a for_each key set is
-# derived from CONFIGURATION, not state, so `…this["sonarr"]` resolves whether or
-# not the object has been imported yet. What a half-imported state does produce
-# is a plan full of creates for objects that already exist — which is why
-# import.sh must run to completion, and `terraform plan` must be clean, before
-# anything is applied. import.sh and imports.tf name the keys below.
+# A half-imported state produces a plan full of creates for objects that already
+# exist, so import.sh must run to completion and `terraform plan` must be clean
+# before anything is applied. import.sh and imports.tf name the keys below.
 #
 # Shared shape notes:
 # - property_mappings is deliberately NOT set (the module never sets it):
@@ -126,6 +120,15 @@ locals {
       basic_auth_enabled            = true
       basic_auth_username_attribute = "adguard_user"
       basic_auth_password_attribute = "adguard_password"
+    }
+
+    # Traefik dashboard (api@internal). No injection: the dashboard has no
+    # backend login at all, so forward-auth IS its only identity gate — the
+    # route also keeps lan-tailscale-strict in front of it
+    # (infrastructure/controllers/traefik/release.yaml).
+    traefik_dashboard = {
+      name          = "Traefik Dashboard"
+      external_host = "https://traefik.esweiss.com"
     }
   }
 

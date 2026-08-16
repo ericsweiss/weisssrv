@@ -88,9 +88,11 @@ list or a count written anywhere else.
   the two exceptions (`downloads`, whose local policy covers ingress
   and egress; `flux-system`, whose upstream manifests ship their own) are listed
   canonically in `docs/29-flux-operations.md`
-  § Network policy exceptions and encoded, with their reasons, in
-  `scripts/check-default-deny-coverage.py` — the `flux:lint` gate that fails a
-  THIRD unfenced namespace. `kube-system` is NOT an exception: its deny and its
+  § Network policy exceptions. `scripts/check-default-deny-coverage.py` is the
+  `flux:lint` gate: it fails any namespace owning a workload without a
+  namespace-wide ingress deny unless that namespace carries a reasoned entry in
+  its `EXEMPT_NAMESPACES` — today only `flux-system`, since `downloads`
+  satisfies the invariant outright. `kube-system` is NOT an exception: its deny and its
   whole allow set live together in
   `kubernetes/infrastructure/configs/kube-system-policies/`, and a new
   kube-system workload must add its allow there in the same commit. Three sibling components
@@ -122,7 +124,7 @@ list or a count written anywhere else.
 | Tenant onboarding (`kubernetes/clusters/weisssrv/tenants/`) | `docs/30-multi-repo-onboarding.md` | the tenant repo is GENERATED with `copier copy` from `eric/weisssrv-app-template` (never forked), and ships its own pre-rendered `docs/ONBOARDING.md` — ask for that page |
 | k3s layer itself (nodes, kube-vip, etcd, VM sizing) | `references/add-vm-app.md` (guest mechanics) + `hosts.yml` | `docs/19-k3s-deployment.md`, `docs/25-multi-node-expansion.md` |
 | GPU workload / passthrough | `references/add-k8s-app.md` § Scheduling | `docs/43-gpu-passthrough.md` |
-| New Proxmox VM / LXC app | `references/add-vm-app.md` | `docs/27-gitlab-deployment.md` (worked example), `docs/06-zfs.md`, `docs/11-firewall.md`, `docs/17-disaster-recovery.md`, `docs/18-bootstrap-new-systems.md` |
+| New Proxmox VM / LXC app | `references/add-vm-app.md` | `docs/35-nextcloud.md` + `docs/36-immich.md` (current-shape worked examples), `docs/27-gitlab-deployment.md` (the Omnibus/registry case), `docs/06-zfs.md`, `docs/11-firewall.md`, `docs/17-disaster-recovery.md`, `docs/18-bootstrap-new-systems.md` |
 | **Ansible role behaviour** (tasks, templates, defaults) | the role in `weisssrv-lib` — **not here** | the collection README + `MIGRATING.md`; back here for the pin bump (§ Invariants) |
 | Inventory / playbook / host or guest sizing | `ansible/README.md` (layout + conventions) + `CLAUDE.md` § Ansible roles | `docs/01-overview.md`, `docs/18-bootstrap-new-systems.md`, the role's README in the collection |
 | Terraform | `terraform/<module>/README.md` + neighbours — the three modules deploy differently: **cloudflare AUTO-APPLIES on merge** (`deploy-terraform`, `-auto-approve`), **tailscale** is plan-in-CI + supervised manual apply, **authentik** is supervised manual apply only. **all three** are thin callers of `weisssrv-lib//terraform/modules/{cloudflare-zone,tailscale-acl,authentik-sso}` at a hand-bumped `?ref=` holding only site data, and `check-lib-pins.py` does not cover module sources — `scripts/test_site_configs.py` holds the refs equal to `WEISSSRV_LIB_REF`. All three refs pin the same release as `WEISSSRV_LIB_REF`. `prevent_destroy` and the unbound-application precondition are **module-side** and a consumer cannot remove them: a rename needs a `moved {}` block, a removal needs `terraform state rm` first | `docs/08-dns.md`, `docs/05-tailscale.md`, `docs/40-authentik-terraform.md` |

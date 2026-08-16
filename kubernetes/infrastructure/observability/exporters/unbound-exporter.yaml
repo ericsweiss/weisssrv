@@ -19,9 +19,8 @@ spec:
       targetPort: 9167
 
 ---
-# discovery.k8s.io/v1, not the deprecated core/v1 Endpoints. The Service is
-# selectorless, so nothing controls this slice but this file; conditions.ready is
-# set explicitly because a hand-written slice has no controller to fill it in.
+# Hand-written EndpointSlice for a selectorless Service — see
+# exporters/node-exporter-host.yaml.
 apiVersion: discovery.k8s.io/v1
 kind: EndpointSlice
 metadata:
@@ -56,9 +55,8 @@ spec:
       targetPort: 9167
 
 ---
-# discovery.k8s.io/v1, not the deprecated core/v1 Endpoints. The Service is
-# selectorless, so nothing controls this slice but this file; conditions.ready is
-# set explicitly because a hand-written slice has no controller to fill it in.
+# Hand-written EndpointSlice for a selectorless Service — see
+# exporters/node-exporter-host.yaml.
 apiVersion: discovery.k8s.io/v1
 kind: EndpointSlice
 metadata:

@@ -86,11 +86,9 @@ spec:
             - name: UMASK
               value: "002"
           # Ports live on the gluetun sidecar, which owns the network namespace.
-          # NFS-ESTALE self-heal: after a NAS reboot the established mounts
-          # return stale handles NZBGet never recovers from, so liveness stats
-          # both NFS mounts — ESTALE or a hung hard-mount fails the probe and
-          # kubelet remounts on restart. Timing is conservative so a brief NFS
-          # blip cannot flap-restart the pod.
+          # NFS-ESTALE self-heal: liveness stats both mounts so a stale or hung
+          # handle restarts the pod and it remounts. Conservative timing so a
+          # brief NFS blip cannot flap-restart.
           livenessProbe:
             exec:
               command:

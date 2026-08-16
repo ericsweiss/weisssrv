@@ -33,8 +33,11 @@ before invoking terraform if the flag is present), the same hard guard
 `terraform:tailscale-apply` carries, so plan review cannot be bypassed by an
 errant flag. CI never applies: it runs only the read-only `authentik-drift-plan`
 job (`terraform plan -detailed-exitcode`, `allow_failure: true`, on the schedule
-and on authentik-module MRs), so an Admin-UI hot-fix surfaces as drift instead
-of being silently reverted later. A non-empty drift plan is always real — with
+and post-merge on `main`), so an Admin-UI hot-fix surfaces as drift instead
+of being silently reverted later. There is deliberately **no**
+`merge_request_event` rule — the job reads thirteen vault items and must not run
+an unmerged branch's code — so the pre-merge control is a local
+`task terraform:authentik-plan`. A non-empty drift plan is always real — with
 exactly one documented, self-closing exception, below.
 
 **The one expected yellow.** `moved` blocks are written to state by `apply`, not
@@ -44,14 +47,16 @@ until the supervised `task terraform:authentik-apply` that persists `moved.tf`,
 every `authentik-drift-plan` run (merge-commit and scheduled) is yellow with the
 78 moves and **nothing else** in the plan. Confirm that by reading it: any line
 that is not a move is real drift. Once the apply lands, the plan is clean again
-and the always-real rule holds without qualification — there is no second
-expected-yellow, and the exception disappears with `moved.tf`.
+and the always-real rule holds without qualification — a `moved` block whose
+source address is no longer in state is a no-op, so the exception closes with the
+apply, not with the deletion of `moved.tf` (that deletion is housekeeping,
+tracked in `docs/16-next-steps.md`).
 
 ## Guardrails
 
 Every application, group, provider, the custom scope mapping and the embedded
 outpost carries `lifecycle { prevent_destroy = true }` — **module-side**, so it
-is not something an edit here can drop. Renaming a `local.applications` key
+is not something an edit here can drop. Renaming a `local.application_data` key
 would otherwise plan as destroy+create — and the slug *is* the OIDC issuer path
 (`/application/o/dashboard/`) — while a group rename drops its memberships and
 every binding referencing it. Policy bindings are exempt (all Terraform-created,
@@ -72,7 +77,7 @@ Renaming a map key is the same operation in disguise — add a `moved {}` block
 
 | Kind | Count | Terraform address | Site data | Import ID |
 |---|---|---|---|---|
-| Applications | 19 | `module.sso.authentik_application.this[<slug>]` | `local.applications` | slug (3 of the 19 are Terraform-created — no import) |
+| Applications | 19 | `module.sso.authentik_application.this[<slug>]` | `local.application_data` | slug (3 of the 19 are Terraform-created — no import) |
 | Proxy providers (forward_single) | 10 | `module.sso.authentik_provider_proxy.this[<key>]` | `local.proxy_provider_data` | provider pk (4-10, 17); `adguard_01`/`adguard_02` are Terraform-created |
 | OAuth2/OIDC providers | 8 | `module.sso.authentik_provider_oauth2.this[<key>]` | `local.oauth2_provider_data` | provider pk (1-3, 13-15); `hermes_dashboard` / `homarr` are Terraform-created |
 | SAML provider (GitLab) | 1 | `module.sso.authentik_provider_saml.this["gitlab"]` | `local.saml_providers` | provider pk (12) |
@@ -170,18 +175,20 @@ adoption was blocked on three things. All three were resolved in the move:
 Consequence for the library: `authentik-sso` now has a consumer that plans it
 against a live IdP, so a behavioural change to the module surfaces here as a
 real plan instead of only in the cluster template's static render check. The
-`?ref=` pinned v0.7.0 ahead of the other two roots while those capabilities
-existed in no earlier release; all three roots converged at v0.7.0 with the
-`WEISSSRV_LIB_REF` bump. The terraform `?ref=` pins are bumped by hand and held equal to
-`WEISSSRV_LIB_REF` by `scripts/test_site_configs.py`; confirm with
-`terraform init -upgrade` before the plan.
+`?ref=` briefly ran ahead of the other two roots while those capabilities existed
+in no earlier release; all three converged again at the current
+`WEISSSRV_LIB_REF`. The terraform `?ref=` pins are bumped **by hand** —
+`scripts/check-lib-pins.py --fix` does not touch them — and
+`scripts/test_site_configs.py` fails when one is not equal to
+`WEISSSRV_LIB_REF`. Confirm with `terraform init -upgrade` before the plan.
 
-**The pin lands before the tag exists.** `terraform init` cannot resolve
-`?ref=v0.7.0` until that release is cut, so `task terraform:validate-local` and
-the CI `terraform-validate` job are red for this root in the window between the
-library MR merging and the tag — the same ordering every other pin surface in a
-library release has. Validate against a checkout meanwhile by pointing `source`
-at a local path, and re-run `terraform init -upgrade` once the tag exists.
+**A pin that lands before its tag exists is red until the tag.** `terraform init`
+cannot resolve a `?ref=` that no release carries yet, so `task
+terraform:validate-local` and the CI `terraform-validate` job are red for this
+root in the window between a library MR merging and the tag being cut — the same
+ordering every other pin surface in a library release has. Validate against a
+checkout meanwhile by pointing `source` at a local path, and re-run
+`terraform init -upgrade` once the tag exists.
 
 **No `outputs.tf`, deliberately.** The module exposes `application_ids`,
 `group_ids`, `policy_binding_ids` and the provider id maps, which would shorten
@@ -315,6 +322,13 @@ Adding the new import blocks to `imports.tf` as you go shortens step 2 next time
   — the API returns the key, so omitting it in config diffs forever.
 - **No `ignore_changes` anywhere** — none proved necessary. (`prevent_destroy`
   is unrelated and is on everywhere — see Guardrails.)
+- **A custom scope mapping must never return `request.user.attributes`.**
+  `media-admins` / `dns-admins` carry the basic-auth injection credentials as
+  group attributes, and group attributes merge into every member's user
+  attributes — so a mapping that returns the attribute bag would emit those
+  cleartext passwords into the ID token of every app the member logs into. The
+  one authored mapping (`local.custom_scope_mappings`) returns `email` /
+  `email_verified` only; keep it that way.
 - **Group `attributes` is only sent when there is something to send.** The
   module emits `null` for a group with no attributes rather than `jsonencode({})`,
   which is exactly what the pre-module resources did by omitting the field — the
@@ -332,7 +346,7 @@ Adding the new import blocks to `imports.tf` as you go shortens step 2 next time
    `authentik-drift-plan` CI job. Entries carry only what differs from
    `local.*_provider_defaults` — those defaults are this site's pinned posture,
    not the module's.
-2. **Application** — one entry in `local.applications`
+2. **Application** — one entry in `local.application_data`
    (`applications.tf`): key = slug, then name, `group`
    (`Home`/`Software`/`Downloads`), launch URL, dashboard icon, and
    `provider_type` + `provider_key` naming the entry from step 1. Do **not** add

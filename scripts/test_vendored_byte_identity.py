@@ -90,14 +90,15 @@ def _run_gate(*extra: str) -> subprocess.CompletedProcess:
     return subprocess.run(argv, capture_output=True, text=True)
 
 
-def registered_consumer_paths() -> list[str]:
-    """Repo-relative paths the library registers for this consumer, or [] when
-    no library checkout is reachable.
+def registered_consumer_entries() -> list[tuple[str, str]]:
+    """(kind, repo-relative path) for every entry the library registers for this
+    consumer, or [] when no library checkout is reachable.
 
-    Collection-time helper for test_vendored_smoke.py's parametrisation. It is
-    deliberately the one place that tolerates a missing checkout: the
-    never-skip assertion belongs to the gate tests below, and duplicating it at
-    import time would turn a clear failure into a collection error.
+    Collection-time helper for test_vendored_smoke.py's parametrisation and for
+    the Origin-column gate in test_scripts_have_tests.py. It is deliberately the
+    one place that tolerates a missing checkout: the never-skip assertion
+    belongs to the gate tests below, and duplicating it at import time would
+    turn a clear failure into a collection error.
     """
     try:
         _lib_root()
@@ -107,9 +108,15 @@ def registered_consumer_paths() -> list[str]:
     if result.returncode != 0:
         return []
     return [
-        parts[1] for parts in (line.split("\t") for line in result.stdout.splitlines())
-        if len(parts) >= 3 and parts[0] == "vendored"
+        (parts[0], parts[1])
+        for parts in (line.split("\t") for line in result.stdout.splitlines())
+        if len(parts) >= 3
     ]
+
+
+def registered_consumer_paths() -> list[str]:
+    """Repo-relative paths registered as byte-identical copies (kind vendored)."""
+    return [path for kind, path in registered_consumer_entries() if kind == "vendored"]
 
 
 @pytest.fixture(scope="module")

@@ -1,0 +1,24 @@
+---
+# kube-system's Pod Security Admission labels, made explicit. k3s creates the
+# namespace unlabelled, and an unlabelled namespace already admits at
+# `privileged` — so this changes no admission decision. What it changes is that
+# the exception is now written down: kube-system is the one namespace that
+# genuinely needs privileged (kured runs privileged, kube-vip takes NET_ADMIN/
+# NET_RAW), instead of being indistinguishable from a namespace nobody labelled.
+#
+# audit/warn stay at `baseline` so anything NEW that needs privileged surfaces
+# as a warning at apply time rather than landing silently. The current residents
+# above that line (kured, kube-vip) are the known, expected warnings.
+#
+# prune: disabled — Flux must never attempt to delete a built-in namespace, and
+# this object only adds labels to the one k3s owns.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kube-system
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+  labels:
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/warn: baseline
+    pod-security.kubernetes.io/audit: baseline

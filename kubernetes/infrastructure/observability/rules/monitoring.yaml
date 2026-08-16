@@ -390,7 +390,8 @@ spec:
               (immich-server 8081/8082) for 5 minutes — the compose stack on
               the Immich VM (192.168.0.157) is down or unreachable, or the
               scrape target is missing. Photo access is offline.
-        # VM 155 is a start-on-demand desktop (onboot=0), so the probe is gated
+        # VM 155 is a desktop an operator shuts down at will (onboot=0, but
+        # auto-started after the NAS unlock — docs/32, 39), so the probe is gated
         # on the VM being powered on and self-silences while it is intentionally
         # off. pve_up{qemu/155} comes from TWO proxmox-exporter targets, so it
         # must be aggregated — a bare vector right of `and on()` errors on
@@ -511,7 +512,7 @@ spec:
           expr: >-
             probe_ssl_earliest_cert_expiry{
               instance=~"https://.*\\.ericsweiss\\.com",
-              instance!~"https://(git|registry\\.git|ide\\.git|photos|auth)\\.ericsweiss\\.com"
+              instance!~"https://(git|registry\\.git|ide\\.git|pages\\.git|photos|auth)\\.ericsweiss\\.com"
             } - time() < 86400 * 14
           for: 1h
           labels:

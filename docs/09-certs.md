@@ -420,11 +420,13 @@ Configured in `group_vars/dns.yml`:
 ```yaml
 adguard_home_tls_enabled: true
 adguard_home_cert_path: /opt/AdGuardHome/certs
-
-secrets:
-  cloudflare_api_token: "op://Homelab/Cloudflare DNS Token/credential"
-  cloudflare_account_id: "op://Homelab/Cloudflare DNS Token/username"
 ```
+
+The Cloudflare credentials are not inventory values. The
+`op://Homelab/Cloudflare DNS Token/{credential,username}` references live in the
+Taskfile task's `env:` block (mirrored by the CI job's `variables:`), and the
+inventory reads them back with `lookup('ansible.builtin.env', ...)` — docs/15
+§ Secrets model is canonical.
 
 ## Related documentation
 

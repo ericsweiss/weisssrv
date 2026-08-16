@@ -25,6 +25,8 @@ spec:
       # Caps for the recorded recommendation (docs/33: every policy carries
       # minAllowed/maxAllowed). maxAllowed.memory matches the hindsight
       # container's 3Gi limit so growth is recorded up to the binding ceiling.
+      # Nothing here ever applies the recommendation to a pod, so the cap only
+      # bounds what is recorded (docs/33: `Off` is exempt from the cap rule).
       - containerName: "*"
         minAllowed: {cpu: 25m, memory: 256Mi}
         maxAllowed: {cpu: 2, memory: 3Gi}

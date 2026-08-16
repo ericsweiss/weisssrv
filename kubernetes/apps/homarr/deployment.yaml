@@ -162,13 +162,19 @@ spec:
             periodSeconds: 30
             timeoutSeconds: 10
             failureThreshold: 5
+          # Hand-set limit (the VPA is RequestsOnly — docs/33 § Limit
+          # oscillation): 896Mi is the 30d working-set peak (548Mi) +60%. The
+          # old 512Mi sat under that peak and only held because the mutating
+          # VPA webhook rewrote it upward at admission — and that webhook is
+          # failurePolicy: Ignore, so a pod admitted while it is down runs at
+          # whatever this file declares.
           resources:
             requests:
               cpu: 50m
               memory: 256Mi
             limits:
               # No CPU limit (repo policy — docs/33); memory capped.
-              memory: 512Mi
+              memory: 896Mi
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:

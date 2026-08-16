@@ -8,16 +8,10 @@
 # the shared rules and the shared false-positive shapes come from there, the
 # path exclusions and the fixture anchors below are this repo's.
 #
-# Scope of exclusions:
-#   - `docs/*.md` is scanned normally — the `regexes` content allowlist below
-#     covers the placeholder shapes docs use (1Password op:// refs, doc
-#     placeholders like `[your-...]`), so a real secret committed under docs/ is
-#     still caught.
-#   - No test or fixture PATH is excluded. The synthetic key material this repo
-#     ships (the cert-distribution molecule scenario's mock acme.sh keys, the
-#     redaction fixtures in `scripts/test_collect_state_lib.py`) is allowlisted
-#     by CONTENT, anchored on each fixture's own distinctive body — so those
-#     files stay fully in scope and a real secret added to either is caught.
+# Exclusion policy: nothing is excluded by PATH except generated/third-party
+# trees. Docs and test fixtures stay fully in scope and are allowlisted by
+# CONTENT, anchored on each shape's own body, so a real secret added to one is
+# still caught.
 #
 # `useDefault = true` is REQUIRED — without it gitleaks loads only the rules
 # defined in this file (which has none), disabling all detection.
@@ -37,43 +31,32 @@ regexes = [
   # Test/fixture tokens — anchored at start of token so a real secret prefixed
   # with "prodtestkey_…" or similar can't be silenced.
   '''^(test|fake|dummy|example)[-_]?(password|token|key|secret)[A-Za-z0-9_-]*''',
-  # Published supply-chain pins the shared CI templates verify downloaded key
-  # material against (1Password's apt GPG fingerprint and its apk public key's
-  # sha256). Both are public by construction but trip the generic-api-key
-  # entropy rule. Listed as exact values, so rotating a pinned key forces this
-  # allowlist to be reviewed alongside it.
+  # Published supply-chain pins (public by construction, but they trip the
+  # entropy rule). Exact values, so rotating a pinned key forces a review here.
   '''^3FEF9748469ADBE15DA7CA80AC2D62742012EA22$''',
   '''^0e88171d9f8b7630763f70cbf69f2a01b4ba8ea1d8e79487f59c162db255eb84$''',
 ]
 
 paths = [
-  # Generated cluster snapshots (gitignored, but never trip on a stray copy).
+  # Generated cluster snapshots (gitignored; guards a stray copy).
   '''CLUSTER_STATUS\.txt''',
   '''cluster-state-.*\.txt''',
-  # Vendored galaxy dependency collections (gitignored; installed into the tree
-  # by the ansible-lint flow) — third-party test fixtures are full of dummy
-  # keys and are not ours to scan.
+  # Vendored galaxy collections (gitignored) — third-party, not ours to scan.
   '''\.ansible-home/''',
-  # Terraform's downloaded module/provider cache (gitignored) — third-party
-  # trees, not ours to scan.
+  # Terraform module/provider cache (gitignored) — third-party.
   '''\.terraform/''',
-  # Byte-compiled copies of the fixtures anchored below; the compiled form does
-  # not preserve the source shape the content anchors match.
+  # Byte-compiled fixtures: the compiled form loses the shape the anchors match.
   '''__pycache__/''',
 ]
 
-# Synthetic key material shipped by this repo's own tests, matched by CONTENT
-# (each anchored on its own distinctive body) rather than by path, so the files
-# holding it stay in scope for every rule.
+# Synthetic key material from this repo's own tests, matched by CONTENT so the
+# files holding it stay in scope for every rule.
 [[allowlists]]
 description = "weisssrv synthetic test fixtures"
 regexes = [
-  # ansible/integration-tests/cert-distribution — mock acme.sh private keys,
-  # written per domain by the converge play.
+  # cert-distribution molecule — mock acme.sh private keys.
   '''MIIEvgIBADANBgkqhkiGTestPrivateKey''',
-  # scripts/test_collect_state_lib.py — the redaction suite's input shapes. The
-  # suite asserts each is redacted OUT of CLUSTER_STATUS.txt; they are the
-  # patterns, not credentials.
+  # test_collect_state_lib.py — redaction-suite inputs, patterns not credentials.
   '''^glpat-abc123def456$''',
   '''^glrt-AbC_123-xyz$''',
   '''7the8keymaterial''',
@@ -84,8 +67,7 @@ regexes = [
 [[allowlists]]
 description = "identifiers the default rules misread as values"
 regexes = [
-  # terraform/authentik — Authentik ATTRIBUTE names the proxy provider reads the
-  # basic-auth password from; the value itself is a `var.basic_auth_*_password`.
+  # terraform/authentik — attribute NAMES, not the passwords they point at.
   '''^"(nzbget|adguard)_password"$''',
   # docs/42 — a dm-crypt cipher spec.
   '''^aes-xts-plain64$''',

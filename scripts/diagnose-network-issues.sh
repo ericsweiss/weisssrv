@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Diagnostic script for network instability issues
 # Run from workstation with SSH access to all nodes
 #
@@ -28,13 +28,14 @@ echo ""
 PVE_HOSTS="$PVE_IPS"
 
 # Addresses whose ARP entries matter when chasing a MAC flap (docs/34): the HA
-# service IPs, which come from hosts.env, plus the three VIPs hosts.env does not
-# yet carry. Built here once instead of being repeated as a literal octet list.
-# The MetalLB pools (.100 public / .101 internal) and the kube-vip API VIP (.161)
-# are defined in group_vars/all.yml and are NOT exported by
-# generate-hosts-env.py — until they are, they are named here rather than
-# inlined into a regex nobody can read.
-VIP_EXTRA_IPS="192.168.0.100 192.168.0.101 192.168.0.161"
+# service IPs, which come from hosts.env, plus the three VIPs. hosts.env cannot
+# carry those — its generator resolves inventory GROUPS and a VIP is not a host —
+# so they are read from cluster-config.yaml, the ConfigMap that owns them.
+VIP_EXTRA_IPS="$("$_SCRIPT_DIR/cluster-config-value.sh" \
+    cluster_metallb_public_vip cluster_metallb_internal_vip cluster_api_vip)" || {
+    echo "ERROR: cannot read the VIPs from cluster-config.yaml" >&2
+    exit 1
+}
 VIP_OCTET_RE="$(
     printf '%s\n' $DNS_IPS $MAIL_IPS "$HOME_ASSISTANT_IP" $VIP_EXTRA_IPS \
         | sed 's/.*\(\.[0-9]*\)$/\1/' | sort -u | paste -sd'|' - | sed 's/^/(/; s/$/)/; s/\./\\./g'

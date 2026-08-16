@@ -60,11 +60,17 @@ Services run as dedicated non-root users with appropriate capabilities:
 
 ### SSH Keys
 
-SSH public keys are managed via 1Password:
+SSH public keys are managed via 1Password, in the two-part shape described in
+docs/15 § Secrets model: the `op://` reference lives in the Taskfile task's `env:`
+block (mirrored by the matching CI job's `variables:`), and the inventory reads
+it back from the environment.
 
 ```yaml
-secrets:
-  ssh_public_key: "op://Homelab/SSH Key/public key"
+# Taskfile.yml — the task's env: block
+SSH_PUBLIC_KEY: op://Homelab/SSH Key/public key
+
+# group_vars/all.yml
+ssh_public_key: "{{ lookup('ansible.builtin.env', 'SSH_PUBLIC_KEY') }}"
 ```
 
 The key is deployed to `~/.ssh/authorized_keys` with IP restrictions:

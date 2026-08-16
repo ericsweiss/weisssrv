@@ -701,3 +701,11 @@ reports both pins.
   ChatGPT-subscription session, fixed by logging in again.
 - **Provider key changes not taking effect**: the gateway needs a restart after
   `.env` edits — `task hermes:restart`.
+
+## Related documentation
+
+- [docs/29-flux-operations.md](29-flux-operations.md) - how the manifests reconcile
+- [docs/31-observability.md](31-observability.md) - metrics, logs and alerts
+- [docs/33-autoscaling.md](33-autoscaling.md) - the VPA tiers that size these pods
+- [docs/40-authentik-terraform.md](40-authentik-terraform.md) - the dashboard's OIDC provider as code
+- [docs/43-gpu-passthrough.md](43-gpu-passthrough.md) - the GPU Hindsight offloads to

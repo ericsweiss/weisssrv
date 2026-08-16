@@ -100,19 +100,14 @@ spec:
         ruleSelectorNilUsesHelmValues: false
         ruleNamespaceSelector: {}
 
-        # Sized off the measured peak, not the steady state: an OOMKill here
-        # takes metrics, every HPA's input and the VPA recommender's input with
-        # it. The 6Gi limit matches the VPA's maxAllowed so the recorded
-        # recommendation is never clamped, and VPARecommendationExceedsLimit is
-        # the automated guard if it ever crosses. Sizing method and the current
-        # numbers live in docs/33 §Applying an Off-tier recommendation.
+        # Request tracks the recorded Off-tier target (the scheduler and the
+        # eviction ranking see the request, not the limit); the limit equals the
+        # VPA's maxAllowed so the recommendation is never clamped, with
+        # VPARecommendationExceedsLimit as the guard. Sizing method: docs/33
+        # §Applying an Off-tier recommendation.
         resources:
           requests:
             cpu: 200m
-            # Tracks the recorded Off-tier target (4524Mi). The request is what
-            # the scheduler and the eviction ranking see, so leaving it a
-            # gigabyte below the measured need put the TSDB in the
-            # first-to-be-evicted band while the limit still looked generous.
             memory: 4608Mi
           limits:
             memory: 6Gi
@@ -171,11 +166,11 @@ spec:
                       fieldRef:
                         fieldPath: metadata.namespace
 
-      # Cluster-wide `secrets` read is dropped from the Grafana SA: the chart's
-      # ClusterRole AND ClusterRoleBinding are replaced by the configmaps-only
-      # pair in grafana-rbac.yaml, which carries the rationale. NOT
-      # `useExistingClusterRole` — that keeps the chart's fixed-name binding and
-      # only rewrites its roleRef, which the RBAC API forbids.
+      # Grafana's SA loses cluster-wide `secrets` read — the chart's ClusterRole
+      # and ClusterRoleBinding are replaced by the pair in grafana-rbac.yaml,
+      # which carries the rationale. NOT `useExistingClusterRole`: that keeps the
+      # chart's binding and only rewrites its roleRef, which the RBAC API
+      # forbids.
       rbac:
         create: false
 
@@ -190,17 +185,18 @@ spec:
           reporting_enabled: false
           feedback_links_enabled: false
 
-      # Static OIDC configuration (Authentik)
-      # Access: users in grafana-users group can log in, grafana-admins get Admin role.
-      # Create both groups in Authentik and assign users accordingly.
+      # Static OIDC (Authentik): grafana-users can log in, grafana-admins get
+      # the Admin role. The issuer host is the EXTERNAL one for every OIDC
+      # consumer here, internal-only apps included — the AdGuard split-horizon
+      # rewrite keeps the traffic on the LAN (docs/31).
       env:
         GF_AUTH_GENERIC_OAUTH_ENABLED: "true"
         GF_AUTH_GENERIC_OAUTH_NAME: "Authentik"
         GF_AUTH_GENERIC_OAUTH_ALLOW_SIGN_UP: "true"
         GF_AUTH_GENERIC_OAUTH_SCOPES: "openid profile email"
-        GF_AUTH_GENERIC_OAUTH_AUTH_URL: "https://auth.${cluster_internal_domain}/application/o/authorize/"
-        GF_AUTH_GENERIC_OAUTH_TOKEN_URL: "https://auth.${cluster_internal_domain}/application/o/token/"
-        GF_AUTH_GENERIC_OAUTH_API_URL: "https://auth.${cluster_internal_domain}/application/o/userinfo/"
+        GF_AUTH_GENERIC_OAUTH_AUTH_URL: "https://auth.${cluster_external_domain}/application/o/authorize/"
+        GF_AUTH_GENERIC_OAUTH_TOKEN_URL: "https://auth.${cluster_external_domain}/application/o/token/"
+        GF_AUTH_GENERIC_OAUTH_API_URL: "https://auth.${cluster_external_domain}/application/o/userinfo/"
         GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH: "contains(groups, 'grafana-admins') && 'Admin' || contains(groups, 'grafana-users') && 'Viewer' || ''"
         GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_STRICT: "true"
 
@@ -259,9 +255,8 @@ spec:
       initChownData:
         enabled: false
 
-      # NFS-ESTALE self-heal: after a NAS reboot the established /var/lib/grafana
-      # mount returns stale handles grafana never recovers from. A stat surfaces
-      # ESTALE or a hung hard-mount, so kubelet restarts the pod and it remounts.
+      # NFS-ESTALE self-heal: liveness stats /var/lib/grafana so a stale or hung
+      # handle restarts the pod and it remounts.
       #
       # httpGet MUST be explicitly nulled: helm deep-merges into the subchart's
       # defaults, whose livenessProbe carries httpGet, and the apiserver rejects
@@ -319,12 +314,17 @@ spec:
           memory: 128Mi
 
     kube-state-metrics:
+      # Sized by the docs/33 rule: the declared values are what the pod admits at
+      # whenever the VPA admission webhook is unavailable (failurePolicy: Ignore).
+      # The VPA is RequestsOnly, so this limit is the binding OOM ceiling and its
+      # maxAllowed tracks it exactly (observability/vpa.yaml) — move both in the
+      # same commit.
       resources:
         requests:
           cpu: 50m
-          memory: 64Mi
+          memory: 192Mi
         limits:
-          memory: 128Mi
+          memory: 384Mi
       # Flux controllers export no per-resource readiness, so it comes from
       # kube-state-metrics customResourceState (flux2-monitoring-example pattern).
       rbac:
@@ -448,21 +448,17 @@ spec:
                   exported_namespace: [metadata, namespace]
                   target_kind: [spec, targetRef, kind]
                   target_name: [spec, targetRef, name]
-                  # Policy shape, needed by VPARecommendationExceedsLimit to
-                  # tell "nothing will ever apply this recommendation" from "the
-                  # VPA rewrites the limit itself on the next admission".
+                  # Policy shape, needed by VPARecommendationExceedsLimit.
                   # kube-state-metrics' [key=value] selector is an exact string
-                  # match, so "*" is the literal entry name, not a wildcard: a
-                  # per-container controlledValues is invisible here, and a VPA
+                  # match, so "*" is a literal entry name, not a wildcard: a VPA
                   # that names every container instead of carrying a "*" entry
-                  # gets no label at all. An unset path simply omits the label.
+                  # gets no label at all (an unset path just omits the label).
                   update_mode: [spec, updatePolicy, updateMode]
                   controlled_values: [spec, resourcePolicy, containerPolicies, "[containerName=*]", controlledValues]
                 # One entry per (metric, resource): valueFrom must resolve to a
-                # scalar quantity, so target/uncappedTarget are split into their
-                # cpu and memory members. commonLabels carries the resource/unit
-                # so the cpu and memory series never collide and the alert's
-                # resource/unit annotations are populated.
+                # scalar quantity, so target/uncappedTarget split into their cpu
+                # and memory members, with commonLabels carrying resource/unit so
+                # the two never collide.
                 metrics:
                   - name: recommendation_target
                     # Same metric family as the memory series below — the HELP

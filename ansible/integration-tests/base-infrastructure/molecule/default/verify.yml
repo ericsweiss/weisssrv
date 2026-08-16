@@ -6,39 +6,46 @@
   hosts: all
   become: true
   gather_facts: true
+  # admin_user (and the rest of the production defaults the converge deploys
+  # against) comes from the same file the converge loads, so these assertions
+  # track the inventory instead of restating it.
+  vars_files:
+    - ../../../../inventories/prod/group_vars/all.yml
 
   tasks:
     # Base Role Verification
     - name: Check admin user exists
       ansible.builtin.user:
-        name: eric
+        name: "{{ admin_user }}"
         state: present
       check_mode: true
-      register: admin_user
+      # NOT `admin_user`: a register of that name would shadow the inventory
+      # variable for every task below.
+      register: admin_user_check
 
     - name: Assert admin user configured
       ansible.builtin.assert:
         that:
-          - admin_user is not changed
-        fail_msg: "Admin user 'eric' not configured"
+          - admin_user_check is not changed
+        fail_msg: "Admin user '{{ admin_user }}' not configured"
         success_msg: "Admin user exists"
 
     - name: Check admin user shell
       ansible.builtin.getent:
         database: passwd
-        key: eric
+        key: "{{ admin_user }}"
       register: user_info
 
     - name: Assert admin user has zsh shell
       ansible.builtin.assert:
         that:
-          - "'/bin/zsh' in user_info.ansible_facts.getent_passwd.eric[5]"
+          - "'/bin/zsh' in user_info.ansible_facts.getent_passwd[admin_user][5]"
         fail_msg: "Admin user shell is not /bin/zsh"
         success_msg: "Admin user shell is /bin/zsh"
 
     - name: Check sudoers configuration
       ansible.builtin.stat:
-        path: /etc/sudoers.d/eric
+        path: /etc/sudoers.d/{{ admin_user }}
       register: sudoers_file
 
     - name: Assert sudoers file exists
@@ -87,7 +94,7 @@
     # QoL Role Verification
     - name: Check Oh My Zsh installed
       ansible.builtin.stat:
-        path: /home/eric/.oh-my-zsh
+        path: /home/{{ admin_user }}/.oh-my-zsh
       register: ohmyzsh_dir
 
     - name: Assert Oh My Zsh installed
@@ -100,7 +107,7 @@
 
     - name: Check .zshrc exists
       ansible.builtin.stat:
-        path: /home/eric/.zshrc
+        path: /home/{{ admin_user }}/.zshrc
       register: zshrc_file
 
     - name: Assert .zshrc configured
@@ -111,7 +118,7 @@
         success_msg: ".zshrc configured"
 
     - name: Check zsh plugins in .zshrc
-      ansible.builtin.command: sed -n '/^plugins=(/,/^)/p' /home/eric/.zshrc  # noqa: command-instead-of-module
+      ansible.builtin.command: sed -n '/^plugins=(/,/^)/p' /home/{{ admin_user }}/.zshrc  # noqa: command-instead-of-module
       register: zsh_plugins_check
       changed_when: false
       failed_when: false
@@ -140,7 +147,7 @@
 
     - name: Check Vundle installed
       ansible.builtin.stat:
-        path: /home/eric/.vim/bundle/Vundle.vim
+        path: /home/{{ admin_user }}/.vim/bundle/Vundle.vim
       register: vundle_dir
 
     - name: Assert Vundle installed
@@ -222,7 +229,7 @@
     # Integration Verification
     - name: Test zsh is functional
       become: true
-      become_user: eric
+      become_user: "{{ admin_user }}"
       ansible.builtin.shell: zsh -c 'echo $SHELL'
       register: zsh_test
       changed_when: false
@@ -236,7 +243,7 @@
 
     - name: Test Oh My Zsh theme loaded
       become: true
-      become_user: eric
+      become_user: "{{ admin_user }}"
       ansible.builtin.shell: zsh -c 'echo $ZSH_THEME'
       register: theme_test
       changed_when: false
@@ -255,8 +262,8 @@
           Host: {{ inventory_hostname }}
 
           Base Role:
-            - Admin User: {{ 'OK' if admin_user is not changed else 'FAILED' }}
-            - Shell: {{ user_info.ansible_facts.getent_passwd.eric[5] }}
+            - Admin User: {{ 'OK' if admin_user_check is not changed else 'FAILED' }}
+            - Shell: {{ user_info.ansible_facts.getent_passwd[admin_user][5] }}
             - Sudoers: {{ 'OK' if sudoers_file.stat.exists else 'FAILED' }}
             - Base Packages: {{ 'OK' if base_pkgs is not changed else 'FAILED' }}
             - Timezone: {{ timezone_link.stat.lnk_source | default('UNKNOWN') }}

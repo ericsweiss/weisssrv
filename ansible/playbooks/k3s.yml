@@ -9,19 +9,13 @@
     - weisssrv.infra.base
     - weisssrv.infra.qol
     - weisssrv.infra.postfix_null_client
-    # Host-side journald -> Loki shipping. site.yml deploys this to k3s nodes in
-    # a dedicated play; include it here so a standalone `task k3s:deploy` does not
-    # leave the k3s VMs without host log shipping.
+    # Also in site.yml; listed here so a standalone deploy stays in sync.
     - weisssrv.infra.alloy_host
 
-# NFSv4-over-TLS daemon for k3s NFS clients — MUST precede the server/agent plays.
-# The k3s role's off-node etcd-snapshot task asserts tlshd is active (and mounts
-# an xprtsec=tls export), so tlshd has to be installed first. Enabled group-wide
-# (nfs_tls_enabled in group_vars/k3s.yml): the six agents mount the NAS-backed
-# PVs, and the three servers mount the off-node etcd-snapshot export — both need
-# tlshd for the handshake. nfs_tls has no dependency on the k3s role (just apt +
-# the CA truststore from the base play). The role's tasks self-guard on
-# `nfs_tls_enabled | default(false)`, so this is a no-op if that var is unset.
+# MUST precede the server/agent plays: the k3s role's off-node etcd-snapshot
+# task asserts tlshd is active and mounts an xprtsec=tls export. Group-wide —
+# agents mount the NAS-backed PVs, servers the etcd-snapshot export. nfs_tls
+# needs only apt + the CA truststore from the base play.
 - name: Deploy NFSv4-over-TLS daemon on NFS-mounting k3s nodes
   hosts: k3s
   become: true
@@ -46,18 +40,21 @@
   roles:
     - weisssrv.infra.k3s
 
-# site.yml deploys node_exporter_host to k3s_servers; include it here so a
-# standalone `task k3s:deploy` does not leave the servers' etcd-snapshot
-# textfile metric (EtcdSnapshotStale) unexposed. Agents are covered by the
-# in-cluster node-exporter DaemonSet.
+# Also in site.yml; listed here so a standalone deploy stays in sync — without
+# it the servers' etcd-snapshot textfile metric (EtcdSnapshotStale) is
+# unexposed. Agents are covered by the in-cluster node-exporter DaemonSet.
 - name: Deploy host-level metrics on k3s servers
   hosts: k3s_servers
   become: true
   roles:
     - weisssrv.infra.node_exporter_host
 
+# gather_facts: false to match site.yml's equivalent play — the role is purely
+# delegated and self-gates on vmid + guest_security_groups, so gathering on all
+# nine VMs buys nothing.
 - name: Deploy guest firewall rules
   hosts: k3s
+  gather_facts: false
   roles:
     - weisssrv.infra.proxmox_firewall
 

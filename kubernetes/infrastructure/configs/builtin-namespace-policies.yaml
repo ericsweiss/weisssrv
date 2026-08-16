@@ -1,8 +1,8 @@
 ---
-# Fail-closed policies for the two pod-free built-in namespaces. Neither holds a
-# workload today — kube-public carries only kube-root-ca.crt and the
-# bootstrap-signer RoleBinding, kube-node-lease only the nine node Leases
-# (verified live) — so this costs nothing now and guards the case it exists for:
+# Fail-closed PSA labels and NetworkPolicies for the two pod-free built-in
+# namespaces. Neither holds a workload today — kube-public carries only
+# kube-root-ca.crt and the bootstrap-signer RoleBinding, kube-node-lease only
+# the node Leases — so this costs nothing now and guards the case it exists for:
 # a pod created there by hand or by a future chart would otherwise be completely
 # unguarded, and neither namespace owns a workload the coverage gate would flag
 # (`scripts/check-default-deny-coverage.py` only examines namespaces that do).
@@ -10,10 +10,37 @@
 # Ingress AND egress, mirroring `default` in default-namespace.yaml — the same
 # reasoning applies, and there is no traffic to preserve.
 #
-# The Namespace objects themselves are deliberately NOT adopted here. `default`
-# is adopted to gain PSA labels because manifests in this repo really do put
-# Services there; these two hold nothing of ours, so the narrower change is the
-# right blast radius.
+# The Namespace objects are adopted for the same fail-closed reason `default` is
+# (default-namespace.yaml): without PSA labels an unlabelled namespace admits at
+# `privileged`, so the two namespaces with the strongest case for `restricted`
+# were the only ones in the cluster running with no Pod Security Admission at
+# all. Both are pod-free, so `restricted` cannot break anything today.
+#
+# prune: disabled — Flux must never attempt to delete a built-in namespace.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kube-public
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kube-node-lease
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
+
+---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

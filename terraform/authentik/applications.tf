@@ -13,7 +13,14 @@
 # `prevent_destroy`: the slug IS the issuer path, so a renamed key would plan as
 # destroy+create and break that app's logins (README § Guardrails).
 locals {
-  applications = {
+  # Shared application posture, pinned here so a library default change cannot
+  # rewrite live access semantics on a ref bump. "any" means EITHER of an app's
+  # two policy bindings grants access (policy_bindings.tf).
+  application_defaults = {
+    policy_engine_mode = "any"
+  }
+
+  application_data = {
     # Home
     bar = {
       name          = "Bar Assistant"
@@ -122,6 +129,17 @@ locals {
       icon          = "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/adguard-home.svg"
     }
 
+    # Traefik dashboard, Terraform-authored (no imports.tf entry — the route had
+    # no forward-auth before this application existed).
+    traefik = {
+      name          = "Traefik Dashboard"
+      group         = "Software"
+      provider_type = "proxy"
+      provider_key  = "traefik_dashboard"
+      launch_url    = "https://traefik.esweiss.com"
+      icon          = "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/traefik.svg"
+    }
+
     # Downloads
     movies = {
       name          = "Radarr"
@@ -179,5 +197,10 @@ locals {
       launch_url    = "https://tv.esweiss.com"
       icon          = "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/sonarr.svg"
     }
+  }
+
+  applications = {
+    for key, application in local.application_data :
+    key => merge(local.application_defaults, application)
   }
 }

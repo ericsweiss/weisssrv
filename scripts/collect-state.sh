@@ -170,17 +170,13 @@ probe_k3s_ready() {
     fi
 }
 
-# GitLab application health, TLS verified (no -k); 200 == healthy. Tries the
-# internal chain (DNS -> Traefik VIP -> GitLab nginx) first, falling back to the
-# external hostname only on a connection-level 000 — the internal Traefik->VM leg
-# can stall past the timeout on a healthy GitLab. Echoes the HTTP status code.
+# GitLab application health, TLS verified (no -k); 200 == healthy. Internal
+# first, external only on a connection-level 000 — see gitlab_health_code in
+# deploy-verify-lib.sh, which this script cannot source (it runs on hosts with
+# no kubectl/jq).
 probe_gitlab_http() {
     local code
     code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 https://git.esweiss.com/-/health 2>/dev/null || true)
-    # Fall back to the external hostname ONLY on a connection-level failure
-    # ("000"/empty) — the transient internal Traefik/ingress blip this guards
-    # against. A real HTTP status (incl 4xx/5xx) means GitLab answered, so trust
-    # it rather than let an external 200 mask an internal error.
     if [ -z "$code" ] || [ "$code" = "000" ]; then
         code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 https://git.ericsweiss.com/-/health 2>/dev/null || true)
     fi
@@ -213,9 +209,7 @@ if [ "${1:-}" = "--json" ]; then
         POD_RUNNING=$(jq '[.items[] | select(.status.phase=="Running" or .status.phase=="Succeeded")] | length' "$K3S_PODS_JSON" 2>/dev/null || echo 0)
     fi
 
-    # ZFS pool health — aggregate across ALL reachable Proxmox hosts (a
-    # degraded local-ssd on a compute node must not hide behind a healthy
-    # NAS). "detail" also builds the pool list (first reachable host's pools).
+    # "detail" also builds the pool list — see probe_zfs_degraded.
     probe_zfs_degraded detail
     ZFS_DEGRADED=$ZFS_DEGRADED_RESULT
     ZFS_POOLS=$ZFS_POOLS_RESULT
@@ -229,11 +223,8 @@ if [ "${1:-}" = "--json" ]; then
     WARNING_EVENTS=$(probe_warning_events)
     case "$WARNING_EVENTS" in ''|*[!0-9]*) WARNING_EVENTS=null ;; esac
 
-    # GitLab application health through the full delivery chain (internal
-    # DNS -> Traefik VIP -> GitLab nginx). GitLab is the GitOps source of
-    # truth, so its health gates green (degrades; never catastrophic).
-    # TLS is verified (no -k): a broken cert chain or failed rotation is
-    # a real degradation this probe should surface, not mask.
+    # GitLab is the GitOps source of truth, so its health degrades the verdict
+    # (never catastrophic) — see probe_gitlab_http.
     GITLAB_OK=0
     GITLAB_HTTP=$(probe_gitlab_http)
     [ "$GITLAB_HTTP" = "200" ] && GITLAB_OK=1
@@ -622,8 +613,6 @@ echo ""
 echo "--- Media Mover Status ---"
 systemctl is-active media-mover.timer 2>/dev/null || echo "media-mover timer not active"
 systemctl status media-mover.timer 2>/dev/null | grep -E 'Active:|Trigger:' || true
-# stderr redirected on journalctl itself (it was previously attached to `tail`,
-# leaking journalctl's errors into the captured stream).
 journalctl -u media-mover.service --since "1 day ago" --no-pager 2>/dev/null \
     | tail -10 | cs_emit "No recent media-mover logs"
 echo ""
@@ -1591,12 +1580,11 @@ PVE_TOTAL_REG=0
 K3S_NODES_READY_REG=0
 K3S_NODES_TOTAL_REG=0
 
-# Proxmox reachability — mirrors --json mode's `pve_up` loop.
+# Proxmox reachability — see probe_pve_reachable.
 read -r PVE_REACHABLE_REG PVE_TOTAL_REG <<< "$(probe_pve_reachable)"
 
-# K3s nodes Ready=True count — mirrors --json mode's `k3s_ready`.
-# Tolerates kubectl unreachable / malformed JSON → 0. K3S_API_OK is set by
-# its own earlier probe above and is intentionally not derived here.
+# K3s nodes Ready=True count — see probe_k3s_ready. K3S_API_OK is set by its own
+# earlier probe and is intentionally not derived here.
 probe_k3s_ready --request-timeout=5s
 K3S_NODES_TOTAL_REG=$K3S_TOTAL_RESULT
 K3S_NODES_READY_REG=$K3S_READY_RESULT
@@ -1604,23 +1592,20 @@ K3S_NODES_READY_REG=$K3S_READY_RESULT
 # Flux readiness — count Kustomizations and HelmReleases NOT Ready=True.
 FLUX_NOT_READY_REG=$(probe_flux_not_ready --request-timeout=5s)
 
-# ZFS pool health — aggregate non-ONLINE pools across ALL reachable
-# Proxmox hosts. Mirrors the --json branch's loop (count only; no pool detail).
+# ZFS pool health — see probe_zfs_degraded (count only; no pool detail here).
 probe_zfs_degraded
 ZFS_DEGRADED_REG=$ZFS_DEGRADED_RESULT
 
-# Recent warning events (last hour). Same field-selector/jq as --json.
+# Recent warning events — see probe_warning_events.
 WARNING_EVENTS_REG=$(probe_warning_events --request-timeout=5s)
 
-# Firing Alertmanager alerts (Watchdog/InfoInhibitor exempt). Regular-mode only — unlike the
-# advisory Warning-event count this DOES gate OK, because an artifact headed
-# "Status: OK" while TargetDown is firing is the exact class of lie this
-# collector exists to prevent. "unknown" when the query could not run.
+# See probe_firing_alerts. Unlike the advisory Warning-event count this DOES
+# gate OK: an artifact headed "Status: OK" while TargetDown is firing is the
+# exact lie this collector exists to prevent.
 ALERTS_FIRING_REG=$(probe_firing_alerts --request-timeout=5s)
 
-# GitLab application health — mirrors the --json probe (full chain through
-# the internal Traefik VIP, TLS verified). Unhealthy GitLab downgrades OK
-# to PARTIAL.
+# GitLab application health — see probe_gitlab_http. Unhealthy downgrades OK to
+# PARTIAL.
 GITLAB_OK_REG=0
 GITLAB_HTTP_REG=$(probe_gitlab_http)
 [ "$GITLAB_HTTP_REG" = "200" ] && GITLAB_OK_REG=1

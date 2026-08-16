@@ -8,15 +8,23 @@
 # producer is healthy. If the metric name drifts, an absent()-shaped rule fires
 # forever (visible) but a `time() - <gauge> > N` rule goes quiet forever
 # (invisible) — so both directions are pinned here.
+#
+# Every "fresh" fixture below carries a REALISTIC LAG rather than tracking
+# time() exactly (`-<lag>+60x...`, the harness clock starting at 0). A gauge
+# that equals time() is silent under any threshold down to 1, so a zero-lag
+# fixture pins a staleness threshold from above only; one that sits just inside
+# the budget pins it from below too — lowering the threshold past the realistic
+# lag turns that arm red.
 rule_files:
   - rules.yaml
 evaluation_interval: 1m
 tests:
-  # pmxcfs: the mtime gauge must be advanced by the collector. Fresh = silent.
+  # pmxcfs: the mtime gauge must be advanced by the collector. A 5-minute-old
+  # mtime is a healthy pmxcfs inside the 10m budget = silent.
   - interval: 1m
     input_series:
       - series: 'proxmox_pmxcfs_manager_status_mtime_seconds{instance="192.168.0.102:9101"}'
-        values: '0+60x60'
+        values: '-300+60x60'
     alert_rule_test:
       - eval_time: 30m
         alertname: PmxcfsStale
@@ -35,11 +43,12 @@ tests:
               severity: critical
               instance: 192.168.0.102:9101
 
-  # corosync health collector: 300s floor, warning severity.
+  # corosync health collector: 300s floor, warning severity. A 2-minute-old
+  # success is a healthy collector inside that floor.
   - interval: 1m
     input_series:
       - series: 'proxmox_corosync_health_collector_last_success_seconds{instance="192.168.0.102:9101"}'
-        values: '0+60x60'
+        values: '-120+60x60'
     alert_rule_test:
       - eval_time: 30m
         alertname: CorosyncHealthCollectorStale
@@ -63,7 +72,7 @@ tests:
   - interval: 1m
     input_series:
       - series: 'proxmox_corosync_health_collector_last_success_seconds{instance="192.168.0.102:9101"}'
-        values: '0+60x60'
+        values: '-120+60x60'
     alert_rule_test:
       - eval_time: 30m
         alertname: ZFSPoolCollectorStale
@@ -72,13 +81,14 @@ tests:
               severity: warning
               instance: 192.168.0.102:9101
 
-  # Both present and fresh -> silent.
+  # Both present and fresh (a 10-minute-old pool scrape is inside the 15m
+  # floor) -> silent.
   - interval: 1m
     input_series:
       - series: 'proxmox_corosync_health_collector_last_success_seconds{instance="192.168.0.102:9101"}'
-        values: '0+60x60'
+        values: '-120+60x60'
       - series: 'zfs_pool_status_collector_last_success_seconds{instance="192.168.0.102:9101"}'
-        values: '0+60x60'
+        values: '-600+60x60'
     alert_rule_test:
       - eval_time: 30m
         alertname: ZFSPoolCollectorStale
@@ -140,6 +150,51 @@ tests:
       - eval_time: 30m
         alertname: GpuTelemetryMissing
         exp_alerts: []
+
+  # DDNSStale: the every-5m cloudflare-ddns CronJob's last success older than 1h.
+  # The fixture carries kube-state-metrics' scrape labels the way the live series
+  # does and exp_labels pins the REDUCED set, so the rule's `max by (namespace,
+  # cronjob)` has to strip them — Alertmanager groups on `instance`, and without
+  # the reduction one stalled DDNS re-notifies as a new group on every KSM
+  # reschedule, while the staleness arm's labels stop matching the absent() arm's.
+  - interval: 1m
+    input_series:
+      - series: 'kube_cronjob_status_last_successful_time{namespace="cloudflare-ddns", cronjob="cloudflare-ddns", job="kube-state-metrics", instance="10.42.3.7:8080", pod="kube-prometheus-stack-kube-state-metrics-6d9c", endpoint="http", service="kube-prometheus-stack-kube-state-metrics"}'
+        values: '-7300+0x60'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: DDNSStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: cloudflare-ddns
+              cronjob: cloudflare-ddns
+
+  # Fresh: a 50-minute-old success is the worst a HEALTHY every-5m CronJob can
+  # look inside the 1h budget (a few skipped runs during a node drain), so it
+  # must stay silent — and it is what pins the 3600s threshold from below.
+  - interval: 1m
+    input_series:
+      - series: 'kube_cronjob_status_last_successful_time{namespace="cloudflare-ddns", cronjob="cloudflare-ddns", job="kube-state-metrics", instance="10.42.3.7:8080", pod="kube-prometheus-stack-kube-state-metrics-6d9c", endpoint="http", service="kube-prometheus-stack-kube-state-metrics"}'
+        values: '-3000+60x60'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: DDNSStale
+        exp_alerts: []
+
+  # absent() arm: the CronJob is gone or has never succeeded. The labels are
+  # synthesized from the selector's equality matchers, which is why they must
+  # equal the reduced staleness-arm set above.
+  - interval: 1m
+    input_series: []
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: DDNSStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: cloudflare-ddns
+              cronjob: cloudflare-ddns
 
   # PodLogShippingStale is covered by log-shipping.test.yaml, which owns the
   # Alloy arm end to end.

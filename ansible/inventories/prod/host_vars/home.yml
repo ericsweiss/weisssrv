@@ -6,17 +6,13 @@
 # Proxmox host for this VM (primary node for HA-managed resource)
 proxmox_host: pve-prec-01
 
-# Proxmox resource pool for organization
 proxmox_resource_pool: apps-public
 
-# VM startup configuration
-# Boot order strategy: DNS (10) -> SMTP (20) -> k3s servers (30) -> k3s agents (40) -> apps (50)
 proxmox_autostart_enabled: true
 proxmox_startup_order: 50
 proxmox_startup_delay: 10
 
-# VM hardware configuration (for reference - VM created manually)
-# These values document the actual configuration but are not used for provisioning
+# The VM was created manually: these values document it, they do not provision it.
 proxmox_vm_cores: 4
 proxmox_vm_memory: 8192
 proxmox_vm_disk_size: 64G

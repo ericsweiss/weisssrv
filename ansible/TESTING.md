@@ -6,7 +6,7 @@
 |---|---|---|
 | Per-role Molecule scenarios | **weisssrv-lib**, beside each role in `ansible_collections/weisssrv/infra/roles/<role>/molecule/` | that repo's `molecule-tests` matrix |
 | Multi-role integration stacks | this repo, `ansible/integration-tests/` | `task ansible:test`, and the `integration-tests` matrix job |
-| Static analysis | this repo | `task ansible:lint` (ansible-lint + yamllint over `playbooks/` and `integration-tests/`) |
+| Static analysis | this repo | `task ansible:lint` (ansible-lint + yamllint over the whole `ansible/` tree — inventory and the shared `molecule/` prep included) |
 | Production verification | this repo, `playbooks/postflight.yml` | `task infra:verify` |
 
 A role's own behaviour is proven where the role lives; a change to one is
@@ -25,7 +25,7 @@ The scenarios pull the published `molecule-test` image from weisssrv-lib's
 registry. Override it for a local build:
 
 ```bash
-export MOLECULE_TEST_IMAGE=registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:v0.7.4
+export MOLECULE_TEST_IMAGE=registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:v0.8.0
 ```
 
 The collection itself is installed by molecule's `galaxy` dependency step from
@@ -120,10 +120,12 @@ shell command with no `creates:` guard — fix it in weisssrv-lib.
 
 ## Expected negative-path failures and the junit report
 
-Some scenarios deliberately drive guard tasks to failure inside `block`/`rescue`
-to prove the guard fires. The Ansible junit callback records the RAW task
-failure even though the rescue handles it, which would leave red entries in a
-green pipeline's report. Two mechanisms keep the report truthful:
+If a scenario drives a guard task to failure inside `block`/`rescue` to prove
+the guard fires, the Ansible junit callback records the RAW task failure even
+though the rescue handles it, which would leave red entries in a green
+pipeline's report. No stack declares one today — the declaration file below is
+absent and the sanitize step is a no-op — so this is the contract to follow when
+adding the first. Two mechanisms keep the report truthful:
 
 1. **Declared downgrades** — a scenario lists its expected failing task names in
    `molecule/default/expected-junit-failures.txt`, and CI's last script step

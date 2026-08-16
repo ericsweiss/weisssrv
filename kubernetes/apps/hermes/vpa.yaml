@@ -1,29 +1,18 @@
 ---
 # VPA: Initial for the hermes Deployment — resize CPU+memory on natural pod
-# restarts (single stateless-scheduling workload; no HPA owns CPU). Applies to
-# the gateway + dashboard containers. Bounded so a runaway agent session can't
-# request the whole node.
+# restarts (no HPA owns CPU here).
 #
-# `controlledValues: RequestsOnly` on both managed containers, because this
-# workload is the textbook case of the limit oscillation docs/33 describes.
-# Hermes is interactive and idle-heavy: the dashboard sat flat at ~138Mi for 26
-# hours and then jumped ~5x the moment a chat was actually used. On the default
-# RequestsAndLimits the recommender sized the request off that quiet baseline
-# (194Mi) and, preserving the manifest's 4:1 ratio, scaled the *limit* down with
-# it — 194Mi x 4 = 777Mi, a 23% cut to the declared 1Gi ceiling. The next
-# active session ran against a limit sized for the idle period and the
-# dashboard was OOMKilled, dropping every open chat and event stream. Worse,
-# `Initial` only applies at pod admission while an OOM restarts the container
-# in place, so the shrunken limit was frozen for the pod's whole lifetime and
-# could not self-heal.
-#
-# So the limits are hand-set in deployment.yaml and the VPA may no longer touch
-# them. Per docs/33 the `maxAllowed` memory of each managed container tracks its
-# manifest limit exactly, so a capped recommendation can never exceed the
-# ceiling the pod is admitted against — raising one means raising both, in the
-# same commit. `minAllowed` is the other half of the fix: it floors the request
-# at the interactive working set rather than the idle baseline, so the scheduler
-# reserves for the burst.
+# `controlledValues: RequestsOnly` on every managed container: limits are
+# hand-set in deployment.yaml and the VPA may not touch them. This workload is
+# interactive and idle-heavy, so on RequestsAndLimits the recommender sizes the
+# request off the quiet baseline and scales the *limit* down with it, and the
+# next active session OOMKills — which `Initial` cannot undo, since it applies
+# only at pod admission while an OOM restarts the container in place.
+# Each `maxAllowed` memory tracks its container's manifest limit exactly, so a
+# capped recommendation can never exceed the ceiling the pod is admitted
+# against — raising one means raising both, in the same commit. `minAllowed`
+# floors the request at the interactive working set rather than the idle
+# baseline. Rationale: docs/33 § Limit oscillation.
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
 metadata:
@@ -33,39 +22,34 @@ spec:
   updatePolicy: {updateMode: Initial}
   resourcePolicy:
     containerPolicies:
-      # The camofox browser container is EXCLUDED (mode Off): Firefox memory
-      # scales with however many tabs/sessions the agent happens to open, not
-      # with usage history, so a percentile estimate would shrink its request
-      # below cold-start needs and under-provision burst headroom. Its
-      # hand-sized request/limit live in deployment.yaml.
+      # Off: Firefox memory scales with the tabs/sessions the agent opens, not
+      # with usage history, so a percentile estimate under-provisions cold start
+      # and burst. Hand-sized request/limit live in deployment.yaml.
       - containerName: camofox
         mode: "Off"
-      # Leave the one-shot init-data initContainer alone (mode Off) — the "*"
-      # floor (128Mi) would ~5x its hand-sized 8Mi request on every restart.
-      # Same guard wg-easy uses for its sysctl initContainer.
+      # Off: the "*" floor below would ~5x this one-shot initContainer's
+      # hand-sized 8Mi request on every restart.
       - containerName: init-data
         mode: "Off"
       # maxAllowed.memory == the dashboard's 2560Mi limit in deployment.yaml.
-      # minAllowed.memory is the interactive floor: the recommender measures
-      # the idle baseline, and reserving 138Mi for a container that needs ~1Gi
-      # the moment someone opens the chat is what put it in the eviction-risk
-      # band to begin with.
+      # minAllowed is the interactive floor: the recommender only ever measures
+      # the idle baseline (~138Mi), and reserving that for a container that
+      # needs ~1Gi the moment a chat opens is what OOMKilled it (!227).
       - containerName: dashboard
         controlledValues: RequestsOnly
         minAllowed: {cpu: 100m, memory: 768Mi}
         maxAllowed: {cpu: 2, memory: 2560Mi}
         controlledResources: [cpu, memory]
       # maxAllowed.memory == the gateway's 2Gi limit in deployment.yaml. Same
-      # interactive-floor reasoning as the dashboard: the gateway forks the
-      # Codex and Claude Code CLIs, so its real footprint depends on the task
-      # in flight rather than on the history the recommender has seen.
+      # interactive-floor reasoning: it forks the Codex and Claude Code CLIs, so
+      # its footprint tracks the task in flight, not the measured history.
       - containerName: gateway
         controlledValues: RequestsOnly
         minAllowed: {cpu: 100m, memory: 512Mi}
         maxAllowed: {cpu: 2, memory: 2Gi}
         controlledResources: [cpu, memory]
-      # Catch-all for any container added later, so a new sidecar cannot
-      # silently inherit the RequestsAndLimits default that caused the outage.
+      # Catch-all so a container added later cannot inherit the
+      # RequestsAndLimits default.
       - containerName: "*"
         controlledValues: RequestsOnly
         minAllowed: {cpu: 25m, memory: 128Mi}

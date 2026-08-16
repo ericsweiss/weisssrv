@@ -1,14 +1,9 @@
 ---
-# NZBGet overlay: NZBGet-specific resources + the shared Gluetun VPN sidecar.
-# The component injects the gluetun container (containers[0]), the
-# check-vpn-config initContainer, and the tun/vpn-config volumes (volumes[0]/[1])
-# + pod dnsConfig. The JSON6902 patches below edit those injected fields IN
-# PLACE (no list reordering) to set the per-app ConfigMap name
-# (nzbget-vpn-config) on the two gluetun env refs + the vpn-config volume, and
-# append NZBGet's app port (6789) to the gluetun container (which owns the
-# shared pod network namespace). Indices are fixed by the component:
-# gluetun=containers[0], VPN_SERVICE_PROVIDER=env[0], SERVER_COUNTRIES=env[1],
-# vpn-config=volumes[1].
+# NZBGet overlay: NZBGet's own resources + the shared _vpn-sidecar component.
+# The JSON6902 patches below edit the injected fields IN PLACE at the indices
+# the component fixes — gluetun=containers[0], VPN_SERVICE_PROVIDER=env[0],
+# SERVER_COUNTRIES=env[1], vpn-config=volumes[1] — to set the per-app ConfigMap
+# name and append NZBGet's port to gluetun, which owns the pod netns.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: downloads

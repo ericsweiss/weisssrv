@@ -8,9 +8,9 @@
 # select which of the module's four lifecycle classes the record lands in.
 #
 # PREVENT_DESTROY POLICY (`protected = true` on every record here)
-# This module auto-applies on main (`terraform apply -auto-approve`, and the MR
-# widget shows only change COUNTS), so deleting or renaming a key would take a
-# record out of DNS unreviewed. `protected` routes the record to a module
+# This module auto-applies on main (`terraform apply -auto-approve`, with no
+# pre-merge plan in CI — see README.md), so deleting or renaming a key would take
+# a record out of DNS unreviewed. `protected` routes the record to a module
 # resource carrying `lifecycle { prevent_destroy = true }`, making removal a
 # deliberate two-step change: clear the flag, then drop the entry. In-place
 # updates and `moved` blocks are unaffected.
@@ -72,16 +72,10 @@ locals {
         content_managed_externally = true
       }
 
-      # Anti-spoofing, monitoring-first — and deliberately parked there, not a
-      # pending TODO. SPF softfail (~all) and DMARC p=none flag a spoofed sender
-      # rather than dropping it. The condition the old comment deferred to
-      # ("tighten once confident none exists") can never be met: the `rua` target
-      # is a consumer Gmail on another org domain, so aggregate reports are
-      # unlikely ever to arrive and no evidence will accumulate. Tightening to
-      # -all / p=reject is therefore a judgement call to make on its own, weighed
-      # against the alert mail this domain relays through Gmail — the record
-      # `comment` fields still carry the original wording and are live data, so
-      # they are left as-is.
+      # SPF ~all / DMARC p=none: monitoring-first and deliberately parked, not a
+      # pending TODO. The `rua` target is a consumer Gmail on another org domain,
+      # so aggregate reports will not accumulate evidence for tightening — treat
+      # -all / p=reject as its own weighed change.
       spf = {
         name      = "@"
         type      = "TXT"

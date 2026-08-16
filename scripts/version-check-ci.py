@@ -135,7 +135,6 @@ def main(argv=None):
 
     rc = result.returncode
 
-    # Parse JSON for human-readable output
     updates = 0
     errors = 0
     data = {}
@@ -149,7 +148,6 @@ def main(argv=None):
             raise ValueError(
                 f"version-check output is not a JSON object (got {type(data).__name__})"
             )
-        # Persist the validated JSON as the artifact.
         _write_report(args.output, result.stdout)
         summary = data.get("summary")
         if not isinstance(summary, dict):
@@ -180,7 +178,6 @@ def main(argv=None):
                 if svc.get("error"):
                     print(f"  {svc.get('name', '?')}: {svc.get('error')}")
 
-        # Reconcile rc with parsed summary in case they diverge
         if errors > 0:
             rc = 2
         elif updates > 0:

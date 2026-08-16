@@ -1,22 +1,9 @@
-# Thin wrapper over the upstream-built Hermes Agent image that bakes in the two
-# subscription-billed coding CLIs Hermes relies on:
-#   * OpenAI Codex CLI — Hermes' Codex runtime delegates OpenAI/Codex turns to
-#     the `codex` CLI (ChatGPT-subscription OAuth via `codex login` — no API
-#     billing), and `codex mcp-server` doubles as a coding-task delegate.
-#   * Claude Code CLI — Hermes delegates coding tasks to headless `claude -p`
-#     runs via its terminal tool / bundled claude-code skill (Claude Max
-#     subscription via a `claude setup-token` OAuth token in
-#     CLAUDE_CODE_OAUTH_TOKEN — the CLI holds the credential; no API billing).
-# Upstream ships neither CLI, so build-hermes-agent (.gitlab-ci.yml) builds the
-# upstream Dockerfile first, then this wrapper as the FINAL published image
-# (tagged :<hermes_version> / :<sha> / :latest exactly as before).
+# Thin wrapper over the upstream-built Hermes Agent image, baking in the three
+# CLIs Hermes shells out to. Why each is here: README.md.
 #
-# The base already bundles Node 22 LTS + npm at /usr/local/bin (its multi-stage
-# build copies them from node:22-bookworm-slim), so we only add the pinned CLI.
-# It also ends on `USER root` (s6-overlay's /init needs root to remap the hermes
-# user to HERMES_UID/GID, then drops privileges), so `npm i -g` here installs to
-# /usr/local (on PATH) without a permission dance and the runtime user model is
-# unchanged — ENTRYPOINT/CMD/ENV/WORKDIR/USER are all inherited from the base.
+# The base already ships Node 22 + npm and ends on `USER root`, so `npm i -g`
+# lands in /usr/local without a permission dance; ENTRYPOINT/CMD/ENV/WORKDIR/USER
+# are all inherited.
 ARG HERMES_IMAGE
 FROM ${HERMES_IMAGE}
 
@@ -27,8 +14,7 @@ ARG HERMES_CODEX_VERSION
 ARG HERMES_CLAUDE_VERSION
 ARG HERMES_OP_VERSION
 
-# Fail loudly if Node/npm somehow isn't present (a future upstream base change),
-# install both pinned CLIs globally, and verify each binary resolves on PATH.
+# Fail loudly if a future base drops Node/npm; verify each CLI resolves on PATH.
 RUN command -v node >/dev/null 2>&1 || { echo "node not found in base image"; exit 1; } \
     && command -v npm  >/dev/null 2>&1 || { echo "npm not found in base image";  exit 1; } \
     && npm install -g --no-audit --no-fund \
@@ -38,23 +24,34 @@ RUN command -v node >/dev/null 2>&1 || { echo "node not found in base image"; ex
     && codex --version \
     && claude --version
 
-# Official 1Password CLI (op), pinned. Baked in so Hermes' first-party 1Password
-# skill (upstream optional-skills/security/1password) can drive `op` against the
-# ISOLATED Agent vault via a service-account token (OP_SERVICE_ACCOUNT_TOKEN,
-# wired into the gateway container by kubernetes/apps/hermes/deployment.yaml).
-# The base runs as root, so apt needs no sudo. Installed from 1Password's signed
-# apt repo — the `signed-by` keyring verifies the repo Release signature — pinned
-# to hermes_op_version (the full deb version string). `op` is a static Go binary;
-# the agent invokes it through the TERMINAL tool, which preserves
-# OP_SERVICE_ACCOUNT_TOKEN in the subprocess env (the code_execution tool strips
-# any *TOKEN* var by substring, so the 1Password skill uses the terminal tool by
-# design — see docs/37 §1Password).
+# `op` is invoked through Hermes' TERMINAL tool, which preserves
+# OP_SERVICE_ACCOUNT_TOKEN in the subprocess env — the code_execution tool
+# strips any *TOKEN* var by substring. docs/37 §1Password.
+#
+# SUPPLY-CHAIN PIN: TLS does not prove the signing key is authentic, so the
+# fingerprint is checked before the key is trusted — same constant as
+# weisssrv-lib's `.install-1password` fragment, which documents re-deriving it.
+# EVERY primary (pub) fingerprint is collected, because `gpg --dearmor` trusts
+# every key in the file and `--with-colons` also emits fpr: records for subkeys.
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends ca-certificates curl gnupg; \
     arch="$(dpkg --print-architecture)"; \
-    curl -fsSL https://downloads.1password.com/linux/keys/1password.asc \
-      | gpg --dearmor --output /usr/share/keyrings/1password-archive-keyring.gpg; \
+    op_key_fpr="3FEF9748469ADBE15DA7CA80AC2D62742012EA22"; \
+    op_key="$(mktemp)"; \
+    curl -fsSL https://downloads.1password.com/linux/keys/1password.asc -o "$op_key"; \
+    got_fprs="$(gpg --show-keys --with-fingerprint --with-colons "$op_key" \
+      | awk -F: '/^pub:/ {p=1; next} /^fpr:/ && p {print $10; p=0}')"; \
+    if [ "$got_fprs" != "$op_key_fpr" ]; then \
+      echo "ERROR: 1Password apt key material did not verify. Expected exactly:" >&2; \
+      echo "  $op_key_fpr" >&2; \
+      echo "Got:" >&2; \
+      echo "$got_fprs" | sed 's/^/  /' >&2; \
+      rm -f "$op_key"; \
+      exit 1; \
+    fi; \
+    gpg --dearmor --output /usr/share/keyrings/1password-archive-keyring.gpg < "$op_key"; \
+    rm -f "$op_key"; \
     printf 'deb [arch=%s signed-by=/usr/share/keyrings/1password-archive-keyring.gpg] https://downloads.1password.com/linux/debian/%s stable main\n' "$arch" "$arch" \
       > /etc/apt/sources.list.d/1password.list; \
     apt-get update; \

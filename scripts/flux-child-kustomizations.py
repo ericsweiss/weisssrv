@@ -1,16 +1,9 @@
 #!/usr/bin/env python3
 """Print the cluster's child Flux Kustomizations in dependsOn order.
 
-Two places used to hand-maintain this list and both stopped at five names, so
-`infrastructure-crds` — the stage added specifically to fix fresh-bootstrap CRD
-ordering — was in neither: `task flux:reconcile` never force-reconciled it
-(despite advertising a "full reconciliation", which meant
-`flux reconcile kustomization infrastructure-controllers` could run against the
-pre-bump CRD set) and scripts/deploy-verify.sh's named readiness gate could not
-report it by name.
-
-Deriving the list from kubernetes/clusters/weisssrv/*.yaml means adding a stage
-is a one-file change and both consumers pick it up. Order is a topological sort
+Derived from kubernetes/clusters/weisssrv/*.yaml, never hand-listed, so adding a
+stage is a one-file change and both consumers (`task flux:reconcile`,
+scripts/deploy-verify.sh) pick it up. Order is a topological sort
 of `spec.dependsOn`, ties broken alphabetically, so the printed sequence is the
 order Flux itself will converge them in and is stable across runs.
 

@@ -1,0 +1,56 @@
+---
+# Shared OS-patch phase for the maintenance entry points: apt upgrade, then the
+# reboot decision (_reboot-if-needed.yml owns the synchronous/detached/defer
+# routing), then the nfsd stop-hang recovery.
+#
+# Included by update-packages.yml (play 1) and update-full.yml (Phase 1) so the
+# reboot and NFS-recovery semantics can only be changed in one place. Both
+# callers run `hosts: base_managed, serial: 1`; the k3s and app_servers plays in
+# update-packages.yml differ (kured delegation / no NFS server) and stay inline.
+#
+# Variables (optional):
+#   apt_upgrade_phase_label - banner text for the per-host debug line
+
+- name: Display current host being updated
+  ansible.builtin.debug:
+    msg: "{{ apt_upgrade_phase_label | default('Updating packages on ' ~ inventory_hostname) }}"
+
+- name: Update apt cache
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 0
+
+- name: Check for available updates
+  ansible.builtin.command: apt list --upgradable
+  register: upgradable_packages
+  changed_when: false
+
+- name: Display available updates
+  ansible.builtin.debug:
+    msg: "{{ upgradable_packages.stdout_lines }}"
+  when: upgradable_packages.stdout_lines | length > 1
+
+- name: Upgrade packages (safe upgrade)
+  ansible.builtin.apt:
+    upgrade: safe
+    autoclean: true
+    autoremove: true
+  register: apt_upgrade
+
+- name: Display upgrade summary
+  ansible.builtin.debug:
+    msg:
+      - "Packages upgraded: {{ apt_upgrade.changed }}"
+      - "{{ apt_upgrade.stdout_lines | default([]) }}"
+
+- name: Check and reboot if needed
+  ansible.builtin.include_tasks: _reboot-if-needed.yml
+
+- name: Verify SSH service after reboot
+  ansible.builtin.service:
+    name: ssh
+    state: started
+  when: reboot_required | bool
+
+- name: Ensure the NFS server is healthy after the upgrade (recover nfsd stop-hang)
+  ansible.builtin.include_tasks: _ensure-nfs-server-healthy.yml

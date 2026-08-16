@@ -5,14 +5,14 @@
 # The export is all_squash,anonuid=1000,anongid=2000, so every write lands as
 # 1000:2000 regardless of Grafana's in-container UID (472) and the directory must
 # be owned by 1000:2000.
+#
+# NFS-over-TLS PV; hostname (not IP) + force annotation rationale:
+# apps/download-clients/_nfs-pv/resources.yaml and docs/07.
 apiVersion: v1
 kind: PersistentVolume
 metadata:
   name: grafana-data
   annotations:
-    # Lets Flux delete+recreate this PV when an immutable field (server,
-    # mountOptions) changes, instead of stalling the Kustomization. Retain
-    # reclaim policy keeps the NFS data — data safe.
     kustomize.toolkit.fluxcd.io/force: "Enabled"
   labels:
     app: grafana
@@ -27,20 +27,12 @@ spec:
     namespace: observability
     name: grafana-data
   nfs:
-    # Hostname, not IP: xprtsec=tls verifies the server cert (SAN *.esweiss.com).
-    # The IP fails cert verification; pve-nas-01.esweiss.com resolves to .102 via
-    # AdGuard and matches the wildcard. See docs/07 Transport Security.
     server: pve-nas-01.${cluster_internal_domain}
     path: /appdata/grafana
   mountOptions:
     - nfsvers=4.2
     - hard
     - noatime
-    # NFSv4-over-TLS: tlshd runs on every k3s agent (nfs_tls role). The
-    # /appdata k3s client lines require TLS (xprtsec=tls); this option
-    # completes the encrypted mount. Changing server: on a bound PV is
-    # immutable — the force annotation above lets Flux delete+recreate this
-    # PV (Retain → data safe) instead of stalling.
     - xprtsec=tls
 ---
 apiVersion: v1

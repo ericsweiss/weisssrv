@@ -37,6 +37,7 @@ CLUSTER_CONFIG = textwrap.dedent(
       cluster_metallb_public_vip: "192.168.0.100"
       cluster_metallb_internal_vip: "192.168.0.101"
       cluster_wg_easy_vip: "192.168.0.99"
+      cluster_api_vip: "192.168.0.161"
       cluster_upstream_dns_servers: "192.168.0.150 192.168.0.160"
     """
 )
@@ -79,7 +80,11 @@ ALL_YML = textwrap.dedent(
     """
 )
 
-K3S_YML = 'k3s_cluster_cidr: "10.42.0.0/16"\nk3s_service_cidr: "10.43.0.0/16"\n'
+K3S_YML = (
+    'k3s_cluster_cidr: "10.42.0.0/16"\n'
+    'k3s_service_cidr: "10.43.0.0/16"\n'
+    'k3s_api_vip: 192.168.0.161\n'
+)
 
 
 @pytest.fixture

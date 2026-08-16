@@ -2,23 +2,6 @@
 
 This document covers the deployment and configuration of Plex Media Server as an unprivileged LXC container on pve-nas-01.
 
-## Table of Contents
-
-1. [Overview](#overview)
-2. [Architecture](#architecture)
-3. [Prerequisites](#prerequisites)
-4. [Deployment](#deployment)
-5. [Storage Configuration](#storage-configuration)
-6. [GPU Hardware Transcoding](#gpu-hardware-transcoding)
-7. [UID/GID Mapping](#uidgid-mapping)
-8. [Accessing Plex](#accessing-plex)
-9. [Backup Restoration](#backup-restoration)
-10. [Maintenance](#maintenance)
-11. [Troubleshooting](#troubleshooting)
-12. [Related documentation](#related-documentation)
-
----
-
 ## Overview
 
 Plex Media Server runs in an unprivileged LXC container on pve-nas-01, providing media streaming services for the homelab. The container has direct access to the NAS storage via bind mounts, with proper UID/GID mapping to access media files.
@@ -338,7 +321,13 @@ lxc.mount.entry: /dev/dri dev/dri none bind,optional,create=dir
 ### Container User Setup
 
 Inside the container:
-- The `plex` user is added to the `media` group (GID 2000)
+- The `plex` user's **primary** group is overridden to `media` by the role's
+  systemd drop-in (`Group=media` + `UMask=0002`). This is load-bearing: the
+  mergerfs mount runs with `default_permissions`, which honours only the primary
+  gid, so a supplementary `media` membership is silently dropped and DVR
+  recordings fail. Note `Group=` replaces the primary group rather than adding to
+  it.
+- The `plex` user is also a member of the `media` group (GID 2000)
 - The `plex` user is added to the `video` and `render` groups (for GPU access)
 - This allows Plex to read media files owned by `eric:media` on the host
 - GPU access enables hardware-accelerated transcoding
@@ -580,9 +569,12 @@ ssh eric@192.168.0.152 "sudo intel_gpu_top"
 
 ## Related documentation
 
-- [Plex Media Server Documentation](https://support.plex.tv/articles/)
-- [Proxmox LXC Unprivileged Containers](https://pve.proxmox.com/wiki/Unprivileged_LXC_containers)
-- [LXC UID/GID Mapping](https://linuxcontainers.org/lxc/manpages/man5/lxc.container.conf.5.html)
 - [docs/06-zfs.md](06-zfs.md) - ZFS storage configuration
 - [docs/07-fileservices.md](07-fileservices.md) - NFS and Samba setup
 - [docs/18-bootstrap-new-systems.md](18-bootstrap-new-systems.md) - LXC bootstrap process
+
+## External references
+
+- [Plex Media Server Documentation](https://support.plex.tv/articles/)
+- [Proxmox LXC Unprivileged Containers](https://pve.proxmox.com/wiki/Unprivileged_LXC_containers)
+- [LXC UID/GID Mapping](https://linuxcontainers.org/lxc/manpages/man5/lxc.container.conf.5.html)

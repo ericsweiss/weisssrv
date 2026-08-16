@@ -82,8 +82,10 @@ tailscale_accept_routes: false  # Prevents routing loops; hosts should not accep
 tailscale_accept_dns: false  # We use our own DNS
 tailscale_advertise_routes: []  # Only subnet routers (Proxmox hosts) advertise routes
 
-secrets:
-  tailscale_auth_key: "op://Homelab/Tailscale Auth Key/credential"
+# The auth key is not an inventory value: the `op://Homelab/Tailscale Auth
+# Key/credential` reference lives in the Taskfile task's env: block (mirrored by
+# the CI job's variables:), and the inventory reads it back with
+# lookup('ansible.builtin.env', 'TAILSCALE_AUTH_KEY'). See docs/15 § Secrets model.
 
 # group_vars/proxmox.yml
 tailscale_advertise_routes:
@@ -127,10 +129,12 @@ than the tag. See `terraform/tailscale/README.md` for the procedure and docs/16
 for status.
 
 In outline: `group:admins` (not `autogroup:member`) is the `src` of every rule;
-`tag:subnet-router` is the Proxmox hosts' tag; three rules cover the hosts' own
+`tag:subnet-router` is the Proxmox hosts' tag; four rules cover the hosts' own
 services, LAN access via subnet routing on the union of user-facing service
-ports, and an SSH network gate; `autoApprovers.routes` keeps subnet-router
-failover approval-free; and Tailscale SSH runs `action check` with root dropped.
+ports, an SSH network gate, and `group:admins → tag:k8s:53,443` (the
+operator-registered `ts-dns` / `traefik-tailnet` devices); `autoApprovers.routes`
+keeps subnet-router failover approval-free; and Tailscale SSH runs `action check`
+with root dropped.
 
 **[`terraform/tailscale/README.md`](../terraform/tailscale/README.md) is the
 authoritative rule-by-rule reference** — per-port justification, the staged apply
@@ -286,9 +290,10 @@ If DNS resolution doesn't work over Tailscale:
 - **Operator User**: Only `eric` user can manage Tailscale on each host
 - **No Exit Node**: Hosts do not route internet traffic through the homelab
 - **Least privilege**: the codified tailnet ACL is tag/port-scoped (no `*:*`
-  full mesh), so a single compromised tailnet device has no flat lateral reach
-  once it is applied — see `terraform/tailscale/README.md` and the
-  not-yet-applied note above
+  full mesh) and applied, so a single compromised tailnet device has no flat
+  lateral reach — see `terraform/tailscale/README.md`. The remaining gap is host
+  tagging: routes are still approved via the owner entry in
+  `autoApprovers.routes` rather than `tag:subnet-router`
 - **ACL changes**: review `policy.hujson` against the live Admin-console ACL
   before any supervised apply (see `terraform/tailscale/README.md`)
 

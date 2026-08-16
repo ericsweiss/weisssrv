@@ -18,9 +18,6 @@ Two halves:
    an empty string and a stale one as a wrong-but-valid value, so a domain that
    moves in group_vars and not here fails nowhere at reconcile time.
 
-Documents are read through PyYAML, so comments never reach the scan — prose in a
-comment may name the real domain, which is what makes comments readable.
-
 EXEMPT, because something parses the manifest BEFORE Flux substitutes:
   * any NetworkPolicy document — scripts/check-netpol-except-parity.py reads the
     ipBlock CIDRs straight from git;
@@ -31,11 +28,10 @@ EXEMPT, because something parses the manifest BEFORE Flux substitutes:
 
 Scanned files: every *.yaml in a substituted tree, read through PyYAML, plus the
 GENERATOR sources kustomize renders INTO those manifests (dashboard *.json, the
-cloudflare-ddns *.py, *.toml, *.tpl), read as raw text with comment-only lines
-dropped. The extension list matters: the dashboards sit in a substituted tree and
-their PromQL label matchers must move with the domain, so a *.yaml-only walk let
-them drift while the success line still claimed full coverage. Markdown is NOT
-scanned — kustomize never renders it, and prose should name the real names.
+CronJob *.py, *.toml, *.tpl), read as raw text with comment-only lines dropped —
+a dashboard's PromQL label matchers must move with the domain just as a
+manifest's do. Markdown is NOT scanned: kustomize never renders it, and prose
+should name the real names.
 
 Usage: scripts/check-cluster-literals.py [--repo-root PATH]
 
@@ -88,6 +84,7 @@ ADDRESS_KEYS = (
     "cluster_metallb_public_vip",
     "cluster_metallb_internal_vip",
     "cluster_wg_easy_vip",
+    "cluster_api_vip",
 )
 
 # VIPs mirrored as AdGuard rewrite ANSWERS rather than as a named inventory key.
@@ -100,6 +97,9 @@ INVENTORY_MIRRORS = {
     "cluster_node_label_domain": (ANSIBLE_ALL, "internal_domain"),
     "cluster_pod_cidr": (ANSIBLE_K3S, "k3s_cluster_cidr"),
     "cluster_service_cidr": (ANSIBLE_K3S, "k3s_service_cidr"),
+    # kube-vip is configured from the inventory side, so this one has a named
+    # mirror rather than the AdGuard-answer treatment the MetalLB VIPs get.
+    "cluster_api_vip": (ANSIBLE_K3S, "k3s_api_vip"),
 }
 
 DNS_SERVERS_KEY = "cluster_upstream_dns_servers"

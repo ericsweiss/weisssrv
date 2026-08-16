@@ -1,37 +1,20 @@
 ---
-# GitLab servers configuration
-
-# Repository storage on separate ZFS zvol (200GB on ssd pool)
-# Mounted at /mnt/gitlab-repos, data stored in /mnt/gitlab-repos/git-data
-# This separates repo data from root disk for:
-#   - Better I/O isolation
-#   - Independent sizing and growth
-#   - Easier backup and migration
+# Repo data and the Container Registry blob store live on the ZFS zvol at
+# /mnt/gitlab-repos (raw-ZFS replicated ssd/appdata -> archive), off the OS disk.
 gitlab_git_data_dir: "/mnt/gitlab-repos/git-data"
-
-# Container Registry blob store on the same ZFS zvol (raw-ZFS replicated
-# ssd/appdata -> archive). The registry (~7.5G) is the largest component and the
-# DiskUsageCritical culprit; relocating it off the OS disk is a one-time move
-# performed by the gitlab role (brief registry outage on the next deploy).
 gitlab_registry_data_dir: "/mnt/gitlab-repos/registry"
 
-# Offsite-eligible backup landing: relocate the daily backup (tarball +
-# gitlab-secrets.json + gitlab.rb) onto the per-app tank/backups/apps/gitlab NFS
-# export so it rides the archsync file walk into restic B2 (docs/42). The role
-# mounts pve-nas-01.esweiss.com:/backups-apps/gitlab OVER TLS (xprtsec=tls, by
-# hostname so the *.esweiss.com cert verifies; the VM runs tlshd via nfs_tls) at
-# /mnt/backups-offsite; the per-app export is scoped to just .153 and
-# all_squashes writes to 1000:2000 on an aes-256-gcm dataset. The 02:00
-# gitlab-backup.timer finishes well before the 06:30 archive window. The whole-VM
-# vzdump image stays the local bare-metal DR path.
+# Offsite-eligible landing: the daily backup goes to the per-app
+# tank/backups/apps NFS export (TLS, by hostname so the wildcard cert verifies)
+# so it rides archsync into restic B2 — docs/42. The whole-VM vzdump image stays
+# the local bare-metal DR path.
 gitlab_backup_nfs_enabled: true
 gitlab_backup_nfs_server: "pve-nas-01.{{ internal_domain }}"
 gitlab_backup_nfs_export: "/backups-apps/gitlab"
 gitlab_backup_path: "/mnt/backups-offsite"
 gitlab_backup_nfs_options: "vers=4.2,rw,hard,noatime,_netdev,nofail,xprtsec=tls"
 
-# SAML Group-based access control (Authentik group names)
-# Only users in these groups can access GitLab
+# Only members of these Authentik groups can access GitLab.
 gitlab_saml_required_groups:
   - "gitlab-users"
   - "gitlab-admins"
@@ -44,29 +27,24 @@ gitlab_saml_admin_groups:
 # smtp-relay over SASL+TLS, loopback-only); the relay host, credentials and
 # aliases are defined in all.yml.
 
-# Monitoring whitelist: role default (loopback + LAN /24) PLUS the k3s pod
-# CIDR. The deploy-verify / maintenance-verify readiness probes run in runner
-# PODS: when such a pod lands on a node hosting a Traefik replica, its
-# connection to the internal VIP short-circuits in-cluster
-# (externalTrafficPolicy: Local preserves the pod source IP), so GitLab sees a
-# 10.42.x client and 404s /-/readiness; on other nodes the traffic SNATs to a
-# node IP and passes — a placement-dependent flake that failed
-# maintenance-run-all's verify on 2026-07-16. The pod CIDR is
-# cluster-internal and unroutable from outside; the exposure ceiling is
-# unauthenticated /-/metrics to in-cluster pods (incl. shared-runner CI jobs),
-# accepted for deterministic verify.
+# Role default (loopback + LAN /24) PLUS the k3s pod CIDR: the verify probes run
+# in runner pods, and on a node hosting a Traefik replica the connection
+# short-circuits in-cluster (externalTrafficPolicy: Local preserves the pod IP),
+# so GitLab sees 10.42.x. Exposure ceiling is unauthenticated /-/metrics to
+# in-cluster pods — accepted.
 gitlab_monitoring_whitelist:
   - 127.0.0.1
   - 192.168.0.0/24
   - 10.42.0.0/16
 
-# Site values that used to be gitlab role defaults. Every optional feature in
-# the collection role is OFF and every endpoint empty by default, so each one
-# enabled below carries its own inputs.
+# Every optional feature in the collection role is OFF and every endpoint empty
+# by default, so each one enabled below carries its own inputs.
 gitlab_external_url: "https://git.{{ external_domain }}"
 gitlab_ssh_host: "git.{{ external_domain }}"
 gitlab_timezone: "{{ timezone }}"
-gitlab_root_password: "{{ lookup('ansible.builtin.env', 'GITLAB_ROOT_PASSWORD') }}"
+gitlab_root_password: >-
+  {{ lookup('ansible.builtin.env', 'GITLAB_ROOT_PASSWORD')
+     or undef(hint='GITLAB_ROOT_PASSWORD env var must be set (run via the task wrapper / op run)') }}
 
 # Container Registry + Pages, both fronted by Traefik.
 gitlab_registry_enabled: true
@@ -84,7 +62,9 @@ gitlab_web_ide_extension_host_domain: "ide.git.{{ external_domain }}"
 # version-check comment token, weisssrv-bot/Reporter) and project CI/CD variables
 # outrank a job's variables: block, so a job-level GITLAB_API_TOKEN op:// ref is
 # silently shadowed by the project token and the deploy 403s. See docs/27.
-gitlab_api_token: "{{ lookup('ansible.builtin.env', 'GITLAB_ADMIN_API_TOKEN') }}"
+gitlab_api_token: >-
+  {{ lookup('ansible.builtin.env', 'GITLAB_ADMIN_API_TOKEN')
+     or undef(hint='GITLAB_ADMIN_API_TOKEN env var must be set (run via the task wrapper / op run)') }}
 
 # Outbound mail via the SMTP relay (same credential as every null client).
 gitlab_smtp_enabled: true
@@ -99,7 +79,9 @@ gitlab_email_reply_to: "noreply@{{ internal_domain }}"
 gitlab_saml_enabled: true
 gitlab_saml_label: "Authentik"
 gitlab_saml_icon_url: "https://auth.{{ external_domain }}/static/dist/assets/icons/icon.svg"
-gitlab_saml_idp_cert_fingerprint: "{{ lookup('ansible.builtin.env', 'GITLAB_SAML_CERT_FINGERPRINT') }}"
+gitlab_saml_idp_cert_fingerprint: >-
+  {{ lookup('ansible.builtin.env', 'GITLAB_SAML_CERT_FINGERPRINT')
+     or undef(hint='GITLAB_SAML_CERT_FINGERPRINT env var must be set (run via the task wrapper / op run)') }}
 gitlab_saml_idp_sso_url: "https://auth.{{ external_domain }}/application/saml/git/sso/binding/redirect/"
 
 # X-Forwarded-For is trusted from the LAN and both cluster CIDRs (Traefik pods

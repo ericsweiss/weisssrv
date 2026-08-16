@@ -295,8 +295,10 @@ task gitlab:deploy-check
 
 ### Step 6: Traefik IngressRoutes (Flux-managed)
 
-The Traefik IngressRoutes for `git.ericsweiss.com` (web + SSH port 2222),
-`registry.git.ericsweiss.com`, and `*.pages.git.ericsweiss.com` live under
+The Traefik IngressRoutes for `git.ericsweiss.com` (web only — there is no SSH
+entrypoint or IngressRouteTCP; :2222 reaches the VM directly, see § Git SSH
+Access), `registry.git.ericsweiss.com`, and `*.pages.git.ericsweiss.com` live
+under
 `kubernetes/apps/vm-ingress/gitlab.yaml`, with ExternalName Services in
 `services-gitlab.yaml` and certificates in `gitlab-certificate.yaml`. Flux
 reconciles them from the `apps` Kustomization. To change them, edit the
@@ -446,8 +448,8 @@ Rotation: mint a replacement deploy token, update both 1Password fields, then
 
 ### CI wiring (owned by `.gitlab-ci.yml`)
 
-The client/DinD side lives in `.gitlab-ci.yml` and the molecule scaffolding
-(outside this app's scope). The intended shape:
+Implemented in `.gitlab/ci/integration-jobs.yml` — the DinD service arg and the
+cache-first pull with direct fallback. The shape, for reference:
 
 - The DinD **service** runs with the cache added as an insecure registry
   (plaintext, cluster-internal):
@@ -651,8 +653,10 @@ kubectl logs -n gitlab-runner -l app=gitlab-runner
 # Verify CI_SERVER_URL is using the LAN URL
 kubectl get deploy gitlab-runner -n gitlab-runner -o yaml | grep CI_SERVER_URL
 
-# Verify DNS from inside the cluster
-kubectl run -it --rm --image=alpine dns-test -- nslookup git.esweiss.com
+# Verify DNS from inside the cluster. Do NOT `kubectl run` a throwaway pod:
+# the `default` namespace enforces restricted PSA and carries a default-deny-all
+# NetworkPolicy, so the probe fails for reasons unrelated to DNS (docs/29).
+kubectl -n gitlab-runner exec deploy/gitlab-runner -- nslookup git.esweiss.com
 
 # Verify registration token
 kubectl get secret -n gitlab-runner
@@ -663,7 +667,9 @@ kubectl get secret -n gitlab-runner
 ### Summary
 
 - **Unified URL**: `git.ericsweiss.com` works for both HTTPS and SSH (port 2222)
-- **LAN (internal)**: Use `git.esweiss.com` on port 22 (direct to GitLab VM)
+- **LAN (internal)**: `git.esweiss.com` resolves to the **internal Traefik VIP**
+  (192.168.0.101), so it is an HTTPS name only. For direct port-22 SSH to the VM
+  use `gitlab.esweiss.com` (192.168.0.153), the guest's own rewrite
 - **External (internet)**: Use `git.ericsweiss.com` on port 2222 (DNS-only, same as web URL)
 
 **Architecture:** `git.ericsweiss.com` is DNS-only (not Cloudflare-proxied), allowing both
@@ -675,13 +681,13 @@ clone operations regardless of protocol.
 From the LAN, you can SSH directly to the GitLab VM using the internal domain:
 
 ```bash
-# Clone via SSH using internal domain (port 22)
-git clone git@git.esweiss.com:username/repo.git
+# Clone via SSH direct to the VM (port 22) — note the guest's own name
+git clone git@gitlab.esweiss.com:username/repo.git
 ```
 
 Add to `~/.ssh/config` for easy internal access:
 ```
-Host git.esweiss.com
+Host gitlab.esweiss.com
     Port 22
     User git
 ```
@@ -734,8 +740,10 @@ your router doesn't support hairpin NAT, LAN clients won't be able to reach
 `git.ericsweiss.com` via the external IP. In that case, use the split internal/external
 configs shown above instead.
 
-**Why port 2222 for internal too?** While `git.esweiss.com` resolves to the GitLab VM's
-internal IP (192.168.0.153), using port 2222 keeps the config consistent across networks.
+**Why port 2222 for internal too?** `git.esweiss.com` resolves to the internal
+Traefik VIP (192.168.0.101), not to the VM — the VM's own name is
+`gitlab.esweiss.com` (192.168.0.153). Using `git.ericsweiss.com:2222` everywhere
+keeps the config consistent across networks.
 The iptables PREROUTING rule on the GitLab VM redirects port 2222 to port 22 regardless of
 source. If you prefer lower latency on LAN, use the split config shown above (port 22 for
 `git.esweiss.com`, port 2222 for `git.ericsweiss.com`).
@@ -894,7 +902,7 @@ The first deploy must order infrastructure → settings so Web IDE doesn't break
    # Then visit https://git.ericsweiss.com/<group>/<project>/-/ide/
    ```
 
-If step 3 fails, do **not** run step 4 — the security flip would break Web IDE entirely until the asset host is reachable. Diagnose with `kubectl -n gitlab describe certificate gitlab-web-ide-wildcard` and `kubectl -n gitlab logs deploy/traefik -n traefik | grep ide.git`.
+If step 3 fails, do **not** run step 4 — the security flip would break Web IDE entirely until the asset host is reachable. Diagnose with `kubectl -n gitlab describe certificate gitlab-web-ide-wildcard` and `kubectl -n traefik logs deploy/traefik | grep ide.git`.
 
 ### Verification
 

@@ -49,8 +49,7 @@ tests:
               component: cpu
               instance: 192.168.0.105:9101
 
-  # The retuned floor: 88C bursts are normal on the laptop node and must not
-  # alert (the incident retune moved warn to 90/15m).
+  # 88C bursts are normal on the laptop node and must not alert.
   - interval: 1m
     input_series:
       - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="192.168.0.107:9101", chip="platform_coretemp_0"}'
@@ -76,15 +75,20 @@ tests:
         exp_alerts: []
 
   # NVMe: warn at 65C, and the alert carries the chip so the drive is
-  # identifiable.
+  # identifiable. The 30m hold is what keeps the nightly backup-window burst
+  # (~15m over 65C on one NAS chip) out of the feed, so both boundaries are
+  # pinned: still pending at 20m, firing at 40m.
   - interval: 1m
     input_series:
       - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="192.168.0.102:9101", chip="nvme_nvme0"}'
-        values: '66+0x30'
+        values: '66+0x60'
       - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="192.168.0.102:9101", chip="nvme_nvme0", chip_name="nvme"}'
-        values: '1+0x30'
+        values: '1+0x60'
     alert_rule_test:
       - eval_time: 20m
+        alertname: NVMeDriveTempWarning
+        exp_alerts: []
+      - eval_time: 40m
         alertname: NVMeDriveTempWarning
         exp_alerts:
           - exp_labels:
@@ -96,11 +100,11 @@ tests:
   - interval: 1m
     input_series:
       - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="192.168.0.102:9101", chip="nvme_nvme0"}'
-        values: '55+0x30'
+        values: '55+0x60'
       - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="192.168.0.102:9101", chip="nvme_nvme0", chip_name="nvme"}'
-        values: '1+0x30'
+        values: '1+0x60'
     alert_rule_test:
-      - eval_time: 20m
+      - eval_time: 40m
         alertname: NVMeDriveTempWarning
         exp_alerts: []
 

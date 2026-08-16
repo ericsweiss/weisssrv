@@ -45,7 +45,8 @@ This homelab currently consists of:
 - **Hostname**: pve-nas-01
 - **IP Address**: 192.168.0.102
 - **CPU**: Intel i7-12700K (12 cores, 20 threads)
-- **RAM**: 128GB DDR5 (~125 GiB usable)
+- **RAM**: 128GB DDR5 (usable figure and the memory budget arithmetic are in
+  [docs/06-zfs.md](06-zfs.md))
 - **GPU**: Intel Arc B580 — shared by the Plex LXC (hardware transcoding,
   docs/20) and the Immich ML LXC (OpenVINO inference, docs/36)
 - **Storage**:

@@ -15,6 +15,7 @@ here).
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -423,3 +424,456 @@ class TestNetpolExceptConfig:
             assert entries, f"canonical list {name} is empty"
             for cidr in entries:
                 ipaddress.ip_network(cidr)
+
+
+class TestPendingAdoptionTable:
+    """docs/13's pending-adoption table must agree with weisssrv-lib's registry.
+
+    The doc's previous claim — "Nothing is pending adoption" — outlived three
+    library releases that shipped exactly the templates it said did not exist.
+    Prose about another repo's state has no other reader, so it is derived from
+    that repo here instead.
+    """
+
+    DOC = REPO / "docs/13-ci-cd.md"
+    MARKER = "**Pending adoption.**"
+
+    @staticmethod
+    def _registry() -> dict:
+        from test_vendored_byte_identity import _lib_root
+
+        doc = yaml.safe_load((_lib_root() / "docs/CONSUMERS.yml").read_text())
+        for consumer in doc["consumers"]:
+            if consumer["name"] == "weisssrv":
+                return consumer["pins"]["ci_includes"]
+        raise AssertionError("weisssrv is not registered in the library's CONSUMERS.yml")
+
+    def _documented(self) -> set[str]:
+        """Library paths named in the first column of the pending-adoption table."""
+        lines = self.DOC.read_text().splitlines()
+        start = next(i for i, line in enumerate(lines) if line.startswith(self.MARKER))
+        rows: set[str] = set()
+        seen_table = False
+        for line in lines[start:]:
+            if not line.startswith("|"):
+                if seen_table:
+                    break
+                continue
+            seen_table = True
+            first = line.split("|")[1]
+            match = re.search(r"`(/ci/[\w./-]+\.yml)`", first)
+            if match:
+                rows.add(match.group(1))
+        assert rows, "parsed no library paths out of the pending-adoption table"
+        return rows
+
+    def test_every_not_yet_adopted_template_is_documented(self):
+        pending = set(self._registry().get("not_yet_adopted") or [])
+        assert pending, "the library registry lists nothing as not_yet_adopted"
+        missing = sorted(pending - self._documented())
+        assert not missing, (
+            f"weisssrv-lib lists {missing} as not_yet_adopted for this repo, but "
+            f"{self.DOC.name}'s pending-adoption table does not mention them."
+        )
+
+    def test_the_table_names_no_template_the_library_already_gives_us(self):
+        registry = self._registry()
+        allowed = set(registry.get("not_yet_adopted") or []) | set(
+            registry.get("not_consumed") or []
+        )
+        stale = sorted(self._documented() - allowed)
+        assert not stale, (
+            f"{self.DOC.name} lists {stale} as pending, but the library registry has "
+            "them neither in not_yet_adopted nor not_consumed — adopt the row or drop it."
+        )
+
+
+class TestPythonTestsFireOnTheirOwnSubjects:
+    """The python-tests job's `changes:` list must cover what the gates read.
+
+    Most of scripts/ is drift guards over files OUTSIDE scripts/. A guard whose
+    subject matches no `changes:` pattern does not run on the MR that breaks it
+    — it runs later, on some unrelated scripts/ edit, and the regression is
+    already merged. .gitlab-ci.yml documents that list as hand-maintained from a
+    one-off audit-hook trace, which is exactly the kind of list that rots.
+
+    Subjects are derived from the repo-path literals in each gate's source, and
+    only paths git actually tracks count — a fixture path a hygiene test invents
+    (`terraform/*/plan.out`) is not a subject.
+    """
+
+    JOB_TEMPLATE = "/ci/test/python-tests.yml"
+    # Top-level trees a literal has to sit under to be a repo path rather than a
+    # URL fragment, a label key or a message.
+    TREES = ("ansible/", "kubernetes/", "terraform/", "docker/", "docs/",
+             "scripts/", ".gitlab/", ".claude/", ".github/")
+    ROOT_FILES = {"Taskfile.yml", "README.md", "CLAUDE.md", "AGENTS.md",
+                  ".cursorrules", "ruff.toml", ".gitlab-ci.yml"}
+    ROOT_TREE = "<root>"
+    # Anti-vacuity floor, PER TREE, set just under today's resolved counts
+    # (kubernetes 19, ansible 14, scripts 10, root 7, terraform 1, docs 1). A
+    # single total was vacuous in the other direction: one tree's subjects can
+    # disappear entirely — a gate deleted, its literals rewritten as segmented
+    # joins — while the total stays comfortably over any global floor and this
+    # guard keeps reporting full coverage of a tree it no longer sees.
+    MIN_SUBJECTS = {"kubernetes/": 15, "ansible/": 10, "scripts/": 8,
+                    ROOT_TREE: 5, "terraform/": 1, "docs/": 1}
+
+    @classmethod
+    def _tree(cls, subject: str) -> str:
+        for tree in cls.TREES:
+            if subject.startswith(tree):
+                return tree
+        return cls.ROOT_TREE
+
+    @staticmethod
+    def _glob_to_re(glob: str) -> re.Pattern:
+        """GitLab matches `changes:` with Ruby File.fnmatch under PATHNAME, so
+        `*` stops at a '/' and only `**` crosses one. Python's fnmatch does not
+        make that distinction and would call every pattern a match."""
+        out = ""
+        i = 0
+        while i < len(glob):
+            if glob.startswith("**/", i):
+                out += "(?:.*/)?"
+                i += 3
+            elif glob.startswith("**", i):
+                out += ".*"
+                i += 2
+            elif glob[i] == "*":
+                out += "[^/]*"
+                i += 1
+            elif glob[i] == "?":
+                out += "[^/]"
+                i += 1
+            else:
+                out += re.escape(glob[i])
+                i += 1
+        return re.compile("^" + out + "$")
+
+    @classmethod
+    def _changes(cls) -> list[str]:
+        from test_site_configs import _CILoader
+
+        doc = yaml.load((REPO / ".gitlab-ci.yml").read_text(), Loader=_CILoader) or {}
+        for include in doc.get("include") or []:
+            if isinstance(include, dict) and include.get("file") == cls.JOB_TEMPLATE:
+                patterns = (include.get("inputs") or {}).get("changes")
+                assert patterns, f"{cls.JOB_TEMPLATE} passes no changes: list"
+                return patterns
+        raise AssertionError(f"{cls.JOB_TEMPLATE} is not included any more")
+
+    @staticmethod
+    def _tracked() -> tuple[set[str], set[str]]:
+        """(tracked files, their parent directories) — the ground truth for
+        'this literal is a real subject'."""
+        out = subprocess.run(["git", "ls-files"], capture_output=True, text=True,
+                             cwd=str(REPO), check=True).stdout.split()
+        files = set(out)
+        dirs = {
+            "/".join(path.split("/")[:depth])
+            for path in files
+            for depth in range(1, path.count("/") + 1)
+        }
+        return files, dirs
+
+    @classmethod
+    def _subjects(cls) -> dict[str, set[str]]:
+        """{repo path a gate names: the gates that name it}.
+
+        Single string literals only, by contract: a path assembled from
+        segments (`REPO / "kubernetes" / "apps"`, `os.path.join(...)`) and a
+        literal containing a glob are both INVISIBLE here — the join never
+        produces the whole path as one token, and a glob cannot be resolved
+        against `git ls-files`. That is a known blind spot, and it is why the
+        per-tree floors below exist: rewriting a gate's literals into joins
+        silently empties its tree instead of failing anything.
+        """
+        literal = re.compile(r"""["']([^"'\s]+)["']""")
+        found: dict[str, set[str]] = {}
+        for path in sorted(SCRIPTS.iterdir()):
+            if path.suffix not in (".py", ".sh"):
+                continue
+            if not (path.name.startswith("test_") or path.name.startswith("check-")):
+                continue
+            for match in literal.finditer(path.read_text()):
+                value = match.group(1).rstrip("/")
+                if "*" in value:
+                    continue
+                if value.startswith(cls.TREES) or value in cls.ROOT_FILES:
+                    found.setdefault(value, set()).add(path.name)
+        return found
+
+    def test_every_gate_subject_is_a_python_tests_trigger(self):
+        matchers = [self._glob_to_re(p) for p in self._changes()]
+        files, dirs = self._tracked()
+        uncovered: list[str] = []
+        checked: dict[str, int] = {}
+        for subject, gates in sorted(self._subjects().items()):
+            if subject in files:
+                probe = subject
+            elif subject in dirs:
+                # A directory subject means the gate reads files under it.
+                probe = f"{subject}/probe.yaml"
+            else:
+                continue  # a fixture path, not a real repo subject
+            checked[self._tree(subject)] = checked.get(self._tree(subject), 0) + 1
+            if not any(m.match(probe) for m in matchers):
+                uncovered.append(f"{subject} (read by {', '.join(sorted(gates))})")
+        thin = {tree: (checked.get(tree, 0), floor)
+                for tree, floor in self.MIN_SUBJECTS.items()
+                if checked.get(tree, 0) < floor}
+        assert not thin, (
+            "the literal scan stopped resolving gate subjects under "
+            + ", ".join(f"{tree} ({got} < {floor})"
+                        for tree, (got, floor) in sorted(thin.items()))
+            + " — this guard reports full coverage of a tree it cannot see. "
+            "Either a gate's paths moved out of single string literals (see "
+            "_subjects) or the gates themselves went away."
+        )
+        assert not uncovered, (
+            "gates read repo paths that no python-tests `changes:` pattern "
+            "matches, so they cannot fire on their own subject:\n  "
+            + "\n  ".join(uncovered)
+            + f"\n\nAdd a pattern for each to the {self.JOB_TEMPLATE} include "
+            "inputs in .gitlab-ci.yml."
+        )
+
+    def test_the_matcher_respects_path_boundaries(self):
+        """A matcher that let `*` cross '/' would report full coverage of
+        anything, which is the failure mode this whole class exists to stop."""
+        single = self._glob_to_re("kubernetes/*/README.md")
+        assert single.match("kubernetes/apps/README.md")
+        assert not single.match("kubernetes/apps/authentik/README.md")
+        deep = self._glob_to_re("kubernetes/**/*")
+        assert deep.match("kubernetes/apps/authentik/release.yaml")
+        assert not deep.match("scripts/check-doc-links.py")
+
+
+class TestLintMirrorsTheCiLintStage:
+    """`task lint` says it mirrors the CI lint stage; this is what enforces it.
+
+    repo-policy-checks and repo-sync-checks are shell, `task lint` is a YAML
+    command tree, and neither reads the other. A gate added to CI alone passes
+    every local run right up to the pipeline that rejects the MR.
+    """
+
+    # `task lint` commands that are not gates and so need no CI twin.
+    NOT_A_GATE = {
+        "scripts/resolve-tool.sh": (
+            "resolves how to invoke a pyenv/PATH dev tool locally; CI installs "
+            "its tools at pinned versions and never resolves one"
+        ),
+    }
+
+    # Gates the pipeline DOES run, but from somewhere a scan of this repo's
+    # .gitlab-ci.yml shell cannot see — a library template's own body, or
+    # another test. Each value says where, and the `/ci/...yml` ones are checked
+    # against the live include: list below so a dropped include cannot leave a
+    # gate exempted for a job that no longer exists.
+    CI_RUNS_IT_ELSEWHERE = {
+        "scripts/check-doc-links.py": (
+            "the library's /ci/lint/docs-link-check.yml job runs it; the script "
+            "name lives in that template, not here"
+        ),
+        "scripts/flux-render.sh": (
+            "reached through the flux_render_script input (scripts/flux-env.sh) "
+            "of the library's /ci/validate/flux-lint.yml job"
+        ),
+        "scripts/check-lib-pins.py": (
+            "subprocessed by scripts/test_site_configs.py, which the "
+            "python-tests job runs"
+        ),
+    }
+
+    # run_check entries whose command is an inline shell function rather than a
+    # script — each maps to the `task lint` sub-task that runs the same logic.
+    INLINE_CHECKS = {
+        "flux-version-pin": "lint:flux-version-pin",
+        "busybox-version-pin": "lint:busybox-version-pin",
+        "tailscale-policy-syntax": "lint:tailscale-policy",
+        "taskfile-smoke": "lint:taskfile-smoke",
+        "hosts-env-sync": "lint:sync-checks",
+        "flux-versions-sync": "lint:sync-checks",
+    }
+
+    @staticmethod
+    def _ci_jobs() -> dict:
+        from test_site_configs import _CILoader
+
+        return yaml.load((REPO / ".gitlab-ci.yml").read_text(), Loader=_CILoader) or {}
+
+    def _run_checks(self) -> dict[str, str]:
+        """{check name: the rest of its run_check line} across both gate jobs."""
+        found: dict[str, str] = {}
+        jobs = self._ci_jobs()
+        for job in ("repo-policy-checks", "repo-sync-checks"):
+            script = jobs[job]["script"]
+            body = "\n".join(script if isinstance(script, list) else [script])
+            for match in re.finditer(r"^\s*run_check\s+(\S+)\s+(.*)$", body, re.M):
+                found[match.group(1)] = match.group(2)
+        assert found, "parsed no run_check entries out of the CI gate jobs"
+        return found
+
+    @staticmethod
+    def _lint_tree() -> tuple[str, set[str]]:
+        """(every command string reachable from `task lint`, the task names walked)."""
+        tasks = yaml.safe_load((REPO / "Taskfile.yml").read_text())["tasks"]
+        seen: set[str] = set()
+        commands: list[str] = []
+
+        def walk(name: str) -> None:
+            if name in seen or name not in tasks:
+                return
+            seen.add(name)
+            for cmd in tasks[name].get("cmds") or []:
+                if isinstance(cmd, dict) and "task" in cmd:
+                    walk(cmd["task"])
+                elif isinstance(cmd, str):
+                    commands.append(cmd)
+                    # `- task lint:x` spelled through the shell (see the
+                    # scripts:test note in Taskfile.yml) is still a dependency.
+                    for ref in re.findall(r"\btask\s+([\w:-]+)", cmd):
+                        walk(ref)
+        walk("lint")
+        assert "lint" in seen, "Taskfile.yml has no `lint` task"
+        return "\n".join(commands), seen
+
+    def test_every_ci_gate_script_is_reachable_from_task_lint(self):
+        commands, _tasks = self._lint_tree()
+        missing = []
+        for name, argv in self._run_checks().items():
+            scripts = re.findall(r"scripts/[\w.-]+\.(?:py|sh)", argv)
+            if not scripts:
+                continue
+            for script in scripts:
+                if script not in commands:
+                    missing.append(f"{name} -> {script}")
+        assert not missing, (
+            "CI lint-stage checks that `task lint` never runs: "
+            + ", ".join(sorted(missing))
+            + "\n\nAdd them to a lint: sub-task, or `task lint` is not the mirror it "
+            "advertises."
+        )
+
+    def test_every_inline_ci_check_maps_to_a_lint_subtask(self):
+        """Floor set: a check that names no script still has to be listed."""
+        _commands, tasks = self._lint_tree()
+        checks = self._run_checks()
+        unmapped = sorted(
+            name for name, argv in checks.items()
+            if not re.search(r"scripts/[\w.-]+\.(?:py|sh)", argv)
+            and name not in self.INLINE_CHECKS
+        )
+        assert not unmapped, (
+            f"inline CI checks with no declared `task lint` counterpart: {unmapped} — "
+            "add each to INLINE_CHECKS naming the sub-task that mirrors it."
+        )
+        stale = sorted(set(self.INLINE_CHECKS) - set(checks))
+        assert not stale, f"INLINE_CHECKS names checks CI no longer runs: {stale}"
+        unreachable = sorted(
+            task for name, task in self.INLINE_CHECKS.items() if task not in tasks
+        )
+        assert not unreachable, (
+            f"mapped sub-tasks not reachable from `task lint`: {unreachable}"
+        )
+
+    @staticmethod
+    def _ci_shell() -> str:
+        """Every shell string the pipeline EXECUTES, comments removed.
+
+        Job script bodies plus the include inputs that are shell
+        (extra_validation, *_command). Deliberately not the raw file: a
+        `changes:` path or a comment naming a gate is not a run of it, and
+        counting either would let a real one-sided gate read as covered.
+        Parsing the YAML drops the file's own comments; the `#` strip removes
+        the shell comments that survive inside a script body.
+        """
+        from test_site_configs import _CILoader
+
+        doc = yaml.load((REPO / ".gitlab-ci.yml").read_text(), Loader=_CILoader) or {}
+        parts: list[str] = []
+
+        def add(value) -> None:
+            if isinstance(value, str):
+                parts.append(value)
+            elif isinstance(value, list):
+                for item in value:
+                    add(item)
+
+        for include in doc.get("include") or []:
+            if isinstance(include, dict):
+                for key, value in (include.get("inputs") or {}).items():
+                    if (key == "extra_validation" or key.endswith("_command")
+                            or key.endswith("_script")):
+                        add(value)
+        for job in doc.values():
+            if isinstance(job, dict):
+                for key in ("script", "before_script", "after_script"):
+                    add(job.get(key))
+        return re.sub(r"(?m)#.*$", "", "\n".join(parts))
+
+    @classmethod
+    def _ci_scripts(cls) -> set[str]:
+        """Every scripts/ gate the pipeline can reach.
+
+        Two ways it reaches one: named in a shell string it runs, or run through
+        `task <name>` from an inline function — this repo's idiom for a gate
+        with one implementation (check_tailscale_policy), which hides the script
+        name from a literal scan.
+        """
+        shell = cls._ci_shell()
+        reachable = set(re.findall(r"scripts/[\w.-]+\.(?:py|sh)", shell))
+        tasks = yaml.safe_load((REPO / "Taskfile.yml").read_text())["tasks"]
+        for name in re.findall(r"\btask\s+([\w:-]+)", shell):
+            for cmd in tasks.get(name, {}).get("cmds") or []:
+                if isinstance(cmd, str):
+                    reachable.update(re.findall(r"scripts/[\w.-]+\.(?:py|sh)", cmd))
+        return reachable
+
+    def test_every_task_lint_gate_has_a_ci_twin(self):
+        """The other direction: a gate added to `task lint` alone is invisible
+        to the pipeline, so an MR that breaks it merges green. `task lint`
+        advertises itself as the CI mirror; a mirror is symmetric."""
+        commands, _tasks = self._lint_tree()
+        lint_scripts = set(re.findall(r"scripts/[\w.-]+\.(?:py|sh)", commands))
+        exempt = set(self.NOT_A_GATE) | set(self.CI_RUNS_IT_ELSEWHERE)
+        missing = sorted(lint_scripts - self._ci_scripts() - exempt)
+        assert not missing, (
+            "gates `task lint` runs that no CI job can reach: "
+            + ", ".join(missing)
+            + "\n\nAdd each to .gitlab-ci.yml (a run_check line in "
+            "repo-policy-checks, or the flux-lint extra_validation input for a "
+            "corpus check), or record it in NOT_A_GATE / CI_RUNS_IT_ELSEWHERE "
+            "with the reason."
+        )
+        stale = sorted(exempt - lint_scripts)
+        assert not stale, f"exemptions name scripts `task lint` no longer runs: {stale}"
+
+    def test_the_elsewhere_exemptions_name_live_ci_includes(self):
+        """An exemption that points at a deleted library job would silently
+        excuse a gate nothing runs."""
+        included = set(re.findall(r"^\s*file:\s*(/ci/\S+\.yml)\s*$",
+                                  (REPO / ".gitlab-ci.yml").read_text(), re.M))
+        assert included, "parsed no library include paths out of .gitlab-ci.yml"
+        for script, reason in self.CI_RUNS_IT_ELSEWHERE.items():
+            for named in re.findall(r"/ci/[\w./-]+\.yml", reason):
+                assert named in included, (
+                    f"{script} is exempted because {named} runs it, but that "
+                    "template is no longer included"
+                )
+
+    def test_the_parser_would_notice_a_missing_gate(self):
+        """A parity test that cannot fail is worse than none."""
+        commands, tasks = self._lint_tree()
+        assert "scripts/check-deploy-coverage.sh" in commands
+        assert "scripts/check-not-a-real-gate.py" not in commands
+        assert "lint:sync-checks" in tasks
+        # ...and in the lint -> CI direction.
+        reachable = self._ci_scripts()
+        assert "scripts/check-cluster-literals.py" in reachable
+        assert "scripts/check-tailscale-policy.py" in reachable, (
+            "the `task <name>` indirection must be followed, or every "
+            "inline-function gate reads as a missing CI twin"
+        )
+        assert "scripts/check-not-a-real-gate.py" not in reachable

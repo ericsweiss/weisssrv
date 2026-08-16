@@ -20,15 +20,6 @@ moved {
 # data.tailscale_device.ts_dns needs no `moved`: data sources are re-read on
 # every plan, so its move into the module (as
 # module.tailnet.data.tailscale_device.split_dns["esweiss.com"]) is invisible to
-# state.
-#
-# ONE SAFEGUARD IS LOST IN THE MOVE, deliberately noted rather than assumed
-# away: the pre-module lookup filtered the address list to the IPv4 entry
-# (`one([for a in ...addresses : a if !strcontains(a, ":")])`) precisely so an
-# ordering change in the provider or the API could not repoint tailnet
-# `esweiss.com` resolution. The library module indexes `addresses[0]` instead.
-# That resolves to the same 100.x address today, but as a property of the
-# provider's ordering, not of this configuration. Until the filter is restored
-# upstream, the supervised apply must CONFIRM THE PLANNED NAMESERVER IS THE
-# 100.x ADDRESS (README § Split-DNS) — a v6 value there breaks `*.esweiss.com`
-# for every tailnet client.
+# state. The module selects the device's IPv4 address explicitly and
+# preconditions on there being exactly one, so the nameserver cannot silently
+# become a v6 value (README § Split-DNS).

@@ -68,10 +68,7 @@ UNTESTED = {
     "NodeStuckCordoned",
     "CorosyncWedged",
     "MaintenanceRebootDeferred",
-    "HostNetworkReceiveErrs",
-    "HindsightGpuOffloadIdle",
     "LokiRequestFailures",
-    "TraefikHighErrorRate",
     "RegistryCacheDown",
     "ExternalSecretSyncFailure",
     # Certificate expiry: a plain `<time> - now` threshold per certificate.
@@ -94,7 +91,6 @@ UNTESTED = {
     "PveClusterBackupStale",
     "ResticOffsiteVerifyStaleCritical",
     "VzdumpBackupFailed",
-    "DDNSStale",
 }
 
 

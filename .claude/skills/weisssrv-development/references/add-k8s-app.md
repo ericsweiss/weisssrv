@@ -24,12 +24,12 @@ gotchas that bite. Copy an existing app rather than inventing a shape.
    capability (NET_ADMIN etc.) forces `privileged`, in which case justify it with
    an inline comment and keep `warn`/`audit` at `restricted`.
 3. **NetworkPolicy**: pull in the shared `kubernetes/components/netpol-baseline`
-   component, then an explicit `default-deny-egress` with scoped allows. Standard
-   allows: kube-dns; apiserver = the **node IPs** `192.168.0.222/223/227:6443`;
-   smtp `192.168.0.151:587` if the app mails; public HTTPS as `0.0.0.0/0`
-   **except** the private ranges `[10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16,
-   100.64.0.0/10, 169.254.0.0/16]`. Add a **scrape-allow** from the observability
-   namespace. Copy the egress shape from `authentik/networkpolicy.yaml` or
+   component, then an explicit `default-deny-egress` with scoped allows —
+   kube-dns, the apiserver node IPs, smtp if the app mails, public HTTPS with the
+   reserved-CIDR except-list. The addresses and the except-list are written out
+   once, in `docs/29-flux-operations.md` § Adding a New App; copy them from there
+   (or from a neighbour), never from memory. Add a **scrape-allow** from the
+   observability namespace. Copy the egress shape from `authentik/networkpolicy.yaml` or
    `recipes/networkpolicy.yaml`. If an allow really is namespace-wide (every pod
    gets it), take the shared component instead — `netpol-egress-dns`,
    `netpol-egress-apiserver`, `netpol-egress-public`; each ships one
@@ -37,15 +37,16 @@ gotchas that bite. Copy an existing app rather than inventing a shape.
    stay LITERAL: the parity gate reads NetworkPolicies straight from git.
 4. **VPA** (`vpa.yaml`, required): `Initial` for stateless; `Off` for
    DB/stateful; memory-only when an HPA owns CPU. See `docs/33-autoscaling.md`.
-5. **Certificate** per host (`certificate.yaml`): `issuerRef` ClusterIssuer
-   `letsencrypt-prod`, `renewBefore: 720h`.
+5. **Certificate** per host (`certificate.yaml`): issuer and `renewBefore` per
+   docs/29 § Adding a New App; copy a neighbour's `certificate.yaml`.
 6. **IngressRoutes**: public → `external-dns.alpha.kubernetes.io/target:
    ${cluster_external_domain}` annotation + `hsts-header` middleware; internal →
    `lan-tailscale-only` + `hsts-header`. Reference platform middlewares from the
    `traefik` namespace.
-7. **Secrets** (`externalsecret.yaml`): store `onepassword-homelab`,
-   `remoteRef.key` = 1P item title, `remoteRef.property` = field. Add any new 1P
-   item to `docs/15-credential-rotation.md`.
+7. **Secrets** (`externalsecret.yaml`): the ClusterSecretStore name and the
+   reference format are in docs/29 § Adding a New App — `remoteRef.key` is the 1P
+   item TITLE and `remoteRef.property` the field, which is the part people get
+   wrong. Add any new 1P item to `docs/15-credential-rotation.md`.
 8. **Version pin**: add `${<app>_version}` to `group_vars/all.yml`, run
    `task flux:sync-versions`, commit both files. New Helm chart → add a
    `HelmRepository` under `kubernetes/infrastructure/sources/`.
@@ -129,5 +130,6 @@ For a new alert:
   objects drift out of state). Its add-an-app recipe and day-2 ops are in
   `terraform/authentik/README.md` + `docs/40-authentik-terraform.md`. Record the
   provider type, redirect URIs, scopes, and group bindings in the app's docs page
-  and the MR deploy plan. (`docs/23-recipes-sso-setup.md` is a legacy manual
-  walkthrough superseded by the terraform module.)
+  and the MR deploy plan. (`docs/23-recipes-sso-setup.md` records the exact Mealie
+  / Bar Assistant provider values — redirect URIs, scopes, env vars — that the
+  Terraform maps must agree with.)

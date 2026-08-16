@@ -1,35 +1,18 @@
 ---
-# Scheduling priority for the two workload classes this cluster actually has to
-# separate. Everything ran at priority 0 before, so a CI burst — the runner
-# quotas admit 46 cores of requests against 31 allocatable — competed with
-# platform workloads on nothing but arrival order, and the one alert that would
-# have caught it (KubeCPUOvercommit) excludes the CI namespaces by design.
-#
-# Two classes, not a ladder: system-cluster-critical / system-node-critical
-# already cover the pieces whose loss takes the cluster with them (kube-vip,
-# CoreDNS, metrics-server, the tailnet DNS proxy), and inventing tiers between
-# them adds preemption paths nobody reasons about.
+# Scheduling priority for the two workload classes this cluster has to separate:
+# `platform` (applied per HelmRelease) and `ci-jobs`.
 #
 # `ci-jobs` at a NEGATIVE value is the load-bearing half: every unclassed pod
-# sits at 0 and therefore outranks a CI job pod without any of them needing a
-# class. preemptionPolicy Never means a CI pod waits for room instead of
-# evicting anything — CI should queue, never displace.
+# sits at 0 and therefore outranks a CI job pod without needing a class of its
+# own. preemptionPolicy Never makes a CI pod queue rather than displace.
 #
-# `platform` is APPLIED, via the `priorityClassName` value of each platform
-# HelmRelease — cert-manager, external-dns, external-secrets (all three
-# components), onepassword-connect, Traefik, MetalLB (controller + speaker),
-# VPA, Reloader, Alloy, Loki, and the kube-prometheus-stack operator/Prometheus/
-# Alertmanager. docs/33 § Scheduling priority is the canonical list, with the
-# per-chart value path each one uses. Deliberately NOT applied to metrics-server
-# or kured: both already carry a HIGHER built-in class
-# (system-cluster-critical / system-node-critical), so setting this would be a
-# downgrade. App tenants and CI job pods keep their own classes.
+# Consumers and the per-chart value path each one uses: docs/33 § Scheduling
+# priority. NOT applied to metrics-server or kured — both carry a HIGHER
+# built-in class, so setting it would be a downgrade.
 #
-# WHY THIS FILE IS IN sources/ AND NOT configs/: the Priority admission plugin
-# rejects a pod naming a PriorityClass that does not exist. The controllers
-# stage creates such pods and runs BEFORE configs, and it is `wait: true` — so a
-# class defined in configs would never be reached on a cold bootstrap. sources
-# is the one stage everything else dependsOn.
+# Lives in sources/ because the Priority admission plugin rejects a pod naming a
+# missing class, and the `wait: true` controllers stage creates such pods before
+# configs is reached (see sources/kustomization.yaml).
 apiVersion: scheduling.k8s.io/v1
 kind: PriorityClass
 metadata:

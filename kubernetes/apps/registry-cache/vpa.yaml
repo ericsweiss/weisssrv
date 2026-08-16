@@ -13,7 +13,10 @@ spec:
   updatePolicy: {updateMode: Initial}
   resourcePolicy:
     containerPolicies:
+      # 0.8x the container's 512Mi memory limit (deployment.yaml): the policy
+      # also controls limits, so a cap at or above the limit would leave no
+      # ceiling that ever binds (docs/33 § Limit oscillation).
       - containerName: "*"
         minAllowed: {cpu: 25m, memory: 64Mi}
-        maxAllowed: {cpu: 1, memory: 1Gi}
+        maxAllowed: {cpu: 1, memory: 409Mi}
         controlledResources: [cpu, memory]

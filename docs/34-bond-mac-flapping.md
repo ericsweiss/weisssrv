@@ -239,3 +239,11 @@ Verify on the host: `ethtool -k nic0 | grep -E 'tcp-segmentation|generic-(segmen
   entry is what makes the setting survive a reboot.
 - Turning off segmentation offload costs some CPU per gigabit; on these hosts
   that is irrelevant next to an unattended power-cycle.
+
+## Related documentation
+
+- [docs/01-overview.md](01-overview.md) - host/node topology and NIC placement
+- [docs/11-firewall.md](11-firewall.md) - Proxmox firewall groups on the same hosts
+- [docs/12-runbooks.md](12-runbooks.md) - operational procedures
+- [docs/16-next-steps.md](16-next-steps.md) - open NIC/firmware follow-ups
+- [docs/31-observability.md](31-observability.md) - the Loki/Grafana path used to diagnose this

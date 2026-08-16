@@ -9,6 +9,10 @@
 # Everything else needs kubectl + curl, so it runs from any CI image.
 #
 # Exits 0 if cluster is healthy, 1 if any critical check fails.
+#
+# Pod -> node lookups here all use jsonpath, never `kubectl get -o wide`: the
+# RESTARTS column's "5 (3m ago)" suffix shifts every field after it, so a
+# positional parse silently reads the wrong column.
 
 set -euo pipefail
 
@@ -138,10 +142,9 @@ if [ -n "$BAD" ]; then
 fi
 if [ -n "$BAD" ]; then
   KURED_NOW=$(kured_rebooting_nodes)
-  # NODE-SCOPED kured excuse. Map pod -> node via jsonpath (NOT `-o wide`, whose
-  # RESTARTS "5 (3m ago)" suffix shifts columns). An unhealthy pod is excused only
-  # while kured is mid-reboot AND the pod is on a rebooting node or unscheduled;
-  # anything else ERRORs, CrashLoop included.
+  # NODE-SCOPED kured excuse: an unhealthy pod is excused only while kured is
+  # mid-reboot AND the pod is on a rebooting node or unscheduled; anything else
+  # ERRORs, CrashLoop included.
   # Accepted limitation: an unschedulable pod unrelated to kured also reads as
   # node-less and so WARNs during a reboot window — see docs/12-runbooks.md
   # § Post-maintenance verification.
@@ -207,11 +210,10 @@ for dep in traefik:traefik coredns:kube-system cert-manager:cert-manager metallb
     fi
     # Under-replicated. NODE-SCOPED kured excuse: excuse only when one of THIS
     # deployment's pods sits on a rebooting node (or is unscheduled); an API blip
-    # in the lookup is 'undetermined -> WARN', never a silent mis-ERROR. jsonpath
-    # name<TAB>node (NOT `-o wide` $7, whose RESTARTS "(3m ago)" suffix shifts
-    # columns); the pod name is anchored to the no-vowel pod-template-hash charset
-    # so a sibling deployment (cert-manager-webhook, coredns-autoscaler) is not
-    # matched. Accepted limitation on multi-replica deployments — see
+    # in the lookup is 'undetermined -> WARN', never a silent mis-ERROR. The pod
+    # name is anchored to the no-vowel pod-template-hash charset so a sibling
+    # deployment (cert-manager-webhook, coredns-autoscaler) is not matched.
+    # Accepted limitation on multi-replica deployments — see
     # docs/12-runbooks.md § Post-maintenance verification.
     dep_excuse=no
     if [ -n "$KURED_NOW" ]; then

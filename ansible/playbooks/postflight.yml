@@ -244,7 +244,9 @@
     - name: Check critical datasets are mounted
       ansible.builtin.assert:
         that:
-          - "'yes' in item"
+          # The `mounted` COLUMN, not a substring of the whole tab-joined line:
+          # a dataset whose NAME embeds "yes" would otherwise pass unmounted.
+          - item.split('\t')[1] == 'yes'
         fail_msg: "Critical ZFS dataset not mounted: {{ item }}"
       loop: "{{ zfs_datasets.stdout_lines }}"
       # Skip zvols (mounted column '-') and datasets deliberately kept unmounted

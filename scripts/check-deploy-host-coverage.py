@@ -4,16 +4,7 @@ that playbook declares it for.
 
 check-deploy-coverage.sh answers "does SOME deploy job trigger on this path?".
 That is a weaker question than it looks: a job can be credited for a role while
-running it on a fraction of the hosts the inventory says need it. Two real
-incidents came out of exactly that gap:
-
-  * encrypted_swap was credited to deploy-ansible-base but missing from its
-    `--tags` list, so the job went green on every role change while the role
-    never executed anywhere (found only when a NAS reboot activated nothing).
-  * nfs_tls is enabled on all six Proxmox hosts (group_vars/proxmox.yml) and is
-    applied to the five non-NAS ones by site.yml, but no deploy job ran that
-    tag. The path-level gate passed because deploy-ansible-storage lists the
-    role — and storage.yml targets pve-nas-01 alone, one host of six.
+running it on a fraction of the hosts the inventory says need it.
 
 So this gate computes, per role:
 
@@ -28,8 +19,8 @@ Roles ship from the weisssrv.infra collection, so a role edit is a
 `ansible/requirements.yml` bump rather than a path under this repo — the
 "does the job trigger on the role's path" half moved to
 check-deploy-coverage.sh's view of that file, and what remains here is the
-host-reachability half (the nfs_tls shape: a job that triggers but --limit or
---tags away most of the hosts).
+host-reachability half. The shape it catches: a job that triggers on a role but
+`--limit`s or `--tags`-away most of the hosts the inventory declares it for.
 
 Deliberately static: it parses hosts.yml, the playbooks, and .gitlab-ci.yml. No
 inventory plugin, no ansible, no cluster.

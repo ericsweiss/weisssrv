@@ -10,9 +10,13 @@ spec:
   updatePolicy: {updateMode: Initial}
   resourcePolicy:
     containerPolicies:
+      # Limit-controlling (controlledValues unset), so the cap is 0.8x the
+      # container's 1Gi memory limit (mealie.yaml) — at or above it the
+      # declared ceiling never binds, because the updater rescales the limit
+      # with the request (docs/33 § Limit oscillation).
       - containerName: "*"
         minAllowed: {cpu: 25m, memory: 128Mi}
-        maxAllowed: {cpu: 2, memory: 2Gi}
+        maxAllowed: {cpu: 2, memory: 819Mi}
         controlledResources: [cpu, memory]
 ---
 apiVersion: autoscaling.k8s.io/v1
@@ -24,9 +28,24 @@ spec:
   updatePolicy: {updateMode: "Off"}
   resourcePolicy:
     containerPolicies:
-      - containerName: "*"
+      # Recommendation-only, so each cap tracks its own container's hand-set
+      # limit (mealie.yaml): the recorded target can then show growth right up
+      # to the ceiling that actually binds it (docs/33, Off row).
+      - containerName: postgres
         minAllowed: {cpu: 25m, memory: 64Mi}
-        maxAllowed: {cpu: 1, memory: 1Gi}
+        maxAllowed: {cpu: 1, memory: 512Mi}
+        controlledResources: [cpu, memory]
+      # The postgres_exporter sidecar is ~10x smaller than the database; a
+      # single DB-sized wildcard would publish an inflated recommendation for
+      # it. Must precede "*".
+      - containerName: postgres-exporter
+        minAllowed: {cpu: 10m, memory: 32Mi}
+        maxAllowed: {cpu: 200m, memory: 128Mi}
+        controlledResources: [cpu, memory]
+      # Catch-all for any future sidecar — sized like the exporter, not the DB.
+      - containerName: "*"
+        minAllowed: {cpu: 10m, memory: 32Mi}
+        maxAllowed: {cpu: 200m, memory: 128Mi}
         controlledResources: [cpu, memory]
 ---
 apiVersion: autoscaling.k8s.io/v1
@@ -38,9 +57,12 @@ spec:
   updatePolicy: {updateMode: Initial}
   resourcePolicy:
     containerPolicies:
+      # 0.8x the container's 1Gi memory limit (bar-assistant.yaml): the policy
+      # also controls limits, so a cap at the limit would leave no ceiling that
+      # ever binds (docs/33).
       - containerName: "*"
         minAllowed: {cpu: 25m, memory: 64Mi}
-        maxAllowed: {cpu: 1, memory: 1Gi}
+        maxAllowed: {cpu: 1, memory: 819Mi}
         controlledResources: [cpu, memory]
 ---
 apiVersion: autoscaling.k8s.io/v1
@@ -52,9 +74,11 @@ spec:
   updatePolicy: {updateMode: Initial}
   resourcePolicy:
     containerPolicies:
+      # 0.8x the container's 512Mi memory limit (bar-assistant.yaml) — the
+      # limit-controlling shape from docs/33.
       - containerName: "*"
         minAllowed: {cpu: 25m, memory: 64Mi}
-        maxAllowed: {cpu: 1, memory: 2Gi}
+        maxAllowed: {cpu: 1, memory: 409Mi}
         controlledResources: [cpu, memory]
 ---
 apiVersion: autoscaling.k8s.io/v1
@@ -66,9 +90,13 @@ spec:
   updatePolicy: {updateMode: Initial}
   resourcePolicy:
     containerPolicies:
+      # RequestsOnly: the hand-set 256Mi limit stays the binding ceiling —
+      # it must clear redis's 192mb `--maxmemory` — while the request may
+      # grow to 204Mi (0.8x) for headroom under it (docs/33).
       - containerName: "*"
-        minAllowed: {cpu: 10m, memory: 32Mi}
-        maxAllowed: {cpu: 200m, memory: 512Mi}
+        controlledValues: RequestsOnly
+        minAllowed: {cpu: 10m, memory: 64Mi}
+        maxAllowed: {cpu: 200m, memory: 204Mi}
         controlledResources: [cpu, memory]
 ---
 apiVersion: autoscaling.k8s.io/v1
@@ -82,7 +110,9 @@ spec:
   # driving the same resource conflict.
   resourcePolicy:
     containerPolicies:
+      # 0.8x the container's 128Mi memory limit (bar-assistant.yaml) — the
+      # policy still controls the memory limit, so the cap must stay under it.
       - containerName: "*"
         minAllowed: {memory: 32Mi}
-        maxAllowed: {memory: 256Mi}
+        maxAllowed: {memory: 102Mi}
         controlledResources: [memory]

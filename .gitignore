@@ -5,10 +5,8 @@ Thumbs.db
 # IDEs / AI tooling
 .idea/
 .vscode/
-# Ignore everything under .claude/ (personal overrides, caches, worktrees the
-# tooling may create) EXCEPT the shared, committed guardrails: settings.json and
-# the checked-in skills/ (the weisssrv-development agent skill).
-# `.claude/*` (not `.claude/`) so the negations can re-include specific paths.
+# Everything under .claude/ except the committed guardrails below.
+# `.claude/*`, NOT `.claude/` — a directory pattern cannot be negated.
 .claude/*
 !.claude/settings.json
 !.claude/skills/
@@ -21,13 +19,10 @@ Thumbs.db
 .worktrees/
 
 # Secrets - NEVER COMMIT
-# Ignore secret VALUE artifacts by type / known filename only. We deliberately
-# do NOT ignore every path containing "secret"/"password": that pattern
-# silently dropped GitOps manifests (ExternalSecret CRs, onepassword-connect-*
-# files) from `git add` and forced a hand-maintained un-ignore list. Actual
-# secret VALUES never live in git — ESO produces them in-cluster from 1Password
-# — so only their generated artifacts are listed here. The gitleaks
-# secret_detection job (.gitleaks.toml) is the content-level backstop.
+# By artefact type / known filename only, NOT `*secret*`: that pattern silently
+# dropped ExternalSecret manifests from `git add`. Real values never live in git
+# (ESO produces them in-cluster); only generated artefacts are listed. The
+# gitleaks secret_detection job is the content-level backstop.
 *.key
 *.pem
 **/secrets/
@@ -42,11 +37,9 @@ sasl_passwd.db
 **/.terraform/
 *.tfstate
 *.tfstate.*
-# Plan files hold every resolved variable, so a terraform/authentik plan is a
-# binary blob carrying the OIDC client secrets and the basic-auth passwords.
-# `-out=tfplan` writes a bare name that `*.tfplan` does not match, so both
-# shapes are listed; scripts/test_repo_hygiene.py fails the gate if one is ever
-# tracked despite this.
+# A plan embeds every resolved variable, incl. OIDC client secrets. Both shapes:
+# `-out=tfplan` writes a bare name `*.tfplan` misses. Gated by
+# scripts/test_repo_hygiene.py.
 *.tfplan
 *.tfplan.json
 tfplan

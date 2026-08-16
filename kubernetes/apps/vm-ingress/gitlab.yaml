@@ -141,16 +141,10 @@ spec:
     secretName: gitlab-services-esweiss-tls
 
 ---
-# GitLab Pages
-# Uses HostRegexp for wildcard matching
-#
-# LIMITATION: These routes only match single-label subdomains (e.g., user.pages.git.ericsweiss.com).
-# Nested subdomains like group.subgroup.pages.git.ericsweiss.com will NOT match and will NOT
-# have TLS (the wildcard cert doesn't cover them either).
-#
-# This is intentional - wildcard certs (*.pages.git.ericsweiss.com) only cover one level.
-# GitLab Pages for nested groups (group/subgroup) should use hyphenated names (group-subgroup).
-# See gitlab-certificate.yaml for more details on this limitation.
+# GitLab Pages. HostRegexp `[^.]+` matches SINGLE-LABEL subdomains only, which
+# is what the wildcard cert covers: a nested name (group.subgroup.pages.…)
+# matches no route and has no TLS. Pages for nested groups must use hyphenated
+# names (group-subgroup).
 
 # External - *.pages.git.ericsweiss.com and pages.git.ericsweiss.com
 apiVersion: traefik.io/v1alpha1
@@ -200,9 +194,7 @@ spec:
   entryPoints:
     - websecure
   routes:
-    # Wildcard subdomain pages (user.pages.git.esweiss.com)
-    # Use [^.]+ to match single-label subdomains only (matches wildcard cert *.pages.git.esweiss.com)
-    # Traefik v3 syntax: HostRegexp uses Go regex directly without capture groups
+    # Traefik v3 HostRegexp is Go regex, no capture groups.
     - match: HostRegexp(`^[^.]+\.pages\.git\.esweiss\.com$`)
       kind: Rule
       middlewares:
@@ -232,13 +224,8 @@ spec:
     secretName: gitlab-pages-esweiss-tls
 
 ---
-# GitLab Web IDE Extension Host
-# Uses HostRegexp for wildcard matching, mirrors gitlab-pages pattern
-#
-# LIMITATION: This route only matches single-label subdomains (e.g.,
-# foo.ide.git.ericsweiss.com). Nested subdomains will NOT match and will NOT
-# have TLS (the wildcard cert doesn't cover them either). See gitlab-pages
-# above for the same constraint.
+# GitLab Web IDE Extension Host — same single-label constraint as gitlab-pages
+# above.
 #
 # Backend: same gitlab-web Service that fronts git.ericsweiss.com. GitLab
 # nginx is a catch-all server_name; Workhorse serves the Web IDE static

@@ -16,9 +16,12 @@ every path the operator uses today.
 sever tailnet connectivity and Tailscale SSH (the path this repo's remote admin
 relies on). `apply` stays **out of CI and supervised**; only a read-only drift
 `plan` runs in CI — the `tailscale-drift-plan` job (`.gitlab-ci.yml`) runs
-`terraform plan` (never `apply`, `allow_failure: true`) on the schedule and on
-tailscale-module MRs, so an Admin-console hot-fix surfaces as drift instead of
-being silently reverted at the next apply.
+`terraform plan` (never `apply`, `allow_failure: true`) on the schedule and
+post-merge on `main`, so an Admin-console hot-fix surfaces as drift instead of
+being silently reverted at the next apply. There is deliberately **no**
+`merge_request_event` rule — the job materializes vault secrets and must not run
+an unmerged branch's code — so the pre-merge control is a local
+`task terraform:tailscale-plan`.
 
 > **The ACL apply has landed** — the live tailnet policy is `policy.hujson`.
 > So the rule is unconditional: `tailscale-drift-plan` is **expected empty**, and
@@ -44,9 +47,12 @@ one-line note per rule, and `docs/05-tailscale.md` points here.
   **zero** access to any host or LAN service until it is deliberately added to the
   group, instead of silently inheriting the full grant that `autogroup:member`
   would give every member.
-- **`tagOwners`** — `tag:subnet-router` is owned by `ericsweiss1@gmail.com`, so
-  the owner can apply the tag to the six Proxmox hosts without a separate tagged
-  auth key.
+- **`tagOwners`** — three tags. `tag:subnet-router` is owned by
+  `ericsweiss1@gmail.com`, so the owner can apply the tag to the six Proxmox
+  hosts without a separate tagged auth key. `tag:k8s-operator` is `[]` (tailnet
+  admins) so the owner can mint the operator OAuth client, and `tag:k8s` must be
+  ownable by `tag:k8s-operator` or the operator cannot register its proxies —
+  the `traefik-tailnet` / `ts-dns` devices ACL rule 4 grants access to.
 - **ACL rule 1 — admin devices → subnet-router hosts.**
   `src group:admins → dst tag:subnet-router:22,80,443,6443,8006`. Reaches a
   Proxmox host's own services on its tailnet (100.x) IP directly. The functional
@@ -124,17 +130,19 @@ self-heals. Managing it is why the OAuth client needs the `dns` scope alongside
 
 Three things to know:
 
-- **Confirm the planned nameserver is the `100.x` address on every supervised
-  apply.** The pre-module lookup filtered the device's address list to the IPv4
-  entry so a provider/API ordering change could not repoint resolution; the
-  library module takes `addresses[0]`. Same value today, but by ordering rather
-  than by construction — so the plan review is the control until the filter is
-  restored upstream (`moved.tf` carries the same note).
-- **No `prevent_destroy`.** Unlike the ACL, the module's
-  `tailscale_dns_split_nameservers` resources carry none, so removing the
-  `esweiss.com` key plans a destroy — and that silently breaks `*.esweiss.com`
-  resolution for every tailnet client (the mesh path in `docs/05-tailscale.md`).
-  Treat the map as break-glass and read the plan.
+- **The nameserver is selected by construction, not by ordering.** The module
+  filters the device's address list to its IPv4 (`100.x`) entry and preconditions
+  on there being exactly one, so an ordering change in the provider or the API
+  cannot repoint tailnet `esweiss.com` resolution at a v6 address — a device that
+  exposes no IPv4 fails the plan instead.
+- **`prevent_destroy` covers the entry.** Like the ACL, the module's
+  `tailscale_dns_split_nameservers` resources carry `prevent_destroy`, so
+  removing the `esweiss.com` key is a hard plan error rather than a destroy. The
+  deliberate path is
+  `terraform state rm 'module.tailnet.tailscale_dns_split_nameservers.this["esweiss.com"]'`
+  (the live mapping survives that), then dropping the key — and doing so breaks
+  `*.esweiss.com` resolution for every tailnet client (the mesh path in
+  `docs/05-tailscale.md`). Treat the map as break-glass and read the plan.
 - **A renamed device fails the plan outright.** Tailscale appends a numeric
   suffix (`ts-dns-1`) when the bare hostname is still held by a device that has
   not aged out — the common outcome when the Service is recreated before the old

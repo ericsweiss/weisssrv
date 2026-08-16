@@ -1,5 +1,4 @@
 ---
-# qbittorrent config storage: thin overlay over the ../../_nfs-pv component.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: downloads

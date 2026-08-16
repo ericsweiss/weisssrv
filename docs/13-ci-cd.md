@@ -63,9 +63,22 @@ Three fragments emit no job of their own and are consumed via `extends:` /
 `.install-1password-alpine`) and `/ci/templates/terraform-http-backend.yml`
 (`.terraform-http-backend`).
 
-**Nothing is pending adoption.** Every library template this repo can use is
-included; the one remaining local job with a library counterpart,
-`version-bump-bot`, is documented at [Version bump bot](#version-bump-bot).
+**Pending adoption.** The library's `docs/CONSUMERS.yml` (`consumers.weisssrv.
+not_yet_adopted`) is the authority on what is extracted but not yet included
+here; each entry is blocked on the local block it would replace:
+
+| Library file | Local counterpart | Blocker |
+|---|---|---|
+| `/ci/deploy/deploy-base.yml` | `.deploy-base` in `.gitlab-ci.yml` | swap at the next `WEISSSRV_LIB_REF` bump — the in-file header marks the block for deletion |
+| `/ci/deploy/kubectl-setup.yml` | the inline kubectl setup in the deploy jobs | same bump |
+| `/ci/deploy/ansible-deploy.yml` (+ its image) | the local ansible-deploy job body | same bump; the image is pinned locally until the library one is adopted |
+
+`/ci/build/docker-build.yml` is deliberately absent from that table: the library
+lists it under `not_consumed`, not `not_yet_adopted` — this pipeline's
+`.build-image-base` is not on an adoption path.
+
+The one remaining local job with a library counterpart, `version-bump-bot`, is
+documented at [Version bump bot](#version-bump-bot).
 
 Rules of engagement:
 
@@ -101,6 +114,15 @@ Rules of engagement:
   the library (`weisssrv-lib/scripts/check-lib-pins.py`) like
   `version-bump-mr.py`; re-copy it when the ref moves rather than editing it
   here.
+- **The molecule fallback image tags ride the same pin.** Each integration
+  scenario writes `${MOLECULE_TEST_IMAGE:-…/molecule-test:vX.Y.Z}` and
+  `ansible/TESTING.md` repeats it. CI always overrides the variable
+  (`.gitlab/ci/integration-jobs.yml` builds it from `$WEISSSRV_LIB_REF`), so a
+  stale literal is invisible in the pipeline and only makes a LOCAL
+  `task ansible:test-integration` run validate against an old image.
+  `scripts/check-molecule-image-pin.py` gates them (via `python-tests` /
+  `scripts:test`) and `--fix` rewrites them. It is site-local rather than part of
+  `check-lib-pins.py` because that script is vendored byte-identical.
 - **Pins duplicated into `include:` inputs are gated too.** `include:` inputs
   cannot read `variables:`, so `kustomize_version`, `kustomize_sha256`,
   `pytest_version` and `pyyaml_version` appear both places. The `ci-pin-parity`
@@ -160,9 +182,15 @@ manager pod:
 
 **Secret selection — three more guards**: `type == kubernetes.io/dockercfg`
 (narrowed server-side with a `fieldSelector`, so the list never returns the
-runner token or SA-token Secrets at all); name starts with `runner-`; and not
-still referenced by a live pod via `imagePullSecrets` or owned via
-`ownerReferences.uid`, so a Secret is only reaped once its job pod is gone.
+runner token or SA-token Secrets at all); the **same**
+`runner-*-project-*-concurrent-*` name shape as the pods, because the Secret is
+named from the same `ProjectUniqueName` (a bare `runner-` prefix is not enough —
+a hand-created `runner-registry` credential would match that); and not still
+referenced by a live pod via `imagePullSecrets` or owned via
+`ownerReferences.uid`, so a Secret is only reaped once its job pod is gone. That
+last guard is only as good as the live-pod listing behind it, so a budget stop
+*during* that listing skips the namespace's secret sweep outright rather than
+judging references against a partial set.
 
 **Grace floors.** A terminal pod is deleted only if its newest container
 termination time is more than `MAX_AGE_MINUTES` (30) in the past, measured from
@@ -652,7 +680,7 @@ op read "op://Homelab/SSH Key/private key" > ~/.ssh/id_ed25519
 chmod 600 ~/.ssh/id_ed25519
 
 # Run Ansible via op run so inline `op://...` env refs are injected at runtime
-op run -- ansible-playbook -i inventories/prod playbooks/site.yml
+op run -- ansible-playbook -i ansible/inventories/prod ansible/playbooks/site.yml
 ```
 
 **Kubernetes secrets (no CI involvement)**:
@@ -664,9 +692,9 @@ secrets in the cluster are `external-secrets/op-credentials` and
 `external-secrets/onepassword-connect-token`, created once during initial setup.
 See `task flux:bootstrap-onepassword` for instructions and `docs/29-flux-operations.md`.
 
-### Required 1Password Items
+### 1Password items the pipeline reads
 
-Core 1Password items used by the CI/CD pipeline (see
+Items a CI job performs an `op read` for (see
 [docs/15-credential-rotation.md](./15-credential-rotation.md) "Required 1Password
 Items" for the complete list of items referenced by ExternalSecrets in the cluster):
 
@@ -675,11 +703,16 @@ Items" for the complete list of items referenced by ExternalSecrets in the clust
 | SSH Key | `private key` | Ansible deployments |
 | Cloudflare Terraform Token | `credential`, `username` | Terraform `terraform-plan` / `deploy-terraform` |
 | Tailscale OAuth | `client id`, `credential` | `tailscale-drift-plan` (read-only ACL drift plan) |
-| GitLab API Token | `credential` | `pr-agent-review` (AI code review); also hard-asserted by `task gitlab:deploy` |
-| OpenAI API Key | `api-key` | `pr-agent-review` (AI code review) |
+| GitLab API Token | `credential` | `deploy-gitlab` (`GITLAB_ADMIN_API_TOKEN`) and `task gitlab:deploy` — an **instance-admin** PAT |
 | GitHub Token | `credential` | `version-bump-bot` (via `task maintenance:update-all-versions`, which runs its checker under `op run`) |
 | GitLab Version Bump Bot Token | `credential` | `version-bump-bot` — the item of record for the `VERSION_BUMP_BOT_TOKEN` CI variable, which is what the job actually reads |
 
+> `pr-agent-review` reads **no** vault item: it runs `secrets_source: env` and
+> takes `GITLAB__PERSONAL_ACCESS_TOKEN` (the `weisssrv-review-bot` project access
+> token) and `OPENAI__KEY` from masked CI variables, because the job's script
+> comes from the branch under review. The **OpenAI API Key** item's consumer is
+> Mealie, in-cluster (docs/15).
+>
 > `version-check` itself does **not** read a 1Password item for GitHub
 > rate-limit headroom — it uses the optional masked `GH_API_TOKEN` variable (see
 > Optional Variables above). The **GitHub Token** item entered CI with
@@ -963,6 +996,13 @@ If secret detection flags a false positive:
    turns the gate off for a whole tree with no record of why.
 
 ## Related documentation
+
+- [docs/16-next-steps.md](./16-next-steps.md) — the roadmap, including the open CI items
+- [docs/15-credential-rotation.md](./15-credential-rotation.md) — the canonical 1Password inventory
+- [docs/29-flux-operations.md](./29-flux-operations.md) — what happens after a merge to `main`
+- [docs/27-gitlab-deployment.md](./27-gitlab-deployment.md) — the GitLab instance and its runners
+
+## External references
 
 - [GitLab CI/CD Documentation](https://docs.gitlab.com/ee/ci/)
 - [GitLab Secret Detection](https://docs.gitlab.com/ee/user/application_security/secret_detection/)

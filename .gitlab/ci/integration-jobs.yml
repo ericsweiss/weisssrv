@@ -1,37 +1,26 @@
 ---
-# Integration-test matrix — the five multi-container stack scenarios.
+# Integration-test matrix — the five multi-container stack scenarios, which
+# exercise ROLE COMBINATIONS against this repo's prod group_vars (the per-role
+# molecule matrix lives in weisssrv-lib, which owns the roles).
 #
-# In its OWN file, included locally from .gitlab-ci.yml, so that
-# `.paths-integration` can name this file instead of `.gitlab-ci.yml`: the
-# matrix is a ~14-minute privileged-DinD fan-out on the critical path to
-# validation-gate, and pointing its trigger at the whole pipeline file fired it
-# on every CI-only edit. The build jobs already avoid the same trap by leaving
-# `.gitlab-ci.yml` out of their `changes:` lists.
+# In its OWN file so `.paths-integration` can name this file rather than
+# .gitlab-ci.yml: the matrix is a long privileged-DinD fan-out on the critical
+# path, and triggering it on the whole pipeline file fired it on every CI edit.
 #
-# It uses `!reference` into .gitlab-ci.yml (`.paths-integration`), which
-# resolves after includes are merged. YAML ANCHORS would NOT — do not introduce
-# any here.
+# `!reference` into .gitlab-ci.yml resolves after includes are merged; YAML
+# ANCHORS would NOT — do not introduce any here.
 #
 # scripts/check-integration-matrix-coverage.sh reads the matrix out of this
 # file: its callers pass CI_FILE=.gitlab/ci/integration-jobs.yml.
-
-# The role molecule matrix lives in weisssrv-lib, which owns the roles. What
-# stays here are the five multi-container stack tests: they exercise ROLE
-# COMBINATIONS against this repo's prod group_vars, which is a weisssrv
-# property the library cannot test.
 #
-# They need Docker-in-Docker, so they run on the privileged infrastructure
-# runner (gitlab-runner-privileged Helm release, tags: infrastructure). That
-# runner is Flux-managed: edit kubernetes/apps/gitlab-runner-privileged/
-# release.yaml and push.
+# Docker-in-Docker, so these run on the privileged infrastructure runner, which
+# is Flux-managed (kubernetes/apps/gitlab-runner-privileged/release.yaml).
 .integration-test-job:
   stage: test
-  # Backstop for infra-class scheduling failures (a job pod that can't be placed
-  # during transition churn surfaces as runner_system_failure). Deliberately NOT
-  # script_failure (a failing test must not be masked — transient container
-  # start storms are handled by the in-job destroy+jitter loop in
+  # Infra-class scheduling failures only. Deliberately NOT script_failure (that
+  # would mask a failing test; container start storms are handled by
   # scripts/molecule-retry.sh) and NOT stuck_or_timeout_failure (a hung test
-  # should fail fast, not burn another full timeout).
+  # should fail fast rather than burn another timeout).
   retry:
     max: 2
     when:
@@ -45,10 +34,9 @@
       optional: true
     - job: yaml-lint
       optional: true
-  # The library's pre-built CI runner image (docker-cli + molecule + ansible +
-  # its dependency collections baked in), pinned to the same tag as every other
-  # library include. `image:` expands $VAR but not bash defaults, so the ref
-  # lives in the variables block below.
+  # The library's pre-built CI runner image, pinned to the same tag as every
+  # other library include. `image:` expands $VAR but not bash defaults, so the
+  # ref lives in the variables block below.
   image: $MOLECULE_CI_IMAGE
   services:
     # Digest-pinned (multi-arch index), matching the library's molecule jobs.
@@ -57,9 +45,8 @@
     # registry-cache, docs/27) is plaintext HTTP, network-fenced to this
     # namespace; every fresh DinD daemon needs the flag to pull from it.
     - name: docker:27.5.1-dind@sha256:aa3df78ecf320f5fafdce71c659f1629e96e9de0968305fe1de670e0ca9176ce
-      # Explicit: the runner derives a service alias from the image name, and a
-      # digest-bearing name must still answer at the `docker` host DOCKER_HOST
-      # points at.
+      # Required: a digest-bearing image name must still answer at the `docker`
+      # host DOCKER_HOST points at.
       alias: docker
       command: ["--insecure-registry=registry-cache.registry-cache.svc.cluster.local:5000"]
   variables:
@@ -110,9 +97,17 @@
     reports:
       junit: junit/*.xml
   # Multi-container scenarios run 2-3 systemd containers through full role
-  # stacks; base-infrastructure alone is ~12m idle, and the in-job wrapper
-  # retries molecule up to 4 attempts.
-  timeout: 35m
+  # stacks; base-infrastructure alone is ~12m idle.
+  #
+  # Budgeted ABOVE MOL_MAX x worst-case attempt, not at it. dns-stack has burned
+  # 33.5m of a 35m budget on four attempts (each dying on the same external
+  # AdGuard release fetch), which lands as `stuck_or_timeout_failure` with the
+  # trace truncated — the one failure mode that hides its own diagnosis. With
+  # headroom the fourth attempt finishes and the job fails as a molecule error
+  # naming the task. Upstream is closing the flake itself (get_url retries in the
+  # adguard_home role, cached release tarballs in molecule-test); until that
+  # lands, this keeps the failure readable.
+  timeout: 50m
   script:
     - cd "ansible/integration-tests/$TEST"
     # Shared destroy+jitter retry (scripts/molecule-retry.sh) — multi-container

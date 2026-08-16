@@ -1,6 +1,4 @@
 ---
-# Default-deny egress; explicit allows below. (default-deny-ingress comes from
-# the shared ../../components/netpol-baseline component.)
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

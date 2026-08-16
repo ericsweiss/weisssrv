@@ -287,8 +287,8 @@ enable: 1
 
 [RULES]
 
-GROUP sg-host-admin
-GROUP sg-web-server
+GROUP sg-vm-admin
+GROUP sg-metrics
 
 # Allow HTTP/HTTPS from LAN
 IN ACCEPT -source 192.168.0.0/24 -p tcp -dport 80 -log nolog

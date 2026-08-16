@@ -15,17 +15,11 @@
 # choice; the module's for_each key sets come from configuration, not state, so
 # a partially-imported state cannot make an address unresolvable.
 #
-# "Already in state" therefore means EITHER address. `moved` blocks are written
-# to state only by `terraform apply`, while `terraform state list` reads the raw
-# state — so between this change merging and the supervised apply that persists
-# moved.tf, state still holds the PRE-MOVE root addresses. Matching only the new
-# ones would re-import all 44 objects into the very addresses the moves target,
-# and Terraform then refuses the moves ("existing objects already at the
-# intended addresses"), stranding the old addresses as configuration-less
-# orphans that plan as DESTROY. The old↔new pairs are read out of moved.tf
-# rather than hardcoded, so the guard cannot drift from it; once moved.tf is
-# deleted (after the apply has persisted the addresses) the window is closed and
-# the pair list is simply empty.
+# "Already in state" means EITHER address while moved.tf exists: `moved` blocks
+# reach state only on apply, so pre-apply state still holds the pre-move root
+# addresses, and re-importing into the addresses the moves target makes
+# Terraform refuse the moves and strand the old ones as DESTROY-planned orphans.
+# Pairs are read out of moved.tf, not hardcoded, so the guard cannot drift.
 #
 # Invoke via `task terraform:authentik-import` (wraps this in `op run` with
 # the TF_VAR_* credentials and TF_HTTP_* state backend env).
@@ -81,16 +75,11 @@ module.sso.authentik_application.this["qbittorrent"]|qbittorrent
 module.sso.authentik_application.this["tv"]|tv
 '
 
-# IMPORTS above is a hand-maintained copy of imports.tf. Derive the same
-# address|id set FROM imports.tf and diff the two, so no pair can drift: a
-# transposed group uuid would bind e.g. module.sso.authentik_group.this["gitlab-users"] to
-# the grafana-users object, and the very next supervised apply would rewrite both
-# groups' membership and every binding pointing at them.
-#
-# The extractor understands exactly the three block shapes imports.tf uses (plain
-# to/id, for_each over local.imported_application_slugs, for_each over an inline
-# uuid map). A fourth shape aborts rather than silently under-reporting, which
-# would turn this guard back into the application-only check it replaced.
+# Cross-check the hand-maintained IMPORTS list against imports.tf so no
+# address|id pair can drift — a transposed uuid binds a resource to the wrong
+# object and the next apply rewrites both. The extractor handles exactly
+# imports.tf's three block shapes and aborts on a fourth rather than
+# under-reporting.
 derived_imports="$(awk '
 function fail(msg) { print "extractor: " msg > "/dev/stderr"; aborted = 1; exit 2 }
 function strip(s) { gsub(/^[ \t]*[a-z_]+[ \t]*=[ \t]*/, "", s); gsub(/[ \t]+$/, "", s); return s }

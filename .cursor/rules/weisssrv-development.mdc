@@ -10,5 +10,4 @@ At the start of any task in this repository, read
 non-negotiable workflow (branch + MR, never push `main`, no secrets in git, Flux
 owns `kubernetes/`, single-source version pins), the pre-MR gate commands, and a
 change-type decision tree pointing at every canonical doc. `CLAUDE.md` remains
-the top-level fact source; this rule and `.cursorrules` both defer to it and to
-the skill.
+the top-level fact source; this rule defers to it and to the skill.

@@ -1,33 +1,18 @@
-# GitLab Agent for Kubernetes configuration
-# Agent name: weisssrv-k3s
-# Cluster: 9-node k3s cluster (3 servers + 6 agents)
-#
-# This agent provides:
-# - Kubernetes dashboard in GitLab UI (Operate > Kubernetes clusters)
-# - Cluster resource queries for GitLab observability
-#
 # NOTE: CI jobs do NOT currently use this agent's kubeconfig — the k8s-touching
-# jobs (.k3s-deploy-base, .maintenance-base, deploy-verify) read a long-lived
-# kubeconfig from 1Password (op://Homelab/K3s Kubeconfig). The ci_access grant
-# below is retained for a future migration to the agent's scoped, short-lived
-# credential; until then it is unused by the pipeline.
-
-# Allow CI/CD pipelines from these projects to use this agent's kubeconfig
+# jobs read a long-lived kubeconfig from 1Password. The ci_access grant below is
+# retained for a future migration to the agent's scoped, short-lived credential;
+# until then it is unused by the pipeline.
 ci_access:
   projects:
     - id: eric/weisssrv
 
-# Observability: allow GitLab to query cluster resources for the dashboard
+# Lets GitLab query cluster resources for the dashboard.
 observability:
   logging:
     level: warn
 
-# Disable the remote_development module: as of agentk v19 it makes a
-# synchronous GET to /api on the in-cluster K8s apiserver at startup and
-# bails fatally on any error. We don't use Web IDE / remote workspaces
-# from this agent, and the startup probe was racing with kube-router's
-# NetworkPolicy enforcement and crashlooping the pod. Disabling skips
-# the call entirely so agentk comes up cleanly regardless of the egress
-# race window.
+# remote_development off: agentk >= v19 hard-fails at startup on its synchronous
+# apiserver probe, which races NetworkPolicy enforcement. Unused here (no Web
+# IDE / remote workspaces).
 remote_development:
   enabled: false

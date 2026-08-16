@@ -614,6 +614,140 @@ def test_terraform_module_refs_match_the_ci_variable():
             )
 
 
+def test_molecule_image_literals_match_the_ci_variable():
+    """The `${MOLECULE_TEST_IMAGE:-...:vX.Y.Z}` fallbacks in the integration
+    scenarios and ansible/TESTING.md are copies of the library pin.
+
+    CI always overrides MOLECULE_TEST_IMAGE from $WEISSSRV_LIB_REF, so a stale
+    literal is invisible in the pipeline and only bites a LOCAL
+    `task ansible:test-integration-*`, which then validates roles against an old
+    image. check-lib-pins.py cannot see them (include block + requirements.yml
+    only) and is vendored byte-identical, so the gate lives in the site-local
+    check-molecule-image-pin.py — run here so it rides `task lint`.
+    """
+    run = subprocess.run(
+        [sys.executable, str(SCRIPTS / "check-molecule-image-pin.py")],
+        capture_output=True, text=True, cwd=REPO,
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+
+
+def test_no_tenant_onboards_while_traefik_allows_cross_namespace():
+    """The docs/30 pre-onboarding checklist, as a build failure.
+
+    Traefik's `allowCrossNamespace: true` is an accepted single-operator risk
+    with nothing enforcing the precondition, while tenant-crd-editor already
+    grants a future tenant full traefik.io write. The gate fires on the exact
+    commit that adds a tenant wiring file, not a checklist re-read.
+    """
+    run = subprocess.run(
+        [sys.executable, str(SCRIPTS / "check-tenant-traefik-isolation.py")],
+        capture_output=True, text=True, cwd=REPO,
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+
+
+def test_the_tenant_isolation_gate_fires_on_a_tenant(tmp_path):
+    """A gate that cannot fail is worse than none: prove it trips once a second
+    resource joins the tenants kustomization."""
+    check = _load("check-tenant-traefik-isolation.py")
+    for rel in (check.TENANTS_KUSTOMIZATION, check.TRAEFIK_RELEASE):
+        dst = tmp_path / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_text((REPO / rel).read_text())
+
+    assert check.check(tmp_path) == []
+
+    kustomization = tmp_path / check.TENANTS_KUSTOMIZATION
+    kustomization.write_text(
+        kustomization.read_text().replace(
+            "  - tenant-crd-editor.yaml",
+            "  - tenant-crd-editor.yaml\n  - some-tenant.yaml",
+        )
+    )
+    problems = check.check(tmp_path)
+    assert problems and "some-tenant.yaml" in problems[0]
+
+    release = tmp_path / check.TRAEFIK_RELEASE
+    release.write_text(
+        release.read_text().replace(
+            "allowCrossNamespace: true", "allowCrossNamespace: false"
+        )
+    )
+    assert check.check(tmp_path) == []
+
+
+def test_the_tailscale_policy_passes_its_gate():
+    """policy.hujson parses, declares every tag it uses, and auto-approves
+    exactly the routes the inventory advertises — the three things nothing else
+    checks before the supervised apply against the live tailnet."""
+    run = subprocess.run(
+        [sys.executable, str(SCRIPTS / "check-tailscale-policy.py")],
+        capture_output=True, text=True, cwd=REPO,
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+
+
+def test_the_tailscale_gate_catches_an_undeclared_tag_and_a_route_drift(tmp_path):
+    """Both semantic arms must be able to fire — a syntax-only gate is what this
+    replaced."""
+    gate = _load("check-tailscale-policy.py")
+    policy = tmp_path / gate.POLICY
+    policy.parent.mkdir(parents=True, exist_ok=True)
+    for rel in gate.INVENTORY_GLOBS:
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+    proxmox = tmp_path / "ansible/inventories/prod/group_vars/proxmox.yml"
+    proxmox.write_text('tailscale_advertise_routes:\n  - "192.168.0.0/24"\n')
+
+    good = (
+        '{\n'
+        '  // comment with a https:// url\n'
+        '  "groups": {"group:admins": ["a@example.com"]},\n'
+        '  "tagOwners": {"tag:router": ["a@example.com"]},\n'
+        '  "acls": [{"action": "accept", "src": ["group:admins"],\n'
+        '            "dst": ["tag:router:22,443"]}],\n'
+        '  "ssh": [],\n'
+        '  "autoApprovers": {"routes": {"192.168.0.0/24": ["tag:router"]}},\n'
+        '}\n'
+    )
+    policy.write_text(good)
+    assert gate.check(tmp_path) == []
+
+    for bad_value in ('[]}', '"tag:router"}', '[42]}'):
+        policy.write_text(good.replace('["tag:router"]}', bad_value))
+        assert any("approver" in p for p in gate.check(tmp_path)), bad_value
+    policy.write_text(good)
+
+    policy.write_text(good.replace("tag:router:22,443", "tag:typo:22,443"))
+    assert any("tag:typo" in v for v in gate.check(tmp_path))
+
+    policy.write_text(good.replace('"192.168.0.0/24": ', '"10.0.0.0/8": '))
+    assert any("autoApprovers.routes" in v for v in gate.check(tmp_path))
+
+
+def test_cluster_config_value_reads_the_configmap():
+    """The VIPs host-side tooling consumes come from cluster-config, and an
+    absent key fails rather than yielding an empty sed/probe list."""
+    ok = subprocess.run(
+        [str(SCRIPTS / "cluster-config-value.sh"),
+         "cluster_metallb_public_vip", "cluster_api_vip"],
+        capture_output=True, text=True, cwd=REPO,
+    )
+    assert ok.returncode == 0, ok.stderr
+    config = yaml.safe_load(
+        (REPO / "kubernetes/infrastructure/sources/cluster-config.yaml").read_text()
+    )["data"]
+    assert ok.stdout.split() == [
+        config["cluster_metallb_public_vip"], config["cluster_api_vip"]
+    ]
+
+    missing = subprocess.run(
+        [str(SCRIPTS / "cluster-config-value.sh"), "cluster_not_a_key"],
+        capture_output=True, text=True, cwd=REPO,
+    )
+    assert missing.returncode != 0 and "cluster_not_a_key" in missing.stderr
+
+
 def test_the_gitlab_backup_companions_are_what_the_wrapper_copies():
     """`gitlab-backup-run.sh` drops `gitlab-secrets.json` and `gitlab.rb` beside
     the tarball, and the collector's `companions:` globs are what emit
@@ -632,3 +766,104 @@ def test_the_gitlab_backup_companions_are_what_the_wrapper_copies():
         a for a in data["nas_storage_backup_artifact_apps"] if a["name"] == "gitlab"
     )
     assert entry["companions"] == ["gitlab-secrets.json", "gitlab.rb"]
+
+
+class TestBackupAlertInstanceRegexes:
+    """The per-host existence witnesses spell their host set as a PromQL
+    character class, and adding a host to hosts.yml does not update it.
+
+    Both arms of those alerts are then silent for the new host: the timestamp
+    arm needs a series the host never emits, and the `up{instance=~...}` witness
+    — the arm that exists precisely to catch "this host emits nothing" — does
+    not select it. So the alert reports healthy for a host it no longer covers.
+    Derive the expectation from the inventory instead of eyeballing the class.
+    """
+
+    RULES = REPO / "kubernetes/infrastructure/observability/rules/scripts.yaml"
+    PORT = "9101"  # node_exporter_host; the k3s DaemonSet owns 9100 on this LAN
+    # alert -> the inventory group whose ansible_host set its witness must cover
+    WITNESSES = {
+        "VzdumpBackupStale": "proxmox",
+        "EtcdSnapshotStale": "k3s_servers",
+    }
+
+    @staticmethod
+    def _inventory_addresses() -> dict[str, str]:
+        """{inventory_hostname: ansible_host} across the whole prod inventory."""
+        found: dict[str, str] = {}
+
+        def walk(node) -> None:
+            if not isinstance(node, dict):
+                return
+            for name, host in (node.get("hosts") or {}).items():
+                if isinstance(host, dict) and host.get("ansible_host"):
+                    found[name] = str(host["ansible_host"])
+            for child in (node.get("children") or {}).values():
+                walk(child)
+
+        inventory = yaml.safe_load(
+            (REPO / "ansible/inventories/prod/hosts.yml").read_text()
+        )
+        walk(inventory.get("all") or {})
+        assert found, "parsed no ansible_host entries out of hosts.yml"
+        return found
+
+    @classmethod
+    def _group_members(cls, group: str) -> set[str]:
+        from test_host_log_staleness import _build_group_index, _resolve_hosts
+
+        inventory = yaml.safe_load(
+            (REPO / "ansible/inventories/prod/hosts.yml").read_text()
+        )
+        hosts = _resolve_hosts(group, _build_group_index(inventory))
+        assert hosts, f"group {group!r} resolved to no hosts (inventory drift?)"
+        return hosts
+
+    @classmethod
+    def _witness_pattern(cls, alert: str) -> str:
+        """The instance regex out of the alert's expr, as PromQL sees it.
+
+        The manifest is a plain YAML scalar, so `\\\\.` reaches PromQL as two
+        characters and PromQL's own double-quoted string unescapes them to one.
+        """
+        doc = yaml.safe_load(cls.RULES.read_text())
+        rules = [
+            rule
+            for group in doc["spec"]["groups"]
+            for rule in group["rules"]
+            if rule.get("alert") == alert
+        ]
+        assert len(rules) == 1, f"expected exactly one {alert} rule, found {len(rules)}"
+        match = re.search(r'instance=~"([^"]+)"', rules[0]["expr"])
+        assert match, f"{alert} has no instance=~ witness arm any more"
+        return match.group(1).replace("\\\\", "\\")
+
+    @pytest.mark.parametrize("alert,group", sorted(WITNESSES.items()))
+    def test_the_witness_covers_exactly_its_inventory_group(self, alert, group):
+        pattern = self._witness_pattern(alert)
+        addresses = self._inventory_addresses()
+        members = self._group_members(group)
+
+        uncovered = sorted(
+            f"{host} ({addresses[host]})"
+            for host in members
+            if host in addresses
+            and not re.fullmatch(pattern, f"{addresses[host]}:{self.PORT}")
+        )
+        assert not uncovered, (
+            f"{alert}'s instance regex {pattern!r} does not select {uncovered} — "
+            f"those {group} hosts are outside the existence witness, so the alert "
+            "reads healthy for a host emitting nothing. Widen the character class."
+        )
+
+        overreach = sorted(
+            f"{host} ({address})"
+            for host, address in addresses.items()
+            if host not in members
+            and re.fullmatch(pattern, f"{address}:{self.PORT}")
+        )
+        assert not overreach, (
+            f"{alert}'s instance regex {pattern!r} also selects {overreach}, which "
+            f"are not in {group} — the witness would fire for hosts that are not "
+            "supposed to emit the metric at all."
+        )

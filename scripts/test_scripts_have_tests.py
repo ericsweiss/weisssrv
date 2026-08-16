@@ -20,17 +20,26 @@ to the code, and re-listing them here would drift the moment the registry does.
 """
 from __future__ import annotations
 
+import os
+import re
 from pathlib import Path
 
 import pytest
 
-from test_vendored_byte_identity import registered_consumer_paths
+from test_vendored_byte_identity import (
+    registered_consumer_entries,
+    registered_consumer_paths,
+)
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO / "scripts"
 README = SCRIPTS / "README.md"
 
 _SCRIPT_SUFFIXES = {".py", ".sh"}
+# Site data and fixtures that sit in scripts/ alongside the code. They are
+# covered by test_site_configs.py / the promtool suites, not by a script test,
+# and some carry the executable bit from a checkout's umask.
+_NON_SCRIPT_SUFFIXES = {".yml", ".yaml", ".json", ".conf", ".env", ".toml", ".md"}
 
 # Operator-only scripts run by a human at a terminal, each with the reason no
 # suite is worth writing. Every entry is a claim that the script has no
@@ -48,9 +57,12 @@ EXEMPT = {
         "commands"
     ),
     "vpn-credcheck.sh": (
-        "prints which vpn-credentials keys the configured provider lacks; the "
-        "provider key map it reads is asserted by the download-clients "
-        "manifests, not by this wrapper"
+        "prints which vpn-credentials keys the configured provider lacks. Its "
+        "provider key map is restated in the sidecar manifest, the Taskfile "
+        "alias map and docs/21, with no lint gate keeping the four in step — "
+        "what covers the drift is `task downloads:vpn-provider`, which fails "
+        "closed on this script's rc=2 the moment the alias map names a provider "
+        "the script does not know"
     ),
     "maintenance-all-ops.sh": (
         "ordering wrapper: runs the maintenance ops in the documented order and "
@@ -72,13 +84,24 @@ EXEMPT = {
 }
 
 
-def _scripts() -> list[Path]:
+def _scripts(root: Path = SCRIPTS) -> list[Path]:
+    """Every script shipped under scripts/, recursively.
+
+    Recursive and NOT extension-keyed, matching the library's collector: an
+    executable with no suffix (the normal shape for a shebang script), a
+    `.bash`/`.pl`, or a helper under `scripts/lib/` is exactly as shipped — and
+    exactly as uncovered — as a `.py`. `.py`/`.sh` stay alongside the executable
+    bit because the vendored copies are sourced or invoked through an
+    interpreter and carry mode 644.
+    """
     return sorted(
         p
-        for p in SCRIPTS.iterdir()
+        for p in root.rglob("*")
         if p.is_file()
-        and p.suffix in _SCRIPT_SUFFIXES
+        and "__pycache__" not in p.parts
         and not p.name.startswith("test_")
+        and p.suffix not in _NON_SCRIPT_SUFFIXES
+        and (p.suffix in _SCRIPT_SUFFIXES or os.access(p, os.X_OK))
     )
 
 
@@ -141,6 +164,55 @@ def test_every_script_appears_in_the_scripts_readme():
     )
 
 
+def test_the_readme_origin_column_matches_the_library_registry():
+    """The Origin column is the readable view of the registry, so it must not
+    contradict it.
+
+    Six rows said `local` — "the library ships nothing equivalent" — for scripts
+    weisssrv-lib registers as vendored, inverting the maintenance rule for
+    exactly the files where a local edit is reverted by the next re-vendor.
+    Nothing noticed: the README gate above only asserts the filename appears
+    somewhere in the body.
+    """
+    registered = {Path(path).name: kind for kind, path in registered_consumer_entries()}
+    assert registered, (
+        "the weisssrv-lib registry resolved no entries — every Origin cell would "
+        "read as correct. See test_vendored_byte_identity.py for the checkout "
+        "requirement."
+    )
+    row = re.compile(r"^\|\s*`([\w.\-/]+)`\s*\|.*\|\s*(local|vendored|forked)\b[^|]*\|\s*$")
+    wrong = []
+    for line in README.read_text().splitlines():
+        match = row.match(line)
+        if not match:
+            continue
+        name, origin = Path(match.group(1)).name, match.group(2)
+        expected = registered.get(name, "local")
+        if origin != expected:
+            wrong.append(f"{name}: README says {origin}, registry says {expected}")
+    assert not wrong, (
+        "scripts/README.md Origin cells disagreeing with weisssrv-lib's "
+        "vendored-paths.yml:\n  " + "\n  ".join(sorted(wrong))
+    )
+
+
 def test_the_gate_sees_a_realistic_number_of_scripts():
     """A collection rule that stopped matching would exempt everything."""
     assert len(_scripts()) > 20, "the script walk resolved almost nothing"
+
+
+def test_the_collector_sees_the_shapes_an_extension_filter_missed(tmp_path):
+    """The hole this gate used to have: non-recursive and extension-keyed, so an
+    extensionless executable and anything in a subdirectory were invisible."""
+    (tmp_path / "gate.py").write_text("#!/usr/bin/env python3\n")
+    (tmp_path / "test_gate.py").write_text("")
+    (tmp_path / "config.yaml").write_text("---\n")
+    (tmp_path / "__pycache__").mkdir()
+    (tmp_path / "__pycache__" / "gate.pyc").write_text("")
+    shebang = tmp_path / "reap"
+    shebang.write_text("#!/usr/bin/env bash\n")
+    shebang.chmod(0o755)
+    (tmp_path / "lib").mkdir()
+    (tmp_path / "lib" / "helper.sh").write_text("")
+
+    assert [p.name for p in _scripts(tmp_path)] == ["gate.py", "helper.sh", "reap"]

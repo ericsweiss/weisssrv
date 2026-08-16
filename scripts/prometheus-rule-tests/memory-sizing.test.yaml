@@ -1,8 +1,9 @@
 ---
-# promtool unit tests for the three memory-sizing alerts:
+# promtool unit tests for the memory-sizing alerts:
 # VPARecommendationExceedsLimit (the VPA knows the workload needs more than its
-# limit allows), ContainerMemoryNearLimit (the live working set approaching the
-# same ceiling, hours earlier) and ContainerOOMKilled (the kill itself, which no
+# limit allows), ContainerMemoryNearLimit and its llama-only sibling
+# HindsightLlamaMemoryNearLimit (the live working set approaching the same
+# ceiling, hours earlier) and ContainerOOMKilled (the kill itself, which no
 # upstream rule reports for a container that restarts cleanly). Separate file
 # from autoscaling.test.yaml because that one evaluates at 6h ticks for
 # VPARecommendationCapped's 24h hold; these need 1m granularity.
@@ -15,7 +16,7 @@ rule_files:
   - rules.yaml
 evaluation_interval: 1m
 tests:
-  # Off-tier drift, replayed from the 2026-07-25 authentik-postgresql OOMKill: a
+  # Off-tier drift, replayed from a real authentik-postgresql OOMKill: a
   # 684Mi (716711186 B) recommendation against the 512Mi limit the container
   # actually had. The kube-state-metrics series carries its OWN namespace label
   # (observability, where KSM runs), so the rule's label_replace must rewrite it
@@ -268,8 +269,10 @@ tests:
         exp_alerts: []
 
   # hindsight/llama is GPU/model-pinned with a deliberate Off VPA and sits above
-  # 0.9 for ~15% of any month. Excluded by name — left in, it would fire
-  # near-continuously and erode the rule's credibility.
+  # 0.9 for ~15% of any month. Excluded by name from the 0.9 rule — left in, it
+  # would fire near-continuously and erode the rule's credibility. Its own band
+  # (HindsightLlamaMemoryNearLimit, 0.95) must stay silent here too: 0.93 is
+  # normal for this container.
   - interval: 1m
     input_series:
       - series: 'container_memory_working_set_bytes{namespace="hindsight", pod="llama-0", container="llama", node="k3s-agt-prec-01"}'
@@ -277,6 +280,35 @@ tests:
       - series: 'kube_pod_container_resource_limits{namespace="hindsight", pod="llama-0", container="llama", resource="memory", unit="byte", node="k3s-agt-prec-01"}'
         values: '1073741824+0x60'
     alert_rule_test:
+      - eval_time: 25m
+        alertname: ContainerMemoryNearLimit
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: HindsightLlamaMemoryNearLimit
+        exp_alerts: []
+
+  # The llama leading indicator: 0.96 of the limit held past the 15m hold. This
+  # is the band the 2026-08 OOMKill climbed through with nothing watching it.
+  - interval: 1m
+    input_series:
+      - series: 'container_memory_working_set_bytes{namespace="hindsight", pod="llama-0", container="llama", node="k3s-agt-prec-01"}'
+        values: '1030792151+0x60'
+      - series: 'kube_pod_container_resource_limits{namespace="hindsight", pod="llama-0", container="llama", resource="memory", unit="byte", node="k3s-agt-prec-01"}'
+        values: '1073741824+0x60'
+    alert_rule_test:
+      # Inside the 15m hold — a transient spike must not page.
+      - eval_time: 10m
+        alertname: HindsightLlamaMemoryNearLimit
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: HindsightLlamaMemoryNearLimit
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: hindsight
+              pod: llama-0
+              container: llama
+      # Still excluded from the generic 0.9 rule.
       - eval_time: 25m
         alertname: ContainerMemoryNearLimit
         exp_alerts: []

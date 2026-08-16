@@ -2,13 +2,10 @@
 # Plex Media Server LXC container configuration
 # Running on pve-nas-01 (192.168.0.102)
 
-# Proxmox host for this container
 proxmox_host: pve-nas-01
 
-# Proxmox resource pool for organization
 proxmox_resource_pool: apps-public
 
-# LXC container configuration
 proxmox_lxc_cores: 4
 proxmox_lxc_memory: 8192
 proxmox_lxc_swap: 2048
@@ -21,8 +18,6 @@ proxmox_lxc_storage: ssd
 # Nesting required for systemd 257+ (Debian 13).
 proxmox_lxc_nesting: true
 
-# Container startup configuration
-# Boot order strategy: DNS (10) -> SMTP (20) -> k3s servers (30) -> k3s agents (40) -> apps (50)
 #
 # onboot=0: the rootfs and the mp0 /config bind (/mnt/ssd/appdata/plex) both
 # live on the ENCRYPTED ssd pool, so pct start fails until ssd unlocks. This CT

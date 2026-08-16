@@ -1,7 +1,12 @@
 # The embedded outpost, adopted by import (imports.tf). The object itself is
 # authentik-managed; its provider list is the one user-touched knob, and pinning
-# it here means `terraform plan` catches a forward-auth app that was never
-# assigned (which otherwise surfaces as a 404 at the outpost).
+# it here means a UI removal from the outpost surfaces as drift in
+# `authentik-drift-plan` instead of as a silent 404.
+#
+# What `terraform plan` does NOT catch: the module builds protocol_providers
+# purely from this list, so a proxy provider defined in providers_proxy.tf but
+# never added here plans clean and 404s at the outpost. Step 4 of the
+# forward-auth checklist in README.md is the only control.
 #
 # Rules:
 # - proxy_provider_keys is ORDERED (the API preserves insertion order) — APPEND
@@ -25,6 +30,7 @@ locals {
       "lidarr",
       "adguard_01",
       "adguard_02",
+      "traefik_dashboard",
     ]
   }
 }

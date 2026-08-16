@@ -2,19 +2,6 @@
 
 This document covers the architecture and procedures for the 6-node Proxmox HA cluster with k3s running across all hosts. It includes reference material for storage configuration, host setup procedures, and HA management.
 
-## Table of Contents
-
-1. [Current State](#current-state)
-2. [IP and VMID Allocation Scheme](#ip-and-vmid-allocation-scheme)
-3. [Node Labels and Taints](#node-labels-and-taints)
-4. [Section 1: Adding local-ssd ZFS Pool (Reference)](#section-1-adding-local-ssd-zfs-pool-reference)
-5. [Section 2: Setting Up Proxmox Hosts (Reference)](#section-2-setting-up-proxmox-hosts-reference)
-6. [Section 3: Proxmox HA Configuration (Reference)](#section-3-proxmox-ha-configuration-reference)
-7. [Network Diagram](#network-diagram)
-8. [Related documentation](#related-documentation)
-
----
-
 ## Current State
 
 **Proxmox Cluster (weisssrv)** — 6 nodes, fully quorate. **K3s Cluster** — 9
@@ -331,6 +318,7 @@ Follow `docs/00-hardware-setup.md` for the full Proxmox installation procedure. 
 | pve-laptop-01 | 192.168.0.103/24 | pve-laptop-01.esweiss.com |
 | pve-opt-01 | 192.168.0.104/24 | pve-opt-01.esweiss.com |
 | pve-opt-02 | 192.168.0.105/24 | pve-opt-02.esweiss.com |
+| pve-opt-03 | 192.168.0.106/24 | pve-opt-03.esweiss.com |
 | pve-prec-01 | 192.168.0.107/24 | pve-prec-01.esweiss.com |
 
 Gateway: 192.168.0.1, DNS: 192.168.0.150 (use 192.168.0.1 if DNS stack is not yet deployed).
@@ -339,29 +327,13 @@ Gateway: 192.168.0.1, DNS: 192.168.0.150 (use 192.168.0.1 if DNS stack is not ye
 
 For hosts with a dedicated 1TB SSD (all compute nodes):
 
+Use the canonical pool-creation commands in
+[Section 1 Step 2](#step-2-create-the-zfs-pool) above (identify the disk by
+`/dev/disk/by-id/`, `zpool create` with the VM-tuned properties, `autotrim=on`),
+then register the pool with Proxmox:
+
 ```bash
-# Identify the SSD
-ls -la /dev/disk/by-id/ | grep -i samsung
-
-# Create pool (replace SERIALNUMBER with actual serial)
-# NOTE: Use lz4 (not zstd) and atime=off for VM workloads
-sudo zpool create -f -o ashift=12 \
-    -O acltype=posixacl \
-    -O compression=lz4 \
-    -O normalization=formD \
-    -O atime=off \
-    -O xattr=sa \
-    local-ssd \
-    /dev/disk/by-id/ata-Samsung_SSD_870_EVO_1TB_SERIALNUMBER
-
-# Enable autotrim for SSD longevity
-sudo zpool set autotrim=on local-ssd
-
-# Register as Proxmox storage
 sudo pvesm add zfspool local-ssd --pool local-ssd --content images,rootdir
-
-# Verify
-sudo zpool status local-ssd
 sudo pvesm status
 ```
 
@@ -372,7 +344,7 @@ sudo pvesm status
 ```bash
 # On the NEW node, join the existing cluster
 # Get the join command from an existing cluster member first:
-ssh eric@192.168.0.102 "sudo pvecm create weisssrv-cluster"  # only if cluster does not exist yet
+ssh eric@192.168.0.102 "sudo pvecm create weisssrv"  # only if cluster does not exist yet (docs/26 Phase 2 owns cluster formation)
 
 # On an existing member, get the join info:
 ssh eric@192.168.0.102 "sudo pvecm status"
@@ -473,7 +445,7 @@ curl -sk https://192.168.0.161:6443/healthz
 - **K3s nodes**: k3s-srv-prec-01 (.227/227) + k3s-agt-prec-01 (.207/207)
 - **Storage**: 1TB Samsung 870 EVO as `local-ssd`
 - **Agent role**: General + compute with `PreferNoSchedule` taint
-- **Agent specs**: 6 vCPU, 12GB RAM (`vm_memory: 12288` in hosts.yml — the source of truth)
+- **Agent specs**: see the `k3s-agt-prec-01` block in `hosts.yml` — the source of truth (its memory is a hard reservation for the GPU workload; docs/43)
 - **Notes**:
   - Workstation-class hardware with more capable CPU than the OptiPlex nodes
   - Good candidate for GPU passthrough if the Precision has a discrete GPU
@@ -888,12 +860,10 @@ Internet
     |   +-- pve-opt-03    (.106) -- Compute
     |   +-- pve-prec-01   (.107) -- Compute
     |
-    +-- Infrastructure (HA-managed, floating IPs)
-    |   +-- dns-01     (.150)  -- Primary DNS (floats via HA)
-    |   +-- smtp-relay (.151)  -- Mail relay (floats via HA)
-    |   +-- plex       (.152)  -- Plex (NAS-bound, no HA)
-    |   +-- home       (.154)  -- Home Assistant VM (floats via HA)
-    |   +-- dns-02     (.160)  -- Secondary DNS (floats via HA)
+    +-- Infrastructure guests (.150-.160)
+    |   HA-managed: dns-01, dns-02, smtp-relay, home (Home Assistant)
+    |   Node-bound: plex, gitlab, windows, nextcloud, immich, immich-ml
+    |   (full list with addresses and doc pointers: docs/01-overview.md)
     |
     +-- K3s Servers (.22X) -- 3-node etcd quorum
     |   +-- k3s-srv-nas-01    (.222) on pve-nas-01
@@ -909,6 +879,7 @@ Internet
     |   +-- k3s-agt-prec-01   (.207) on pve-prec-01    [general, compute]
     |
     +-- Virtual IPs
+        +-- vip-wg-easy   (.99)  -- MetalLB (wg-easy UDP endpoint, docs/38)
         +-- vip-public    (.100) -- MetalLB (managed by MetalLB)
         +-- vip-internal  (.101) -- MetalLB (managed by MetalLB)
         +-- k3s-api       (.161) -- kube-vip (managed by kube-vip)

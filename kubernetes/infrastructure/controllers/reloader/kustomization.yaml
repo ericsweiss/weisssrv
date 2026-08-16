@@ -1,8 +1,6 @@
 ---
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-# Single-namespace dir: set the namespace so the shared NetworkPolicy components
-# (added below) land in reloader.
 namespace: reloader
 resources:
   - namespace.yaml

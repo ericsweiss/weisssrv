@@ -12,7 +12,8 @@ managed vs deliberately unmanaged, the secret-injection table, provider
 quirks, and the add-an-app recipe; this page covers day-2 operations.
 
 The resource **shape** now comes from the weisssrv-lib `authentik-sso` module at
-the `?ref=` pinned in `main.tf` (v0.7.0); the files here hold this site's data as
+the `?ref=` pinned in `main.tf` — held equal to `WEISSSRV_LIB_REF` by
+`scripts/test_site_configs.py`; the files here hold this site's data as
 one map per object class. Nothing about the workflow below changed with that
 move — plan is still read-only, apply is still supervised, and no live object is
 touched: `moved.tf` re-addresses all 78 resource instances, so the first plan
@@ -58,7 +59,9 @@ Two consequences of the module adoption an operator meets first:
 2. `task terraform:authentik-plan` — the diff must contain exactly what you
    meant to change and nothing else.
 3. MR → merge. The `authentik-drift-plan` CI job (advisory, `allow_failure`)
-   re-plans on authentik-module MRs and on the schedule.
+   re-plans post-merge on `main` and on the schedule — it has no
+   `merge_request_event` rule (it materializes vault secrets), so step 2's local
+   plan is the pre-merge control.
 4. Supervised apply (see ground rules), then `task terraform:authentik-plan`
    again to confirm clean.
 

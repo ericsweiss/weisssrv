@@ -4,69 +4,63 @@
 #
 # Covers: AdGuard Home, adguardhome-sync, Tailscale, Plex, Ansible collections
 # This playbook is also imported by update-full.yml (single source of truth)
+#
+# The upgrades themselves are the collection roles — every one of them is
+# version-aware and idempotent (adguard_home compares the running binary against
+# adguard_home_version, adguard_sync goes through the shared prometheus_exporter
+# install pipeline, tailscale/plex install the pinned apt version behind a hold).
+# Re-implementing them here produced two divergent upgrade paths, so this
+# playbook now only carries the site-specific steps the roles genuinely lack.
 
 - name: Update AdGuard Home
   hosts: dns
   become: true
   serial: 1  # One host at a time to maintain DNS availability
-  vars:
-    force_adguard_upgrade: false  # Set to true to force upgrade even if version matches
+  # With serial: 1 a failure on the first resolver must stop the run before the
+  # second batch takes the surviving resolver down too.
+  any_errors_fatal: true
   tasks:
-    - name: Check current AdGuard Home version
-      ansible.builtin.command: "{{ adguard_home_install_path }}/AdGuardHome --version"
-      register: current_version
-      changed_when: false
-      failed_when: false
-
-    - name: Display current version
+    - name: Display target AdGuard Home version
       ansible.builtin.debug:
-        msg: "Current: {{ current_version.stdout | default('not installed') }}, Target: {{ adguard_home_version }}"
+        msg: "Reconciling {{ inventory_hostname }} to AdGuard Home {{ adguard_home_version }}"
 
-    - name: Determine if upgrade needed
-      ansible.builtin.set_fact:
-        needs_upgrade: >-
-          {{
-            force_adguard_upgrade or
-            current_version.rc != 0 or
-            adguard_home_version not in (current_version.stdout | default(''))
-          }}
+    - name: Check for an installed AdGuard Home configuration
+      ansible.builtin.stat:
+        path: "{{ adguard_home_install_path }}/AdGuardHome.yaml"
+      register: adguard_home_config_stat
 
-    - name: Skip if no upgrade needed
-      ansible.builtin.debug:
-        msg: "AdGuard Home already at version {{ adguard_home_version }}, skipping"
-      when: not needs_upgrade
+    # Suffix from a task-time controller lookup, NOT ansible_date_time.epoch:
+    # ansible.cfg sets gathering = smart, so facts are gathered once per RUN and
+    # that epoch is frozen for every play in it — two backups in one run would
+    # collide on the suffix and the second copy would no-op onto the first,
+    # discarding the pre-upgrade config it was meant to preserve.
+    # Gated on the stat: on a host where the role has not installed a config yet
+    # this play would otherwise fail on a missing source.
+    - name: Back up the AdGuard Home configuration before the upgrade
+      ansible.builtin.copy:
+        src: "{{ adguard_home_install_path }}/AdGuardHome.yaml"
+        dest: "{{ adguard_home_install_path }}/AdGuardHome.yaml.backup-{{ lookup('pipe', 'date +%s') }}"
+        remote_src: true
+        mode: "0644"
+      when: adguard_home_config_stat.stat.exists
 
-    # Upgrade AdGuard with error handling to ensure service always restarts
-    - name: Upgrade AdGuard Home with failure recovery
-      when: needs_upgrade
+    # DNS chicken-and-egg: each resolver points /etc/resolv.conf at itself, so
+    # the window where the role stops AdGuardHome to swap the binary would leave
+    # this host with no resolution. Point it at the peer first — serial: 1, so
+    # the peer is always the one that is NOT being upgraded. On success the
+    # role's own resolv_conf pass puts the file back to 127.0.0.1 (immutable) at
+    # the end of the run; the always: below is what covers the failure path,
+    # which otherwise leaves the resolver stopped and resolv.conf mutable.
+    - name: Upgrade AdGuard Home behind the peer resolver
       block:
-        # Set architecture for download URL (same logic as adguard_home role)
-        - name: Set AdGuard Home architecture
-          ansible.builtin.set_fact:
-            adguard_arch: "{{ 'arm64' if ansible_architecture == 'aarch64' else 'amd64' }}"
-
-        # DNS chicken-and-egg fix: Each DNS server uses itself for resolution.
-        # Before stopping AdGuard, configure it to use the OTHER DNS server temporarily.
-        # Since serial: 1, dns-01 upgrades first (uses dns-02), then dns-02 (uses dns-01).
-        - name: Backup resolv.conf
-          ansible.builtin.copy:
-            src: /etc/resolv.conf
-            dest: /etc/resolv.conf.backup-upgrade
-            remote_src: true
-            mode: "0644"
-
-        # The adguard_home role makes /etc/resolv.conf immutable (chattr +i) in
-        # steady state, so the bare copies below would EPERM-fail on a normally
-        # deployed DNS host. Clear the flag for the upgrade window; it is
-        # re-asserted after the final restore (and in rescue). failed_when:false
-        # because the file may not be immutable / the FS may not support attrs.
-        - name: Clear immutable flag on resolv.conf for upgrade
+        - name: Clear the immutable flag on resolv.conf for the upgrade window
           ansible.builtin.command:
             cmd: chattr -i /etc/resolv.conf
           changed_when: false
+          # The file may not be immutable, or the FS may not support attrs.
           failed_when: false
 
-        - name: Configure temporary DNS to use the peer DNS server
+        - name: Point resolv.conf at the peer DNS server for the upgrade window
           vars:
             dns_peer: "{{ groups['dns'] | difference([inventory_hostname]) | first }}"
           ansible.builtin.copy:
@@ -77,375 +71,84 @@
             dest: /etc/resolv.conf
             mode: "0644"
 
-        - name: Stop AdGuard Home for upgrade
-          ansible.builtin.service:
-            name: AdGuardHome
-            state: stopped
-
-        - name: Backup AdGuard Home configuration
-          ansible.builtin.copy:
-            src: "{{ adguard_home_install_path }}/AdGuardHome.yaml"
-            dest: "{{ adguard_home_install_path }}/AdGuardHome.yaml.backup-{{ ansible_date_time.epoch }}"
-            remote_src: true
-            mode: "0644"
-
-        - name: Download new AdGuard Home version
-          ansible.builtin.get_url:
-            url: "https://github.com/AdguardTeam/AdGuardHome/releases/download/v{{ adguard_home_version }}/AdGuardHome_linux_{{ adguard_arch }}.tar.gz"
-            # Use upstream filename so get_url's checksum lookup matches an entry in checksums.txt
-            dest: "/tmp/AdGuardHome_linux_{{ adguard_arch }}.tar.gz"
-            mode: "0644"
-            timeout: 60
-            checksum: "sha256:https://github.com/AdguardTeam/AdGuardHome/releases/download/v{{ adguard_home_version }}/checksums.txt"
-
-        - name: Extract new version
-          ansible.builtin.unarchive:
-            src: "/tmp/AdGuardHome_linux_{{ adguard_arch }}.tar.gz"
-            dest: /tmp
-            remote_src: true
-
-        - name: Install new binary
-          ansible.builtin.copy:
-            src: /tmp/AdGuardHome/AdGuardHome
-            dest: "{{ adguard_home_install_path }}/AdGuardHome"
-            owner: root
-            group: root
-            mode: "0755"
-            remote_src: true
-
-        - name: Start AdGuard Home
+        - name: Reconcile AdGuard Home to the pinned version
+          ansible.builtin.include_role:
+            name: weisssrv.infra.adguard_home
+      always:
+        # Best-effort first, then re-lock the file, and only then fail: a fail:
+        # placed earlier would skip the rest of this block. Leaving resolv.conf
+        # pointing at the peer is a working resolution path — the next
+        # successful role run rewrites it to 127.0.0.1 — but leaving it MUTABLE
+        # lets DHCP clobber it, so the +i goes back on either way.
+        - name: Start AdGuard Home again after the upgrade window
           ansible.builtin.service:
             name: AdGuardHome
             state: started
-
-        - name: Wait for AdGuard Home to be ready
-          ansible.builtin.wait_for:
-            port: "{{ adguard_home_http_port }}"
-            timeout: 60
-
-        # Restore original DNS configuration after AdGuard is back up
-        - name: Restore original resolv.conf
-          ansible.builtin.copy:
-            src: /etc/resolv.conf.backup-upgrade
-            dest: /etc/resolv.conf
-            remote_src: true
-            mode: "0644"
-
-        # Re-assert the immutable flag the adguard_home role keeps in steady state.
-        - name: Re-set immutable flag on resolv.conf
-          ansible.builtin.command:
-            cmd: chattr +i /etc/resolv.conf
-          changed_when: false
           failed_when: false
 
-        - name: Remove resolv.conf backup
-          ansible.builtin.file:
-            path: /etc/resolv.conf.backup-upgrade
-            state: absent
-
-        - name: Cleanup download
-          ansible.builtin.file:
-            path: "{{ item }}"
-            state: absent
-          loop:
-            - "/tmp/AdGuardHome_linux_{{ adguard_arch }}.tar.gz"
-            - /tmp/AdGuardHome
-
-      rescue:
-        - name: Display upgrade failure warning
-          ansible.builtin.debug:
-            msg: "WARNING: AdGuard upgrade failed! Ensuring service is started and DNS is restored..."
-
-        - name: Ensure AdGuard Home is started after failure
-          ansible.builtin.service:
-            name: AdGuardHome
-            state: started
-          failed_when: false  # Best effort recovery
-
-        - name: Clear immutable flag on resolv.conf for failure restore
-          ansible.builtin.command:
-            cmd: chattr -i /etc/resolv.conf
+        - name: Read the AdGuard Home service state  # noqa: command-instead-of-module
+          ansible.builtin.command: systemctl is-active AdGuardHome
+          register: adguard_home_active
           changed_when: false
-          failed_when: false  # Best effort recovery
+          failed_when: false
+          check_mode: false
 
-        - name: Restore original resolv.conf after failure
-          ansible.builtin.copy:
-            src: /etc/resolv.conf.backup-upgrade
-            dest: /etc/resolv.conf
-            remote_src: true
-            mode: "0644"
-          failed_when: false  # Best effort recovery
-
-        - name: Re-set immutable flag on resolv.conf after failure
+        - name: Re-assert the immutable flag on resolv.conf
           ansible.builtin.command:
             cmd: chattr +i /etc/resolv.conf
+          register: resolv_conf_relock
           changed_when: false
-          failed_when: false  # Best effort recovery
+          # Already immutable, or the FS does not support attrs — non-fatal, but
+          # a real failure leaves the file writable for DHCP, so the terminal
+          # message below reports the rc rather than dropping it.
+          failed_when: false
 
-        - name: Remove resolv.conf backup after failure
-          ansible.builtin.file:
-            path: /etc/resolv.conf.backup-upgrade
-            state: absent
-          failed_when: false  # Best effort cleanup
-
-        - name: Fail with original error
+        - name: Fail when AdGuard Home is still down after the upgrade window
           ansible.builtin.fail:
-            msg: "AdGuard Home upgrade failed. Service has been restarted with previous version."
-
-    - name: Verify new version
-      ansible.builtin.command: "{{ adguard_home_install_path }}/AdGuardHome --version"
-      changed_when: false
-      register: new_version
-
-    - name: Display upgrade result
-      ansible.builtin.debug:
-        msg: "AdGuard Home {{ 'upgraded to' if needs_upgrade else 'already at' }} version: {{ new_version.stdout }}"
+            msg: >-
+              AdGuard Home on {{ inventory_hostname }} is
+              '{{ adguard_home_active.stdout | default('unknown') | trim }}' after the
+              upgrade window — this resolver is NOT answering. resolv.conf points at
+              the peer, re-lock rc={{ resolv_conf_relock.rc | default('?') }}
+              {{ '(NOT immutable — DHCP can clobber it)'
+                 if (resolv_conf_relock.rc | default(1)) != 0 else '(immutable)' }};
+              fix this host before the peer's own serial: 1 turn takes the other
+              resolver down.
+          when: (adguard_home_active.stdout | default('') | trim) != 'active'
 
 - name: Update adguardhome-sync (dns-01 only)
   hosts: dns-01
   become: true
-  vars:
-    force_sync_upgrade: false
   tasks:
-    - name: Check if adguardhome-sync exists
-      ansible.builtin.stat:
-        path: /usr/local/bin/adguardhome-sync
-      register: sync_binary
-
-    - name: Get current version if exists
-      ansible.builtin.command: /usr/local/bin/adguardhome-sync --version
-      register: current_sync_version
-      changed_when: false
-      failed_when: false
-      when: sync_binary.stat.exists
-
-    - name: Display current vs target version
-      ansible.builtin.debug:
-        msg: "Current: {{ current_sync_version.stdout | default('not installed') }}, Target: {{ adguard_sync_version }}"
-
-    - name: Determine if sync upgrade needed
-      ansible.builtin.set_fact:
-        needs_sync_upgrade: >-
-          {{
-            force_sync_upgrade or
-            not sync_binary.stat.exists or
-            adguard_sync_version not in (current_sync_version.stdout | default(''))
-          }}
-
-    - name: Skip if no upgrade needed
-      ansible.builtin.debug:
-        msg: "adguardhome-sync already at version {{ adguard_sync_version }}, skipping"
-      when: not needs_sync_upgrade
-
-    - name: Upgrade adguardhome-sync with safe restart handling
-      when: needs_sync_upgrade
-      block:
-        # Set architecture for download URL (same logic as adguard_home role)
-        - name: Set adguardhome-sync architecture
-          ansible.builtin.set_fact:
-            adguard_sync_arch: "{{ 'arm64' if ansible_architecture == 'aarch64' else 'amd64' }}"
-
-        - name: Download new adguardhome-sync version
-          ansible.builtin.get_url:
-            url: "https://github.com/bakito/adguardhome-sync/releases/download/v{{ adguard_sync_version }}/adguardhome-sync_{{ adguard_sync_version }}_linux_{{ adguard_sync_arch }}.tar.gz"  # noqa yaml[line-length]
-            # Use upstream filename so get_url's checksum lookup matches an entry in checksums.txt
-            dest: "/tmp/adguardhome-sync_{{ adguard_sync_version }}_linux_{{ adguard_sync_arch }}.tar.gz"
-            mode: "0644"
-            timeout: 60
-            checksum: "sha256:https://github.com/bakito/adguardhome-sync/releases/download/v{{ adguard_sync_version }}/checksums.txt"
-          register: sync_download
-
-        - name: Extract adguardhome-sync
-          ansible.builtin.unarchive:
-            src: "/tmp/adguardhome-sync_{{ adguard_sync_version }}_linux_{{ adguard_sync_arch }}.tar.gz"
-            dest: /tmp
-            remote_src: true
-
-        - name: Stop sync timer before upgrade
-          ansible.builtin.systemd:
-            name: adguardhome-sync.timer
-            state: stopped
-
-        - name: Install new binary
-          ansible.builtin.copy:
-            src: /tmp/adguardhome-sync
-            dest: /usr/local/bin/adguardhome-sync
-            owner: root
-            group: root
-            mode: "0755"
-            remote_src: true
-
-      always:
-        - name: Ensure sync timer is started after upgrade (even on failure)
-          ansible.builtin.systemd:
-            name: adguardhome-sync.timer
-            state: started
-            daemon_reload: true
-
-    - name: Cleanup
-      ansible.builtin.file:
-        path: "{{ item }}"
-        state: absent
-      loop:
-        - "/tmp/adguardhome-sync_{{ adguard_sync_version }}_linux_{{ adguard_sync_arch }}.tar.gz"
-        - /tmp/adguardhome-sync
-      when: needs_sync_upgrade
-
-    - name: Display upgrade result
-      ansible.builtin.debug:
-        msg: "adguardhome-sync {{ 'upgraded' if needs_sync_upgrade else 'already at version ' + adguard_sync_version }}"
+    # The role self-gates on adguard_sync_enabled (host_vars/dns-01.yml), so it
+    # is a no-op anywhere the sync is not deployed.
+    - name: Reconcile adguardhome-sync to the pinned version
+      ansible.builtin.include_role:
+        name: weisssrv.infra.adguard_sync
 
 - name: Update Tailscale (Proxmox hosts only)
   hosts: proxmox
   become: true
   serial: 1  # One host at a time
   tasks:
-    - name: Check current Tailscale version
-      ansible.builtin.command: tailscale version
-      register: current_tailscale_version
-      changed_when: false
-      failed_when: false
-
-    - name: Parse current Tailscale version
-      ansible.builtin.set_fact:
-        tailscale_installed: "{{ current_tailscale_version.stdout_lines[0] | default('') }}"
-      when: current_tailscale_version.rc == 0
-
-    # Tailscale's apt packages carry no Debian revision suffix, so `tailscale
-    # version` output compares directly against tailscale_version.
-    - name: Display version info
-      ansible.builtin.debug:
-        msg: "Current: {{ tailscale_installed | default('not detected') }}, Target: {{ tailscale_version }}"
-
-    - name: Determine if Tailscale upgrade needed
-      ansible.builtin.set_fact:
-        needs_tailscale_upgrade: >-
-          {{
-            current_tailscale_version.rc != 0 or
-            (tailscale_installed | default('')) != tailscale_version
-          }}
-
-    - name: Skip if no upgrade needed
-      ansible.builtin.debug:
-        msg: "Tailscale already at version {{ tailscale_version }}, skipping"
-      when: not needs_tailscale_upgrade
-
-    - name: Upgrade Tailscale package
-      ansible.builtin.apt:
-        name: "tailscale={{ tailscale_version }}"
-        state: present
-        update_cache: true
-        allow_downgrade: true
-      when: needs_tailscale_upgrade
-
-    - name: Restart Tailscale service if upgraded
-      ansible.builtin.systemd:
-        name: tailscaled
-        state: restarted
-        daemon_reload: true
-      when: needs_tailscale_upgrade
-
-    - name: Verify Tailscale version after upgrade
-      ansible.builtin.command: tailscale version
-      register: new_tailscale_version
-      changed_when: false
-
-    - name: Display upgrade result
-      ansible.builtin.debug:
-        msg: >-
-          Tailscale {{ 'upgraded to' if needs_tailscale_upgrade else 'already at' }}
-          version: {{ new_tailscale_version.stdout_lines[0] | default('unknown') }}
+    # The role installs `tailscale={{ tailscale_version }}` with
+    # allow_change_held_packages, so a pin bump moves through the apt hold; the
+    # deb's postinst restarts tailscaled. `tailscale up` is gated on
+    # BackendState, so an already-joined node needs no auth key here.
+    - name: Reconcile Tailscale to the pinned version
+      ansible.builtin.include_role:
+        name: weisssrv.infra.tailscale
 
 - name: Update Plex Media Server
   hosts: plex
   become: true
-  vars:
-    force_plex_upgrade: false  # Set to true to force apt upgrade
   tasks:
-    - name: Check current Plex version
-      ansible.builtin.command: dpkg-query -W -f='${Version}' plexmediaserver
-      register: current_plex_version
-      changed_when: false
-      failed_when: false
-      check_mode: false
-
-    - name: Display current Plex version
-      ansible.builtin.debug:
-        msg: "Current: {{ current_plex_version.stdout | default('not installed') }}, Target: {{ plex_version }}"
-
-    - name: Update apt cache
-      ansible.builtin.apt:
-        update_cache: true
-        cache_valid_time: 0
-
-    # When plex_version is "latest": upgrade to whatever apt has available
-    - name: Check for available Plex updates (latest mode)
-      ansible.builtin.shell: |
-        set -o pipefail
-        apt list --upgradable 2>/dev/null | grep plexmediaserver || echo "no updates"
-      args:
-        executable: /bin/bash
-      register: plex_upgradable
-      changed_when: false
-      check_mode: false
-      when: plex_version == 'latest'
-
-    - name: Upgrade Plex Media Server (latest mode)  # noqa package-latest
-      ansible.builtin.apt:
-        name: plexmediaserver
-        state: latest
-      when: plex_version == 'latest' and (force_plex_upgrade or 'plexmediaserver' in (plex_upgradable.stdout | default('')))
-      register: plex_upgrade_latest
-
-    # When plex_version is pinned: install that exact version
-    - name: Determine if pinned version differs from installed
-      ansible.builtin.set_fact:
-        needs_plex_upgrade: >-
-          {{
-            force_plex_upgrade or
-            current_plex_version.rc != 0 or
-            plex_version != (current_plex_version.stdout | default(''))
-          }}
-      when: plex_version != 'latest'
-
-    - name: Install pinned Plex version
-      ansible.builtin.apt:
-        name: "plexmediaserver={{ plex_version }}"
-        state: present
-        allow_downgrade: true
-      when: plex_version != 'latest' and (needs_plex_upgrade | default(false))
-      register: plex_upgrade_pinned
-
-    # default({}) guards registers from skipped tasks (no .changed attribute)
-    - name: Set combined upgrade result
-      ansible.builtin.set_fact:
-        plex_was_upgraded: >-
-          {{
-            ((plex_upgrade_latest | default({})).changed | default(false)) or
-            ((plex_upgrade_pinned | default({})).changed | default(false))
-          }}
-
-    - name: Restart Plex service if upgraded  # noqa no-handler
-      ansible.builtin.systemd:
-        name: plexmediaserver
-        state: restarted
-      when: plex_was_upgraded | bool
-
-    - name: Wait for Plex to be ready  # noqa no-handler
-      ansible.builtin.wait_for:
-        port: 32400
-        timeout: 60
-      when: plex_was_upgraded | bool
-
-    - name: Verify Plex version after upgrade
-      ansible.builtin.command: dpkg-query -W -f='${Version}' plexmediaserver
-      register: new_plex_version
-      changed_when: false
-      check_mode: false
-
-    - name: Display Plex upgrade result
-      ansible.builtin.debug:
-        msg: "Plex {{ 'upgraded to' if (plex_was_upgraded | bool) else 'already at' }} version: {{ new_plex_version.stdout }}"
+    # install.yml honours both the pinned and the `latest` value of plex_version
+    # and manages the apt hold; the role's service tasks flush the restart
+    # handler and wait for /identity before the play ends.
+    - name: Reconcile Plex Media Server to the pinned version
+      ansible.builtin.include_role:
+        name: weisssrv.infra.plex
 
 - name: Update Ansible collections
   hosts: localhost

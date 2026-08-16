@@ -720,7 +720,10 @@ Custom alert rules live under
 `kubernetes/infrastructure/observability/rules/`, one `PrometheusRule` manifest
 per group. Those manifests are **authoritative** — every rule carries a
 `runbook_url` into docs/12. The tables below summarize the groups; read the
-manifests for exact expressions and thresholds.
+manifests for exact expressions and thresholds, and treat
+`ls kubernetes/infrastructure/observability/rules/` (or
+`kubectl get prometheusrule -n observability -o yaml`) as the complete
+inventory — a table row may lag a newly added rule.
 
 `scripts/prometheus-rule-tests/` holds `promtool test rules` unit tests for the
 rule families; the `prometheus-config-lint` CI job runs them (docs/13).
@@ -736,6 +739,10 @@ rule families; the `prometheus-config-lint` CI job runs them (docs/13).
 | SMARTReallocatedSectorsGrowing / SMARTPendingSectors / SMARTOfflineUncorrectable / SMARTMediaErrors | SMART attribute deltas (textfile collector) | warning | — |
 | SMARTCollectorStale | SMART textfile metric stopped updating (> 15m) or absent | warning | 5m |
 | NASSwapNotClearing | NAS swap above 2 GiB for 2 days (swap-clean textfile metric) | warning | 1h |
+| NASSwapGone | NAS has zero swap configured | warning | 30m |
+| SwapCleanFailed | swap-clean job failed or aborted-unsafe | warning | 1h |
+| SwapCleanGuestRestartFailed | swap-clean could not restart a guest it stopped | warning | 5m |
+| SwapCleanStoppedGuests | swap-clean stopped production guests to reclaim swap | info | 5m |
 | LocalPathPVExists | any PV on the `local-path` StorageClass (`kube_persistentvolume_info{storageclass="local-path"}`) — nothing may use it (stateless VM bootdisk, excluded from backups); catches PVC storageClass drift (see the loki guard, docs/29) | warning | 15m |
 
 #### Infrastructure Alerts (`homelab.infrastructure`)
@@ -836,14 +843,20 @@ These alerts use metrics exposed via the node_exporter textfile collector on Pro
 | ArchiveBackupStale | archive-backupctl last success > 2 days ago | warning | 1h |
 | ArchiveBackupDatasetStale | a single archive dataset hasn't replicated in > 2 days | warning | 1h |
 | ArchiveBackupChronicallyDeferred | an archive dataset deferred >= 3 runs in a row | warning | 1h |
+| ArchiveBackupFailedProlonged | archive backup failing for a full day | critical | 24h |
+| ArchiveBackupStaleCritical | archive backup no success in > 4 days | critical | 1h |
+| AdGuardSyncFailed / AdGuardSyncStale | dns-01 -> dns-02 sync failing / no success in 30m | warning | 15m |
 | MediaMoverFailed | media-mover last run exit code != 0 | warning | 1h |
 | MediaMoverStale | media-mover last success > 2 days ago | warning | 1h |
 | CertRenewalFailed | acme.sh cert renewal/distribution exit code != 0 | warning | 1h |
 | CertExpiringSoon | host-distributed `*.esweiss.com` cert within 14 days of its real `notAfter` (`cert_local_expiry_timestamp_seconds`), or metric absent | warning | 1h |
 | CertExpiringSoonCritical | host-distributed cert within 3 days of expiry | critical | 1h |
+| CertRenewalFailedProlonged | cert renewal failing for over 3 days | critical | 72h |
 | GitLabBackupFailed | gitlab-backup-run.sh last run exit code != 0 | warning | 1h |
 | GitLabBackupStale | GitLab backup last success > 2 days ago (or metric absent) | warning | 1h |
 | GitLabBackupStaleCritical | GitLab backup last success > 4 days ago | critical | 1h |
+| GitLabBackupSecretsMissing | `gitlab-secrets.json` missing or empty in the backup landing zone | critical | 1h |
+| AuthentikBackupStale / MealieBackupStale | that app's DB dump no success in > 26h | warning | 1h |
 | EtcdSnapshotStale | newest off-node etcd snapshot copy > 36h old (three 12h cycles), or metric absent (docs/17) | warning | 1h |
 | VzdumpBackupFailed / VzdumpBackupStale | nightly vzdump guest-image backup failed / no success in 36h (hookscript deployed fleet-wide by node_exporter_host) | warning | 1h |
 | VzdumpBackupStaleCritical | no successful vzdump in 4 days | critical | 1h |
@@ -860,6 +873,15 @@ These alerts use metrics exposed via the node_exporter textfile collector on Pro
 | ResticOffsiteVerifyFailed | the weekly `restic check` found repository damage | critical | 1h |
 | ResticOffsiteVerifyStale / …StaleCritical | no `restic check` in 8 days / 14 days | warning / critical | 1h |
 | BackupArtifactStale | NAS-side mtime of the newest `tank/backups/apps/<app>` dump > 50h old (or collector absent) — the "the dump landed offsite-eligible" signal, independent of the VM-side "the dump ran" metric | warning | 1h |
+| BackupArtifactStaleCritical | the same artifact has not landed in > 4 days | critical | 1h |
+| BackupArtifactEmpty | a run reported success but produced no artifact | critical | 1h |
+| BackupArtifactZeroBytes | the artifact landed at 0 bytes | critical | 1h |
+| BackupArtifactCompanionMissing | a required companion file is missing or empty | critical | 1h |
+| BackupArtifactCollectorStale | the mtime collector is degraded or missing | warning | 5m |
+| BackupRestoreDrillStale | no restore drill has passed in > 100 days | critical | 1h |
+| BackupRestoreDrillNeverRan | no restore drill has ever passed | warning | 26h |
+| BackupRestoreDrillFailing | the most recent restore drill did not pass | warning | 1h |
+| BackupRestoreDrillProvedTooLittle | a drill passed on fewer than 3 files | warning | 1h |
 
 Note: the three restic/backup-artifact metrics above appear only once the
 `restic_offsite` role and the NAS-side mtime textfile collector are deployed
@@ -872,7 +894,7 @@ series to have existed) and the `Backup — Nightly Jobs` dashboard panels rende
 - **`homelab.temperature`** — SATA/NVMe drive, CPU, host GPU (`HostGpuTemp*`, hwmon on the Proxmox host) and NIC temperature warning/critical pairs (drivetemp + hwmon via node_exporter_host), all scoped to the six physical hosts so the LXC guests do not double-page their host's sensors. The 1660 Ti's own telemetry is the DCGM `GpuTemp*` pair in `homelab.gpu`.
 - **`homelab.gpu`** — GpuExporterDown, GpuTempWarning/Critical, HindsightGpuOffloadIdle, GpuTelemetryMissing (DCGM exporter on the pve-prec-01 1660 Ti; GpuTelemetryMissing catches "exporter up but zero GPU series"). See [docs/43](43-gpu-passthrough.md).
 - **`homelab.mail`** — PostfixQueueBacklog, PostfixDown, PostfixQueueCollectorStale (smtp-relay queue textfile collector).
-- **`homelab.kubernetes-resources`** — the tuned KubeCPUOvercommit replacement (see Built-in Alerts below).
+- **`homelab.kubernetes-resources`** — the tuned KubeCPUOvercommit replacement (see Built-in Alerts below), plus ContainerMemoryNearLimit, HindsightLlamaMemoryNearLimit and ContainerOOMKilled (docs/33).
 
 ### Built-in Alerts
 
@@ -1021,7 +1043,11 @@ Flux controller metrics (source-controller, kustomize-controller, helm-controlle
 
 4. Verify network connectivity from the cluster to the external target:
    ```bash
-   kubectl run -it --rm debug --image=busybox -- wget -q -O- http://192.168.0.102:9134/metrics
+   # Exec into an existing workload — do NOT `kubectl run` a throwaway pod: the
+   # `default` namespace enforces restricted PSA and carries a default-deny-all
+   # NetworkPolicy, so the probe fails for reasons unrelated to the target (docs/29).
+   kubectl -n observability exec deploy/kube-prometheus-stack-grafana -c grafana -- \
+     wget -qO- http://192.168.0.102:9134/metrics
    ```
 
 ### Alert Routing Debug
@@ -1052,7 +1078,8 @@ Flux controller metrics (source-controller, kustomize-controller, helm-controlle
 
 4. For SMTP issues, verify the smtp-relay is reachable from the cluster:
    ```bash
-   kubectl run -it --rm debug --image=busybox -- nc -zv 192.168.0.151 587
+   kubectl -n observability exec deploy/kube-prometheus-stack-grafana -c grafana -- \
+     nc -zv 192.168.0.151 587
    ```
 
 5. For Discord issues, test the webhook URL manually. The URL is not readable
@@ -1087,7 +1114,8 @@ Flux controller metrics (source-controller, kustomize-controller, helm-controlle
 
 4. Verify DNS resolution of `auth.esweiss.com` from inside the cluster:
    ```bash
-   kubectl run -it --rm debug --image=busybox -- nslookup auth.esweiss.com
+   kubectl -n observability exec deploy/kube-prometheus-stack-grafana -c grafana -- \
+     nslookup auth.esweiss.com
    ```
 
 5. If all else fails, disable OIDC temporarily by setting `GF_AUTH_GENERIC_OAUTH_ENABLED: "false"` in the HelmRelease (use `task flux:dev-apply` for quick iteration).

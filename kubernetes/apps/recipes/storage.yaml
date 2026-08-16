@@ -2,9 +2,8 @@
 # Recipes storage: app configs on NFS (/appdata/{app} from pve-nas-01);
 # Mealie PostgreSQL on a dedicated ZFS zvol (hostPath on k3s-agt-nas-01).
 #
-# The NFS PVs use server: pve-nas-01.esweiss.com (NOT the IP) so xprtsec=tls
-# matches the *.esweiss.com cert. server: is an immutable PV field — the force
-# annotation on each PV lets Flux delete+recreate it (Retain → data safe).
+# NFS-over-TLS PVs; hostname (not IP) + force annotation rationale:
+# apps/download-clients/_nfs-pv/resources.yaml and docs/07.
 
 # Mealie App Config Storage
 apiVersion: v1
@@ -12,9 +11,6 @@ kind: PersistentVolume
 metadata:
   name: recipes-appdata-mealie
   annotations:
-    # Lets Flux delete+recreate this PV when an immutable field (server,
-    # mountOptions) changes, instead of stalling the Kustomization. Retain
-    # reclaim policy keeps the NFS data — data safe.
     kustomize.toolkit.fluxcd.io/force: "Enabled"
   labels:
     type: nfs
@@ -27,17 +23,12 @@ spec:
   persistentVolumeReclaimPolicy: Retain
   storageClassName: ""
   nfs:
-    # Hostname, not IP: xprtsec=tls verifies the server cert (SAN *.esweiss.com).
-    # The IP fails cert verification; pve-nas-01.esweiss.com resolves to .102 via
-    # AdGuard and matches the wildcard. See docs/07 Transport Security.
     server: pve-nas-01.${cluster_internal_domain}
     path: /appdata/mealie
   mountOptions:
     - nfsvers=4.2
     - hard
     - noatime
-    # Encrypt the /appdata wire with tlshd (on every agent). The /appdata
-    # k3s client lines require TLS (xprtsec=tls) — plaintext is rejected.
     - xprtsec=tls
 
 ---
@@ -109,9 +100,6 @@ kind: PersistentVolume
 metadata:
   name: recipes-appdata-bar-assistant
   annotations:
-    # Lets Flux delete+recreate this PV when an immutable field (server,
-    # mountOptions) changes, instead of stalling the Kustomization. Retain
-    # reclaim policy keeps the NFS data — data safe.
     kustomize.toolkit.fluxcd.io/force: "Enabled"
   labels:
     type: nfs
@@ -124,17 +112,12 @@ spec:
   persistentVolumeReclaimPolicy: Retain
   storageClassName: ""
   nfs:
-    # Hostname, not IP: xprtsec=tls verifies the server cert (SAN *.esweiss.com).
-    # The IP fails cert verification; pve-nas-01.esweiss.com resolves to .102 via
-    # AdGuard and matches the wildcard. See docs/07 Transport Security.
     server: pve-nas-01.${cluster_internal_domain}
     path: /appdata/bar-assistant
   mountOptions:
     - nfsvers=4.2
     - hard
     - noatime
-    # Encrypt the /appdata wire with tlshd (on every agent). The /appdata
-    # k3s client lines require TLS (xprtsec=tls) — plaintext is rejected.
     - xprtsec=tls
 
 ---
@@ -164,9 +147,6 @@ kind: PersistentVolume
 metadata:
   name: mealie-pg-dump
   annotations:
-    # Lets Flux delete+recreate this PV when an immutable field (server,
-    # mountOptions) changes, instead of stalling the Kustomization. Retain
-    # reclaim policy keeps the NFS data — data safe.
     kustomize.toolkit.fluxcd.io/force: "Enabled"
   labels:
     type: nfs
@@ -182,7 +162,6 @@ spec:
   persistentVolumeReclaimPolicy: Retain
   storageClassName: ""
   nfs:
-    # Hostname, not IP: xprtsec=tls verifies the server cert (SAN *.esweiss.com).
     server: pve-nas-01.${cluster_internal_domain}
     path: /backups-apps/mealie
   mountOptions:

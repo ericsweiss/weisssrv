@@ -9,9 +9,8 @@
 # replicas: 1 + Recreate (deployment.yaml) guarantee no two pods dual-mount this
 # RWO PV. docs/41 records the ext4-on-zvol fallback if WAL/locking ever bites.
 #
-# server: is immutable, so the force annotation lets Flux delete+recreate the PV
-# (Retain -> data safe). It must be the hostname: xprtsec=tls verifies against
-# the *.esweiss.com cert SAN and an IP mount fails the handshake (docs/07).
+# NFS-over-TLS PV; hostname (not IP) + force annotation rationale:
+# apps/download-clients/_nfs-pv/resources.yaml and docs/07.
 apiVersion: v1
 kind: PersistentVolume
 metadata:
@@ -40,8 +39,6 @@ spec:
     - nfsvers=4.2
     - hard
     - noatime
-    # The /appdata k3s client export lines require TLS (xprtsec=tls); plaintext
-    # is rejected. tlshd runs on every agent (nfs_tls role).
     - xprtsec=tls
 
 ---

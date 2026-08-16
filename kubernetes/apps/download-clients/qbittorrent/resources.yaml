@@ -162,10 +162,8 @@ spec:
       containers:
         # Gluetun VPN-health exporter: polls the control server on loopback and
         # serves gluetun_vpn_status on :8002, scraped by the PodMonitor below
-        # and alerted on by VPNDown. Third-party image, so it is pinned by
-        # immutable digest (re-resolve when bumping the tag) and runs read-only
-        # with no mounts. COUPLED: vpn_enabled + this sidecar + that PodMonitor
-        # change together — README § Per-App VPN Control.
+        # and alerted on by VPNDown. Third-party image, so it is digest-pinned
+        # (re-resolve when bumping the tag) and runs read-only with no mounts.
         - name: gluetun-exporter
           image: ghcr.io/thecfu/gluetun-exporter:0.1.1-standalone@sha256:bafeabb2a9638bf6b0800c2d3d47d49c6236d879bd01eec8caea45dfca2b50c5
           imagePullPolicy: IfNotPresent
@@ -247,12 +245,10 @@ spec:
             - name: QBT_LEGAL_NOTICE
               value: "confirm"
           # Ports live on the gluetun sidecar, which owns the network namespace.
-          # NFS-ESTALE self-heal: after a NAS reboot the established mounts
-          # return stale handles that qBittorrent never recovers from while the
-          # WebUI keeps answering, so liveness stats both NFS mounts — ESTALE or
-          # a hung hard-mount fails the probe and kubelet remounts on restart.
-          # readiness keeps the UI check. Timing is conservative so a brief NFS
-          # blip cannot flap-restart the pod.
+          # NFS-ESTALE self-heal: liveness stats both mounts so a stale or hung
+          # handle restarts the pod and it remounts — the WebUI keeps answering
+          # meanwhile, so readiness cannot catch it. Conservative timing so a
+          # brief NFS blip cannot flap-restart.
           livenessProbe:
             exec:
               command:

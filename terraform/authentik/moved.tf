@@ -3,23 +3,11 @@
 # address changed, from a root-module resource to a keyed instance of the
 # module's equivalent resource.
 #
-# 78 blocks — one per RESOURCE INSTANCE that existed before the move, which is
-# every address `terraform state list` reports for this state:
-#
-#   19  applications   (16 keyed + adguard_01 / adguard_02 / homarr)
-#   10  proxy providers
-#    8  OAuth2 providers
-#    1  SAML provider
-#    1  scope property mapping (email_verified)
-#   18  groups         (15 keyed + media_admins / dns_admins / authentik_admins)
-#   20  policy bindings (16 keyed + adguard_01 / adguard_02 / homarr / homarr_users)
-#    1  embedded outpost
-#
-# An address with NO block here plans as destroy+create of a live SSO object, so
-# the list is exhaustive by construction rather than by inspection: it was
+# One block per RESOURCE INSTANCE that existed before the move — every address
+# `terraform state list` reports. An address with NO block here plans as
+# destroy+create of a live SSO object, so the list must stay exhaustive: it is
 # derived from the pre-move .tf files (each explicit resource plus every key of
-# each `for_each` map) and cross-checked against imports.tf and import.sh, which
-# name the same identities.
+# each `for_each` map) and cross-checked against imports.tf and import.sh.
 #
 # `moved` is not affected by `prevent_destroy`, and re-applying is a no-op once
 # state carries the new addresses. The data sources need no blocks: they are

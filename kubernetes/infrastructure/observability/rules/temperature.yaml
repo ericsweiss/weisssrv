@@ -72,7 +72,11 @@ spec:
               * on (instance, chip) group_left(chip_name)
               node_hwmon_chip_names{job="node-exporter-host", chip_name="nvme"}
             ) >= 65
-          for: 10m
+          # 30m, not 10m: the nightly backup window drives one NAS chip over 65C
+          # in ~15-minute bursts with nothing actionable at the time it fires.
+          # The threshold stays at 65C — it is the level that catches a real
+          # airflow regression, and a sustained over-temp still clears 30m.
+          for: 30m
           labels:
             severity: warning
             component: storage
@@ -84,7 +88,7 @@ spec:
               {{ $value | printf "%.0f" }}C
             description: >-
               NVMe drive {{ $labels.chip }} on {{ $labels.instance }}
-              has been at {{ $value | printf "%.0f" }}C for 10 minutes.
+              has been at {{ $value | printf "%.0f" }}C for 30 minutes.
               NVMe drives throttle around 80C and warn around 82C; investigate before
               that happens.
 

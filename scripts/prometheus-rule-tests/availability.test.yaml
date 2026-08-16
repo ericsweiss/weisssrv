@@ -405,3 +405,51 @@ tests:
           - exp_labels:
               severity: warning
               job: immich
+
+  # TraefikHighErrorRate: 5xx as a fraction of ALL requests over 5m, summed
+  # across every service. 10 of every 100 requests failing clears the 5%
+  # threshold; the expression aggregates away every label, so the alert carries
+  # only its severity.
+  - interval: 1m
+    input_series:
+      - series: 'traefik_service_requests_total{code="500", service="tv-esweiss@kubernetes"}'
+        values: '0+10x40'
+      - series: 'traefik_service_requests_total{code="200", service="tv-esweiss@kubernetes"}'
+        values: '0+90x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: TraefikHighErrorRate
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+
+  # 2% of the same volume is under the threshold — no alert.
+  - interval: 1m
+    input_series:
+      - series: 'traefik_service_requests_total{code="500", service="tv-esweiss@kubernetes"}'
+        values: '0+2x40'
+      - series: 'traefik_service_requests_total{code="200", service="tv-esweiss@kubernetes"}'
+        values: '0+98x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: TraefikHighErrorRate
+        exp_alerts: []
+
+  # The `and sum(rate(...)) > 0` guard: an idle Traefik divides 0 by 0. Flat
+  # counters (no requests in the window) are the shape that produces the NaN,
+  # and a proxy serving nothing is not a 5xx storm.
+  #
+  # DEFENSIVE, and currently unreachable in production: this ingress always
+  # carries traffic (Homarr, the *arrs and the blackbox probes poll continuously),
+  # so the guard exists for a genuinely idle window — a maintenance freeze, or a
+  # fresh cluster before anything is routed — not for a condition seen live.
+  - interval: 1m
+    input_series:
+      - series: 'traefik_service_requests_total{code="500", service="tv-esweiss@kubernetes"}'
+        values: '7+0x40'
+      - series: 'traefik_service_requests_total{code="200", service="tv-esweiss@kubernetes"}'
+        values: '350+0x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: TraefikHighErrorRate
+        exp_alerts: []

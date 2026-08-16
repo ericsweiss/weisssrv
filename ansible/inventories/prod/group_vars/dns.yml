@@ -1,7 +1,6 @@
 ---
 # DNS server configuration (dns-01, dns-02)
 
-# LXC container settings
 proxmox_lxc_nesting: true  # Required for systemd 257+
 
 # Write the SAME key base deploys (from=-restricted), not the plain
@@ -20,12 +19,17 @@ base_is_resolver_host: true
 # Boot order (proxmox_lxc_startup_order/delay) is set per host in
 # host_vars/dns-01.yml and host_vars/dns-02.yml (both order 10, delay 10).
 
-# Unbound configuration
-# Most settings (interface, forwarders, performance tuning) are in role defaults
-# unbound_port is defined here since it's referenced by adguard_home configuration
+# Set here (not left to the unbound role default) because adguard_home
+# references it below.
 unbound_port: 5335
 
-# AdGuard Home configuration
+# This site's superseded drop-in name, removed on every run. Site data, so it
+# belongs here rather than in the role default (which is due to become []) —
+# without it the stale file survives, and unbound merges the drop-in dir with a
+# SORTED glob, so weisssrv.conf wins every scalar it duplicates from managed.conf.
+unbound_legacy_dropins:
+  - weisssrv.conf
+
 adguard_home_user: adguard
 adguard_home_group: adguard
 adguard_home_install_path: /opt/AdGuardHome
@@ -39,25 +43,17 @@ adguard_home_admin_password: >-
   {{ lookup('ansible.builtin.env', 'ADGUARD_ADMIN_PASSWORD')
      or undef(hint='ADGUARD_ADMIN_PASSWORD env var must be set (run via op run)') }}
 
-# TLS/Encryption configuration
-# AdGuard terminates the wildcard cert itself on every user-facing listener: the
-# web UI + DoH on :443, DoT/DoQ on :853. The acme_certs push keeps
-# adguard_home_cert_path current. Traefik's vm-ingress does NOT terminate for it
-# — it re-originates to :443 (scheme: https + the vm-tls-wildcard
-# ServersTransport, kubernetes/apps/vm-ingress/adguard-home.yaml), and the
-# adguard-exporter scrapes the same :443 name. :3000 stays HTTP and is the
-# plaintext admin API only — human break-glass, firewalled to admin_ts/admin_lan
-# (proxmox_firewall_dns_admin_ports in group_vars/all.yml).
+# AdGuard terminates the wildcard cert on :443 (UI + DoH) and :853 (DoT/DoQ);
+# Traefik re-originates rather than terminating. :3000 is the plaintext admin
+# API, firewalled to the admin sets (proxmox_firewall_dns_admin_ports in all.yml).
 adguard_home_tls_enabled: true
 adguard_home_tls_server_name: "dns.{{ internal_domain }}"
 adguard_home_cert_path: "{{ adguard_home_install_path }}/certs"
 adguard_home_doq_port: 853
 
-# Upstream DNS
 adguard_home_upstream_dns:
   - "127.0.0.1:{{ unbound_port }}"
 
-# DNS server configuration
 adguard_home_protection_enabled: true
 adguard_home_upstream_mode: "load_balance"
 adguard_home_fallback_dns: []
@@ -66,14 +62,12 @@ adguard_home_resolve_clients: true
 adguard_home_use_private_ptr_resolvers: false
 adguard_home_disable_ipv6: false
 
-# Cache configuration
 adguard_home_cache_enabled: true
 adguard_home_cache_size: 8388608
 adguard_home_cache_ttl_min: 0
 adguard_home_cache_ttl_max: 0
 adguard_home_cache_optimistic: false
 
-# Rate limiting
 adguard_home_ratelimit: 20
 adguard_home_ratelimit_whitelist: []
 
@@ -161,12 +155,10 @@ adguard_home_rewrites:
   # so forward/reverse round-trip. External clients reach .100 via Cloudflare.
   - domain: "vip-public.{{ internal_domain }}"
     answer: "192.168.0.100"
-  # Traefik dashboard and observability
   - domain: "traefik.{{ internal_domain }}"
     answer: "192.168.0.101"
   - domain: "grafana.{{ internal_domain }}"
     answer: "192.168.0.101"
-  # Traefik ingress routes (internal services via traefik-internal on .101)
   - domain: "bar.{{ internal_domain }}"
     answer: "192.168.0.101"
   - domain: "food.{{ internal_domain }}"
@@ -190,33 +182,22 @@ adguard_home_rewrites:
   # dashboard.ericsweiss.com is Cloudflare-only (created by external-dns).
   - domain: "dashboard.{{ internal_domain }}"
     answer: "192.168.0.101"
-  # DOCUMENTED EXCEPTION to the no-ericsweiss-rewrite rule below: Authentik's
-  # EXTERNAL hostname resolves internally to the internal Traefik VIP. OIDC
-  # BACKENDS (the hermes dashboard's self_hosted provider, immich/nextcloud
-  # user_oidc, grafana) fetch discovery/JWKS from the issuer host server-side;
-  # via the WAN hairpin those fetches transit Cloudflare, whose bot protection
-  # 403s non-browser user agents (observed live 2026-07-19: Python-urllib ->
-  # 403, curl -> 200 on the same JWKS URL — UA-keyed). The issuer must stay
-  # the external name (external browsers need the authorize endpoint), so the
-  # split-horizon answer moves only the FETCH path internal. Traefik serves
-  # the auth.ericsweiss.com cert on .101 (same router as the public VIP).
+  # DOCUMENTED EXCEPTION to the internal-only rule below: auth.ericsweiss.com
+  # resolves internally so server-side OIDC discovery/JWKS fetches skip the WAN
+  # hairpin (Cloudflare bot protection 403s non-browser user agents). The issuer
+  # must stay the external name — docs/08.
   - domain: "auth.ericsweiss.com"
     answer: "192.168.0.101"
   # Hermes gateway OpenAI-compatible API (bearer-keyed; Home Assistant Voice
   # pipeline — docs/37 §Voice assistant). Internal-only, no external record.
   - domain: "agent-api.{{ internal_domain }}"
     answer: "192.168.0.101"
-  # Internal-only services - esweiss.com only (internal domain)
-  # No external DNS in Cloudflare, no AdGuard rewrite for ericsweiss.com
-  # ericsweiss.com variants won't resolve (cleaner separation of internal vs
-  # external domains). Sole exception: auth.ericsweiss.com above (OIDC backend
-  # fetches must bypass Cloudflare's UA-keyed bot filtering).
-  # Download clients
+  # Internal-only services: esweiss.com rewrites only, no ericsweiss.com
+  # variant. Sole exception is auth.ericsweiss.com above.
   - domain: "nzbget.{{ internal_domain }}"
     answer: "192.168.0.101"
   - domain: "qbittorrent.{{ internal_domain }}"
     answer: "192.168.0.101"
-  # Media managers (*arr stack) - using canonical short names
   - domain: "prowlarr.{{ internal_domain }}"
     answer: "192.168.0.101"
   - domain: "tv.{{ internal_domain }}"
@@ -227,7 +208,6 @@ adguard_home_rewrites:
     answer: "192.168.0.101"
   - domain: "pulsarr.{{ internal_domain }}"
     answer: "192.168.0.101"
-  # GitLab services via Traefik Internal VIP
   - domain: "git.{{ internal_domain }}"
     answer: "192.168.0.101"
   - domain: "registry.git.{{ internal_domain }}"
@@ -236,16 +216,12 @@ adguard_home_rewrites:
     answer: "192.168.0.101"
   - domain: "*.pages.git.{{ internal_domain }}"
     answer: "192.168.0.101"
-  # Nextcloud web frontend via Traefik Internal VIP
   - domain: "cloud.{{ internal_domain }}"
     answer: "192.168.0.101"
-  # Immich photo management via Traefik Internal VIP
   - domain: "photos.{{ internal_domain }}"
     answer: "192.168.0.101"
 
-# Custom filtering rules
 adguard_home_user_rules:
-  # Allowlist
   - '@@||moneroocean.stream^'
   # PTR records for internal infrastructure
   - '||150.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;dns-01.{{ internal_domain }}.'
@@ -276,7 +252,6 @@ adguard_home_user_rules:
   - '||100.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;vip-public.{{ internal_domain }}.'
   - '||101.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;vip-internal.{{ internal_domain }}.'
 
-# DHCP configuration
 adguard_home_dhcp_enabled: false
 
 # Postfix null client uses the role default postfix_null_client_config (relay
@@ -291,35 +266,13 @@ acme_certs_ssh_public_key: >-
   {{ lookup('ansible.builtin.env', 'DNS01_SSH_PUBLIC_KEY')
      or undef(hint='DNS01_SSH_PUBLIC_KEY env var must be set (run via op run)') }}
 
-# AdGuard Home Sync configuration (dns-01 -> dns-02).
-# URLs hit Traefik (192.168.0.101) which fronts each AdGuard instance
-# at dns-{01,02}.esweiss.com. TLS terminated by Traefik with the shared
-# wildcard cert, so the dns-01 -> dns-02 sync hop is now end-to-end
-# encrypted on the wire. The lan-tailscale-only middleware on the
-# IngressRoute ensures only LAN/Tailscale sources reach the API.
-# adguard_sync_enabled is set on dns-01 only (host_vars/dns-01.yml).
+# AdGuard Home Sync (dns-01 -> dns-02). Both URLs go through Traefik (.101), so
+# the sync hop is TLS on the wire and the lan-tailscale-only middleware keeps
+# the API off the WAN. adguard_sync_enabled is set on dns-01 only.
 adguard_sync_origin: "https://dns-01.{{ internal_domain }}"
 adguard_sync_replica: "https://dns-02.{{ internal_domain }}"
-# The sync API credentials are its own inputs now — it no longer borrows the
-# adguard_home pair.
 adguard_sync_admin_user: "{{ adguard_home_admin_user }}"
 adguard_sync_admin_password: "{{ adguard_home_admin_password }}"
-adguard_sync_features:
-  dns:
-    accessLists: true
-    serverConfig: true
-    rewrites: true
-  dhcp:
-    serverConfig: true
-    staticLeases: true
-  generalSettings: true
-  queryLogConfig: true
-  statsConfig: true
-  clientSettings: true
-  services: true
-  filters: true
-  theme: true
-  # Not synced: cert files/paths are host-local and TLS is reconciled per host
-  # by the adguard_home role (drift detection included) — syncing tlsConfig
-  # from dns-01 would fight the Ansible-managed config on dns-02.
-  tlsConfig: false
+# adguard_sync_features is deliberately NOT set: restating the role default
+# would freeze a copy and keep an upstream change from reaching these resolvers.
+# Deltas only, same policy as group_vars/mail.yml.

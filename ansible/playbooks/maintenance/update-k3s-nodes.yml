@@ -46,10 +46,9 @@
       ansible.builtin.debug:
         msg: "=== Updating k3s server: {{ inventory_hostname }} ==="
 
-    # Version detection + staged installer download shared with the k3s role:
-    # get_url to /root/k3s-install.sh (0700) with the tag-pinned URL and the
-    # optional k3s_install_script_checksum from all.yml — no `curl | sh`, so
-    # the root-run installer is integrity-checkable before it executes.
+    # Shared with the k3s role: get_url to /root/k3s-install.sh with the
+    # tag-pinned URL + k3s_install_script_checksum — no `curl | sh`, so the
+    # root-run installer is verified before it executes.
     - name: Detect k3s version and stage install script
       ansible.builtin.include_role:
         name: weisssrv.infra.k3s
@@ -78,10 +77,9 @@
         # the containers across a kubelet restart), and draining the executor's
         # own node would deadlock the CI job. Cordon just blocks new scheduling
         # for the ~1-2 min the binary upgrade takes.
-        # Note: when this node is the one running the CI executor pod, the
-        # runner-manager's kubelet exec/log stream to that pod may blip for the
-        # seconds the node's kubelet restarts. The container (and the job process)
-        # survives — observed OK — so the brief stream gap is tolerated.
+        # When this node runs the CI executor pod, its exec/log stream blips
+        # for the seconds the kubelet restarts; the container and the job
+        # process survive, so the gap is tolerated.
         - name: Cordon node before upgrade
           ansible.builtin.command: k3s kubectl cordon {{ inventory_hostname }}
           changed_when: true
@@ -102,7 +100,7 @@
 
         - name: Restart k3s service
           ansible.builtin.systemd:
-            name: weisssrv.infra.k3s
+            name: k3s
             state: restarted
             daemon_reload: true
 
@@ -177,26 +175,22 @@
           changed_when: true
           delegate_to: "{{ k3s_delegate_server }}"
 
-        # CRITICAL: Must pass "agent" argument to install script, otherwise it installs
-        # as server mode and creates k3s.service instead of k3s-agent.service.
-        # The agent also needs K3S_URL and K3S_TOKEN to know which cluster to join.
+        # The "agent" argument is REQUIRED: without it the installer sets up
+        # server mode and creates k3s.service instead of k3s-agent.service.
         - name: Upgrade k3s agent binary (staged installer)
           ansible.builtin.command: /root/k3s-install.sh agent
           environment:
             INSTALL_K3S_VERSION: "{{ k3s_version }}"
             INSTALL_K3S_SKIP_START: "true"
             K3S_URL: "https://{{ k3s_api_vip }}:{{ k3s_api_port }}"
-            # Use the (opt-in) agent token so a node-version upgrade rewrites the
-            # agent env file with the lower-privilege token, not the cluster
-            # token. Falls back to k3s_token when K3S_AGENT_TOKEN is unset, so
-            # this is behaviour-preserving until the feature is enabled — see
-            # docs/19 "Agent token".
+            # Lower-privilege agent token, so an upgrade rewrites the agent env
+            # file with it rather than the cluster token — docs/19 "Agent token".
             K3S_TOKEN: "{{ k3s_agent_token }}"
           changed_when: true
           no_log: true
 
-        # Agents must never run k3s.service (server). The unit may not exist on a
-        # clean agent install, so check before disabling.
+        # Agents must never run k3s.service (the server unit); it may not exist
+        # on a clean agent install, hence the stat.
         - name: Check if k3s.service exists (server service on agent node)
           ansible.builtin.stat:
             path: /etc/systemd/system/k3s.service
@@ -204,20 +198,15 @@
 
         - name: Stop and disable k3s.service if present (wrong service for agent)
           ansible.builtin.systemd:
-            name: weisssrv.infra.k3s
+            name: k3s
             state: stopped
             enabled: false
             daemon_reload: true
           when: k3s_server_service.stat.exists
-          failed_when: false  # Don't fail if service doesn't exist in systemd
 
-        # No drain: this agent is cordoned, not drained. Per the constraints the CI
-        # executor pod is ALWAYS on an agent, so this is the path most likely to run
-        # under the executor's OWN node — and a kubelet (k3s-agent) restart is safe
-        # for it: containerd keeps the container and the running job process alive
-        # across the restart; only exec/log streaming blips for a few seconds. A
-        # drain here would evict the executor and re-introduce the very self-deadlock
-        # this rework removes — do NOT add one.
+        # Cordon, never drain: the CI executor pod always runs on an agent, and
+        # draining it deadlocks the job. containerd keeps containers alive
+        # across a kubelet restart.
         - name: Restart k3s-agent service
           ansible.builtin.systemd:
             name: k3s-agent
@@ -234,14 +223,11 @@
           delegate_to: "{{ k3s_delegate_server }}"
 
         - name: Wait for pods to stabilize on upgraded node
-          # Mirror scripts/maintenance-lib.sh:42-46 list_unhealthy_pods so this
+          # Mirrors list_unhealthy_pods in scripts/maintenance-lib.sh so this
           # gate and post-maintenance-verify.sh agree: skip terminal BATCH pods
-          # (Completed/Succeeded/Error/Failed — never-GC'd CI/Job pods), but still
-          # flag Pending/CrashLoopBackOff/Evicted/OOMKilled and Running-but-not-ready.
-          # A phase-only field-selector (the prior form) wrongly counted terminal
-          # Error/Failed pods (failing on a leftover CI runner pod) AND missed
-          # CrashLoop/not-ready (phase=Running). Inlined (not sourced) because this
-          # task is delegate_to a k3s server where the repo lib is not present.
+          # (never-GC'd CI/Job pods), still flag Pending/CrashLoop/Evicted/
+          # OOMKilled and Running-but-not-ready. Inlined rather than sourced —
+          # this task delegates to a k3s server, which has no copy of the repo.
           ansible.builtin.shell: |
             set -o pipefail
             k3s kubectl get pods --all-namespaces \
@@ -310,10 +296,8 @@
         msg: "{{ pod_status.stdout_lines }}"
 
     - name: Check for unhealthy pods
-      # Same terminal-skip semantics as scripts/maintenance-lib.sh:42-46 (and the
-      # stabilization wait above) so this warning does not re-list never-GC'd
-      # terminal Error/Failed CI pods that the verify intentionally ignores, while
-      # still surfacing Pending/CrashLoop/Evicted/not-ready pods.
+      # Same terminal-skip semantics as list_unhealthy_pods (see the
+      # stabilization wait above).
       ansible.builtin.shell: |
         set -o pipefail
         k3s kubectl get pods --all-namespaces --no-headers 2>/dev/null \

@@ -2,6 +2,15 @@
 # promtool unit tests for the backup/durability alerts.
 # rule_files is resolved relative to this file's runtime location; the lint
 # script copies the tests next to the extracted rules.yaml before running them.
+#
+# Every "fresh" fixture below carries a REALISTIC LAG rather than tracking
+# time() exactly (`-<lag>+60x...`, the harness clock starting at 0): for a
+# nightly producer that is a full 24h, for a weekly verify a full 7 days. A
+# gauge that equals time() is silent under any threshold down to 1, so it pins
+# a staleness threshold from above only; a lag that sits just inside the budget
+# pins it from below too. The exception is a rule with an `mtime > 0` guard
+# (BackupArtifactZeroBytes) — the harness clock starts at 0, so a realistic lag
+# there is a NEGATIVE mtime and would mean "no file at all".
 rule_files:
   - rules.yaml
 evaluation_interval: 1m
@@ -108,13 +117,39 @@ tests:
               severity: warning
               instance: '192.168.0.102:9101'
 
+  # The absence arm is per-host: .102 backs up fine, .103 emits no vzdump metric
+  # at all while its node_exporter is up. A vector-wide absent() sees .102 and
+  # stays silent — the 12-day gap that shape hid. Only .103 may fire.
+  - interval: 1m
+    input_series:
+      - series: 'vzdump_backup_last_success_timestamp_seconds{instance="192.168.0.102:9101"}'
+        values: '-86400+60x70'
+      - series: 'up{job="node-exporter-host", instance="192.168.0.102:9101"}'
+        values: '1+0x70'
+      - series: 'up{job="node-exporter-host", instance="192.168.0.103:9101"}'
+        values: '1+0x70'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: VzdumpBackupStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: node-exporter-host
+              instance: '192.168.0.103:9101'
+
   # AuthentikBackupStale: the nightly pg-dump CronJob's last-success timestamp is
   # older than 26h (kube_cronjob_status_last_successful_time). A fresh timestamp
   # does not fire; the absent() arm (below) fires if the CronJob has never
   # succeeded / kube-state is down.
+  #
+  # The fixtures carry kube-state-metrics' scrape labels the way the live series
+  # do, and exp_labels pins the REDUCED set: the rule's `max by (namespace,
+  # cronjob)` must strip them, or Alertmanager (which groups on `instance`)
+  # re-notifies the same missed dump every time KSM is rescheduled — and the
+  # staleness arm's label set would stop matching the absent() arm's.
   - interval: 1m
     input_series:
-      - series: 'kube_cronjob_status_last_successful_time{namespace="authentik", cronjob="authentik-pg-dump"}'
+      - series: 'kube_cronjob_status_last_successful_time{namespace="authentik", cronjob="authentik-pg-dump", job="kube-state-metrics", instance="10.42.3.7:8080", pod="kube-prometheus-stack-kube-state-metrics-6d9c", endpoint="http", service="kube-prometheus-stack-kube-state-metrics"}'
         values: '-93700+0x70'
     alert_rule_test:
       - eval_time: 65m
@@ -125,11 +160,13 @@ tests:
               namespace: authentik
               cronjob: authentik-pg-dump
 
-  # Fresh (timestamp tracks ~now) must NOT fire.
+  # Fresh: last night's dump, a full 24h ago — the oldest a HEALTHY nightly
+  # CronJob ever looks, and inside the 26h budget. It must stay silent, which is
+  # what pins the 93600s threshold from below as well as above.
   - interval: 1m
     input_series:
-      - series: 'kube_cronjob_status_last_successful_time{namespace="authentik", cronjob="authentik-pg-dump"}'
-        values: '0+60x70'
+      - series: 'kube_cronjob_status_last_successful_time{namespace="authentik", cronjob="authentik-pg-dump", job="kube-state-metrics", instance="10.42.3.7:8080", pod="kube-prometheus-stack-kube-state-metrics-6d9c", endpoint="http", service="kube-prometheus-stack-kube-state-metrics"}'
+        values: '-86400+60x70'
     alert_rule_test:
       - eval_time: 65m
         alertname: AuthentikBackupStale
@@ -151,7 +188,7 @@ tests:
   # MealieBackupStale: same shape in the recipes namespace.
   - interval: 1m
     input_series:
-      - series: 'kube_cronjob_status_last_successful_time{namespace="recipes", cronjob="mealie-pg-dump"}'
+      - series: 'kube_cronjob_status_last_successful_time{namespace="recipes", cronjob="mealie-pg-dump", job="kube-state-metrics", instance="10.42.3.7:8080", pod="kube-prometheus-stack-kube-state-metrics-6d9c", endpoint="http", service="kube-prometheus-stack-kube-state-metrics"}'
         values: '-93700+0x70'
     alert_rule_test:
       - eval_time: 65m
@@ -162,11 +199,12 @@ tests:
               namespace: recipes
               cronjob: mealie-pg-dump
 
-  # Fresh (timestamp tracks ~now) must NOT fire (parity with AuthentikBackupStale).
+  # Fresh (last night's dump, 24h ago) must NOT fire — parity with
+  # AuthentikBackupStale, threshold pinned from below the same way.
   - interval: 1m
     input_series:
-      - series: 'kube_cronjob_status_last_successful_time{namespace="recipes", cronjob="mealie-pg-dump"}'
-        values: '0+60x70'
+      - series: 'kube_cronjob_status_last_successful_time{namespace="recipes", cronjob="mealie-pg-dump", job="kube-state-metrics", instance="10.42.3.7:8080", pod="kube-prometheus-stack-kube-state-metrics-6d9c", endpoint="http", service="kube-prometheus-stack-kube-state-metrics"}'
+        values: '-86400+60x70'
     alert_rule_test:
       - eval_time: 65m
         alertname: MealieBackupStale
@@ -215,10 +253,12 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
+  # Fresh = last night's upload, 24h ago: inside the 50h budget, and low enough
+  # that dropping the threshold toward it turns this arm red.
   - interval: 1m
     input_series:
       - series: 'restic_offsite_last_success_timestamp_seconds'
-        values: '0+60x70'
+        values: '-86400+60x70'
     alert_rule_test:
       - eval_time: 65m
         alertname: ResticOffsiteStale
@@ -234,23 +274,24 @@ tests:
 
   # BackupArtifactStale — freshness arm: with all seven static app series present,
   # only the app whose mtime is older than 50h fires (labelled by app); the six
-  # fresh apps do not, and no per-app absent arm fires (all present).
+  # fresh apps do not, and no per-app absent arm fires (all present). Fresh here
+  # is last night's dump, 24h old — the oldest a healthy nightly artefact gets.
   - interval: 1m
     input_series:
       - series: 'backup_artifact_last_mtime_seconds{app="authentik"}'
-        values: '0+60x70'
+        values: '-86400+60x70'
       - series: 'backup_artifact_last_mtime_seconds{app="mealie"}'
-        values: '0+60x70'
+        values: '-86400+60x70'
       - series: 'backup_artifact_last_mtime_seconds{app="gitlab"}'
         values: '-200000+0x70'
       - series: 'backup_artifact_last_mtime_seconds{app="immich"}'
-        values: '0+60x70'
+        values: '-86400+60x70'
       - series: 'backup_artifact_last_mtime_seconds{app="nextcloud"}'
-        values: '0+60x70'
+        values: '-86400+60x70'
       - series: 'backup_artifact_last_mtime_seconds{app="home-assistant"}'
-        values: '0+60x70'
+        values: '-86400+60x70'
       - series: 'backup_artifact_last_mtime_seconds{app="pve-cluster"}'
-        values: '0+60x70'
+        values: '-86400+60x70'
     alert_rule_test:
       - eval_time: 65m
         alertname: BackupArtifactStale
@@ -266,17 +307,17 @@ tests:
   - interval: 1m
     input_series:
       - series: 'backup_artifact_last_mtime_seconds{app="authentik"}'
-        values: '0+60x70'
+        values: '-86400+60x70'
       - series: 'backup_artifact_last_mtime_seconds{app="mealie"}'
-        values: '0+60x70'
+        values: '-86400+60x70'
       - series: 'backup_artifact_last_mtime_seconds{app="gitlab"}'
-        values: '0+60x70'
+        values: '-86400+60x70'
       - series: 'backup_artifact_last_mtime_seconds{app="nextcloud"}'
-        values: '0+60x70'
+        values: '-86400+60x70'
       - series: 'backup_artifact_last_mtime_seconds{app="home-assistant"}'
-        values: '0+60x70'
+        values: '-86400+60x70'
       - series: 'backup_artifact_last_mtime_seconds{app="pve-cluster"}'
-        values: '0+60x70'
+        values: '-86400+60x70'
     alert_rule_test:
       - eval_time: 65m
         alertname: BackupArtifactStale
@@ -408,6 +449,9 @@ tests:
   # and the only size arm covering authentik/mealie/home-assistant (no VM-side
   # wrapper emits a size metric for them). A truncated dump lands with a FRESH
   # mtime, so BackupArtifactStale stays green: that is the case pinned here.
+  # The two mtimes deliberately keep the zero-lag shape: this rule's guard is
+  # `mtime > 0`, and the harness clock starts at 0, so the realistic-lag shape
+  # used elsewhere in this file would read as "no matching file at all".
   - interval: 1m
     input_series:
       - series: 'backup_artifact_last_size_bytes{app="authentik"}'
@@ -816,10 +860,12 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
+  # Fresh = last week's verify, a full 7 days ago: the oldest a HEALTHY weekly
+  # timer looks, and inside the 8d budget.
   - interval: 1m
     input_series:
       - series: 'restic_offsite_last_verify_timestamp_seconds'
-        values: '0+60x70'
+        values: '-604800+60x70'
       - series: 'restic_offsite_last_verify_success'
         values: '1+0x70'
     alert_rule_test:
@@ -831,7 +877,7 @@ tests:
   - interval: 1m
     input_series:
       - series: 'restic_offsite_last_verify_timestamp_seconds'
-        values: '0+60x70'
+        values: '-604800+60x70'
       - series: 'restic_offsite_last_verify_success'
         values: '0+0x70'
     alert_rule_test:
@@ -867,7 +913,7 @@ tests:
   - interval: 1m
     input_series:
       - series: 'backup_artifact_collector_last_success_seconds{instance="192.168.0.102:9101"}'
-        values: '0+60x70'
+        values: '-3600+60x70'
     alert_rule_test:
       - eval_time: 65m
         alertname: BackupArtifactCollectorStale

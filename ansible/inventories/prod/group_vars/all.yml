@@ -25,6 +25,7 @@ dns_servers:
 deploy_expected_absent_hosts: []
 
 # Proxmox autostart / boot order is set PER GUEST, never here.
+# Order legend: DNS 10 -> SMTP 20 -> k3s servers 30 -> agents 40 -> apps 50+.
 #
 # There is deliberately no group-wide `proxmox_autostart_enabled` /
 # `proxmox_startup_order` / `proxmox_startup_delay`: the proxmox_lxc role reads
@@ -146,7 +147,10 @@ tailscale_accept_routes: false  # Hosts should NOT accept routes (prevents routi
 tailscale_accept_dns: false  # Use local DNS infrastructure
 tailscale_advertise_routes: []  # Only subnet routers (Proxmox hosts) should advertise routes
 
-# Application version pins
+# Application version pins. Bump = pick a newer tag, update any paired
+# *_git_sha / *_checksum, run `task flux:sync-versions`, commit; CI verifies and
+# rebuilds, Flux rolls the pods (docs/12). Each pin below carries its upstream
+# feed and only what the tag itself cannot express.
 adguard_home_version: "0.107.78"
 adguard_sync_version: "0.9.2"
 # Host-side Alloy apt package (alloy_host role; distinct from the in-cluster
@@ -163,20 +167,15 @@ qol_vundle_version: "v0.10.2"
 coredns_tailnet_version: "1.14.6"
 debian_version: "13"
 # Proxmox LXC root template (pveam appliance). Authoritative pin — mirrors the
-# proxmox_lxc role default (bump both together; the role default is the
-# molecule/standalone fallback). Not a Flux version (host-side Ansible), so it is
-# NOT added to the versions ConfigMap. Upstream silently rotates the point
-# release (13.1-2 -> 13.6-1 broke a cached-template recreate — see the
-# proxmox_lxc role), so it is tracked in check-versions.py (category
-# "manual"); check for a newer build with `pveam update && pveam available
+# proxmox_lxc role default (bump both together). Upstream silently rotates the
+# point release, which breaks a cached-template recreate, so it is tracked in
+# check-versions.py as category "manual": `pveam update && pveam available
 # --section system | grep debian-13-standard`.
 proxmox_lxc_template: "debian-13-standard_13.6-1_amd64.tar.zst"
 k3s_version: "v1.36.3+k3s1"
-# Pin the sha256 of install.sh for the k3s_version tag so get_url verifies the
-# root-run installer script before exec (fail-closed against a force-pushed tag /
-# compromised CDN / MITM — install.sh's own check covers the k3s binary, not the
-# script itself). Host-side ansible, NOT a Flux version — do not add to the
-# versions ConfigMap. Recompute + update in lockstep with every k3s_version bump:
+# sha256 of install.sh for the k3s_version tag: get_url verifies the root-run
+# installer before exec (install.sh's own check covers the k3s binary, not the
+# script). Recompute in lockstep with every k3s_version bump:
 #   curl -sfL https://raw.githubusercontent.com/k3s-io/k3s/<k3s_version>/install.sh | sha256sum
 k3s_install_script_checksum: "sha256:46177d4c99440b4c0311b67233823a8e8a2fc09693f6c89af1a7161e152fbfad"
 kube_vip_version: "v1.2.3"
@@ -187,21 +186,14 @@ flux_version: "2.9.0"
 # Authentik SSO identity provider
 authentik_version: "2026.5.6"
 
-# PostgreSQL version for Authentik (bundled with Helm chart)
-# Using Debian Trixie base for consistency with homelab standard
-# Available tags: https://hub.docker.com/_/postgres/tags
+# Postgres for Authentik (bundled with the Helm chart); trixie base.
+# https://hub.docker.com/_/postgres/tags
 postgresql_version: "18.6-trixie"
 
-# PostgreSQL version for Mealie (standalone deployment)
-# Using Alpine base for lighter footprint
-# Available tags: https://hub.docker.com/_/postgres/tags
+# Postgres for Mealie (standalone deployment); alpine base.
 mealie_postgresql_version: "18.6-alpine"
 
-# Download clients and media stack versions
-# Pinned to specific versions for reproducible deployments and controlled updates.
-# After editing a version here, run `task flux:sync-versions` to regenerate
-# kubernetes/infrastructure/sources/versions-configmap.yaml, then commit +
-# push both files — Flux reconciles the new image tags into the running pods.
+# Download clients and media stack.
 # LinuxServer.io images: https://docs.linuxserver.io/images/
 # Gluetun: https://github.com/qdm12/gluetun/releases
 # Pulsarr: https://github.com/jamcalli/Pulsarr/releases
@@ -221,64 +213,51 @@ pulsarr_version: "0.18.0"
 # https://github.com/wg-easy/wg-easy/releases
 wg_easy_version: "15.4.0"
 
-# Recipe management stack versions
+# Recipe management stack.
 # Mealie: https://github.com/mealie-recipes/mealie/releases
 # Bar Assistant: https://github.com/bar-assistant/bar-assistant/releases
 # Salt Rim: https://hub.docker.com/r/barassistant/salt-rim/tags
 # Meilisearch: https://github.com/meilisearch/meilisearch/releases (pinned to 1.15.x for Bar Assistant compat)
 # Redis: https://hub.docker.com/_/redis/tags (Alpine variant)
 mealie_version: "v3.22.0"
-bar_assistant_version: "5.15.4"
-salt_rim_version: "4.15.0"
+bar_assistant_version: "6.0.0"
+salt_rim_version: "5.0.0"
 meilisearch_version: "v1.15.2"
 redis_version: "8.10.0-alpine"
 
 # Plex Media Server version (apt-managed via official repository)
 plex_version: "1.43.3.10861-07dfddaeb"
 
-# GitLab EE (using CE features) - Omnibus package
+# GitLab EE (using CE features) — Omnibus package.
 # https://packages.gitlab.com/gitlab/gitlab-ee
-# 19.1.x line (incl. CVE-2026-5816 Web IDE single-origin fix); 19.1.2-ee.0 =
-# current latest patch. Applied by task gitlab:deploy / the deploy-gitlab CI
-# job (triggered on all.yml changes); maintenance apt-upgrade honors the
-# gitlab-ee package hold and will not bump it.
+# Applied by task gitlab:deploy / the deploy-gitlab CI job; the maintenance
+# apt-upgrade honours the gitlab-ee package hold and will not bump it.
 gitlab_version: "19.2.2-ee.0"
 
-# GitLab Runner version for k3s cluster
 # https://gitlab.com/gitlab-org/charts/gitlab-runner/tags
 gitlab_runner_helm_version: "0.91.2"
 
-# GitLab Agent for Kubernetes Helm chart version
 # https://gitlab.com/gitlab-org/charts/gitlab-agent/tags
 gitlab_agent_helm_version: "2.29.0"
 
-# In-cluster pull-through Docker registry cache for CI (kubernetes/apps/
-# registry-cache, docs/27 § Registry pull-through cache) — the CNCF distribution
-# `registry` image (Docker Hub library/registry), run in proxy mode in front of
-# registry.git.ericsweiss.com so molecule CI jobs warm-hit the molecule-test
-# image on the LAN. Bare X.Y.Z tag. https://hub.docker.com/_/registry/tags
+# In-cluster pull-through registry cache for CI (docs/27 § Registry pull-through
+# cache). Bare X.Y.Z tag. https://hub.docker.com/_/registry/tags
 registry_cache_version: "3.1.1"
 
-# Nextcloud (Docker Compose stack on the NAS-pinned VM, 192.168.0.156)
-# Consumed by Ansible (the nextcloud role) directly from all.yml — the VM
-# containers are NOT Flux-managed, but the pins live here per the
-# single-source-of-truth convention (they flow harmlessly into the versions
-# ConfigMap; no k8s manifest references them).
-# Nextcloud server: https://github.com/nextcloud/docker/blob/master/versions.json (34 = current stable, PHP 8.5, Debian trixie)
+# Nextcloud (compose stack on the VM — consumed by the nextcloud Ansible role;
+# the VM-only pins ride the versions ConfigMap as a harmless superset).
+# https://github.com/nextcloud/docker/blob/master/versions.json
 nextcloud_version: "34.0.3"
-# PostgreSQL: PG 18 is Nextcloud-recommended; matches the homelab postgres pin.
-# https://hub.docker.com/_/postgres/tags
+# PG 18 is Nextcloud-recommended and matches the homelab postgres pin.
 nextcloud_postgres_version: "18.6-trixie"
 # Redis (cache + transactional file locking) reuses the shared `redis_version`
-# pin above — same image/tag, tracked once by the "Redis" version-check entry.
+# pin above, tracked once by the "Redis" version-check entry.
 # Nextcloud exporter: https://github.com/xperimental/nextcloud-exporter/releases
 nextcloud_exporter_version: "0.9.1"
 # The Nextcloud VM's Docker engine uses the shared docker_engine_* pins below —
 # one source of truth across immich / immich_ml / nextcloud.
 
-# Immich (photo-management VM, docker-compose stack — consumed by the immich
-# Ansible role; the VM-only pins ride the versions-configmap as a harmless
-# superset). App: https://github.com/immich-app/immich/releases
+# Immich (compose stack on the VM). https://github.com/immich-app/immich/releases
 # The Postgres + Valkey images (tag AND digest) are whatever Immich's pinned
 # release pins in its own docker/docker-compose.yml — the DB is release-coupled
 # (vectorchord/pgvectors build), so NEVER bump it independently of immich_version.
@@ -288,106 +267,65 @@ immich_postgres_digest: "sha256:bcf63357191b76a916ae5eb93464d65c07511da41e3bf7a8
 immich_valkey_version: "9"
 immich_valkey_digest: "sha256:4963247afc4cd33c7d3b2d2816b9f7f8eeebab148d29056c2ca4d7cbc966f2d9"
 
-# Docker Engine — the single pinned apt versions for the Debian 13/trixie VM
-# compose stacks (immich, immich_ml, nextcloud via the shared docker_engine
-# role). dpkg-held so the maintenance apt-upgrade never bumps them under a
-# running stack. Bump workflow:
+# Docker Engine for the trixie VM compose stacks (immich, immich_ml, nextcloud).
+# dpkg-held so the maintenance apt-upgrade never bumps them under a running stack.
 # https://download.docker.com/linux/debian/dists/trixie/stable/binary-amd64/Packages
 docker_engine_ce_version: "5:29.6.2-1~debian.13~trixie"
 docker_engine_containerd_version: "2.2.6-1~debian.13~trixie"
 docker_engine_buildx_plugin_version: "0.35.0-1~debian.13~trixie"
 docker_engine_compose_plugin_version: "5.3.1-1~debian.13~trixie"
-# VirtIO driver ISO for the Windows 11 VM (proxmox_vm windows guest path).
-# The proxmox_vm role downloads + checksum-verifies this ISO to the
-# tank-proxmox store so Windows setup can load the virtio-scsi (viostor) and
-# virtio-net (netkvm) drivers. Pinned to a versioned Fedora ARCHIVE URL (the
-# stable-virtio/ symlink is a moving target that breaks the pin on the next
-# upstream release). Fedora publishes no ISO checksum in its CHECKSUM file
-# (RPMs only), so this sha256 is computed from the pinned archive artifact.
-# On bump: change proxmox_vm_virtio_win_version, then recompute the new ISO's sha256
-#   curl -sL https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio/virtio-win-<ver>-1/virtio-win-<ver>.iso | sha256sum
-# and update both lines. The Windows install ISO itself is downloaded manually
-# from Microsoft (it can't be redistributed) — see docs/39-windows-vm.md.
+# VirtIO driver ISO for the Windows 11 VM. Pinned to a versioned Fedora ARCHIVE
+# URL — the stable-virtio/ symlink is a moving target that breaks the pin on the
+# next upstream release. Fedora publishes no ISO checksum (RPMs only), so the
+# sha256 is computed from the pinned artifact and bumped with it. The Windows
+# install ISO itself is fetched manually from Microsoft — docs/39-windows-vm.md.
 # https://github.com/virtio-win/virtio-win-pkg-scripts
 proxmox_vm_virtio_win_version: "0.1.285"
 proxmox_vm_virtio_win_checksum: "sha256:e14cf2b94492c3e925f0070ba7fdfedeb2048c91eea9c5a5afb30232a3976331"
-# Hermes Agent (NousResearch) - autonomous AI agent + web dashboard
-# https://github.com/NousResearch/hermes-agent/releases
-# Upstream ships no published image; the build-hermes-agent CI job clones the
-# repo at this git tag and builds THEIR Dockerfile into the GitLab registry as
-# hermes-agent:${hermes_version}. The value is the upstream RELEASE TAG (used
-# verbatim both as `git clone --branch` and as the built image tag), NOT the
-# semver whl version (v2026.7.7.2 == release 0.18.2). Bump = pick a newer tag,
-# update hermes_git_sha below to that tag's commit, run task flux:sync-versions,
-# commit — CI verifies the tag→SHA, rebuilds, Flux rolls the pods.
-hermes_version: "v2026.8.13"
-# Immutable commit the pinned tag must resolve to. build-hermes-agent refuses to
-# build if `git clone --branch hermes_version` resolves to a different HEAD,
-# defending against a moved/compromised upstream tag. Update in lockstep with
-# hermes_version (get it from the tag on GitHub or the CI build log).
-hermes_git_sha: "f80f453ae0679347e38abc917c7f94f717bf96c5"
-# PUBLISHED image tag = <hermes_version>-r<N>. The -rN local revision exists
-# because the image is upstream + our reviewed patches (docker/hermes-agent/
-# patches/): a patch change without an upstream bump must produce a NEW tag or
-# the nodes' IfNotPresent cache would keep serving the unpatched image. Bump
-# -rN when patches change; reset to -r1 on a hermes_version bump. CI asserts
-# the prefix matches hermes_version so the two can never drift.
-hermes_image_version: "v2026.8.13-r2"
-# OpenAI Codex CLI (https://github.com/openai/codex/releases, npm @openai/codex).
-# Hermes' Codex app-server runtime delegates OpenAI/Codex turns to this CLI over
-# JSON-RPC stdio, authenticated with a ChatGPT subscription (OAuth) — no API
-# billing. The build-hermes-agent CI job bakes it into the image via the thin
-# docker/hermes-agent/Dockerfile.codex wrapper (npm i -g @openai/codex@<pin>).
-# Requires >=0.130.0 for the Hermes runtime; the image already ships Node 22.
-# Bump = pick a newer stable release, sync-versions, commit — CI rebuilds the
-# wrapper, Flux rolls the pods. NOT substituted into any manifest (build-time
-# only); it rides in the versions ConfigMap as a harmless superset.
+# Hermes Agent. https://github.com/NousResearch/hermes-agent/releases
+# Upstream ships no image; build-hermes-agent clones the repo at this git tag
+# and builds THEIR Dockerfile. The value is the upstream RELEASE TAG (used
+# verbatim as `git clone --branch` and as the built image tag), NOT the semver
+# whl version.
+hermes_version: "v2026.8.16"
+# Immutable commit the pinned tag must resolve to — build-hermes-agent refuses
+# to build on a mismatch (moved/compromised tag defence). Lockstep with
+# hermes_version.
+hermes_git_sha: "df4b65147d7ddd74dd449f9067aabbca5aef0ec7"
+# PUBLISHED image tag = <hermes_version>-r<N>. The image is upstream + our
+# patches (docker/hermes-agent/patches/), so a patch change without an upstream
+# bump MUST produce a new tag or the nodes' IfNotPresent cache keeps serving the
+# unpatched image. Bump -rN when patches change; reset to -r1 on a
+# hermes_version bump. CI asserts the prefix matches hermes_version.
+hermes_image_version: "v2026.8.16-r1"
+# OpenAI Codex CLI, baked into the hermes image by Dockerfile.codex. Requires
+# >=0.130.0 for the Hermes runtime. Build-time only — not substituted into any
+# manifest. https://github.com/openai/codex/releases (npm @openai/codex)
 hermes_codex_version: "0.147.0"
-# Claude Code CLI (https://github.com/anthropics/claude-code, npm
-# @anthropic-ai/claude-code). Baked into the hermes-agent image alongside the
-# Codex CLI so Hermes can DELEGATE coding tasks to Claude Code headlessly
-# (`claude -p` via the terminal tool / the bundled claude-code skill),
-# authenticated with a Claude Max subscription long-lived OAuth token
-# (`claude setup-token` -> CLAUDE_CODE_OAUTH_TOKEN via ESO — subscription
-# billing, no API key; the CLI holds the credential, Hermes only reads stdout).
-# Bump = pick a newer stable release, sync-versions, commit — CI rebuilds the
-# wrapper, Flux rolls the pods. Build-time only; rides in the versions
-# ConfigMap as a harmless superset (same as hermes_codex_version).
+# Claude Code CLI, baked into the hermes image alongside the Codex CLI so Hermes
+# can delegate coding tasks headlessly (`claude -p`), authenticated with a
+# long-lived OAuth token (CLAUDE_CODE_OAUTH_TOKEN via ESO — no API key; the CLI
+# holds the credential, Hermes only reads stdout). Build-time only — docs/37.
+# https://github.com/anthropics/claude-code (npm @anthropic-ai/claude-code)
 hermes_claude_version: "2.1.233"
-# 1Password CLI (op), the official first-party binary. Baked into the hermes
-# image (docker/hermes-agent/Dockerfile.codex) so Hermes' first-party 1Password
-# skill can drive `op` against the isolated Agent vault via a service-account
-# token (OP_SERVICE_ACCOUNT_TOKEN — wired in kubernetes/apps/hermes; docs/37
-# §1Password). Value is the full DEB version string (apt pin), not the bare
-# semver `op --version` reports (2.39.0). No release feed to poll — bump by
-# checking `apt-cache madison 1password-cli` against 1Password's signed repo,
-# then sync-versions + commit; CI rebuilds the wrapper. Build-time only (not
-# substituted into any manifest); rides in the versions ConfigMap as a harmless
-# superset like hermes_codex_version.
+# 1Password CLI (op), baked into the hermes image so Hermes' 1Password skill can
+# drive `op` against the isolated Agent vault (docs/37 §1Password). Value is the
+# full DEB version string, not the bare semver `op --version` reports.
 #
-# NOT optional maintenance: the repo carries exactly ONE version at a time —
-# 1Password prunes the rest — so a stale pin FAILS the image build outright
-# (not merely lags), and every upstream release invalidates this pin whether or
-# not anything else changed. version-check cannot catch it: there is no release
-# feed. Read the current version straight off the Packages index:
+# NOT optional maintenance: the repo keeps exactly ONE version — 1Password
+# prunes the rest — so a stale pin FAILS the image build outright, and
+# version-check cannot see it (no release feed). Read the current version off
+# the Packages index:
 #   curl -fsSL https://downloads.1password.com/linux/debian/amd64/dists/stable/main/binary-amd64/Packages \
 #     | awk '/^Package: 1password-cli$/{p=1} p&&/^Version:/{print $2; p=0}'
-# 2.38.1-1 was pruned in favour of 2.39.0-1 and broke build-hermes-agent on
-# pipeline 1333 (2026-08-14).
 hermes_op_version: "2.39.0-1"
-# Camofox anti-detection browser server (jo-inc/camofox-browser) — the sidecar
-# behind Hermes' camofox browser tool (CAMOFOX_URL). Upstream publishes no
-# container image; the build-camofox-browser CI job clones the repo at tag
-# v<version> and builds THEIR Dockerfile unmodified into the GitLab registry as
-# camofox-browser:<version>. The pin is the bare semver (the image tag); the
-# git tag carries the leading "v". Bump = pick a newer stable tag, update
-# hermes_camofox_git_sha below to that tag's commit, sync-versions, commit.
+# Camofox browser server — the sidecar behind Hermes' camofox tool. Upstream
+# publishes no image; build-camofox-browser clones the repo at tag v<version>.
+# The pin is the bare semver (the image tag); the git tag carries the "v".
 # https://github.com/jo-inc/camofox-browser/releases
 hermes_camofox_version: "1.13.0"
-# Immutable commit tag v${hermes_camofox_version} must resolve to.
-# build-camofox-browser refuses to build if the clone resolves elsewhere
-# (moved/compromised tag defence — same pattern as hermes_git_sha). Update in
-# lockstep with hermes_camofox_version.
+# Immutable commit tag v${hermes_camofox_version} must resolve to; the build
+# refuses on a mismatch. Lockstep with hermes_camofox_version.
 hermes_camofox_git_sha: "8b5b0959adfadadae38ecce9d7eed706ab102bf1"
 
 # Hindsight agent-memory server (vectorize-io/hindsight) — Hermes' long-term
@@ -395,63 +333,45 @@ hermes_camofox_git_sha: "8b5b0959adfadadae38ecce9d7eed706ab102bf1"
 # is the ghcr.io/vectorize-io/hindsight image tag (bare semver; the git tag
 # carries a leading "v"). https://github.com/vectorize-io/hindsight/releases
 hindsight_version: "0.9.1"
-# llama.cpp server sidecar for Hindsight's local LLM. The deployment builds the
-# image tag as ghcr.io/ggml-org/llama.cpp:server-cuda-<pin> — the CUDA build,
-# for GPU offload on the pve-prec-01 1660 Ti (docs/43). Upstream tags a build
-# (bNNNN) many times per day and publishes BOTH server-<build> (CPU) and
-# server-cuda-<build> (CUDA) for a given build, so this one pin drives both; not
-# every build publishes images, so it is bumped opportunistically (any recent
-# build with a server-cuda- variant serves the pinned Gemma GGUF), category
-# "manual" in check-versions. https://github.com/ggml-org/llama.cpp/releases
+# llama.cpp server sidecar for Hindsight's local LLM, built as
+# ghcr.io/ggml-org/llama.cpp:server-cuda-<pin> for GPU offload (docs/43).
+# Upstream tags builds (bNNNN) many times a day and not every build publishes
+# images, so this is bumped opportunistically — category "manual" in
+# check-versions. https://github.com/ggml-org/llama.cpp/releases
 hindsight_llamacpp_version: "b10068"
 
 # GPU stack for the pve-prec-01 1660 Ti (Hindsight CUDA offload, docs/43).
-# nvidia-open (the open GPU kernel modules) comes from NVIDIA's own CUDA apt repo
-# (debian13), NOT Debian non-free — installed on the agent VM by the k3s role's
-# tasks/gpu.yml. The open modules support Turing (TU116 is GSP-equipped) and are
-# CUDA-12.8-capable: the Hindsight llama.cpp image is built against CUDA 12.8,
-# which needs a native driver >= 570 on a consumer GeForce card (cuda-compat
-# forward-compat is unsupported there), so the Debian non-free 550 is too old.
-# The driver pin is an EXACT apt version. gpu.yml HOLDS nvidia-open after install
-# so a routine `apt upgrade` can't move it off the pin; bump this pin to upgrade
-# (the install passes allow_change_held_packages, so it applies over the hold).
-# https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/
+# nvidia-open comes from NVIDIA's own CUDA apt repo, NOT Debian non-free: the
+# llama.cpp image is built against CUDA 12.8, which needs a native driver >= 570
+# on a consumer GeForce card (cuda-compat forward-compat is unsupported there).
+# Exact apt version; gpu.yml HOLDS the package, and bumping this pin applies
+# over the hold. https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/
 nvidia_driver_version: "610.43.02-1"
-# NVIDIA CUDA apt repo keyring. The debian13 CUDA repo InRelease is signed by a key
-# NVIDIA does NOT publish as a standalone .pub (unlike debian12's older 3bf863cc.pub
-# — a DIFFERENT key); it ships ONLY in the official cuda-keyring package, which also
-# drops the matching sources file. gpu.yml verifies this SHA256 BEFORE installing
-# the deb (it runs maintainer scripts as root, so the artifact is checked up front
-# — verify-before-trust); the repo it drops (signed key 02182E60…8793F200) is then
-# apt-verified against that key on every fetch. Bump version + sha256 in lockstep.
-# https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/
+# NVIDIA CUDA apt repo keyring. The debian13 repo's signing key is published
+# ONLY inside this cuda-keyring package (no standalone .pub), so gpu.yml verifies
+# this SHA256 BEFORE installing the deb — its maintainer scripts run as root.
+# Bump version + sha256 in lockstep.
 nvidia_cuda_keyring_version: "1.1-1"
 nvidia_cuda_keyring_sha256: "d0d4ef986a44400f9db33c600ef33a985175e7cc63d805a10e1839c7a1e78f5f"
-# nvidia-container-toolkit from NVIDIA's libnvidia-container apt repo (added via
-# the apt_signed_repo pattern). Provides nvidia-container-runtime, which k3s
-# (>=1.30) auto-detects on PATH and wires into its generated containerd config as
-# the `nvidia` runtime handler (no config-v3.toml.tmpl needed). Exact apt pin.
+# Provides nvidia-container-runtime, which k3s auto-detects on PATH and wires
+# into its generated containerd config as the `nvidia` runtime handler (no
+# config-v3.toml.tmpl needed). Exact apt pin.
 # https://github.com/NVIDIA/nvidia-container-toolkit/releases
 nvidia_container_toolkit_version: "1.19.1-1"
-# NVIDIA DCGM exporter image (raw DaemonSet on the GPU node,
-# kubernetes/infrastructure/observability/exporters/dcgm-exporter.yaml). Tag form
-# is <DCGM ver>-<exporter ver>-<variant>. nvcr.io/nvidia/k8s/dcgm-exporter.
+# NVIDIA DCGM exporter (raw DaemonSet on the GPU node). Tag form is
+# <DCGM ver>-<exporter ver>-<variant>, nvcr.io/nvidia/k8s/dcgm-exporter.
 # https://github.com/NVIDIA/dcgm-exporter/releases
 dcgm_exporter_version: "4.6.0-4.8.3-distroless"
 
-# Homarr dashboard (kubernetes/apps/homarr, docs/41) — the ghcr.io/homarr-labs/
-# homarr image tag. The Docker tag is v-PREFIXED (v1.71.0 returns 200; a bare
-# 1.71.0 is 404), so keep the leading "v". https://github.com/homarr-labs/homarr/releases
+# Homarr (docs/41). The Docker tag is v-PREFIXED — a bare semver 404s.
+# https://github.com/homarr-labs/homarr/releases
 homarr_version: "v1.75.0"
 
 # Offsite backup binaries (restic_offsite role on pve-nas-01, docs/42).
-# restic installs from Debian apt (0.18.x, current); a NON-EMPTY restic_version
-# becomes an EXACT apt pin (restic=<value>) — leave empty ("" = distro).
-# rclone installs from rclone.org's official .deb, pinned + sha256-verified
-# (Debian ships a 2022-era 1.60.1-DEV build; the pin keeps the backup
-# transport reproducible). Bump BOTH values together from
+# A NON-EMPTY restic_version becomes an EXACT apt pin — "" means distro.
+# rclone installs from rclone.org's own .deb (Debian's build is years stale);
+# bump version + sha256 together from
 # https://downloads.rclone.org/vX.Y.Z/SHA256SUMS (linux-amd64.deb line).
-# Host-side only — no k8s substitution.
 restic_offsite_restic_version: ""
 restic_offsite_rclone_version: "1.74.4"
 restic_offsite_rclone_deb_sha256: "a9da2eaa70428c6dcc5acbb0b7eac0faec4c61643e0b468d9fe09ddf79b7e929"
@@ -470,14 +390,13 @@ exportarr_version: "v2.3.0"
 proxmox_exporter_version: "3.10.0"
 zfs_exporter_version: "2.4.1"
 # sha256 of zfs_exporter-<version>.linux-amd64.tar.gz from the release's
-# sha256sums.txt — verified by get_url so a tampered/MITM'd binary (run as
-# root with /dev/zfs access) fails the download. Update on every version bump.
+# sha256sums.txt — the binary runs as root with /dev/zfs access, so get_url
+# fails closed on a mismatch. Update on every version bump.
 zfs_exporter_checksum: "sha256:60489e74e8f41eadff4f313fb16e94fc0964d37b9cf1be79c25c927b285a3228"
 adguard_exporter_version: "v1.2.1"
-# 0.6.0 publishes an x86_64 .deb again (0.5.0 was source-only); the role
-# installs via .deb (prometheus_exporter_artifact_type: deb). Upstream ships no
-# checksum file, so we pin our own sha256 of the release asset for supply-chain
-# integrity. On bump: shasum -a 256 the downloaded .deb and update both lines.
+# Installed from the release .deb (prometheus_exporter_artifact_type: deb) —
+# check a new release still publishes one. Upstream ships no checksum file, so
+# the sha256 is our own: `shasum -a 256` the .deb and bump both lines.
 unbound_exporter_version: "0.6.0"
 unbound_exporter_checksum: "sha256:4f61876a292b49f918baf6b6b57d17dcf94f97513787282b0dadb88b95084890"
 redis_exporter_version: "v1.89.0"
@@ -486,13 +405,7 @@ redis_exporter_version: "v1.89.0"
 # https://github.com/prometheus-community/postgres_exporter/releases
 postgres_exporter_version: "v0.20.1"
 
-# Helm chart versions for k3s platform workloads
-# These flow into kubernetes/infrastructure/sources/versions-configmap.yaml
-# via scripts/generate-versions-configmap.py, and Flux substitutes them into
-# HelmReleases at reconcile time.
-# Update workflow: edit these versions → task flux:sync-versions → commit → push.
-# Flux reconciles within ~1 minute (or run `task flux:reconcile` to force).
-# Check ArtifactHub or chart repos for latest stable versions:
+# Helm chart versions for the k3s platform workloads.
 # - MetalLB: https://artifacthub.io/packages/helm/metallb/metallb
 # - Traefik: https://github.com/traefik/traefik-helm-chart/releases
 # - cert-manager: https://artifacthub.io/packages/helm/cert-manager/cert-manager
@@ -537,8 +450,7 @@ helm_chart_versions:
   # kubernetes/infrastructure/controllers/metrics-server/release.yaml.
   metrics_server: "3.13.1"
 
-# Proxmox resource pools
-# These are created automatically when provisioning VMs/LXCs
+# Created automatically when provisioning VMs/LXCs.
 proxmox_resource_pools:
   - infra-core      # DNS, SMTP relay, core infrastructure
   - apps-public     # Plex, public-facing applications
@@ -571,23 +483,12 @@ proxmox_firewall_wan_wireguard_vips:
 # Resolver admin surfaces rendered into sg-dns ({port, sources[], comment?}).
 # The role default is the two admin sets only.
 #
-# Read the source lists as BOOKKEEPING, not as a reachability boundary:
-# admin_lan is the whole flat 192.168.0.0/24 (above) and every k3s node sits
-# inside it, with pod egress SNATed to the node's LAN IP — so naming k3s_nodes
-# admits nothing admin_lan does not already admit, and omitting it closes
-# nothing. Both entries are still spelled out deliberately:
-#   :443 names k3s_nodes because those ARE the in-cluster callers of AdGuard's
-#   own TLS listener (Traefik's vm-ingress and the adguard-exporter, which pins
-#   the name to the host IP with hostAliases —
-#   kubernetes/infrastructure/observability/exporters/adguard-exporter.yaml), so
-#   the rule documents them and survives a future admin_lan narrowing.
-#   :3000 is the PLAINTEXT admin API carrying a reusable admin credential and
-#   names only the two human break-glass sets, so that narrowing admin_lan (VLAN
-#   segmentation, docs/16) closes it to the cluster in one edit. Until that
-#   lands, anything on the LAN still reaches it — Homarr's two AdGuard
-#   integrations do exactly that (kubernetes/apps/homarr/networkpolicy.yaml,
-#   docs/41). The credential hardening here is the exporter's move to HTTPS,
-#   not the source list.
+# Read the source lists as BOOKKEEPING, not a reachability boundary: admin_lan
+# is the whole flat /24 and every k3s node sits inside it (pod egress SNATs to
+# the node IP), so naming k3s_nodes admits nothing extra. They are spelled out
+# so that :443 documents its in-cluster callers, and :3000 — the plaintext admin
+# API carrying a reusable credential — closes to the cluster in one edit once
+# admin_lan is narrowed (VLAN segmentation, docs/16).
 proxmox_firewall_dns_admin_ports:
   - port: 443
     sources: [k3s_nodes, admin_ts, admin_lan]
@@ -694,7 +595,7 @@ proxmox_firewall_security_groups:
       - "IN ACCEPT -source +dc/admin_ts -p tcp -dport 22222 -log nolog"
       - "IN ACCEPT -source +dc/admin_lan -p tcp -dport 22222 -log nolog"
       # ICMP from admin sources for ping/traceroute during triage; see
-      # docs/11-firewall.md (2026-06-10 conntrack incident).
+      # docs/11-firewall.md.
       - "IN ACCEPT -source +dc/admin_ts -p icmp -log nolog"
       - "IN ACCEPT -source +dc/admin_lan -p icmp -log nolog"
 
@@ -716,34 +617,23 @@ proxmox_firewall_security_groups:
       - "IN ACCEPT -source +dc/admin_ts -p tcp -dport 3389 -log nolog"
       - "IN ACCEPT -source +dc/admin_lan -p tcp -dport 3389 -log nolog"
 
-# Proxmox HA configuration
-# HA rules (Proxmox 9+) define node affinity for resources
-# node-affinity rules restrict which nodes can run specific resources
-# All critical services excluded from pve-nas-01 to avoid I/O contention with NAS workloads
-#
-# Each critical service gets a per-service rule that (a) lists ONLY the five
-# local-ssd compute nodes, so it never lands on pve-nas-01 unless every compute
-# node is down (strict=false), and (b) gives its HOME node priority 2 vs 1 for the
-# rest, so after an HA failover the service fails BACK to its home when that node
-# returns instead of stranding on the failover node — the placement drift the
-# proxmox_ha_replication_jobs source-node warnings flag. Homes match the
-# proxmox_ha_replication_jobs primary layout below.
+# Per-service node-affinity rules. Each (a) lists ONLY the five local-ssd
+# compute nodes, so the service never lands on pve-nas-01 unless every compute
+# node is down (strict=false, avoiding I/O contention with the NAS), and (b)
+# gives its HOME node priority 2 vs 1, so after a failover it fails BACK instead
+# of stranding. Homes match the proxmox_ha_replication_jobs layout below.
 proxmox_ha_rules:
   - name: affinity-dns-01
     type: node-affinity
     resources:
       - ct:150  # dns-01 (AdGuard Home primary)
     nodes:
-      # Home is pve-prec-01: it has 62 GiB against the 14-15 GiB of the opt and
-      # laptop hosts, and those five are permanently capped at that size. dns-01
-      # is 2 GiB of guest that a small host cannot spare and prec-01 does not
-      # notice, so the primary lives where the headroom is.
+      # Home is pve-prec-01, the only host with real RAM headroom; dns-02 sits
+      # on pve-opt-03 so the pair stays split across hosts.
       #
-      # dns-02 is on pve-opt-03, so the pair stays split across hosts.
-      #
-      # THIS ENTRY, the 150-* proxmox_ha_replication_jobs source_node, and dns-01's
-      # proxmox_host in hosts.yml are ONE UNIT — move all three together or
-      # proxmox_ha/replication.yml cannot manage the jobs.
+      # THIS ENTRY, the 150-* proxmox_ha_replication_jobs source_node, and
+      # dns-01's proxmox_host in hosts.yml are ONE UNIT — move all three
+      # together or proxmox_ha/replication.yml cannot manage the jobs.
       - "pve-prec-01:2"  # home
       - "pve-laptop-01:1"
       - "pve-opt-01:1"
@@ -795,8 +685,7 @@ proxmox_ha_rules:
     comment: "home-assistant home pve-prec-01 (fails back when available); never pve-nas-01"
     enabled: true
 
-# HA resources define which VMs/containers are managed by HA
-# These will automatically restart/relocate on node failure
+# Guests HA manages: restarted/relocated automatically on node failure.
 proxmox_ha_resources:
   - type: ct
     vmid: 150
@@ -822,29 +711,15 @@ proxmox_ha_resources:
     comment: "home-assistant (HAOS VM)"
     enabled: true
 
-# Proxmox Storage Replication configuration
-# Replication jobs provide near-synchronous data replication for fast failover
-# Jobs replicate from primary node to ALL other eligible nodes every 15 minutes
-#
-# Multi-target replication:
-# - Proxmox supports replicating a guest to MULTIPLE target nodes
-# - Each service replicates to ALL 4 other local-ssd nodes (not just one)
-# - This allows HA to failover to ANY available node, not just a single backup
-# - Replication job IDs: <VMID>-<job_number> (0, 1, 2, 3 for 4 targets)
-# - pve-nas-01 excluded: no local-ssd storage, services migrated OFF for I/O contention
-#
-# Node layout (primary locations): pve-prec-01 = dns-01 (150) + home-assistant
-# (154); pve-opt-01 = smtp-relay (151); pve-opt-03 = dns-02 (160);
-# pve-laptop-01 / pve-opt-02 = replication targets only.
-#
+# Storage replication, every 15 minutes. Each service replicates to ALL 4 other
+# local-ssd nodes so HA can fail over to any of them; job id is
+# <VMID>-<job_number>. pve-nas-01 is excluded (no local-ssd).
+# Schedules are explicit times, not */15, so the four services' offsets stay
+# deterministic.
 proxmox_ha_replication_jobs:
-  # dns-01 (VMID 150) - Primary on pve-prec-01 (matches the affinity-dns-01
-  # home above; source_node MUST track the HA home or the role's replication pass
-  # cannot manage these jobs). Note 150-3 targets pve-laptop-01 rather than
-  # pve-prec-01: the source node cannot also be a replication target.
-  # Replicate to all other local-ssd nodes
-  # Staggered: offset 0 (explicit times instead of */15 so the four
-  # services' offsets stay deterministic)
+  # dns-01 (150), offset 0. source_node MUST track the affinity-dns-01 home or
+  # the role's replication pass cannot manage these jobs; the source node cannot
+  # also be a target, which is why 150-3 goes to pve-laptop-01.
   - id: "150-0"
     source_node: pve-prec-01
     target_node: pve-opt-01
@@ -870,9 +745,7 @@ proxmox_ha_replication_jobs:
     comment: "dns-01 -> pve-laptop-01"
     enabled: true
 
-  # smtp-relay (VMID 151) - Primary on pve-opt-01
-  # Replicate to all other local-ssd nodes
-  # Staggered: offset 3 from dns-01's slots
+  # smtp-relay (151), home pve-opt-01, offset 3.
   - id: "151-0"
     source_node: pve-opt-01
     target_node: pve-laptop-01
@@ -898,9 +771,7 @@ proxmox_ha_replication_jobs:
     comment: "smtp-relay -> pve-prec-01"
     enabled: true
 
-  # dns-02 (VMID 160) - Primary on pve-opt-03
-  # Replicate to all other local-ssd nodes
-  # Staggered: offset 6
+  # dns-02 (160), home pve-opt-03, offset 6.
   - id: "160-0"
     source_node: pve-opt-03
     target_node: pve-laptop-01
@@ -926,9 +797,7 @@ proxmox_ha_replication_jobs:
     comment: "dns-02 -> pve-prec-01"
     enabled: true
 
-  # home-assistant (VMID 154) - Primary on pve-prec-01
-  # Replicate to all other local-ssd nodes
-  # Staggered: offset 9
+  # home-assistant (154), home pve-prec-01, offset 9.
   - id: "154-0"
     source_node: pve-prec-01
     target_node: pve-laptop-01

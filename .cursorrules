@@ -1,15 +1,4 @@
 # Cursor Rules for weisssrv
 
-Production Proxmox homelab managed as Infrastructure as Code. The tech stack is
-described once, in `CLAUDE.md` § Project Overview.
-
-1. Read `CLAUDE.md` first — project overview, architecture, repo family, secrets
-   and version management. It names the canonical source for everything owned
-   elsewhere (`README.md` for the docs index, `docs/01-overview.md` for IPs,
-   `docs/15-credential-rotation.md` for 1Password items, `ansible/README.md` for
-   Ansible conventions, `task --list` for commands).
-2. Then read `.claude/skills/weisssrv-development/SKILL.md` and the `references/`
-   file for the change at hand. It is the single home of the workflow invariants
-   (branch + MR, never push `main`, no secrets in git, Flux owns `kubernetes/`,
-   single-sourced versions, roles change in weisssrv-lib), the pre-MR gates, and
-   the change-type decision tree. Follow it rather than these notes.
+Legacy Cursor format, superseded by `.cursor/rules/weisssrv-development.mdc`.
+Both defer to [AGENTS.md](AGENTS.md), which is the entry point for every agent.

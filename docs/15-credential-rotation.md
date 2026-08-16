@@ -122,7 +122,7 @@ re-run the consuming deploy (`task <area>:deploy`) for `op run` consumers, or
 | Item | Fields | Consumed by |
 |---|---|---|
 | GitLab | `root-password` | initial GitLab root user |
-| GitLab API Token | `credential` (admin PAT, `api` scope) | PR-Agent review; hard-asserted by `task gitlab:deploy` for the Web IDE settings block |
+| GitLab API Token | `credential` (admin PAT, `api` scope) | `deploy-gitlab` (`GITLAB_ADMIN_API_TOKEN`); hard-asserted by `task gitlab:deploy` for the Web IDE settings block. **Not** the PR-Agent credential — that job is `secrets_source: env` and uses the `weisssrv-review-bot` project token |
 | GitLab Version Bump Bot Token | `credential` (`api` + `write_repository`, Developer+) | the `VERSION_BUMP_BOT_TOKEN` CI variable — see [detail](#gitlab-version-bump-bot-token) |
 | GitLab SSO | `saml-cert-fingerprint` | Authentik SAML |
 | GitLab Runner | `runner-token` (`glrt-*`) | shared multi-project runner, tags `k8s-deploy`, untagged yes |

@@ -51,19 +51,11 @@ spec:
         ${cluster_node_label_domain}/general: "true"
       # No in-cluster API access.
       automountServiceAccountToken: false
-      # Pin the upstream registry's EXTERNAL hostname to the internal Traefik VIP
-      # at POD scope — the same rationale as the node-level k3s_registry_host_pins
-      # (the weisssrv.infra.k3s role's defaults): registry.git.ericsweiss.com has no
-      # AdGuard rewrite (dns.yml intentionally leaves ericsweiss.com internal
-      # names unresolved, sole exception auth.ericsweiss.com), so a POD would
-      # otherwise resolve it via the Cloudflare/public path and hairpin over the
-      # WAN (flaky "Try again" DNS — the exact failure the node pin was created
-      # to dodge). The node's /etc/hosts pin does NOT reach pods (they resolve via
-      # CoreDNS), so the pin is repeated here. .101 is the internal Traefik VIP,
-      # which fronts the gitlab-registry IngressRoute (Host registry.git.eric...
-      # -> gitlab-registry VM :5050). TLS is unaffected: SNI/validation still use
-      # the hostname, and Traefik serves its cert on .101 (same router as the
-      # public VIP — same mechanism as auth.ericsweiss.com, docs/08).
+      # Pin the upstream registry hostname to the internal Traefik VIP at POD
+      # scope: registry.git.ericsweiss.com has no AdGuard rewrite, so a pod would
+      # otherwise hairpin over the WAN. The node-level /etc/hosts pin does not
+      # reach pods (they resolve via CoreDNS), hence the repeat here. TLS is
+      # unaffected — SNI/validation still use the hostname. docs/08.
       hostAliases:
         - ip: "${cluster_metallb_internal_vip}"
           hostnames:

@@ -7,9 +7,12 @@ backend + 1Password-injected credentials) with one crucial difference:
 
 > **This is the only Terraform module that auto-applies to production.** On a
 > merge to `main` touching `terraform/cloudflare/**`, the `deploy-terraform` CI
-> job runs `terraform apply -auto-approve` against the saved plan. The MR widget
-> shows change **counts**, not which records — so review the plan output in the
-> `terraform-plan` job before merging.
+> job runs `terraform apply -auto-approve` against the saved plan. There is **no
+> pre-merge plan in CI**: while `OP_SERVICE_ACCOUNT_TOKEN` is masked+protected
+> the `terraform-plan` job's `merge_request_event` rule cannot match, so the job
+> is inert and the MR widget shows nothing (see its rule comment in
+> `.gitlab-ci.yml`, which is the authority). The mandatory pre-merge review is a
+> local `task terraform:plan`.
 
 ## Shape from the library, records from here
 
@@ -70,12 +73,13 @@ record from public DNS with no confirmation step. Removing one is a deliberate
 `prevent_destroy` does not block in-place updates, and `moved` blocks (state
 renames — `moved.tf` holds the ones from the pre-module layout) are unaffected.
 
-One gap the module cannot close: `lifecycle` takes no variables, so the
-zone-settings override does **not** carry `prevent_destroy` (the module's
-`manage_zone_settings` toggle has to stay reversible). Removing the whole
-`module "zone"` block still fails on the records' `prevent_destroy`, so the only
-unguarded path is deliberately setting `manage_zone_settings = false` — which
-reverts `ssl`/HSTS/`min_tls_version` zone-wide. Do not do that casually.
+The zone-settings override is protected the same way at the pinned ref, so
+flipping `manage_zone_settings = false` — which would revert `ssl`/HSTS/
+`min_tls_version` zone-wide — plans a destroy that `prevent_destroy` refuses.
+The deliberate path is
+`terraform state rm 'module.zone.cloudflare_zone_settings_override.this[0]'`
+first, then flipping the variable. Removing the whole `module "zone"` block
+likewise fails on the records' `prevent_destroy`.
 
 ## Credentials and state backend
 

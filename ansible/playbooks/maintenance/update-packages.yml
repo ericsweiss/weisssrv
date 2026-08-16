@@ -7,78 +7,31 @@
   become: true
   serial: 1  # One host at a time
   tasks:
-    - name: Display current host being updated
-      ansible.builtin.debug:
-        msg: "Updating packages on {{ inventory_hostname }}"
-
-    - name: Update apt cache
-      ansible.builtin.apt:
-        update_cache: true
-        cache_valid_time: 0
-
-    - name: Check for available updates
-      ansible.builtin.command: apt list --upgradable
-      register: upgradable_packages
-      changed_when: false
-
-    - name: Display available updates
-      ansible.builtin.debug:
-        msg: "{{ upgradable_packages.stdout_lines }}"
-      when: upgradable_packages.stdout_lines | length > 1
-
-    - name: Upgrade packages (safe upgrade)
-      ansible.builtin.apt:
-        upgrade: safe
-        autoclean: true
-        autoremove: true
-      register: apt_upgrade
-
-    - name: Display upgrade summary
-      ansible.builtin.debug:
-        msg:
-          - "Packages upgraded: {{ apt_upgrade.changed }}"
-          - "{{ apt_upgrade.stdout_lines | default([]) }}"
-
-    - name: Check and reboot if needed
-      ansible.builtin.include_tasks: _reboot-if-needed.yml
-
-    - name: Verify services after reboot
-      ansible.builtin.service:
-        name: ssh
-        state: started
-      when: reboot_required | bool
-
-    - name: Ensure the NFS server is healthy after the upgrade (recover nfsd stop-hang)
-      ansible.builtin.include_tasks: _ensure-nfs-server-healthy.yml
+    # Shared with update-full.yml Phase 1 — apt upgrade, reboot routing, nfsd recovery.
+    - name: Upgrade packages and handle the reboot
+      ansible.builtin.include_tasks: _apt-upgrade-and-reboot.yml
+      vars:
+        apt_upgrade_phase_label: "Updating packages on {{ inventory_hostname }}"
 
 - name: Update OS packages on k3s nodes (rolling; kernel reboots delegated to kured)
   hosts: k3s
   become: true
   serial: 1  # One node at a time to maintain cluster availability
   tasks:
-    # Verify ONCE, up front (before any node is flagged, so kured is idle and every
-    # server VM is up to delegate to), that kured is actually rolled out. If it is
-    # dead/absent, touching the sentinel later would silently flag a reboot that
-    # never happens (the node stays Ready — invisible to verify); fail loudly here.
-    # Retries ride out a transient mid-rollout (e.g. a Flux chart bump just landed).
-    # This catches kured ABSENT, not kured present-but-wedged (lock held / alert-
-    # paused) — that residual is backstopped by the verify's NodeStuckCordoned and
-    # the MaintenanceRebootDeferred metric. MUST run truly ONCE at play start:
-    # run_once alone runs once PER SERIAL BATCH, and with serial:1 every node is its
-    # own batch, so run_once would re-run on every node — and on later nodes
-    # `rollout status ds/kured` legitimately reports NotAvailable (an earlier node's
-    # kured pod is gone mid-reboot) and would abort the rolling update. The
-    # `when: == ansible_play_hosts_all[0]` (first host of the WHOLE play, stable
-    # across batches) pins it to a single up-front execution while kured is idle.
+    # Verify kured is rolled out ONCE, up front, while it is idle: a dead or
+    # absent kured means the sentinel below flags a reboot that never happens.
+    # `when: inventory_hostname == ansible_play_hosts_all[0]` — NOT run_once,
+    # which re-fires per serial:1 batch and would abort on a node whose kured pod
+    # is legitimately mid-reboot. Catches kured ABSENT only; present-but-wedged is
+    # backstopped by NodeStuckCordoned + the MaintenanceRebootDeferred metric.
     - name: Verify kured DaemonSet is healthy before delegating reboots to it
       ansible.builtin.command: >-
         k3s kubectl -n kube-system rollout status ds/kured --timeout=120s
       register: kured_rollout
       changed_when: false
-      # ~3 min budget: tolerant of an AGENT VM still rejoining after a play-1 host
-      # reboot (kured pod re-scheduling) so this doesn't spuriously fail. Delegate to
-      # a server NOT the first play host, falling back to the first server (resilient
-      # pattern used elsewhere), in case that server is itself momentarily down.
+      # Budget tolerates an agent VM still rejoining after an earlier host
+      # reboot. Delegates to a server other than the first play host, falling
+      # back to the first server.
       retries: 6
       delay: 20
       until: kured_rollout.rc == 0
@@ -123,13 +76,10 @@
       vars:
         skip_reboot: true
 
-    # k3s node KERNEL reboots are delegated to kured (Kubernetes Reboot Daemon,
-    # a DaemonSet). We do NOT cordon/drain/reboot here: from a CI job that would
-    # drain the very node hosting the job's own runner executor pod and deadlock
-    # (observed: maintenance-run-all hung ~29 min on the executor's node).
-    # Instead we flag the sentinel; kured reboots each flagged node one at a time
-    # (cordon -> drain -> reboot -> uncordon), decoupled from and surviving this
-    # CI job. See kubernetes/infrastructure/controllers/kured/release.yaml.
+    # k3s kernel reboots are kured's job — draining from CI would evict the
+    # executor's own pod and deadlock. Flagging the sentinel hands the node to
+    # kured, which reboots one at a time, outliving this job. See
+    # kubernetes/infrastructure/controllers/kured/release.yaml.
     - name: Flag node for kured reboot (kernel updated)
       ansible.builtin.file:
         path: /var/run/reboot-required

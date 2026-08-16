@@ -4,10 +4,11 @@
 # NOTE: this does NOT drain Proxmox HA guests before rebooting, and the cluster
 # leaves shutdown_policy at the Proxmox default (`conditional`), which FREEZES
 # HA services across a reboot instead of moving them — they stay assigned to the
-# node and are down for its whole downtime. On a host that homes an HA guest
-# (today: dns-01 on pve-laptop-01, smtp-relay on pve-opt-01, dns-02 on
-# pve-opt-03, home-assistant on pve-prec-01) that means losing that guest for the
-# reboot. It is survivable by design — dns-01/dns-02 are a redundant pair — but
+# node and are down for its whole downtime. On a host that homes an HA guest that
+# means losing that guest for the reboot. Which host homes which guest is the
+# `affinity-*` entries of proxmox_ha_rules in group_vars/all.yml (each names its
+# home node) — read it there rather than from a list here, which goes stale.
+# It is survivable by design — dns-01/dns-02 are a redundant pair — but
 # if you want the guest to stay up, drain first with
 # `ha-manager crm-command node-maintenance enable <node>` and release afterwards.
 # Full procedure and the reasoning: docs/12-runbooks.md § "Rebooting a Proxmox
@@ -472,10 +473,13 @@
 
 # Self-correct: once the host no longer needs a reboot (operator rebooted it),
 # the next run clears the stale metric. Scoped to every host group that runs this
-# reboot path and can therefore write the metric — base_managed PLUS the app hosts
-# (plex/gitlab), which also include _reboot-if-needed and can hit the defer path
-# (e.g. CI detection failure). state=absent is a safe no-op on a host without the
-# file or the textfile dir. The k3s play passes skip_reboot and never defers.
+# reboot path and can therefore write the metric — base_managed PLUS app_servers
+# (update-packages.yml runs this include for `hosts: app_servers`, i.e. plex,
+# gitlab, nextcloud, immich AND immich-ml), all of which can hit the defer path
+# (e.g. CI detection failure). Must stay in sync with that host set: a group that
+# can write the metric but is not cleared here latches it forever. state=absent is
+# a safe no-op on a host without the file or the textfile dir. The k3s play passes
+# skip_reboot and never defers.
 - name: Clear a stale deferred-reboot metric once the host no longer needs a reboot
   ansible.builtin.file:
     path: "{{ node_exporter_host_textfile_dir | default('/var/lib/node_exporter') }}/maintenance_reboot_deferred.prom"
@@ -484,5 +488,4 @@
   when:
     - not (reboot_required | bool)
     - inventory_hostname in ((groups['base_managed'] | default([]))
-        + (groups['plex_servers'] | default([]))
-        + (groups['gitlab_servers'] | default([])))
+        + (groups['app_servers'] | default([])))

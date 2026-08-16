@@ -1,16 +1,8 @@
 ---
-# Bar Assistant - Cocktail and bar recipe management
-# URL: bar.esweiss.com / bar.ericsweiss.com
-# Docs: https://bar-assistant.github.io/docs/
-#
-# Layout follows the official Docker setup:
-# https://github.com/bar-assistant/docker
-#
-# Architecture:
-# - Bar Assistant Server (v5) - Laravel API with SQLite database
-# - Salt Rim (v4) - Vue.js frontend
-# - Meilisearch - Full-text search engine
-# - Redis - Cache and session storage
+# Bar Assistant (bar.esweiss.com / bar.ericsweiss.com) — four workloads laid out
+# as in the upstream Docker setup: the Laravel API on SQLite, the Salt Rim Vue
+# frontend, Meilisearch for full-text search, and Redis for cache + sessions.
+# docs/23.
 
 
 # Redis (cache and session storage)
@@ -36,10 +28,9 @@ spec:
         app.kubernetes.io/name: bar-assistant-redis
         app.kubernetes.io/component: cache
     spec:
-      # Pod hardening: redis cache does not talk to the kube-API. NOTE:
-      # runAsNonRoot/runAsUser NOT pinned — the running image starts as root and
-      # drops to redis itself (verified live: uid 0), so forcing a non-root UID
-      # risks startup. Pod-level seccomp + automount:false are the safe subset.
+      # No kube-API use. runAsNonRoot/runAsUser deliberately NOT pinned: the
+      # image starts as root and gosu-drops to redis itself, so forcing a
+      # non-root UID risks startup.
       automountServiceAccountToken: false
       securityContext:
         seccompProfile:
@@ -74,17 +65,12 @@ spec:
             - 192mb
             - --maxmemory-policy
             - allkeys-lru
-          # No drop:[ALL]/aPE:false: image starts as root and gosu-drops to redis
-          # (needs CAP_SETUID). Pod-level seccomp + automount:false are the safe
-          # hardening; deeper container hardening needs per-image testing first.
+          # No drop:[ALL]/aPE:false — the gosu drop needs CAP_SETUID.
           env:
-            # Match official docker-compose: ALLOW_EMPTY_PASSWORD=yes. Accepted
-            # tradeoff — this cache holds sessions (bar-assistant sets
-            # SESSION_DRIVER=redis below) but is reachable only from the
-            # bar-assistant pod (+ the observability redis-exporter) per
-            # networkpolicy.yaml. If any other workload lands in `recipes`, switch
-            # to a REDIS_PASSWORD from recipes-secrets before relying on policy
-            # alone.
+            # Accepted tradeoff: this cache holds sessions but is reachable only
+            # from the bar-assistant pod and the redis-exporter
+            # (networkpolicy.yaml). Any further workload in `recipes` means
+            # switching to a REDIS_PASSWORD from recipes-secrets.
             - name: ALLOW_EMPTY_PASSWORD
               value: "yes"
           ports:
@@ -157,11 +143,9 @@ spec:
         app.kubernetes.io/name: bar-assistant-meilisearch
         app.kubernetes.io/component: search
     spec:
-      # Pod hardening: meilisearch does not talk to the kube-API. The image runs
-      # as root by default and may chown /meili_data on start, so ONLY the
-      # universally-safe subset (seccomp + automount:false) is applied — no
-      # runAsNonRoot and no container drop-ALL/aPE:false (those would break the
-      # root start / data-dir setup), matching the postgres/redis decision.
+      # No kube-API use. The image runs as root and may chown /meili_data on
+      # start, so runAsNonRoot and container drop-ALL/aPE:false are omitted —
+      # same call as redis above.
       automountServiceAccountToken: false
       securityContext:
         seccompProfile:
@@ -185,9 +169,7 @@ spec:
         - name: meilisearch
           image: getmeili/meilisearch:${meilisearch_version}
           imagePullPolicy: IfNotPresent
-          # No drop:[ALL]/aPE:false: image runs as root (verified live) and may
-          # chown its data dir on start (needs caps). Pod-level seccomp +
-          # automount:false are the safe hardening for this root-start image.
+          # No drop:[ALL]/aPE:false — the root start chowns its data dir.
           env:
             - name: MEILI_ENV
               value: production
@@ -276,11 +258,9 @@ spec:
         app.kubernetes.io/name: bar-assistant
         app.kubernetes.io/component: api
     spec:
-      # Pod hardening: bar-assistant does not talk to the kube-API. The image runs
-      # unprivileged as www-data (UID 33), but its SQLite + uploads live on an
-      # existing PVC that may not yet be 33-owned, so runAsNonRoot/fsGroup are NOT
-      # forced here (would risk migration write failures on first rollout). Only
-      # the universally-safe subset + container aPE:false / drop-ALL are applied.
+      # No kube-API use. The image runs unprivileged as www-data, but its SQLite
+      # and uploads live on a PVC that may not be 33-owned, so runAsNonRoot and
+      # fsGroup are NOT forced — that would risk migration write failures.
       automountServiceAccountToken: false
       securityContext:
         seccompProfile:
@@ -309,10 +289,8 @@ spec:
             capabilities:
               drop: ["ALL"]
           env:
-            # Application URL - matches official docker-compose APP_URL=$API_URL
             - name: APP_URL
               value: https://bar.${cluster_external_domain}
-            # Meilisearch configuration - matches official docker-compose
             - name: MEILISEARCH_HOST
               value: http://bar-assistant-meilisearch:7700
             - name: MEILISEARCH_KEY
@@ -320,7 +298,6 @@ spec:
                 secretKeyRef:
                   name: recipes-secrets
                   key: bar-assistant-meilisearch-master-key
-            # Redis configuration - matches official docker-compose
             - name: REDIS_HOST
               value: bar-assistant-redis
             - name: CACHE_DRIVER
@@ -350,7 +327,6 @@ spec:
               value: bar-assistant@${cluster_internal_domain}
             - name: MAIL_FROM_NAME
               value: Bar Assistant
-            # Authentik SSO configuration
             - name: AUTHENTIK_BASE_URL
               value: https://auth.${cluster_external_domain}
             - name: AUTHENTIK_CLIENT_ID
@@ -370,14 +346,12 @@ spec:
             # application (terraform/authentik/policy_bindings.tf), not here.
             - name: ALLOW_REGISTRATION
               value: "true"
-            # Disable password login (SSO only)
             - name: ENABLE_PASSWORD_LOGIN
               value: "false"
           ports:
             - name: http
               containerPort: 8080
               protocol: TCP
-          # Give the app time to run migrations on first startup
           startupProbe:
             httpGet:
               path: /api/server/version
@@ -407,7 +381,6 @@ spec:
             limits:
               memory: 1Gi
           volumeMounts:
-            # Mount the entire bar-assistant directory for SQLite database + uploads
             - name: data
               mountPath: /var/www/cocktails/storage/bar-assistant
       volumes:
@@ -498,9 +471,8 @@ spec:
                 topologyKey: kubernetes.io/hostname
       nodeSelector:
         ${cluster_node_label_domain}/general: "true"
-      # Static nginx frontend: no kube-API use, already non-root on :8080, so
-      # drop-ALL + aPE:false are safe. runAsUser is not pinned — the image sets
-      # uid 33 itself.
+      # Static nginx frontend: already non-root on :8080, so drop-ALL +
+      # aPE:false are safe. runAsUser unpinned — the image sets uid 33 itself.
       automountServiceAccountToken: false
       securityContext:
         seccompProfile:

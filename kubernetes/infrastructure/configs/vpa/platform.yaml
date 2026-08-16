@@ -1,26 +1,22 @@
 ---
-# VPA policies for platform controllers. Default is updateMode Auto (the updater
-# may evict to apply new requests). Anything on the synchronous request or
-# admission path uses Initial instead — recommendations land on the next natural
-# restart, never by eviction: Traefik, cert-manager-webhook, external-dns,
-# metallb-speaker and tailscale-operator, each annotated below.
+# VPA policies for platform controllers. Default updateMode is Auto (the updater
+# may evict to apply new requests); anything on the synchronous request or
+# admission path uses Initial instead, annotated per entry below.
 #
-# controlledValues: RequestsOnly is a TARGETED setting, not a blanket one — the
-# five entries that carry it below (external-dns, the three external-secrets
-# components, onepassword-connect) are the ones whose limit was measured moving.
-# On the default RequestsAndLimits the updater rescales the LIMIT with the
-# recommendation, so a quiet period shrinks the ceiling and the next burst runs
-# at >0.95 of it (and on an Auto VPA each revision is an eviction); requests-only
-# keeps the limit at the hand-set manifest number, sized at the 30d working-set
-# peak +60%, with maxAllowed here tracking that same number.
+# controlledValues: RequestsOnly is TARGETED, added only when a limit is
+# OBSERVED to oscillate — never on principle. On the default RequestsAndLimits
+# the updater rescales the limit with the recommendation, so a quiet period
+# shrinks the ceiling and the next burst runs against it. Flipping an entry
+# lowers its effective ceiling to the manifest limit, so it is only safe once
+# that limit is re-measured and this maxAllowed reconciled with it.
 #
-# The other memory-driving policies here stay on RequestsAndLimits deliberately:
-# flipping one lowers its effective ceiling to the manifest limit, which is only
-# safe once that limit has been re-measured against 30d data and maxAllowed
-# reconciled with it (for cert-manager, cainjector, cert-manager-webhook,
-# reloader and tailscale-operator, maxAllowed currently sits ABOVE the limit the
-# HelmRelease sets). Add a policy to the set when its limit is observed to
-# oscillate, not on principle. docs/33 § Limit oscillation.
+# Every maxAllowed.memory below is derived from the HelmRelease's memory limit,
+# per the scoped rule in docs/33 § Limit oscillation: a RequestsOnly entry caps
+# AT the limit (the request may reach the admitted ceiling, never pass it); a
+# limit-controlling entry caps at 0.8x it, because a cap at or above the limit
+# lets the updater rescale the declared ceiling out from under it. `Off`
+# entries are recommend-only and exempt. Re-derive a cap in the same commit
+# that moves its limit.
 #
 # Lives in configs/ because controllers/vpa installs the CRD.
 apiVersion: autoscaling.k8s.io/v1
@@ -39,7 +35,7 @@ spec:
     containerPolicies:
       - containerName: "*"
         minAllowed: {cpu: 10m, memory: 32Mi}
-        maxAllowed: {cpu: 200m, memory: 256Mi}
+        maxAllowed: {cpu: 200m, memory: 204Mi}
         controlledResources: [cpu, memory]
 ---
 apiVersion: autoscaling.k8s.io/v1
@@ -62,7 +58,7 @@ spec:
     containerPolicies:
       - containerName: "*"
         minAllowed: {cpu: 10m, memory: 32Mi}
-        maxAllowed: {cpu: 300m, memory: 256Mi}
+        maxAllowed: {cpu: 300m, memory: 204Mi}
         controlledResources: [cpu, memory]
 ---
 apiVersion: autoscaling.k8s.io/v1
@@ -87,7 +83,7 @@ spec:
     containerPolicies:
       - containerName: "*"
         minAllowed: {memory: 64Mi}
-        maxAllowed: {memory: 512Mi}
+        maxAllowed: {memory: 409Mi}
         controlledResources: [memory]
 ---
 apiVersion: autoscaling.k8s.io/v1
@@ -106,7 +102,7 @@ spec:
     containerPolicies:
       - containerName: "*"
         minAllowed: {cpu: 10m, memory: 32Mi}
-        maxAllowed: {cpu: 200m, memory: 256Mi}
+        maxAllowed: {cpu: 200m, memory: 102Mi}
         controlledResources: [cpu, memory]
 ---
 apiVersion: autoscaling.k8s.io/v1
@@ -125,7 +121,7 @@ spec:
     containerPolicies:
       - containerName: "*"
         minAllowed: {cpu: 10m, memory: 32Mi}
-        maxAllowed: {cpu: 200m, memory: 384Mi}
+        maxAllowed: {cpu: 200m, memory: 102Mi}
         controlledResources: [cpu, memory]
 ---
 apiVersion: autoscaling.k8s.io/v1
@@ -147,7 +143,7 @@ spec:
     containerPolicies:
       - containerName: "*"
         minAllowed: {cpu: 10m, memory: 32Mi}
-        maxAllowed: {cpu: 200m, memory: 256Mi}
+        maxAllowed: {cpu: 200m, memory: 102Mi}
         controlledResources: [cpu, memory]
 ---
 apiVersion: autoscaling.k8s.io/v1
@@ -344,7 +340,7 @@ spec:
     containerPolicies:
       - containerName: "*"
         minAllowed: {cpu: 10m, memory: 32Mi}
-        maxAllowed: {cpu: 200m, memory: 256Mi}
+        maxAllowed: {cpu: 200m, memory: 102Mi}
         controlledResources: [cpu, memory]
 ---
 apiVersion: autoscaling.k8s.io/v1
@@ -366,5 +362,28 @@ spec:
     containerPolicies:
       - containerName: "*"
         minAllowed: {cpu: 10m, memory: 32Mi}
-        maxAllowed: {cpu: 200m, memory: 384Mi}
+        maxAllowed: {cpu: 200m, memory: 204Mi}
+        controlledResources: [cpu, memory]
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: nvidia-device-plugin
+  namespace: nvidia-device-plugin
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: DaemonSet
+    name: nvidia-device-plugin
+  # Off (recommendations only): the plugin advertises the GPU to the kubelet, so
+  # an eviction briefly withdraws nvidia.com/gpu from the node. Its footprint is
+  # fixed anyway (~50Mi against a 64Mi request) — this exists so the workload is
+  # covered by a right-sizing signal rather than being invisible (docs/33).
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 10m, memory: 32Mi}
+        maxAllowed: {cpu: 200m, memory: 256Mi}
         controlledResources: [cpu, memory]

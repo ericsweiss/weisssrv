@@ -2,6 +2,10 @@
 # Webhook ingress + metrics scrapes from observability. The webhook port is
 # open from anywhere because the apiserver call arrives post-DNAT from whichever
 # server is active; cert-manager's own TLS/authz is the gate there.
+# Deliberately looser than kube-system-policies/allow-coredns.yaml, which pins
+# the same post-DNAT class to the pod CIDR + LAN: :53 has no per-caller auth
+# so the CIDRs are its only gate, a webhook's own TLS/authz is a real one
+# (docs/29 § Network policy exceptions).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

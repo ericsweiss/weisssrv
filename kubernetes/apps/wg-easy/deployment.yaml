@@ -24,30 +24,19 @@ spec:
       labels:
         app.kubernetes.io/name: wg-easy
     spec:
-      # Pin to an ingress agent (HARD). With ETP Local, MetalLB L2 announces the
-      # VIP .99 from the node running the pod, so that node MUST carry the
-      # sg-k3s-ingress-pub firewall group that admits the WAN :51820/udp -> .99
-      # forward. Exactly the 5 esweiss.com/ingress agents
-      # (laptop/opt-01/02/03/prec-01) carry that group. The NAS agent
-      # (k3s-agt-nas-01) is esweiss.com/general BUT NOT esweiss.com/ingress and
-      # does NOT carry sg-k3s-ingress-pub — so a `general` nodeSelector plus only
-      # a *soft* NAS-avoid could, under scheduling pressure, land the pod on NAS
-      # and silently black-hole the WAN endpoint. Selecting on esweiss.com/ingress
-      # excludes NAS by construction. Same ETP-Local pattern as Traefik
-      # (controllers/traefik/release.yaml). State floats on NFS, so there is no
-      # locality reason to pin harder.
+      # HARD pin to the ingress agents: with ETP Local, MetalLB announces the
+      # VIP from the pod's node, and only those agents carry the
+      # sg-k3s-ingress-pub group that admits the WAN :51820/udp forward.
+      # Selecting on the label excludes the NAS agent by construction — a soft
+      # avoid could land there and silently black-hole the endpoint.
       nodeSelector:
         ${cluster_node_label_domain}/ingress: "true"
       # wg-easy is not a Kubernetes-integrated app; it needs no API access.
       automountServiceAccountToken: false
-      # Public resolvers for the POD itself — deliberately NOT kube-dns. wg-easy
-      # is not cluster-integrated and only ever resolves public names (e.g. its
-      # ip-info lookup), so it has no need for internal DNS. Using 1.1.1.1 lets
-      # the egress NetworkPolicy drop its kube-dns allow entirely: without that
-      # allow, forwarded client traffic aimed at the CoreDNS ClusterIP
-      # (10.43.0.10, inside the excepted 10.0.0.0/8) is dropped at the CNI layer,
-      # so a connected client genuinely cannot reach internal DNS (docs/38,
-      # no-LAN model). ndots:1 avoids pointless search-domain expansion.
+      # Public resolvers for the POD itself, deliberately NOT kube-dns: it only
+      # resolves public names, and dropping the kube-dns allow from the egress
+      # policy is what stops forwarded client traffic reaching internal DNS —
+      # see networkpolicy.yaml for the no-LAN model.
       dnsPolicy: None
       dnsConfig:
         nameservers:
@@ -176,16 +165,11 @@ spec:
             periodSeconds: 15
             timeoutSeconds: 5
             failureThreshold: 3
-          # NFS-ESTALE self-heal: /etc/wireguard is NFS-backed (wg-easy-appdata
-          # from pve-nas-01). After a NAS/NFS reboot the established mount returns
-          # stale file handles that wg-easy does not recover from — the UI can
-          # keep answering on :51821 (a tcpSocket liveness would stay green) while
-          # its SQLite state is unreadable. stat-ing the mount surfaces ESTALE
-          # (immediate error) or a
-          # hung hard-mount (probe timeout); either fails the probe so kubelet
-          # restarts the pod and it remounts. The tcpSocket UI check is retained
-          # as the readinessProbe above. Conservative timing so a brief NFS blip
-          # can't flap-restart. Runs as root (runAsUser 0).
+          # NFS-ESTALE self-heal: liveness stats the NFS-backed /etc/wireguard
+          # so a stale or hung handle restarts the pod and it remounts. The UI
+          # keeps answering on :51821 while that state is unreadable, so the
+          # tcpSocket readiness above cannot catch it. Conservative timing so a
+          # brief NFS blip cannot flap-restart.
           livenessProbe:
             exec:
               command:

@@ -43,9 +43,10 @@ spec:
         #
         # Exclusions are the workloads whose steady state legitimately sits near
         # the ceiling: hindsight/llama is GPU/model-pinned with a deliberate Off
-        # VPA (docs/43) and spends ~15% of a month above 0.9, and Prometheus and
-        # Loki count reclaimable page cache in their working set. Everything else
-        # crossing 0.9 for 15m is a real sizing gap.
+        # VPA (docs/43) and routinely runs above 0.9, and Prometheus and Loki
+        # count reclaimable page cache in their working set. Everything else
+        # crossing 0.9 for 15m is a real sizing gap. llama is not left unwatched
+        # — HindsightLlamaMemoryNearLimit below carries it at 0.95.
         - alert: ContainerMemoryNearLimit
           expr: >-
             (
@@ -81,6 +82,41 @@ spec:
               ({{ $value | humanizePercentage }}). Raise the limit in git and,
               where the workload has a VPA, its maxAllowed alongside — docs/33
               "Applying an Off-tier recommendation".
+
+        # hindsight/llama's own band, since the 0.9 rule above excludes it. It
+        # is the one container in the cluster with neither a VPA recommendation
+        # (its VPA is deliberately Off — docs/43) nor a leading indicator, so an
+        # OOMKill is otherwise its first and only signal. 0.95 sits clear of its
+        # normal ceiling, so a crossing is a leak / KV-spill signature rather
+        # than page-cache flap.
+        - alert: HindsightLlamaMemoryNearLimit
+          expr: >-
+            (
+              max by (namespace, pod, container) (
+                container_memory_working_set_bytes{namespace="hindsight", container="llama"}
+              )
+              / on (namespace, pod, container) group_left ()
+              max by (namespace, pod, container) (
+                kube_pod_container_resource_limits{resource="memory",
+                                                   namespace="hindsight",
+                                                   container="llama"}
+              )
+            ) > 0.95
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: '${cluster_runbook_base_url}/43-gpu-passthrough.md'
+            summary: >-
+              hindsight/llama is within 5% of its memory limit
+            description: >-
+              llama-server in {{ $labels.namespace }}/{{ $labels.pod }} has
+              held above 95% of its memory limit for 15 minutes
+              ({{ $value | humanizePercentage }}) and will OOMKill shortly.
+              Its steady state is far below this, so treat it as host-side
+              growth (KV/context spilling out of VRAM, or a llama-server
+              leak) before raising the limit — its GPU node has little
+              allocatable memory left to give.
 
         # A container that OOMKills and restarts cleanly is invisible upstream:
         # KubePodCrashLooping needs a restart RATE and KubeContainerWaiting needs

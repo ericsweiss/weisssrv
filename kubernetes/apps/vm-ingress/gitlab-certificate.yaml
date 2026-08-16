@@ -93,10 +93,9 @@ spec:
 # from the GitLab session cookie. CVE-2026-5816 mitigation; see
 # docs/27-gitlab-deployment.md.
 #
-# LIMITATION: Wildcard certs only cover single-label subdomains (same constraint
-# as gitlab-pages-wildcard above). Extension IDs that contain dots (e.g.
-# publisher.name) are sanitized to single-label form by GitLab before being
-# used as a Host header.
+# Same single-label wildcard limitation as gitlab-pages-wildcard above; GitLab
+# sanitizes dotted extension IDs to single-label form before using them as a
+# Host header.
 #
 # No internal *.ide.git.esweiss.com mirror because Web IDE is loaded as an
 # iframe from git.ericsweiss.com (canonical external host), so there's no

@@ -84,9 +84,10 @@ tests:
 
   # BlackboxCertExpiringSoon fires for a Cloudflare-edge target
   # (home.ericsweiss.com) whose cert is under 14 days out; a healthy (30d) edge
-  # cert does not; an esweiss.com target is out of scope entirely; and the four
-  # hostnames whose TLS terminates on our own Traefik (git, registry.git and
-  # photos over the WAN, auth over the split-horizon internal VIP) are excluded
+  # cert does not; an esweiss.com target is out of scope entirely; and the five
+  # hostnames whose TLS terminates on our own Traefik (git, registry.git,
+  # pages.git and photos over the WAN, auth over the split-horizon internal VIP)
+  # are excluded
   # even while expiring — cert-manager's CertExpiringWarning/Critical own those
   # certs, and firing here too would double-page on a single lapsing cert.
   - interval: 1m
@@ -101,6 +102,8 @@ tests:
       - series: 'probe_ssl_earliest_cert_expiry{instance="https://git.ericsweiss.com"}'
         values: '864000+0x70'
       - series: 'probe_ssl_earliest_cert_expiry{instance="https://registry.git.ericsweiss.com"}'
+        values: '864000+0x70'
+      - series: 'probe_ssl_earliest_cert_expiry{instance="https://pages.git.ericsweiss.com"}'
         values: '864000+0x70'
       - series: 'probe_ssl_earliest_cert_expiry{instance="https://photos.ericsweiss.com"}'
         values: '864000+0x70'

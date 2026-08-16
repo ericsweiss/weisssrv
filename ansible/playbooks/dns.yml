@@ -19,10 +19,7 @@
     - weisssrv.infra.unbound
     - weisssrv.infra.unbound_exporter
     - weisssrv.infra.adguard_home
-    # Host-level observability. site.yml deploys node_exporter_host (to dns via
-    # proxmox:dns:mail:gitlab_servers) and alloy_host (to dns via base_managed)
-    # in dedicated plays; include them here so a standalone `task dns:deploy`
-    # keeps host metrics + log shipping in sync with the role.
+    # Also in site.yml; listed here so a standalone deploy stays in sync.
     - weisssrv.infra.node_exporter_host
     - weisssrv.infra.alloy_host
 

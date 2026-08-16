@@ -5,9 +5,10 @@
 # run SYNCHRONOUSLY: with CPU-only local extraction taking minutes, every
 # manual retain blew Hermes's 120s tool timeout while the server kept
 # processing. Async retains return in ~10ms (queued server-side).
-# Applies to NousResearch/hermes-agent @ v2026.7.20
-# (3ef6bbd201263d354fd83ec55b3c306ded2eb72a). Re-verify on every version bump —
-# the build fails loudly if this no longer applies.
+# Last verified against NousResearch/hermes-agent @ v2026.8.13
+# (f80f453ae0679347e38abc917c7f94f717bf96c5) — the current hermes_version /
+# hermes_git_sha pin. Re-verify on every version bump and update this line; the
+# build fails loudly if the patch no longer applies.
 diff --git a/plugins/memory/hindsight/__init__.py b/plugins/memory/hindsight/__init__.py
 index 9f5974b..ecdd24f 100644
 --- a/plugins/memory/hindsight/__init__.py

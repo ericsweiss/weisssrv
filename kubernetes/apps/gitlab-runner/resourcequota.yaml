@@ -19,12 +19,10 @@ spec:
     requests.cpu: "8"
     requests.memory: 16Gi
     # concurrent:7 x 5Gi job-pod limits + the manager, PLUS two churn
-    # slots: Terminating pods from a just-finished pipeline still count
-    # against the quota (same modelling as the privileged twin), and at
-    # exactly 7x5+manager the next burst's submissions got a hard 403
-    # (runner_system_failure, sub-second, no retry — 2026-08-13, five
-    # bursts). Terminating limits are accounting, not resident memory,
-    # so the eviction guard this quota exists for is unchanged.
+    # slots: Terminating pods still count against the quota (same modelling
+    # as the privileged twin), and at exactly 7x5+manager the next burst
+    # 403s with no retry. Terminating limits are accounting, not resident
+    # memory, so the eviction guard this quota exists for is unchanged.
     limits.memory: 46Gi
     pods: "20"
 ---

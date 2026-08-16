@@ -37,24 +37,14 @@
   roles:
     - weisssrv.infra.base
     - weisssrv.infra.postfix_null_client
-    # node_exporter_host runs node_exporter with the textfile collector pointed
-    # at /var/lib/node_exporter, which is what exposes the gitlab backup
-    # wrapper's gitlab_backup.prom to Prometheus (the wrapper creates the dir +
-    # file itself). site.yml deploys node_exporter_host to gitlab_servers, but a
-    # standalone `task gitlab:deploy` never did, so on this VM the metric was
-    # written but no exporter exposed it (GitLabBackupStale via absent()).
-    # Ordered before gitlab so the exporter is in place when the wrapper lands.
+    # Exposes the backup wrapper's gitlab_backup.prom textfile; ordered before
+    # gitlab so the exporter is in place when the wrapper lands.
+    # Also in site.yml; listed here so a standalone deploy stays in sync.
     - weisssrv.infra.node_exporter_host
-    # site.yml deploys alloy_host (host journald -> Loki) to gitlab_servers in a
-    # dedicated play; include it here so a standalone `task gitlab:deploy` keeps
-    # log shipping in sync.
+    # Also in site.yml; listed here so a standalone deploy stays in sync.
     - weisssrv.infra.alloy_host
-    # NFSv4-over-TLS client daemon (tlshd) for the offsite backup mount, which now
-    # requires xprtsec=tls. Ordered before gitlab so tlshd is up before the role
-    # mounts /backups-apps/gitlab by hostname. Gated on the NFS-backed backup being
-    # enabled (mirrors how the k3s agents get nfs_tls); tasks self-guard on
-    # nfs_tls_enabled. Client-only (nfs_tls_is_server defaults false) — needs only
-    # the CA truststore, no cert/key.
+    # tlshd for the xprtsec=tls backup mount; must precede the app role, which
+    # mounts by hostname. Client-only.
     - role: weisssrv.infra.nfs_tls
       vars:
         nfs_tls_enabled: "{{ gitlab_backup_nfs_enabled | default(false) }}"

@@ -16,11 +16,19 @@ Container Registry, in two stages:
    Codex CLI (`npm i -g @openai/codex@<hermes_codex_version>`), the Claude Code
    CLI (`@anthropic-ai/claude-code@<hermes_claude_version>`, the coding-delegate
    path) and the 1Password CLI (`op`, `<hermes_op_version>`, from 1Password's
-   signed apt repo — docs/37 §1Password). Node 22 + npm are already in
+   signed apt repo, whose signing key the wrapper fingerprint-pins against the
+   same constant weisssrv-lib's `.install-1password` CI fragment uses —
+   docs/37 §1Password). Node 22 + npm are already in
    the base and its final stage is `USER root` (s6 `/init` remaps + drops
    privileges at runtime), so the npm CLIs install to `/usr/local/bin` (on PATH)
    and the runtime user model is unchanged. This wrapper is the **final
    published image**.
+
+Both coding CLIs are billed by *subscription*, not by API token, and each holds
+its own credential: `codex` authenticates against ChatGPT via `codex login`
+(persisted in `CODEX_HOME=/opt/data/.codex`), and `claude` runs headless (`claude
+-p`, via Hermes' terminal tool / bundled claude-code skill) against a Claude Max
+`claude setup-token` OAuth token supplied as `CLAUDE_CODE_OAUTH_TOKEN`.
 
 The `build-hermes-agent` CI job (`.gitlab-ci.yml`) does both stages.
 
@@ -54,11 +62,13 @@ The `build-hermes-agent` CI job (`.gitlab-ci.yml`) does both stages.
 ## How it works
 
 - **Build**: `build-hermes-agent` (DinD, infrastructure runner) clones upstream
-  at the tag, verifies the SHA, and runs `docker build --build-arg
-  HERMES_GIT_SHA=<sha>` to a local intermediate tag, then builds `Dockerfile.codex`
-  with `--build-arg HERMES_IMAGE=<intermediate> --build-arg
-  HERMES_CODEX_VERSION=<pin>` as the final image. `HERMES_GIT_SHA` is baked in so
-  `hermes dump` / the banner report the exact upstream commit.
+  at the tag, verifies the SHA, applies `patches/*.patch`, and runs `docker build
+  --build-arg HERMES_GIT_SHA=<sha>` to a local intermediate tag, then builds
+  `Dockerfile.codex` with `--build-arg HERMES_IMAGE=<intermediate>
+  --build-arg HERMES_CODEX_VERSION=<pin> --build-arg HERMES_CLAUDE_VERSION=<pin>
+  --build-arg HERMES_OP_VERSION=<pin>` (plus `BUILDKIT_INLINE_CACHE=1`) as the
+  final image. `HERMES_GIT_SHA` is baked in so `hermes dump` / the banner report
+  the exact upstream commit.
 - **Push**: MR pipelines build-only (nothing is pushed); on `main` the image is
   pushed as `:<hermes_image_version>` (the tag the cluster pulls) alongside
   `:<hermes_version>`, `:latest` and `:<commit-sha>`, and the job then verifies

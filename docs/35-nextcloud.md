@@ -160,10 +160,19 @@ work and is **not** implemented today.
 ## Outgoing mail (SMTP relay)
 
 Nextcloud sends notifications, share invites, and password-reset mail through the
-homelab SMTP relay. The Nextcloud VM (`.156`) is in the relay's `mynetworks`
-(`192.168.0.0/24`), so it relays via **`smtp-relay.esweiss.com:25` without SASL**
-(permit_mynetworks — no credential to manage); the relay adds TLS on the Gmail
-hop. The `nextcloud` role applies this with `occ config:system:set mail_*` (the
+homelab SMTP relay, configured as **`smtp-relay.esweiss.com:25` without SASL**
+(`nextcloud_smtp_*` in `group_vars/nextcloud_servers.yml`); the relay adds TLS on
+the Gmail hop.
+
+> **Known gap.** The relay's `mynetworks` is loopback-only and its
+> `smtpd_relay_restrictions` is `permit_sasl_authenticated,
+> reject_unauth_destination` (docs/10) — the LAN `permit_mynetworks` path the
+> port-25 config assumed no longer exists, so unauthenticated relay from `.156`
+> is refused. The fix is to move Nextcloud onto submission with the null-client
+> SASL credentials, the way `gitlab_servers.yml` already does; tracked in
+> `docs/16-next-steps.md`.
+
+The `nextcloud` role applies this with `occ config:system:set mail_*` (the
 image's `SMTP_*` env only autoconfigures a fresh install, not the live instance),
 from-address `nextcloud@ericsweiss.com`. Tune via the `nextcloud_smtp_*` /
 `nextcloud_mail_*` role defaults. Test after deploy from Admin settings → Basic
@@ -279,3 +288,12 @@ task immich-ml:deploy
 
 (`task maintenance:check-versions` tracks the four image pins; the docker apt
 pins are `category: manual` there — bumped from the repo Packages index.)
+
+## Related documentation
+
+- [docs/06-zfs.md](06-zfs.md) - the zvols behind the VM's data disks
+- [docs/10-mail.md](10-mail.md) - the SMTP relay Nextcloud sends through
+- [docs/11-firewall.md](11-firewall.md) - `sg-nextcloud`
+- [docs/17-disaster-recovery.md](17-disaster-recovery.md) / [docs/42-offsite-backup.md](42-offsite-backup.md) - backup and restore tiers
+- [docs/32-zfs-encryption.md](32-zfs-encryption.md) - why the guest starts only after unlock
+- [docs/40-authentik-terraform.md](40-authentik-terraform.md) - the OIDC provider as code

@@ -63,6 +63,33 @@ a hardware spend or a posture change — rather than an implementation task.
   the Ubiquiti router/switch purchase (which also unlocks the VLAN and
   second-corosync-ring items above).
 
+### Split the `Homelab` vault (ESO-consumed vs host/CI-only)
+
+Every ESO-synced item and every host/CI `op://` reference share one vault, so the
+Connect credential can read all of them. Splitting out a `Homelab-Ops` vault
+re-mints the Connect credential and rewrites every `op://` reference in the
+Taskfile and CI — a botched cutover breaks ESO and every deploy job at once.
+**Operator decision:** schedule the two-vault re-org, or accept whole-vault ESO
+read as a documented risk. The interim narrowing (no admin-scoped item reachable
+from an MR-branch job) is already done, so either answer is safe today.
+
+### `tank/backups` legacy data and `archive` headroom
+
+Two linked data-lifecycle calls only the operator can make:
+
+- ~767 GB of immutable 2021-22 machine backups sit in `tank/backups` and are
+  re-walked by the nightly restic run every night, for no recovery value anyone
+  has claimed. **Decide: delete, cold-archive, or keep paying the nightly walk
+  and the B2 footprint.**
+- `archive` pool headroom is dominated by `archive/proxmox`. **Decide: tighten
+  the vzdump retention, or buy disks.** Nothing else frees meaningful space.
+
+### Opt-agent CPU saturation (hardware/placement call)
+
+The three legacy 3-vCPU opt agents run at 7d p95 CPU 64–68% with 94–99% peaks.
+**Decide: rebalance the `*arr` workloads onto the modern agents, or accept the
+peaks until the hardware is replaced.** Not a code change either way.
+
 ### Authentik user lifecycle as code (small follow-up)
 
 - **Current state**: groups/apps/providers are Terraform
@@ -124,6 +151,19 @@ drop-in has been redeployed and verified authoritative across a reboot
 (`ifquery nic1` clean, `ethtool -k nic1` showing
 `generic-receive-offload: off`).
 
+### Move the wg-easy VIP out of the router's DHCP range
+
+`cluster_wg_easy_vip` is `192.168.0.99`, which sits **inside** the router's DHCP
+pool and depends on an uncoded router-side exclusion — documented three times
+(`infrastructure/configs/metallb-ip-pools.yaml`, and docs/38 in both the router
+setup checklist and the gotchas), but a dropped exclusion lets a workstation
+lease collide with an internet-facing endpoint and shows up only as
+`EndpointDown`. Moving it into the static block beside `.100`/`.101` removes the
+dependency entirely. It is a one-line `cluster_wg_easy_vip` change **plus a
+manual router port-forward edit** (51820/udp follows the VIP), which is why it is
+here rather than done: the two must land together or the VPN endpoint is dark in
+between.
+
 ---
 
 ## Accepted risks
@@ -155,6 +195,26 @@ convenience rather than a dependency. The Windows VM (155) is the one guest whos
 state is not IaC-reproducible; see [docs/17](17-disaster-recovery.md) § What
 vzdump does and does not cover.
 
+### Windows VM has no offsite export
+
+Nothing on the Windows desktop (155) is exported to `tank/backups/apps/`, so it
+has no offsite copy and no `BackupArtifact*` alert can cover it. The recommendation
+in [docs/17](17-disaster-recovery.md) is advisory and deliberately not automated —
+**decision: nothing on that desktop needs offsite durability.** Revisit by adding a
+`windows` entry to `nas_storage_backup_artifact_apps` if that ever changes.
+
+### Home Assistant automatic backup is PARTIAL
+
+The HA-native scheduled backup is `type: partial` — core config, add-ons and the
+`ssl` folder. `/media`, `/share` and `addons/local` are therefore absent from both
+the HA-native and the offsite (B2) tiers. They are **not** unprotected: HAOS is
+vmid 154 and is not in the vzdump exclusion list, so the whole guest image is
+captured nightly to `tank/proxmox` and replicated to `archive` — image-level, local
++ archive only. **Decision: keep the partial scope** (those folders are empty on
+this deployment); switch the HA scheduled backup to full only if `/media` or
+`/share` ever holds something worth an offsite copy. Recorded in
+[docs/24](24-home-assistant-deployment.md) § Configure Automatic Backups.
+
 ### Residual plaintext LAN hops
 
 GitLab, HAOS, Plex and AdGuard all terminate TLS themselves and Traefik connects
@@ -173,6 +233,42 @@ now serves `admin_ts`/`admin_lan` break-glass only.
 Both remaining hops are acceptable residual LAN-trust hops; the user-facing edge
 is HTTPS throughout. The posture table is docs/06 § In Transit.
 
+### Real client IP end-to-end (one coordinated change, not a Traefik edit)
+
+Every downstream consumer — Authentik's event log, the Traefik access log, the
+Nextcloud/GitLab/Immich/HAOS guest `nginx` real-IP chains — currently resolves a
+**Cloudflare edge address** for every WAN visitor, because Traefik has no
+`forwardedHeaders.trustedIPs` and therefore overwrites `X-Forwarded-*` for
+everyone. That is the safe default and deliberately still in place: adding the CF
+ranges to Traefik *alone* buys nothing (the guests' own trust lists would still
+stop at Traefik) while newly letting an internet client's forged
+`X-Forwarded-Host`/`-Proto` through the edge.
+
+Do all four parts together, or none:
+
+1. **Cloudflare edge Transform Rule** setting `X-Forwarded-For` (or a dedicated
+   header) to `ip.src`, so the value Traefik is asked to trust is one the edge
+   actually authored — `terraform/cloudflare`.
+2. **Traefik** `ports.websecure.forwardedHeaders.trustedIPs` = Cloudflare's
+   published v4+v6 ranges (`https://www.cloudflare.com/ips-v4` / `ips-v6`), an
+   upstream-owned constant like the reserved-CIDR except-lists in
+   `kubernetes/components/netpol-egress-public`, with a refresh note.
+3. **A header-pinning middleware on every public route** that overwrites
+   `X-Forwarded-Host` and `X-Forwarded-Proto` after the trust decision, so
+   trusting the edge for XFF does not also trust a client for the other two.
+   Internal-only routes keep today's overwrite-everything behaviour.
+4. **The guest trust lists**: Cloudflare's ranges in the `set_real_ip_from` /
+   `real_ip_header` blocks of the four VM guests' nginx (docs/35, docs/36,
+   docs/27, docs/24) and in Authentik's trusted-proxy CIDR list, or those tiers
+   still log Traefik's pod IP.
+
+Verification is per-tier and needs an off-LAN, off-tailnet client: the visitor's
+real address must appear in the Traefik access log, in Authentik's event log for
+the same login, and in the guest's own access log — while a LAN/tailnet request
+on the same entrypoint keeps its real remote address and no forged header is
+honoured. `ipAllowList` middlewares are unaffected either way (they key on the
+remote address, not the header).
+
 ---
 
 ## Planned work
@@ -185,6 +281,12 @@ is HTTPS throughout. The posture table is docs/06 § In Transit.
 
 ### Nextcloud follow-ups (not blockers)
 
+- [ ] **Move Nextcloud's outgoing mail onto submission.** `nextcloud_smtp_*` in
+  `group_vars/nextcloud_servers.yml` still points at the relay's port 25 with no
+  SASL, from the era when the relay trusted the LAN in `mynetworks`. It does not
+  any more (docs/10), so use the null-client SASL credentials on 587, the way
+  `gitlab_servers.yml` does.
+
 - [ ] Grafana dashboard: the upstream xperimental exporter dashboard uses a
   `${DS_LOCAL}` import-input datasource that needs adapting for the sidecar.
   Metrics are queryable in Explore and covered by alerts in the meantime.
@@ -194,20 +296,87 @@ is HTTPS throughout. The posture table is docs/06 § In Transit.
 
 - [ ] **Distributed cache backend for the runners.** Every pip/galaxy/toolchain
   `cache:` block in `.gitlab-ci.yml` is inert because neither runner declares a
-  cache backend. Standing up an in-cluster S3/MinIO target (the `registry-cache`
-  app is the precedent) is the largest safe wall-clock win in the pipeline —
-  see [docs/13](13-ci-cd.md) § Lint Stage.
+  cache backend — measured, not theoretical: no job restores a cache today.
+  Standing up an in-cluster S3/MinIO target (the `registry-cache` app is the
+  precedent) is the largest safe wall-clock win in the pipeline, and it closes
+  the inert-`cache:` blocks in the same change — see
+  [docs/13](13-ci-cd.md) § Lint Stage. Deferred: needs an S3-compatible store
+  stood up first.
+- [ ] **Alert on the runner reaper's partial sweeps.** `gitlab-runner-reaper`
+  exits 0 on a clean budget stop and says so only in its log
+  (`BUDGET STOP after <n>s; not fully reaped this run: <namespaces>`), so a
+  permanently over-budget reaper looks like a clean no-op. The prefix is
+  deliberately distinguishable; what is missing is the rule. The mechanism is
+  already there — a LogQL rule in a `loki_rule` ConfigMap next to
+  `observability/loki/host-log-staleness.yaml` — so this is a small,
+  self-contained follow-up rather than new plumbing. See docs/13 § Runner
+  garbage collection.
+- [ ] **GitLab runner ResourceQuota is overcommitted** — ~46 cores requested
+  against 31 allocatable, so a full concurrency burst cannot schedule. Resolving
+  it is a capacity decision (lower `concurrent`, lower per-job requests, or more
+  hardware), not an edit.
+- [ ] **Whole-pipeline deploy atomicity via a deploy child pipeline.** Today's
+  `resource_group`s are per target, so pipeline A's fleet-wide
+  `deploy-ansible-base` can run concurrently with pipeline B's
+  `deploy-ansible-proxmox` or a manual maintenance op on the same Proxmox hosts.
+  That is an **accepted trade-off**, stated in the `workflow:` comment in
+  `.gitlab-ci.yml` and backstopped by the "serialize merges" operating rule — a
+  single repo-wide group would close it at the cost of serialising the app-deploy
+  fan-out. The design that closes it *without* losing parallelism: move the
+  deploy stage into a child pipeline and put the lock on the trigger job —
+  `deploy-fleet: {stage: deploy, resource_group: fleet-deploy,
+  interruptible: false, trigger: {include: .gitlab/ci/deploy-jobs.yml,
+  strategy: depend}}`. With `strategy: depend` the trigger job stays Running for
+  the whole child pipeline, so `fleet-deploy` is held across the entire fan-out
+  while the child keeps full internal parallelism. Put the manual maintenance
+  jobs in the same group (a job may declare only one) so a maintenance op queues
+  behind an in-flight deploy, and set that group's process mode to `oldest_first`
+  like the rest (docs/17 § GitLab project state).
+
+### Cross-file invariant gates (from the 2026-08 review's mutation pass)
+
+Seams that hold today but are enforced by nothing; each is a small gate:
+
+- [ ] `authentik-auth` middleware consumers ↔ `terraform/authentik` proxy
+  providers: a route can gain the middleware without its provider (404 at the
+  outpost). Derive the provider list from the `.tf` and diff against the
+  IngressRoutes.
+- [ ] `k3s_disable` ↔ the self-managed twins: nothing asserts that everything
+  in `group_vars/k3s.yml`'s disable list has its Flux-managed replacement (and
+  vice versa — metrics-server is the precedent).
+- [ ] `deploy-preflight`'s ~130-line inline parser in `.gitlab-ci.yml` is
+  invisible to `test_scripts_have_tests.py`; extract to `scripts/` with tests
+  when it next changes.
+- [ ] `test_vendored_byte_identity.py`: add the third hint branch ("registered
+  in the library working tree but absent at the pin — bump the pin") mirroring
+  the lib's `check-vendored-copies.py` wording.
 
 ### Ansible collection migration residue
 
 The Ansible layer now consumes roles from the `weisssrv.infra` collection in
 `eric/weisssrv-lib` rather than in-tree `ansible/roles/*`. Residue to watch:
 
-- [ ] Confirm every deploy job's `changes:` list tracks the collection pin
-  rather than the deleted role paths, and that `check-deploy-coverage` gates on
-  collection-pin semantics.
-- [ ] Re-home any molecule scenario still expecting an in-tree role path.
-- [ ] Re-check role-README links from `docs/` after the move.
+The deploy-job `changes:` gating (`check-deploy-coverage.sh` +
+`check-collection-pin-trigger.py` in `repo-policy-checks`), the molecule
+scenarios and the `docs/` role-README links were all reconciled. Open:
+
+- [ ] **Adopt weisssrv-lib v0.8.0 (per-consumer wave).** The library MR that
+  ships with this branch changes role behaviour this repo already assumes, so
+  the adoption is its own MR and its own deploy window, after the cluster has
+  settled. Per consumer (weisssrv, then both templates): bump
+  `ansible/requirements.yml` + `WEISSSRV_LIB_REF` + the three Terraform `?ref=`
+  pins, run `scripts/check-lib-pins.py --fix` and
+  `scripts/check-molecule-image-pin.py --fix`, **re-vendor** (this is the pass
+  that flips `check-default-deny-coverage.py` from a local file to a vendored
+  one and picks up the extended `check-hpa-vpa-invariant.py`), then
+  `ansible-galaxy install -r ansible/requirements.yml --force`. Two site-facing
+  consequences land with it: `unbound_legacy_dropins` stops being a library
+  default and is honoured from `group_vars/dns.yml` (verify `weisssrv.conf` is
+  actually gone on both resolvers), and `ArchiveBackupPruneBlocked`
+  (`observability/rules/scripts.yaml`) stops being dormant once
+  archive-backupctl emits `archive_backup_last_prune_success`. The re-vendored
+  HPA/VPA gate also collapses the "the gate belongs in the library" half of the
+  § Autoscaling entry below to just the remaining re-derivations.
 
 ### Storage
 
@@ -242,7 +411,24 @@ deserves its own focused change.
   transformer** instead of per-overlay name/label patches.
 - **k8s-apps-08 — split the `downloads` namespace** into a privileged tier
   (qbittorrent/nzbget) and a restricted tier (`*arr`) so PSS can enforce
-  `restricted` on the managers.
+  `restricted` on the managers. This is also the only route to PSA `restricted`
+  on that namespace — deferred with the split, not separately.
+- **Per-namespace egress NetworkPolicies for the 10 namespaces without one.**
+  The ingress default-deny is universal; egress is per-app and ten namespaces
+  (gitlab, kube-system, observability among them) have no allowlist. Authoring
+  them needs measured traffic per namespace and carries high breakage risk —
+  weeks of iteration, deferred as its own project.
+- **Rate-limiting / in-flight-request middleware on the public perimeter.**
+  There is none today. Adding one needs traffic baselining before thresholds can
+  be chosen, or the first incident it causes is self-inflicted.
+- **Two hand-maintained mirrors of kube-prometheus-stack rule content.** They are
+  correct today; keeping them correct automatically needs a chart-render step in
+  the test pipeline, which is the actual deferred work.
+- **Delete the three `moved.tf` files.** `terraform/{authentik,cloudflare,tailscale}/moved.tf`
+  are module-adoption scaffolding. A `moved` block whose source address is no
+  longer in state is a no-op, so they are not causing drift — this is
+  housekeeping, to be done once the authentik and cloudflare supervised applies
+  are confirmed landed (tailscale's is recorded above).
 - **Molecule test build-outs** — ANS-A-08 (SSH-hardening path), ANS-C-10 (zvol
   data-safety cases), and ANS-INV-13 (health-verify resilience) need a runnable
   molecule environment to author and validate, so they are deferred from this MR.
@@ -262,7 +448,9 @@ deserves its own focused change.
   iterating on the live pipeline, and the template/job sections are interleaved.
   Deferred to its own focused MR to avoid risking this MR's pipeline; purely a
   maintainability change.
-- **k8s-apps-10 — image pinning, remaining scope.** The default runner
+- **k8s-apps-10 — image pinning, remaining scope.** (Also in scope: the ~72
+  workload images still on mutable tags. Doing that maintainably needs a
+  digest-refresh workflow first, which is why it is one item, not 72.) The default runner
   executor images are now digest-pinned (`debian:trixie` in
   `gitlab-runner/release.yaml`, `python:3.11` in
   `gitlab-runner-privileged/release.yaml`), and the molecule-test/molecule-ci
@@ -409,29 +597,6 @@ its own text.
 **Open follow-ups from the R4 mega-review hardening MR** (carried out of that
 MR's deploy runbook, which is not tracked in git):
 
-- [ ] **Complete the metrics-server cutover: run `task k3s:deploy`** (or play the
-  manual `maintenance-k3s-provision` job) so the k3s servers pick up
-  `--disable=metrics-server` and the HelmRelease can finally install. There is
-  **no automatic deploy job for `group_vars/k3s.yml`**, so nothing closes this
-  window but an operator. Until it lands, all of the following are expected and
-  none of them is a regression:
-  - `infrastructure-metrics-server` is not-Ready by design;
-    `scripts/deploy-verify.sh` detects the open cutover live (the AddOn's
-    objectset stamp on the APIService), prints it as a NOTICE, and excludes
-    only those two resources from its readiness gates — so `deploy-verify`
-    stays green and a red job during the window is a real, unrelated failure;
-  - `FluxResourceNotReady` fires for both the `infrastructure-metrics-server`
-    Kustomization and the `kube-system/metrics-server` HelmRelease — warning,
-    Discord, 12h repeat;
-  - `task collect-state` cannot return a green verdict (it requires zero firing
-    alerts), and `task flux:reconcile` reports that one stage as failed while
-    still reconciling every other stage.
-
-  Silence for a long window with
-  `amtool silence add alertname=FluxResourceNotReady name=~"metrics-server|infrastructure-metrics-server" --duration=…`
-  (the silence mutes those two names entirely, cutover-related or not — keep it
-  no longer than the planned window; docs/33 § metrics-server has the caveat).
-  Design detail: [docs/33](33-autoscaling.md) § metrics-server.
 - **Promote `scripts/flux-env.sh` into weisssrv-lib.** It is a byte copy of the
   cluster-template's file but is *not* in the library's vendored registry, so
   nothing keeps the two in step. Alternative: fold multi-ConfigMap support into
@@ -448,9 +613,6 @@ MR's deploy runbook, which is not tracked in git):
   pytest asserting set equality was never written, so nothing prevents re-drift.
 - **`deploy-preflight` cannot catch a job that forgot an `op://` variable.**
   Stated in the job header; closing it needs a different check.
-- **13 hand-maintained `molecule-test:<tag>` fallbacks** in the integration
-  scenarios have no gate and must be re-bumped alongside `WEISSSRV_LIB_REF`. CI
-  overrides them via `MOLECULE_TEST_IMAGE`, so only local molecule runs break.
 - **Nothing enforces a yamllint config for `ansible/`** since `ansible/.yamllint`
   was deleted (nothing read it). Wants either a repo-root `.yamllint` or a
   `yamllint -c` change in `Taskfile.yml`.
@@ -477,6 +639,12 @@ MR's deploy runbook, which is not tracked in git):
   Applying settings changes is an operator action; an agent cannot edit its own
   permission configuration. (The companion `pre-commit install` half of this
   item has landed — SKILL.md § Pre-MR gates and `references/cluster-access.md`.)
+
+- [ ] **MetalLB stays held at 0.15.3.** The 0.16.x apiserver-flood regression
+  (metallb#3063) has a merged upstream fix (#3079, merged 2026-08-05) but no
+  release carries it yet — the latest tag is v0.16.1 (2026-05-27). Re-check the
+  releases page before any unhold; the pin and its reason are in
+  `group_vars/all.yml`.
 
 ### GitOps / Flux bootstrap robustness
 
@@ -509,6 +677,41 @@ MR's deploy runbook, which is not tracked in git):
 
 - [ ] Network topology diagrams (draw.io or Mermaid).
 - [ ] Troubleshooting flowcharts.
+- [ ] **A human-facing architecture page.** The cluster template ships
+  `docs/ARCHITECTURE.md` (two lifecycles, the Flux stage graph, the substitution
+  model, a backend-seam table); this repo's equivalent map lives only in
+  `CLAUDE.md`, which is agent-facing. Adding the twin here also gives the
+  template a live page to diff its claims against.
+- [ ] **Rename the two odd cross-link headings** — `ansible/TESTING.md`
+  § References and `kubernetes/README.md` § Documentation — to
+  `## Related documentation`, so grepping the convention's name returns the whole
+  doc set (README § Documentation conventions).
+
+### Terraform and CI gates
+
+- [ ] **Extend the `policy.hujson` gate beyond syntax.** It parses HuJSON and
+  checks the five top-level keys; it does not assert that every `tag:` used in
+  `acls`/`ssh`/`autoApprovers` has a `tagOwners` entry, nor that
+  `autoApprovers.routes` covers `tailscale_advertise_routes` from the inventory.
+  Both are cheap and match the house gate style (`check-cluster-literals.py`,
+  `check-netpol-except-parity.py`).
+- [ ] **Assert `keys(local.proxy_providers) ⊆ embedded_outpost.proxy_provider_keys`.**
+  The module builds the outpost's provider list purely from that key list, so a
+  forward-auth provider omitted from it plans clean and 404s at the outpost.
+  Today the two sets are 10/10 by hand.
+- [ ] **Reject a `custom_scope_mappings` expression referencing
+  `request.user.attributes`.** The basic-auth injection credentials ride group
+  attributes, which merge into member user attributes, so such a mapping would
+  emit them into ID tokens. No present exposure — the one authored mapping
+  returns `email`/`email_verified` — this is a guard against a future edit.
+- [ ] **Teach `check-lib-pins.py --fix` about the Terraform `?ref=` pins.**
+  `scripts/test_site_configs.py` already *fails* a mismatched ref pre-merge, so
+  coverage exists; what is missing is the one-command rewrite, leaving a bump
+  partly manual.
+- [ ] **Protect release tags in the `weisssrv-lib` GitLab project** (a project
+  setting, not an edit). Terraform's lock file covers providers only — module
+  sources are re-resolved on every `init`, so a moved tag silently changes
+  infrastructure code. Confirm the setting before treating this as open.
 
 ### Observability
 
@@ -520,6 +723,35 @@ MR's deploy runbook, which is not tracked in git):
   `instance` labels match by construction — both come from the same node_exporter
   scrape). Add a recording rule or extend the existing alert once the join is
   confirmed in prod.
+
+- [ ] **Root-cause hindsight/llama's anonymous RSS growth.** The llama.cpp
+  container's memory is dominated by anonymous (non-reclaimable) pages that keep
+  climbing between restarts rather than settling at the model's resident size, so
+  its 4Gi limit is sized off "what it has reached" instead of a measured steady
+  state. Its VPA is `Off`, so nothing acts on the recommendation and nothing
+  alerts until it OOMs — the growth is only visible in the container memory
+  panels. Establish whether it is the KV cache growing with context, GGUF mmap
+  accounting, or a genuine leak, before the next limit bump; a restart to test is
+  expensive (~30 min GPU model reload, and the 900m CPU request has to be
+  re-satisfied on a node near its ceiling).
+
+### Autoscaling
+
+- [ ] **Re-derive the VPA caps the gate cannot see.** The scoped cap rule
+  (docs/33 § Limit oscillation) is now enforced by the vendored
+  `scripts/check-hpa-vpa-invariant.py` under `task flux:lint`, and every policy
+  it can judge conforms with an empty `vpa_cap_allowlist` — the *arrs,
+  mealie/mealie-postgres/bar-assistant/meilisearch/salt-rim, the small exporters
+  (adguard/exportarr/plex/redis/proxmox), registry-cache, tailnet-dns and
+  wg-easy were re-derived from their declared limits, and the download clients'
+  one-shot init containers moved to `mode: "Off"`. Live sizing changes for those
+  workloads on the next admission, so watch for `VPARecommendationCapped` after
+  the deploy. Still outstanding: the policies whose target limits never enter
+  the kustomize corpus — the flux-system controllers (1Gi caps against the 1Gi
+  limits in upstream `gotk-components.yaml`), both gitlab-runners and grafana
+  (chart-set limits). Re-derive those by hand against the rendered chart output;
+  teaching the gate to read HelmRelease `.spec.values` would fold them in, and
+  that is a **weisssrv-lib** MR + tag + re-vendor, not an edit in this repo.
 
 ---
 
@@ -545,7 +777,7 @@ implementation story.
 | GPU | GTX 1660 Ti VFIO passthrough to the k3s GPU agent, time-sliced device plugin | [43](43-gpu-passthrough.md) |
 | k3s secrets encryption | Enabled cluster-wide; rotation stage `reencrypt_finished` | [17](17-disaster-recovery.md) |
 | NFS over TLS | Every k3s export line and `/export/tank-proxmox` require `xprtsec=tls`; PVs mount by hostname | [07](07-fileservices.md) |
-| metrics-server HA | Moved off the k3s static AddOn to a Flux HelmRelease: 2 replicas, PDB, anti-affinity, pinned limits (manifests shipped; the live cutover stays the open checkbox above until `task k3s:deploy` lands) | [33](33-autoscaling.md) |
+| metrics-server HA | Moved off the k3s static AddOn to a Flux HelmRelease: 2 replicas, PDB, anti-affinity, pinned limits; the live cutover landed 2026-08-13 | [33](33-autoscaling.md) |
 | Off-node etcd snapshots | `k3s_etcd_snapshot_offnode_enabled` copies each server's snapshots to the NAS | [17](17-disaster-recovery.md) |
 | Multi-repo tenants | Tenant onboarding via `weisssrv-app-template` + wiring under `kubernetes/clusters/weisssrv/tenants/` | [30](30-multi-repo-onboarding.md) |
 

@@ -111,9 +111,17 @@ deliberate `proxmox_ha_migration_type: insecure`.
 
 #### Service-Specific Security Groups
 
-> The blocks below are reproduced from
-> weisssrv-lib `ansible_collections/weisssrv/infra/roles/proxmox_firewall/templates/cluster.fw.j2`, which is the
-> authoritative source; if they ever diverge, trust the template.
+> Two sources own these blocks, and which one applies depends on the group.
+> `sg-dns`, `sg-host-admin`, `sg-vm-admin`, `sg-k3s-*`, `sg-nfs-server`,
+> `sg-metrics`, `sg-pve-cluster`, `sg-smb-server`, `sg-smtp-relay` and
+> `sg-host-egress` are **library built-ins**, reproduced from
+> weisssrv-lib `ansible_collections/weisssrv/infra/roles/proxmox_firewall/templates/cluster.fw.j2` —
+> if they ever diverge, trust the template. The per-application groups
+> (`sg-plex`, `sg-gitlab`, `sg-nextcloud`, `sg-immich`, `sg-immich-ml`,
+> `sg-haos`, `sg-windows`) are **site data**: entries of
+> `proxmox_firewall_security_groups` in
+> `ansible/inventories/prod/group_vars/all.yml`, which the template renders
+> through a generic loop. For those, that file is the authoritative source.
 
 **sg-dns** - DNS service ports only (no SSH):
 ```ini
@@ -195,7 +203,8 @@ IN ACCEPT -source +dc/admin_ts -p tcp -dport 6443 -log nolog        # kubectl fr
 IN ACCEPT -source +dc/admin_lan -p tcp -dport 6443 -log nolog       # kubectl from LAN
 ```
 
-**sg-plex** - Plex Media Server:
+**sg-plex** - Plex Media Server (site data — `proxmox_firewall_security_groups`
+in `group_vars/all.yml`):
 ```ini
 [group sg-plex]
 
@@ -449,24 +458,26 @@ k3s_agents:
         - sg-metrics          # Prometheus exporter scraping
 ```
 
-**Available Security Groups:**
+**Available Security Groups** (`lib` = rendered by the collection's
+`cluster.fw.j2`; `site` = an entry of `proxmox_firewall_security_groups` in
+`group_vars/all.yml`):
 
-| Security Group | Purpose | Use For |
-|---------------|---------|---------|
-| `sg-vm-admin` | SSH + ICMP admin access | **All VMs/LXCs** |
-| `sg-dns` | DNS service (DoT, UDP/TCP 53, AdGuard UI) | DNS containers |
-| `sg-smtp-relay` | SMTP submission/relay + outbound | smtp-relay container |
-| `sg-plex` | Plex Media Server ports | Plex container |
-| `sg-k3s-core` | K3s cluster communication | All K3s nodes |
-| `sg-k3s-ingress-int` | HTTP/HTTPS from admin networks | K3s ingress nodes (internal apps) |
-| `sg-k3s-ingress-pub` | HTTP/HTTPS from all sources | K3s ingress nodes (public apps) |
-| `sg-gitlab` | GitLab HTTP/HTTPS + Git SSH | GitLab VM |
-| `sg-nextcloud` | HTTPS 443 (Traefik + admin) + nextcloud-exporter 9205 | Nextcloud VM (.156) |
-| `sg-immich` | HTTPS 443 (Traefik + admin) + Immich telemetry 8081/8082 | Immich VM (.157) |
-| `sg-immich-ml` | ML inference 3003 from the Immich VM **only** (the API is authless — this rule is the security boundary) | immich-ml LXC (.158) |
-| `sg-haos` | Home Assistant Web UI + mDNS | Home Assistant VM |
-| `sg-windows` | Windows RDP | Windows VMs |
-| `sg-metrics` | Prometheus exporter scrape ports from k3s_nodes: the collection's built-ins (9100/9101/9134/9167) plus whatever `proxmox_firewall_metrics_scrape_ports` in `group_vars/all.yml` declares (today 8123/32400/7472/7473, and the Loki push NodePort 31100 from core-cluster) | **All hosts and guests** |
+| Security Group | Source | Purpose | Use For |
+|---------------|--------|---------|---------|
+| `sg-vm-admin` | lib | SSH + ICMP admin access | **All VMs/LXCs** |
+| `sg-dns` | lib | DNS service (DoT, UDP/TCP 53, AdGuard UI) | DNS containers |
+| `sg-smtp-relay` | lib | SMTP submission/relay + outbound | smtp-relay container |
+| `sg-plex` | site | Plex Media Server ports | Plex container |
+| `sg-k3s-core` | lib | K3s cluster communication | All K3s nodes |
+| `sg-k3s-ingress-int` | lib | HTTP/HTTPS from admin networks | K3s ingress nodes (internal apps) |
+| `sg-k3s-ingress-pub` | lib | HTTP/HTTPS from all sources | K3s ingress nodes (public apps) |
+| `sg-gitlab` | site | GitLab HTTP/HTTPS + Git SSH | GitLab VM |
+| `sg-nextcloud` | site | HTTPS 443 (Traefik + admin) + nextcloud-exporter 9205 | Nextcloud VM (.156) |
+| `sg-immich` | site | HTTPS 443 (Traefik + admin) + Immich telemetry 8081/8082 | Immich VM (.157) |
+| `sg-immich-ml` | site | ML inference 3003 from the Immich VM **only** (the API is authless — this rule is the security boundary) | immich-ml LXC (.158) |
+| `sg-haos` | site | Home Assistant Web UI + mDNS | Home Assistant VM |
+| `sg-windows` | site | Windows RDP | Windows VMs |
+| `sg-metrics` | lib | Prometheus exporter scrape ports from k3s_nodes: the collection's built-ins (9100/9101/9134/9167) plus whatever `proxmox_firewall_metrics_scrape_ports` in `group_vars/all.yml` declares (today 8123/32400/7472/7473, and the Loki push NodePort 31100 from core-cluster) | **All hosts and guests** |
 
 Five more groups are rendered by `cluster.fw.j2` but are **host-only**: they
 attach to Proxmox hosts via `host.fw`, never to a guest's

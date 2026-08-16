@@ -35,6 +35,11 @@ recordsize: 1M (tank/media), 128K (tank/share, default)
 - `tank/proxmox` - Proxmox VM backup target (mounted `/mnt/tank/proxmox`)
 - `tank/pve` - Ephemeral Proxmox VM/LXC images (mounted `/mnt/tank/pve`)
 - `tank/backups` - General backup target (encryption root; replicated to `archive`)
+- `tank/backups/apps` - Per-app logical-dump landing zone, one subdirectory per
+  app, each NFS-exported to just that app's client. A child of `tank/backups`, so
+  it **inherits** that encryption root rather than being one itself, and rides
+  the same recursive raw `zfs send -w`. Created by hand (`nas_storage` never
+  creates datasets) — the sequence is in docs/44 § Creating a dataset by hand.
 - `tank/nextcloud-data` - Nextcloud data (encryption root, replicated)
 - `tank/immich-data` - Immich data (encryption root, replicated). Holds the
   `tank/immich-data/disk` zvol — the 2 TB **sparse** photo library for the Immich

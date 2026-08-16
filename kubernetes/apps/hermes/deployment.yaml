@@ -360,15 +360,12 @@ spec:
             periodSeconds: 30
             timeoutSeconds: 10
             failureThreshold: 5
-          # This is the container that OOMKilled the chat and event feeds: it
-          # holds a flat ~138Mi idle and jumps ~5x on the first active chat, so
-          # the recommender only ever measured the quiet baseline and the
-          # ratio-scaled limit landed under the burst — the exact case docs/33
-          # § Limit oscillation describes. The limit is now hand-set and
-          # binding (vpa.yaml is RequestsOnly, `maxAllowed` tracks this number)
-          # at ~2.4x the 1059Mi 30d working-set peak. The request is floored at
-          # the same 768Mi by `minAllowed` so the scheduler reserves for the
-          # burst rather than for the idle baseline. No CPU limit (docs/33).
+          # This is the container the VPA squeezed into OOMKills, dropping the
+          # chat and event feeds (!227): ~2.4x the 1059Mi 30d working-set peak.
+          # Hand-set and binding: vpa.yaml is RequestsOnly and its `maxAllowed`
+          # tracks this limit — raise both together (docs/33). The request is
+          # floored by `minAllowed` at the interactive burst, not the idle
+          # baseline. No CPU limit (docs/33).
           resources:
             requests:
               cpu: 100m
@@ -432,14 +429,12 @@ spec:
             failureThreshold: 5
           # No readinessProbe: nothing routes through a Service to :9377 (the
           # gateway calls localhost), so readiness has nothing to gate.
-          # Firefox memory scales with open tabs/sessions, not steady-state
-          # history. The 448Mi request this replaces sat below the ~810Mi the
-          # server holds while merely idle, so the scheduler under-reserved for
-          # it on every placement; 1Gi covers the real idle footprint and the
-          # 3Gi limit (~2.9x the 1054Mi 30d working-set peak) caps a
-          # MAX_SESSIONS burst. VPA is Off for this container (vpa.yaml), so
-          # the request is hand-measured and must be revisited when usage
-          # changes. No CPU limit (docs/33).
+          # Hand-sized (VPA Off for this container — Firefox memory scales with
+          # open tabs/sessions, not steady-state history): 1Gi covers the real
+          # idle footprint the old 448Mi request under-reserved, and the 3Gi
+          # limit is ~2.9x the 1054Mi 30d working-set peak, capping a
+          # MAX_SESSIONS burst. Re-measure when usage changes. No CPU limit
+          # (docs/33).
           resources:
             requests:
               cpu: 100m

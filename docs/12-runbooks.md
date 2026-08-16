@@ -849,6 +849,8 @@ task maintenance:update-all-versions
 
 After updating versions in `all.yml`, deploy with the appropriate mechanism:
 - **Ansible-managed** (AdGuard, Tailscale, Plex): `task maintenance:update-applications`
+  — this is a plain Ansible run against the hosts, so it neither reconciles nor
+  waits on Flux; anything in `kubernetes/` still needs the commit + push below.
 - **k3s node binary**: `task maintenance:update-k3s-nodes`
 - **K3s Helm charts and workloads** (Flux-managed — MetalLB, Traefik, cert-manager,
   external-dns, Authentik, downloads, recipes, gitlab-runner, gitlab-agent):
@@ -1015,22 +1017,22 @@ task maintenance:update-full -- --limit=pve-nas-01
 **AdGuard configuration corrupted**:
 ```bash
 # List backups
-ansible dns -i inventories/prod -m shell -a "ls -la /opt/AdGuardHome/AdGuardHome.yaml.backup-*"
+ansible dns -i ansible/inventories/prod -m shell -a "ls -la /opt/AdGuardHome/AdGuardHome.yaml.backup-*"
 
 # Restore on specific host
-ansible dns-01 -i inventories/prod -m copy -a "src=/opt/AdGuardHome/AdGuardHome.yaml.backup-TIMESTAMP dest=/opt/AdGuardHome/AdGuardHome.yaml remote_src=yes"
+ansible dns-01 -i ansible/inventories/prod -m copy -a "src=/opt/AdGuardHome/AdGuardHome.yaml.backup-TIMESTAMP dest=/opt/AdGuardHome/AdGuardHome.yaml remote_src=yes"
 
 # Restart service
-ansible dns-01 -i inventories/prod -m service -a "name=AdGuardHome state=restarted"
+ansible dns-01 -i ansible/inventories/prod -m service -a "name=AdGuardHome state=restarted"
 ```
 
 **Service not starting after update**:
 ```bash
 # Check service status
-ansible <host> -i inventories/prod -m command -a "systemctl status AdGuardHome"
+ansible <host> -i ansible/inventories/prod -m command -a "systemctl status AdGuardHome"
 
 # Check logs
-ansible <host> -i inventories/prod -m shell -a "journalctl -u AdGuardHome -n 50"
+ansible <host> -i ansible/inventories/prod -m shell -a "journalctl -u AdGuardHome -n 50"
 ```
 
 ### Post-maintenance verification
@@ -1754,6 +1756,35 @@ kubectl delete service -n observability loki-external
 
 Flux never reconciles this Service (it is in no kustomization), so nothing
 removes it for you.
+
+### Traefik dashboard break-glass (Authentik down)
+
+**Symptoms:** `https://traefik.esweiss.com` 404s or never reaches a login —
+Authentik, its embedded outpost, or the `traefik_dashboard` provider is broken,
+and the dashboard is exactly what you want to read while diagnosing a routing
+problem.
+
+The dashboard route is chained `lan-tailscale-strict` -> `authentik-auth` ->
+`hsts-header`, so there is no password form to fall back to: forward-auth is the
+only identity gate. Reach the API directly instead of loosening the chain — the
+port-forward is authenticated by your kubeconfig and is gone when you Ctrl-C it:
+
+```bash
+# The dashboard/API listens on the chart's own `traefik` entrypoint, whose
+# container port has moved between chart majors — read it rather than assume it.
+TRAEFIK_PORT=$(kubectl -n traefik get deploy traefik \
+  -o jsonpath='{.spec.template.spec.containers[0].ports[?(@.name=="traefik")].containerPort}')
+kubectl -n traefik port-forward deploy/traefik 8080:"$TRAEFIK_PORT"
+# then, in another shell / a local browser:
+curl -s localhost:8080/api/overview | head
+open http://localhost:8080/dashboard/
+```
+
+Do **not** temporarily drop `authentik-auth` from the IngressRoute: `/api/rawdata`
+dumps every internal hostname and ClientIP bypass, and the change would sit live
+in git until someone reverts it. Fix the Authentik side instead — the provider,
+application, group binding and outpost key are codified in `terraform/authentik`
+(docs/40), so re-apply there rather than editing in the UI.
 
 ---
 

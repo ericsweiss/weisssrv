@@ -12,7 +12,7 @@ It runs as a single pod in the `wg-easy` namespace, reconciled by Flux from
 - **VPN endpoint (WAN):** `vpn.ericsweiss.com:51820/udp`
 - **Admin UI (internal only):** `https://vpn.esweiss.com` (Authentik-gated)
 - **Client subnet:** `10.8.0.0/24` (IPv4 only)
-- **Image:** `ghcr.io/wg-easy/wg-easy:15.3.0` (pinned via `wg_easy_version`)
+- **Image:** `ghcr.io/wg-easy/wg-easy:${wg_easy_version}` (the pin lives in `group_vars/all.yml`)
 
 ---
 
@@ -136,7 +136,7 @@ NetworkPolicy cannot express — blocking forwarded client traffic to the CoreDN
 *ClusterIP* while still letting the pod resolve names — is instead handled by
 giving the pod its **own** public resolver (`dnsPolicy: None`) and removing the
 `kube-dns` egress allow, which makes Layer 2 a genuine superset (see Layer 2).
-wg-easy 15.3.0's optional **Per-Client Firewall** (Admin Panel → Interface)
+wg-easy's optional **Per-Client Firewall** (Admin Panel → Interface)
 remains available to further restrict individual clients, but is not required for
 the no-LAN fence and is not configured by default. Consequently the verification
 runbook below tests the **two real enforcement points** (client DNS + the
@@ -240,9 +240,11 @@ availability instead.)
 
 ### 7. Authentik objects (Terraform)
 
-The pinned wg-easy 15.3.0 has no native OIDC (generic `OAUTH_PROVIDERS` support
-landed upstream after this tag), so the UI is protected by Traefik ForwardAuth via
-the shared `authentik-auth` outpost — the same pattern the `*arr` apps use.
+wg-easy's native OIDC (generic `OAUTH_PROVIDERS`) is not used: the UI is
+protected by Traefik ForwardAuth via the shared `authentik-auth` outpost — the
+same pattern the `*arr` apps use. Re-evaluate the design if a pin bump is ever
+taken specifically to adopt native OIDC; check the running tag against
+`wg_easy_version` in `group_vars/all.yml` first.
 
 The proxy provider, application and `vpn-admins` group are declared in
 `terraform/authentik/` (`providers_proxy.tf`, `applications.tf`, `groups.tf`,
@@ -327,7 +329,7 @@ task wg-easy:status
   them later is a no-op.
 - **Admin password rotation**: change it in the UI (Admin Panel), then update
   `init-password` in 1Password for documentation parity (it is not re-read).
-- **Optional server-side per-client firewall**: v15.3 has an experimental
+- **Optional server-side per-client firewall**: wg-easy ships an experimental
   "Per-Client Firewall" (Admin Panel → Interface) that enforces destination
   allowlists per client with iptables. It is redundant with layer 2 for the
   no-LAN guarantee, but can further restrict individual clients (e.g. web-only).
@@ -373,3 +375,10 @@ re-issued a config.
   (`replicas: 1`, `Recreate`). Do not scale wg-easy.
 - **Metrics need the one-time UI enable** (step 6) — the ServiceMonitor alone
   does not turn them on.
+
+## Related documentation
+
+- [docs/08-dns.md](08-dns.md) - split-horizon DNS for the VPN endpoint name
+- [docs/29-flux-operations.md](29-flux-operations.md) - how the manifests reconcile
+- [docs/31-observability.md](31-observability.md) - the metrics endpoint and its alerts
+- [docs/40-authentik-terraform.md](40-authentik-terraform.md) - the forward-auth provider as code

@@ -1,0 +1,56 @@
+---
+# promtool unit tests for the GPU alerts that join two independent series.
+# HindsightGpuOffloadIdle is the one that cannot be read off its expression: it
+# is only meaningful as a PAIR (VRAM near-empty AND the deployment available),
+# and either half alone is a normal state — an idle card with Hindsight scaled
+# to zero, or a loading model during the 30m hold.
+rule_files:
+  - rules.yaml
+evaluation_interval: 1m
+tests:
+  # Hindsight available but the card holds 128 MiB: the model is not resident,
+  # so the llama CUDA offload has fallen back to CPU.
+  - interval: 1m
+    input_series:
+      - series: 'DCGM_FI_DEV_FB_USED{job="dcgm-exporter", gpu="0", instance="10.42.7.11:9400"}'
+        values: '128+0x60'
+      - series: 'kube_deployment_status_replicas_available{namespace="hindsight", deployment="hindsight"}'
+        values: '1+0x60'
+    alert_rule_test:
+      # Inside the 30m hold — the one-time GGUF download + model load must not
+      # page.
+      - eval_time: 25m
+        alertname: HindsightGpuOffloadIdle
+        exp_alerts: []
+      - eval_time: 40m
+        alertname: HindsightGpuOffloadIdle
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: gpu
+
+  # Model resident (2871 MiB, the live steady state): no alert.
+  - interval: 1m
+    input_series:
+      - series: 'DCGM_FI_DEV_FB_USED{job="dcgm-exporter", gpu="0", instance="10.42.7.11:9400"}'
+        values: '2871+0x60'
+      - series: 'kube_deployment_status_replicas_available{namespace="hindsight", deployment="hindsight"}'
+        values: '1+0x60'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: HindsightGpuOffloadIdle
+        exp_alerts: []
+
+  # The gate half: an empty card with Hindsight scaled to zero is the expected
+  # state, not a broken offload. Without the replicas arm this fires whenever
+  # the deployment is intentionally down.
+  - interval: 1m
+    input_series:
+      - series: 'DCGM_FI_DEV_FB_USED{job="dcgm-exporter", gpu="0", instance="10.42.7.11:9400"}'
+        values: '128+0x60'
+      - series: 'kube_deployment_status_replicas_available{namespace="hindsight", deployment="hindsight"}'
+        values: '0+0x60'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: HindsightGpuOffloadIdle
+        exp_alerts: []

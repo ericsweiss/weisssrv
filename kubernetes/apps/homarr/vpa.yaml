@@ -11,7 +11,12 @@ spec:
   updatePolicy: {updateMode: Initial}
   resourcePolicy:
     containerPolicies:
+      # RequestsOnly: on the default RequestsAndLimits the updater rescales the
+      # LIVE limit away from the declared one, so a pod admitted while the
+      # mutating webhook is down runs under its own peak. The limit is hand-set
+      # in deployment.yaml and maxAllowed tracks it exactly (docs/33).
       - containerName: "*"
         minAllowed: {cpu: 25m, memory: 128Mi}
-        maxAllowed: {cpu: 1, memory: 1Gi}
+        maxAllowed: {cpu: 1, memory: 896Mi}
         controlledResources: [cpu, memory]
+        controlledValues: RequestsOnly

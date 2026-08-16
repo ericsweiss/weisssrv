@@ -814,10 +814,10 @@ _SERVICES: list[dict] = [
     },
     {
         # Debian LXC root template (pveam appliance). Proxmox silently rotates
-        # the point build out of its index (13.1-2 vanished 2026-07 and broke a
-        # cached-template recreate — proxmox_lxc role + !160). No release feed to
-        # poll; check the pveam index on a Proxmox host. Current value read from
-        # all.yml (authoritative pin; mirrored as the proxmox_lxc role default).
+        # the point build out of its index, which breaks a cached-template
+        # recreate. No release feed to poll; check the pveam index on a Proxmox
+        # host. Authoritative pin lives in all.yml (mirrored as the proxmox_lxc
+        # role default).
         "name": "Debian LXC template (pveam)",
         "var_name": "proxmox_lxc_template",
         "category": "manual",

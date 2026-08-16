@@ -2,7 +2,10 @@
 # Vertical Pod Autoscaler (Fairwinds chart). Recommender + updater +
 # admission controller; per-workload VerticalPodAutoscaler policies live
 # next to the workloads (configs/vpa/, observability/vpa.yaml,
-# apps/*/vpa.yaml). Metrics come from the k3s-bundled metrics-server.
+# apps/*/vpa.yaml). Metrics come from the Flux-owned metrics-server
+# (controllers/metrics-server/, its own Flux stage) — the k3s-bundled AddOn is
+# disabled (k3s_disable in group_vars/k3s.yml), so a blind recommender is
+# diagnosed there, not against k3s.
 #
 # nodeSelector esweiss.com/cpu: modern — same constraint as ESO: generic
 # Go controller images SIGILL on the Core 2 Quad opt nodes.
@@ -75,6 +78,27 @@ spec:
           ${cluster_node_label_domain}/cpu: modern
       nodeSelector:
         ${cluster_node_label_domain}/cpu: modern
+      # Two replicas + a PDB: this webhook is on the admission path for EVERY
+      # pod in the cluster, and it is failurePolicy: Ignore — while it is down
+      # nothing rewrites requests, so every pod admitted in that window runs at
+      # the raw manifest numbers. Single-replica made a node drain enough to
+      # open that window. The chart only renders the PDB when replicaCount > 1.
+      replicaCount: 2
+      podDisruptionBudget:
+        minAvailable: 1
+      # Soft, not required: nodeSelector already narrows the candidates to the
+      # modern-CPU nodes, and a hard rule would leave a replica Pending there.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: vpa
+                    app.kubernetes.io/instance: vpa
+                    app.kubernetes.io/component: admission-controller
       resources:
         requests:
           cpu: 25m

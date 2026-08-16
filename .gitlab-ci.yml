@@ -94,7 +94,7 @@ variables:
   # as a literal and scripts/check-lib-pins.py enforces that they all equal this
   # value and that it is a release tag. Bump here, then `--fix`. See the comment
   # on the include block.
-  WEISSSRV_LIB_REF: "v0.7.4"
+  WEISSSRV_LIB_REF: "v0.8.0"
   # Single source for the Ansible pin the deploy jobs (.deploy-base) pip-install.
   # Keep in step with requirements.txt's ansible pin.
   ANSIBLE_VERSION: "11.6.0"
@@ -969,6 +969,7 @@ repo-policy-checks:
       # except-lists and peer-less-egress allowlist are site data.
       run_check netpol-except-parity python3 scripts/check-netpol-except-parity.py --config scripts/netpol-except.yaml
       run_check cluster-literals python3 scripts/check-cluster-literals.py
+      run_check ansible-service-names python3 scripts/check-ansible-service-names.py
       run_check kubectl-version-pin python3 scripts/check-kubectl-version-pin.py
       run_check flux-version-pin check_flux_version_pin
       run_check busybox-version-pin check_busybox_version_pin
@@ -1397,10 +1398,11 @@ deploy-preflight:
                   for t in m.group("tags").split(",")
                   if t
               })
+              inventory_argv = ["-i", inventory] if inventory else []
               for tag in tags:
                   selections += 1
                   proc = subprocess.run(
-                      ["ansible-playbook", "-i", inventory, playbook,
+                      ["ansible-playbook", *inventory_argv, playbook,
                        "--list-tasks", "--tags", tag],
                       cwd=ANSIBLE_DIR, capture_output=True, text=True,
                   )
@@ -1483,7 +1485,7 @@ include:
   # already describe this instance and the cloudflare state; the two drift-plan
   # jobs override the three TF_HTTP_*ADDRESS vars for their own state names.
   - project: eric/weisssrv-lib
-    ref: v0.7.4
+    ref: v0.8.0
     file:
       - /ci/templates/dep-cache.yml
       - /ci/templates/install-1password.yml
@@ -1498,7 +1500,7 @@ include:
   #     selector, allow_failure, MR/main/schedule rules); the hard block comes
   #     from validation-gate needing this job non-optionally.
   - project: eric/weisssrv-lib
-    ref: v0.7.4
+    ref: v0.8.0
     file:
       - /ci/validate/terraform.yml
       - /ci/security/secret-detection.yml
@@ -1506,7 +1508,7 @@ include:
   # yaml-lint: the library default targets `.gitlab/ci/` only; lint all of
   # `.gitlab/` so the agent config is covered alongside the CI fragments.
   - project: eric/weisssrv-lib
-    ref: v0.7.4
+    ref: v0.8.0
     file: /ci/lint/yaml-lint.yml
     inputs:
       targets: "ansible/ kubernetes/ .gitlab-ci.yml .gitlab/"
@@ -1521,7 +1523,7 @@ include:
   # where the library's own pipeline shellchecks it. What is left is scripts/
   # plus the terraform helper scripts the default set missed.
   - project: eric/weisssrv-lib
-    ref: v0.7.4
+    ref: v0.8.0
     file: /ci/lint/shellcheck.yml
     inputs:
       direct_globs: "scripts/*.sh terraform/*/*.sh"
@@ -1539,7 +1541,7 @@ include:
   # walks UP from its cwd, so the config is ./.ansible-lint. It is in `changes:`
   # so a profile edit re-runs the job.
   - project: eric/weisssrv-lib
-    ref: v0.7.4
+    ref: v0.8.0
     file: /ci/lint/ansible-lint.yml
     inputs:
       targets: "ansible/"
@@ -1555,13 +1557,14 @@ include:
   # python-lint: ruff over the helper scripts, using the library's shared
   # profile vendored to this repo's root as ruff.toml.
   - project: eric/weisssrv-lib
-    ref: v0.7.4
+    ref: v0.8.0
     file: /ci/lint/python-lint.yml
     inputs:
-      targets: "scripts"
+      targets: "scripts kubernetes"
       config: "--config ruff.toml"
       changes:
         - "scripts/**/*.py"
+        - "kubernetes/**/*.py"
         - "ruff.toml"
         - ".gitlab-ci.yml"
 
@@ -1570,7 +1573,7 @@ include:
   # trigger list has to be `**/*.md`-wide — the library default only covers
   # docs/ + the top-level READMEs.
   - project: eric/weisssrv-lib
-    ref: v0.7.4
+    ref: v0.8.0
     file: /ci/lint/docs-link-check.yml
     inputs:
       changes:
@@ -1596,7 +1599,7 @@ include:
   # its admin PAT from GITLAB_ADMIN_API_TOKEN (see the deploy-gitlab job) to avoid
   # being silently shadowed by this project token.
   - project: eric/weisssrv-lib
-    ref: v0.7.4
+    ref: v0.8.0
     file: /ci/maintenance/version-check.yml
     inputs:
       setup_command: 'pip install --quiet "pyyaml==${PYYAML_VERSION}" requests==2.34.2'
@@ -1623,7 +1626,7 @@ include:
   # copies against it and never skips, so the checkout is a hard requirement of
   # the job (WEISSSRV_LIB_PATH points at it — see the job override below).
   - project: eric/weisssrv-lib
-    ref: v0.7.4
+    ref: v0.8.0
     file: /ci/test/python-tests.yml
     inputs:
       pytest_version: "9.1.1"
@@ -1645,7 +1648,12 @@ include:
         - "kubernetes/infrastructure/configs/**/*"
         - "kubernetes/infrastructure/sources/**/*"
         - "kubernetes/apps/**/*"
+        - "kubernetes/components/**/*"
+        - "kubernetes/infrastructure/controllers/**/*"
+        - "kubernetes/infrastructure/crds/**/*"
         - "kubernetes/README.md"
+        - "terraform/*/main.tf"
+        - "terraform/tailscale/policy.hujson"
         - "terraform/*/README.md"
         - "docker/*/README.md"
         - "docs/**/*"
@@ -1671,7 +1679,7 @@ include:
   # as `task flux:lint` passes them — an omitted --releases is a FileNotFoundError
   # and an omitted --policy-config silently asserts zero chart-native targets.
   - project: eric/weisssrv-lib
-    ref: v0.7.4
+    ref: v0.8.0
     file: /ci/validate/flux-lint.yml
     inputs:
       substitute: true
@@ -1711,6 +1719,7 @@ include:
         - "scripts/check-default-deny-coverage.py"
         - "scripts/check-secretstore-scope.py"
         - "scripts/check-pvc-storageclass.py"
+        - "scripts/check-nfs-tls.py"
         - "scripts/validate-helm-values.py"
         - "scripts/flux-render.sh"
         # The two-ConfigMap wrapper the job actually calls, and the vendored
@@ -1725,7 +1734,7 @@ include:
         # kubeconform and helm pins have no other guard.) yaml-lint,
         # ansible-lint, python-lint and python-tests already list it.
         - ".gitlab-ci.yml"
-      extra_validation: 'echo "=== Adding the tenants tree to the corpus ==="; kustomize build kubernetes/clusters/weisssrv/tenants >> "$RENDER_ALL" || FAILED=1; printf "\n---\n" >> "$RENDER_ALL"; echo "=== Checking HPA/VPA invariant ==="; python3 scripts/check-hpa-vpa-invariant.py --require-chart-native-vpas --policy-config scripts/autoscaling-policy.yaml < "$RENDER_ALL" || FAILED=1; echo "=== Checking scrape/NetworkPolicy invariant ==="; python3 scripts/check-scrape-netpol.py < "$RENDER_ALL" || FAILED=1; echo "=== Checking ingress default-deny coverage ==="; python3 scripts/check-default-deny-coverage.py < "$RENDER_ALL" || FAILED=1; echo "=== Checking ClusterSecretStore scoping ==="; python3 scripts/check-secretstore-scope.py < "$RENDER_ALL" || FAILED=1; echo "=== Checking PVC storageClassName ==="; python3 scripts/check-pvc-storageclass.py < "$RENDER_ALL" || FAILED=1; echo "=== Schema-validating HelmRelease values blocks (helm template) ==="; MERGED_CM=$(mktemp); scripts/flux-env.sh merged-configmap "$VERSIONS_CONFIGMAP" > "$MERGED_CM" && python3 scripts/validate-helm-values.py --kubeconform --releases scripts/helm-values-releases.yaml --versions-configmap "$MERGED_CM" --policy-config scripts/autoscaling-policy.yaml || FAILED=1; rm -f "$MERGED_CM"'
+      extra_validation: 'echo "=== Adding the tenants tree to the corpus ==="; kustomize build kubernetes/clusters/weisssrv/tenants >> "$RENDER_ALL" || FAILED=1; printf "\n---\n" >> "$RENDER_ALL"; echo "=== Checking HPA/VPA invariant ==="; python3 scripts/check-hpa-vpa-invariant.py --require-chart-native-vpas --policy-config scripts/autoscaling-policy.yaml < "$RENDER_ALL" || FAILED=1; echo "=== Checking scrape/NetworkPolicy invariant ==="; python3 scripts/check-scrape-netpol.py < "$RENDER_ALL" || FAILED=1; echo "=== Checking ingress default-deny coverage ==="; python3 scripts/check-default-deny-coverage.py < "$RENDER_ALL" || FAILED=1; echo "=== Checking ClusterSecretStore scoping ==="; python3 scripts/check-secretstore-scope.py < "$RENDER_ALL" || FAILED=1; echo "=== Checking PVC storageClassName ==="; python3 scripts/check-pvc-storageclass.py < "$RENDER_ALL" || FAILED=1; echo "=== Checking NFS PersistentVolume TLS ==="; python3 scripts/check-nfs-tls.py < "$RENDER_ALL" || FAILED=1; echo "=== Schema-validating HelmRelease values blocks (helm template) ==="; MERGED_CM=$(mktemp); scripts/flux-env.sh merged-configmap "$VERSIONS_CONFIGMAP" > "$MERGED_CM" && python3 scripts/validate-helm-values.py --kubeconform --releases scripts/helm-values-releases.yaml --versions-configmap "$MERGED_CM" --policy-config scripts/autoscaling-policy.yaml || FAILED=1; rm -f "$MERGED_CM"'
 
   # pr-agent-review (ai-review stage): advisory AI review of the MR. Both
   # credentials are masked CI variables (OPENAI__KEY, the
@@ -1742,7 +1751,7 @@ include:
   # pipelines). Model, reasoning effort and both timeouts are the library
   # defaults.
   - project: eric/weisssrv-lib
-    ref: v0.7.4
+    ref: v0.8.0
     file: /ci/review/pr-agent.yml
     inputs:
       secrets_source: "env"
@@ -2563,10 +2572,11 @@ deploy-gitlab-verify:
       fi
 
       echo "Testing SSH connectivity..."
-      if timeout 5 bash -c 'cat < /dev/null > /dev/tcp/192.168.0.153/22' 2>/dev/null; then
+      . scripts/hosts.env
+      if timeout 5 bash -c "cat < /dev/null > /dev/tcp/${GITLAB_IP}/22" 2>/dev/null; then
         echo "SSH port 22: OK"
       else
-        echo "ERROR: SSH port 22 on 192.168.0.153 not reachable"
+        echo "ERROR: SSH port 22 on ${GITLAB_IP} not reachable"
         EXIT=1
       fi
 

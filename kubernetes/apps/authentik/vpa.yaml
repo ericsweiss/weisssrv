@@ -22,10 +22,16 @@ spec:
       # request (878Mi == 878Mi) against an 810Mi working set — the same
       # zero-headroom trap documented for prowlarr in
       # apps/download-clients/vpa.yaml.
+      #
+      # maxAllowed == the 1536Mi limit in release.yaml, the RequestsOnly shape
+      # docs/33 § Limit oscillation prescribes: the request may rise to the
+      # ceiling the pod is admitted against (Guaranteed QoS) but never past it.
+      # It was 2Gi — ABOVE the limit, so the cap bounded nothing. Move both
+      # numbers in the same commit.
       - containerName: "*"
         controlledValues: RequestsOnly
         minAllowed: {memory: 256Mi}
-        maxAllowed: {memory: 2Gi}
+        maxAllowed: {memory: 1536Mi}
         controlledResources: [memory]
 ---
 apiVersion: autoscaling.k8s.io/v1
@@ -37,7 +43,14 @@ spec:
   updatePolicy: {updateMode: Initial}
   resourcePolicy:
     containerPolicies:
+      # Same shape as the server: the 1536Mi limit in release.yaml is hand-set
+      # and stays the real ceiling (it is also what a pod admitted WITHOUT the
+      # mutating webhook gets — failurePolicy: Ignore), and maxAllowed.memory
+      # tracks it. The default RequestsAndLimits would rescale the limit with
+      # the request instead, so the effective ceiling would be whatever the last
+      # recommendation happened to be rather than the number reviewed here.
       - containerName: "*"
+        controlledValues: RequestsOnly
         minAllowed: {cpu: 25m, memory: 256Mi}
         maxAllowed: {cpu: 1, memory: 1536Mi}
         controlledResources: [cpu, memory]

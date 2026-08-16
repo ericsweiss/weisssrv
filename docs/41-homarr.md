@@ -302,7 +302,7 @@ above), and the NAS `/appdata/homarr` dir + DNS rewrite are deployed.
      UI user/pass.
    - NZBGet → `http://nzbget.downloads.svc.cluster.local:6789` + 1P `NZBGet`
      user/pass.
-   - AdGuard Home ×2 → `http://192.168.0.150:3000` / `:160:3000` + 1P
+   - AdGuard Home ×2 → `http://192.168.0.150:3000` / `http://192.168.0.160:3000` + 1P
      `AdGuard Home` user/pass.
    - Proxmox → `https://192.168.0.102:8006` + 1P `Homarr Proxmox Token`
      token-id/secret. Leave "ignore TLS" **off** — the PVE cluster CA is trusted
@@ -326,3 +326,10 @@ above), and the NAS `/appdata/homarr` dir + DNS rewrite are deployed.
    as a widget error). If a LAN integration can't connect, re-check the matching
    `ipBlock` in
    [`kubernetes/apps/homarr/networkpolicy.yaml`](../kubernetes/apps/homarr/networkpolicy.yaml).
+
+## Related documentation
+
+- [docs/29-flux-operations.md](29-flux-operations.md) - how the manifests reconcile
+- [docs/31-observability.md](31-observability.md) - metrics and alerts
+- [docs/40-authentik-terraform.md](40-authentik-terraform.md) - the OIDC provider and the two access groups as code
+- [docs/15-credential-rotation.md](15-credential-rotation.md) - the UI-entered integration credentials of record

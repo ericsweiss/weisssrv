@@ -1,6 +1,11 @@
 ---
 # Export map for scripts/generate-hosts-env.py: which inventory group becomes
 # which variable in scripts/hosts.env. Regenerate with `task hosts:sync`.
+#
+# HOSTS only. The MetalLB VIPs and the kube-vip API VIP are not inventory hosts,
+# so the generator (vendored — it resolves groups and nothing else) cannot reach
+# them; they live in cluster-config.yaml and host-side tooling reads them with
+# scripts/cluster-config-value.sh.
 output: scripts/hosts.env
 exports:
   # PVE_HOSTS is hostnames (Tailscale/LAN resolvable); every other list is IPs.

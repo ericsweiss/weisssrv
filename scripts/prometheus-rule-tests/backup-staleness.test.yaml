@@ -39,12 +39,16 @@ tests:
         alertname: EtcdSnapshotStale
         exp_alerts: []
 
-  # The absent() arm: a copy timer that never ran once looks exactly like a
-  # healthy cluster without it. Fires with no instance label (absent()
-  # synthesises the vector), so a different metric is used to drive the clock.
+  # The absence arm is per-server: .222 still copies, .223 emits no copy metric
+  # at all while its node_exporter is up. A vector-wide absent() would see .222
+  # and stay silent — this must fire, and only for .223.
   - interval: 1h
     input_series:
-      - series: 'up{job="unrelated"}'
+      - series: 'etcd_snapshot_last_copy_timestamp_seconds{instance="192.168.0.222:9101"}'
+        values: '0+3600x60'
+      - series: 'up{job="node-exporter-host", instance="192.168.0.222:9101"}'
+        values: '1+0x60'
+      - series: 'up{job="node-exporter-host", instance="192.168.0.223:9101"}'
         values: '1+0x60'
     alert_rule_test:
       - eval_time: 38h
@@ -52,6 +56,20 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
+              job: node-exporter-host
+              instance: '192.168.0.223:9101'
+
+  # The exporter itself being down is HostExporterDown's job, not this alert's:
+  # up == 0 fails the witness, so a scrape outage does not masquerade as a dead
+  # copy timer.
+  - interval: 1h
+    input_series:
+      - series: 'up{job="node-exporter-host", instance="192.168.0.223:9101"}'
+        values: '0+0x60'
+    alert_rule_test:
+      - eval_time: 38h
+        alertname: EtcdSnapshotStale
+        exp_alerts: []
 
   # ArchiveBackup: 2-day warning, 4-day critical off the same metric.
   - interval: 1h

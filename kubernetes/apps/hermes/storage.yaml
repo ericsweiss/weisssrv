@@ -1,17 +1,13 @@
 ---
 # NFS-backed persistent state for Hermes Agent (config, API keys, sessions,
-# skills, memories -> /opt/data in the container). Lives on the encrypted
-# ssd/appdata dataset via the appdata NFS export; captured by the nightly
-# ssd/appdata -> archive raw-ZFS replication (no SRC_LIST edit needed — it is a
-# child of an existing backup root). The export uses all_squash,anonuid=1000,
-# anongid=2000, so every container write maps to 1000:2000 on the NAS
-# regardless of the in-container UID; the /appdata/hermes subdir is created +
-# owned 1000:2000 by the nas_storage role (nas_storage_appdata_dirs).
+# skills, memories -> /opt/data in the container) on the encrypted ssd/appdata
+# dataset, so the nightly archive replication captures it as a child of an
+# existing backup root. The export is all_squash,anonuid=1000,anongid=2000, so
+# every container write lands as 1000:2000 whatever the in-container UID; the
+# subdir is created + owned by the nas_storage role (nas_storage_appdata_dirs).
 #
-# server: is an immutable PV field; the kustomize force annotation lets Flux
-# delete+recreate it if server/mountOptions ever change (Retain -> data safe).
-# Hostname (not IP) is required so xprtsec=tls verifies against the
-# *.esweiss.com cert SAN — an IP mount fails the TLS handshake. See docs/07.
+# NFS-over-TLS PV; hostname (not IP) + force annotation rationale:
+# apps/download-clients/_nfs-pv/resources.yaml and docs/07.
 apiVersion: v1
 kind: PersistentVolume
 metadata:
@@ -40,8 +36,6 @@ spec:
     - nfsvers=4.2
     - hard
     - noatime
-    # The /appdata k3s client export lines require TLS (xprtsec=tls); plaintext
-    # is rejected. tlshd runs on every agent (nfs_tls role).
     - xprtsec=tls
 
 ---

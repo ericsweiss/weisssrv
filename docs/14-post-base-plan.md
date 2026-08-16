@@ -18,3 +18,10 @@ application tier. All of that is now live and documented in current form:
 | Remaining work and roadmap | [docs/16](16-next-steps.md) |
 
 Per-application deployment docs are listed in the README documentation index.
+
+## Related documentation
+
+- [docs/16-next-steps.md](16-next-steps.md) - the live roadmap this page hands off to
+- [docs/19-k3s-deployment.md](19-k3s-deployment.md) - the k3s layer as built
+- [docs/29-flux-operations.md](29-flux-operations.md) - Flux day-2 operations
+- [README.md](../README.md) - the documentation index

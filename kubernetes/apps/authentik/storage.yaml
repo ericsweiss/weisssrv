@@ -1,9 +1,6 @@
-# Authentik PostgreSQL Persistent Storage
-# Uses hostPath pointing to /mnt/postgres-data on k3s-agt-nas-01
-# This directory is an ext4 filesystem on a ZFS zvol (ssd/appdata/authentik/postgres)
-# The zvol is attached to the VM as /dev/sdb and mounted at /mnt/postgres-data
-# Data survives VM recreation since the zvol persists on the Proxmox host's ZFS pool
-# Managed by proxmox_vm role via vm_additional_disks in hosts.yml
+# Authentik PostgreSQL storage: hostPath /mnt/postgres-data on k3s-agt-nas-01 —
+# ext4 on a ZFS zvol declared in vm_additional_disks (hosts.yml), so the data
+# outlives the VM.
 
 apiVersion: v1
 kind: PersistentVolume
@@ -55,9 +52,8 @@ spec:
 # DEPLOY-ORDER DEPENDENCY: the nas_storage role creates the subdir and its
 # per-app export, so run the ansible storage deploy before this PV reconciles.
 #
-# Hostname (not IP) + xprtsec=tls: the *.esweiss.com cert has no IP SAN, so an
-# IP mount fails the handshake (docs/07). server is immutable, so the force
-# annotation lets Flux delete+recreate the PV (Retain -> data safe).
+# NFS-over-TLS PV; hostname (not IP) + force annotation rationale:
+# apps/download-clients/_nfs-pv/resources.yaml and docs/07.
 apiVersion: v1
 kind: PersistentVolume
 metadata:

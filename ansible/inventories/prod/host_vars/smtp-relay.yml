@@ -1,16 +1,10 @@
 ---
-# smtp-relay specific configuration
-# Central SMTP relay that forwards to Gmail
-#
-# Note: This LXC uses 'eric' user for SSH access like all other containers.
-# Postfix itself runs as root (which is normal/expected for mail servers).
+# Central SMTP relay that forwards to Gmail. Postfix runs as root (normal for
+# mail servers); SSH access is the usual 'eric' user.
 
-# Proxmox resource pool for organization
 proxmox_resource_pool: infra-core
 
-# Container startup configuration (smtp-relay is the only mail host, so boot
-# order lives here rather than group_vars/mail.yml)
-# Boot order strategy: DNS (10) -> SMTP (20) -> k3s servers (30) -> k3s agents (40) -> apps (50)
+# Boot order lives here, not group_vars/mail.yml: smtp-relay is the only mail host.
 proxmox_lxc_onboot: true
 proxmox_lxc_startup_order: 20
 proxmox_lxc_startup_delay: 10

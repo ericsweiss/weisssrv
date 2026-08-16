@@ -413,3 +413,11 @@ automatic phone-photo sync.
 - **Stack won't start after a NAS reboot**: the encrypted pools must unlock first;
   verify vmid 157 is in `zfs_encryption_guest_vmids` and the pools are mounted
   (`docs/32`). (The `immich-ml` LXC is exempt — no encrypted storage, `onboot=1`.)
+
+## Related documentation
+
+- [docs/06-zfs.md](06-zfs.md) - the zvols behind the VM's data disks
+- [docs/11-firewall.md](11-firewall.md) - `sg-immich`, `sg-immich-ml`
+- [docs/17-disaster-recovery.md](17-disaster-recovery.md) / [docs/42-offsite-backup.md](42-offsite-backup.md) - backup and restore tiers
+- [docs/32-zfs-encryption.md](32-zfs-encryption.md) - why the guest starts only after unlock
+- [docs/40-authentik-terraform.md](40-authentik-terraform.md) - the OIDC provider as code

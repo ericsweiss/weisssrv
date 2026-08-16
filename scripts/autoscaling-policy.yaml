@@ -23,3 +23,8 @@ chart_native_hpa_targets:
 # "namespace/Kind/name" workloads intentionally permitted a CPU limit. Empty by
 # design (docs/33-autoscaling.md) — add an entry only with an inline rationale.
 cpu_limit_allowlist: []
+
+# namespace/VerticalPodAutoscaler/name entries exempt from the VPA memory-cap
+# rule (cap==limit under a limit-controlling policy). Empty: violations are
+# fixed in the manifests instead.
+vpa_cap_allowlist: []

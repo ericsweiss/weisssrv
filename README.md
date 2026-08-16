@@ -31,36 +31,15 @@ Internet
     |
 [192.168.0.0/24] -- Core LAN
     |
-    +-- Proxmox Hosts (6-node cluster)
-    |   +-- pve-nas-01    (.102) - NAS + Storage
-    |   +-- pve-laptop-01 (.103) - Compute
-    |   +-- pve-opt-01    (.104) - Compute
-    |   +-- pve-opt-02    (.105) - Compute
-    |   +-- pve-opt-03    (.106) - Compute
-    |   +-- pve-prec-01   (.107) - Compute
+    +-- Proxmox hosts        6-node cluster "weisssrv" (1 NAS + 5 compute)
     |
-    +-- Infrastructure LXC/VMs
-    |   +-- dns-01        (.150) - Primary DNS
-    |   +-- dns-02        (.160) - Secondary DNS
-    |   +-- smtp-relay    (.151) - Mail relay
-    |   +-- plex          (.152) - Plex Media Server
-    |   +-- gitlab        (.153) - GitLab EE
-    |   +-- home-assistant (.154) - Home Assistant OS
-    |   +-- windows        (.155) - Windows 11 VM (IaC shell, interactive install)
-    |   +-- nextcloud      (.156) - Nextcloud
-    |   +-- immich         (.157) - Immich photos
-    |   +-- immich-ml      (.158) - Immich GPU ML (OpenVINO LXC)
+    +-- Infrastructure LXC/VMs   DNS x2, SMTP relay, Plex, GitLab,
+    |                            Home Assistant, Windows, Nextcloud,
+    |                            Immich + Immich ML
     |
-    +-- K3s Cluster (9 nodes)
-        +-- k3s-srv-nas-01    (.222) - Server + etcd
-        +-- k3s-srv-laptop-01 (.223) - Server + etcd
-        +-- k3s-srv-prec-01   (.227) - Server + etcd
-        +-- k3s-agt-nas-01    (.202) - Agent (NAS workloads)
-        +-- k3s-agt-laptop-01 (.203) - Agent (ingress + general)
-        +-- k3s-agt-opt-01    (.204) - Agent (ingress + general)
-        +-- k3s-agt-opt-02    (.205) - Agent (ingress + general)
-        +-- k3s-agt-opt-03    (.206) - Agent (ingress + general)
-        +-- k3s-agt-prec-01   (.207) - Agent (general + compute)
+    +-- K3s cluster          9 nodes (3 servers + etcd, 6 agents)
+    |
+    +-- MetalLB / kube-vip VIPs  public + internal ingress, API, wg-easy
 ```
 
 Canonical host/node/VIP topology reference: [docs/01-overview.md](docs/01-overview.md).
@@ -334,7 +313,7 @@ Mealie and Bar Assistant for food and cocktail recipe management:
 | Service | Purpose | URL |
 |---------|---------|-----|
 | Mealie | Recipe management and meal planning | food.esweiss.com |
-| Bar Assistant | Cocktail recipe management | bar.esweiss.com |
+| Bar Assistant | Cocktail recipe management | bar.ericsweiss.com (bar.esweiss.com redirects to it) |
 
 Both services use Authentik SSO for authentication. Bar Assistant additionally
 runs its Salt Rim web UI, Meilisearch, and Redis — see docs/22 for the full
@@ -544,6 +523,7 @@ Homelab dashboard/launcher for every service in the cluster:
 | [kubernetes/clusters/weisssrv/tenants/README](kubernetes/clusters/weisssrv/tenants/README.md) | Onboarding a tenant repo's Flux Kustomization (walkthrough: docs/30) |
 | `kubernetes/apps/<app>/README.md` (one per app that has notes — see `kubernetes/apps/`) | Per-app notes; [authentik](kubernetes/apps/authentik/README.md) is the **canonical** Authentik doc (its Terraform layer is docs/40) |
 | [terraform/cloudflare/README](terraform/cloudflare/README.md), [terraform/tailscale/README](terraform/tailscale/README.md), [terraform/authentik/README](terraform/authentik/README.md) | Per-module ownership, plan/apply rules, import + DR recipes |
+| [kubernetes/components/README](kubernetes/components/README.md) | The reusable Kustomize components (netpol-baseline, the three netpol-egress-*, gitlab-runner-common) and when to take one rather than an inline policy |
 | [scripts/README](scripts/README.md) | Every script, grouped by purpose, with its origin (local / dual-maintained / vendored) |
 | [docker/hermes-agent/README](docker/hermes-agent/README.md), [docker/camofox-browser/README](docker/camofox-browser/README.md) | The two app images this repo builds |
 | [.claude/skills/weisssrv-development/SKILL](.claude/skills/weisssrv-development/SKILL.md) | The agent operating map (workflow invariants, gates, decision tree) |
@@ -572,16 +552,25 @@ Homelab dashboard/launcher for every service in the cluster:
   `## External references` list below it, so grepping the first name returns a
   usable map of the doc set.
 - **Wrap prose at about 100 columns.** Tables, code blocks, and URLs are exempt.
-- **Superseded docs keep their number** and gain a status banner in the H1 plus a
-  row in the Historical table above; they are never silently deleted, because
-  older MRs and runbooks link to them.
+- **Commands are repo-root-relative** unless the doc says otherwise — write
+  `ansible-playbook -i ansible/inventories/prod ansible/playbooks/…`, never a
+  `cd ansible/`-relative form, since that is what the `task` wrappers and CI
+  present.
+- **Superseded docs keep their number** and gain a status banner plus a row in
+  the Historical table above; they are never silently deleted, because older MRs
+  and runbooks link to them. `docs/14-post-base-plan.md` is the exemplar — its
+  `> **Status: superseded.**` blockquote sits immediately under the H1.
+  A doc whose *procedure* is superseded but whose *reference data* is still
+  current stays in its topical group instead, carries the banner at the point
+  the superseded procedure begins rather than at the top, and is annotated in
+  its index row — `docs/23-recipes-sso-setup.md` is that variant.
 - Every relative `.md` link is CI-checked (`docs-link-check` over every tracked
   Markdown file), so a rename that breaks a cross-link fails the pipeline.
 
 **Agent guidance**: coding agents should start from the
 [`weisssrv-development` skill](.claude/skills/weisssrv-development/SKILL.md) — it
 maps the repo workflow, pre-MR gates, and change-type decision tree onto the docs
-above. `CLAUDE.md` / `AGENTS.md` / `.cursorrules` all defer to it.
+above. `CLAUDE.md` and `AGENTS.md` defer to it, as do the Cursor rules.
 
 ## User Management
 

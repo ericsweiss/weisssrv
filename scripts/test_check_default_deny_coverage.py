@@ -211,16 +211,20 @@ def test_every_exemption_carries_a_reason(ns: str) -> None:
     assert len(gate.EXEMPT_NAMESPACES[ns]) > 40
 
 
-# --- The two kube-system scrape allows no gate can see ------------------------
+# --- The kube-system allows no gate can see -----------------------------------
 #
 # check-scrape-netpol.py matches `serviceMonitor.enabled` / `podMonitor.enabled`
 # in HelmRelease values, and neither kube-system monitor is spelled that way:
 # kured's comes from `metrics.create: true`, and CoreDNS's is rendered by
 # kube-prometheus-stack (chart-rendered monitors never enter the flux:lint
-# corpus at all). So kube-system is the one fenced namespace where deleting or
-# mistyping a scrape allow passes every gate in `task lint`. These pin the two
-# rules directly. The gate script is vendored from weisssrv-lib, so teaching it
-# the `metrics.create` spelling is a library change, not a local edit.
+# corpus at all). metrics-server's :10250 is not a scrape path at all — it is
+# the aggregated metrics.k8s.io API, so no scrape gate would ever look for it,
+# and losing it breaks `kubectl top`, the HPA and the VPA recommender rather
+# than a dashboard. So kube-system is the one fenced namespace where deleting or
+# mistyping an ingress allow passes every gate in `task lint`. These pin the
+# three rules directly. The gate script is vendored from weisssrv-lib, so
+# teaching it the `metrics.create` spelling is a library change, not a local
+# edit.
 
 KUBE_SYSTEM_POLICIES = REPO / "kubernetes" / "infrastructure" / "configs" / "kube-system-policies"
 
@@ -246,3 +250,10 @@ def test_coredns_keeps_its_scrape_allow_on_9153() -> None:
 def test_kured_keeps_its_scrape_allow_on_8080() -> None:
     selector = (("app.kubernetes.io/instance", "kured"), ("app.kubernetes.io/name", "kured"))
     assert (selector, 8080) in _ingress_allows("allow-kured.yaml")
+
+
+def test_metrics_server_keeps_its_aggregated_api_allow_on_10250() -> None:
+    # Label-scoped on purpose (the file says why), so the selector is pinned
+    # too: widening it to podSelector: {} would open :10250 namespace-wide.
+    selector = (("app.kubernetes.io/name", "metrics-server"),)
+    assert (selector, 10250) in _ingress_allows("allow-metrics-server.yaml")

@@ -170,27 +170,13 @@ fi
 
 # --- Known-transitional carve-out: the metrics-server AddOn cutover ---------
 #
-# `infrastructure-metrics-server` is the one Flux stage whose Ready=False is a
-# DESIGNED, operator-paced state rather than a fault: the HelmRelease cannot
-# install while k3s's packaged AddOn still owns v1beta1.metrics.k8s.io, and the
-# `--disable=metrics-server` that removes it lands from Ansible, never from the
-# merge pipeline (docs/33 § metrics-server).
-#
-# Without this carve-out that one stage poisons STEADY_STATE below, which
-# silently DOWNGRADES six unrelated failure classes to WARNING (non-Ready
-# ExternalSecrets, an empty observability namespace, failing/unready
-# observability pods, missing/failing observability HelmReleases) and collapses
-# their wait budgets — on every main pipeline, for as long as the window is
-# open. So the two known objects are excluded by name, loudly, and NOTHING else
-# changes: every other resource keeps its normal severity and the job still
-# fails on it.
-#
-# The carve-out is keyed to LIVE evidence that the cutover is still open — the
-# AddOn stamps its objects with Rancher objectset annotations — so it expires by
-# itself the moment the k3s deploy lands. While the window is open, ANY fault in
-# these two objects (cutover-related or not) is deferred to a NOTICE; the gates
-# re-arm when the APIService loses its objectset stamp, so a masked defect
-# surfaces at cutover close rather than being lost.
+# `infrastructure-metrics-server` is Ready=False BY DESIGN until `task k3s:deploy`
+# removes the packaged AddOn that owns v1beta1.metrics.k8s.io (docs/33). Left in,
+# it poisons STEADY_STATE below, which downgrades six unrelated failure classes to
+# WARNING and collapses their wait budgets on every main pipeline. Keyed to the
+# AddOn's live Rancher objectset annotation, so it expires by itself; while the
+# window is open, ANY fault in these two objects is deferred to a NOTICE, and the
+# gates re-arm the moment the stamp is gone.
 CUTOVER_KS="flux-system/infrastructure-metrics-server"
 CUTOVER_HR="kube-system/metrics-server"
 CUTOVER_EXCLUDE=""

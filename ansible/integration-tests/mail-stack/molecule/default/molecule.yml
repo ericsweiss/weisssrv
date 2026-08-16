@@ -5,60 +5,43 @@
 driver:
   name: docker
 
+# The systemd-container block is identical for every platform here, so the first
+# entry anchors it and the rest merge it and override only name/groups. Anchors
+# are per-file (YAML has no cross-file include), so the same shape is repeated
+# once per scenario.
 platforms:
   - name: smtp-relay
-    image: "${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:v0.7.4}"
-    pre_build_image: true
-    privileged: true
-    cgroupns_mode: host
-    volumes:
-      - /sys/fs/cgroup:/sys/fs/cgroup:rw
-    command: /lib/systemd/systemd
-    stop_signal: SIGRTMIN+3
-    tty: true
-    tmpfs:
-      - /run
-      - /tmp
-    networks:
-      - name: mail-stack-net
+    # The systemd-container block is identical for every platform in this
+    # scenario, so it is anchored once and merged into the rest; only name and
+    # groups differ. Anchors are per-file — YAML has no cross-file include — so
+    # each scenario carries its own copy of the shape.
+    <<: &systemd_platform
+      image: "${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:v0.8.0}"
+      pre_build_image: true
+      privileged: true
+      cgroupns_mode: host
+      volumes:
+        - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      command: /lib/systemd/systemd
+      stop_signal: SIGRTMIN+3
+      tty: true
+      tmpfs:
+        - /run
+        - /tmp
+      networks:
+        - name: mail-stack-net
     groups:
       - mail
       - relay_servers
 
   - name: mail-client-01
-    image: "${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:v0.7.4}"
-    pre_build_image: true
-    privileged: true
-    cgroupns_mode: host
-    volumes:
-      - /sys/fs/cgroup:/sys/fs/cgroup:rw
-    command: /lib/systemd/systemd
-    stop_signal: SIGRTMIN+3
-    tty: true
-    tmpfs:
-      - /run
-      - /tmp
-    networks:
-      - name: mail-stack-net
+    <<: *systemd_platform
     groups:
       - mail
       - mail_clients
 
   - name: mail-client-02
-    image: "${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:v0.7.4}"
-    pre_build_image: true
-    privileged: true
-    cgroupns_mode: host
-    volumes:
-      - /sys/fs/cgroup:/sys/fs/cgroup:rw
-    command: /lib/systemd/systemd
-    stop_signal: SIGRTMIN+3
-    tty: true
-    tmpfs:
-      - /run
-      - /tmp
-    networks:
-      - name: mail-stack-net
+    <<: *systemd_platform
     groups:
       - mail
       - mail_clients

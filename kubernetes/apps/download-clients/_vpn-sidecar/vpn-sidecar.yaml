@@ -1,13 +1,8 @@
 ---
-# Strategic-merge patch injecting the Gluetun VPN sidecar into a Deployment.
-# metadata.name is a placeholder: the patch is applied via the component's
-# `patches[].target` (kind: Deployment), so the target — not this name — selects
-# the resource, and this name is NOT merged in (the Deployment keeps its own).
-#
-# The per-app ConfigMap name is the placeholder `placeholder-vpn-config`; each
-# consuming overlay (../nzbget, ../qbittorrent) replaces it on the two gluetun
-# env refs and the vpn-config volume. The base `ports` carry only the shared
-# health port; overlays append the app-specific ports.
+# Strategic-merge patch body for the _vpn-sidecar component (see its
+# kustomization.yaml). metadata.name and `placeholder-vpn-config` are
+# placeholders: `patches[].target` selects the Deployment, and each overlay
+# repoints the ConfigMap name.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -148,11 +143,9 @@ spec:
               value: "30s"
             - name: HTTP_CONTROL_SERVER_ADDRESS
               value: "127.0.0.1:8001"
-            # Auth roles TOML. Default is /gluetun/auth/config.toml, but /gluetun
-            # is the read-only vpn-config configMap mount here, so a nested mount
-            # under it can't be created — point gluetun at a separate mount path
-            # instead. Rendered by ESO (Secret gluetun-control-auth) and mounted
-            # read-only at /gluetun-auth (see volumeMounts / volumes).
+            # NOT the default /gluetun/auth/config.toml: /gluetun is the
+            # read-only vpn-config mount, so no nested mount can be created under
+            # it. See the gluetun-auth volume below.
             - name: HTTP_CONTROL_SERVER_AUTH_CONFIG_FILEPATH
               value: "/gluetun-auth/config.toml"
             - name: DNS_ADDRESS

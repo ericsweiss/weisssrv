@@ -69,7 +69,7 @@ shipped by `task dns:deploy`:
   server-side OIDC backends (hermes, immich, nextcloud, grafana) fetch
   discovery/JWKS from the **issuer host**, which must stay the external name for
   browsers — and over the WAN hairpin those non-browser fetches hit Cloudflare's
-  UA-keyed bot filter (a live 403 on 2026-07-19). The rewrite moves only the
+  UA-keyed bot filter with a 403. The rewrite moves only the
   fetch path inside; the reasoning lives next to the entry in `dns.yml`.
 
 **External (Cloudflare)** — created by external-dns from the IngressRoute's

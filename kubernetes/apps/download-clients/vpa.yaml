@@ -20,11 +20,16 @@ spec:
         maxAllowed: {cpu: 200m, memory: 256Mi}
         controlledResources: [cpu, memory]
         controlledValues: RequestsOnly
-      # memory maxAllowed 1Gi, well under the container's 4Gi limit: nzbget's
-      # working set is dominated by reclaimable page cache from download writes,
-      # so an uncapped recommendation reserves GiBs the process never needs.
-      # Expect VPARecommendationCapped here — that is the accepted case
-      # (docs/33). RequestsOnly leaves the 4Gi OOM ceiling untouched.
+      # One-shot init container with a 16Mi limit (_vpn-sidecar): mode Off so
+      # the download client's "*" caps are never judged against — or applied
+      # to — it. Must precede "*".
+      - containerName: check-vpn-config
+        mode: "Off"
+      # maxAllowed deliberately far under the container's limit: the working set
+      # is dominated by reclaimable page cache from download writes, so an
+      # uncapped recommendation reserves memory the process never needs. Expect
+      # VPARecommendationCapped — the accepted case (docs/33). RequestsOnly
+      # leaves the OOM ceiling untouched.
       - containerName: "*"
         minAllowed: {cpu: 25m, memory: 64Mi}
         maxAllowed: {cpu: 2, memory: 1Gi}
@@ -49,14 +54,28 @@ spec:
         controlledValues: RequestsOnly
       # The VPN-health exporter is tiny (polls the control API on loopback);
       # cap it so the "*" floor doesn't over-provision it. Must precede "*".
-      # Keep maxAllowed.memory == the container's memory limit (both 48Mi):
-      # under RequestsOnly the request can't exceed the limit, so the two must
-      # move together or the ~36Mi recommendation stays clamped and OOM-tight.
+      # maxAllowed.memory == the container's 48Mi limit
+      # (qbittorrent/resources.yaml): under RequestsOnly the request cannot
+      # exceed the limit, so the two move together or the ~36Mi recommendation
+      # stays clamped and OOM-tight.
       - containerName: gluetun-exporter
         minAllowed: {cpu: 10m, memory: 16Mi}
         maxAllowed: {cpu: 50m, memory: 48Mi}
         controlledResources: [cpu, memory]
         controlledValues: RequestsOnly
+      # One-shot init containers, each with a 16Mi limit: mode Off so the
+      # qbittorrent-sized "*" caps are never judged against — or applied to —
+      # them. Must precede "*".
+      - containerName: check-vpn-config
+        mode: "Off"
+      - containerName: clean-stale-locks
+        mode: "Off"
+      - containerName: seed-webui-bypass
+        mode: "Off"
+      # maxAllowed.memory == the qbittorrent container's 2Gi limit
+      # (qbittorrent/resources.yaml), the RequestsOnly shape docs/33 prescribes:
+      # the request may rise to the admitted ceiling but never past it, and the
+      # limit itself stays hand-set as the OOM ceiling.
       - containerName: "*"
         minAllowed: {cpu: 25m, memory: 64Mi}
         maxAllowed: {cpu: 2, memory: 2Gi}
@@ -72,12 +91,12 @@ spec:
   updatePolicy: {updateMode: Initial}
   resourcePolicy:
     containerPolicies:
-      # RequestsOnly, and maxAllowed strictly UNDER prowlarr's 512Mi memory
-      # limit: the default RequestsAndLimits would rewrite the limit down 1:1
-      # with the request, and a cap equal to the limit would let a capped
-      # recommendation land back on request == limit — the zero-burst-headroom
-      # shape that OOMKilled prowlarr on search/backup spikes. 384Mi clears the
-      # 30d working-set peak (257Mi) with room for the recommender's margin.
+      # The one measured exception to "cap == limit": 384Mi is strictly UNDER
+      # prowlarr's 512Mi limit because request == limit is the shape that
+      # OOMKilled it on search/backup spikes, and 384Mi clears the 30d
+      # working-set peak (257Mi) with room for the recommender's margin.
+      # RequestsOnly, so the default RequestsAndLimits cannot rewrite the limit
+      # down 1:1 with the request.
       - containerName: "*"
         minAllowed: {cpu: 25m, memory: 64Mi}
         maxAllowed: {cpu: 1, memory: 384Mi}
@@ -93,9 +112,13 @@ spec:
   updatePolicy: {updateMode: Initial}
   resourcePolicy:
     containerPolicies:
+      # Limit-controlling (controlledValues unset), so the cap sits at 0.8x the
+      # shared _arr 1Gi memory limit — at or above it the declared ceiling
+      # would never bind, because the updater rescales it with the request
+      # (docs/33 § Limit oscillation).
       - containerName: "*"
         minAllowed: {cpu: 25m, memory: 128Mi}
-        maxAllowed: {cpu: 2, memory: 2Gi}
+        maxAllowed: {cpu: 2, memory: 819Mi}
         controlledResources: [cpu, memory]
 ---
 apiVersion: autoscaling.k8s.io/v1
@@ -107,9 +130,10 @@ spec:
   updatePolicy: {updateMode: Initial}
   resourcePolicy:
     containerPolicies:
+      # 0.8x the shared _arr 1Gi memory limit — same shape as sonarr above.
       - containerName: "*"
         minAllowed: {cpu: 25m, memory: 128Mi}
-        maxAllowed: {cpu: 2, memory: 2Gi}
+        maxAllowed: {cpu: 2, memory: 819Mi}
         controlledResources: [cpu, memory]
 ---
 apiVersion: autoscaling.k8s.io/v1
@@ -121,9 +145,10 @@ spec:
   updatePolicy: {updateMode: Initial}
   resourcePolicy:
     containerPolicies:
+      # 0.8x the shared _arr 1Gi memory limit — same shape as sonarr above.
       - containerName: "*"
         minAllowed: {cpu: 25m, memory: 128Mi}
-        maxAllowed: {cpu: 2, memory: 2Gi}
+        maxAllowed: {cpu: 2, memory: 819Mi}
         controlledResources: [cpu, memory]
 ---
 apiVersion: autoscaling.k8s.io/v1
@@ -135,13 +160,12 @@ spec:
   updatePolicy: {updateMode: Initial}
   resourcePolicy:
     containerPolicies:
-      # 1.5Gi clears pulsarr's padded historical-peak recommendation, which a
-      # 1Gi ceiling clamped below the working set, and equals the container's
-      # hand-set memory limit (pulsarr.yaml). RequestsOnly: on the default
+      # maxAllowed == the container's hand-set 1536Mi limit (pulsarr.yaml),
+      # which clears the padded historical-peak recommendation a 1Gi ceiling
+      # clamped below the working set. RequestsOnly, because on the default
       # RequestsAndLimits the updater rescaled the LIMIT with each
       # recommendation — five revisions in 7d, down to 783Mi against a 903Mi
-      # 30d working-set peak, so the next burst ran at >0.95 of its own
-      # ceiling. docs/33 § Limit oscillation.
+      # 30d working-set peak. docs/33 § Limit oscillation.
       - containerName: "*"
         minAllowed: {cpu: 25m, memory: 64Mi}
         maxAllowed: {cpu: 1, memory: 1536Mi}

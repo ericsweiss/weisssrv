@@ -5,9 +5,9 @@ Guide for configuring Authentik SSO for Mealie and Bar Assistant, plus OpenAI in
 ## Overview
 
 This guide configures:
-1. **Mealie** - OIDC/SSO authentication via Authentik with group-based access control
+1. **Mealie** - OIDC/SSO authentication via Authentik with group-based access
+   control, plus the OpenAI integration for recipe parsing and image-to-recipe
 2. **Bar Assistant** - Authentik-native SSO integration
-3. **Mealie** - OpenAI integration for recipe parsing and image-to-recipe features
 
 > **Authentik objects are Terraform-managed.** The Mealie and Bar Assistant
 > OAuth2 providers, applications, and the `mealie-users`/`mealie-admins` groups
@@ -15,15 +15,17 @@ This guide configures:
 > `applications.tf`, `groups.tf`) and changed via a supervised `terraform apply`
 > — **not the Authentik UI** ([docs/40-authentik-terraform.md](40-authentik-terraform.md)).
 > Creating these objects by hand in the UI produces drift Terraform will revert
-> on the next apply. The UI walkthroughs below are retained only as a reference
-> for the exact values (redirect URIs, scopes, client credentials, env vars);
-> make the actual provider/app/group changes in the `.tf` files.
+> on the next apply. The tables below record the exact values Terraform sets
+> (redirect URIs, scopes, client credentials, env vars) — the Terraform maps and
+> this page must agree; make the actual provider/app/group changes in the `.tf`
+> files.
 
 ## Prerequisites
 
 - Authentik running at `auth.ericsweiss.com`
 - Mealie running at `food.esweiss.com` / `food.ericsweiss.com`
-- Bar Assistant running at `bar.esweiss.com` / `bar.ericsweiss.com`
+- Bar Assistant running at `bar.ericsweiss.com` (canonical; `bar.esweiss.com`
+  302-redirects to it)
 - OpenAI account with API access (Tier 1 or higher - requires $5+ deposit)
 - 1Password CLI configured and signed in (`eval $(op signin)`)
 
@@ -86,7 +88,7 @@ users.
 | Client type | Confidential | Confidential |
 | Authorization flow | `default-authorization-flow` (implicit consent) | same |
 | Scopes | `openid`, `email`, `profile` | `openid`, `email`, `profile` |
-| Launch URL | `https://food.esweiss.com` | `https://bar.esweiss.com` |
+| Launch URL | `https://food.ericsweiss.com` | `https://bar.ericsweiss.com` |
 | Redirect URI regex | `https://food\.esweiss\.com/login(\?direct=1)?$`<br>`https://food\.ericsweiss\.com/login(\?direct=1)?$` | `https://bar\.(es\|ericsweiss)\.com/oauth/callback$` |
 | 1Password item | `Mealie SSO` (`oidc-client-id`, `oidc-client-secret`) | `Bar Assistant SSO` (`authentik-client-id`, `authentik-client-secret`) |
 
@@ -112,7 +114,7 @@ Recipe secrets live in the single ExternalSecret in
   auth (username + password from the "SMTP Relay Auth" 1Password item).
 
 The OpenAI key is NOT ESO-synced — it is configured in the Mealie UI under
-Settings > AI (see Part 8). See `docs/22-recipes-deployment.md` for the full
+Settings > AI (see Part 4). See `docs/22-recipes-deployment.md` for the full
 field-by-field breakdown.
 
 Once the values above are in 1Password, there's no kubectl or helm step — just
@@ -175,7 +177,8 @@ kubectl exec -n recipes deployment/mealie -- env | grep OIDC
 
 ### Test Bar Assistant SSO
 
-1. Open https://bar.esweiss.com
+1. Open https://bar.ericsweiss.com (the canonical host — `bar.esweiss.com`
+   redirects here)
 2. You should see a **"Login with Authentik"** or similar SSO option
 3. Click it and verify redirect to Authentik
 4. Log in with an Authentik user

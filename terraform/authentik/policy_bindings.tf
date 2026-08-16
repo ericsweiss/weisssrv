@@ -36,6 +36,7 @@ locals {
     agent   = { application = "agent", group = "hermes-users" }
     git     = { application = "git", group = "gitlab-users" }
     grafana = { application = "grafana", group = "grafana-users" }
+    traefik = { application = "traefik", group = "traefik-admins" }
     vpn     = { application = "vpn", group = "vpn-admins" }
 
     # The two AdGuard SSO dashboards: dns-admins (which also carries the

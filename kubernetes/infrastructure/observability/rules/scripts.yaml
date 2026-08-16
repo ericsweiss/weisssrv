@@ -110,6 +110,41 @@ spec:
               vzdump is overrunning the 06:30 archive-backup timer. See the
               runbook.
 
+        # Replication succeeding while retention does not: snapshots accumulate
+        # on the archive pool until it fills, and last_run_success stays 1 the
+        # whole time, so nothing else here sees it. Mirrors
+        # ResticOffsitePruneBlocked's severity/for and its 2-day shape — the
+        # window is read out of the TSDB rather than held in a multi-day `for:`,
+        # whose pending timer this NAS-pinned Prometheus discards on restart.
+        # max_over_time == 0 means every sample in the window failed, and the
+        # offset arm proves the window actually HAS ~48h of history so a
+        # freshly-deployed collector cannot fire two days early.
+        #
+        # DORMANT until the v0.8.0 adoption wave: archive_backup_last_prune_success
+        # is emitted by nas_storage's archive-backupctl, and the pinned collection
+        # (v0.7.4) does not write it yet — every arm is empty, so the rule cannot
+        # fire either way. It goes live with the pin bump + NAS deploy (docs/16
+        # § Ansible collection migration residue).
+        - alert: ArchiveBackupPruneBlocked
+          expr: >-
+            archive_backup_last_prune_success == 0
+            and on (instance)
+            (max_over_time(archive_backup_last_prune_success[48h]) == 0)
+            and on (instance)
+            (archive_backup_last_prune_success offset 47h == 0)
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#backup-and-recovery'
+            summary: 'Archive snapshot pruning has been failing for 2 days'
+            description: >-
+              Snapshot retention on the archive pool has failed on every run for
+              2 days while replication kept succeeding, so archive snapshots only
+              accumulate from here and the pool fills. Check
+              `journalctl -u archive-backup.service` on pve-nas-01 for the failed
+              `zfs destroy`, then re-run `archive-backupctl` (docs/42).
+
         - alert: MediaMoverFailed
           expr: media_mover_last_run_success == 0
           for: 1h
@@ -375,9 +410,15 @@ spec:
         # kube_cronjob_status_last_successful_time. 26h = one nightly cycle +
         # grace; the absent() arm fires if the CronJob is missing or has never
         # succeeded. Authentik's Postgres is the SSO recovery path.
+        #
+        # `max by (namespace, cronjob)` drops kube-state-metrics' own scrape
+        # labels (instance/pod/endpoint/service). Without it the alert carries
+        # the KSM pod IP, and since Alertmanager groups on `instance` one missed
+        # dump re-notifies as a new group every time KSM is rescheduled. It also
+        # keeps the staleness arm's label set identical to the absent() arm's.
         - alert: AuthentikBackupStale
           expr: >-
-            (time() - kube_cronjob_status_last_successful_time{namespace="authentik", cronjob="authentik-pg-dump"} > 93600)
+            (time() - max by (namespace, cronjob) (kube_cronjob_status_last_successful_time{namespace="authentik", cronjob="authentik-pg-dump"}) > 93600)
             or absent(kube_cronjob_status_last_successful_time{namespace="authentik", cronjob="authentik-pg-dump"})
           for: 1h
           labels:
@@ -392,10 +433,11 @@ spec:
               kube-state-metrics down). Authentik's Postgres lives on a zvol;
               losing it loses every SSO app's identity provider.
 
-        # Same shape as AuthentikBackupStale (26h window, absent() arm).
+        # Same shape as AuthentikBackupStale (26h window, absent() arm, KSM
+        # scrape labels aggregated away).
         - alert: MealieBackupStale
           expr: >-
-            (time() - kube_cronjob_status_last_successful_time{namespace="recipes", cronjob="mealie-pg-dump"} > 93600)
+            (time() - max by (namespace, cronjob) (kube_cronjob_status_last_successful_time{namespace="recipes", cronjob="mealie-pg-dump"}) > 93600)
             or absent(kube_cronjob_status_last_successful_time{namespace="recipes", cronjob="mealie-pg-dump"})
           for: 1h
           labels:
@@ -413,20 +455,30 @@ spec:
         # snapshots every 12h; 36h is three missed copy cycles, wide enough that
         # one deferred run during planned node maintenance does not page while
         # still detecting a genuinely stopped copy inside two nights.
+        #
+        # Per-server existence witness for the same reason VzdumpBackupStale has
+        # one: a vector-wide absent() goes silent unless all three servers stop
+        # emitting at once, so one server whose copy timer is gone is invisible.
         - alert: EtcdSnapshotStale
-          expr: (time() - etcd_snapshot_last_copy_timestamp_seconds > 129600) or absent(etcd_snapshot_last_copy_timestamp_seconds)
+          expr: >-
+            (time() - etcd_snapshot_last_copy_timestamp_seconds > 129600)
+            or (
+              up{job="node-exporter-host", instance=~"192\\.168\\.0\\.22[237]:9101"} == 1
+              unless on (instance) etcd_snapshot_last_copy_timestamp_seconds
+            )
           for: 1h
           labels:
             severity: warning
           annotations:
             runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#backup-and-recovery'
-            summary: 'etcd snapshot off-node copy is stale'
+            summary: 'etcd snapshot off-node copy is stale on {{ $labels.instance }}'
             description: >-
-              The newest etcd snapshot copied to pve-nas-01 is more than
-              36 hours old (three 12h snapshot cycles), or the copy metric
-              is missing. Losing all three server nodes without an
-              off-node snapshot loses etcd — check the copy timer on the
-              k3s server nodes.
+              The newest etcd snapshot copied to pve-nas-01 from
+              {{ $labels.instance }} is more than 36 hours old (three 12h
+              snapshot cycles), or that server emits no copy metric at all
+              while its node_exporter is up. Losing all three server nodes
+              without an off-node snapshot loses etcd — check the copy timer
+              on the k3s server nodes.
 
         # Nightly guest-image backup to tank-proxmox; the per-host vzdump
         # hookscript writes the metrics.
@@ -482,8 +534,19 @@ spec:
 
         # 36h, not 26h: tolerates one nightly run deferred by planned host
         # maintenance; two missed nights still detect.
+        #
+        # The absence arm is a PER-HOST existence witness, not a bare absent():
+        # a vector-wide absent() only fires once every Proxmox host has stopped
+        # emitting, so one host whose hookscript metric vanishes is silent on
+        # both arms. `up == 1` on the same job/instance is the witness — if the
+        # exporter itself is down, HostExporterDown owns that.
         - alert: VzdumpBackupStale
-          expr: (time() - vzdump_backup_last_success_timestamp_seconds > 129600) or absent(vzdump_backup_last_success_timestamp_seconds)
+          expr: >-
+            (time() - vzdump_backup_last_success_timestamp_seconds > 129600)
+            or (
+              up{job="node-exporter-host", instance=~"192\\.168\\.0\\.10[2-7]:9101"} == 1
+              unless on (instance) vzdump_backup_last_success_timestamp_seconds
+            )
           for: 1h
           labels:
             severity: warning
@@ -492,10 +555,10 @@ spec:
             summary: 'Proxmox vzdump backup has not succeeded in over 36 hours'
             description: >-
               No successful Proxmox vzdump backup has been recorded for more
-              than 36 hours on {{ $labels.instance }}, or the metric is absent
-              on every Proxmox host (hookscript not deployed anywhere). Guest
-              VM/LXC images on tank-proxmox are the DR path for the
-              compute-node guests.
+              than 36 hours on {{ $labels.instance }}, or that host emits no
+              vzdump metric at all while its node_exporter is up (hookscript
+              not deployed there). Guest VM/LXC images on tank-proxmox are the
+              DR path for the compute-node guests.
 
         # Three missed nights: guest images are the only DR path for the
         # compute-node guests. No absent() arm — absence stays warning-tier.
@@ -764,8 +827,7 @@ spec:
         # that state emits no _last_success_seconds series at all. Both arms
         # carry the same instance labels, so `or` collapses them to one alert.
         #
-        # absent() is deliberately NOT here, and this is the opposite of the
-        # comment that used to sit in this spot: the metric only exists once a
+        # absent() is deliberately NOT here: the metric only exists once a
         # drill has actually run, so a bare absent() arm pages critical from
         # merge day until the first quarterly elapse — the same trap
         # GitLabBackupSecretsMissing avoids. BackupRestoreDrillNeverRan below

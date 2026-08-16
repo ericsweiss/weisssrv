@@ -21,6 +21,15 @@ components:
   - ../../components/netpol-baseline
   - ../../components/netpol-egress-dns
   - ../../components/netpol-egress-apiserver
+# The CronJob's program. It lives beside this kustomization because kustomize
+# refuses generator sources outside the kustomization root; its unit tests are
+# scripts/test_gitlab_runner_reaper.py.
+configMapGenerator:
+  - name: gitlab-runner-reaper-script
+    namespace: gitlab-runner-reaper
+    files:
+      - gitlab-runner-reaper.py
+
 patches:
   # This kustomization deliberately sets no top-level namespace (its
   # RoleBindings target other namespaces), so namespace the component-shipped

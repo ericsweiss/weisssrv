@@ -2,30 +2,16 @@
 """Assert what the Alertmanager config DOES, not just that it parses.
 
 `amtool check-config` is a syntax gate: a route reorder that silences the
-Watchdog dead-man's switch, a matcher that misroutes a critical, a redundant
-`equal:` label that makes an inhibit pair dedup nothing, and a one-sided
-alertname rename between an inhibit source and target all pass it green.
+Watchdog dead-man's switch, a misrouting matcher, a redundant `equal:` label
+that makes an inhibit pair dedup nothing, and a one-sided alertname rename all
+pass it green. This resolves each declared route case with `amtool config routes
+test` and compares the receiver reached, then checks every inhibit rule. EVERY
+member of a regex alternation is checked, so a long target list cannot hide a
+typo; chart-shipped alerts are invisible to the extractor and are declared.
 
-Extracts the config + rules with the consumer's extract-prometheus-config.py,
-then:
-  * resolves each declared route case with `amtool config routes test` and
-    compares the receiver actually reached;
-  * checks every inhibit rule for parseable matchers, a redundant `equal:`
-    label, and alertnames that no longer exist. EVERY member of a regex
-    alternation is checked, not just "at least one survives", so a long target
-    list cannot hide a typo. Chart-shipped alerts are invisible to the
-    extractor, so they are declared explicitly.
-
-The routing table, the receivers and the upstream alert set are site data and
-come from `--config` (see examples/alertmanager-behaviour.example.yaml):
-
-    route_cases:                 # required, non-empty
-      - receiver: watchdog-heartbeat
-        labels: [alertname=Watchdog, severity=none]
-    synthetic_route_alerts: []   # route-case alertnames that name no rule
-    upstream_alerts: []          # alertnames shipped by a chart's own rules
-
-Requires amtool on PATH. Exit 0 clean, 1 on a finding, 2 on an operator error.
+Routing table, receivers and upstream alert set are site data from `--config`;
+see examples/alertmanager-behaviour.example.yaml. Requires amtool on PATH.
+Exit 0 clean, 1 on a finding, 2 on an operator error.
 
   check-alertmanager-behaviour.py --config FILE [--repo-root DIR]
                                   [--extract-script PATH]

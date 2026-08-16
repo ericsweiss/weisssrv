@@ -353,11 +353,15 @@ This:
    `kustomization.yaml` to the current branch.
 5. Creates the `GitRepository` and top-level `Kustomization` CRs that watch this repo.
 
-After bootstrap, Flux reconciles six Kustomizations in `dependsOn` order:
+After bootstrap, Flux reconciles six chained Kustomizations in `dependsOn` order:
 `infrastructure-sources` → `infrastructure-crds` →
 `infrastructure-controllers` → `infrastructure-configs`, which fans out to
 `infrastructure-observability` and `apps` in parallel (apps deliberately do not
-gate on observability health). The
+gate on observability health). A seventh stage,
+`infrastructure-metrics-server`, sits **off** that chain — it dependsOn
+`sources` only, so a metrics-server problem cannot stall the platform (see the
+header of `kubernetes/clusters/weisssrv/infrastructure-metrics-server.yaml` and
+docs/33 § metrics-server). The
 canonical description of each stage's role and membership lives in
 `docs/29-flux-operations.md`; each stage's `kustomization.yaml` under
 `kubernetes/infrastructure/` and `kubernetes/apps/` is the current set.
@@ -391,6 +395,8 @@ Expected state (Flux Kustomization stages reconcile in dependsOn order):
 - `infrastructure-configs` `Kustomization` — Ready (after controllers)
 - `infrastructure-observability` `Kustomization` — Ready (after configs)
 - `apps` `Kustomization` — Ready (after infrastructure-configs)
+- `infrastructure-metrics-server` `Kustomization` — Ready (after sources only —
+  off the dependsOn chain)
 - Every `HelmRelease` — Ready
 - Every `ExternalSecret` — `SecretSynced: True`
 - Every `IngressRoute` resolved and responding

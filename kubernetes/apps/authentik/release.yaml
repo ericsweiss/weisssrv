@@ -86,14 +86,10 @@ spec:
               target:
                 type: Utilization
                 averageUtilization: 75
-        # Damp HPA flap: authentik-server idles ~35m CPU (≈18% of the 200m
-        # request), but sub-minute login/SSO and background task-reconcile
-        # spikes briefly cross the 75% (≈150m) trip point. Without a
-        # stabilization window the HPA jumped 2→4 on those bursts (~24×/day),
-        # parking at max long enough to flap KubeHpaMaxedOut into Pending.
-        # Require ~2 min of sustained pressure before adding a pod, one pod at a
-        # time; keep the default 5-min downscale damping. Genuine sustained load
-        # still scales to max=4.
+        # Damp HPA flap: the server idles well under the 75% trip point, but
+        # sub-minute SSO and task-reconcile spikes cross it and used to bounce
+        # 2→4. Require ~2 min of sustained pressure, one pod at a time; keep the
+        # default 5-min downscale damping.
         behavior:
           scaleUp:
             stabilizationWindowSeconds: 120
@@ -147,16 +143,17 @@ spec:
               name: authentik-secrets
               key: smtp-password
 
-      # CPU request sized so the HPA's 75% utilization target (~150m) sits
-      # well above the ~60-70m idle draw — otherwise the threshold trips at
-      # near-idle and the HPA pins to maxReplicas. VPA manages memory only
-      # for this Deployment (see vpa.yaml), so this CPU request stays static.
+      # CPU request is static — the HPA owns CPU, and sizing it so the 75%
+      # target sits well above the idle draw is what stops the threshold
+      # tripping at near-idle.
       #
-      # memory limit MUST stay above the request: with request == limit the
-      # VPA's default controlledValues would rewrite the limit down 1:1 with
-      # every request revision, leaving zero burst headroom (the prowlarr
-      # failure mode — download-clients/vpa.yaml). vpa.yaml pins
-      # controlledValues: RequestsOnly here as the belt to this braces.
+      # The memory limit is hand-set and permanent: vpa.yaml is
+      # controlledValues: RequestsOnly, so the VPA never rewrites it and 1536Mi
+      # is the ceiling every pod is admitted against. That is the whole
+      # guarantee — the REQUEST is still VPA-managed, bounded by that policy's
+      # maxAllowed, which equals this limit (1536Mi): under RequestsOnly the
+      # request may rise to the ceiling the pod is admitted against, never past
+      # it. Moving this limit means moving that cap in the same commit.
       resources:
         requests:
           cpu: 200m
@@ -198,10 +195,8 @@ spec:
       image:
         tag: "${authentik_version}"
 
-      # Worker requires /dev/shm for PID file used by healthcheck
-      # Without this, healthcheck fails: "open /dev/shm/authentik-worker.pid: no such file or directory"
-      # NOTE: The Authentik Helm chart uses 'additionalVolumes' and 'additionalVolumeMounts' (not 'volumes')
-      # See: https://github.com/goauthentik/helm/blob/main/charts/authentik/values.yaml
+      # The worker healthcheck needs /dev/shm for its PID file. The chart's keys
+      # are 'additionalVolumes'/'additionalVolumeMounts', not 'volumes'.
       additionalVolumes:
         - name: shm
           emptyDir:
@@ -266,15 +261,11 @@ spec:
       enabled: true
       image:
         tag: "${postgresql_version}"
-      # postgres_exporter sidecar + its metrics Service and ServiceMonitor. This
-      # chart-rendered ServiceMonitor is the ONLY scrape of the exporter —
-      # observability/service-monitors/postgres.yaml deliberately ships no
-      # authentik PodMonitor, which would double-scrape the same podIP:9187.
-      # The observability -> :9187 ingress allow lives in networkpolicy.yaml;
-      # the flux:lint scrape gate is namespace-level only (it asserts that SOME
-      # ingress policy admits the observability namespace, not the port or the
-      # target pod), so mis-scoping the 9187 rule passes CI and surfaces only as
-      # TargetDown.
+      # postgres_exporter sidecar. The chart-rendered ServiceMonitor is the ONLY
+      # scrape of it — see observability/service-monitors/postgres.yaml for why
+      # no authentik PodMonitor exists. Its ingress allow lives in
+      # networkpolicy.yaml, and the flux:lint scrape gate is namespace-level
+      # only, so a mis-scoped :9187 rule passes CI and surfaces as TargetDown.
       #
       # extraEnvVars re-point the exporter at the `authentik` role: the subchart
       # hardcodes DATA_SOURCE_USER to `postgres`, which this deployment's

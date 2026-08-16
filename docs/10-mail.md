@@ -30,7 +30,8 @@ The relay server accepts mail from the internal network and forwards to Gmail.
 
 ```ini
 myhostname = smtp-relay.esweiss.com
-mynetworks = 127.0.0.0/8,192.168.0.0/24                # loopback + host LAN only; all in-cluster senders SASL-auth on 587
+mynetworks = 127.0.0.0/8                               # loopback only — every sender SASL-auths on 587
+smtpd_relay_restrictions = permit_sasl_authenticated, reject_unauth_destination
 relayhost = [smtp.gmail.com]:587
 smtp_sasl_auth_enable = yes
 smtp_sasl_password_maps = hash:/etc/postfix/sasl_passwd
@@ -41,10 +42,15 @@ smtpd_tls_key_file = /etc/postfix/tls/privkey.pem
 ### Incoming Authentication
 
 The relay accepts mail on two paths (`smtp_relay_config` /
-`smtp_relay_submission_config` in `group_vars/mail.yml`):
+`smtp_relay_submission_config` in `group_vars/mail.yml`). `mynetworks` and
+`smtpd_relay_restrictions` are deliberately **not** restated there, so the
+collection's loopback-only + SASL-only defaults reach this relay:
 
-- **Port 25**: `permit_mynetworks` only — SASL AUTH is disabled on this
-  port (cleartext would be permitted and the chrooted smtpd breaks it).
+- **Port 25**: refuses unauthenticated relay. `smtpd_relay_restrictions` is
+  `permit_sasl_authenticated, reject_unauth_destination` and `mynetworks` is
+  loopback-only, so the `permit_mynetworks` path grants nothing off-host. SASL
+  AUTH is not offered on this port (cleartext would be permitted and the
+  chrooted smtpd breaks it), which makes :25 effectively local-only.
 - **Port 587 (submission)**: mandatory TLS (`smtpd_tls_security_level =
   encrypt`) plus SASL auth (`permit_sasl_authenticated,reject`). Null
   clients authenticate with the "SMTP Relay Auth" credentials from
@@ -113,7 +119,11 @@ The smtp-relay accepts connections only from the core cluster:
 ```
 [group sg-smtp-relay]
 IN ACCEPT -source +dc/core-cluster -p tcp -dport 587 -log nolog
+IN ACCEPT -source +dc/core-cluster -p tcp -dport 25 -log nolog
 ```
+
+The rendered group is owned by the collection's `proxmox_firewall` template —
+see [docs/11-firewall.md](./11-firewall.md) if these ever disagree.
 
 ## Testing
 

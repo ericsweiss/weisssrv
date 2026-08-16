@@ -51,10 +51,9 @@ spec:
 
       config: |
         [[runners]]
-          # The runner's own startup warning recommends 2-4: at the default 1,
-          # job acquisition serializes behind GitLab's long-polling window,
-          # which showed as sub-second runner_system_failure bursts whenever
-          # several pipelines started at once (2026-08-13; every retry clean).
+          # request_concurrency 1 serializes job acquisition behind GitLab's
+          # long-poll window and surfaces as runner_system_failure bursts; the
+          # runner's own startup warning recommends 2-4.
           request_concurrency = 3
           # Keep clones on the LAN path too (see gitlabUrl above).
           clone_url = "https://git.${cluster_internal_domain}"

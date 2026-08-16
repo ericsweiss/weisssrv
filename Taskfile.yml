@@ -391,6 +391,10 @@ tasks:
     cmds:
       - |
         echo "Fetching kubeconfig from k3s server..."
+        # The kube-vip API VIP is read from cluster-config, not spelled here:
+        # it is the same value as k3s_api_vip in group_vars/k3s.yml and
+        # check-cluster-literals.py holds the two equal.
+        API_VIP=$(scripts/cluster-config-value.sh cluster_api_vip) || exit 1
         # First-reachable entry point via the shared helper (targets are
         # eric@<ip>, so $SERVER already carries the user; no eric@ prefix below).
         TARGETS=""
@@ -416,7 +420,7 @@ tasks:
         fi
         mkdir -p ~/.kube
         echo "$KUBECONFIG_DATA" | \
-          sed 's/127.0.0.1/192.168.0.161/g; s/0.0.0.0/192.168.0.161/g' > ~/.kube/config-k3s
+          sed "s/127.0.0.1/$API_VIP/g; s/0.0.0.0/$API_VIP/g" > ~/.kube/config-k3s
         chmod 600 ~/.kube/config-k3s
         echo "Kubeconfig saved to ~/.kube/config-k3s (permissions: 600)"
         echo "Run: export KUBECONFIG=~/.kube/config-k3s"
@@ -848,14 +852,11 @@ tasks:
       # would reconcile controllers against the pre-bump CRD set.
       #
       # Per-stage error capture, NOT `set -e` over a `while read` pipeline: one
-      # stage that cannot reach Ready must never stop the loop. The shape that
-      # taught this is the metrics-server cutover, where `infrastructure-
-      # metrics-server` is Ready=False BY DESIGN until an operator runs
-      # `task k3s:deploy`. It sorts third in dependsOn order, so the old loop
-      # aborted there and silently left controllers, configs, apps and
-      # observability un-reconciled — while the only message on screen was the
-      # failure the operator had been told to expect. A `for` over a captured
-      # list (not a pipeline) also keeps the accumulator out of a subshell.
+      # stage that cannot reach Ready must never stop the loop —
+      # infrastructure-metrics-server is Ready=False BY DESIGN until an operator
+      # runs `task k3s:deploy`, and it sorts early enough to strand every later
+      # stage. A `for` over a captured list also keeps the accumulator out of a
+      # subshell.
       - |
         set -u
         STAGES=$(python3 scripts/flux-child-kustomizations.py) || {
@@ -906,7 +907,12 @@ tasks:
         set -u
         rc=0
         echo "=== Live CPU-limit policy (docs/33-autoscaling.md) ==="
-        kubectl get pods -A -o json | python3 scripts/check-live-cpu-limits.py || rc=1
+        # pods AND the workload templates: with pods alone the script's
+        # memory-limit-drift half short-circuits with a "not checked" note. The
+        # VPAs come along so a container whose limits an active VPA rewrites at
+        # admission is skipped instead of reported as unfixable drift.
+        kubectl get pods,deployments,statefulsets,daemonsets,verticalpodautoscalers \
+          -A -o json | python3 scripts/check-live-cpu-limits.py || rc=1
         echo ""
         echo "=== Secret ownership / rotation coverage (docs/29-flux-operations.md) ==="
         kubectl get secrets -A -o json | python3 scripts/check-unmanaged-secrets.py || rc=1
@@ -937,8 +943,13 @@ tasks:
     cmds:
       # flux:lint proves the policy in git; this proves it in the cluster. The
       # two disagree whenever a retired field manager still co-owns limits.cpu
-      # under server-side apply — a state no static lint can see.
-      - kubectl get pods -A -o json | python3 scripts/check-live-cpu-limits.py
+      # under server-side apply — a state no static lint can see. The workload
+      # templates come along so the script's memory-limit-drift half runs too
+      # (pods alone leave it skipped), and the VPAs so that half can tell a
+      # stale pod from one whose limits an active VPA legitimately rewrote.
+      - >-
+        kubectl get pods,deployments,statefulsets,daemonsets,verticalpodautoscalers
+        -A -o json | python3 scripts/check-live-cpu-limits.py
 
   flux:status:
     desc: Concise health summary
@@ -1190,12 +1201,11 @@ tasks:
           # as empty string, so we must validate against the RAW input to catch
           # typos (Flux's kustomize-controller does the same thing silently by
           # default — our lint is intentionally stricter).
-          # Flux's Go envsubst PARSE-errors on `${` followed by anything
-          # that cannot start a variable name, and silently EATS `${1}`-style
-          # refs — while the GNU envsubst below ignores both, which is how a
-          # literal "${" inside a ConfigMap script reached the live configs
-          # stage as a post-build failure (2026-08-13). `$${` is Flux's
-          # escape and is exempt.
+          # Flux's Go envsubst PARSE-errors on `${` followed by anything that
+          # cannot start a variable name, and silently EATS `${1}`-style refs;
+          # the GNU envsubst below ignores both, so a literal "${" inside a
+          # ConfigMap script reaches the live cluster as a post-build failure.
+          # `$${` is Flux's escape and is exempt.
           MALFORMED=$(printf '%s\n' "$RAW" | sed 's/\$\$[{]/__FLUX_ESCAPED__/g' | grep -nE '\$\{[^A-Za-z_]' || true)
           if [ -n "$MALFORMED" ]; then
             echo "ERROR: $SRCPATH renders a \${ sequence Flux's envsubst mishandles (escape as \$\${ or assemble at runtime):"
@@ -1284,12 +1294,20 @@ tasks:
           FAILED=1
         fi
 
-        # storageClassName invariant: every claim must pin its class. An omitted
-        # field is rewritten by the DefaultStorageClass admission plugin at
-        # create time, which is how a PVC silently lands on the unbacked-up VM
-        # bootdisk (the 2026-07 loki-0 incident).
+        # storageClassName invariant: every claim must pin its class. An
+        # omitted field is rewritten by the DefaultStorageClass admission plugin
+        # at create time, landing the PVC on the unbacked-up VM bootdisk.
         echo "=== Checking claim storageClassName ==="
         if ! python3 scripts/check-pvc-storageclass.py < "$RENDER_ALL"; then
+          FAILED=1
+        fi
+
+        # NFS-over-TLS invariant: the nas_storage exports REJECT plaintext and
+        # the server certificate has no IP SAN, so a PV that drops xprtsec=tls
+        # or names the NAS by IP does not degrade — it fails to mount, after the
+        # pod is already scheduled.
+        echo "=== Checking NFS PersistentVolume TLS ==="
+        if ! python3 scripts/check-nfs-tls.py < "$RENDER_ALL"; then
           FAILED=1
         fi
 
@@ -1693,7 +1711,7 @@ tasks:
         esac
         op run -- terraform apply {{.CLI_ARGS}}
 
-  # --- Authentik SSO module (separate state name; NO apply task yet) ---
+  # --- Authentik SSO module (separate state name; SUPERVISED apply) ---
   # Mirrors the cloudflare/tailscale terraform:* tasks but points at
   # terraform/authentik, its own GitLab state name, and the authentik API
   # token + per-provider OAuth2 client secrets (the same 1Password items the
@@ -1703,7 +1721,7 @@ tasks:
   terraform:authentik-init:
     desc: Initialize Terraform for the authentik SSO module (GitLab state backend)
     dir: "{{.TERRAFORM_DIR}}/authentik"
-    # Anchor shared by terraform:authentik-init/plan/import — authentik API
+    # Anchor shared by terraform:authentik-init/plan/import/apply — authentik API
     # token + OAuth2 client secrets + the authentik-specific HTTP state name
     # in one place.
     env: &tf_authentik_env
@@ -1915,14 +1933,18 @@ tasks:
       - shellcheck --severity=warning --exclude=SC1091,SC2034 terraform/*/*.sh
 
   lint:ruff:
-    desc: Ruff over scripts/ (mirrors the CI python-lint job)
+    desc: Ruff over scripts/ and the in-manifest Python (mirrors the CI python-lint job)
     preconditions:
       - sh: command -v ruff
         msg: "ruff not installed. pip install ruff"
     cmds:
-      # Same argv as the CI python-lint include (targets `scripts`, config
-      # `--config ruff.toml` — the library's shared profile vendored to the root).
-      - ruff check --config ruff.toml scripts
+      # `scripts kubernetes` and `--config ruff.toml` are verbatim the CI
+      # python-lint include's `targets` / `config` inputs. Directory form, not a
+      # file list: ruff resolves its own excludes when it walks a directory, and
+      # explicitly-named files bypass them. kubernetes/ is in scope because two
+      # real programs ship inside manifests (gitlab-runner-reaper,
+      # cloudflare-ddns) as ConfigMap-mounted files.
+      - ruff check --config ruff.toml scripts kubernetes
 
   lint:yamllint:
     desc: Baseline YAML syntax check (mirrors CI yaml-lint job, plus Taskfile.yml)
@@ -1958,104 +1980,20 @@ tasks:
         python3 scripts/check-backup-artifact-apps.py
         --host-vars ansible/inventories/prod/host_vars/pve-nas-01.yml
         --rules kubernetes/infrastructure/observability/rules/scripts.yaml
+      # A role FQCN passed to a systemd/service task resolves to a unit that
+      # does not exist, and `failed_when: false` turns that into a permanent
+      # silent no-op. ansible-lint checks module ARGUMENTS, not unit names.
+      - python3 scripts/check-ansible-service-names.py
 
   lint:tailscale-policy:
-    desc: Syntax-check terraform/tailscale/policy.hujson (the ACL the supervised apply pushes)
+    desc: Validate terraform/tailscale/policy.hujson (syntax, tag declarations, route approvals)
     cmds:
       # The module reads policy.hujson with file(), so terraform fmt/validate
       # never parse it and the only other reader is the Tailscale API during the
-      # supervised apply — the one place a stray comma must not be discovered.
-      # Strip HuJSON's comment/trailing-comma extensions, parse as JSON, require
-      # the top-level keys the module and README describe. Run from CI's
+      # supervised apply — the one place a stray comma, an undeclared tag or an
+      # un-approved subnet route must not be discovered. Run from CI's
       # repo-policy-checks through `task`, so there is one copy of this code.
-      - |
-        python3 - <<'HUJSON'
-        import json
-        import sys
-        from pathlib import Path
-
-        REQUIRED = ("groups", "tagOwners", "acls", "ssh", "autoApprovers")
-        BACKSLASH = chr(92)
-        src = Path("terraform/tailscale/policy.hujson").read_text()
-
-        # Hand-rolled scanner, not a regex: `//` inside a string value (every
-        # https:// URL) must not start a comment.
-        out = []
-        in_str = False
-        i = 0
-        while i < len(src):
-            c = src[i]
-            if in_str:
-                out.append(c)
-                if c == BACKSLASH:
-                    out.append(src[i + 1])
-                    i += 2
-                    continue
-                if c == '"':
-                    in_str = False
-                i += 1
-                continue
-            if c == '"':
-                in_str = True
-                out.append(c)
-                i += 1
-                continue
-            if src.startswith("//", i):
-                i = src.find(chr(10), i)
-                if i == -1:
-                    break
-                continue
-            if src.startswith("/*", i):
-                end = src.find("*/", i + 2)
-                if end == -1:
-                    sys.exit("ERROR: policy.hujson contains an unterminated block comment")
-                i = end + 2
-                continue
-            out.append(c)
-            i += 1
-
-        # Second pass over the comment-free text: drop each HuJSON trailing
-        # comma (one whose next non-space character closes the object/array).
-        # Two passes, because in the raw source that next character is often the
-        # `/` of a comment.
-        stripped = "".join(out)
-        kept = []
-        in_str = False
-        i = 0
-        while i < len(stripped):
-            c = stripped[i]
-            if in_str:
-                kept.append(c)
-                if c == BACKSLASH:
-                    kept.append(stripped[i + 1])
-                    i += 2
-                    continue
-                if c == '"':
-                    in_str = False
-                i += 1
-                continue
-            if c == '"':
-                in_str = True
-            elif c == ",":
-                j = i + 1
-                while j < len(stripped) and stripped[j].isspace():
-                    j += 1
-                if j < len(stripped) and stripped[j] in "}]":
-                    i += 1
-                    continue
-            kept.append(c)
-            i += 1
-
-        try:
-            doc = json.loads("".join(kept))
-        except json.JSONDecodeError as exc:
-            sys.exit("ERROR: policy.hujson is not valid HuJSON: " + str(exc))
-
-        missing = [k for k in REQUIRED if k not in doc]
-        if missing:
-            sys.exit("ERROR: policy.hujson is missing top-level key(s): " + ", ".join(missing))
-        print("policy.hujson parses; top-level keys: " + ", ".join(sorted(doc)))
-        HUJSON
+      - python3 scripts/check-tailscale-policy.py
 
   lint:sync-checks:
     desc: Generated-file freshness (hosts.env, versions-configmap) — mirrors the CI repo-sync-checks job

@@ -39,9 +39,9 @@ tests:
         alertname: VPARecommendationCapped
         exp_alerts: []
 
-  # nzbget memory is the one clamp that is the sizing DECISION, not a symptom
-  # (the recommender chases the unpack-time page cache — docs/33 and
-  # apps/download-clients/vpa.yaml), so it is excluded. Left in, it is a
+  # nzbget and qbittorrent memory are the clamps that are the sizing DECISION,
+  # not a symptom (the recommender chases reclaimable page cache — docs/33 and
+  # apps/download-clients/vpa.yaml), so both are excluded. Left in, each is a
   # permanently-firing warning on an otherwise alert-clear cluster.
   - interval: 6h
     input_series:
@@ -49,19 +49,30 @@ tests:
         values: '3000+0x8'
       - series: 'vpa_recommendation_target{exported_namespace="downloads", verticalpodautoscaler="nzbget", container="nzbget", resource="memory", unit="byte"}'
         values: '2000+0x8'
+      - series: 'vpa_recommendation_uncappedtarget{exported_namespace="downloads", verticalpodautoscaler="qbittorrent", container="qbittorrent", resource="memory", unit="byte"}'
+        values: '3000+0x8'
+      - series: 'vpa_recommendation_target{exported_namespace="downloads", verticalpodautoscaler="qbittorrent", container="qbittorrent", resource="memory", unit="byte"}'
+        values: '2000+0x8'
     alert_rule_test:
       - eval_time: 30h
         alertname: VPARecommendationCapped
         exp_alerts: []
 
-  # The exclusion is scoped to nzbget's MEMORY series only: a CPU clamp on the
-  # same VPA, or a clamp on any other download-clients workload, still alerts.
+  # Each exclusion is scoped to that VPA's MEMORY series only: a CPU clamp on
+  # the same VPA, or a clamp on any other download-clients workload, still
+  # alerts. nzbget's clamped MEMORY series is present here too — without it the
+  # exclusion has nothing to match and `resource` could drop out of the
+  # `unless on (...)` list unnoticed, silently exempting nzbget's CPU as well.
   - interval: 6h
     input_series:
       - series: 'vpa_recommendation_uncappedtarget{exported_namespace="downloads", verticalpodautoscaler="nzbget", container="nzbget", resource="cpu", unit="core"}'
         values: '3+0x8'
       - series: 'vpa_recommendation_target{exported_namespace="downloads", verticalpodautoscaler="nzbget", container="nzbget", resource="cpu", unit="core"}'
         values: '2+0x8'
+      - series: 'vpa_recommendation_uncappedtarget{exported_namespace="downloads", verticalpodautoscaler="nzbget", container="nzbget", resource="memory", unit="byte"}'
+        values: '3000+0x8'
+      - series: 'vpa_recommendation_target{exported_namespace="downloads", verticalpodautoscaler="nzbget", container="nzbget", resource="memory", unit="byte"}'
+        values: '2000+0x8'
       - series: 'vpa_recommendation_uncappedtarget{exported_namespace="downloads", verticalpodautoscaler="sonarr", container="sonarr", resource="memory", unit="byte"}'
         values: '3000+0x8'
       - series: 'vpa_recommendation_target{exported_namespace="downloads", verticalpodautoscaler="sonarr", container="sonarr", resource="memory", unit="byte"}'
@@ -84,3 +95,55 @@ tests:
               container: sonarr
               resource: memory
               unit: byte
+
+  # Live series carry kube-state-metrics' scrape labels. The rule aggregates
+  # them away, so the alert's identity is the recommendation's own labels and a
+  # KSM reschedule mid-`for:` cannot restart the 24h clock.
+  #
+  # TWO instances, because a single one cannot tell `max by` from `min by`: mid
+  # reschedule the departing and the arriving KSM pod are both scraped, and the
+  # departing one's last uncapped sample is the stale, LOWER number. `max` keeps
+  # the live recommendation and the clamp stays visible; `min` would believe the
+  # stale sample and go quiet for as long as the two overlap.
+  - interval: 6h
+    input_series:
+      - series: 'vpa_recommendation_uncappedtarget{exported_namespace="observability", verticalpodautoscaler="prometheus", container="prometheus", resource="memory", unit="byte", job="kube-state-metrics", instance="10.42.0.9:8080", pod="kube-state-metrics-abc", endpoint="http", service="kube-state-metrics"}'
+        values: '3000+0x8'
+      - series: 'vpa_recommendation_uncappedtarget{exported_namespace="observability", verticalpodautoscaler="prometheus", container="prometheus", resource="memory", unit="byte", job="kube-state-metrics", instance="10.42.1.4:8080", pod="kube-state-metrics-def", endpoint="http", service="kube-state-metrics"}'
+        values: '1000+0x8'
+      - series: 'vpa_recommendation_target{exported_namespace="observability", verticalpodautoscaler="prometheus", container="prometheus", resource="memory", unit="byte", job="kube-state-metrics", instance="10.42.0.9:8080", pod="kube-state-metrics-abc", endpoint="http", service="kube-state-metrics"}'
+        values: '2000+0x8'
+      - series: 'vpa_recommendation_target{exported_namespace="observability", verticalpodautoscaler="prometheus", container="prometheus", resource="memory", unit="byte", job="kube-state-metrics", instance="10.42.1.4:8080", pod="kube-state-metrics-def", endpoint="http", service="kube-state-metrics"}'
+        values: '2000+0x8'
+    alert_rule_test:
+      - eval_time: 30h
+        alertname: VPARecommendationCapped
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              exported_namespace: observability
+              verticalpodautoscaler: prometheus
+              container: prometheus
+              resource: memory
+              unit: byte
+
+  # The same overlap on the OTHER side of the `>`: both instances agree the
+  # uncapped recommendation, while the arriving KSM already reports the RAISED
+  # maxAllowed (target 4000) and the departing one still reports the old 1000.
+  # `max` on the target side means the raised cap wins and the alert clears;
+  # `min` would keep believing the stale cap and page about a clamp that an
+  # operator has already lifted.
+  - interval: 6h
+    input_series:
+      - series: 'vpa_recommendation_uncappedtarget{exported_namespace="observability", verticalpodautoscaler="prometheus", container="prometheus", resource="memory", unit="byte", job="kube-state-metrics", instance="10.42.0.9:8080", pod="kube-state-metrics-abc", endpoint="http", service="kube-state-metrics"}'
+        values: '3000+0x8'
+      - series: 'vpa_recommendation_uncappedtarget{exported_namespace="observability", verticalpodautoscaler="prometheus", container="prometheus", resource="memory", unit="byte", job="kube-state-metrics", instance="10.42.1.4:8080", pod="kube-state-metrics-def", endpoint="http", service="kube-state-metrics"}'
+        values: '3000+0x8'
+      - series: 'vpa_recommendation_target{exported_namespace="observability", verticalpodautoscaler="prometheus", container="prometheus", resource="memory", unit="byte", job="kube-state-metrics", instance="10.42.0.9:8080", pod="kube-state-metrics-abc", endpoint="http", service="kube-state-metrics"}'
+        values: '1000+0x8'
+      - series: 'vpa_recommendation_target{exported_namespace="observability", verticalpodautoscaler="prometheus", container="prometheus", resource="memory", unit="byte", job="kube-state-metrics", instance="10.42.1.4:8080", pod="kube-state-metrics-def", endpoint="http", service="kube-state-metrics"}'
+        values: '4000+0x8'
+    alert_rule_test:
+      - eval_time: 30h
+        alertname: VPARecommendationCapped
+        exp_alerts: []

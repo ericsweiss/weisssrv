@@ -167,10 +167,13 @@ ssh pve-nas-01 "sudo chmod -R 2775 /mnt/nvme/media/"
 
 ### 3. DNS Configuration
 
-Add DNS rewrites in AdGuard Home for all services pointing to the internal Traefik VIP (192.168.0.101):
+Add DNS rewrites to `adguard_home_rewrites` in
+`ansible/inventories/prod/group_vars/dns.yml`, pointing every service at the
+internal Traefik VIP (192.168.0.101), then `task dns:deploy`. The role deletes
+any rewrite not in the codified list, so a UI-added entry is reverted on the next
+deploy (docs/08 § DNS rewrites):
 
 ```yaml
-# Add to dns.yml or configure via AdGuard Home UI
 - domain: nzbget.esweiss.com
   answer: 192.168.0.101
 - domain: qbittorrent.esweiss.com
@@ -798,8 +801,10 @@ task downloads:shell APP=nzbget CONTAINER=gluetun
 # Restart everything
 task downloads:restart
 
-# Restart specific app
-kubectl rollout restart deployment/sonarr -n downloads
+# Restart specific app — delete the pods, never `rollout restart`: these
+# Deployments are Flux-managed and kustomize-controller drift-reverts the
+# restart annotation (docs/12 § Restarting workloads).
+kubectl delete pod -n downloads -l app.kubernetes.io/name=sonarr
 ```
 
 ### Update Apps

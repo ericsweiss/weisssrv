@@ -16,7 +16,10 @@ spec:
     updateMode: Initial
   resourcePolicy:
     containerPolicies:
+      # 0.8x the container's 128Mi memory limit (deployment.yaml): the policy
+      # also controls limits, so a cap at the limit would leave no ceiling that
+      # ever binds (docs/33 § Limit oscillation).
       - containerName: coredns
         minAllowed: {cpu: 25m, memory: 32Mi}
-        maxAllowed: {cpu: 200m, memory: 128Mi}
+        maxAllowed: {cpu: 200m, memory: 102Mi}
         controlledResources: [cpu, memory]

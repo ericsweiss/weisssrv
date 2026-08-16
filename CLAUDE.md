@@ -24,7 +24,13 @@ below are applied consistently. The skill lives at
 ## Repository Structure
 
 **Canonical source**: https://git.ericsweiss.com/eric/weisssrv (GitLab)
-**GitHub mirror**: https://github.com/ericsweiss/weisssrv (read-only)
+**GitHub mirror**: https://github.com/ericsweiss/weisssrv (read-only) — the
+library and both templates are mirrored too, which is what makes the DR path in
+`docs/17-disaster-recovery.md` work.
+
+The tree below is annotated for agents (which stage owns what, and the traps).
+`README.md` § Repository Structure is the human-facing version; neither is a
+substitute for reading the directory itself.
 
 ```
 weisssrv/
@@ -87,7 +93,7 @@ This repo consumes four things from the library, all pinned:
    `terraform/tailscale`, `terraform/authentik`) are thin callers of
    `weisssrv-lib//terraform/modules/{cloudflare-zone,tailscale-acl,authentik-sso}`
    at a `?ref=` pin, holding only site data. All three pin the same release
-   as `WEISSSRV_LIB_REF` (v0.7.0). Those `?ref=`
+   as `WEISSSRV_LIB_REF`. Those `?ref=`
    pins are bumped **by hand** — `scripts/check-lib-pins.py` reads only the
    `include:` block and `ansible/requirements.yml` — but a missed one fails
    `scripts/test_site_configs.py` (the refs must equal `WEISSSRV_LIB_REF`).
@@ -110,6 +116,9 @@ Consequences an agent must not miss:
 
 ## Architecture
 
+Quick reference only — `docs/01-overview.md` is canonical for the topology, and
+each app's row below names the doc that owns it.
+
 ### Current Infrastructure (Base Parity)
 
 - **6 Proxmox hosts** (cluster `weisssrv`), `.102`-`.107` — pve-nas-01 is NAS +
@@ -128,8 +137,7 @@ Consequences an agent must not miss:
 
 **9-node cluster** (3 servers + 6 agents): three server nodes form the etcd
 quorum; the six agents carry NAS, ingress, and compute workloads. Node-by-node
-list with IPs and host placement lives in the README architecture diagram and
-`docs/01-overview.md`.
+list with IPs and host placement lives in `docs/01-overview.md` (canonical).
 
 **Two lifecycles:**
 
@@ -187,7 +195,7 @@ The k3s layer is `docs/19-k3s-deployment.md`; Flux day-2 ops are
 | Authentik SSO (IdP for everything below) | auth.esweiss.com / auth.ericsweiss.com | `kubernetes/apps/authentik/README.md`; Terraform layer docs/40 |
 | Plex (LXC .152) | plex.esweiss.com | docs/20 |
 | Download/media stack (`downloads` ns) | nzbget / qbittorrent / prowlarr / tv / movies / music / pulsarr .esweiss.com | docs/21 |
-| Recipes (`recipes` ns) | food.esweiss.com, bar.esweiss.com | docs/22, docs/23 |
+| Recipes (`recipes` ns) | food.esweiss.com; bar.ericsweiss.com (bar.esweiss.com redirects to it) | docs/22, docs/23 |
 | Home Assistant (HAOS VM .154) | home.esweiss.com / home.ericsweiss.com | docs/24 |
 | GitLab (VM .153) | git.esweiss.com / git.ericsweiss.com (+ registry, pages) | docs/27 |
 | Observability (Grafana) | grafana.esweiss.com | docs/31 |
@@ -214,7 +222,8 @@ Cross-cutting facts no single app doc owns:
   it starting — do not set `onboot=1` (docs/32, docs/39).
 
 **Planned** — roadmap source of truth is `docs/16-next-steps.md` (Uptime Kuma is
-the one queued app; open non-app work is in its Outstanding Follow-Ups).
+the one queued app; open non-app work is split across its § Decisions needed,
+§ Pending supervised steps and § Planned work).
 
 ## Common Development Commands
 
@@ -377,9 +386,12 @@ old→new variable map.
    with its molecule scenario, MR it, and have a release tag cut.
 2. Here: bump the collection `version:` in `ansible/requirements.yml`, bump
    `variables.WEISSSRV_LIB_REF` in `.gitlab-ci.yml` and run
-   `scripts/check-lib-pins.py --fix`, re-vendor the byte-identical scripts, then
-   `ansible-galaxy install -r ansible/requirements.yml --force` and re-run the
-   gates.
+   `scripts/check-lib-pins.py --fix` **and**
+   `scripts/check-molecule-image-pin.py --fix` (the molecule-test fallback tags
+   in the integration scenarios and `ansible/TESTING.md` — CI overrides the
+   image, so only local runs read them), re-vendor the byte-identical scripts,
+   then `ansible-galaxy install -r ansible/requirements.yml --force` and re-run
+   the gates. The three Terraform `?ref=` pins are still bumped by hand.
 3. Land the inventory changes a renamed/emptied variable requires **in the same
    MR** — the collection's variables are `| default(...)`-guarded, so a missed
    rename does not fail, it silently takes the role default.

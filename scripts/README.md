@@ -27,24 +27,29 @@ python3 ../weisssrv-lib/scripts/check-vendored-copies.py --consumer weisssrv --l
 
 | Script | What it asserts | Origin |
 |---|---|---|
-| `check-backup-artifact-apps.py` | The backup-artifact app list and its alert arms stay paired | local |
+| `check-backup-artifact-apps.py` | The backup-artifact app list and its alert arms stay paired | vendored |
 | `check-ci-pin-parity.sh` | Every `include:` input repeats its `variables:` pin exactly — `include:` resolves before `variables:` exists, so the literals are copies that have to be kept equal | local |
 | `check-collection-pin-trigger.py` | Every playbook-running `deploy-*` job also triggers on `ansible/requirements.yml`, the only in-repo signal that a role's content changed | local |
 | `check-deploy-coverage.sh` | Every changed deploy input is covered by a `deploy-*` job | vendored |
 | `check-deploy-host-coverage.py` | Each CI-deployed playbook's roles really reach every host it claims | local |
 | `check-doc-links.py` | Every relative Markdown link in every tracked `*.md` resolves | vendored |
-| `check-alertmanager-behaviour.py` | Each alert reaches the receiver it should, and every inhibit pair still binds | local |
+| `check-alertmanager-behaviour.py` | Each alert reaches the receiver it should, and every inhibit pair still binds | vendored |
+| `check-ansible-service-names.py` | Every service/systemd task names a systemd unit, not an Ansible role FQCN | local |
 | `check-cluster-literals.py` | The substituted trees spell cluster identity as `cluster-config` placeholders, and that ConfigMap agrees with the Ansible inventory | local |
-| `check-default-deny-coverage.py` | Every workload-owning namespace carries an ingress default-deny (reasoned exemptions in the script) | local |
+| `check-default-deny-coverage.py` | Every workload-owning namespace carries an ingress default-deny (reasoned exemptions in the script) | vendored |
 | `check-hpa-vpa-invariant.py` | No workload has both an HPA and a CPU-controlling VPA | vendored |
 | `check-integration-matrix-coverage.sh` | Every integration-test dir has a CI matrix entry | local |
 | `check-kubectl-version-pin.py` | The CI kubectl pin stays within ±1 minor of `k3s_version` | vendored |
 | `check-lib-pins.py` | Every weisssrv-lib `include:` pins `WEISSSRV_LIB_REF`, and it is a release tag (`--fix` rewrites) | vendored |
-| `check-netpol-except-parity.py` | Every public-egress NetworkPolicy uses the canonical reserved-CIDR except-list | local |
-| `check-pvc-storageclass.py` | Every claim pins a `storageClassName` | local |
-| `check-scrape-netpol.py` | Every scraped namespace admits Prometheus through its NetworkPolicies | local |
-| `check-secretstore-scope.py` | Each ClusterSecretStore is namespace-scoped and covers its consumers | local |
+| `check-molecule-image-pin.py` | Every `molecule-test:<tag>` fallback in the integration scenarios and `ansible/TESTING.md` equals `WEISSSRV_LIB_REF` (`--fix` rewrites) — CI overrides the image, so only local runs read the literal | local |
+| `check-netpol-except-parity.py` | Every public-egress NetworkPolicy uses the canonical reserved-CIDR except-list | vendored |
+| `check-nfs-tls.py` | Every NFS PersistentVolume mounts `xprtsec=tls`, by hostname (the cert has no IP SAN) | local |
+| `check-pvc-storageclass.py` | Every claim pins a `storageClassName` | vendored |
+| `check-scrape-netpol.py` | Every scraped namespace admits Prometheus through its NetworkPolicies | vendored |
+| `check-secretstore-scope.py` | Each ClusterSecretStore is namespace-scoped and covers its consumers | vendored |
+| `check-tailscale-policy.py` | `policy.hujson` parses, every `tag:` it references has a `tagOwners` entry, and `autoApprovers.routes` matches the inventory's `tailscale_advertise_routes` | local |
 | `check-taskfile.sh` | Taskfile references resolve (tasks, scripts, files) | vendored |
+| `check-tenant-traefik-isolation.py` | No tenant is wired into `clusters/weisssrv/tenants/` while Traefik still sets `allowCrossNamespace: true` (docs/30 pre-onboarding checklist, as a gate) | local |
 | `kubeconform-skipped.py` | The kubeconform skip-list stays justified | vendored |
 | `validate-helm-values.py` | The value-heavy Flux HelmReleases still `helm template` cleanly | vendored |
 | `lint-prometheus-config.sh` | promtool/amtool over the alert rules and the rule unit tests | vendored |
@@ -63,6 +68,7 @@ python3 ../weisssrv-lib/scripts/check-vendored-copies.py --consumer weisssrv --l
 |---|---|---|
 | `generate-versions-configmap.py` | `kubernetes/infrastructure/sources/versions-configmap.yaml` from `all.yml` (`task flux:sync-versions`) | vendored |
 | `generate-hosts-env.py` | `scripts/hosts.env` from `hosts.yml` (`task hosts:sync`) | vendored |
+| `cluster-config-value.sh` | One key out of `cluster-config.yaml` — how host-side tooling reads the VIPs, which `hosts.env` cannot carry (they are not inventory hosts) | local |
 | `extract-prometheus-config.py` | Standalone rule + Alertmanager files for promtool/amtool — unions the HelmRelease with `observability/rules/` | forked |
 | `flux-render.sh` | The substitution exports + schema version for a Flux render (ONE ConfigMap) | vendored |
 | `flux-env.sh` | The same entry point over BOTH substitution ConfigMaps — what `task flux:lint` and the CI flux-lint job call | vendored |

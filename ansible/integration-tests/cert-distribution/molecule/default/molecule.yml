@@ -7,58 +7,37 @@ driver:
 
 platforms:
   - name: dns-01
-    image: "${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:v0.7.4}"
-    pre_build_image: true
-    privileged: true
-    cgroupns_mode: host
-    volumes:
-      - /sys/fs/cgroup:/sys/fs/cgroup:rw
-    command: /lib/systemd/systemd
-    stop_signal: SIGRTMIN+3
-    tty: true
-    tmpfs:
-      - /run
-      - /tmp
-    networks:
-      - name: cert-stack-net
+    # The systemd-container block is identical for every platform in this
+    # scenario, so it is anchored once and merged into the rest; only name and
+    # groups differ. Anchors are per-file — YAML has no cross-file include — so
+    # each scenario carries its own copy of the shape.
+    <<: &systemd_platform
+      image: "${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:v0.8.0}"
+      pre_build_image: true
+      privileged: true
+      cgroupns_mode: host
+      volumes:
+        - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      command: /lib/systemd/systemd
+      stop_signal: SIGRTMIN+3
+      tty: true
+      tmpfs:
+        - /run
+        - /tmp
+      networks:
+        - name: cert-stack-net
     groups:
       - cert_stack
       - cert_servers
 
   - name: cert-client-01
-    image: "${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:v0.7.4}"
-    pre_build_image: true
-    privileged: true
-    cgroupns_mode: host
-    volumes:
-      - /sys/fs/cgroup:/sys/fs/cgroup:rw
-    command: /lib/systemd/systemd
-    stop_signal: SIGRTMIN+3
-    tty: true
-    tmpfs:
-      - /run
-      - /tmp
-    networks:
-      - name: cert-stack-net
+    <<: *systemd_platform
     groups:
       - cert_stack
       - cert_clients
 
   - name: cert-client-02
-    image: "${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:v0.7.4}"
-    pre_build_image: true
-    privileged: true
-    cgroupns_mode: host
-    volumes:
-      - /sys/fs/cgroup:/sys/fs/cgroup:rw
-    command: /lib/systemd/systemd
-    stop_signal: SIGRTMIN+3
-    tty: true
-    tmpfs:
-      - /run
-      - /tmp
-    networks:
-      - name: cert-stack-net
+    <<: *systemd_platform
     groups:
       - cert_stack
       - cert_clients
@@ -93,7 +72,6 @@ provisioner:
         acme_certs_email: test@example.com
         # The distribution key belongs to the admin user, matching production.
         acme_certs_ssh_user: eric
-        acme_cloudflare_token: test_cloudflare_token_not_real
         # Test-local list driving the mock cert fixtures in converge/verify —
         # NOT a role knob (acme_certs issues acme_certs_domain + its wildcard
         # and reads no domain-list variable).

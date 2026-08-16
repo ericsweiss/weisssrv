@@ -37,10 +37,10 @@
 # in a dashboard's PromQL matcher has to move with the domain like any other.
 #
 # The values below that also exist in the Ansible inventory (internal_domain,
-# external_domain, dns_servers, k3s_cluster_cidr / k3s_service_cidr, and the two
-# MetalLB VIPs — mirrored as AdGuard rewrite answers in group_vars/dns.yml) are
-# cross-checked against it by the same gate, so this file and
-# ansible/inventories/prod/ cannot silently disagree.
+# external_domain, dns_servers, k3s_cluster_cidr / k3s_service_cidr, k3s_api_vip,
+# and the two MetalLB VIPs — mirrored as AdGuard rewrite answers in
+# group_vars/dns.yml) are cross-checked against it by the same gate, so this file
+# and ansible/inventories/prod/ cannot silently disagree.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -75,6 +75,11 @@ data:
   # wg-easy's WAN endpoint gets its own VIP so the UDP port-forward is
   # independent of the two ingress VIPs (docs/38).
   cluster_wg_easy_vip: "192.168.0.99"
+  # kube-vip's API VIP. Unlike the MetalLB pools this one IS owned by Ansible
+  # (`k3s_api_vip` in group_vars/k3s.yml, which configures kube-vip); the key
+  # exists so manifests and the operator tooling stop re-spelling the address,
+  # and check-cluster-literals.py holds the two equal.
+  cluster_api_vip: "192.168.0.161"
 
   # LAN resolvers, space-separated — the form CoreDNS's `forward` needs, and the
   # same pair as `dns_servers` in group_vars/all.yml.

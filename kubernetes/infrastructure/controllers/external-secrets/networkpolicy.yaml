@@ -8,6 +8,10 @@
 # Webhook ingress + metrics scrapes from observability. The webhook port is
 # open from anywhere because the apiserver call arrives post-DNAT from whichever
 # server is active; ESO's own TLS/authz is the gate there.
+# Deliberately looser than kube-system-policies/allow-coredns.yaml, which pins
+# the same post-DNAT class to the pod CIDR + LAN: :53 has no per-caller auth
+# so the CIDRs are its only gate, a webhook's own TLS/authz is a real one
+# (docs/29 § Network policy exceptions).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -128,34 +132,23 @@ spec:
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0
-            # Public unicast only: every non-public / reserved IPv4 block is
-            # excepted so a compromised pod cannot reach the LAN, loopback,
-            # cloud-metadata or other reserved space. This is the "reserved-full"
-            # set — scripts/check-netpol-except-parity.py fails if any copy drifts.
+            # "reserved-full" except-list — canonical copy and per-RFC
+            # annotations in components/netpol-egress-public/allow-egress-public.yaml;
+            # parity enforced by scripts/check-netpol-except-parity.py.
             except:
-              # RFC1918 private LAN.
               - 10.0.0.0/8
               - 172.16.0.0/12
               - 192.168.0.0/16
-              # "This network" / unspecified (RFC 1122).
               - 0.0.0.0/8
-              # Loopback (RFC 1122).
               - 127.0.0.0/8
-              # Link-local (RFC 3927) — incl. 169.254.169.254 cloud-metadata.
               - 169.254.0.0/16
-              # Tailscale / CGNAT (RFC 6598) — same trust boundary as the LAN.
               - 100.64.0.0/10
-              # IETF protocol assignments (RFC 6890).
               - 192.0.0.0/24
-              # TEST-NET-1/2/3 documentation (RFC 5737).
               - 192.0.2.0/24
               - 198.51.100.0/24
               - 203.0.113.0/24
-              # Benchmarking (RFC 2544).
               - 198.18.0.0/15
-              # Multicast (RFC 5771) — HTTPS is unicast.
               - 224.0.0.0/4
-              # Reserved / future use (RFC 1112) — incl. 255.255.255.255.
               - 240.0.0.0/4
       ports:
         - protocol: TCP

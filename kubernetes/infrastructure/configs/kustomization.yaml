@@ -8,9 +8,9 @@
 # namespaces this repo does not otherwise own. They sit here rather than earlier
 # because nothing renders or schedules against them.
 #
-# priorityclasses.yaml used to live here and now lives under sources/: pods in
-# the controllers stage name `platform`, and a pod whose PriorityClass does not
-# exist yet is rejected at admission (see that stage's header).
+# priorityclasses.yaml lives under sources/, not here: pods in the controllers
+# stage name `platform`, and a pod whose PriorityClass does not exist yet is
+# rejected at admission (see that file's header).
 #
 # The versions-configmap.yaml lives under sources/ (not here) because it must
 # exist before controllers/ renders HelmReleases with ${var} placeholders.

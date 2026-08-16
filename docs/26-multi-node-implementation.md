@@ -7,20 +7,6 @@
 > replacement hardware. For the current topology see `docs/01-overview.md`;
 > for current HA operations see `docs/25-multi-node-expansion.md`.
 
-## Table of Contents
-
-1. [Overview](#overview)
-2. [Phase 1: Bootstrap New Proxmox Hosts](#phase-1-bootstrap-new-proxmox-hosts)
-3. [Phase 2: Form Proxmox Cluster](#phase-2-form-proxmox-cluster)
-4. [Phase 3: Expand k3s Cluster](#phase-3-expand-k3s-cluster)
-5. [Phase 4: Enable High Availability](#phase-4-enable-high-availability)
-6. [Validation and Testing](#validation-and-testing)
-7. [Rollback Procedures](#rollback-procedures)
-8. [Answers to Design Questions](#answers-to-design-questions)
-9. [Related documentation](#related-documentation)
-
----
-
 ## Overview
 
 ### Resulting State (6-Node Cluster)
@@ -101,27 +87,13 @@ ls -la /dev/disk/by-id/ | grep -i samsung
 EOF
 ```
 
-For each host, run (replacing SERIALNUMBER):
+For each host, create the pool with the canonical commands in
+[docs/25 § Step 2: Create the ZFS Pool](25-multi-node-expansion.md) — do not
+hand-transcribe them here — then register it with Proxmox:
 
 ```bash
 ssh eric@<host-ip> << 'EOF'
-# Create local-ssd pool (ADJUST SERIAL NUMBER!)
-sudo zpool create -f -o ashift=12 \
-    -O acltype=posixacl \
-    -O compression=lz4 \
-    -O normalization=formD \
-    -O atime=off \
-    -O xattr=sa \
-    local-ssd \
-    /dev/disk/by-id/ata-Samsung_SSD_870_EVO_1TB_SERIALNUMBER
-
-# Enable autotrim for SSD longevity
-sudo zpool set autotrim=on local-ssd
-
-# Register as Proxmox storage
 sudo pvesm add zfspool local-ssd --pool local-ssd --content images,rootdir
-
-# Verify
 sudo zpool status local-ssd
 sudo pvesm status
 EOF

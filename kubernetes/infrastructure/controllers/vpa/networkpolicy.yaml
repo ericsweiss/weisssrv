@@ -6,6 +6,10 @@
 # active; allow the webhook port from anywhere and rely on the webhook's own TLS
 # for authenticity. The :8944 rule is a parity allow only (see below) — VPA
 # exposes no scraped metrics, so nothing actually connects there.
+# Deliberately looser than kube-system-policies/allow-coredns.yaml, which pins
+# the same post-DNAT class to the pod CIDR + LAN: :53 has no per-caller auth
+# so the CIDRs are its only gate, a webhook's own TLS/authz is a real one
+# (docs/29 § Network policy exceptions).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

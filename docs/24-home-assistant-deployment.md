@@ -70,8 +70,9 @@ dig home.esweiss.com @192.168.0.150
 Download the latest Home Assistant OS image for Proxmox:
 
 ```bash
-# SSH to Proxmox host
-ssh pve-nas-01
+# SSH to the host the VM will live on — /var/lib/vz is node-local, and Phase 1
+# imports the disk from this path on pve-prec-01
+ssh pve-prec-01
 
 # Download HAOS image (check https://www.home-assistant.io/installation/alternative for latest version)
 cd /var/lib/vz/template/iso
@@ -388,9 +389,9 @@ data:
 **Configuration Files:**
 
 Templates are version-controlled in the `weisssrv.infra.home_assistant` role (weisssrv-lib):
-- `ansible_collections/weisssrv/infra/roles/home_assistant/templates/configuration.yaml.j2` - Main configuration
-- `ansible_collections/weisssrv/infra/roles/home_assistant/templates/secrets.yaml.j2` - Secrets template
-- `ansible_collections/weisssrv/infra/roles/home_assistant/defaults/main.yml` - Default variables
+- weisssrv-lib `ansible_collections/weisssrv/infra/roles/home_assistant/templates/configuration.yaml.j2` - Main configuration
+- weisssrv-lib `ansible_collections/weisssrv/infra/roles/home_assistant/templates/secrets.yaml.j2` - Secrets template
+- weisssrv-lib `ansible_collections/weisssrv/infra/roles/home_assistant/defaults/main.yml` - Default variables
 - `ansible/playbooks/home-assistant.yml` - Deployment playbook
 
 **Making Changes:**
@@ -522,6 +523,16 @@ bare-metal DR path.
 
 This is a one-time UI step per rebuild: the NAS side is Ansible-managed, but
 HAOS's own storage/backup settings are not (docs/42 has the same walkthrough).
+
+> **The scheduled backup is `type: partial`, deliberately.** It carries core
+> config, the add-ons and the `ssl` folder — **not** `/media`, `/share` or
+> `addons/local`, which are therefore absent from both the HA-native and the
+> offsite (B2) tiers. They are not unprotected: vmid 154 is not in the vzdump
+> exclusion list, so the whole guest image is captured nightly to `tank/proxmox`
+> and replicated to `archive` — image-level, local + archive only. Those folders
+> are empty on this deployment, so the partial scope is the accepted position
+> ([docs/16](16-next-steps.md) § Accepted risks). Switch the scheduled backup to
+> **full** if `/media` or `/share` ever holds something worth an offsite copy.
 
 **Step 3: Manual Backup**
 
@@ -1065,7 +1076,7 @@ No additional firewall rules are needed.
 ## Related documentation
 
 - `docs/19-k3s-deployment.md` - K3s cluster and platform services
-- `docs/23-recipes-sso-setup.md` - Authentik SSO configuration patterns
+- `docs/40-authentik-terraform.md` - Authentik objects as code (the SSO source of truth)
 - `docs/08-dns.md` - DNS architecture and AdGuard Home configuration
 - [Home Assistant Installation](https://www.home-assistant.io/installation/alternative)
 - [HAOS CLI](https://www.home-assistant.io/common-tasks/os/)

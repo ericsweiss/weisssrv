@@ -1,6 +1,4 @@
 ---
-# sonarr config storage: thin overlay over the ../../_nfs-pv-arr component
-# (10Gi + actimeo/lookupcache defined once there).
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: downloads

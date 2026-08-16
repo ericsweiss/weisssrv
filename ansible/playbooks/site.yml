@@ -3,14 +3,10 @@
 # host-level observability). k3s, Plex, GitLab, Home Assistant, Nextcloud,
 # Immich, and Immich ML have dedicated playbooks with separate lifecycles.
 
-# smtp-relay has no dedicated playbook (dns/plex/gitlab provision via their
-# own), so codify its create path here — otherwise rebuilding the container
-# after loss is a manual, undocumented step. proxmox_lxc is idempotent and
-# handles the container living on another node after an HA migration. Runs
-# FIRST (gather_facts:false, purely delegated to pve-opt-01): the base_managed
-# play below connects directly to smtp-relay and would mark a lost container
-# UNREACHABLE, excluding it from every subsequent play — so provisioning must
-# happen before that first connection attempt.
+# smtp-relay has no dedicated playbook, so its create path is codified here.
+# Runs FIRST (purely delegated, gather_facts: false): the base_managed play
+# below connects directly to smtp-relay and would mark a lost container
+# UNREACHABLE, excluding it from every subsequent play.
 - name: Provision SMTP relay LXC container
   hosts: mail
   gather_facts: false
@@ -25,29 +21,20 @@
   ansible.builtin.import_playbook: _reachability-probe.yml
 
 - name: Deploy base configuration to all managed hosts
-  # !deploy_skipped drops whatever the probe above could not reach: it is
-  # already on the ledger, and leaving it in would make it fail this play on
-  # the first task templating an ungathered fact (a hard failure the gate's
-  # deploy_expected_absent_hosts downgrade cannot undo). Every play below that
-  # tolerates an absent host carries the same exclusion.
+  # The reachability contract, referenced by every multi-host play below:
+  #   - `!deploy_skipped` drops what the probe could not reach; left in, such a
+  #     host fails on the first task templating an ungathered fact, which the
+  #     gate's deploy_expected_absent_hosts downgrade cannot undo.
+  #   - `ignore_unreachable` covers a host that dies BETWEEN probe and play, so
+  #     the hosts that ARE up still converge. `--tags` does not suppress fact
+  #     gathering, so this bites even for plays a tag-scoped run selects nothing
+  #     from.
+  #   - The single-host plays below (mail, pve-nas-01) deliberately carry
+  #     NEITHER: skipping their one host means the deploy did nothing, which
+  #     must stay red.
+  # See _reachability-probe.yml for why exit 0 is not proof of a deploy.
   hosts: base_managed:!deploy_skipped
   become: true
-  # Still needed for a host that dies BETWEEN the probe and here: skip it
-  # instead of failing the whole play, because this is a multi-host reconciler
-  # and the hosts that ARE up still converge. A genuinely-down host
-  # surfaces as NodeDown — and a bare-metal host out for hardware work (or an
-  # HA-migrating guest) no longer reds every tag-scoped site.yml deploy at the
-  # first play and skips the whole downstream CI DAG.
-  #
-  # The recap does NOT compensate: with ignore_unreachable ansible-core counts
-  # the host into `ok`+`ignored`, never into `dark`, so the recap prints
-  # `unreachable=0` and the playbook exits 0. The reachability probe/gate pair
-  # imported around these plays is what keeps a skipped host from passing as a
-  # successful deploy.
-  # `--tags` does NOT suppress fact gathering, so this bites even for plays a
-  # tag-scoped run selects zero tasks from. Deliberately NOT applied to the
-  # single-host plays below (mail, pve-nas-01): there, skipping the one host
-  # means the deploy did nothing at all, which must stay red.
   ignore_unreachable: true
   roles:
     - role: weisssrv.infra.base
@@ -87,13 +74,9 @@
     - role: weisssrv.infra.tailscale
       tags: [tailscale]
       when: tailscale_enabled | bool
-    # tlshd on every PVE host (client mode; truststore only) — prerequisite
-    # for the tank-proxmox storage.cfg entry mounting with xprtsec=tls on all
-    # nodes. Tasks self-guard on nfs_tls_enabled (group_vars/proxmox.yml).
-    # Server-mode pve-nas-01 (nfs_tls_is_server) is EXCLUDED here so its
-    # cert/key-dependent setup runs only in the NAS play below, after acme_certs
-    # distributes the wildcard cert — preserving the fresh-bootstrap ordering
-    # documented on the NAS play. Client-only hosts need just the CA bundle.
+    # tlshd for the xprtsec=tls tank-proxmox mount. Client-only here:
+    # server-mode pve-nas-01 is EXCLUDED so its cert/key-dependent setup runs in
+    # the NAS play below, after acme_certs distributes the wildcard cert.
     - role: weisssrv.infra.nfs_tls
       tags: [nfs_tls]
       when: not (nfs_tls_is_server | default(false))
@@ -104,9 +87,9 @@
   hosts: dns:!deploy_skipped
   become: true
   serial: 1  # one resolver at a time — never restart unbound/AdGuard on both at once
-  # See the reachability note on the base_managed play above. It matters more
-  # here: with serial: 1 an unreachable dns-01 is a batch of one, and a failed
-  # batch ends the play — so the OTHER resolver would never be reconciled.
+  # See the base_managed play above. It matters more here: with serial: 1 an
+  # unreachable dns-01 is a batch of one, and a failed batch ends the play — so
+  # the OTHER resolver would never be reconciled.
   ignore_unreachable: true
   roles:
     - role: weisssrv.infra.postfix_null_client
@@ -130,22 +113,17 @@
     - role: weisssrv.infra.adguard_sync
       tags: [adguard_sync]
 
-# NAS storage runs AFTER certificate management: nfs_tls's preflight fails loud
-# if the wildcard cert/key aren't present on pve-nas-01, and those are
-# distributed by the acme_certs play above (acme_certs_distribution_targets). Running
-# the NAS play earlier would fail a fresh `site.yml` bootstrap before the cert
-# exists. (storage.yml is the standalone NAS playbook for re-runs once the cert
-# is already distributed.) Nothing in the DNS/cert plays above depends on NAS
-# storage, and the proxmox play still precedes this one.
+# MUST run AFTER certificate management: nfs_tls's preflight fails loud without
+# the wildcard cert/key, which the acme_certs play above distributes — so an
+# earlier NAS play breaks a fresh site.yml bootstrap. (storage.yml is the
+# standalone NAS playbook for re-runs once the cert is distributed.)
 - name: Deploy NAS storage configuration
   hosts: pve-nas-01
   become: true
   roles:
-    # Opt-in NFSv4-over-TLS daemon; tasks self-guard on nfs_tls_enabled, so this
-    # is a no-op unless set in host_vars/pve-nas-01 (matches storage.yml). Runs
-    # BEFORE nas_storage so tlshd is installed + verified before nas_storage
-    # (re)publishes any xprtsec=tls export — otherwise a TLS-required export
-    # could be live without a working handshake daemon if nfs_tls later fails.
+    # BEFORE nas_storage, so tlshd is verified before any xprtsec=tls export is
+    # (re)published — otherwise a TLS-required export could go live without a
+    # working handshake daemon.
     - role: weisssrv.infra.nfs_tls
       tags: [nfs_tls]
     - role: weisssrv.infra.nas_storage
@@ -186,12 +164,10 @@
 - name: Deploy host-level metrics (node_exporter on bare metal, DNS, mail, GitLab, Nextcloud, Immich, and k3s-server hosts)
   hosts: proxmox:dns:mail:gitlab_servers:nextcloud_servers:immich_servers:k3s_servers:!deploy_skipped
   become: true
-  # App VMs (nextcloud, immich) are provisioned by their own deploy jobs, which
-  # need deploy-ansible-base to succeed first — so on a first deploy the VM does
-  # not exist yet and this metrics play would otherwise fail the whole base
-  # deploy with UNREACHABLE. Skip unreachable hosts here (their own playbook also
-  # deploys node_exporter_host); a genuinely-down host surfaces via NodeDown, not
-  # by failing every base deploy.
+  # App VMs are provisioned by their own deploy jobs, which need this one to
+  # succeed first — so on a first deploy the VM does not exist yet. Skipping is
+  # safe: their own playbook also ships node_exporter_host, and a genuinely-down
+  # host surfaces via NodeDown.
   ignore_unreachable: true
   roles:
     - role: weisssrv.infra.node_exporter_host
@@ -200,20 +176,17 @@
 - name: Deploy host-side log collection (Alloy → Loki)
   hosts: base_managed:plex_servers:gitlab_servers:nextcloud_servers:immich_servers:immich_ml_servers:k3s_servers:k3s_agents:!deploy_skipped
   become: true
-  # Same first-deploy ordering as the metrics play above: skip a not-yet-provisioned
-  # app VM instead of failing the base deploy (the app's own playbook ships alloy_host).
+  # Same first-deploy ordering as the metrics play above.
   ignore_unreachable: true
   roles:
     - role: weisssrv.infra.alloy_host
       tags: [alloy_host]
 
-# Deploy guest firewall rules for VMs that can't run Ansible directly (Home
-# Assistant, the Windows 11 VM): firewall rules are deployed via delegation to a
-# Proxmox host (the /etc/pve/ filesystem is clustered). windows_vms is included
-# so an inventory-only guest_security_groups edit still deploys 155.fw via
-# deploy-ansible-firewall (which runs `site.yml --tags proxmox_firewall`). The
-# services hosts inherit ansible_become: false and windows_vms true, but the
-# guest .fw write carries its own explicit become: true, so both render.
+# Guests that cannot run Ansible: the .fw writes are delegated to a Proxmox
+# host (/etc/pve is clustered). windows_vms is included so an inventory-only
+# guest_security_groups edit still deploys 155.fw via deploy-ansible-firewall.
+# The two groups differ on ansible_become, but the .fw write carries its own
+# explicit become: true, so both render.
 - name: Deploy guest firewall rules for delegation-only VMs
   hosts: services:windows_vms
   gather_facts: false
@@ -221,12 +194,10 @@
     - role: weisssrv.infra.proxmox_firewall
       tags: [proxmox_firewall]
 
-# k3s guest .fw files (VMIDs 202-207, 222-227) are otherwise written only by
-# playbooks/k3s.yml (hosts: k3s), which has no CI deploy job. Run them here under
-# --tags proxmox_firewall so an inventory-only guest_security_groups edit in
-# hosts.yml deploys via deploy-ansible-firewall. The role self-gates on
-# vmid + guest_security_groups, so it is a safe no-op for any k3s host without
-# security groups; cluster.fw is run_once-guarded, so this only writes guest .fw.
+# The k3s guest .fw files are otherwise written only by k3s.yml, which has no CI
+# deploy job — so they run here too, letting an inventory-only edit deploy via
+# deploy-ansible-firewall. cluster.fw is run_once-guarded, so this writes guest
+# .fw only.
 - name: Deploy k3s guest firewall rules
   hosts: k3s
   gather_facts: false

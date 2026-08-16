@@ -1,42 +1,31 @@
 #!/usr/bin/env bash
-# Pure-logic helpers shared by the maintenance scripts, extracted so the
-# parsing/state-machine logic that runs in production maintenance CI can be
-# unit-tested without a live cluster.
+# Pure-logic helpers shared by the maintenance scripts, so the parsing that runs
+# in production maintenance CI is unit-testable without a live cluster
+# (scripts/test_maintenance_lib.py).
 #
-# This file defines functions only (no top-level side effects) so it is safe
-# to `source` from both the prod scripts and the pytest harness
-# (scripts/test_maintenance_lib.py). Each function reads its input from stdin
-# or positional args and writes a verdict to stdout / returns an exit status —
-# none of them call kubectl/curl/ansible themselves.
+# Functions only, no top-level side effects: each reads stdin or positional args
+# and writes a verdict to stdout / returns a status. None call kubectl, curl or
+# ansible themselves.
 
-# post-maintenance-verify.sh parsers
-
-# not_ready_node_names: read `kubectl get nodes --no-headers` on stdin, print the
-# NAME ($1) of each node whose STATUS ($2) does not begin with "Ready" (so
-# "Ready,SchedulingDisabled" — cordoned-but-healthy — is treated as ready and NOT
-# listed). The verify then classifies each printed node (kured-rebooting -> warn,
-# anything else -> error).
+# not_ready_node_names: `kubectl get nodes --no-headers` on stdin -> the NAME of
+# each node whose STATUS does not begin with "Ready", so "Ready,SchedulingDisabled"
+# (cordoned but healthy) counts as ready and is NOT listed.
 not_ready_node_names() {
   awk '$2 !~ /^Ready/ {print $1}'
 }
 
-# kured_rebooting_filter: read `node<TAB>annotation<TAB>unschedulable` rows
-# (jsonpath output) on stdin and print the names of nodes kured is ACTIVELY
-# rebooting. A node qualifies only if it is BOTH kured-annotated AND cordoned
-# (unschedulable): kured writes the annotation BEFORE its block-check and does
-# NOT clear it when blocked, so an annotated-but-still-schedulable node is
-# stale/blocked, not mid-reboot — excusing it would mask a real problem.
-# (Matches the annotation+cordoned logic in _wait-no-kured-server-reboot.yml.)
+# kured_rebooting_filter: `node<TAB>annotation<TAB>unschedulable` rows on stdin ->
+# the nodes kured is ACTIVELY rebooting. A node qualifies only if BOTH annotated
+# AND cordoned: kured writes the annotation before its block-check and never
+# clears it when blocked, so annotated-but-schedulable means blocked, not
+# mid-reboot. (Same logic as _wait-no-kured-server-reboot.yml.)
 kured_rebooting_filter() {
   awk -F'\t' '$2 != "" && $3 == "true" {print $1}'
 }
 
-# classify_not_ready_nodes <kured_names>: read not-ready node names on stdin
-# and print one verdict line per node — "excused <name>" when the node appears
-# (exact match) in the newline-separated <kured_names> list, "error <name>"
-# otherwise. The verify WARNs excused nodes (kured rebooting, verified next
-# run) and ERRORs the rest; any "error" line also means the grace re-read is
-# warranted.
+# classify_not_ready_nodes <kured_names>: not-ready node names on stdin -> one
+# verdict line per node, "excused <name>" on an exact match in the
+# newline-separated <kured_names>, "error <name>" otherwise.
 classify_not_ready_nodes() {
   local kured_names="$1" n
   while IFS= read -r n; do
@@ -49,13 +38,11 @@ classify_not_ready_nodes() {
   done
 }
 
-# list_unhealthy_pods: read `kubectl get pods -A --no-headers` on stdin, print
-# the rows for genuinely-unhealthy pods — STATUS ($4) not "Running", or READY
-# ($3, "a/b") with a != b. Terminal batch outcomes (Completed/Succeeded and
-# Error/Failed) are skipped: on this cluster they come from exited Job/CronJob
-# pods, and a flaky retry there is not a maintenance regression. The verify's
-# grace re-check, its failed-Job check and the Prometheus alerts backstop what
-# this filter deliberately drops.
+# list_unhealthy_pods: `kubectl get pods -A --no-headers` on stdin -> the rows
+# for genuinely-unhealthy pods (STATUS not "Running", or READY "a/b" with a != b).
+# Terminal batch outcomes (Completed/Succeeded/Error/Failed) are SKIPPED — they
+# come from exited Job/CronJob pods — and the verify's failed-Job check plus the
+# Prometheus alerts backstop what that drops.
 list_unhealthy_pods() {
   awk '
     $4 == "Completed" || $4 == "Succeeded" || $4 == "Error" || $4 == "Failed" { next }
@@ -63,9 +50,7 @@ list_unhealthy_pods() {
 }
 
 # deployment_replicas_ok <available> <desired>: exit 0 if available >= desired,
-# defaulting available to 0 and desired to 1 when blank (mirrors the verify
-# script's `[ "${AVAIL:-0}" -ge "${DESIRED:-1}" ]` guard, which also tolerates
-# non-numeric input by returning non-zero).
+# defaulting blanks to 0 and 1; non-numeric input returns non-zero.
 deployment_replicas_ok() {
   local avail="${1:-0}" desired="${2:-1}"
   [ "${avail:-0}" -ge "${desired:-1}" ] 2>/dev/null

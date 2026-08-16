@@ -77,24 +77,17 @@ spec:
         # inside the 30-day retention, so nothing is accepted that would be
         # compacted away immediately.
         reject_old_samples_max_age: 336h
-        # Stream ceiling, pinned rather than left at Loki's 5000 default so the
+        # Stream ceiling, pinned rather than left at Loki's default so the
         # cardinality budget is reviewable next to the labels that spend it.
         # Every stream holds an open chunk for up to max_chunk_age, so this is a
-        # memory bound as much as an index one; 2000 leaves several times the
-        # live headroom and still stops a relabel mistake (a per-pid or
-        # per-message-id label) from taking the log plane down.
+        # memory bound as much as an index one — it exists to stop a relabel
+        # mistake (a per-pid or per-message-id label) taking the log plane down.
         max_global_streams_per_user: 2000
-      # Out-of-order accept window: Loki takes a push up to max_chunk_age/2
-      # behind the stream's newest entry and rejects the rest as
-      # `too_far_behind`. The senders' backfill horizon is the alloy_host journal
-      # re-read (alloy_host_journal_max_age) plus its ~1h on-disk WAL replay, so
-      # 12h (a 6h window) covers a multi-hour Loki outage instead of only the
-      # replay itself. Cost is bounded: a busy stream's chunk is cut on
-      # chunk_target_size long before this age, so only idle streams hold memory
-      # longer. alloy_host_journal_max_age (3h by default) must stay inside the
-      # 6h window. Nothing enforces the pair — it is a hand-maintained
-      # convention, stated on both halves: see the alloy_host role README
-      # ("Sender/receiver pair") in the weisssrv.infra collection.
+      # Out-of-order accept window = max_chunk_age/2; anything older is rejected
+      # as `too_far_behind`. 12h (a 6h window) covers a multi-hour Loki outage,
+      # not just the senders' WAL replay. alloy_host_journal_max_age must stay
+      # inside that 6h window — an unenforced convention, stated on both halves
+      # (alloy_host role README, "Sender/receiver pair").
       ingester:
         max_chunk_age: 12h
       compactor:

@@ -2,19 +2,6 @@
 
 How to attach an external Git repository to the weisssrv k3s cluster so Flux reconciles its workloads into a dedicated namespace. Covers two backends for secret management — 1Password (my own repos) and GitLab CI/CD variables (friends without 1Password) — plus namespace isolation rules, rate-limit considerations, and removal.
 
-## Table of Contents
-
-1. [Overview](#overview) (incl. the [Pre-Onboarding Checklist](#pre-onboarding-checklist))
-2. [Path A — 1Password Backend](#path-a--1password-backend)
-3. [Path B — GitLab CI/CD Variables Backend](#path-b--gitlab-cicd-variables-backend)
-4. [Namespace Isolation](#namespace-isolation)
-5. [Rate Limits (1Password Families Plan)](#rate-limits-1password-families-plan)
-6. [Removal](#removal)
-7. [weisssrv-app-template Repo](#weisssrv-app-template-repo)
-8. [Worked Example: Onboarding `example-app`](#worked-example-onboarding-example-app)
-
----
-
 ## Overview
 
 Each external repo that deploys to this cluster gets **one wiring file** in `kubernetes/clusters/weisssrv/tenants/<repo-slug>.yaml`. That file defines three things:
@@ -57,7 +44,9 @@ operator-authored):
   A tenant-authored IngressRoute could pull platform middlewares or another
   namespace's Service. Options: scope the provider per-tenant, add a
   validating policy pinning `@namespace` refs, or revert to
-  `allowCrossNamespace: false`.
+  `allowCrossNamespace: false`. `scripts/check-tenant-traefik-isolation.py`
+  (run by `task lint`) fails the commit that adds the first tenant wiring file
+  while the flag is still true, so this line is a gate rather than a re-read.
 - **Scope the GitLab agent's RBAC below cluster-admin.** The agent
   (`kubernetes/apps/gitlab-agent/release.yaml`) currently gets cluster-admin
   via the chart's default `rbac.create` — deliberate while it is the CI
@@ -78,6 +67,13 @@ operator-authored):
   templates below carry `pod-security.kubernetes.io/enforce: baseline` (+ `warn`
   / `audit: restricted`) so the platform actually enforces the non-root /
   read-only-rootfs posture the tenant template ships.
+- **Require a namespace-wide ingress default-deny in the tenant repo.** It is
+  mandatory in every namespace on this cluster, but
+  `scripts/check-default-deny-coverage.py` reads only *this* repo's rendered
+  corpus — a tenant repo's namespace is invisible to it, so this is a **review
+  responsibility at onboarding**, not a gate. A copier-generated repo ships
+  `template/kubernetes/flux/networkpolicy.yaml.jinja` already; a hand-authored
+  one must add the deny plus a scrape-allow from `observability`.
 
 ---
 
@@ -209,139 +205,18 @@ Only the token is needed. The Connect server already runs in `external-secrets` 
 
 ### 4. Add the Wiring File
 
-Create `kubernetes/clusters/weisssrv/tenants/<repo-slug>.yaml`. Copy-adapt the 1Password template from `kubernetes/clusters/weisssrv/tenants/README.md`:
-
-```yaml
----
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: <repo-slug>
-  labels:
-    app.kubernetes.io/managed-by: flux
-    fluxcd.io/tenant: <repo-slug>
-    # Pod Security Admission — baseline enforced, restricted advised. The tenant
-    # template ships non-root / read-only-rootfs pods that satisfy baseline;
-    # these labels make the platform actually enforce it.
-    pod-security.kubernetes.io/enforce: baseline
-    pod-security.kubernetes.io/warn: restricted
-    pod-security.kubernetes.io/audit: restricted
----
-apiVersion: external-secrets.io/v1
-kind: ClusterSecretStore
-metadata:
-  name: onepassword-<repo-slug>
-spec:
-  # A ClusterSecretStore is cluster-scoped: without `conditions`, ANY namespace
-  # can reference it by name and read this store's vault. Scope every tenant
-  # store to its own namespace.
-  conditions:
-    - namespaces:
-        - <repo-slug>
-  provider:
-    onepassword:
-      connectHost: http://onepassword-connect.external-secrets.svc.cluster.local:8080
-      vaults:
-        Homelab: 1
-      auth:
-        secretRef:
-          connectTokenSecretRef:
-            name: onepassword-connect-token
-            namespace: <repo-slug>
-            key: token
----
-apiVersion: source.toolkit.fluxcd.io/v1
-kind: GitRepository
-metadata:
-  name: <repo-slug>
-  namespace: flux-system
-spec:
-  interval: 1m
-  url: https://git.ericsweiss.com/eric/<repo-slug>
-  ref:
-    branch: main
-  # For private repos, attach a deploy token:
-  # secretRef:
-  #   name: <repo-slug>-git-creds
-  #
-  # A tenant hosted on GitHub works the same way — point `url` at
-  # https://github.com/<owner>/<repo> and, for a private repo, create the
-  # secretRef with a fine-grained PAT:
-  #   kubectl -n flux-system create secret generic <repo-slug>-git-creds \
-  #     --from-literal=username=git --from-literal=password=<token>
-  # Flux's source-controller treats both hosts identically; nothing else in this
-  # wiring changes.
----
-# Tenant reconciliation runs under a namespace-scoped ServiceAccount —
-# without serviceAccountName, kustomize-controller applies tenant manifests
-# with its own cluster-admin credentials. The SA must live in the
-# Kustomization's OWN namespace (flux-system); the RoleBinding in the tenant
-# namespace grants it admin there and nowhere else.
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: <repo-slug>-flux
-  namespace: flux-system
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: <repo-slug>-flux-admin
-  namespace: <repo-slug>
-subjects:
-  - kind: ServiceAccount
-    name: <repo-slug>-flux
-    namespace: flux-system
-roleRef:
-  kind: ClusterRole
-  name: admin
-  apiGroup: rbac.authorization.k8s.io
----
-# `admin` (bound above) does NOT aggregate the platform CRD groups a tenant
-# uses — traefik.io (IngressRoute), monitoring.coreos.com
-# (ServiceMonitor/PrometheusRule) and autoscaling.k8s.io (VerticalPodAutoscaler).
-# Bind the shared `tenant-crd-editor` ClusterRole (defined once in
-# tenants/tenant-crd-editor.yaml) alongside admin so those CRs apply; otherwise
-# the tenant Kustomization goes NotReady on the first IngressRoute/
-# ServiceMonitor/PrometheusRule/VPA it tries to create.
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: <repo-slug>-flux-crd-editor
-  namespace: <repo-slug>
-subjects:
-  - kind: ServiceAccount
-    name: <repo-slug>-flux
-    namespace: flux-system
-roleRef:
-  kind: ClusterRole
-  name: tenant-crd-editor
-  apiGroup: rbac.authorization.k8s.io
----
-apiVersion: kustomize.toolkit.fluxcd.io/v1
-kind: Kustomization
-metadata:
-  name: <repo-slug>
-  namespace: flux-system
-spec:
-  interval: 10m
-  retryInterval: 1m
-  timeout: 10m
-  # Wait for the platform CRD chain (sources -> controllers -> configs) so a
-  # fresh bootstrap doesn't apply this tenant's ExternalSecret/IngressRoute/etc.
-  # before the ESO/cert-manager/Traefik CRDs exist. Mirrors the platform's own
-  # apps.yaml.
-  dependsOn:
-    - name: infrastructure-configs
-  serviceAccountName: <repo-slug>-flux
-  sourceRef:
-    kind: GitRepository
-    name: <repo-slug>
-  path: ./kubernetes/flux
-  prune: true
-  targetNamespace: <repo-slug>
-  wait: true
-```
+Create `kubernetes/clusters/weisssrv/tenants/<repo-slug>.yaml`.
+`kubernetes/clusters/weisssrv/tenants/README.md` § *1Password-backed tenant*
+holds the canonical template — copy it and substitute `<repo-slug>` throughout.
+It wires, in one file: the Namespace with its PSA labels, a `ClusterSecretStore`
+scoped to that namespace by `conditions` (a cluster-scoped store without them is
+readable from every namespace), the tenant's `GitRepository`, a namespace-scoped
+`ServiceAccount` in **flux-system** (without `serviceAccountName` the
+Kustomization reconciles with kustomize-controller's cluster-admin credentials),
+and two RoleBindings in the tenant namespace — `admin` **plus** the shared
+`tenant-crd-editor` ClusterRole, because `admin` does not aggregate traefik.io /
+monitoring.coreos.com / autoscaling.k8s.io and the Kustomization goes NotReady on
+the first IngressRoute, ServiceMonitor, PrometheusRule or VPA without it.
 
 Then register the file in the tenants Kustomize aggregate
 (`kubernetes/clusters/weisssrv/tenants/kustomization.yaml`):
@@ -364,6 +239,9 @@ work is replacing the placeholder image and hostnames. For a hand-authored
 tenant, create `kubernetes/flux/` with:
 
 - Workload manifests (Deployments, HelmReleases, etc.).
+- A **namespace-wide ingress default-deny NetworkPolicy** plus a scrape-allow
+  from the `observability` namespace. Mandatory on this cluster, and no platform
+  gate can see it from here — see the Pre-Onboarding Checklist.
 - `ExternalSecret` CRs that reference `ClusterSecretStore/onepassword-<repo-slug>`.
 - A top-level `kustomization.yaml` aggregating everything under `kubernetes/flux/`.
 
@@ -430,114 +308,19 @@ kubectl -n <repo-slug> create secret generic gitlab-api-token \
 
 ### 3. Add the Wiring File
 
-```yaml
-# kubernetes/clusters/weisssrv/tenants/<repo-slug>.yaml
----
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: <repo-slug>
-  labels:
-    app.kubernetes.io/managed-by: flux
-    fluxcd.io/tenant: <repo-slug>
-    pod-security.kubernetes.io/enforce: baseline
-    pod-security.kubernetes.io/warn: restricted
-    pod-security.kubernetes.io/audit: restricted
----
-apiVersion: external-secrets.io/v1
-kind: ClusterSecretStore
-metadata:
-  name: gitlab-<repo-slug>
-spec:
-  # A ClusterSecretStore is cluster-scoped: without `conditions`, ANY namespace
-  # can reference it by name and read this store's vault. Scope every tenant
-  # store to its own namespace.
-  conditions:
-    - namespaces:
-        - <repo-slug>
-  provider:
-    gitlab:
-      url: https://git.ericsweiss.com
-      projectID: "<NUMERIC_PROJECT_ID>"
-      auth:
-        SecretRef:
-          accessToken:
-            name: gitlab-api-token
-            namespace: <repo-slug>
-            key: token
-      environment: "*"
----
-apiVersion: source.toolkit.fluxcd.io/v1
-kind: GitRepository
-metadata:
-  name: <repo-slug>
-  namespace: flux-system
-spec:
-  interval: 1m
-  url: https://git.ericsweiss.com/<group>/<repo-slug>
-  ref:
-    branch: main
----
-# ServiceAccount + both RoleBindings + Kustomization: identical pattern to
-# Path A step 4 — the Kustomization must NOT reconcile with
-# kustomize-controller's cluster-admin credentials, and `admin` alone does not
-# cover the tenant CRD groups (bind tenant-crd-editor too).
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: <repo-slug>-flux
-  namespace: flux-system
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: <repo-slug>-flux-admin
-  namespace: <repo-slug>
-subjects:
-  - kind: ServiceAccount
-    name: <repo-slug>-flux
-    namespace: flux-system
-roleRef:
-  kind: ClusterRole
-  name: admin
-  apiGroup: rbac.authorization.k8s.io
----
-# See Path A — `admin` does not aggregate traefik.io / monitoring.coreos.com /
-# autoscaling.k8s.io; bind the shared tenant-crd-editor ClusterRole too.
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: <repo-slug>-flux-crd-editor
-  namespace: <repo-slug>
-subjects:
-  - kind: ServiceAccount
-    name: <repo-slug>-flux
-    namespace: flux-system
-roleRef:
-  kind: ClusterRole
-  name: tenant-crd-editor
-  apiGroup: rbac.authorization.k8s.io
----
-apiVersion: kustomize.toolkit.fluxcd.io/v1
-kind: Kustomization
-metadata:
-  name: <repo-slug>
-  namespace: flux-system
-spec:
-  interval: 10m
-  retryInterval: 1m
-  timeout: 10m
-  dependsOn:
-    - name: infrastructure-configs
-  serviceAccountName: <repo-slug>-flux
-  sourceRef:
-    kind: GitRepository
-    name: <repo-slug>
-  path: ./kubernetes/flux
-  prune: true
-  targetNamespace: <repo-slug>
-  wait: true
-```
+Copy the **GitLab-variables template** from
+`kubernetes/clusters/weisssrv/tenants/README.md` — it is the canonical copy —
+and substitute `<repo-slug>` throughout. The only deltas from Path A are:
+
+- the `ClusterSecretStore` uses the `gitlab` provider (`projectID`,
+  `environment: "*"`, `auth.SecretRef.accessToken` → the `gitlab-api-token`
+  secret seeded in step 2) instead of the `onepassword` provider;
+- the bootstrap secret is `gitlab-api-token`, not
+  `onepassword-connect-token`.
+
+Everything else — the Namespace and its PSA labels, the GitRepository, the
+namespace-scoped ServiceAccount, the `admin` **and** `tenant-crd-editor`
+RoleBindings, and the Kustomization — is identical to Path A.
 
 The numeric project ID is under GitLab → Project → Settings → General (visible below the project name).
 
@@ -763,111 +546,11 @@ kubectl get secret onepassword-connect-token -n example-app
 
 Create `kubernetes/clusters/weisssrv/tenants/example-app.yaml`:
 
-```yaml
----
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: example-app
-  labels:
-    app.kubernetes.io/managed-by: flux
-    fluxcd.io/tenant: example-app
-    pod-security.kubernetes.io/enforce: baseline
-    pod-security.kubernetes.io/warn: restricted
-    pod-security.kubernetes.io/audit: restricted
----
-apiVersion: external-secrets.io/v1
-kind: ClusterSecretStore
-metadata:
-  name: onepassword-example-app
-spec:
-  # A ClusterSecretStore is cluster-scoped: without `conditions`, ANY namespace
-  # can reference it by name and read this store's vault. Scope every tenant
-  # store to its own namespace.
-  conditions:
-    - namespaces:
-        - example-app
-  provider:
-    onepassword:
-      connectHost: http://onepassword-connect.external-secrets.svc.cluster.local:8080
-      vaults:
-        Homelab: 1
-      auth:
-        secretRef:
-          connectTokenSecretRef:
-            name: onepassword-connect-token
-            namespace: example-app
-            key: token
----
-apiVersion: source.toolkit.fluxcd.io/v1
-kind: GitRepository
-metadata:
-  name: example-app
-  namespace: flux-system
-spec:
-  interval: 1m
-  url: https://git.ericsweiss.com/eric/example-app
-  ref:
-    branch: main
----
-# SA + RoleBinding: see Path A step 4 — the Kustomization reconciles as
-# this namespace-scoped SA, not as kustomize-controller's cluster-admin.
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: example-app-flux
-  namespace: flux-system
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: example-app-flux-admin
-  namespace: example-app
-subjects:
-  - kind: ServiceAccount
-    name: example-app-flux
-    namespace: flux-system
-roleRef:
-  kind: ClusterRole
-  name: admin
-  apiGroup: rbac.authorization.k8s.io
----
-# `admin` does not cover traefik.io / monitoring.coreos.com / autoscaling.k8s.io
-# — bind the shared tenant-crd-editor ClusterRole too (see Path A step 4).
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: example-app-flux-crd-editor
-  namespace: example-app
-subjects:
-  - kind: ServiceAccount
-    name: example-app-flux
-    namespace: flux-system
-roleRef:
-  kind: ClusterRole
-  name: tenant-crd-editor
-  apiGroup: rbac.authorization.k8s.io
----
-apiVersion: kustomize.toolkit.fluxcd.io/v1
-kind: Kustomization
-metadata:
-  name: example-app
-  namespace: flux-system
-spec:
-  interval: 10m
-  retryInterval: 1m
-  timeout: 10m
-  dependsOn:
-    - name: infrastructure-configs
-  serviceAccountName: example-app-flux
-  sourceRef:
-    kind: GitRepository
-    name: example-app
-  path: ./kubernetes/flux
-  prune: true
-  targetNamespace: example-app
-  wait: true
-```
+Copy the **1Password template** from
+`kubernetes/clusters/weisssrv/tenants/README.md` and substitute `example-app`
+for `<repo-slug>` throughout (namespace, ClusterSecretStore `conditions`,
+GitRepository URL, ServiceAccount, both RoleBindings, Kustomization
+`targetNamespace`). Nothing else in the template changes.
 
 Register the file in the tenants Kustomization aggregate:
 

@@ -78,10 +78,18 @@ here rather than restating them.
 - **Follow existing patterns** — mirror the closest neighbouring playbook or
   inventory block instead of inventing a new shape. The handler and service
   patterns the roles follow are documented in the collection's own README.
+- **Cross-cutting roles are listed twice on purpose.** `node_exporter_host`,
+  `alloy_host` and `nfs_tls` are deployed by `site.yml` in dedicated plays AND
+  by each app playbook, so a standalone `task <app>:deploy` does not leave
+  metrics, log shipping or tlshd behind. Each app playbook marks them with
+  `# Also in site.yml; listed here so a standalone deploy stays in sync.`
 
 ## Testing
 
-- `task ansible:lint` lints `playbooks/` and `integration-tests/`.
+- `task ansible:lint` lints the whole `ansible/` tree — `playbooks/`,
+  `integration-tests/`, `inventories/prod/` and the shared `molecule/` prep —
+  with `.ansible-lint` excluding the collection installed under
+  `.ansible-home/collections`.
 - `task ansible:test` runs the integration-test stacks (needs Docker).
 - Per-role molecule scenarios run in weisssrv-lib, against the role. Details and
   container caveats: [TESTING.md](TESTING.md).

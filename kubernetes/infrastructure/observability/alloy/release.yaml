@@ -48,12 +48,18 @@ spec:
         extra:
           - name: alloy-storage
             mountPath: /var/lib/alloy
+      # Hand-set limit (the VPA is RequestsOnly — docs/33 § Limit oscillation):
+      # 640Mi is the 30d working-set peak (371Mi) +60%. The old 256Mi sat UNDER
+      # that peak and only survived because the mutating webhook rewrote it
+      # upward at admission — and that webhook is failurePolicy: Ignore, so a
+      # pod admitted while it is down runs at whatever this file declares.
+      # Request is a bootstrap floor; the VPA owns the live number.
       resources:
         requests:
           cpu: 25m
-          memory: 64Mi
-        limits:
           memory: 256Mi
+        limits:
+          memory: 640Mi
       configMap:
         content: |
           // Discover all pods on this node
@@ -147,6 +153,17 @@ spec:
             hostPath:
               path: /var/lib/alloy
               type: DirectoryOrCreate
+
+    # The chart ships the config-reloader sidecar with a request and no memory
+    # limit; memory is incompressible, so every container carries one (docs/33).
+    # 128Mi is ~3x its measured peak (41Mi).
+    configReloader:
+      resources:
+        requests:
+          cpu: 10m
+          memory: 64Mi
+        limits:
+          memory: 128Mi
 
     serviceMonitor:
       enabled: true

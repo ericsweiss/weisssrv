@@ -15,9 +15,12 @@ spec:
     updateMode: Initial
   resourcePolicy:
     containerPolicies:
+      # 0.8x the container's 256Mi memory limit (deployment.yaml): the policy
+      # also controls limits, so a cap at the limit would leave no ceiling that
+      # ever binds (docs/33 § Limit oscillation).
       - containerName: wg-easy
         minAllowed: {cpu: 25m, memory: 64Mi}
-        maxAllowed: {cpu: 500m, memory: 256Mi}
+        maxAllowed: {cpu: 500m, memory: 204Mi}
         controlledResources: [cpu, memory]
       # Leave the one-shot privileged sysctl initContainer alone.
       - containerName: sysctl

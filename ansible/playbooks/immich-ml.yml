@@ -38,10 +38,8 @@
     - weisssrv.infra.base
     - weisssrv.infra.postfix_null_client
     - weisssrv.infra.immich_ml
-    # site.yml ships host-side log collection (alloy_host) to immich_ml_servers
-    # in a dedicated play; include it here so a standalone
-    # `task immich-ml:deploy` keeps log shipping in sync. node_exporter_host is
-    # NOT deployed to LXC guests by site.yml (host metrics ride the Proxmox
-    # host's exporter — same as plex), so it is intentionally omitted.
+    # Also in site.yml; listed here so a standalone deploy stays in sync.
+    # node_exporter_host is intentionally absent: LXC guests get their host
+    # metrics from the Proxmox host's exporter.
     - weisssrv.infra.alloy_host
     - weisssrv.infra.proxmox_firewall

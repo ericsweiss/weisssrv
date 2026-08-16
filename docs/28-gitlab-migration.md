@@ -166,8 +166,12 @@ The service account needs read access to these items in the "Homelab" vault. The
 |-----------|----------------|---------|
 | SSH Key | `private key` | Ansible deployments |
 | Cloudflare Terraform Token | `credential`, `username` | Terraform `terraform-plan` / `deploy-terraform` |
-| GitLab API Token | `credential` | AI code review (PR-Agent) |
-| OpenAI API Key | `api-key` | AI code review (PR-Agent) |
+| GitLab API Token | `credential` | `deploy-gitlab` — this item is now an **instance-admin** PAT and must NOT be reused for the MR bot |
+
+PR-Agent reads no vault item on the live project: it runs `secrets_source: env`
+with a `weisssrv-review-bot` **project** access token and the OpenAI key in
+masked CI variables (docs/13 § 1Password items the pipeline reads, docs/27 § Web
+IDE Extension Host).
 
 Most cluster secrets (Authentik, VPN, Mealie/Bar Assistant, runner tokens, agent
 token, SMTP, etc.) are consumed in-cluster by ExternalSecrets, not by CI — they do
@@ -377,22 +381,22 @@ pr-agent-review:
   allow_failure: true  # Don't block MRs on AI review
 ```
 
-#### Step 6.2: Create GitLab API Token
+#### Step 6.2: Create the PR-Agent token
 
-1. Navigate to **User Settings** > **Access Tokens**
-2. Click **Add new token**
-3. Configure:
-   - **Token name**: `PR-Agent`
-   - **Expiration date**: 1 year
-   - **Scopes**: `api`, `read_repository`
-4. Click **Create personal access token**
-5. Store in 1Password:
-   - **Item**: `GitLab API Token`
-   - **Field**: `credential` = (paste token)
+> The live project does **not** use the `GitLab API Token` 1Password item here —
+> that item is the instance-admin PAT, and pointing an MR-branch-controlled job
+> at it would hand admin scope to any branch. Mint a **project** access token
+> instead.
 
-#### Step 6.3: Verify OpenAI API Key
+1. In the project: **Settings > Access Tokens**
+2. Name `weisssrv-review-bot`, role Developer, scopes `api`, `read_repository`
+3. Store the value in the masked CI variable `GITLAB__PERSONAL_ACCESS_TOKEN`
+   (the job runs `secrets_source: env`)
 
-Ensure `OpenAI API Key` item exists in 1Password with field `api-key`.
+#### Step 6.3: OpenAI key
+
+Store the key in the masked CI variable `OPENAI__KEY`. The `OpenAI API Key`
+1Password item is Mealie's, not this job's.
 
 ### Option B: Cursor Bugbot (Requires Paid GitLab)
 

@@ -43,12 +43,29 @@ spec:
             preferred_ip_protocol: ip4
             tls_config:
               insecure_skip_verify: false
+        # For targets fronted by an auth gate. The probe verifies ingress + TLS +
+        # backend reachability, not an authenticated session: 301/302 is a
+        # redirect to a login, 401/403 an auth or IP-allowlist rejection — all
+        # proof the router and backend are alive, while a real outage still
+        # returns 502/503 or times out.
         http_sso:
           prober: http
           timeout: 10s
           http:
             valid_http_versions: ["HTTP/1.1", "HTTP/2.0"]
             valid_status_codes: [200, 301, 302, 401, 403]
+            follow_redirects: false
+            preferred_ip_protocol: ip4
+            tls_config:
+              insecure_skip_verify: false
+        # http_sso plus 404, for the GitLab Pages apex hosts: no project is
+        # mapped to the apex, so 404 is the healthy answer there.
+        http_pages:
+          prober: http
+          timeout: 10s
+          http:
+            valid_http_versions: ["HTTP/1.1", "HTTP/2.0"]
+            valid_status_codes: [200, 301, 302, 401, 403, 404]
             follow_redirects: false
             preferred_ip_protocol: ip4
             tls_config:
@@ -105,18 +122,14 @@ spec:
         - name: bar-assistant
           url: https://bar.${cluster_internal_domain}
           module: http_sso
-        # Hermes dashboard: an unauthenticated probe is answered by its OIDC
-        # gate with a 302, which http_sso accepts (docs/37 §SSO).
         - name: hermes
           url: https://agent.${cluster_internal_domain}
           module: http_sso
-        # The gateway API is a separate Traefik router from the dashboard above
-        # and is the path the agent itself serves on. `/` is a 404, so the probe
-        # targets its health endpoint.
+        # Separate Traefik router from the dashboard above; `/` is a 404, so
+        # probe /health.
         - name: hermes-api
           url: https://agent-api.${cluster_internal_domain}/health
           module: http_2xx
-        # Homarr answers an unauthenticated probe with a 302 to its OIDC login.
         - name: homarr
           url: https://dashboard.${cluster_internal_domain}
           module: http_sso
@@ -129,47 +142,33 @@ spec:
         - name: gitlab
           url: https://git.${cluster_internal_domain}
           module: http_2xx
-        # SSO-only: the root redirects to Authentik (302). Like every http_sso
-        # target here, the probe verifies ingress + TLS + backend reachability,
-        # not an authenticated session.
         - name: nextcloud
           url: https://cloud.${cluster_internal_domain}
           module: http_sso
-        # Immich answers 200 directly today (the SPA redirects client-side);
-        # http_sso keeps the probe correct if a server-side SSO gate ever lands.
         - name: immich
           url: https://photos.${cluster_internal_domain}
           module: http_sso
         - name: pulsarr
           url: https://pulsarr.${cluster_internal_domain}
           module: http_sso
-        # wg-easy ADMIN UI only — behind authentik-auth ForwardAuth, so the
-        # probe verifies the ingress + TLS + ForwardAuth hop. The WAN WireGuard
-        # endpoint itself is UDP and unprobeable here; WgEasyEndpointVipMissing
-        # (rules/infrastructure.yaml) watches that datapath instead.
+        # ADMIN UI only: the WAN WireGuard endpoint is UDP and unprobeable
+        # here — WgEasyEndpointVipMissing watches that datapath instead.
         - name: wg-easy
           url: https://vpn.${cluster_internal_domain}
           module: http_sso
-        # Host-side Alloy's log-shipping path: loki-push-auth returns 401
-        # without credentials, which http_sso accepts.
+        # Host-side Alloy's log-shipping path (loki-push-auth 401s unauthenticated).
         - name: loki-push
           url: https://loki.${cluster_internal_domain}
           module: http_sso
-        # 1Password Connect is the secrets backend for every ExternalSecret AND
-        # the ZFS key-load path at boot. OnePasswordConnectDown watches the
-        # Deployment and ExternalSecretSyncFailure the consumer; neither covers
-        # the ingress + TLS hop. `/` is a 404, so probe the health endpoint. Its
-        # IngressRoute is access-controlled (internal-only), so /health returns
-        # 403 to the exporter's source — http_sso accepts 200/401/403 (Traefik +
-        # TLS reachable), while a real outage still returns 502/503 and fires.
+        # The ingress + TLS hop for 1Password Connect, which no other alert
+        # covers. /health, not / (404); its access-controlled IngressRoute
+        # returns 403 to this pod's source.
         - name: onepassword-connect
           url: https://connect.${cluster_internal_domain}/health
           module: http_sso
-        # AdGuard UIs. adguard*/dns-0* are two router pairs onto the same two
-        # resolvers: the adguard* names sit behind Authentik ForwardAuth (302 to
-        # auth), the dns-0* names go straight to AdGuard's own login (302).
-        # Resolver FUNCTION is covered by the DNS probes below; these cover the
-        # management path.
+        # AdGuard UIs: adguard*/dns-0* are two router pairs onto the same two
+        # resolvers. Management path only — resolver FUNCTION is covered by the
+        # DNS probes below.
         - name: adguard-dns-01
           url: https://adguard.${cluster_internal_domain}
           module: http_sso
@@ -182,6 +181,12 @@ spec:
         - name: adguard-ui-dns-02
           url: https://dns-02.${cluster_internal_domain}
           module: http_sso
+        # Router admin UI: its route's lan-tailscale-STRICT middleware drops the
+        # pod CIDR, so this probe gets a 403 and covers the Traefik router +
+        # cert, not the web UI behind it.
+        - name: router
+          url: https://router.${cluster_internal_domain}
+          module: http_sso
         - name: dns-01
           url: 192.168.0.150:53
           module: dns_resolution
@@ -192,27 +197,27 @@ spec:
           url: smtp-relay.${cluster_internal_domain}:587
           module: tcp_connect
         - name: k3s-api-vip
-          url: 192.168.0.161:6443
+          url: ${cluster_api_vip}:6443
           module: tcp_connect
-        # Windows 11 VM RDP reachability — target is live/armed (docs/39). Feeds
-        # the WindowsRdpDown alert (kube-prometheus-stack release.yaml,
-        # homelab.monitoring); instance is "192.168.0.155:3389". VM 155 is a
-        # start-on-demand desktop (onboot=0) that is off much of the time, so
-        # WindowsRdpDown is gated on the VM actually being powered on
-        # (pve_up{id="qemu/155"}) — it stays silent while the VM is intentionally
-        # stopped and only fires when RDP is dead on a running VM.
+        # Windows 11 VM RDP reachability (docs/39). WindowsRdpDown is gated on
+        # pve_up{id="qemu/155"}: the desktop auto-starts after every NAS unlock
+        # but an operator may shut it down at any time.
         - name: windows-rdp
           url: 192.168.0.155:3389
           module: tcp_connect
-        # GitLab Container Registry — every CI image pull and push goes through
-        # it, and it has its own Traefik router and certificate, so neither the
-        # git.esweiss.com probe nor the runner jobs' failure mode covers it
-        # (a broken registry surfaces as a mid-pipeline ImagePullBackOff).
-        # Unauthenticated GET / answers 200 today; http_sso also tolerates the
-        # 401 the registry API returns if that ever changes.
+        # GitLab Container Registry: its own router and certificate, which the
+        # git.esweiss.com probe does not cover (a broken registry otherwise
+        # surfaces only as a mid-pipeline ImagePullBackOff). http_sso tolerates
+        # both the 200 it answers today and a future 401.
         - name: gitlab-registry
           url: https://registry.git.${cluster_internal_domain}
           module: http_sso
+        # GitLab Pages: its own router, backend port and certificate, so the
+        # git.* probes cover none of it. The apex has no project mapped and
+        # answers 404 — hence http_pages; a broken router/backend still 502s.
+        - name: gitlab-pages
+          url: https://pages.git.${cluster_internal_domain}
+          module: http_pages
         # External path (Cloudflare -> WAN -> MetalLB .100): catches DDNS drift
         # and public-ingress breakage the internal probes cannot see. AdGuard
         # rewrites only *.esweiss.com, so every *.ericsweiss.com probe below
@@ -228,21 +233,23 @@ spec:
         - name: gitlab-registry-external
           url: https://registry.git.${cluster_external_domain}
           module: http_sso
-        # NOT an external probe despite the hostname: auth.ericsweiss.com is the
-        # AdGuard split-horizon exception (group_vars/dns.yml), so this pod
-        # reaches the INTERNAL Traefik VIP with that SNI — exactly the path every
-        # server-side OIDC discovery/JWKS fetch takes, and a different router and
-        # certificate from the auth.esweiss.com probe. The genuinely public front
-        # door cannot be probed from in-cluster while the rewrite stands.
+        # Same router/cert reasoning as the internal pages probe above.
+        - name: gitlab-pages-external
+          url: https://pages.git.${cluster_external_domain}
+          module: http_pages
+        # NOT external despite the hostname: auth.ericsweiss.com is the AdGuard
+        # split-horizon exception (group_vars/dns.yml), so this probes the
+        # internal VIP — the same path server-side OIDC discovery takes, on a
+        # different router and cert from the auth.esweiss.com probe. The public
+        # front door cannot be probed from in-cluster while the rewrite stands.
         - name: authentik-oidc-issuer
           url: https://auth.${cluster_external_domain}
           module: http_2xx
         - name: nextcloud-external
           url: https://cloud.${cluster_external_domain}
           module: http_sso
-        # photos.ericsweiss.com is a DNS-only (proxy-bypassed) CNAME so large
-        # uploads skip Cloudflare — which also means it is the hostname most
-        # exposed to DDNS drift and the one with no proxy in front to mask it.
+        # DNS-only (proxy-bypassed) CNAME so large uploads skip Cloudflare —
+        # which also leaves it the name most exposed to DDNS drift.
         - name: immich-external
           url: https://photos.${cluster_external_domain}
           module: http_sso
@@ -261,9 +268,8 @@ spec:
         - name: plex-external
           url: https://plex.${cluster_external_domain}
           module: http_sso
-        # Web IDE extension host — a separate router and origin from
-        # git.ericsweiss.com, and the SOP isolation it provides is load-bearing
-        # (docs/27). Answers 302 to GitLab's sign-in unauthenticated.
+        # Web IDE extension host: a separate router and origin from
+        # git.ericsweiss.com, whose SOP isolation is load-bearing (docs/27).
         - name: gitlab-webide-external
           url: https://ide.git.${cluster_external_domain}
           module: http_sso

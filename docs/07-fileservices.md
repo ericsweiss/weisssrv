@@ -44,7 +44,7 @@ A systemd timer (`media-mover.timer`, daily at 06:00 —
 `nas_storage_media_mover_schedule` in `host_vars/pve-nas-01.yml` is the source of truth;
 role default 06:00)
 runs `/usr/local/sbin/media-mover.sh`, which moves files older than 12 hours
-(`media_mover_min_age`) from `/mnt/nvme/media/library` to
+(`nas_storage_media_mover_min_age`) from `/mnt/nvme/media/library` to
 `/mnt/tank/media/library`. The service is load-shaped so a large overnight
 move cannot starve Plex or backups: `Nice`/`ionice` plus cgroup-v2
 `CPUWeight`/`IOWeight` (defaults 20), with an optional hard rsync cap via
@@ -288,7 +288,7 @@ Deploy file services with:
 ```bash
 task storage:deploy
 # Or directly:
-ansible-playbook -i inventories/prod playbooks/storage.yml
+ansible-playbook -i ansible/inventories/prod ansible/playbooks/storage.yml
 ```
 
 ### Role: `nas_storage`

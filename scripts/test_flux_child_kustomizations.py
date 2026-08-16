@@ -1,11 +1,19 @@
 #!/usr/bin/env python3
-"""Unit tests for scripts/flux-child-kustomizations.py.
+"""Unit tests for scripts/flux-child-kustomizations.py, plus the substitution
+contract the same set of Kustomizations has to satisfy.
 
 Two consumers (task flux:reconcile, scripts/deploy-verify.sh) used to
 hand-maintain the child Kustomization list and both omitted
 `infrastructure-crds`. These tests pin that the derived list covers every
 Kustomization the cluster directory actually declares and orders it by
 dependsOn, so adding a stage can never silently drop out of either consumer.
+
+TestSubstituteFrom gates a second invariant over the same files: every stage
+after `sources` must substitute from BOTH cluster-versions and cluster-config,
+each `optional: false`. It lives here rather than in flux:lint because
+flux:lint structurally cannot see it — that task exports the union of both
+ConfigMaps and envsubsts every tree with all of them, regardless of what each
+Kustomization declares.
 
 Run with pytest:
     pytest scripts/test_flux_child_kustomizations.py -v
@@ -76,6 +84,76 @@ class TestAgainstTheRealCluster:
             ("infrastructure-configs", "infrastructure-observability"),
         ]:
             assert out.index(earlier) < out.index(later), f"{earlier} must precede {later}"
+
+
+class TestSubstituteFrom:
+    """Every Kustomization after `sources` substitutes from exactly the two
+    ConfigMaps, both non-optional (CLAUDE.md § Task Runner).
+
+    A stage that lists only cluster-versions lints green — flux:lint substitutes
+    every tree with the union of both — and then ships a literal
+    `${cluster_internal_domain}` into a live manifest, which Flux renders as an
+    empty string. check-cluster-literals.py cannot catch it either: it uses
+    substituteFrom to DERIVE which trees to scan, so a Kustomization missing
+    cluster-config is excluded from the very scan that would flag its literals.
+    """
+
+    REQUIRED = {"cluster-versions", "cluster-config"}
+    # infrastructure-sources is where both ConfigMaps live, so it has nothing to
+    # substitute from; flux-system is the upstream bootstrap Kustomization.
+    EXEMPT = {"infrastructure-sources", "flux-system"}
+    # Tenant wiring files are not platform stages. The canonical template in
+    # kubernetes/clusters/weisssrv/tenants/README.md deliberately lists
+    # cluster-config ONLY (and only when the tenant uses placeholders at all):
+    # a tenant pins its own image versions rather than tracking this cluster's,
+    # so requiring cluster-versions here would contradict the documented shape.
+    EXEMPT_TREES = ("kubernetes/clusters/weisssrv/tenants/",)
+
+    def _declared(self):
+        import yaml
+
+        found = []
+        for path in sorted(REPO.glob("kubernetes/**/*.yaml")):
+            for doc in yaml.safe_load_all(path.read_text()):
+                if (
+                    isinstance(doc, dict)
+                    and doc.get("kind") == "Kustomization"
+                    and str(doc.get("apiVersion", "")).startswith("kustomize.toolkit")
+                ):
+                    found.append((path, doc))
+        assert found, "no Flux Kustomizations parsed from kubernetes/"
+        return found
+
+    def test_every_stage_substitutes_from_both_configmaps(self):
+        problems = []
+        for path, doc in self._declared():
+            name = doc.get("metadata", {}).get("name", "")
+            if name in self.EXEMPT:
+                continue
+            if any(
+                str(path.relative_to(REPO)).startswith(tree) for tree in self.EXEMPT_TREES
+            ):
+                continue
+            entries = (doc.get("spec", {}).get("postBuild", {}) or {}).get("substituteFrom") or []
+            names = {e.get("name") for e in entries if e.get("kind") == "ConfigMap"}
+            rel = path.relative_to(REPO)
+            if names != self.REQUIRED:
+                problems.append(f"{rel} ({name}): substitutes from {sorted(names)}")
+                continue
+            optional = [e.get("name") for e in entries if e.get("optional") is not False]
+            if optional:
+                problems.append(f"{rel} ({name}): {optional} must be optional: false")
+        assert not problems, (
+            "Flux Kustomizations with an incomplete substituteFrom:\n  "
+            + "\n  ".join(problems)
+            + "\n\nEvery stage after infrastructure-sources must list BOTH "
+            "cluster-versions and cluster-config with optional: false — a missing "
+            "one renders its placeholders as empty strings at reconcile time."
+        )
+
+    def test_the_exemptions_still_name_real_kustomizations(self):
+        names = {doc.get("metadata", {}).get("name") for _p, doc in self._declared()}
+        assert self.EXEMPT <= names, f"stale exemptions: {sorted(self.EXEMPT - names)}"
 
 
 class TestSynthetic:

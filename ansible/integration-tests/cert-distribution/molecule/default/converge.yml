@@ -28,7 +28,6 @@
           - openssl
         state: present
 
-    # Set up SSH for certificate distribution
     - name: Create admin user
       ansible.builtin.user:
         name: "{{ admin_username }}"
@@ -188,7 +187,6 @@
     acme_certs_local_cert_dir: /opt/AdGuardHome/certs
 
   tasks:
-    # Pre-create mock certificates (acme.sh would normally get these from Let's Encrypt)
     - name: Create acme.sh directory
       ansible.builtin.file:
         path: /root/.acme.sh
@@ -249,20 +247,17 @@
         dest: /root/.acme.sh/dnsapi/dns_cf.sh
         mode: '0755'
 
-    # Create local cert dir with installed certs (simulates acme.sh --install-cert)
     - name: Create local certificate directory
       ansible.builtin.file:
         path: "{{ acme_certs_local_cert_dir }}"
         state: directory
         mode: '0755'
 
-    # Generate a REAL *.{{ internal_domain }} wildcard cert that CHAINS to a
-    # throwaway CA. The forced-command receiver validates every pushed bundle
-    # with openssl (parse, notAfter, key==cert, SAN covers *.<internal_domain>,
-    # AND chains to a CA already in the client truststore), so the distributed
-    # cert must be genuine AND trusted — a self-signed leaf is now rejected. The
-    # test CA is installed into each client's trust store in the play below,
-    # before the push, so the receiver's chain check passes end to end.
+    # The forced-command receiver validates every pushed bundle with openssl
+    # (parse, notAfter, key==cert, SAN, AND chains to a CA in the client
+    # truststore), so a self-signed leaf is rejected — hence a real wildcard
+    # leaf signed by a throwaway CA, which the play below installs on each
+    # client before the push.
     - name: Generate a CA-chained wildcard cert (leaf + CA) for distribution
       ansible.builtin.shell:
         chdir: "{{ acme_certs_local_cert_dir }}"
@@ -271,18 +266,15 @@
         cmd: |
           set -euo pipefail
           dom="{{ internal_domain }}"
-          # 1. Throwaway root CA
           openssl req -x509 -newkey rsa:2048 -nodes -keyout test-ca.key -out test-ca.pem \
             -days 30 -subj "/CN=Homelab Test CA"
-          # 2. Leaf key + CSR for the wildcard
           openssl req -newkey rsa:2048 -nodes -keyout privkey.pem -out leaf.csr \
             -subj "/CN=*.${dom}"
-          # 3. Sign the leaf with the CA, carrying the wildcard SAN
           printf 'subjectAltName=DNS:*.%s,DNS:%s\nbasicConstraints=CA:FALSE\n' "$dom" "$dom" > san.ext
           openssl x509 -req -in leaf.csr -CA test-ca.pem -CAkey test-ca.key -CAcreateserial \
             -days 30 -extfile san.ext -out leaf.pem
-          # 4. fullchain = leaf + CA (leaf FIRST, so the receiver's single-cert
-          #    `openssl x509` checks still read the leaf)
+          # leaf FIRST in fullchain, so the receiver's single-cert
+          # `openssl x509` checks still read the leaf
           cat leaf.pem test-ca.pem > fullchain.pem
 
     - name: Set permissions on the generated cert pair
@@ -293,9 +285,8 @@
         - {name: fullchain.pem, mode: "0644"}
         - {name: privkey.pem, mode: "0640"}
 
-    # Stash the throwaway CA cert as a fact so the cert_clients play below can
-    # install it into their trust store — the receiver's chain check runs on the
-    # clients, so the leaf must chain to a CA they trust.
+    # Stashed as a fact so the cert_clients play below can install it — the
+    # receiver's chain check runs on the clients.
     - name: Slurp the test CA cert
       ansible.builtin.slurp:
         src: "{{ acme_certs_local_cert_dir }}/test-ca.pem"
@@ -305,13 +296,12 @@
       ansible.builtin.set_fact:
         test_ca_pem_b64: "{{ test_ca_slurp.content }}"
 
-    # Install sudo for the distribution script (runs sudo on remote hosts)
     - name: Install sudo
       ansible.builtin.apt:
         name: sudo
         state: present
 
-    # Create mock AdGuardHome service (the reload script tries to restart it)
+    # The reload script restarts AdGuardHome, so mock the unit.
     - name: Create mock AdGuardHome binary
       ansible.builtin.copy:
         content: |
@@ -342,7 +332,6 @@
         state: started
         enabled: true
 
-    # Vars come from molecule.yml inventory and all.yml vars_files
     - name: Apply acme_certs role
       ansible.builtin.include_role:
         name: weisssrv.infra.acme_certs
@@ -357,24 +346,14 @@
         # the distribution key to that source IP — the from="..." restriction
         # would reject the SSH push from the container and fail distribution.
         acme_certs_key_from: ""
-        # Suppress the role's OWN proactive push here: it runs during this play,
-        # which is BEFORE the CA is trusted on the clients (next play), so the
-        # receiver's chain check would reject it and abort converge. The real
-        # distribution is exercised by the explicit "Run Certificate
-        # Distribution" play below, after the test CA is installed.
+        # Suppress the role's OWN push: it would run BEFORE the next play
+        # trusts the CA on the clients, so the chain check would abort converge.
+        # Distribution is exercised explicitly further down.
         acme_certs_skip_distribution: true
 
-    # The role deploys the real ed25519 keypair (generated earlier in this
-    # converge, injected via add_host) to /home/eric/.ssh/id_ed25519_certs and pushes
-    # the matching pubkey to each acme_certs_distribution_targets host's
-    # authorized_keys via ansible.posix.authorized_key. Both happen inside
-    # acme_certs above, so no post-role keygen / authorized_key push is
-    # needed here.
 
-# Trust the throwaway test CA on the clients BEFORE distribution — the
-# forced-command receiver's `openssl verify -CAfile /etc/ssl/certs/ca-certificates.crt`
-# check runs on each client, so the distributed leaf must chain to a CA the
-# client already trusts.
+# MUST precede distribution: the receiver's `openssl verify` runs on each
+# client, so the leaf must chain to a CA the client already trusts.
 - name: Converge - Trust the test CA on cert clients
   hosts: cert_clients
   become: true
@@ -390,7 +369,6 @@
       ansible.builtin.command: update-ca-certificates
       changed_when: true
 
-# Third play: Run the distribution script now that keys are in place
 - name: Converge - Run Certificate Distribution
   hosts: cert_servers
   become: true

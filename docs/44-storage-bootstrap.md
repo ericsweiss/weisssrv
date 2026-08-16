@@ -93,16 +93,14 @@ Ensure your Ansible environment is set up:
 
 ```bash
 # Install Ansible collections
-cd ansible
-ansible-galaxy collection install -r requirements.yml
+ansible-galaxy collection install -r ansible/requirements.yml
 
 # Verify 1Password authentication
 op account get
-
-# Export required secrets
-export SSH_PUBLIC_KEY=$(op read "op://Homelab/SSH Key/public key")
-export SAMBA_NAS_PASSWORD=$(op read "op://Homelab/Samba NAS User/password")
 ```
+
+The two secrets the playbook needs (`SSH_PUBLIC_KEY`, `SAMBA_NAS_PASSWORD`) are
+injected by the task wrapper below — do not export them into your shell.
 
 ---
 
@@ -126,10 +124,17 @@ ssh pve-nas-01 'ls -la /mnt/ /export/'
 ### Step 2: Run Bootstrap Playbook
 
 ```bash
-cd ansible
+# Runs the playbook under `op run --`, injecting SSH_PUBLIC_KEY and
+# SAMBA_NAS_PASSWORD from 1Password (interactive — prompts for confirmation)
+task disaster-recovery:storage-bootstrap
+```
 
-# Run bootstrap (interactive mode - will prompt for confirmation)
-ansible-playbook playbooks/bootstrap/storage-bootstrap.yml --limit pve-nas-01
+Fallback, if the Taskfile is unavailable: export `SSH_PUBLIC_KEY` and
+`SAMBA_NAS_PASSWORD` by hand, then
+
+```bash
+ansible-playbook -i ansible/inventories/prod \
+  ansible/playbooks/bootstrap/storage-bootstrap.yml --limit pve-nas-01
 ```
 
 ### Step 3: Review Detection Results
@@ -172,7 +177,8 @@ ZFS Pools to Create:
 ZFS Datasets to Create:
   WARNING: tank/media
   WARNING: tank/share
-  WARNING: tank/downloads
+  ... (the dataset list comes from the `datasets:` blocks of
+       `nas_storage_zfs_pools` in host_vars/pve-nas-01.yml — shape-only output)
   (or: All datasets exist)
 
 Directories to Create:
@@ -214,9 +220,9 @@ CONFIRMATION REQUIRED
 This playbook will create the following ZFS datasets:
   - tank/media
   - tank/share
-  - tank/downloads
   - tank/proxmox
   - tank/pve
+  ... (as declared in host_vars/pve-nas-01.yml)
 
 WARNING: This operation will:
   - Create ZFS datasets with configured properties
@@ -240,7 +246,7 @@ The playbook will:
    TASK [Create missing ZFS datasets]
    changed: [pve-nas-01] => (item=tank/media)
    changed: [pve-nas-01] => (item=tank/share)
-   changed: [pve-nas-01] => (item=tank/downloads)
+   ... (one item per `nas_storage_zfs_pools[].datasets` entry)
    ```
 
 2. **Create Directory Structure**
@@ -259,6 +265,45 @@ The playbook will:
    - NFS exports active
    - MergerFS unions created
 
+### Creating a dataset by hand
+
+`nas_storage` **never creates datasets** — declaring one it cannot find is a hard
+`DATASET_MISSING` failure on the next NAS deploy. So a new entry in
+`nas_storage_zfs_pools[].datasets` is always paired with this sequence, run as
+root on pve-nas-01 **before** the deploy. `tank/backups/apps` is the worked
+example: it was a plain directory under `tank/backups` holding live per-app
+dumps, and `zfs create` refuses a non-empty mountpoint.
+
+```bash
+# 1. Stop whatever writes there (in-cluster dump CronJobs, archsync/restic
+#    timers, the gitlab-backup timer on .153). A dump landing mid-move is lost.
+
+# 2. Move existing content aside — same pool, so this is a rename, not a copy.
+mv /mnt/tank/backups/apps /mnt/tank/backups/apps.pre-dataset
+
+# 3. Create it. Encryption is INHERITED from the tank/backups encryption root:
+#    do NOT pass -o encryption, and never `zfs set encryption` on an existing
+#    dataset (it errors, by design — that is the plaintext-recreation guard).
+zfs create -o mountpoint=/mnt/tank/backups/apps \
+           -o atime=off -o compression=zstd \
+           -o com.sun:auto-snapshot=false \
+           tank/backups/apps
+
+# 4. Move the content back and restore ownership to the exports' all_squash pair.
+mv /mnt/tank/backups/apps.pre-dataset/* /mnt/tank/backups/apps/
+rmdir /mnt/tank/backups/apps.pre-dataset
+chown -R 1000:2000 /mnt/tank/backups/apps
+
+# 5. Prove it is a mounted dataset — this is exactly what the exports'
+#    bind_source_check tests, and a bare directory passes nothing.
+mountpoint -q /mnt/tank/backups/apps && echo "OK: dataset mounted"
+zfs get -o property,value encryption,keystatus,mountpoint tank/backups/apps
+```
+
+Only then `task infra:deploy -- --limit pve-nas-01 --tags nas_storage`, restart
+the writers, and confirm the next nightly dumps land. The dataset is listed in
+docs/06's `tank` dataset table.
+
 ### Step 7: Review Completion Status
 
 ```
@@ -268,16 +313,14 @@ ZFS Datasets Mounted:
   tank                     yes
   tank/media              yes
   tank/share              yes
-  tank/downloads          yes
   tank/proxmox            yes
   tank/pve                yes
+  ... (one line per declared dataset)
 
 NFS Exports:
   Export list for pve-nas-01:
-  /export           192.168.0.102,192.168.0.200/29
-  /export/media     192.168.0.200/29,192.168.0.154
-  /export/share     192.168.0.200/29
-  /export/appdata   192.168.0.200/29
+  ... (the live export set, its client scoping and its TLS requirement are
+       described in section 4 below — `nas_storage_exports` is the source)
 
 MergerFS Mounts:
   /mnt/media  /mnt/nvme/media:/mnt/tank/media

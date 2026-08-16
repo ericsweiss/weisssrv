@@ -9,8 +9,8 @@ This guide covers deploying the recipe management stack including Mealie (food r
 | Component | Purpose | Port | URL |
 |-----------|---------|------|-----|
 | **Mealie** | Recipe management, meal planning | 9000 | food.esweiss.com / food.ericsweiss.com |
-| **Bar Assistant** | Cocktail recipe management | 8080 | bar.esweiss.com / bar.ericsweiss.com |
-| **Salt Rim** | Bar Assistant web UI | 8080 | (served at bar.esweiss.com) |
+| **Bar Assistant** | Cocktail recipe management | 8080 | bar.ericsweiss.com (canonical) |
+| **Salt Rim** | Bar Assistant web UI | 8080 | (served at bar.ericsweiss.com) |
 | **Mealie PostgreSQL** | Mealie database | 5432 | Internal only |
 | **Redis** | Bar Assistant cache and sessions | 6379 | Internal only |
 | **Meilisearch** | Bar Assistant search engine | 7700 | Internal only |
@@ -143,11 +143,14 @@ Both apps are accessible via internal and external domains with proper TLS certi
 | food.ericsweiss.com | External | Cloudflare (external-dns) | .100 (public) | `recipes-ericsweiss-tls` |
 | food.esweiss.com | Internal | AdGuard Home | .101 (internal) | `recipes-esweiss-tls` |
 | bar.ericsweiss.com | External | Cloudflare (external-dns) | .100 (public) | `recipes-ericsweiss-tls` |
-| bar.esweiss.com | Internal | AdGuard Home | .101 (internal) | `recipes-esweiss-tls` |
+| bar.esweiss.com | Internal | AdGuard Home | .101 (internal) | `recipes-esweiss-tls` — **redirect only**, 302 to `bar.ericsweiss.com` |
 
 **Note**: Per-namespace certificates are created by cert-manager via `certificate.yaml` in each namespace. This ensures certificate secrets exist in the same namespace as the IngressRoutes that reference them.
 
-**Add DNS rewrites in AdGuard Home:**
+**Add DNS rewrites** to `adguard_home_rewrites` in
+`ansible/inventories/prod/group_vars/dns.yml`, then `task dns:deploy`. The role
+deletes any rewrite not in the codified list, so a UI-added entry is reverted on
+the next deploy (docs/08 § DNS rewrites):
 
 ```yaml
 # Internal (esweiss.com) -> internal Traefik VIP
@@ -178,7 +181,8 @@ kubernetes/apps/recipes/
 ├── hpa.yaml                # salt-rim standalone HPA (see docs/33-autoscaling.md)
 ├── networkpolicy.yaml      # default-deny + per-app allowlist
 ├── vpa.yaml                # VerticalPodAutoscalers (per-container sizing)
-└── kustomization.yaml
+├── kustomization.yaml
+└── README.md
 ```
 
 ### Deploying Changes
@@ -255,7 +259,7 @@ task recipes:status
 
 # Verify services are accessible
 curl -k https://food.esweiss.com/api/app/about
-curl -k https://bar.esweiss.com/api/server/version
+curl -k https://bar.ericsweiss.com/api/server/version
 ```
 
 ## Application Configuration
@@ -263,7 +267,9 @@ curl -k https://bar.esweiss.com/api/server/version
 ### Mealie Initial Setup
 
 1. Access: https://food.esweiss.com
-2. Create your first admin user
+2. Log in through Authentik — password login is disabled, so the first user is
+   whoever the `mealie-users` group binding admits (docs/23,
+   `terraform/authentik/groups.tf`). There is no local break-glass account.
 3. Configure settings:
    - General: Set site name, timezone
    - Email: Already configured via environment variables
@@ -271,8 +277,11 @@ curl -k https://bar.esweiss.com/api/server/version
 
 ### Bar Assistant Initial Setup
 
-1. Access: https://bar.esweiss.com
-2. Create your first admin user
+1. Access: https://bar.ericsweiss.com — the canonical host. `bar.esweiss.com`
+   302-redirects here, because Bar Assistant pins a single OIDC callback origin.
+2. Log in through Authentik — password login is disabled, so the first user is
+   whoever the `bar-assistant-users` group binding admits (docs/23). There is no
+   local break-glass account.
 3. Import default data:
    - Go to Settings > Data
    - Import IBA cocktails or other defaults
@@ -333,9 +342,11 @@ kubectl exec -it -n recipes deployment/mealie-postgres -- psql -U mealie
 # Restart everything
 task recipes:restart
 
-# Restart specific app
-kubectl rollout restart deployment/mealie -n recipes
-kubectl rollout restart deployment/bar-assistant -n recipes
+# Restart specific app — delete the pods, never `rollout restart`: these
+# Deployments are Flux-managed and kustomize-controller drift-reverts the
+# restart annotation (docs/12 § Restarting workloads).
+kubectl delete pod -n recipes -l app.kubernetes.io/name=mealie
+kubectl delete pod -n recipes -l app.kubernetes.io/name=bar-assistant
 ```
 
 ### Update Apps

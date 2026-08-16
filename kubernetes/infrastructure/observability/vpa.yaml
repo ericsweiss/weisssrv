@@ -11,6 +11,12 @@
 # sidecars a small catch-all — a single wildcard sized for the main container
 # publishes ~10x-inflated sidecar recommendations that the Off-tier
 # apply-by-hand workflow would then act on.
+#
+# The small exporters below (adguard, exportarr, plex, redis, proxmox) are
+# limit-controlling — controlledValues unset — so each maxAllowed.memory sits
+# at 0.8x the container's declared limit in exporters/ (64Mi, 256Mi for
+# pve-exporter). At or above the limit the updater just rescales the limit with
+# the request and the declared ceiling never binds (docs/33).
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
 metadata:
@@ -22,7 +28,7 @@ spec:
     containerPolicies:
       - containerName: "*"
         minAllowed: {cpu: 10m, memory: 32Mi}
-        maxAllowed: {cpu: 200m, memory: 256Mi}
+        maxAllowed: {cpu: 200m, memory: 51Mi}
         controlledResources: [cpu, memory]
 ---
 apiVersion: autoscaling.k8s.io/v1
@@ -36,7 +42,7 @@ spec:
     containerPolicies:
       - containerName: "*"
         minAllowed: {cpu: 10m, memory: 32Mi}
-        maxAllowed: {cpu: 200m, memory: 256Mi}
+        maxAllowed: {cpu: 200m, memory: 51Mi}
         controlledResources: [cpu, memory]
 ---
 apiVersion: autoscaling.k8s.io/v1
@@ -50,7 +56,7 @@ spec:
     containerPolicies:
       - containerName: "*"
         minAllowed: {cpu: 10m, memory: 32Mi}
-        maxAllowed: {cpu: 200m, memory: 256Mi}
+        maxAllowed: {cpu: 200m, memory: 51Mi}
         controlledResources: [cpu, memory]
 ---
 apiVersion: autoscaling.k8s.io/v1
@@ -64,7 +70,7 @@ spec:
     containerPolicies:
       - containerName: "*"
         minAllowed: {cpu: 10m, memory: 32Mi}
-        maxAllowed: {cpu: 200m, memory: 256Mi}
+        maxAllowed: {cpu: 200m, memory: 51Mi}
         controlledResources: [cpu, memory]
 ---
 apiVersion: autoscaling.k8s.io/v1
@@ -78,7 +84,7 @@ spec:
     containerPolicies:
       - containerName: "*"
         minAllowed: {cpu: 10m, memory: 32Mi}
-        maxAllowed: {cpu: 200m, memory: 256Mi}
+        maxAllowed: {cpu: 200m, memory: 51Mi}
         controlledResources: [cpu, memory]
 ---
 apiVersion: autoscaling.k8s.io/v1
@@ -92,7 +98,7 @@ spec:
     containerPolicies:
       - containerName: "*"
         minAllowed: {cpu: 10m, memory: 32Mi}
-        maxAllowed: {cpu: 200m, memory: 256Mi}
+        maxAllowed: {cpu: 200m, memory: 51Mi}
         controlledResources: [cpu, memory]
 ---
 apiVersion: autoscaling.k8s.io/v1
@@ -106,7 +112,7 @@ spec:
     containerPolicies:
       - containerName: "*"
         minAllowed: {cpu: 10m, memory: 32Mi}
-        maxAllowed: {cpu: 200m, memory: 256Mi}
+        maxAllowed: {cpu: 200m, memory: 51Mi}
         controlledResources: [cpu, memory]
 ---
 apiVersion: autoscaling.k8s.io/v1
@@ -120,7 +126,7 @@ spec:
     containerPolicies:
       - containerName: "*"
         minAllowed: {cpu: 10m, memory: 32Mi}
-        maxAllowed: {cpu: 500m, memory: 384Mi}
+        maxAllowed: {cpu: 500m, memory: 204Mi}
         controlledResources: [cpu, memory]
 ---
 apiVersion: autoscaling.k8s.io/v1
@@ -134,7 +140,7 @@ spec:
     containerPolicies:
       - containerName: "*"
         minAllowed: {cpu: 10m, memory: 32Mi}
-        maxAllowed: {cpu: 200m, memory: 256Mi}
+        maxAllowed: {cpu: 200m, memory: 51Mi}
         controlledResources: [cpu, memory]
 ---
 apiVersion: autoscaling.k8s.io/v1
@@ -174,10 +180,16 @@ spec:
   updatePolicy: {updateMode: Auto}
   resourcePolicy:
     containerPolicies:
+      # RequestsOnly with maxAllowed == the 384Mi limit in
+      # kube-prometheus-stack/release.yaml — the shape its sibling exporter
+      # policies here use (alloy, node-exporter, dcgm-exporter). Its working set
+      # scales with object count, so leaving the updater to rescale the limit
+      # would move the ceiling this file reviews; only the request moves.
       - containerName: "*"
         minAllowed: {cpu: 10m, memory: 64Mi}
         maxAllowed: {cpu: 300m, memory: 384Mi}
         controlledResources: [cpu, memory]
+        controlledValues: RequestsOnly
 ---
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
@@ -188,10 +200,16 @@ spec:
   updatePolicy: {updateMode: Auto}
   resourcePolicy:
     containerPolicies:
+      # RequestsOnly: on the default RequestsAndLimits the updater rescales the
+      # LIVE limit away from the declared one, so a pod admitted while the
+      # mutating webhook is down runs under its own peak. The 640Mi limit is
+      # hand-set in alloy/release.yaml and stays the OOM ceiling; maxAllowed
+      # sits under it at the measured working set (docs/33).
       - containerName: "*"
         minAllowed: {cpu: 25m, memory: 64Mi}
         maxAllowed: {cpu: 500m, memory: 512Mi}
         controlledResources: [cpu, memory]
+        controlledValues: RequestsOnly
 ---
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
@@ -215,10 +233,9 @@ apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
 metadata:
   # GPU-telemetry DaemonSet (one pod, on the GPU node only). maxAllowed.memory
-  # sits above DCGM's real working set (hostengine + NVML driver libs) and below
-  # the 1Gi limit in exporters/dcgm-exporter.yaml. RequestsOnly: with the default
-  # RequestsAndLimits the VPA scales the limit by the manifest's 4:1 ratio, and
-  # the 1Gi limit is the hand-set OOM ceiling — only the request should move.
+  # sits above DCGM's working set and below the limit in
+  # exporters/dcgm-exporter.yaml, which is the hand-set OOM ceiling —
+  # RequestsOnly so only the request moves.
   name: dcgm-exporter
 spec:
   targetRef: {apiVersion: apps/v1, kind: DaemonSet, name: dcgm-exporter}
@@ -267,8 +284,8 @@ spec:
         minAllowed: {cpu: 100m, memory: 512Mi}
         maxAllowed: {cpu: 2, memory: 6Gi}
         controlledResources: [cpu, memory]
-      # config-reloader and any future sidecar: a 25-30Mi process must not
-      # inherit the main container's floor.
+      # config-reloader and any future sidecar must not inherit the main
+      # container's floor.
       - containerName: "*"
         minAllowed: {cpu: 10m, memory: 32Mi}
         maxAllowed: {cpu: 200m, memory: 256Mi}

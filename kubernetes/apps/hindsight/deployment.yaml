@@ -112,11 +112,12 @@ spec:
             failureThreshold: 4
           # In-process torch/sentence-transformers embeddings + flashrank
           # reranker + embedded PostgreSQL + the Next.js control plane. Request
-          # tracks the recorded VPA target. No CPU limit (docs/33).
+          # tracks the recorded VPA target (`Off` tier — applied by hand): 1920Mi
+          # covers the 1805Mi 30d working-set peak. No CPU limit (docs/33).
           resources:
             requests:
               cpu: 200m
-              memory: 1536Mi
+              memory: 1920Mi
             limits:
               memory: 3Gi
           # Runs as the image's unprivileged `hindsight` user (UID 1000),
@@ -165,8 +166,9 @@ spec:
             # serialized inference is fine.
             - name: LLAMA_ARG_N_PARALLEL
               value: "1"
-            # Threads only feed the GPU under -ngl 99, so 4 is generous. Retune
-            # from measured tok/s rather than deleting (docs/43).
+            # 4 threads. Nominally these only feed the GPU under -ngl 99, but
+            # measured CPU is ~0.9 cores at p95 (see the resources block), so
+            # retune from measured tok/s rather than deleting (docs/43).
             - name: LLAMA_ARG_THREADS
               value: "4"
           # /health returns 503 while the model loads. The 30-minute startup
@@ -186,15 +188,21 @@ spec:
             periodSeconds: 30
             timeoutSeconds: 10
             failureThreshold: 5
-          # Model + KV cache live in VRAM (-ngl 99); the host side is ~560Mi RSS
-          # plus the active slice of the mmap'd GGUF page cache (reclaimable), so
-          # the request sits under the ~2.7Gi working set on purpose. The limit
-          # is a reclaim ceiling with headroom over the observed peak. No CPU
-          # limit (docs/33); nvidia.com/gpu is an integer extended resource, so
-          # its request auto-mirrors the limit.
+          # Model + KV cache live in VRAM (-ngl 99); the host side is mostly the
+          # mmap'd GGUF page cache, which is reclaimable — so the request sits
+          # UNDER the working set on purpose and the limit is a reclaim ceiling,
+          # deliberately not raised after a one-off anon-RSS spill OOMKilled the
+          # container (the GPU node is near its allocatable-memory ceiling in
+          # limits). Watch the growth instead.
+          #
+          # The CPU request tracks the measured p95 rather than the "threads only
+          # feed the GPU" premise above: a sustained ~0.9 cores is the second
+          # signal to check when revisiting whether the model is still fully
+          # offloaded. No CPU limit (docs/33); nvidia.com/gpu is an integer
+          # extended resource, so its request auto-mirrors the limit.
           resources:
             requests:
-              cpu: 250m
+              cpu: 900m
               memory: 2Gi
             limits:
               memory: 4Gi

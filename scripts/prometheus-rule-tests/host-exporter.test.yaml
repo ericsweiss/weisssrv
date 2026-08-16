@@ -185,6 +185,58 @@ tests:
               instance: '192.168.0.104:9101'
               device: nic0
 
+  # HostNetworkReceiveErrs: the same 1%-of-packets ratio on the receive side.
+  # This is the arm that watches the documented OptiPlex e1000e failure family
+  # (docs/34), so both halves are pinned — .104 over the ratio fires, .105 at
+  # zero errors on the same device name stays silent.
+  - interval: 1m
+    input_series:
+      - series: 'node_network_receive_errs_total{job="node-exporter-host", instance="192.168.0.104:9101", device="nic0"}'
+        values: '0+5x80'
+      - series: 'node_network_receive_packets_total{job="node-exporter-host", instance="192.168.0.104:9101", device="nic0"}'
+        values: '0+100x80'
+      - series: 'node_network_receive_errs_total{job="node-exporter-host", instance="192.168.0.105:9101", device="nic0"}'
+        values: '0+0x80'
+      - series: 'node_network_receive_packets_total{job="node-exporter-host", instance="192.168.0.105:9101", device="nic0"}'
+        values: '0+100x80'
+    alert_rule_test:
+      # Inside the 1h hold — a burst of receive errors must not page.
+      - eval_time: 30m
+        alertname: HostNetworkReceiveErrs
+        exp_alerts: []
+      - eval_time: 70m
+        alertname: HostNetworkReceiveErrs
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: node-exporter-host
+              instance: '192.168.0.104:9101'
+              device: nic0
+
+  # The rate window is [5m], not the [2m] the mixin uses, because this job is
+  # scraped every 60s: a [2m] window holds two samples, so a SINGLE missed
+  # scrape (a kured drain, a busy host, one dropped scrape — punched in here at
+  # minute 31) leaves it with one sample, rate() returns nothing for two
+  # evaluations, and the 1h `for:` restarts from zero. The e1000e hang this arm
+  # watches (docs/34) drops scrapes while it degrades, so a window that cannot
+  # survive a gap is a window that never reaches an hour. At [5m] the gap is
+  # absorbed and the alert still fires on schedule.
+  - interval: 1m
+    input_series:
+      - series: 'node_network_receive_errs_total{job="node-exporter-host", instance="192.168.0.104:9101", device="nic0"}'
+        values: '0+5x30 _ 160+5x50'
+      - series: 'node_network_receive_packets_total{job="node-exporter-host", instance="192.168.0.104:9101", device="nic0"}'
+        values: '0+100x30 _ 3200+100x50'
+    alert_rule_test:
+      - eval_time: 70m
+        alertname: HostNetworkReceiveErrs
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: node-exporter-host
+              instance: '192.168.0.104:9101'
+              device: nic0
+
   # HostConntrackEntriesHigh at 75% of the table.
   - interval: 1m
     input_series:

@@ -3,8 +3,11 @@
 A VM/LXC app is provisioned by **Ansible** (not Flux): a collection role builds
 the guest, a playbook here runs it, and the app is fronted by an in-cluster
 Traefik IngressRoute (the "vm-ingress" pattern) so k3s routing still applies.
-GitLab is the fullest worked example — read it alongside this list:
-`docs/27-gitlab-deployment.md`. Storage: `docs/06-zfs.md` and
+Nextcloud (`docs/35-nextcloud.md`) and Immich (`docs/36-immich.md`) are the
+current-shape worked examples — encrypted zvol passthrough, host nginx +
+`vm-tls-wildcard`, cert distribution, pg_dump + BackupArtifact alerts. GitLab
+(`docs/27-gitlab-deployment.md`) is the fullest one, but it is Omnibus-specific
+and predates most of that. Storage: `docs/06-zfs.md` and
 `docs/44-storage-bootstrap.md`. Firewall: `docs/11-firewall.md`. DR/backups:
 `docs/17-disaster-recovery.md` and `docs/42-offsite-backup.md`. New-guest
 bootstrap: `docs/18-bootstrap-new-systems.md`.

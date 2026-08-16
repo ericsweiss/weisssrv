@@ -1,18 +1,11 @@
-# Import blocks binding the ADOPTED resources to their live API objects
-# (applications by slug, providers by numeric pk, groups by uuid). Idempotent:
-# once a resource is in state the block is a no-op, so this file is the permanent
-# state<->API identity map.
+# Import blocks binding the objects that existed at adoption time to their live
+# API ids (applications by slug, providers by pk, groups by uuid). Idempotent:
+# a no-op once the resource is in state.
 #
-# Addresses are MODULE-QUALIFIED since the move onto the library `authentik-sso`
-# module (main.tf): the resources are keyed instances of the module's resources,
-# and the key is the map key in the sibling site-data files. moved.tf holds the
-# old->new address map for state that predates the move; this file is for state
-# that has none.
-#
-# SCOPE — the 44 objects that existed in the Admin UI at adoption time only.
-# Objects this module has AUTHORED since have no import block (authentik assigns
-# their pks/uuids at create time), which is why a state-loss rebuild is not a
-# one-command re-import — see README "Import methodology / disaster recovery".
+# Addresses are module-qualified; moved.tf covers state that predates the move.
+# Terraform-AUTHORED objects have no block here, which is why a state-loss
+# rebuild is not a one-command re-import — see README "Import methodology /
+# disaster recovery".
 
 # Applications (id = slug). Static list, NOT local.applications: a newly
 # authored app has no live object to import, and a for_each over the map would

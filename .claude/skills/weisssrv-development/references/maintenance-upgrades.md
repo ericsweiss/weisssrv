@@ -52,6 +52,13 @@ both move together, in one MR:
 2. The collection `version:` in `ansible/requirements.yml`, then
    `ansible-galaxy install -r ansible/requirements.yml --force`.
 
+Two more literals ride the same tag and are NOT in those two files: the
+`molecule-test:<tag>` fallbacks in the integration scenarios and
+`ansible/TESTING.md` (`scripts/check-molecule-image-pin.py --fix` rewrites them;
+CI overrides the image, so a stale one only breaks a local `molecule test`), and
+the three Terraform `?ref=` module pins, which are still bumped by hand. Both are
+gated by `scripts/test_site_configs.py`.
+
 While the new tag does not exist yet, both the pinned galaxy install and
 `task ansible:lint` fail on it. Lint against the library checkout instead:
 

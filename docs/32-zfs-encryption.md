@@ -446,8 +446,8 @@ The chain is:
    can take ~240s in the worst case for sequential vault+item
    Connect calls, so the burst rarely trips — the unit retries
    indefinitely rather than reaching a clean `failed` state. See
-   the "Cold-cluster recovery" section below for the operator
-   path if Connect itself never comes up.)
+   "Recovery is only needed if Connect itself can't come up"
+   below for the operator path.)
 5. Keys load → `zfs-mount-encrypted.service` (the late anchor) mounts the
    encrypted datasets on its next retry → nfsd (drop-in, ordered after it)
    serves the real datasets, and `pve-start-encrypted-guests.service` starts

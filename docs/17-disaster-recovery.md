@@ -162,7 +162,9 @@ site loss takes both. That is acceptable for the IaC-managed guests, whose
 recovery path is reprovision-then-restore-data. The Windows VM (155) is the one
 guest whose desktop state is not reproducible from IaC; if anything on it matters,
 export it onto an NFS path under `tank/backups/apps/` so it rides the existing
-file walk into B2.
+file walk into B2. No such export exists today, and nothing alerts on its
+absence — the decision to keep it that way is recorded in
+[docs/16-next-steps.md](16-next-steps.md) § Accepted risks.
 
 ## Total site loss — the ordered critical path
 
@@ -176,10 +178,18 @@ flood).
    the Terraform HTTP state backends for `terraform/{cloudflare,tailscale,authentik}`.
    Its nightly tarball reaches B2 — but you cannot read B2 without the repo's
    tooling, so the bootstrap copy is the **read-only GitHub mirror**
-   (`github.com/ericsweiss/weisssrv`). The mirror carries this repo only: **not**
-   `weisssrv-lib` / `weisssrv-app-template` history, not issues/MRs, not the
-   container registry, and not Terraform state. Those come back from the GitLab
-   tarball once GitLab itself is running.
+   (`github.com/ericsweiss/weisssrv`). `weisssrv-lib` and both templates are
+   mirrored too, with their release tags — which matters, because since the
+   collection migration this repo has no `ansible/roles/` and every playbook
+   needs `weisssrv.infra` at the pinned tag. Install it from the mirror:
+
+   ```bash
+   ansible-galaxy install -r <(sed 's#git.ericsweiss.com/eric#github.com/ericsweiss#' ansible/requirements.yml)
+   ```
+
+   What the mirrors do **not** carry: issues/MRs, the container registry, and
+   Terraform state. Those come back from the GitLab tarball once GitLab itself is
+   running.
 2. **The credentials.** The 1Password vault (survives independently) plus an
    **offline** copy of `restic_repo_password` — without it the entire B2 repo is
    an inert blob (`docs/15-credential-rotation.md`).
@@ -191,7 +201,7 @@ flood).
 | 1 | Install Proxmox on the replacement hosts, restore `/etc/pve` from the `pve-cluster` archive once B2 is readable (or rebuild the cluster and re-add nodes) | hardware | 2–4 h |
 | 2 | Clone the IaC from the **GitHub mirror**; sign in to 1Password; restore the offline `restic_repo_password` | GitHub + 1Password | 15 min |
 | 3 | Create the ZFS pools by hand (never automated — docs/06), then run the [storage bootstrap](44-storage-bootstrap.md). **`nvme` lives on partition 4 of the Proxmox boot disk you installed in step 1** — create it against `...-part4`, never the whole device | 1, 2 | 1–2 h |
-| 4 | Restore from B2: `restic-offsitectl restore <source>` for `backups`, `share`, `appdata`, `k3s-etcd`, and the two data zvol trees | 3 | hours–days (data-volume bound; 621 GB raw at review time) |
+| 4 | Restore from B2: `restic-offsitectl restore <source>` for `backups`, `share`, `appdata`, `k3s-etcd`, and the two data zvol trees. `restic-offsitectl` is role-shipped, so before step 3 has run it does not exist — the fallback is raw `restic -r rclone:b2:weisssrv-backup/restic restore` with the offline repo password | 3 | hours–days (data-volume bound; 621 GB raw at review time) |
 | 5 | Rebuild the k3s VMs + cluster (`task k3s:deploy`), restoring etcd from the off-node snapshot if a same-identity cluster is wanted. **Never `qmrestore` a k3s guest** — no image exists, and a stale server image corrupts etcd quorum | 3, 4 | 1–2 h |
 | 6 | Bootstrap Flux + ESO (the two manual secrets — `docs/29-flux-operations.md`), let Flux reconcile everything in `kubernetes/` | 5 | 30–60 min |
 | 7 | Rebuild the VM/LXC apps via their playbooks, then replay logical dumps from the restored `backups/apps/<app>` (`gitlab-backup restore`, `pg_restore`, HAOS tar import — the HA tars need `backup_encryption_key`) | 4, 6 | 2–4 h |
@@ -203,6 +213,25 @@ archive only), so step 7 is "reprovision via Ansible, then restore data" — not
 the reason the GitHub mirror is a hard dependency rather than a convenience.
 
 **Nothing above is proven until it is drilled** — see docs/42 § "Restore drills".
+
+## GitLab project state that is not in git
+
+A GitLab project restore brings back the repos, issues, MRs and registry from
+the nightly tarball, but a handful of project settings live only in the API and
+come back at their DEFAULTS. Re-apply them after step 7 above.
+
+**Resource-group process modes.** `.gitlab-ci.yml` declares the resource groups
+(the per-target `deploy-*` set plus `infrastructure-maintenance`), but a group's
+`process_mode` is an API-only setting and a restore resets every group to
+`unordered` — which lets queued deploys and maintenance ops execute out of
+submission order, breaking the merge ordering the `workflow:` comment relies on.
+Every group must be `oldest_first`. Verify and re-apply:
+
+```bash
+glab api projects/eric%2Fweisssrv/resource_groups
+# for each group not reporting oldest_first:
+glab api -X PUT projects/eric%2Fweisssrv/resource_groups/<name> -f process_mode=oldest_first
+```
 
 ## Restore Procedures
 
@@ -497,9 +526,9 @@ the ping URL is injected via the alertmanager-config `ExternalSecret`. The
 external service alarms when the heartbeat *stops* — i.e. when Prometheus,
 Alertmanager, the NAS node, or notification egress is down. This is the only
 signal that survives a total observability-plane outage, including both DNS
-resolvers (on which the SMTP and Discord receivers depend). Remaining manual
-step: create the healthchecks.io check and the `Healthchecks Watchdog`
-1Password item (field `ping url`, see docs/15) so ESO can render the ping URL.
+resolvers (on which the SMTP and Discord receivers depend). The check and its
+`Healthchecks Watchdog` 1Password item (field `ping url`, docs/15) exist — the
+alertmanager-config ExternalSecret syncs, which it could not do otherwise.
 Optionally `remote_write` a thin critical-alerts shard to an off-NAS target.
 
 ---
@@ -601,4 +630,8 @@ See https://docs.k3s.io/security/secrets-encryption for the upstream guide.
 - [docs/29-flux-operations.md](29-flux-operations.md) - Flux day-2 ops (suspend/resume, rotation, rollback)
 - [docs/42-offsite-backup.md](42-offsite-backup.md) - offsite restic/B2 tier and restore drills
 - `weisssrv.infra.nas_storage` (weisssrv-lib) - Storage role implementation
-- External: [OpenZFS docs](https://openzfs.github.io/openzfs-docs/), [Proxmox forums](https://forum.proxmox.com/)
+
+## External references
+
+- [OpenZFS docs](https://openzfs.github.io/openzfs-docs/)
+- [Proxmox forums](https://forum.proxmox.com/)

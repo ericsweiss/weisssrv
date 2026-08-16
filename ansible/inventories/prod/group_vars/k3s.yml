@@ -1,7 +1,4 @@
 ---
-# K3s cluster configuration
-
-# Cluster configuration
 k3s_api_vip: 192.168.0.161
 k3s_api_port: 6443
 # apiserver SAN list. The role adds the VIP, inventory_hostname and
@@ -44,124 +41,67 @@ k3s_service_cidr: "10.43.0.0/16"
 # kubelet's --cluster-domain.
 resolv_conf_search_domains: []
 
-# Disable built-in components (we deploy our own)
+# Disable built-in components — we deploy our own.
 #
-# local-storage: k3s's local-path-provisioner ships `local-path` as the
-# CLUSTER-DEFAULT StorageClass, so any PVC that omits storageClassName is
-# silently defaulted onto the k3s VM bootdisk — a disk no backup path covers
-# (archive replication and vzdump cover zvols and OS disks only). Every PV in
-# this cluster is statically provisioned with `storageClassName: ""` + Retain,
-# so nothing consumes the class; removing it turns a silent fall-through into a
-# Pending PVC. The LocalPathPVExists alert stays as the detective control in
-# case a future k3s release re-enables it.
+# local-storage: k3s ships `local-path` as the CLUSTER-DEFAULT StorageClass, so
+# a PVC omitting storageClassName silently lands on the k3s VM bootdisk, which
+# no backup path covers. Every PV here is static (`storageClassName: ""` +
+# Retain), so removing the class turns a silent fall-through into a Pending PVC.
 #
-# metrics-server: k3s packages it as a STATIC wrangler AddOn (single replica, no
-# memory limit), which a HelmChartConfig cannot patch — and it is the only metric
-# source every HPA and the VPA recommender read. It is replaced by the Flux
-# HelmRelease in kubernetes/infrastructure/controllers/metrics-server/, so this
-# entry and that HelmRelease are ONE UNIT: disabling here without the release in
-# the cluster leaves every HPA and the VPA recommender with no metrics.
+# metrics-server: k3s packages it as a static wrangler AddOn a HelmChartConfig
+# cannot patch. This entry and the HelmRelease in
+# kubernetes/infrastructure/controllers/metrics-server/ are ONE UNIT — disabling
+# here without that release leaves every HPA and the VPA recommender with no
+# metrics.
 #
-# NOTE: applying this restarts the k3s servers (config.yaml change), which
-# needs a healthy etcd quorum — do not deploy it with a server node down.
+# Applying this restarts the k3s servers (config.yaml change): needs a healthy
+# etcd quorum — do not deploy with a server node down.
 k3s_disable:
   - servicelb       # Using MetalLB
   - traefik         # Deploying our own Traefik
   - local-storage   # No dynamic provisioning: all PVs are static (see above)
   - metrics-server  # Replaced by the Flux HelmRelease (see above)
 
-# Flannel backend = wireguard-native: pod-to-pod traffic across nodes
-# is encrypted with WireGuard (kernel module). Replaces the default
-# vxlan backend (UDP/8472, plaintext) with UDP/51820 + WireGuard.
-# The wire-encryption closes the in-cluster plaintext rows from
-# docs/06-zfs.md (Traefik->pod, ESO->Connect, Alloy->Loki, etc.) in
-# one shot, at ~5% throughput cost.
-#
-# Set vxlan to roll back. Switching the backend on a running cluster
-# requires server-by-server restart (cluster API briefly unavailable
-# during each restart); see docs/19-k3s-deployment.md 'Switching
-# flannel backend' for the procedure. Firewall rule for UDP/51820
-# between k3s_nodes is in proxmox_firewall sg-k3s-core; the UDP/8472
-# rule is retained as a documented rollback path.
-#
-# Rendered as `flannel-backend:` in /etc/rancher/k3s/config.yaml by
-# the k3s-server-config.yaml.j2 template — k3s reads this on every
-# server restart, no INSTALL_K3S_EXEC plumbing required.
+# wireguard-native encrypts pod-to-pod traffic across nodes (UDP/51820) at ~5%
+# throughput cost. Switching the backend on a running cluster needs a
+# server-by-server restart — docs/19-k3s-deployment.md § Switching flannel
+# backend. The UDP/8472 firewall rule is retained as the vxlan rollback path.
 k3s_flannel_backend: "wireguard-native"
 
-# Kubelet args applied to every k3s node (server + agent) via the kubelet-arg
-# field in /etc/rancher/k3s/config.yaml.
-#
-# image-gc-{high,low}-threshold: percentages of the kubelet's filesystem
-# (root by default) at which kubelet starts/stops pruning unused container
-# images. Defaults are 85/80, which on the 64 GiB k3s VM root disks lets
-# /var/lib/rancher/k3s/agent/containerd grow to ~50 GiB before kicking in
-# (observed: agt-prec-01 at 75% root with 30 GiB of overlayfs layers and
-# 8.8 GiB of unused image content). 70/50 reclaims earlier, more often.
+# image-gc-{high,low}-threshold: 70/50 instead of the 85/80 default — the
+# thresholds are a PERCENTAGE of the disk, so on the small k3s VM root disks
+# the default lets containerd's image store grow past what leaves room for
+# ephemeral storage before pruning starts.
 k3s_kubelet_args:
   - "image-gc-high-threshold=70"
   - "image-gc-low-threshold=50"
 
-# NFSv4-over-TLS: install + start tlshd on every k3s agent so a pod that
-# schedules to ANY agent can mount pve-nas-01's exports (/appdata, /share,
-# /media) with xprtsec=tls. /appdata and /share require TLS (xprtsec=tls —
-# plaintext mounts are rejected); /media is require-TLS for the k3s client
-# lines too, with a permissive plaintext per-client exception only for HAOS
-# (.154). The PVs drive the mount by hostname (pve-nas-01.esweiss.com, so the
-# *.esweiss.com cert verifies). Set
-# group-wide rather than per-agent because the NFS-backed PVs (grafana,
-# *arr, recipes, downloads data) float across the cluster. The nfs_tls role
-# runs on the whole k3s group (playbooks/k3s.yml): agents mount the NAS-backed
-# PVs, and the servers mount the off-node etcd-snapshot export (see
-# k3s_etcd_snapshot_offnode_enabled below). Both are pure TLS clients: they need
-# only the system CA truststore (ca-certificates) to verify pve-nas-01's cert
-# and present no cert/key of their own — only pve-nas-01 (the server side) holds
-# the wildcard cert+key. Do NOT re-add k3s nodes to
-# acme_certs_distribution_targets in host_vars/dns-01.yml; the nfs_tls role scrubs stale cert/key material from
-# client-only nodes (least privilege, see docs/16).
+# tlshd for the xprtsec=tls mounts of pve-nas-01's exports. Group-wide, not
+# per-agent: the NFS-backed PVs float across the cluster, and the servers mount
+# the off-node etcd-snapshot export. Client-only — do NOT re-add k3s nodes to
+# acme_certs_distribution_targets in host_vars/dns-01.yml; the role scrubs stale
+# cert/key material from client-only nodes.
 nfs_tls_enabled: true
 
 # Off-node etcd snapshot copy (servers only; docs/17). Each server's systemd
 # timer copies its newest local etcd snapshot to the NAS (/export/k3s-etcd over
 # xprtsec=tls) and emits etcd_snapshot_last_copy_timestamp_seconds for the
-# EtcdSnapshotStale alert. Companion changes that make this work (all present in
-# this repo): the /export/k3s-etcd NFS export + ssd/k3s-etcd dataset
-# (host_vars/pve-nas-01; the dataset must be `zfs create`d manually first),
-# nfs_tls widened to the servers (playbooks/k3s.yml), node_exporter_host on
-# k3s_servers (playbooks/site.yml) + its scrape Endpoints (kubernetes
-# observability), and the servers already in the nfs_clients ipset.
+# EtcdSnapshotStale alert.
 k3s_etcd_snapshot_offnode_enabled: true
 # Mounted by hostname — the *.esweiss.com cert has no IP SAN, so an IP mount
 # fails the TLS handshake.
 k3s_etcd_snapshot_nfs_server: "pve-nas-01.{{ internal_domain }}"
 
-# kube-apiserver audit logging (servers only; docs/19 + docs/31). k3s ships this
-# OFF, which left the cluster with no record of who read a Secret or granted
-# themselves a ClusterRole. The role's default policy is deliberately narrow —
-# Metadata on secrets/configmaps/serviceaccounts, RequestResponse on RBAC
-# writes, Metadata on RBAC reads, and no catch-all — so volume stays small.
-#
-# The log lands on EACH SERVER'S LOCAL DISK (/var/lib/rancher/k3s/server/logs/
-# audit.log), rotated by the apiserver itself and capped at ~1.1 GB per node
-# (100 MB x 10 backups + current). It is NOT shipped to Loki: alloy_host reads
-# journald only and the apiserver writes this file directly, so it is node-local
-# forensic material — see docs/31-observability.md § kube-apiserver audit log.
-#
-# Renders a kube-apiserver-arg block into /etc/rancher/k3s/config.yaml, so
-# turning this on costs a ROLLING CONTROL-PLANE RESTART on the next
-# `task k3s:deploy` (serial: 1 across the 3 servers, one API-VIP failover each).
-# Needs a healthy etcd quorum — do not deploy it with a server node down.
+# kube-apiserver audit logging (servers only; docs/19 + docs/31). The log is
+# node-local (/var/lib/rancher/k3s/server/logs/audit.log, apiserver-rotated) and
+# NOT shipped to Loki — alloy_host reads journald only.
+# Changing this costs a ROLLING CONTROL-PLANE RESTART on the next
+# `task k3s:deploy`; needs a healthy etcd quorum — do not deploy with a server down.
 k3s_audit_enabled: true
 
-# kube-vip configuration
 k3s_kube_vip_interface: "eth0"
 
-# Boot order (DNS 10 -> SMTP 20 -> k3s servers 30 -> agents 40 -> apps 50) and
-# the `platform` resource pool are set per host in hosts.yml — servers and
-# agents use different orders, so a single group value would only ever be
-# shadowed. Driven entirely from host_vars to keep one source of truth.
-
-# VM and cloud-init defaults inherited from proxmox_vm role
-# Override in host_vars if needed (see hosts.yml for per-host resources)
+# Boot order and the `platform` resource pool are per host in hosts.yml —
+# servers and agents use different orders, so a group value would be shadowed.
 
 # The relay host and SASL credentials are defined in all.yml.

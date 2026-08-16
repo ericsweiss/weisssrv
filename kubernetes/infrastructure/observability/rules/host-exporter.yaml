@@ -47,10 +47,17 @@ spec:
         # NIC error ratio, mirroring the mixin's NodeNetworkTransmit/ReceiveErrs
         # at the same 1%/1h threshold. These counters sit at zero fleet-wide, so
         # a sustained ratio is a degrading link or driver.
+        #
+        # [5m], not the mixin's [2m]: this job is scraped every 60s, so a 2m
+        # window holds 3 samples and ONE missed scrape leaves rate() with too
+        # few points — it returns nothing, the ratio drops out of the vector,
+        # and the 1h `for:` restarts. On a flapping NIC, which is exactly what
+        # this watches, missed scrapes are the norm, so the alert would never
+        # reach its hold. Keep both arms on the same window.
         - alert: HostNetworkTransmitErrs
           expr: >-
-            rate(node_network_transmit_errs_total{job="node-exporter-host", device=~"nic[0-9]+|bond[0-9]+|eth[0-9]+"}[2m])
-            / rate(node_network_transmit_packets_total{job="node-exporter-host", device=~"nic[0-9]+|bond[0-9]+|eth[0-9]+"}[2m])
+            rate(node_network_transmit_errs_total{job="node-exporter-host", device=~"nic[0-9]+|bond[0-9]+|eth[0-9]+"}[5m])
+            / rate(node_network_transmit_packets_total{job="node-exporter-host", device=~"nic[0-9]+|bond[0-9]+|eth[0-9]+"}[5m])
             > 0.01
           for: 1h
           labels:
@@ -68,8 +75,8 @@ spec:
 
         - alert: HostNetworkReceiveErrs
           expr: >-
-            rate(node_network_receive_errs_total{job="node-exporter-host", device=~"nic[0-9]+|bond[0-9]+|eth[0-9]+"}[2m])
-            / rate(node_network_receive_packets_total{job="node-exporter-host", device=~"nic[0-9]+|bond[0-9]+|eth[0-9]+"}[2m])
+            rate(node_network_receive_errs_total{job="node-exporter-host", device=~"nic[0-9]+|bond[0-9]+|eth[0-9]+"}[5m])
+            / rate(node_network_receive_packets_total{job="node-exporter-host", device=~"nic[0-9]+|bond[0-9]+|eth[0-9]+"}[5m])
             > 0.01
           for: 1h
           labels:

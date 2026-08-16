@@ -1,52 +1,30 @@
 ---
-# Proxmox-specific variables
-# These hosts act as Tailscale subnet routers for remote access to the homelab
-
-# Tailscale subnet routing configuration
-# Proxmox hosts advertise the internal LAN but do NOT accept routes from other peers
-# This prevents routing loops where the host routes its own traffic through Tailscale
-#
-# Advertising a route only makes it usable once APPROVED in the tailnet. Route
-# auto-approval (so all six hosts' advertisements approve = real HA failover, not
-# a single-host SPOF) and the SSH/access ACLs are managed as code in
+# These hosts act as Tailscale subnet routers for remote access to the homelab.
+# Route auto-approval and the SSH/access ACLs are managed as code in
 # terraform/tailscale (see that module's README).
-tailscale_accept_routes: false  # CRITICAL: Subnet routers must NOT accept routes
+tailscale_accept_routes: false  # CRITICAL: subnet routers must NOT accept routes (routing loop)
 tailscale_advertise_routes:
-  - "192.168.0.0/24"  # Advertise internal LAN for remote access via Tailscale
+  - "192.168.0.0/24"
 
-# Additional Tailscale flags for subnet routers
-# These are passed to `tailscale up` command
 tailscale_additional_flags:
-  - "--operator=eric"  # Allow eric user to manage Tailscale
-  - "--ssh"  # Enable Tailscale SSH
+  - "--operator=eric"
+  - "--ssh"
 
-# ACL tag advertised by every Proxmox subnet router. The least-privilege tailnet
-# policy (terraform/tailscale/policy.hujson) scopes host access and route
-# auto-approval to tag:subnet-router. Adopted via the role's best-effort
-# `tailscale set --advertise-tags` reconcile task (NOT the initial `tailscale up`
-# — a tag on `up` would hard-fail a join before tagOwners exists). DEPLOY ORDER
-# MATTERS: apply the ACL first (it defines tagOwners + the tag-based route
-# auto-approver), THEN run this role so the hosts adopt the tag — see
-# terraform/tailscale/README.md. The owner entry stays in the ACL's autoApprovers
-# during migration so untagged hosts keep route approval.
-# NOTE: on merge, the deploy-ansible-proxmox pipeline runs this role automatically
-# (before the supervised ACL apply). The tag-reconcile task will benignly report
-# "needs reauth" until tagOwners exists live — by default it is best-effort
-# (tailscale_tags_require_adoption=false), so the pipeline stays green; the tags
-# actually adopt during the supervised step, which is run with
-# `-e tailscale_tags_require_adoption=true` to catch any host that fails to adopt.
+# Adopted via the role's best-effort `tailscale set --advertise-tags` reconcile
+# task, NOT the initial `tailscale up` — a tag on `up` hard-fails a join before
+# tagOwners exists. DEPLOY ORDER MATTERS: apply the ACL first (it defines
+# tagOwners + the tag-based route auto-approver), THEN run this role so the
+# hosts adopt the tag — see terraform/tailscale/README.md.
 tailscale_advertise_tags:
   - "tag:subnet-router"
 
-# SSH configuration override for Proxmox cluster
-# Allow root SSH with keys (required for migrations and replication)
-# This overrides the default "no" from group_vars/all.yml
+# Root SSH with keys is required for migrations and replication; overrides the
+# "no" default from group_vars/all.yml.
 base_ssh_permit_root_login: "prohibit-password"
 
 # The relay host and SASL credentials are defined in all.yml.
 
-# Fail2ban configuration for Proxmox hosts
-# Enable pveproxy jail to protect Proxmox web UI (port 8006) from brute-force attacks
+# pveproxy jail: brute-force protection for the Proxmox web UI (8006).
 base_fail2ban_pveproxy_enabled: true
 
 # ip_forward=1 required for Tailscale subnet routing (advertised above).
