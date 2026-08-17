@@ -8,9 +8,11 @@ scripts/test_cloudflare_ddns.py). Stdlib only — the job runs a bare
 python:3-slim image with no pip step.
 
 Division of ownership with Terraform (terraform/cloudflare): Terraform owns
-`proxied`, `ttl` and `comment` on every record; this script owns `content`
-only. Updates therefore re-send the record's existing values for the fields it
-does not own, because the Cloudflare record API is a full-body PUT.
+`proxied`, `ttl` and every record decoration (`comment`, `tags`, `settings`);
+this script owns `content` only. Updates therefore re-send the record's existing
+values for the fields it does not own, because the Cloudflare record API is a
+full-body PUT — anything omitted from the body is ERASED, so a decoration this
+script forgets to carry forward is silently deleted on the next address change.
 """
 from __future__ import annotations
 
@@ -134,6 +136,49 @@ def zone_is_substituted(zone=ZONE):
     return bool(zone) and marker not in zone and "." in zone
 
 
+def records_are_valid(records=RECORDS):
+    """Fail closed on the record list, before the first API call.
+
+    RECORDS is a literal here rather than an env var, but it is derived from
+    ZONE and edited by hand, so the same two failure modes apply: an empty tuple
+    makes the run exit 0 having managed nothing (a green CronJob that publishes
+    no address at all), and an entry whose name is blank sends
+    `?type=A&name=` — the unfiltered-list shape `get_zone_id` refuses for
+    zones, which here would match an arbitrary record and rewrite it.
+    """
+    if not records:
+        print(
+            "ERROR: RECORDS is empty — refusing a run that would manage no DNS at all",
+            file=sys.stderr,
+        )
+        return False
+    for entry in records:
+        # Shape before content: a stray two-character string unpacks as
+        # (name, proxied) and its first character would pass the blank-name
+        # check below, sending a one-letter name into the API query.
+        if not isinstance(entry, (tuple, list)) or len(entry) != 2:
+            print(
+                f"ERROR: record entry {entry!r} is not a (name, proxied) pair",
+                file=sys.stderr,
+            )
+            return False
+        name, proxied = entry
+        if not isinstance(name, str) or not name.strip():
+            print(
+                f"ERROR: record entry {entry!r} has no record name — "
+                "an empty name queries the zone unfiltered",
+                file=sys.stderr,
+            )
+            return False
+        if not isinstance(proxied, bool):
+            print(
+                f"ERROR: record entry {entry!r} has a non-boolean proxied flag",
+                file=sys.stderr,
+            )
+            return False
+    return True
+
+
 def get_zone_id(token, zone=ZONE):
     """Return the Cloudflare zone id for `zone`, or None."""
     data = api_request(token, f"{API_BASE}/zones?name={zone}")
@@ -151,6 +196,12 @@ def get_zone_id(token, zone=ZONE):
     return match.get("id")
 
 
+# Record decorations Terraform sets and this script must carry forward. The PUT
+# replaces the whole record, so any of these left out of the body is erased on
+# the next address change — which reads as Terraform drift, not as a DDNS bug.
+PRESERVED_FIELDS = ("comment", "tags", "settings")
+
+
 def build_record_body(record_name, current_ip, proxied, existing=None):
     """Body for the full-body PUT/POST, preserving Terraform-owned fields."""
     existing = existing or {}
@@ -161,9 +212,12 @@ def build_record_body(record_name, current_ip, proxied, existing=None):
         "ttl": existing.get("ttl", 1) if existing else 1,
         "proxied": existing.get("proxied", proxied) if existing else proxied,
     }
-    comment = existing.get("comment")
-    if comment:
-        body["comment"] = comment
+    for key in PRESERVED_FIELDS:
+        # `is not None`, not truthiness: Cloudflare returns an unset decoration
+        # as null, while a deliberately-empty one (`tags: []`) is a value the
+        # record actually has and re-sending it keeps the PUT a faithful echo.
+        if existing.get(key) is not None:
+            body[key] = existing[key]
     return body
 
 
@@ -177,6 +231,17 @@ def update_record(token, zone_id, record_name, current_ip, proxied):
         return False
 
     records = data.get("result") or []
+    if len(records) > 1:
+        # Single-record ownership is this job's contract. Updating just the
+        # first would leave the stale sibling answering intermittently — a
+        # round-robin half-outage that looks like a flapping WAN — and picking
+        # one at all is a guess about which record Terraform owns.
+        print(
+            f"ERROR: {len(records)} A records for {record_name}; "
+            "ambiguous ownership, refusing a partial update",
+            file=sys.stderr,
+        )
+        return False
     existing = records[0] if records else None
     existing_ip = existing.get("content") if existing else None
     record_id = existing.get("id") if existing else None
@@ -214,6 +279,12 @@ def main(argv=None):
             "postBuild substitution did not run. Refusing to touch DNS.",
             file=sys.stderr,
         )
+        return 1
+
+    # Passed explicitly, not left to the default: the default binds the tuple at
+    # def time, so the guard must read the same module global the update loop
+    # below iterates.
+    if not records_are_valid(RECORDS):
         return 1
 
     current_ip = get_public_ip()

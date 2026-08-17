@@ -2280,6 +2280,15 @@ deploy-plex:
     - job: validation-gate
     - job: deploy-ansible-base
       optional: true
+    # Fleet-wide plays touch these guests too: without the ordering, a
+    # firewall/dns/cert run overlaps an in-flight app deploy on the same host
+    # (sudo-prompt timeouts, probes hitting a mid-reconfigure service).
+    - job: deploy-ansible-firewall
+      optional: true
+    - job: deploy-ansible-dns
+      optional: true
+    - job: deploy-ansible-certs
+      optional: true
   variables:
     # plex.yml runs postfix_null_client, which renders postfix_null_client_aliases
     # (root -> admin_email -> ROOT_EMAIL_ALIAS); without it the aliases
@@ -2316,6 +2325,15 @@ deploy-gitlab:
   needs:
     - job: validation-gate
     - job: deploy-ansible-base
+      optional: true
+    # Fleet-wide plays touch these guests too: without the ordering, a
+    # firewall/dns/cert run overlaps an in-flight app deploy on the same host
+    # (sudo-prompt timeouts, probes hitting a mid-reconfigure service).
+    - job: deploy-ansible-firewall
+      optional: true
+    - job: deploy-ansible-dns
+      optional: true
+    - job: deploy-ansible-certs
       optional: true
   variables:
     # GitLab role reads secrets from env vars via lookup('ansible.builtin.env', ...)
@@ -2385,6 +2403,15 @@ deploy-nextcloud:
     - job: validation-gate
     - job: deploy-ansible-base
       optional: true
+    # Fleet-wide plays touch these guests too: without the ordering, a
+    # firewall/dns/cert run overlaps an in-flight app deploy on the same host
+    # (sudo-prompt timeouts, probes hitting a mid-reconfigure service).
+    - job: deploy-ansible-firewall
+      optional: true
+    - job: deploy-ansible-dns
+      optional: true
+    - job: deploy-ansible-certs
+      optional: true
   variables:
     # nextcloud.yml runs postfix_null_client (ROOT_EMAIL_ALIAS + SMTP creds),
     # base (SSH_PUBLIC_KEY), and alloy_host (LOKI_PUSH_* from .deploy-base). The
@@ -2424,6 +2451,15 @@ deploy-immich:
   needs:
     - job: validation-gate
     - job: deploy-ansible-base
+      optional: true
+    # Fleet-wide plays touch these guests too: without the ordering, a
+    # firewall/dns/cert run overlaps an in-flight app deploy on the same host
+    # (sudo-prompt timeouts, probes hitting a mid-reconfigure service).
+    - job: deploy-ansible-firewall
+      optional: true
+    - job: deploy-ansible-dns
+      optional: true
+    - job: deploy-ansible-certs
       optional: true
   variables:
     # immich role + playbook read secrets from env vars via
@@ -2465,6 +2501,15 @@ deploy-immich-ml:
     - job: validation-gate
     - job: deploy-ansible-base
       optional: true
+    # Fleet-wide plays touch these guests too: without the ordering, a
+    # firewall/dns/cert run overlaps an in-flight app deploy on the same host
+    # (sudo-prompt timeouts, probes hitting a mid-reconfigure service).
+    - job: deploy-ansible-firewall
+      optional: true
+    - job: deploy-ansible-dns
+      optional: true
+    - job: deploy-ansible-certs
+      optional: true
   variables:
     # immich-ml.yml runs postfix_null_client (ROOT_EMAIL_ALIAS + SMTP creds)
     # and base (SSH_PUBLIC_KEY); alloy_host's LOKI_PUSH_* come from
@@ -2502,6 +2547,15 @@ deploy-home-assistant-config:
   needs:
     - job: validation-gate
     - job: deploy-ansible-base
+      optional: true
+    # Fleet-wide plays touch these guests too: without the ordering, a
+    # firewall/dns/cert run overlaps an in-flight app deploy on the same host
+    # (sudo-prompt timeouts, probes hitting a mid-reconfigure service).
+    - job: deploy-ansible-firewall
+      optional: true
+    - job: deploy-ansible-dns
+      optional: true
+    - job: deploy-ansible-certs
       optional: true
   variables:
     # Home Assistant role reads secrets from env vars via lookup('ansible.builtin.env', ...)

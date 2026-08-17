@@ -304,6 +304,25 @@ Only then `task infra:deploy -- --limit pve-nas-01 --tags nas_storage`, restart
 the writers, and confirm the next nightly dumps land. The dataset is listed in
 docs/06's `tank` dataset table.
 
+**Every established mount goes stale across the move — server binds first.**
+The `/export/backups-apps/<app>` bind mounts captured the OLD tree when they
+were mounted; a `zfs rename` or a staging-dir migration leaves them serving a
+deleted filesystem (`findmnt` shows the source suffixed `//deleted`) even
+though fstab already names the new path. Until they are re-pointed, every
+client mount RPC against those exports hangs — fixing clients alone fixes
+nothing. On the NAS, for each app:
+`umount -l /export/backups-apps/<app> && mount /export/backups-apps/<app>`
+(fstab is already correct), then `sudo exportfs -ra`. Then the clients: any
+guest that already had the path mounted (gitlab/nextcloud/immich's offsite
+landing mounts) holds pre-move file handles, and its next `stat` HANGS on the
+hard mount — which freezes an Ansible play mid-task rather than failing it —
+so lazy-unmount there too and let the role's next converge remount fresh.
+The storage role cannot detect either case: mount point mounted + fstab entry
+present reads as converged, but a bind's live *source* is not re-checked.
+Symptom to recognize: deploy jobs stuck >10 min on "Check whether the backup
+landing directory is already a mountpoint" / "Mount the offsite backup NFS
+export".
+
 ### Step 7: Review Completion Status
 
 ```

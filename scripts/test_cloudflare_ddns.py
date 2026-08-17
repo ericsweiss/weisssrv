@@ -80,11 +80,50 @@ def test_build_record_body_preserves_terraform_owned_fields(ddns):
     }
 
 
+def test_build_record_body_preserves_every_terraform_owned_decoration(ddns):
+    """The PUT replaces the WHOLE record, so a decoration this script omits is
+    erased on the next address change — and reads afterwards as Terraform drift
+    rather than as a DDNS bug. `comment` was already carried; `tags` and
+    `settings` are the two that were being silently dropped."""
+    existing = {
+        "ttl": 60,
+        "proxied": True,
+        "comment": "Terraform-owned",
+        "tags": ["managed"],
+        "settings": {"ipv4_only": True},
+    }
+    body = ddns.build_record_body("git.ericsweiss.com", "198.51.100.7", False, existing)
+    assert body == {
+        "type": "A",
+        "name": "git.ericsweiss.com",
+        "content": "198.51.100.7",
+        "ttl": 60,
+        "proxied": True,
+        "comment": "Terraform-owned",
+        "tags": ["managed"],
+        "settings": {"ipv4_only": True},
+    }
+
+
+def test_build_record_body_drops_null_decorations_but_keeps_empty_ones(ddns):
+    """Cloudflare returns an unset decoration as null — sending it back would be
+    a type error — while a deliberately-empty one is a value the record has."""
+    body = ddns.build_record_body(
+        "vpn.ericsweiss.com",
+        "198.51.100.7",
+        False,
+        {"ttl": 1, "proxied": False, "comment": None, "tags": [], "settings": {}},
+    )
+    assert "comment" not in body
+    assert body["tags"] == []
+    assert body["settings"] == {}
+
+
 def test_build_record_body_on_create_uses_the_literal_proxied(ddns):
     body = ddns.build_record_body("ericsweiss.com", "198.51.100.7", True, None)
     assert body["proxied"] is True
     assert body["ttl"] == 1
-    assert "comment" not in body
+    assert not any(key in body for key in ddns.PRESERVED_FIELDS)
 
 
 def test_update_record_is_a_noop_when_the_ip_is_unchanged(ddns, monkeypatch):
@@ -111,6 +150,125 @@ def test_update_record_posts_when_the_record_is_absent(ddns, monkeypatch):
     monkeypatch.setattr(ddns, "api_request", fake_api)
     assert ddns.update_record("tok", "z1", "vpn.ericsweiss.com", "198.51.100.7", False) is True
     assert seen[-1][0] == "POST"
+
+
+def test_update_record_puts_the_preserved_decorations_end_to_end(ddns, monkeypatch):
+    """build_record_body is only half the guarantee — this is the body that
+    actually reaches the wire on the PUT path."""
+    seen = []
+
+    def fake_api(token, url, method="GET", data=None, timeout=30):
+        seen.append((method, url, data))
+        if method == "GET":
+            return {
+                "success": True,
+                "result": [
+                    {
+                        "id": "r1",
+                        "content": "198.51.100.1",
+                        "ttl": 60,
+                        "proxied": True,
+                        "comment": "Terraform-owned",
+                        "tags": ["managed"],
+                        "settings": {"ipv4_only": True},
+                    }
+                ],
+            }
+        return {"success": True}
+
+    monkeypatch.setattr(ddns, "api_request", fake_api)
+    assert ddns.update_record("tok", "z1", "git.ericsweiss.com", "198.51.100.7", False) is True
+    method, url, data = seen[-1]
+    assert method == "PUT"
+    assert url.endswith("/dns_records/r1")
+    assert data["content"] == "198.51.100.7"
+    assert data["comment"] == "Terraform-owned"
+    assert data["tags"] == ["managed"]
+    assert data["settings"] == {"ipv4_only": True}
+
+
+def test_update_record_refuses_an_ambiguous_multi_record_name(ddns, monkeypatch, capsys):
+    """Two A records for one name is ambiguous ownership: updating just the
+    first leaves the stale sibling answering intermittently — a round-robin half
+    outage — and picking one at all guesses which record Terraform owns."""
+    seen = []
+
+    def fake_api(token, url, method="GET", data=None, timeout=30):
+        seen.append((method, url))
+        return {
+            "success": True,
+            "result": [
+                {"id": "r1", "content": "198.51.100.1"},
+                {"id": "r2", "content": "198.51.100.2"},
+            ],
+        }
+
+    monkeypatch.setattr(ddns, "api_request", fake_api)
+    assert ddns.update_record("tok", "z1", "vpn.ericsweiss.com", "203.0.113.9", False) is False
+    # Only the query happened: nothing was written, not even the first record.
+    assert [m for m, _ in seen] == ["GET"]
+    captured = capsys.readouterr()
+    assert "ambiguous ownership" in captured.err
+    # stdout is the per-record report a healthy run also writes; a refusal buried
+    # there reads as success.
+    assert "ambiguous ownership" not in captured.out
+
+
+def test_records_are_valid_rejects_empty_and_nameless_lists(ddns, capsys):
+    """The RECORDS analogue of ct's blank `DDNS_RECORDS` / stray `:false`."""
+    assert ddns.records_are_valid(ddns.RECORDS) is True
+    assert ddns.records_are_valid(()) is False
+    assert "RECORDS is empty" in capsys.readouterr().err
+    for bad in ((("", False),), (("   ", True),), ((None, False),),
+                (("git.ericsweiss.com", False), ("", True))):
+        assert ddns.records_are_valid(bad) is False
+        assert "no record name" in capsys.readouterr().err
+
+
+def test_records_are_valid_rejects_malformed_entry_shapes(ddns, capsys):
+    """A stray 2-char string unpacks as (name, proxied) and its first character
+    would pass the blank-name check — shape is validated before content."""
+    for bad in (("ab",), (("git", False, "extra"),), (("git",),), (42,)):
+        assert ddns.records_are_valid(bad) is False
+        assert "not a (name, proxied) pair" in capsys.readouterr().err
+    assert ddns.records_are_valid((("git", "yes"),)) is False
+    assert "non-boolean proxied flag" in capsys.readouterr().err
+    # Terraform-style list entries stay accepted — the shape check must not
+    # tighten pair to tuple-only.
+    assert ddns.records_are_valid((["git", True],)) is True
+
+
+def _main_past_the_zone_guard(ddns, monkeypatch, records):
+    """Drive main() past the token and zone guards, making every outbound call
+    fatal to the assertion: the point is that nothing is reached."""
+    monkeypatch.setenv("CF_API_TOKEN", "tok")
+    monkeypatch.setattr(ddns, "zone_is_substituted", lambda *a, **k: True)
+    monkeypatch.setattr(ddns, "RECORDS", records)
+    calls = []
+    monkeypatch.setattr(ddns, "get_public_ip", lambda *a, **k: calls.append("ip") or "203.0.113.9")
+    monkeypatch.setattr(ddns, "api_request", lambda *a, **k: calls.append("api"))
+    return calls
+
+
+def test_main_fails_closed_on_an_empty_record_list(ddns, monkeypatch, capsys):
+    """An empty list would exit 0 having managed no DNS at all — a green CronJob
+    that publishes nothing is the failure nobody notices."""
+    calls = _main_past_the_zone_guard(ddns, monkeypatch, ())
+    assert ddns.main() == 1
+    assert calls == []
+    assert "RECORDS is empty" in capsys.readouterr().err
+
+
+def test_main_fails_closed_on_a_nameless_record_entry(ddns, monkeypatch, capsys):
+    """A blank name sends `?type=A&name=` — the unfiltered-list shape get_zone_id
+    already refuses for zones, which here would rewrite an arbitrary record."""
+    calls = _main_past_the_zone_guard(
+        ddns, monkeypatch, (("git.ericsweiss.com", False), ("", True))
+    )
+    assert ddns.main() == 1
+    # Rejected before the first API call, and before even detecting the IP.
+    assert calls == []
+    assert "no record name" in capsys.readouterr().err
 
 
 def test_main_fails_without_a_token(ddns, monkeypatch):

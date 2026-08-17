@@ -97,7 +97,9 @@ spec:
           module: http_2xx
         - name: traefik
           url: https://traefik.${cluster_internal_domain}
-          module: http_2xx
+          # SSO-fronted since the dashboard gained forward-auth: a 302 to
+          # Authentik is the healthy shape.
+          module: http_sso
         - name: sonarr
           url: https://tv.${cluster_internal_domain}
           module: http_sso

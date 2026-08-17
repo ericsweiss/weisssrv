@@ -160,8 +160,14 @@ itself with a TXT registry:
   TXT, so it never touches Terraform/DDNS records.
 - **cloudflare-ddns CronJob** (`configs/cloudflare-ddns`) — keeps the *content*
   (public IP) of four A records current: the apex, `git`, `direct` and `vpn`.
-  `proxied` and `ttl` stay Terraform-owned — the CronJob PUTs a full body but
-  preserves the record's live values on update, seeding them only on creation.
+  `proxied`, `ttl` and the record decorations (`comment`, `tags`, `settings`)
+  stay Terraform-owned — the CronJob PUTs a full body but preserves the record's
+  live values on update, seeding them only on creation. Anything it failed to
+  carry forward would be **erased** by the PUT and read afterwards as Terraform
+  drift, so the preserved set is asserted in `scripts/test_cloudflare_ddns.py`.
+  If a name resolves to more than one A record the job refuses to write it at
+  all: ownership is ambiguous, and updating one of them would leave the sibling
+  answering stale intermittently.
 
 Keep hostnames disjoint across the three owners; a collision would let two
 tools fight over one record.

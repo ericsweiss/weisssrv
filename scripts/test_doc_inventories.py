@@ -10,6 +10,11 @@
    files (which no gate covered — `lint:taskfile-smoke` checks the reverse
    direction, Taskfile → scripts). A renamed task leaves every runbook that
    named it pointing at nothing.
+3. **The docs/13 job tables vs the pipeline.** Those tables are the operator's
+   map of CI, and a job missing from them is invisible to anyone reading the doc
+   rather than the YAML. Only the locally-defined jobs can be enumerated from
+   `.gitlab-ci.yml` — the library-included ones are documented there too but
+   come from `weisssrv-lib` — so those are what this gate holds.
 
 All run under `pytest scripts/` (`task scripts:test`, part of `task lint`, and
 the CI `python-tests` job).
@@ -193,3 +198,79 @@ def test_task_token_scan_finds_the_real_references():
     """Guard the regex: the docs really do reference namespaced tasks."""
     tokens = _doc_task_tokens()
     assert len(tokens) >= 50, f"expected many `task ns:name` references, found {len(tokens)}"
+
+
+# --- docs/13 job tables vs the pipeline -------------------------------------
+
+CI_FILE = REPO / ".gitlab-ci.yml"
+CI_DOC = REPO / "docs" / "13-ci-cd.md"
+
+# Top-level keys of a pipeline that are not jobs. GitLab also allows the
+# job-keyword globals (`image`, `services`, ...) at the top level, and one of
+# those read as a job name would demand a documentation row for it.
+_CI_RESERVED = {
+    "stages", "default", "workflow", "variables", "include",
+    "image", "services", "cache", "before_script", "after_script",
+}
+
+
+class _CILoader(yaml.SafeLoader):
+    """SafeLoader that survives GitLab's `!reference` tag.
+
+    `safe_load` raises on it and .gitlab-ci.yml uses it freely; the values are
+    irrelevant here, only the top-level job NAMES are read.
+    """
+
+
+_CILoader.add_multi_constructor("!", lambda loader, suffix, node: None)
+
+
+def _local_ci_jobs() -> set[str]:
+    """Every job `.gitlab-ci.yml` defines itself — hidden fragments excluded."""
+    ci = yaml.load(CI_FILE.read_text(encoding="utf-8"), Loader=_CILoader) or {}
+    return {
+        name
+        for name, job in ci.items()
+        if isinstance(job, dict) and name not in _CI_RESERVED and not name.startswith(".")
+    }
+
+
+def _documented_ci_jobs() -> set[str]:
+    """First-column backticked names of every `| Job | ... |` table row in docs/13.
+
+    Scoped to those tables rather than every backtick in the file: a job name
+    that happens to appear in prose is not the operator-facing row this gate is
+    about, and counting it would let a table lose a row without failing.
+    """
+    documented: set[str] = set()
+    in_job_table = False
+    for line in CI_DOC.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            in_job_table = False
+            continue
+        cells = [c.strip() for c in stripped.strip("|").split("|")]
+        if cells and cells[0].lower() == "job":
+            in_job_table = True
+            continue
+        if in_job_table:
+            match = re.match(r"`([^`]+)`", cells[0])
+            if match:
+                documented.add(match.group(1))
+    return documented
+
+
+def test_ci_doc_job_tables_name_every_local_job():
+    documented = _documented_ci_jobs()
+    assert documented, "docs/13-ci-cd.md has no `| Job |` table rows — this gate examined nothing"
+    missing = sorted(_local_ci_jobs() - documented)
+    assert not missing, (
+        "docs/13-ci-cd.md's job tables do not name these jobs .gitlab-ci.yml defines:\n  "
+        + "\n  ".join(missing)
+    )
+
+
+def test_ci_job_scan_finds_the_real_pipeline():
+    """Guard both scanners: an empty side would make the gate above vacuous."""
+    assert len(_local_ci_jobs()) >= 20
+    assert len(_documented_ci_jobs()) >= 20
