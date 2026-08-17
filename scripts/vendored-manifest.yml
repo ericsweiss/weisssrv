@@ -1,0 +1,78 @@
+---
+# This repo's vendored copies of weisssrv-lib files — the consumer-owned half
+# of the vendored-copy contract (the library's half is its offer list,
+# scripts/vendorable-paths.yml, which bounds what may be listed here).
+#
+# Read by the library's scripts/check-vendored-copies.py, driven here by
+# scripts/test_vendored_byte_identity.py under `task lint` at the pinned
+# WEISSSRV_LIB_REF. Two relationships:
+#
+#   vendored — byte-identical to the library at the pin. Drift in either
+#              direction fails; fix upstream and re-vendor, never edit a copy.
+#   forked   — deliberately divergent. Must still differ, and
+#              `reconciled_sha256` (the library blob last absorbed) fails the
+#              fork when the library side moves — re-take it here after
+#              absorbing the change. `reason:` is mandatory.
+#
+# Entry forms: a bare string when both repos use the same path, or a mapping
+# with `lib:` and `consumer:` when they differ. Moving a copy inside this repo
+# is an edit to THIS file in the same commit — no library release involved.
+
+vendored:
+  - scripts/b2-bucket-drift.py
+  - scripts/check-alertmanager-behaviour.py
+  - scripts/check-backup-artifact-apps.py
+  - scripts/check-default-deny-coverage.py
+  - scripts/check-deploy-coverage.sh
+  - scripts/check-doc-links.py
+  - scripts/check-hpa-vpa-invariant.py
+  - scripts/check-kubectl-version-pin.py
+  - scripts/check-lib-pins.py
+  - scripts/check-netpol-except-parity.py
+  - scripts/check-pvc-storageclass.py
+  - scripts/check-scrape-netpol.py
+  - scripts/check-secretstore-scope.py
+  - scripts/check-taskfile.sh
+  - scripts/check-versions.py
+  - scripts/find-pve-host-for-vm.sh
+  - scripts/find-reachable-host.sh
+  - scripts/flux-env.sh
+  - scripts/flux-render.sh
+  - scripts/generate-hosts-env.py
+  - scripts/generate-versions-configmap.py
+  - scripts/kubeconform-skipped.py
+  - scripts/lint-prometheus-config.sh
+  - scripts/molecule-retry.sh
+  - scripts/resolve-tool.sh
+  - scripts/sanitize-junit-expected-failures.py
+  - scripts/shell-lib.sh
+  - scripts/validate-helm-values.py
+  - scripts/version-bump-mr.py
+  - scripts/version-check-ci.py
+  # Discovered by the tool at its conventional root name.
+  - lib: lint/ruff.toml
+    consumer: ruff.toml
+
+forked:
+  - lib: scripts/extract-prometheus-config.py
+    reason: >-
+      Rules extraction unions the HelmRelease with the standalone
+      PrometheusRule manifests under observability/rules/; the library copy
+      reads the HelmRelease alone.
+    reconciled_sha256: 294bcbf560adf90c9318c10c10d5da9c33e96b0043498e55e11616a20b03adf9
+  - lib: lint/gitleaks.toml
+    consumer: .gitleaks.toml
+    reason: Allowlist paths and fixture anchors are per-repo.
+    reconciled_sha256: bffbe70c94436f4442aaeecc1f1f5715315fc5908b1486b2198796b9e097ff0d
+  - lib: lint/secret-detection-ruleset.toml
+    consumer: .gitlab/secret-detection-ruleset.toml
+    reason: Ruleset overrides name this repo's scanned paths.
+    reconciled_sha256: d6413e69a2d8a6f7d0c468d4370a406299894ad9e3fe274eb7f69eb30a7c936d
+  - lib: lint/editorconfig
+    consumer: .editorconfig
+    reason: Per-repo file-type sections on a shared base.
+    reconciled_sha256: 911171d9f26ba0bb47300c97a9e46b078d48eb852dfe9a050fbc3c8e41cc2944
+  - lib: lint/pre-commit-config.yaml
+    consumer: .pre-commit-config.yaml
+    reason: Per-repo hook set on a shared base.
+    reconciled_sha256: 39e7c3a5fbc7d2185ad73c436cbba736cae1e2b2b88f7f50387f041cbd87323c

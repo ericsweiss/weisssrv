@@ -3,8 +3,8 @@
 # This is consumed by GitLab's secret_detection job (which uses gitleaks under
 # the hood) via the passthrough in `.gitlab/secret-detection-ruleset.toml`.
 #
-# A declared fork of weisssrv-lib's `lint/gitleaks.toml` (registered in that
-# repo's `scripts/vendored-paths.yml`, which is what gates the divergence):
+# A declared fork of weisssrv-lib's `lint/gitleaks.toml` (declared in this
+# repo's `scripts/vendored-manifest.yml`, which is what gates the divergence):
 # the shared rules and the shared false-positive shapes come from there, the
 # path exclusions and the fixture anchors below are this repo's.
 #

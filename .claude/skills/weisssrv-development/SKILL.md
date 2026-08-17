@@ -29,7 +29,7 @@ docs index and the repo map; `task --list` owns the command set.
 the CI job templates, and a set of vendored files come from `eric/weisssrv-lib`
 at pinned refs (`CLAUDE.md` § Repo family). Changing any of them is a two-repo
 flow. Never assume a file is repo-owned: `scripts/README.md`'s **Origin** column
-and the library's `scripts/vendored-paths.yml` registry (enforced here by
+and this repo's own `scripts/vendored-manifest.yml` (enforced by
 `scripts/test_vendored_byte_identity.py`) are the inventory of record — never a
 list or a count written anywhere else.
 
@@ -59,10 +59,10 @@ list or a count written anywhere else.
 - **Bumping weisssrv-lib is one atomic set of edits**, all in the same MR:
   `variables.WEISSSRV_LIB_REF` in `.gitlab-ci.yml` → `scripts/check-lib-pins.py
   --fix` (rewrites every literal `ref:`) → the collection `version:` in
-  `ansible/requirements.yml` → re-vendor **every** file the library's
-  `scripts/vendored-paths.yml` registers for this consumer (never a
-  hand-remembered subset; `python3 <lib>/scripts/check-vendored-copies.py
-  --consumer weisssrv` lists and gates them) → any inventory change the
+  `ansible/requirements.yml` → re-vendor **every** file this repo's
+  `scripts/vendored-manifest.yml` lists (never a hand-remembered subset;
+  `python3 <lib>/scripts/check-vendored-copies.py --manifest
+  scripts/vendored-manifest.yml` lists and gates them) → any inventory change the
   collection's `MIGRATING.md` requires for renamed or emptied variables. Never
   patch a vendored file or a role locally: the next re-vendor reverts it. Never
   re-add an included CI job inline — a same-named local job silently overrides

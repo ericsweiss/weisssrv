@@ -232,7 +232,7 @@ plex_version: "1.43.3.10861-07dfddaeb"
 # https://packages.gitlab.com/gitlab/gitlab-ee
 # Applied by task gitlab:deploy / the deploy-gitlab CI job; the maintenance
 # apt-upgrade honours the gitlab-ee package hold and will not bump it.
-gitlab_version: "19.2.2-ee.0"
+gitlab_version: "19.2.4-ee.0"
 
 # https://gitlab.com/gitlab-org/charts/gitlab-runner/tags
 gitlab_runner_helm_version: "0.91.2"
@@ -287,17 +287,17 @@ proxmox_vm_virtio_win_checksum: "sha256:e14cf2b94492c3e925f0070ba7fdfedeb2048c91
 # and builds THEIR Dockerfile. The value is the upstream RELEASE TAG (used
 # verbatim as `git clone --branch` and as the built image tag), NOT the semver
 # whl version.
-hermes_version: "v2026.8.16"
+hermes_version: "v2026.8.16.2"
 # Immutable commit the pinned tag must resolve to — build-hermes-agent refuses
 # to build on a mismatch (moved/compromised tag defence). Lockstep with
 # hermes_version.
-hermes_git_sha: "df4b65147d7ddd74dd449f9067aabbca5aef0ec7"
+hermes_git_sha: "7339f5f160db5c96657a3bab60151227cc61f66c"
 # PUBLISHED image tag = <hermes_version>-r<N>. The image is upstream + our
 # patches (docker/hermes-agent/patches/), so a patch change without an upstream
 # bump MUST produce a new tag or the nodes' IfNotPresent cache keeps serving the
 # unpatched image. Bump -rN when patches change; reset to -r1 on a
 # hermes_version bump. CI asserts the prefix matches hermes_version.
-hermes_image_version: "v2026.8.16-r1"
+hermes_image_version: "v2026.8.16.2-r1"
 # OpenAI Codex CLI, baked into the hermes image by Dockerfile.codex. Requires
 # >=0.130.0 for the Hermes runtime. Build-time only — not substituted into any
 # manifest. https://github.com/openai/codex/releases (npm @openai/codex)
@@ -307,7 +307,7 @@ hermes_codex_version: "0.147.0"
 # long-lived OAuth token (CLAUDE_CODE_OAUTH_TOKEN via ESO — no API key; the CLI
 # holds the credential, Hermes only reads stdout). Build-time only — docs/37.
 # https://github.com/anthropics/claude-code (npm @anthropic-ai/claude-code)
-hermes_claude_version: "2.1.233"
+hermes_claude_version: "2.1.234"
 # 1Password CLI (op), baked into the hermes image so Hermes' 1Password skill can
 # drive `op` against the isolated Agent vault (docs/37 §1Password). Value is the
 # full DEB version string, not the bare semver `op --version` reports.

@@ -15,8 +15,8 @@ wrapper/library pairs (`collect-state.sh` -> `test_collect_state_lib.py`) are
 covered that way by design.
 
 Scripts vendored or forked from the library are skipped by READING the library's
-registry, never a hand-copied list: their exhaustive suites live upstream next
-to the code, and re-listing them here would drift the moment the registry does.
+manifest, never a hand-copied list: their exhaustive suites live upstream next
+to the code, and re-listing them here would drift the moment the manifest does.
 """
 from __future__ import annotations
 
@@ -107,10 +107,10 @@ def _scripts(root: Path = SCRIPTS) -> list[Path]:
 
 @pytest.fixture(scope="module")
 def upstream_covered() -> set[str]:
-    """Filenames the library registry accounts for (vendored or forked)."""
+    """Filenames scripts/vendored-manifest.yml accounts for (vendored or forked)."""
     names = {Path(p).name for p in registered_consumer_paths()}
     assert names, (
-        "the weisssrv-lib registry resolved no entries — every vendored script "
+        "scripts/vendored-manifest.yml resolved no entries — every vendored script "
         "would read as untested here. See test_vendored_byte_identity.py for the "
         "checkout requirement."
     )
@@ -144,7 +144,7 @@ def test_every_exemption_still_names_a_script(upstream_covered):
     upstream = sorted(set(EXEMPT) & upstream_covered)
     assert not upstream, (
         f"these are exempt here but vendored from the library: {upstream} — the "
-        "registry already accounts for them, drop the EXEMPT entries"
+        "manifest already accounts for them, drop the EXEMPT entries"
     )
 
 
@@ -164,8 +164,8 @@ def test_every_script_appears_in_the_scripts_readme():
     )
 
 
-def test_the_readme_origin_column_matches_the_library_registry():
-    """The Origin column is the readable view of the registry, so it must not
+def test_the_readme_origin_column_matches_the_manifest():
+    """The Origin column is the readable view of the manifest, so it must not
     contradict it.
 
     Six rows said `local` — "the library ships nothing equivalent" — for scripts
@@ -176,7 +176,7 @@ def test_the_readme_origin_column_matches_the_library_registry():
     """
     registered = {Path(path).name: kind for kind, path in registered_consumer_entries()}
     assert registered, (
-        "the weisssrv-lib registry resolved no entries — every Origin cell would "
+        "scripts/vendored-manifest.yml resolved no entries — every Origin cell would "
         "read as correct. See test_vendored_byte_identity.py for the checkout "
         "requirement."
     )
@@ -189,10 +189,10 @@ def test_the_readme_origin_column_matches_the_library_registry():
         name, origin = Path(match.group(1)).name, match.group(2)
         expected = registered.get(name, "local")
         if origin != expected:
-            wrong.append(f"{name}: README says {origin}, registry says {expected}")
+            wrong.append(f"{name}: README says {origin}, the manifest says {expected}")
     assert not wrong, (
         "scripts/README.md Origin cells disagreeing with weisssrv-lib's "
-        "vendored-paths.yml:\n  " + "\n  ".join(sorted(wrong))
+        "vendored-manifest.yml:\n  " + "\n  ".join(sorted(wrong))
     )
 
 

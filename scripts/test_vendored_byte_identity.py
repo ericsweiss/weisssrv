@@ -3,15 +3,17 @@
 Nothing else notices when a vendored copy drifts: the fix the library shipped is
 simply absent, and the next re-vendor silently reverts whatever was edited here.
 
-**The copy relationship is recorded once, in the library** —
-`weisssrv-lib/scripts/vendored-paths.yml`, read by
-`weisssrv-lib/scripts/check-vendored-copies.py`. This module drives that gate
-rather than keeping a second list: a file the library starts or stops shipping
-reaches this gate at the next bump instead of waiting for someone to remember to
-re-list it here. It covers more than `scripts/` (the shared lint profiles live at
-this repo's root) and it distinguishes vendored copies from declared forks,
-asserting a fork still differs AND that the library side has not moved since the
-fork was last reconciled.
+**The copy relationship is recorded here, in this repo's own manifest** —
+`scripts/vendored-manifest.yml`, read by the library's
+`weisssrv-lib/scripts/check-vendored-copies.py` engine (the library itself
+knows nothing about its consumers; its `scripts/vendorable-paths.yml` offer
+list bounds what the manifest may name). This module drives that gate rather
+than keeping a second list: a file the library stops shipping reaches this gate
+at the next bump, and a file this repo copies without a manifest entry is
+caught by the local twin smoke test below. It covers more than `scripts/` (the
+shared lint profiles live at this repo's root) and it distinguishes vendored
+copies from declared forks, asserting a fork still differs AND that the library
+side has not moved since the fork was last reconciled.
 
 The library checkout comes from `$WEISSSRV_LIB_PATH`, else a sibling
 `../weisssrv-lib`. There is no skip-when-missing path: an unavailable checkout
@@ -33,7 +35,7 @@ import yaml
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO / "scripts"
-CONSUMER = "weisssrv"
+MANIFEST = SCRIPTS / "vendored-manifest.yml"
 GATE_RELPATH = "scripts/check-vendored-copies.py"
 
 # Config files carry site data, not library code, so a same-named one is not a
@@ -79,8 +81,8 @@ def _run_gate(*extra: str) -> subprocess.CompletedProcess:
     argv = [
         sys.executable,
         str(lib / GATE_RELPATH),
-        "--consumer",
-        CONSUMER,
+        "--manifest",
+        str(MANIFEST),
         "--repo-root",
         str(REPO),
         "--lib-path",
@@ -91,8 +93,8 @@ def _run_gate(*extra: str) -> subprocess.CompletedProcess:
 
 
 def registered_consumer_entries() -> list[tuple[str, str]]:
-    """(kind, repo-relative path) for every entry the library registers for this
-    consumer, or [] when no library checkout is reachable.
+    """(kind, repo-relative path) for every entry the manifest lists, or []
+    when no library checkout is reachable.
 
     Collection-time helper for test_vendored_smoke.py's parametrisation and for
     the Origin-column gate in test_scripts_have_tests.py. It is deliberately the
@@ -121,17 +123,17 @@ def registered_consumer_paths() -> list[str]:
 
 @pytest.fixture(scope="module")
 def registered() -> list[tuple[str, str, str]]:
-    """(kind, consumer_path, lib_path) for every entry registered for weisssrv."""
+    """(kind, consumer_path, lib_path) for every entry the manifest lists."""
     result = _run_gate("--list")
     assert result.returncode == 0, (
-        f"the library gate could not read its registry for {CONSUMER}:\n{result.stderr}"
+        f"the library gate could not read {MANIFEST}:\n{result.stderr}"
     )
     rows = []
     for line in result.stdout.splitlines():
         parts = line.split("\t")
         if len(parts) >= 3:
             rows.append((parts[0], parts[1], parts[2]))
-    assert rows, f"the library registry declares no copies for {CONSUMER}"
+    assert rows, f"{MANIFEST} declares no copies"
     return rows
 
 
@@ -170,7 +172,7 @@ def test_registered_copies_are_reconciled(registered):
     hint = (
         "Re-vendor from weisssrv-lib and review the diff; site data belongs in the "
         "script's config file, never in the copy. A fork must ABSORB the library's "
-        "change, then have its reconciled_sha256 updated in the library registry."
+        "change, then have its reconciled_sha256 updated in scripts/vendored-manifest.yml."
     )
     if at_pin and _run_gate().returncode == 0:
         hint = (
@@ -185,19 +187,19 @@ def test_registered_copies_are_reconciled(registered):
 
 
 def test_every_registered_copy_exists_here(registered):
-    """A registry entry is a claim about this repo's layout, so a moved or
+    """A manifest entry is a claim about this repo's layout, so a moved or
     deleted copy has to surface here rather than as a silent no-op."""
     missing = sorted(path for _kind, path, _lib in registered if not (REPO / path).is_file())
     assert not missing, (
-        f"registered as vendored/forked from weisssrv-lib but absent here: {missing}. "
-        "Either re-vendor them, or get the entry dropped from the library registry "
-        "(a consumer's layout is a library-release event)."
+        f"listed as vendored/forked from weisssrv-lib but absent here: {missing}. "
+        "Either re-vendor them, or drop the entry from scripts/vendored-manifest.yml "
+        "in the same commit — the manifest is this repo's to edit."
     )
 
 
 def test_every_library_twin_is_registered(registered):
     """Local smoke test: a script sharing a name with a library script must be
-    covered by the registry.
+    covered by the manifest.
 
     The library cannot notice a file this repo added; without this, copying a
     library script in by hand and never registering it leaves it ungated — the
@@ -216,7 +218,7 @@ def test_every_library_twin_is_registered(registered):
         and not p.name.startswith("test_")
     )
     assert not undeclared, (
-        "scripts with a weisssrv-lib twin that the library registry does not cover: "
-        f"{undeclared} — add them to weisssrv-lib/scripts/vendored-paths.yml under "
-        f"consumers.{CONSUMER}, or rename them so they are not mistaken for copies."
+        "scripts with a weisssrv-lib twin that scripts/vendored-manifest.yml does not "
+        f"cover: {undeclared} — add them there, or rename them so they are not "
+        "mistaken for copies."
     )

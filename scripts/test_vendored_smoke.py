@@ -23,7 +23,7 @@ from test_vendored_byte_identity import registered_consumer_paths
 
 SCRIPTS = Path(__file__).resolve().parent
 
-# Derived from the library's registry, never re-listed here — a newly vendored
+# Derived from this repo's manifest, never re-listed here — a newly vendored
 # script is smoke-tested the moment it is registered.
 _VENDORED = sorted(
     Path(p).name for p in registered_consumer_paths() if p.startswith("scripts/")
@@ -47,10 +47,10 @@ HELP_SCRIPTS = [
 ]
 
 
-def test_the_registry_was_readable():
+def test_the_manifest_was_readable():
     """An empty parametrisation would silently pass every case below."""
     assert _VENDORED, (
-        "no vendored scripts/ entries resolved from the weisssrv-lib registry — see "
+        "no vendored scripts/ entries resolved from scripts/vendored-manifest.yml — see "
         "test_vendored_byte_identity.py for the checkout requirement"
     )
 

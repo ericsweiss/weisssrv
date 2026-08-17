@@ -63,19 +63,25 @@ Three fragments emit no job of their own and are consumed via `extends:` /
 `.install-1password-alpine`) and `/ci/templates/terraform-http-backend.yml`
 (`.terraform-http-backend`).
 
-**Pending adoption.** The library's `docs/CONSUMERS.yml` (`consumers.weisssrv.
-not_yet_adopted`) is the authority on what is extracted but not yet included
-here; each entry is blocked on the local block it would replace:
+**Pending adoption.** This table is the authority on what the library has
+extracted but this pipeline does not yet include (the library keeps no
+per-consumer ledger — since v0.9.0 each consumer records its own adoption
+state); each entry is blocked on the local block it would replace:
 
 | Library file | Local counterpart | Blocker |
 |---|---|---|
-| `/ci/deploy/deploy-base.yml` | `.deploy-base` in `.gitlab-ci.yml` | swap at the next `WEISSSRV_LIB_REF` bump — the in-file header marks the block for deletion |
-| `/ci/deploy/kubectl-setup.yml` | the inline kubectl setup in the deploy jobs | same bump |
-| `/ci/deploy/ansible-deploy.yml` (+ its image) | the local ansible-deploy job body | same bump; the image is pinned locally until the library one is adopted |
+| `/ci/deploy/deploy-base.yml` | the `.deploy-base` definition in `.gitlab-ci.yml` | swap at the next `WEISSSRV_LIB_REF` bump — the in-file header marks the block for deletion |
+| `/ci/deploy/kubectl-setup.yml` | the `.kubectl-setup` definition in `.gitlab-ci.yml` | same bump |
+| `/ci/deploy/ansible-deploy.yml` (+ its image) | the ansible deploy-job bodies built on `.deploy-base` | same bump; the image is pinned locally until the library one is adopted |
 
-`/ci/build/docker-build.yml` is deliberately absent from that table: the library
-lists it under `not_consumed`, not `not_yet_adopted` — this pipeline's
-`.build-image-base` is not on an adoption path.
+Every row names its local counterpart as a backticked `.anchor`, because that is
+what the gate checks: the anchor's DEFINITION still existing is what "not yet
+adopted" means, and a row whose definition is gone must be dropped in the
+adopting MR. `/ci/build/docker-build.yml` is deliberately absent from the
+table: it is not on an adoption path for this pipeline (`.build-image-base`
+stays local), which the gate's not-consumed declaration records with its
+reason — as it does for every other extracted template this pipeline
+deliberately does not include.
 
 The one remaining local job with a library counterpart, `version-bump-bot`, is
 documented at [Version bump bot](#version-bump-bot).

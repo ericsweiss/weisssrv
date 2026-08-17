@@ -427,32 +427,64 @@ class TestNetpolExceptConfig:
 
 
 class TestPendingAdoptionTable:
-    """docs/13's pending-adoption table must agree with weisssrv-lib's registry.
+    """docs/13's pending-adoption table must agree with reality on both sides.
 
     The doc's previous claim — "Nothing is pending adoption" — outlived three
     library releases that shipped exactly the templates it said did not exist.
-    Prose about another repo's state has no other reader, so it is derived from
-    that repo here instead.
+    Since the v0.9.0 registry inversion the library keeps no per-consumer
+    ledger, so this table IS the adoption record — and a record nothing checks
+    is the thing that rotted last time. Three mechanical arms:
+
+    * every library path a row names exists in the library checkout (a renamed
+      or dropped template fails the row);
+    * every row names at least one local `.anchor`, and that anchor is still
+      DEFINED (`^.anchor:`) in .gitlab-ci.yml — a substring test would match
+      the `extends:`/`!reference` usages that survive adoption, so only the
+      definition line proves the local block is still here. An adopted row
+      (definition deleted) must be dropped from the table in the same MR;
+    * the sweep: every consumer-facing library template is either included,
+      pending in the table, or declared not-consumed here WITH a reason — the
+      enumeration half the library's retired CONSUMERS.yml used to carry.
     """
 
     DOC = REPO / "docs/13-ci-cd.md"
     MARKER = "**Pending adoption.**"
 
-    @staticmethod
-    def _registry() -> dict:
-        from test_vendored_byte_identity import _lib_root
+    # Extracted templates this pipeline deliberately does not include. An entry
+    # here is a decision with a reason, not a backlog item — backlog rows live
+    # in the docs/13 table. The sweep fails a library template that is in
+    # NEITHER place, which is exactly the state that rotted unnoticed before.
+    NOT_CONSUMED = {
+        "/ci/build/docker-build.yml": (
+            "this pipeline's .build-image-base is not on an adoption path "
+            "(docs/13 names it under the table)"
+        ),
+        "/ci/maintenance/version-bump-bot.yml": (
+            "the local version-bump-bot job is deliberately kept — "
+            "docs/13 § Version bump bot"
+        ),
+        "/ci/release/github-release-workflow.example.yml": (
+            "an Actions reference copy for GitHub-shape consumers, not a "
+            "GitLab include"
+        ),
+        "/ci/release/semantic-release.yml": (
+            "this repo cuts no releases — deploys are merge-triggered, not "
+            "tagged"
+        ),
+    }
+    # Library ci/ subdirectories that hold consumer-facing GitLab templates.
+    # ci/github (Actions examples) and ci/internal (the library's own jobs)
+    # are out of scope by construction.
+    TEMPLATE_DIRS = (
+        "build", "deploy", "lint", "maintenance", "release",
+        "review", "security", "templates", "test", "validate",
+    )
 
-        doc = yaml.safe_load((_lib_root() / "docs/CONSUMERS.yml").read_text())
-        for consumer in doc["consumers"]:
-            if consumer["name"] == "weisssrv":
-                return consumer["pins"]["ci_includes"]
-        raise AssertionError("weisssrv is not registered in the library's CONSUMERS.yml")
-
-    def _documented(self) -> set[str]:
-        """Library paths named in the first column of the pending-adoption table."""
+    def _rows(self) -> list[tuple[list[str], str]]:
+        """(library paths, local-counterpart cell) per pending-adoption row."""
         lines = self.DOC.read_text().splitlines()
         start = next(i for i, line in enumerate(lines) if line.startswith(self.MARKER))
-        rows: set[str] = set()
+        rows: list[tuple[list[str], str]] = []
         seen_table = False
         for line in lines[start:]:
             if not line.startswith("|"):
@@ -460,31 +492,113 @@ class TestPendingAdoptionTable:
                     break
                 continue
             seen_table = True
-            first = line.split("|")[1]
-            match = re.search(r"`(/ci/[\w./-]+\.yml)`", first)
-            if match:
-                rows.add(match.group(1))
+            cells = line.split("|")
+            paths = re.findall(r"`(/ci/[\w./-]+\.yml)`", cells[1])
+            if paths:
+                rows.append((paths, cells[2]))
         assert rows, "parsed no library paths out of the pending-adoption table"
         return rows
 
-    def test_every_not_yet_adopted_template_is_documented(self):
-        pending = set(self._registry().get("not_yet_adopted") or [])
-        assert pending, "the library registry lists nothing as not_yet_adopted"
-        missing = sorted(pending - self._documented())
+    @staticmethod
+    def _included_files() -> set[str]:
+        from test_site_configs import _CILoader
+
+        ci = yaml.load((REPO / ".gitlab-ci.yml").read_text(), Loader=_CILoader)
+        files: set[str] = set()
+        for entry in ci.get("include") or []:
+            if not isinstance(entry, dict):
+                continue
+            value = entry.get("file")
+            if isinstance(value, list):
+                files.update(str(v) for v in value)
+            elif value:
+                files.add(str(value))
+        return files
+
+    def test_every_pending_library_path_exists_in_the_library(self):
+        from test_vendored_byte_identity import _lib_root
+
+        lib = _lib_root()
+        missing = sorted(
+            path
+            for paths, _local in self._rows()
+            for path in paths
+            if ".." in Path(path).parts or not (lib / path.lstrip("/")).is_file()
+        )
         assert not missing, (
-            f"weisssrv-lib lists {missing} as not_yet_adopted for this repo, but "
-            f"{self.DOC.name}'s pending-adoption table does not mention them."
+            f"{self.DOC.name}'s pending-adoption table names {missing}, which the "
+            "library checkout does not ship — the template moved or retired, so "
+            "the row is wrong either way."
         )
 
-    def test_the_table_names_no_template_the_library_already_gives_us(self):
-        registry = self._registry()
-        allowed = set(registry.get("not_yet_adopted") or []) | set(
-            registry.get("not_consumed") or []
+    def test_every_row_is_blocked_on_a_local_anchor_that_still_exists(self):
+        """Definition, not substring: `extends: .deploy-base` and its
+        `!reference` usages SURVIVE adoption (the included template then
+        defines the anchor), so only the `^.anchor:` definition line proves
+        the local block is still here to replace."""
+        ci_text = (REPO / ".gitlab-ci.yml").read_text()
+        problems = []
+        for paths, local in self._rows():
+            anchors = re.findall(r"`(\.[\w-]+)`", local)
+            if not anchors:
+                problems.append(
+                    f"{paths[0]}: its row names no backticked `.anchor` — the "
+                    "stale-row check has nothing to bind to"
+                )
+                continue
+            for anchor in anchors:
+                if not re.search(rf"(?m)^{re.escape(anchor)}:", ci_text):
+                    problems.append(
+                        f"{paths[0]}: blocked on {anchor}, whose definition no "
+                        "longer exists — the template was adopted, drop the row"
+                    )
+        assert not problems, (
+            f"{self.DOC.name}'s pending-adoption table is stale:\n  "
+            + "\n  ".join(problems)
         )
-        stale = sorted(self._documented() - allowed)
-        assert not stale, (
-            f"{self.DOC.name} lists {stale} as pending, but the library registry has "
-            "them neither in not_yet_adopted nor not_consumed — adopt the row or drop it."
+
+    def test_every_library_template_is_included_pending_or_declared(self):
+        """The enumeration half: an extracted template in NEITHER the include
+        list, the pending table, nor the not-consumed declaration is exactly
+        the silently-ignored state the old library-side ledger existed to
+        prevent. A template in MORE than one place is stale bookkeeping."""
+        from test_vendored_byte_identity import _lib_root
+
+        lib = _lib_root()
+        # A NEW library ci/ directory must be classified before the sweep can
+        # claim coverage — silently ignoring it recreates the unwatched gap.
+        unclassified = sorted(
+            path.name
+            for path in (lib / "ci").iterdir()
+            if path.is_dir() and path.name not in set(self.TEMPLATE_DIRS) | {"github", "internal"}
+        )
+        assert not unclassified, (
+            f"library ci/ directories not classified as consumer-facing or excluded: {unclassified}"
+        )
+        shipped = {
+            f"/{path.relative_to(lib).as_posix()}"
+            for d in self.TEMPLATE_DIRS
+            for path in sorted((lib / "ci" / d).rglob("*.yml"))
+        }
+        assert shipped, "the library checkout ships no ci/ templates at all"
+        included = self._included_files()
+        pending = {path for paths, _local in self._rows() for path in paths}
+
+        unaccounted = sorted(shipped - included - pending - set(self.NOT_CONSUMED))
+        assert not unaccounted, (
+            "library templates neither included, nor pending in docs/13, nor "
+            f"declared not-consumed here: {unaccounted} — adopt, table, or "
+            "declare each with its reason."
+        )
+        # Every pair of categories is contradictory bookkeeping, not just
+        # overlap with the include list: pending AND not-consumed is a
+        # decision recorded twice with opposite meanings.
+        not_consumed = set(self.NOT_CONSUMED)
+        overlapping = sorted(
+            (pending & included) | (not_consumed & included) | (pending & not_consumed)
+        )
+        assert not overlapping, (
+            f"templates recorded in more than one adoption category: {overlapping}"
         )
 
 

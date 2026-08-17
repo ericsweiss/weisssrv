@@ -83,10 +83,12 @@ This repo consumes four things from the library, all pinned:
 3. **Vendored files** — byte-identical copies of library files, and they are
    **many more than the two an agent usually assumes**. Never keep a list or a
    count here: `scripts/README.md`'s **Origin** column is the human inventory
-   and the library's `scripts/vendored-paths.yml` registry — enforced here by
-   `scripts/test_vendored_byte_identity.py` under `task lint` — is the
-   machine-checked one, covering the copies outside `scripts/` and the declared
-   forks that are deliberately allowed to differ. Fix a vendored file upstream
+   and this repo's own `scripts/vendored-manifest.yml` — enforced by
+   `scripts/test_vendored_byte_identity.py` under `task lint`, driving the
+   library's `check-vendored-copies.py` engine against its
+   `vendorable-paths.yml` offer list — is the machine-checked one, covering
+   the copies outside `scripts/` and the declared forks that are deliberately
+   allowed to differ. Fix a vendored file upstream
    and re-vendor; a local edit is reverted by the next re-vendor and reds the
    gate meanwhile.
 4. **Terraform modules** — all three roots (`terraform/cloudflare`,

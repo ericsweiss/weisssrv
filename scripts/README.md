@@ -10,17 +10,18 @@ point, and CI calls the same commands.
 |---|---|
 | local | Maintained here; the library ships nothing equivalent. |
 | vendored | A byte-identical copy of a weisssrv-lib file. Fix it upstream, tag, re-vendor — a local edit is reverted by the next re-vendor, and site data belongs in the script's config file. |
-| forked | A vendored file this cluster had to diverge from, declared with its reason in the registry. Re-converge by getting the difference upstream; a library change to a forked file must be ABSORBED, not ignored. |
+| forked | A vendored file this cluster had to diverge from, declared with its reason in the manifest. Re-converge by getting the difference upstream; a library change to a forked file must be ABSORBED, not ignored. |
 
-The **inventory of record is the library's registry**,
-`weisssrv-lib/scripts/vendored-paths.yml`, enforced here by
+The **inventory of record is this repo's own manifest**,
+[`vendored-manifest.yml`](vendored-manifest.yml), enforced by
 `test_vendored_byte_identity.py` (which drives the library's
-`scripts/check-vendored-copies.py`). The Origin columns below are the readable
-view of it; when the two disagree, the registry wins. List what is registered
-with:
+`scripts/check-vendored-copies.py` engine; the library's
+`vendorable-paths.yml` offer list bounds what the manifest may name). The
+Origin columns below are the readable view of it; when the two disagree, the
+manifest wins. List what it declares with:
 
 ```bash
-python3 ../weisssrv-lib/scripts/check-vendored-copies.py --consumer weisssrv --list
+python3 ../weisssrv-lib/scripts/check-vendored-copies.py --repo-root . --list
 ```
 
 ## Policy gates (run by `task lint` and the CI lint stage)
