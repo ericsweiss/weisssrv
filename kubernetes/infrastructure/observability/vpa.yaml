@@ -56,7 +56,7 @@ spec:
     containerPolicies:
       - containerName: "*"
         minAllowed: {cpu: 10m, memory: 32Mi}
-        maxAllowed: {cpu: 200m, memory: 51Mi}
+        maxAllowed: {cpu: 200m, memory: 76Mi}
         controlledResources: [cpu, memory]
 ---
 apiVersion: autoscaling.k8s.io/v1
@@ -70,7 +70,7 @@ spec:
     containerPolicies:
       - containerName: "*"
         minAllowed: {cpu: 10m, memory: 32Mi}
-        maxAllowed: {cpu: 200m, memory: 51Mi}
+        maxAllowed: {cpu: 200m, memory: 76Mi}
         controlledResources: [cpu, memory]
 ---
 apiVersion: autoscaling.k8s.io/v1
@@ -84,7 +84,7 @@ spec:
     containerPolicies:
       - containerName: "*"
         minAllowed: {cpu: 10m, memory: 32Mi}
-        maxAllowed: {cpu: 200m, memory: 51Mi}
+        maxAllowed: {cpu: 200m, memory: 76Mi}
         controlledResources: [cpu, memory]
 ---
 apiVersion: autoscaling.k8s.io/v1
@@ -98,7 +98,7 @@ spec:
     containerPolicies:
       - containerName: "*"
         minAllowed: {cpu: 10m, memory: 32Mi}
-        maxAllowed: {cpu: 200m, memory: 51Mi}
+        maxAllowed: {cpu: 200m, memory: 76Mi}
         controlledResources: [cpu, memory]
 ---
 apiVersion: autoscaling.k8s.io/v1

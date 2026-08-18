@@ -121,7 +121,7 @@ spec:
     containerPolicies:
       - containerName: "*"
         minAllowed: {cpu: 10m, memory: 32Mi}
-        maxAllowed: {cpu: 200m, memory: 102Mi}
+        maxAllowed: {cpu: 200m, memory: 128Mi}
         controlledResources: [cpu, memory]
 ---
 apiVersion: autoscaling.k8s.io/v1

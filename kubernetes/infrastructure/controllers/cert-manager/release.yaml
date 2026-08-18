@@ -62,7 +62,9 @@ spec:
           cpu: 50m
           memory: 64Mi
         limits:
-          memory: 128Mi
+          # 160Mi: the VPA's uncapped want sat pinned at the old 128Mi
+          # ceiling's cap for a day (~105Mi after margin, live ~66Mi).
+          memory: 160Mi
     global:
       # `platform` (sources/priorityclasses.yaml). global.priorityClassName is
       # the chart's single key for all three controllers — controller, webhook
