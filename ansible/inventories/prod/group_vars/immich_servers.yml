@@ -47,3 +47,12 @@ immich_postgres_exporter_version: "{{ postgres_exporter_version }}"
 immich_backup_nfs_enabled: true
 immich_backup_nfs_server: "pve-nas-01.{{ internal_domain }}"
 immich_backup_nfs_export: /backups-apps/immich
+
+# 01:00, not the role's 02:30 default: the nightly guest backups used to pack
+# into 02:00-03:15 (gitlab 02:00, nextcloud 02:34, immich 02:39) and their
+# combined working sets swapped ~10 GiB of idle guest memory every night
+# (docs/06 § NAS memory management). Spread so the window holds one heavy
+# job at a time: immich 01:00 -> nextcloud 01:30 -> gitlab 02:00 -> vzdump
+# 03:30.
+immich_backup_hour: "01"
+immich_backup_minute: "00"

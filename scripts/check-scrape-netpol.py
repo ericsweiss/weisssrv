@@ -120,32 +120,38 @@ def _rule_ipblocks_cover_both_families(peers: list) -> bool:
     """
     families: set[int] = set()
     for peer in peers or []:
-        # A single invalid peer rejects the WHOLE policy at the API — two
-        # valid /0 peers beside it must not credit a rule that never applies.
+        # ATOMICITY: any invalid shape anywhere in the rule rejects the WHOLE
+        # policy at the API, so it disqualifies the credit outright — only a
+        # peer that is VALID but simply not contributing (a selector peer, a
+        # narrowing block) is skipped.
         if not isinstance(peer, dict) or set(peer) - {"ipBlock", "namespaceSelector", "podSelector"}:
             return False
         ip_block = peer.get("ipBlock")
-        # The API rejects a peer combining ipBlock with a selector, and an
-        # `except` of any non-empty-list shape (including the falsey `{}`)
-        # is either narrowing or invalid — none of those may count toward
-        # the credit.
-        if not isinstance(ip_block, dict):
+        if ip_block is None:
+            # A pure selector peer — valid, contributes nothing here.
             continue
-        if peer.get("namespaceSelector") is not None or peer.get("podSelector") is not None:
-            continue
-        # Same rule one level down: an `exept:` typo would read as an
-        # unexcepted block and credit a peer the API rejects.
-        if set(ip_block) - {"cidr", "except"}:
-            continue
+        if (
+            not isinstance(ip_block, dict)
+            or set(ip_block) - {"cidr", "except"}
+            or peer.get("namespaceSelector") is not None
+            or peer.get("podSelector") is not None
+        ):
+            # Wrong type, unknown keys (`exept:`), or the ipBlock+selector
+            # combination — all API-invalid: poison, not skip.
+            return False
         excepts = ip_block.get("except")
-        if excepts is not None and excepts != []:
-            continue
+        if excepts is not None and not isinstance(excepts, list):
+            # `except: {}` and friends are invalid shapes, not narrowing.
+            return False
         # A real parse, not a `:` sniff: crediting is the fail-OPEN direction
         # here, so only a cidr the API itself would accept may count —
         # `garbage/0` must not pass as IPv4.
         try:
             net = ipaddress.ip_network(str(ip_block.get("cidr") or "").strip(), strict=False)
         except ValueError:
+            return False
+        if excepts:
+            # A valid, non-empty except list narrows — skip, don't poison.
             continue
         if net.prefixlen == 0:
             families.add(net.version)

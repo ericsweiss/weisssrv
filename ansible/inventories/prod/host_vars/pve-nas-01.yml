@@ -262,12 +262,16 @@ nas_storage_archive_backup_sources:
   - ssd/databases
   - ssd/k3s-etcd
 
-# ZFS ARC cap (16 GiB): a guard, not a target — uncapped, ARC takes about half
+# ZFS ARC cap (12 GiB): a guard, not a target — uncapped, ARC takes about half
 # of this host's RAM and squeezes the guests. The working set is far below the
-# ceiling, and unused ceiling costs nothing (ARC self-tunes down under pressure
-# and is instantly reclaimable). Rendered into /etc/modprobe.d/zfs.conf by
-# nas_storage, with an update-initramfs handler so it applies at early boot.
-nas_storage_zfs_arc_max_bytes: 17179869184
+# ceiling (~2.5 GiB at a ~98% hit ratio), and the ceiling itself is what
+# collides with the 01:00-03:30 backup window: at 16 GiB the ARC swing plus
+# the guests' backup working sets exceeded the host's spare and swapped idle
+# guest anon nightly (docs/06 § NAS memory management). 12 GiB keeps ample
+# metadata growth room while returning 4 GiB of permanent night-window
+# headroom. Rendered into /etc/modprobe.d/zfs.conf by nas_storage, with an
+# update-initramfs handler so it applies at early boot.
+nas_storage_zfs_arc_max_bytes: 12884901888
 
 # Nightly /etc/pve archive into the offsite-eligible landing zone. pmxcfs is
 # cluster-shared, so archiving it from this one node covers the whole cluster —

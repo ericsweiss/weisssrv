@@ -39,3 +39,7 @@ nextcloud_postgres_exporter_version: "{{ postgres_exporter_version }}"
 nextcloud_backup_nfs_enabled: true
 nextcloud_backup_nfs_server: "pve-nas-01.{{ internal_domain }}"
 nextcloud_backup_nfs_export: /backups-apps/nextcloud
+
+# 01:30, not the role's 02:30 default — the backup-window stagger; the full
+# schedule rationale lives with immich_backup_hour in immich_servers.yml.
+nextcloud_backup_oncalendar: "*-*-* 01:30:00"
