@@ -36,59 +36,43 @@ a hardware spend or a posture change — rather than an implementation task.
 - **Decision needed**: buy/configure a VLAN-capable switch and re-IP into
   segments, or take the interim IPSet tightening now.
 
-### Network-fabric SPOF: second switch + corosync ring
+### Network-fabric SPOF: second switch + corosync ring — deferred indefinitely
 
-- **Current state**: a single unmanaged switch carries both legs of every
-  active-backup bond; a single router/gateway (Asus GT-AX11000 at 192.168.0.1)
-  is also DHCP and the Cloudflare-origin port-forwarder; everything rides one
-  flat `vmbr0` /24 with only one corosync ring (5405/ring0; 5406/ring1 is
-  reserved but unused). A switch or router failure collapses Proxmox corosync
-  quorum and k3s etcd L2 simultaneously. See
-  [docs/17-disaster-recovery.md](17-disaster-recovery.md) (Network Fabric SPOF)
-  and [docs/34-bond-mac-flapping.md](34-bond-mac-flapping.md).
-- **Proposed change**: budget-permitting, add a second cheap switch and a second
-  corosync ring on a separate NIC/VLAN for the Proxmox cluster so a single
-  switch failure cannot lose cluster quorum.
-- **Decision needed**: hardware spend, and whether the compute nodes have a
-  spare NIC for ring1.
+May eventually happen, but not planned for any near-term window. Note: the
+2026-08 Ubiquiti wave (Cloud Fiber Gateway + Pro XG 8 PoE + U7 Pro XGS)
+replaces the gateway/switch tier and is the natural carrier for the network
+segmentation work — a later session.
 
----
 
-### UPS for the NAS (planned, with the network-hardware wave)
+### UPS for the NAS — deferred indefinitely
 
-- **Current state**: no monitored UPS; a power loss hard-stops every host. The
-  cold-boot path is unattended-safe (docs/32), so recovery is clean but
-  unmanaged.
-- **Planned**: a UPS on at least pve-nas-01 with NUT-driven shutdown, alongside
-  the Ubiquiti router/switch purchase (which also unlocks the VLAN and
-  second-corosync-ring items above).
+May eventually happen; not planned for the time being.
 
-### Split the `Homelab` vault (ESO-consumed vs host/CI-only)
 
-Every ESO-synced item and every host/CI `op://` reference share one vault, so the
-Connect credential can read all of them. Splitting out a `Homelab-Ops` vault
-re-mints the Connect credential and rewrites every `op://` reference in the
-Taskfile and CI — a botched cutover breaks ESO and every deploy job at once.
-**Operator decision:** schedule the two-vault re-org, or accept whole-vault ESO
-read as a documented risk. The interim narrowing (no admin-scoped item reachable
-from an MR-branch job) is already done, so either answer is safe today.
+### ~~Split the `Homelab` vault~~ — DONE
 
-### `tank/backups` legacy data and `archive` headroom
+Completed: `Homelab-Admin` carries the admin/CI-only items (service-account
+token, Connect credentials, bot tokens, …), `Homelab-Boot` the ZFS pool
+passphrases, and the ESO `ClusterSecretStore` reads only `Homelab`. The
+remaining, separate idea — per-namespace scoping *within* the ESO-consumed
+vault — stays parked (re-score wf-b#8 residual).
 
-Two linked data-lifecycle calls only the operator can make:
 
-- ~767 GB of immutable 2021-22 machine backups sit in `tank/backups` and are
-  re-walked by the nightly restic run every night, for no recovery value anyone
-  has claimed. **Decide: delete, cold-archive, or keep paying the nightly walk
-  and the B2 footprint.**
-- `archive` pool headroom is dominated by `archive/proxmox`. **Decide: tighten
-  the vzdump retention, or buy disks.** Nothing else frees meaningful space.
+### ~~`tank/backups` legacy data and `archive` headroom~~ — CLOSED
 
-### Opt-agent CPU saturation (hardware/placement call)
+Decided 2026-08-19: the 2021-22 machine backups stay in all three tiers
+(tank + archive replication + B2). Mechanism (in flight, same wave): the
+nightly restic job excludes those immutable subdirectories and their
+existing B2 data is pinned by forever-kept `legacy`-tagged snapshots
+(docs/42 will carry the detail). `archive` headroom: deliberately
+untracked — revisit holistically only if the pool ever runs hot.
 
-The three legacy 3-vCPU opt agents run at 7d p95 CPU 64–68% with 94–99% peaks.
-**Decide: rebalance the `*arr` workloads onto the modern agents, or accept the
-peaks until the hardware is replaced.** Not a code change either way.
+
+### ~~Opt-agent CPU saturation~~ — resolved by the August placement work
+
+Re-measured 2026-08-19: 7d average 23–25%, p95 31–33% across all three opt
+agents (was p95 64–68%). The VPA retunes and CI-placement changes absorbed
+it; nothing to decide. Watch only — the numbers live in Grafana.
 
 ### Authentik user lifecycle as code (small follow-up)
 
@@ -286,15 +270,16 @@ recipe and the reboot procedure: [docs/06 § Kernel 192-byte slab
 leak](06-zfs.md)). Until it closes, `HostSlabLeakSuspected` pages roughly
 weekly and each page means a NAS reboot window. To close it:
 
-1. **First post-`slub_nomerge` boot** (the cmdline flag is armed): read
-   `slabtop -s c` / `/proc/slabinfo` over the first days — the leaking
-   cache now reports under its own name. Suspect aliases from the merge
-   set: `skbuff_ext_cache` (br_netfilter per-packet extension),
-   `virtio_scsi_cmd`, `inet_peer`, `rtable`, `mfc_cache`.
-2. **Then** find/verify the upstream fix for that subsystem and watch the
-   Proxmox kernel changelogs for it (`apt-get changelog
-   proxmox-kernel-7.0`); after installing, a week of flat slab retires the
-   cadence, the delegations toggle, and (optionally) `slub_nomerge`.
+1. ~~Identify the tenant~~ **DONE 2026-08-19**: `skbuff_ext_cache`, leaked
+   by br_netfilter per bridged frame (`skb_ext_add` via
+   `br_nf_pre_routing`/`br_nf_forward`/`br_flood` — bpftrace-captured).
+   Fleet-wide but NAS-dominant (the NFS data plane rides its bridge).
+2. **Watch Proxmox kernel changelogs** for a br_netfilter / skb_ext fix
+   (`apt-get changelog proxmox-kernel-7.0`), and consider reporting
+   upstream with the captured stacks (docs/06 has the fingerprint); after
+   a fixed kernel installs, a week of flat `skbuff_ext_cache` retires the
+   reboot cadence, the delegations toggle, and (optionally)
+   `slub_nomerge`.
 
 ### Nextcloud follow-ups (not blockers)
 

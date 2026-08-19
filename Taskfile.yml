@@ -1369,6 +1369,8 @@ tasks:
       TAILSCALE_AUTH_KEY: op://Homelab/Tailscale Auth Key/credential
       DNS01_SSH_PRIVATE_KEY: op://Homelab/DNS-01 SSH Key/private key
       DNS01_SSH_PUBLIC_KEY: op://Homelab/DNS-01 SSH Key/public key
+      # Twin of the CI jobs' env: the plex role fail-louds without it.
+      PLEX_PFX_PASSPHRASE: op://Homelab/Plex Custom Certificate/password
     cmds:
       - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/maintenance/update-applications.yml {{.CLI_ARGS}}
 

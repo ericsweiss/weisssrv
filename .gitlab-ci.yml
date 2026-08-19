@@ -2763,6 +2763,9 @@ maintenance-update-applications:
     TAILSCALE_AUTH_KEY: "op://Homelab/Tailscale Auth Key/credential"
     DNS01_SSH_PRIVATE_KEY: "op://Homelab/DNS-01 SSH Key/private key"
     DNS01_SSH_PUBLIC_KEY: "op://Homelab/DNS-01 SSH Key/public key"
+    # The plex role fail-louds without this (cert reload script needs it);
+    # 2026-08-19 run-all failed on exactly that gap.
+    PLEX_PFX_PASSPHRASE: "op://Homelab/Plex Custom Certificate/password"
   script:
     - cd ansible
     - bash ../scripts/maintenance-run-with-verify.sh
@@ -2871,6 +2874,11 @@ maintenance-run-all:
     # Lower-privilege agent token (ANS-D-2) — required by the k3s node-update
     # and provision ops below, or they'd fall back to the cluster token.
     K3S_AGENT_TOKEN: "op://Homelab/K3s Agent Token/credential"
+    # update-applications runs the plex role, whose PFX guard fail-louds
+    # without this (the 2026-08-19 run-all failure).
+    PLEX_PFX_PASSPHRASE: "op://Homelab/Plex Custom Certificate/password"
+    DNS01_SSH_PRIVATE_KEY: "op://Homelab/DNS-01 SSH Key/private key"
+    DNS01_SSH_PUBLIC_KEY: "op://Homelab/DNS-01 SSH Key/public key"
   script:
     # The all-ops sub-script handles the 6 ops; the wrapper guarantees
     # verify runs after, even if any op failed.

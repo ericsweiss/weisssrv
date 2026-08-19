@@ -60,6 +60,14 @@ The split is by authentication, not by hostname:
 | Public status page (`services` slug ONLY, external) | external: `/`, `/status/services[/…]`, `/api/status-page/services[/…]`, `/api/status-page/heartbeat/services`, `/api/entry-page`, `/assets/…`, `/upload/…`, `/favicon.ico`, `/icon.svg`, `/manifest.json`, `/apple-touch-icon.png`, `/robots.txt`; internal: the same shape but with `/status[/…]` + `/api/status-page[/…]` prefix-wide (every slug) — all prefixes segment-boundary-safe | served, unauthenticated, **slug-fenced** | served, `lan-tailscale-only`, every slug |
 | Admin (dashboard, `/socket.io`, `/metrics`, everything else) | the catch-all | **no router — Traefik 404** | `lan-tailscale-only` + `authentik-auth` |
 
+### Alerting boundary
+
+Kuma sends **no notifications by design**. Alertmanager is the single
+alerting brain: every Kuma monitor target class is also blackbox-probed, so
+a Kuma Discord/ntfy hookup would only duplicate pages. Kuma's job is the
+status pages and their history. If a future monitor has no blackbox
+counterpart, add the blackbox target — not a Kuma notification.
+
 ### Status pages
 
 Two pages, each **domain-mapped** so `/` on its host renders it directly (no

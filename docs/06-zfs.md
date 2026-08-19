@@ -718,12 +718,15 @@ second, unreclaimable driver the levers cannot touch: a kernel leak in the
 **merged 192-byte slab** (`:0000192`), which `/proc/slabinfo` happens to
 display under its `file_lock_cache` alias — **the name is the alias, not the
 culprit**. bpftrace tracing (2026-08-19) showed every attributable allocator
-balanced (`locks_alloc_lock` and `rt_dst_alloc` alloc/free 1:1) while the slab
-grew ~500 objects/s, so the leaking tenant is one of the OTHER aliases sharing
-the cache (`skbuff_ext_cache`, `virtio_scsi_cmd`, `inet_peer`, `mfc_cache`,
-`rtable`, …). The growth tracks NFS GETATTR volume because that dominates the
-host's packet rate, which is what originally mis-attributed it to nfsd file
-locks. Compounded: **33 GiB in 9 days** — ~2.7-4 GiB/day of RAM only a reboot
+balanced while the slab grew ~500 objects/s; the first `slub_nomerge` boot
+then named the tenant: **`skbuff_ext_cache`** — skb extensions allocated by
+**br_netfilter** per bridged frame (`skb_ext_add` from
+`br_nf_pre_routing`/`br_nf_forward`/`br_flood`, captured live). The growth
+tracks NFS GETATTR volume because the NFS data plane transits the NAS bridge
+— which is also why the leak is FLEET-WIDE but slow elsewhere (every pve
+host runs the same bridge+br_netfilter path; ~230-380 MB/host/day vs GBs on
+the NAS). Same signature as the historical v5.4 bridge-nf skb_ext leak
+(commit 895b5c9f206 fallout), recurred in this kernel series. Compounded: **33 GiB in 9 days** — ~2.7-4 GiB/day of RAM only a reboot
 can reclaim, which swap-clean then papered over nightly until the 08-17 run
 had to escalate to a guest stop.
 
