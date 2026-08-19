@@ -16,23 +16,32 @@
 # (single local account; forward-auth IS its identity gate, same as the Traefik
 # dashboard).
 #
-# The path allowlist is Kuma 2.x's status-page surface, verified against
-# server/routers/status-page-router.js + api-router.js:
-#   /status/<slug>[/rss]        rendered page
-#   /status-page                the legacy "default" status page URL, spelled
-#                               out so the rule holds whether Traefik's
-#                               PathPrefix is a raw-string or a segment match
-#   /api/status-page/<slug>/*   page config, heartbeats, incident history,
-#                               manifest.json, badge
-#   /api/entry-page             what `/` calls to resolve the entry page
+# TWO status pages exist (docs/45 § Status pages), and the split is enforced
+# HERE, not in Kuma: page slugs are unauthenticated by construction, so the
+# private page is private only because the external router never matches its
+# paths.
+#
+#   services  — public services only, domain-mapped to the external host so
+#               `/` serves it directly (no redirect)
+#   internal  — public + private services, domain-mapped to the internal host;
+#               must NEVER be reachable externally (it names internal-only
+#               services), which is why the external allowlist below is
+#               SLUG-FENCED to `services` rather than a /status/ prefix
+#
+# The external path allowlist is Kuma 2.x's status-page surface for ONE slug,
+# verified against server/routers/status-page-router.js + api-router.js:
+#   /status/services[/rss]                    rendered page (canonical URL)
+#   /api/status-page/services[/*]             page config, manifest.json
+#   /api/status-page/heartbeat/services       heartbeat JSON (slug LAST here)
+#   /api/entry-page                           what `/` calls as fallback
 #   /assets, the icon/manifest/robots files   the Vite bundle served from dist/
-#   /upload/*                   status-page logo uploads
-#   Path(`/`)                   the entry page itself (302 -> /status/<slug>
-#                               once the entry page is set — docs/45 checklist)
-# /api/badge/<id>/* is deliberately NOT here: it answers for ANY monitor id,
-# including monitors on no status page.
+#   /upload/*                                 status-page logo uploads
+#   Path(`/`)                                 the domain-mapped page itself
+# /api/badge/<id>/* is deliberately NOT here: it answers for ANY monitor id.
+# A new status page is EXTERNAL-INVISIBLE until its slug is added here — that
+# is the safe default, not an oversight.
 
-# External - status.ericsweiss.com (public status page only)
+# External - status.ericsweiss.com (public status page only, slug-fenced)
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:
@@ -49,10 +58,10 @@ spec:
   routes:
     - match: >-
         Host(`status.${cluster_external_domain}`) && (Path(`/`)
-        || Path(`/status`) || PathPrefix(`/status/`)
-        || Path(`/status-page`) || PathPrefix(`/status-page/`)
-        || Path(`/api/status-page`) || PathPrefix(`/api/status-page/`)
-        || Path(`/api/entry-page`) || PathPrefix(`/api/entry-page/`)
+        || Path(`/status/services`) || PathPrefix(`/status/services/`)
+        || Path(`/api/status-page/services`) || PathPrefix(`/api/status-page/services/`)
+        || Path(`/api/status-page/heartbeat/services`)
+        || Path(`/api/entry-page`)
         || PathPrefix(`/assets/`)
         || PathPrefix(`/upload/`)
         || Path(`/favicon.ico`)
@@ -71,10 +80,12 @@ spec:
     secretName: uptime-kuma-ericsweiss-tls
 
 ---
-# Internal - status.esweiss.com, public status-page surface. Same allowlist as
-# the external route, so a LAN/tailnet reader gets the page without a WAN
-# hairpin and without holding an Authentik session. Higher priority than the
-# admin catch-all below (Traefik picks the highest priority, and relying on the
+# Internal - status.esweiss.com, status-page surface. Deliberately BROADER
+# than the external route: every slug (including `internal`, which is
+# domain-mapped to this host) is readable by a LAN/tailnet reader without a
+# WAN hairpin and without holding an Authentik session — the lan-tailscale
+# middleware is the fence at this tier. Higher priority than the admin
+# catch-all below (Traefik picks the highest priority, and relying on the
 # implicit rule-length ordering here would be fragile).
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute

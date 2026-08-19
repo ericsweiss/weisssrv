@@ -57,8 +57,25 @@ The split is by authentication, not by hostname:
 
 | Surface | Paths | External `status.ericsweiss.com` | Internal `status.esweiss.com` |
 |---|---|---|---|
-| Public status page | `/`, `/status[/…]`, `/status-page[/…]`, `/api/status-page[/…]`, `/api/entry-page[/…]`, `/assets/…`, `/upload/…`, `/favicon.ico`, `/icon.svg`, `/manifest.json`, `/apple-touch-icon.png`, `/robots.txt` — every prefix segment-boundary-safe (`/status-admin` style names cannot ride the allowlist) | served, unauthenticated | served, `lan-tailscale-only` |
+| Public status page (`services` slug ONLY, external) | external: `/`, `/status/services[/…]`, `/api/status-page/services[/…]`, `/api/status-page/heartbeat/services`, `/api/entry-page`, `/assets/…`, `/upload/…`, `/favicon.ico`, `/icon.svg`, `/manifest.json`, `/apple-touch-icon.png`, `/robots.txt`; internal: the same shape but with `/status[/…]` + `/api/status-page[/…]` prefix-wide (every slug) — all prefixes segment-boundary-safe | served, unauthenticated, **slug-fenced** | served, `lan-tailscale-only`, every slug |
 | Admin (dashboard, `/socket.io`, `/metrics`, everything else) | the catch-all | **no router — Traefik 404** | `lan-tailscale-only` + `authentik-auth` |
+
+### Status pages
+
+Two pages, each **domain-mapped** so `/` on its host renders it directly (no
+redirect):
+
+| Page slug | Domain-mapped host | Shows |
+|---|---|---|
+| `services` | `status.ericsweiss.com` | the public services (their `*.ericsweiss.com` endpoints, so the page reflects the real Cloudflare → VIP public path) |
+| `internal` | `status.esweiss.com` | everything — the public group plus the private services (Grafana, the downloads stack, wg-easy admin) on their internal endpoints |
+
+Page slugs are unauthenticated **by construction** in Kuma, so the privacy of
+`internal` is enforced by the ingress, not the app: the external route's
+allowlist names the `services` paths explicitly rather than a `/status/`
+prefix. A new status page is therefore external-invisible until its slug is
+added to the external route — the safe default. The `Entry Page` setting
+(`services`) is only the fallback for a host that is not domain-mapped.
 
 Consequences worth stating plainly:
 
@@ -239,15 +256,14 @@ Runs after the MR merges, Flux reconciles the app, and the supervised
    honours Traefik's `X-Forwarded-*`, which is what makes the entry-page
    hostname logic and the client IPs correct), and set **Monitor History**
    retention deliberately (it governs PV growth).
-3. **Create the status page** — Status Pages → New. Set its slug (the URL
-   becomes `/status/<slug>`), add the monitors that should be public, and set
-   **Domain Names** to `status.ericsweiss.com` so `/` on the external host
-   renders the page directly.
-4. **Set the entry page** — Settings → General → Entry Page → the status page
-   (the two `uptime-kuma*` blackbox probes follow the `/` redirect and stay
-   RED until this step lands on a 200)
-   from step 3. `/` then 302s to `/status/<slug>` on both hostnames, which is
-   the shape the two `http_sso` blackbox probes expect.
+3. **Create the status pages** — Status Pages → New, per the § Status pages
+   table: `services` (public monitors, Domain Names `status.ericsweiss.com`)
+   and `internal` (all monitors, Domain Names `status.esweiss.com`). Domain
+   mapping is what makes `/` render each page directly. A page with any OTHER
+   slug is not reachable externally until the ingress allowlist names it.
+4. **Set the entry page** — Settings → General → Entry Page → `services`
+   (the fallback for non-domain-mapped hosts; the two `uptime-kuma*` blackbox
+   probes stay RED until `/` lands on a 200, which domain mapping satisfies).
 5. **Add monitors** — keep each one inside the egress allowlist (§ Monitor
    types). A reasonable starting set:
    - external HTTPS: `https://home.ericsweiss.com`, `git.`, `cloud.`, `photos.`,

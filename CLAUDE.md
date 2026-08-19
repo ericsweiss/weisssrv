@@ -195,9 +195,9 @@ The k3s layer is `docs/19-k3s-deployment.md`; Flux day-2 ops are
 | App | Hostnames | Doc |
 |---|---|---|
 | Authentik SSO (IdP for everything below) | auth.esweiss.com / auth.ericsweiss.com | `kubernetes/apps/authentik/README.md`; Terraform layer docs/40 |
-| Plex (LXC .152) | plex.esweiss.com | docs/20 |
+| Plex (LXC .152) | plex.esweiss.com / plex.ericsweiss.com | docs/20 |
 | Download/media stack (`downloads` ns) | nzbget / qbittorrent / prowlarr / tv / movies / music / pulsarr .esweiss.com | docs/21 |
-| Recipes (`recipes` ns) | food.esweiss.com; bar.ericsweiss.com (bar.esweiss.com redirects to it) | docs/22, docs/23 |
+| Recipes (`recipes` ns) | food.esweiss.com / food.ericsweiss.com; bar.ericsweiss.com (bar.esweiss.com redirects to it) | docs/22, docs/23 |
 | Home Assistant (HAOS VM .154) | home.esweiss.com / home.ericsweiss.com | docs/24 |
 | GitLab (VM .153) | git.esweiss.com / git.ericsweiss.com (+ registry, pages) | docs/27 |
 | Observability (Grafana) | grafana.esweiss.com | docs/31 |
