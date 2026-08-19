@@ -274,6 +274,14 @@ nas_storage_archive_backup_sources:
 # update-initramfs handler so it applies at early boot.
 nas_storage_zfs_arc_max_bytes: 12884901888
 
+# NFSv4 delegation kill-switch (fs.leases-enable=0, persisted via sysctl.d).
+# The running kernel's nfsd leaks one unreclaimable file_lock per GETATTR
+# delegation-conflict check — 33 GiB of slab in 9 days against ~5k standing
+# write delegations from the k3s NFS clients (2026-08-18 incident, docs/06
+# § Kernel file_lock slab leak). Remove only per the criteria there: a fixed
+# kernel AND a week of flat file_lock_cache.
+nas_storage_nfs_disable_delegations: true
+
 # Nightly /etc/pve archive into the offsite-eligible landing zone. pmxcfs is
 # cluster-shared, so archiving it from this one node covers the whole cluster —
 # and this is the node whose landing zone rides archsync into restic B2. Without

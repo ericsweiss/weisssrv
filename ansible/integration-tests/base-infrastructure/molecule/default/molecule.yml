@@ -12,7 +12,7 @@ platforms:
     # differs. Anchors are per-file — YAML has no cross-file include — so each
     # scenario carries its own copy of the shape.
     <<: &systemd_platform
-      image: "${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:v0.9.8}"
+      image: "${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:v0.10.0}"
       pre_build_image: true
       privileged: true
       cgroupns_mode: host

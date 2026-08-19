@@ -619,12 +619,17 @@ sudo zpool status tank
 
 ### NAS memory management (ARC cap, swappiness, swap reset)
 
-pve-nas-01 has ~124 GiB usable. Guest maximums total ~84 GiB of VMs plus the two
+pve-nas-01 has ~124 GiB usable. Guest maximums total ~76 GiB of VMs (gitlab 16,
+immich 12, windows 8, nextcloud 8, k3s agent 24 + server 8) plus the two
 LXC ceilings (plex and immich-ml at `proxmox_lxc_memory: 8192` each), and the ARC ceiling
-adds 16 GiB — so worst case, with every guest pinned at its cap, the commit is
-~120 GiB of ~124. Both LXCs peak well under 1 GiB in practice, so the realistic
-spare is ~20 GiB; the ceilings are cgroup caps, which cost nothing until
-something genuinely asks for the memory.
+adds 12 GiB — so worst case, with every guest pinned at its cap, the commit is
+~104 GiB of ~124. Both LXCs peak well under 1 GiB in practice, so the realistic
+spare is ~30 GiB; the ceilings are cgroup caps, which cost nothing until
+something genuinely asks for the memory. The night window is the pressure test:
+guest backups are deliberately staggered (immich 01:00, nextcloud 01:30, gitlab
+02:00, vzdump 03:30 — `immich_backup_hour`/`nextcloud_backup_oncalendar`/the
+gitlab role default/`hosts.yml`) so their compress/pack peaks never stack, and
+the swap reset at 07:00 closes the window.
 It is not memory-tight, and the five levers below are what keep it that way —
 most of them are **guards** rather than fixes: they cost nothing while there is
 headroom, and they are what stops a new workload silently re-creating the swap
@@ -633,15 +638,18 @@ ratchet this host is prone to.
 The first three live in `host_vars/pve-nas-01.yml`, the fourth in `hosts.yml`,
 the fifth in the GitLab runner config:
 
-1. **ARC cap `nas_storage_zfs_arc_max_bytes` = `17179869184` (16 GiB).** The `nas_storage`
+1. **ARC cap `nas_storage_zfs_arc_max_bytes` = `12884901888` (12 GiB).** The `nas_storage`
    role renders `/etc/modprobe.d/zfs.conf` and notifies an `update-initramfs`
    handler (the pools import from the initramfs at early boot, so a bare
    modprobe.d write would only apply on the next module reload). The cap is a
    **guard, not a target**: uncapped, ARC takes ~half of RAM (~62 GiB), and a
-   rebuild must never silently revert to that. The measured working set sits far
-   below the ceiling — ARC runs a ~98 % hit ratio at ~2.5 GiB, almost all
-   metadata, because the pools are large-but-cold — so 16 GiB is room for the
-   metadata cache to grow as the pools fill, not a response to a shortage.
+   rebuild must never silently revert to that. Sized 16 → 12 GiB in the
+   2026-08 night-window retune: ARC swings to whatever the cap allows during
+   the backup window, and each GiB shaved off the cap is a GiB the window
+   never has to swap out. Budget honestly when re-sizing: ~2.5 GiB of the cap
+   is L2ARC headers for the 3.6 TB cache device (fixed overhead, not evictable
+   data cache), so 12 GiB of cap is ~9.5 GiB of actual cache — still far above
+   the measured ~2.5 GiB / ~98 %-hit metadata working set.
 2. **`vm.swappiness = 1`** (`nic_tuning_vm_swappiness`, via `nic_tuning`'s
    sysctl.d drop-in). This is the only host in the fleet that sets it; the others
    keep the kernel default of 60, because they run neither ZFS ARC nor
@@ -703,13 +711,46 @@ the fifth in the GitLab runner config:
    6 cores makes the CI-eligible pool 25 cores, which is what `concurrent: 12`
    and the matching ResourceQuota are sized against.
 
+#### Kernel file_lock slab leak (2026-08-18) and the NFS delegation kill-switch
+
+The levers above manage *reclaimable* pressure. The 2026-08 swap sawtooth had a
+second, unreclaimable driver the levers cannot touch: the running kernel's nfsd
+leaks one 192-byte `file_lock` per GETATTR delegation-conflict check against a
+write-delegated file. With the k3s NFS clients holding ~5 000 standing WRITE
+delegations (SQLite-heavy app dirs) and GETATTRs arriving at ~170/s, that
+compounded to **33 GiB of `file_lock_cache` slab in 9 days** — ~2.7 GiB/day of
+RAM only a reboot can reclaim, which swap-clean then papered over nightly until
+the 08-17 run had to escalate to a guest stop.
+
+Standing posture until a fixed kernel ships (Prometheus shows the leak back
+to at least mid-July, across several kernels of the 7.0.14 line; upstream's
+NFSD fixes landed in kernel 7.1.3 and Proxmox publishes no 7.1 kernel yet):
+
+- **`nas_storage_nfs_disable_delegations: true`** in
+  `host_vars/pve-nas-01.yml` persists `fs.leases-enable=0`. Shipped as the
+  first mitigation attempt; measurement afterwards showed the leak survives
+  with zero delegations, so this is retained as hygiene (it removed ~5 000
+  standing write delegations and one suspect allocation path), not as the fix.
+- **The `HostSlabLeakSuspected` alert** (SUnreclaim minus ARC above 16 GiB
+  for 24 h) is the reboot pager: at the measured ~4 GiB/day it fires roughly
+  weekly, and firing means *schedule the NAS reboot window now* — a reboot
+  reclaims the whole leak (33 GiB on 2026-08-18) and resets the clock.
+- Diagnosis fingerprint, for confirming recurrence or a fix:
+  `grep file_lock_cache /proc/slabinfo` object count vastly exceeding
+  `wc -l /proc/locks`, growth tracking the GETATTR rate in
+  `/proc/net/rpc/nfsd`, and `SUnreclaim` in `/proc/meminfo` far above what
+  ARC accounts for.
+- Remove the toggle and retire the cadence only when the running kernel
+  carries the upstream nfsd fix **and** a week of flat `file_lock_cache`
+  confirms it (tracking item: docs/16).
+
 ```bash
 # View ARC size + hit ratio
 awk '$1 ~ /^(c|c_max|size)$/' /proc/spl/kstat/zfs/arcstats
 sudo arc_summary | grep "Hit Rate"
 
 # Limit ARC (temporary, until reboot)
-echo 17179869184 | sudo tee /sys/module/zfs/parameters/zfs_arc_max  # 16 GiB
+echo 12884901888 | sudo tee /sys/module/zfs/parameters/zfs_arc_max  # 12 GiB (matches host_vars)
 
 # One-off swap reset (what the timer does)
 sudo /usr/local/sbin/swap-clean.sh

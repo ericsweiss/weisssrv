@@ -237,6 +237,62 @@ tests:
               instance: '192.168.0.104:9101'
               device: nic0
 
+  # HostSlabLeakSuspected: SUnreclaim 27 GiB above ARC on the NAS fires (the
+  # 2026-08-18 nfsd file_lock leak shape); a healthy peer whose SUnreclaim is
+  # ~ARC does not. Default label matching: both series come from the same
+  # exporter with identical job+instance. 1m samples: wider spacing than the
+  # 5m staleness lookback would break the 24h `for:` chain between points.
+  - interval: 1m
+    input_series:
+      - series: 'node_memory_SUnreclaim_bytes{job="node-exporter-host", instance="192.168.0.102:9101"}'
+        values: '39000000000+0x1500'
+      - series: 'node_zfs_arc_size{job="node-exporter-host", instance="192.168.0.102:9101"}'
+        values: '12000000000+0x1500'
+      - series: 'node_memory_SUnreclaim_bytes{job="node-exporter-host", instance="192.168.0.104:9101"}'
+        values: '9000000000+0x1500'
+      - series: 'node_zfs_arc_size{job="node-exporter-host", instance="192.168.0.104:9101"}'
+        values: '8000000000+0x1500'
+    alert_rule_test:
+      - eval_time: 24h30m
+        alertname: HostSlabLeakSuspected
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: node-exporter-host
+              instance: '192.168.0.102:9101'
+
+  # HostMemAvailableLow: 6% available for the full 30m hold fires; 19% does
+  # not; and a dip that recovers inside the hold does not.
+  - interval: 1m
+    input_series:
+      - series: 'node_memory_MemAvailable_bytes{job="node-exporter-host", instance="192.168.0.102:9101"}'
+        values: '1000000000+0x35'
+      - series: 'node_memory_MemTotal_bytes{job="node-exporter-host", instance="192.168.0.102:9101"}'
+        values: '16000000000+0x35'
+      - series: 'node_memory_MemAvailable_bytes{job="node-exporter-host", instance="192.168.0.104:9101"}'
+        values: '3000000000+0x35'
+      - series: 'node_memory_MemTotal_bytes{job="node-exporter-host", instance="192.168.0.104:9101"}'
+        values: '16000000000+0x35'
+    alert_rule_test:
+      - eval_time: 31m
+        alertname: HostMemAvailableLow
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: node-exporter-host
+              instance: '192.168.0.102:9101'
+
+  - interval: 1m
+    input_series:
+      - series: 'node_memory_MemAvailable_bytes{job="node-exporter-host", instance="192.168.0.102:9101"}'
+        values: '1000000000 1000000000 1000000000 1000000000 1000000000 3000000000+0x30'
+      - series: 'node_memory_MemTotal_bytes{job="node-exporter-host", instance="192.168.0.102:9101"}'
+        values: '16000000000+0x35'
+    alert_rule_test:
+      - eval_time: 31m
+        alertname: HostMemAvailableLow
+        exp_alerts: []
+
   # HostConntrackEntriesHigh at 75% of the table.
   - interval: 1m
     input_series:

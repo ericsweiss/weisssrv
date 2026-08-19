@@ -183,6 +183,55 @@ spec:
               `dmesg -T | tail`, SMART for the backing device, and the ZFS
               pool state before remounting rw.
 
+        # SUnreclaim minus ARC: on these hosts nearly all legitimate unreclaimable
+        # slab IS the ZFS ARC (SPL allocations land in SUnreclaim), so the
+        # delta is the leak signal. 16 GiB / 24h is tuned as a REBOOT PAGER
+        # for the standing nfsd file_lock leak (~4 GiB/day, docs/06 § Kernel
+        # file_lock slab leak): it fires roughly weekly, early enough to
+        # schedule the NAS window before the night backups feel it, and late
+        # enough not to stand lit for days and train dismissal. Both metrics
+        # come from the same host exporter, so the subtraction only yields
+        # series on ZFS hosts — the k3s guests' 9100 exporters never match.
+        - alert: HostSlabLeakSuspected
+          expr: >-
+            (node_memory_SUnreclaim_bytes{job="node-exporter-host"} - node_zfs_arc_size{job="node-exporter-host"}) > 16 * 1024 * 1024 * 1024
+          for: 24h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: '${cluster_runbook_base_url}/06-zfs.md'
+            summary: 'Unreclaimable slab far above ARC on {{ $labels.instance }} — schedule the reboot window'
+            description: >-
+              SUnreclaim on {{ $labels.instance }} exceeds the ZFS ARC size by
+              {{ $value | humanize1024 }}B and has for 24 hours — kernel
+              memory only a reboot reclaims. On the NAS this is the standing
+              nfsd file_lock leak (~4 GiB/day until a fixed kernel ships):
+              firing means schedule the reboot window now, before the night
+              backup window starts swapping. Fingerprint + procedure: docs/06
+              § Kernel file_lock slab leak; compare `grep file_lock_cache
+              /proc/slabinfo` against `wc -l /proc/locks` on the host.
+
+        # Genuine memory-pressure floor, fleet-wide. The NAS swap alerts catch
+        # the NAS's specific failure modes; nothing watched the other hosts
+        # (or the NAS between swap events) simply running out of available
+        # memory — the mode the 2026-08 slab leak would have ended in.
+        - alert: HostMemAvailableLow
+          expr: >-
+            (node_memory_MemAvailable_bytes{job="node-exporter-host"} / node_memory_MemTotal_bytes{job="node-exporter-host"}) < 0.08
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: '${cluster_runbook_base_url}/06-zfs.md'
+            summary: 'Available memory below 8% on {{ $labels.instance }} for 30m'
+            description: >-
+              {{ $labels.instance }} has under 8% of RAM available
+              ({{ $value | humanizePercentage }}) for 30 minutes — sustained
+              pressure, not a transient peak. Check the big consumers (guest
+              ballooning, ARC vs its cap, SUnreclaim for slab growth) before
+              the kernel starts swapping or OOM-killing (docs/06 § NAS memory
+              management for the NAS levers).
+
         - alert: HostConntrackEntriesHigh
           expr: >-
             (node_nf_conntrack_entries{job="node-exporter-host"} / node_nf_conntrack_entries_limit{job="node-exporter-host"}) > 0.75
