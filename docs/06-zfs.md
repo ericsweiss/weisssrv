@@ -711,20 +711,26 @@ the fifth in the GitLab runner config:
    6 cores makes the CI-eligible pool 25 cores, which is what `concurrent: 12`
    and the matching ResourceQuota are sized against.
 
-#### Kernel file_lock slab leak (2026-08-18) and the NFS delegation kill-switch
+#### Kernel 192-byte slab leak (2026-08-18) and the NFS delegation kill-switch
 
 The levers above manage *reclaimable* pressure. The 2026-08 swap sawtooth had a
-second, unreclaimable driver the levers cannot touch: the running kernel's nfsd
-leaks one 192-byte `file_lock` per GETATTR delegation-conflict check against a
-write-delegated file. With the k3s NFS clients holding ~5 000 standing WRITE
-delegations (SQLite-heavy app dirs) and GETATTRs arriving at ~170/s, that
-compounded to **33 GiB of `file_lock_cache` slab in 9 days** — ~2.7 GiB/day of
-RAM only a reboot can reclaim, which swap-clean then papered over nightly until
-the 08-17 run had to escalate to a guest stop.
+second, unreclaimable driver the levers cannot touch: a kernel leak in the
+**merged 192-byte slab** (`:0000192`), which `/proc/slabinfo` happens to
+display under its `file_lock_cache` alias — **the name is the alias, not the
+culprit**. bpftrace tracing (2026-08-19) showed every attributable allocator
+balanced (`locks_alloc_lock` and `rt_dst_alloc` alloc/free 1:1) while the slab
+grew ~500 objects/s, so the leaking tenant is one of the OTHER aliases sharing
+the cache (`skbuff_ext_cache`, `virtio_scsi_cmd`, `inet_peer`, `mfc_cache`,
+`rtable`, …). The growth tracks NFS GETATTR volume because that dominates the
+host's packet rate, which is what originally mis-attributed it to nfsd file
+locks. Compounded: **33 GiB in 9 days** — ~2.7-4 GiB/day of RAM only a reboot
+can reclaim, which swap-clean then papered over nightly until the 08-17 run
+had to escalate to a guest stop.
 
-Standing posture until a fixed kernel ships (Prometheus shows the leak back
-to at least mid-July, across several kernels of the 7.0.14 line; upstream's
-NFSD fixes landed in kernel 7.1.3 and Proxmox publishes no 7.1 kernel yet):
+Standing posture until the tenant is isolated and a fixed kernel ships
+(Prometheus shows the leak back to at least mid-July, across several kernels
+of the 7.0.14 line; note the earlier assumption that kernel 7.1.3's NFSD
+fixes cover this is RETRACTED — the leaking path is not proven to be nfsd):
 
 - **`nas_storage_nfs_disable_delegations: true`** in
   `host_vars/pve-nas-01.yml` persists `fs.leases-enable=0`. Shipped as the
@@ -735,14 +741,21 @@ NFSD fixes landed in kernel 7.1.3 and Proxmox publishes no 7.1 kernel yet):
   for 24 h) is the reboot pager: at the measured ~4 GiB/day it fires roughly
   weekly, and firing means *schedule the NAS reboot window now* — a reboot
   reclaims the whole leak (33 GiB on 2026-08-18) and resets the clock.
-- Diagnosis fingerprint, for confirming recurrence or a fix:
-  `grep file_lock_cache /proc/slabinfo` object count vastly exceeding
-  `wc -l /proc/locks`, growth tracking the GETATTR rate in
-  `/proc/net/rpc/nfsd`, and `SUnreclaim` in `/proc/meminfo` far above what
-  ARC accounts for.
-- Remove the toggle and retire the cadence only when the running kernel
-  carries the upstream nfsd fix **and** a week of flat `file_lock_cache`
-  confirms it (tracking item: docs/16).
+- **`slub_nomerge` is armed on the kernel cmdline** (GRUB): from the next
+  boot every slab reports under its own name, so `/proc/slabinfo` (or
+  `slabtop -s c`) names the leaking cache directly — watch which 192 B cache
+  climbs in the first days after the reboot, then hunt the upstream fix for
+  THAT subsystem. Negligible overhead; keep it until the leak is closed.
+- Diagnosis fingerprint, for confirming recurrence or a fix: a 192 B slab's
+  object count in the millions with no matching kernel-object population,
+  and `SUnreclaim` in `/proc/meminfo` far above what ARC accounts for.
+  bpftrace recipe that got this far:
+  `bpftrace -e 'kprobe:<suspect_alloc> { @[kstack(8)] = count(); }'`
+  against alloc/free pairs, compared with the slab object delta over the
+  same window.
+- Remove the toggle and retire the cadence only when the leaking cache is
+  identified, the running kernel carries its upstream fix, **and** a week of
+  flat slab confirms it (tracking item: docs/16).
 
 ```bash
 # View ARC size + hit ratio

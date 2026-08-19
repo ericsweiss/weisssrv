@@ -277,22 +277,24 @@ remote address, not the header).
 ([docs/45](45-uptime-kuma.md)); everything below is platform and operations
 work. A new app starts as an entry here.
 
-### NAS nfsd file_lock slab leak — kernel watch (standing, ~weekly reboots)
+### NAS 192B-slab kernel leak — isolate the tenant, then the fix (standing, ~weekly reboots)
 
-The running 7.0.14-line kernel leaks unreclaimable `file_lock` slab at
-~4 GiB/day on pve-nas-01 (root cause, fingerprint, mitigations and the
-reboot procedure: [docs/06 § Kernel file_lock slab leak](06-zfs.md)). Until
-it closes, `HostSlabLeakSuspected` pages roughly weekly and each page means
-a NAS reboot window. To close it:
+The running 7.0.14-line kernel leaks an unreclaimable **merged 192 B slab**
+at ~4 GiB/day on pve-nas-01 — displayed as `file_lock_cache` in slabinfo,
+but tracing proved that alias innocent (mechanism, fingerprint, bpftrace
+recipe and the reboot procedure: [docs/06 § Kernel 192-byte slab
+leak](06-zfs.md)). Until it closes, `HostSlabLeakSuspected` pages roughly
+weekly and each page means a NAS reboot window. To close it:
 
-- **Watch Proxmox kernel releases** for a 7.1-line kernel (upstream's NFSD
-  fixes landed in 7.1.3) or an nfsd backport in the 7.0.14 changelog
-  (`apt-get changelog proxmox-kernel-7.0`); after installing one, keep the
-  slab watch for a week and only then retire the cadence and the
-  `nas_storage_nfs_disable_delegations` toggle per the docs/06 criteria.
-- **Optional experiment** while waiting: mount one busy NFS PV with
-  `vers=4.1` and compare that client's contribution to the GETATTR-correlated
-  growth — cheap signal on whether the leaking path is v4.2-specific.
+1. **First post-`slub_nomerge` boot** (the cmdline flag is armed): read
+   `slabtop -s c` / `/proc/slabinfo` over the first days — the leaking
+   cache now reports under its own name. Suspect aliases from the merge
+   set: `skbuff_ext_cache` (br_netfilter per-packet extension),
+   `virtio_scsi_cmd`, `inet_peer`, `rtable`, `mfc_cache`.
+2. **Then** find/verify the upstream fix for that subsystem and watch the
+   Proxmox kernel changelogs for it (`apt-get changelog
+   proxmox-kernel-7.0`); after installing, a week of flat slab retires the
+   cadence, the delegations toggle, and (optionally) `slub_nomerge`.
 
 ### Nextcloud follow-ups (not blockers)
 
