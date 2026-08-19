@@ -31,6 +31,7 @@ locals {
       "adguard_01",
       "adguard_02",
       "traefik_dashboard",
+      "uptime_kuma",
     ]
   }
 }

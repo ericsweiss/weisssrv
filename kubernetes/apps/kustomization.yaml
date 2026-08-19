@@ -18,5 +18,6 @@ resources:
   - gitlab-agent
   - registry-cache
   - tailnet-dns
+  - uptime-kuma
   - vm-ingress
   - wg-easy

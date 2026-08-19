@@ -367,6 +367,12 @@ dcgm_exporter_version: "4.6.0-4.8.3-distroless"
 # https://github.com/homarr-labs/homarr/releases
 homarr_version: "v1.75.0"
 
+# Uptime Kuma (docs/45). BARE semver tag on Docker Hub (no "v"); the manifest
+# appends "-rootless", which is the same release built with USER node and is
+# what lets the namespace enforce PSA restricted.
+# https://github.com/louislam/uptime-kuma/releases
+uptime_kuma_version: "2.5.0"
+
 # Offsite backup binaries (restic_offsite role on pve-nas-01, docs/42).
 # A NON-EMPTY restic_version becomes an EXACT apt pin — "" means distro.
 # rclone installs from rclone.org's own .deb (Debian's build is years stale);

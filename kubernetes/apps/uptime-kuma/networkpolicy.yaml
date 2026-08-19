@@ -1,0 +1,158 @@
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-egress
+  namespace: uptime-kuma
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+
+---
+# Ingress: Traefik reaches the app on :3001 (status page + admin UI) and
+# Prometheus scrapes /metrics on the same port. Everything else (cross-pod,
+# cross-namespace) is denied by the baseline default-deny-ingress. Kubelet
+# health probes are node-local and not gated by NetworkPolicy.
+#
+# The observability peer is what scripts/check-scrape-netpol.py requires for the
+# ServiceMonitor in
+# kubernetes/infrastructure/observability/service-monitors/uptime-kuma.yaml.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-uptime-kuma-ingress
+  namespace: uptime-kuma
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: uptime-kuma
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: traefik
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+      ports:
+        - protocol: TCP
+          port: 3001
+
+---
+# Egress for the uptime-kuma pod. Probing IS this app's data path, so the
+# allowlist is the monitor inventory: one `to:` block per target class
+# (docs/45 § What it may reach). Adding a monitor whose target is not covered
+# here fails as a timeout, not a policy error — extend this file in the same
+# change.
+#
+# The namespaceSelector peer in rule 3 is load-bearing: kube-proxy DNATs a
+# ClusterIP/VIP to the backend pod IP before policy evaluation, so an ipBlock
+# alone cannot match a Service VIP. No kube-apiserver reach
+# (automountServiceAccountToken is false).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-uptime-kuma
+  namespace: uptime-kuma
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: uptime-kuma
+  policyTypes:
+    - Egress
+  egress:
+    # 1. kube-dns — every monitor resolves its target first.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # 2. public HTTPS — the point of the app: the *.ericsweiss.com endpoints
+    #    (which leave the LAN and come back through Cloudflare), third-party
+    #    dependencies, and outbound webhook notifications (Discord/ntfy/…).
+    #    Scoped to :443; a monitor that must check a plaintext :80 redirect
+    #    needs a deliberate edit here.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 100.64.0.0/10
+              - 169.254.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443
+    # 3. Traefik — every in-cluster and VM-hosted service is monitored on its
+    #    real user-facing path (https://<app>.esweiss.com), not a direct
+    #    backend port. Two rules because the DNAT happens BEFORE policy
+    #    evaluation (the 2026-07-30 ipBlock/VIP lesson): the load-bearing rule
+    #    is the traefik POD selector on the websecure TARGET port — 443 as
+    #    this chart configures the container, with the chart-default 8443
+    #    also allowed so a values change cannot silently black-hole every
+    #    internal monitor. The VIP:443 ipBlocks document the pre-DNAT intent.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: traefik
+      ports:
+        - protocol: TCP
+          port: 8443
+        - protocol: TCP
+          port: 443
+    - to:
+        - ipBlock: { cidr: 192.168.0.101/32 }
+        - ipBlock: { cidr: 192.168.0.100/32 }
+      ports:
+        - protocol: TCP
+          port: 443
+    # 4a. DNS resolvers (dns-01/dns-02): DNS-type monitors, which check the
+    #     resolver FUNCTION rather than its admin UI.
+    - to:
+        - ipBlock: { cidr: 192.168.0.150/32 }
+        - ipBlock: { cidr: 192.168.0.160/32 }
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # 4b. SMTP relay: the submission listener (TCP-port monitor) and the same
+    #     port Kuma's email notification channel sends through.
+    - to:
+        - ipBlock: { cidr: 192.168.0.151/32 }
+      ports:
+        - protocol: TCP
+          port: 587
+    # 4c. Proxmox API on every node — TCP-port monitors only. An HTTPS monitor
+    #     would need the PVE cluster CA trusted in-process (or the un-codified
+    #     "ignore TLS" toggle), and host health is already covered by the
+    #     Proxmox exporter; this is the independent-of-Prometheus liveness view.
+    - to:
+        - ipBlock: { cidr: 192.168.0.102/32 }
+        - ipBlock: { cidr: 192.168.0.103/32 }
+        - ipBlock: { cidr: 192.168.0.104/32 }
+        - ipBlock: { cidr: 192.168.0.105/32 }
+        - ipBlock: { cidr: 192.168.0.106/32 }
+        - ipBlock: { cidr: 192.168.0.107/32 }
+      ports:
+        - protocol: TCP
+          port: 8006
+    # 4d. kube-apiserver VIP (kube-vip): a TCP-port monitor on the control
+    #     plane's front door. Not the apiserver as a client — this pod holds no
+    #     service-account token.
+    - to:
+        - ipBlock: { cidr: 192.168.0.161/32 }
+      ports:
+        - protocol: TCP
+          port: 6443

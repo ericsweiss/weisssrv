@@ -85,6 +85,7 @@ data:
   sonarr_version: 4.0.19.2979
   tailscale_version: 1.102.2
   unbound_exporter_version: 0.6.0
+  uptime_kuma_version: 2.5.0
   wg_easy_version: 15.4.0
   zfs_exporter_version: 2.4.1
 kind: ConfigMap

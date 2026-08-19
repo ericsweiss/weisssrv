@@ -71,6 +71,22 @@ _SERVICES: list[dict] = [
         "tag_filter": r"^v\d+\.\d+\.\d+$",
     },
     {
+        # Uptime Kuma (kubernetes/apps/uptime-kuma, docs/45). Docker Hub
+        # `louislam/uptime-kuma`, tracked there rather than on GitHub because
+        # the deployed tag is the Docker one: the manifest pins
+        # `${uptime_kuma_version}-rootless`, and the regex keeps the bare X.Y.Z
+        # releases while excluding the floating majors (2), the channel tags
+        # (next, beta, nightly2) and the -slim/-rootless variants that share
+        # the repo. Flux-managed image pin, so it routes through
+        # flux:sync-versions.
+        "name": "Uptime Kuma",
+        "var_name": "uptime_kuma_version",
+        "category": "dockerhub",
+        "docker_image": "louislam/uptime-kuma",
+        "tag_regex": r"^(\d+\.\d+\.\d+)$",
+        "source_url": "https://github.com/louislam/uptime-kuma/releases",
+    },
+    {
         # Immich app (immich-server + immich-machine-learning images share this
         # tag). The coupled DB/Valkey pins (immich_postgres_version,
         # immich_valkey_version) are NOT tracked here — they must be taken from
@@ -855,6 +871,7 @@ _FLUX_MANAGED = {
     "gluetun_version", "nzbget_version", "qbittorrent_version",
     "prowlarr_version", "sonarr_version", "radarr_version",
     "lidarr_version", "pulsarr_version", "wg_easy_version", "homarr_version",
+    "uptime_kuma_version",
     "hermes_version", "hermes_codex_version", "hermes_claude_version",
     "hermes_op_version", "hermes_camofox_version",
     "hindsight_version", "hindsight_llamacpp_version",

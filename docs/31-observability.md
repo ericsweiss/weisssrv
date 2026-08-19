@@ -51,6 +51,7 @@ In addition to the built-in scrape targets, custom ServiceMonitors collect metri
 | Immich (VM: api + microservices) | observability (external endpoint) | `/metrics` | 60s |
 | Nextcloud (VM exporter) | observability (external endpoint) | `/metrics` | 60s |
 | wg-easy | wg-easy | `/metrics/prometheus` | 30s |
+| Uptime Kuma (HTTP Basic against its admin account — docs/45) | uptime-kuma | `/metrics` | 60s |
 | Hindsight | hindsight | `/metrics` | 30s |
 | Blackbox exporter (HTTP + DNS + TCP probes — `observability/exporters/blackbox-exporter.yaml` `serviceMonitor.targets` is the list) | observability | `/probe` | 60s |
 | cert-manager | cert-manager | `/metrics` | (chart default) |
@@ -768,6 +769,7 @@ rule families; the `prometheus-config-lint` CI job runs them (docs/13).
 | WgEasyEndpointVipMissing / WgEasyMetricsMissing | the `.99` endpoint VIP or the wg-easy metrics series is gone | warning | 15m |
 | HindsightDown | Hindsight (Hermes memory backend) down | warning | 15m |
 | RegistryCacheDown | pull-through registry cache down | warning | 15m |
+| UptimeKumaDown | Uptime Kuma has no available replica — no endpoint monitor runs and the public status page is down (docs/45) | warning | 15m |
 | TailscaleOperatorDown / TailscaleProxyDown | Tailscale operator or a proxy pod down | warning | 15m |
 | GitLabAgentDown | GitLab k8s agent down (Flux push-reconcile stops) | warning | 15m |
 | AuthentikWorkerDown | authentik-worker scrape target down — blueprints, outposts and mail stop while the server keeps serving stale config | warning | 15m |

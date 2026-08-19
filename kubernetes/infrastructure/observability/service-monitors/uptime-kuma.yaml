@@ -1,0 +1,42 @@
+---
+# Uptime Kuma's native metrics, served on the app port (3001) at /metrics —
+# monitor_status / monitor_response_time / monitor_cert_days_remaining plus the
+# process metrics. Lives in observability with its Basic secret, same shape as
+# the wg-easy / meilisearch ServiceMonitors; observability->3001 is opened by
+# allow-uptime-kuma-ingress (kubernetes/apps/uptime-kuma/networkpolicy.yaml).
+#
+# Kuma protects /metrics with HTTP Basic against **the single admin account**
+# (server/server.js: `app.get("/metrics", apiAuth, …)`, and apiAuth falls back
+# to the user authorizer while the "API Keys" feature is off). So the scrape
+# credentials ARE the admin credentials, recorded in 1Password "Uptime Kuma"
+# before the app is deployed and entered verbatim in the first-run setup form
+# (docs/45). Two consequences, both load-bearing:
+#   * enabling API Keys in Kuma's UI switches /metrics to API-key-only and this
+#     scrape starts 401ing — rotate the 1P field to the key at the same time;
+#   * a changed admin password must be mirrored into 1P, or the target goes
+#     down with the app perfectly healthy — and worse than silent, since every
+#     failed scrape spends a token from Kuma's shared login rate limiter, which
+#     is the same bucket the operator's own login draws from.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: uptime-kuma
+  namespace: observability
+spec:
+  namespaceSelector:
+    matchNames:
+      - uptime-kuma
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: uptime-kuma
+  endpoints:
+    - port: http
+      interval: 60s
+      path: /metrics
+      basicAuth:
+        username:
+          name: observability-exporter-secrets
+          key: uptime-kuma-username
+        password:
+          name: observability-exporter-secrets
+          key: uptime-kuma-password

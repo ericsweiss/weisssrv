@@ -1,0 +1,143 @@
+---
+# Uptime Kuma — three routes across two hostnames, split by AUTHENTICATION, not
+# by host (docs/45 § Routing split):
+#
+#   * the PUBLIC status-page surface (read-only: the rendered page, its JSON
+#     heartbeat/incident endpoints, the SPA bundle and the uploaded logo) is
+#     served unauthenticated on BOTH hostnames;
+#   * EVERYTHING ELSE — the dashboard, the socket.io control channel Kuma logs
+#     in over, /metrics — is admin surface and exists ONLY on the internal
+#     hostname, behind lan-tailscale-only + Authentik forward-auth.
+#
+# So the external hostname has no catch-all: a request outside the allowlist
+# below (e.g. https://status.ericsweiss.com/dashboard) matches no router and
+# Traefik answers 404. That is the fence — the admin UI is never published to
+# the internet, and Kuma has no OIDC support of its own to fall back on
+# (single local account; forward-auth IS its identity gate, same as the Traefik
+# dashboard).
+#
+# The path allowlist is Kuma 2.x's status-page surface, verified against
+# server/routers/status-page-router.js + api-router.js:
+#   /status/<slug>[/rss]        rendered page
+#   /status-page                the legacy "default" status page URL, spelled
+#                               out so the rule holds whether Traefik's
+#                               PathPrefix is a raw-string or a segment match
+#   /api/status-page/<slug>/*   page config, heartbeats, incident history,
+#                               manifest.json, badge
+#   /api/entry-page             what `/` calls to resolve the entry page
+#   /assets, the icon/manifest/robots files   the Vite bundle served from dist/
+#   /upload/*                   status-page logo uploads
+#   Path(`/`)                   the entry page itself (302 -> /status/<slug>
+#                               once the entry page is set — docs/45 checklist)
+# /api/badge/<id>/* is deliberately NOT here: it answers for ANY monitor id,
+# including monitors on no status page.
+
+# External - status.ericsweiss.com (public status page only)
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: uptime-kuma-status
+  namespace: uptime-kuma
+  annotations:
+    # external-dns auto-creates the Cloudflare record from this route — no
+    # terraform/cloudflare edit (same as homarr/hermes; a Terraform entry is
+    # only needed for a nested subdomain or a DNS-only record — docs/08).
+    external-dns.alpha.kubernetes.io/target: ${cluster_external_domain}
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: >-
+        Host(`status.${cluster_external_domain}`) && (Path(`/`)
+        || Path(`/status`) || PathPrefix(`/status/`)
+        || Path(`/status-page`) || PathPrefix(`/status-page/`)
+        || Path(`/api/status-page`) || PathPrefix(`/api/status-page/`)
+        || Path(`/api/entry-page`) || PathPrefix(`/api/entry-page/`)
+        || PathPrefix(`/assets/`)
+        || PathPrefix(`/upload/`)
+        || Path(`/favicon.ico`)
+        || Path(`/icon.svg`)
+        || Path(`/manifest.json`)
+        || Path(`/apple-touch-icon.png`)
+        || Path(`/robots.txt`))
+      kind: Rule
+      middlewares:
+        - name: hsts-header
+          namespace: traefik
+      services:
+        - name: uptime-kuma
+          port: 3001
+  tls:
+    secretName: uptime-kuma-ericsweiss-tls
+
+---
+# Internal - status.esweiss.com, public status-page surface. Same allowlist as
+# the external route, so a LAN/tailnet reader gets the page without a WAN
+# hairpin and without holding an Authentik session. Higher priority than the
+# admin catch-all below (Traefik picks the highest priority, and relying on the
+# implicit rule-length ordering here would be fragile).
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: uptime-kuma-internal-status
+  namespace: uptime-kuma
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: >-
+        Host(`status.${cluster_internal_domain}`) && (Path(`/`)
+        || Path(`/status`) || PathPrefix(`/status/`)
+        || Path(`/status-page`) || PathPrefix(`/status-page/`)
+        || Path(`/api/status-page`) || PathPrefix(`/api/status-page/`)
+        || Path(`/api/entry-page`) || PathPrefix(`/api/entry-page/`)
+        || PathPrefix(`/assets/`)
+        || PathPrefix(`/upload/`)
+        || Path(`/favicon.ico`)
+        || Path(`/icon.svg`)
+        || Path(`/manifest.json`)
+        || Path(`/apple-touch-icon.png`)
+        || Path(`/robots.txt`))
+      kind: Rule
+      priority: 100
+      middlewares:
+        - name: lan-tailscale-only
+          namespace: traefik
+        - name: hsts-header
+          namespace: traefik
+      services:
+        - name: uptime-kuma
+          port: 3001
+  tls:
+    secretName: uptime-kuma-esweiss-tls
+
+---
+# Internal - status.esweiss.com, ADMIN catch-all (everything the route above
+# does not claim: /dashboard, /add, /settings, /socket.io, /metrics).
+# lan-tailscale-only bounds it to the LAN/tailnet; authentik-auth is the login
+# (Kuma's own single-account login stays underneath as a second factor — the
+# forward-auth outpost injects no credentials into it).
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: uptime-kuma-internal
+  namespace: uptime-kuma
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`status.${cluster_internal_domain}`)
+      kind: Rule
+      priority: 10
+      middlewares:
+        - name: lan-tailscale-only
+          namespace: traefik
+        - name: authentik-auth
+          namespace: authentik
+        - name: hsts-header
+          namespace: traefik
+      services:
+        - name: uptime-kuma
+          port: 3001
+  tls:
+    secretName: uptime-kuma-esweiss-tls

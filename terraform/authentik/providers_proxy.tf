@@ -130,6 +130,16 @@ locals {
       name          = "Traefik Dashboard"
       external_host = "https://traefik.esweiss.com"
     }
+
+    # Uptime Kuma admin UI (docs/45). The INTERNAL hostname only: the external
+    # status.ericsweiss.com router publishes the read-only status page and has
+    # no admin path for a provider to gate, so forward_single needs just this
+    # one host. No injection — Kuma keeps its own single-account login
+    # underneath the outpost, and its login form is not HTTP Basic.
+    uptime_kuma = {
+      name          = "Uptime Kuma"
+      external_host = "https://status.esweiss.com"
+    }
   }
 
   proxy_providers = {

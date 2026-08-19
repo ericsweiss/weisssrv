@@ -165,6 +165,7 @@ re-run the consuming deploy (`task <area>:deploy`) for `op run` consumers, or
 | Immich Secrets | `postgres-password`, `admin-bootstrap-password` | Immich compose DB; the bootstrap password is operator-only |
 | Homarr Proxmox Token | `token-id`, `token-secret` (PVEAuditor) | entered in the Homarr UI, not ESO-consumed (docs/41) |
 | Homarr Integrations | per-integration API keys | DR-convenience record of UI-entered credentials, not ESO-consumed |
+| Uptime Kuma | `admin-username`, `admin-password` | Kuma's single admin account **and** its `/metrics` scrape — see [detail](#uptime-kuma) |
 | Plex Token | `token` | Plex exporter metrics |
 
 #### Observability and backups
@@ -336,6 +337,24 @@ Connect provider does not resolve a LOGIN item's primary username field.
 Rotate: create a replacement deploy token with the same name and scope, update
 `token`, then `task flux:refresh-secret -- hermes/hermes-registry-pull` and
 revoke the old token.
+
+#### Uptime Kuma
+
+Operator-chosen **before** the app is deployed, then typed verbatim into Kuma's
+first-run setup form (docs/45). They are one credential doing two jobs: Kuma's
+only login, and the HTTP Basic pair Prometheus scrapes `/metrics` with — Kuma
+protects that endpoint with the admin account while its "API Keys" feature is
+off. So a password change is a two-step rotation: change it in Kuma's UI, update
+this item, then let ESO re-sync (`observability-exporter-secrets` →
+`uptime-kuma-username`/`uptime-kuma-password`) or force it with
+`task flux:rotate-secret -- observability-exporters` (Prometheus reads the
+mounted Secret through its config-reloader, so it needs no restart). Enabling
+API Keys in Kuma switches `/metrics` to key-only auth and the scrape 401s until
+`admin-password` is replaced with the key.
+
+Both fields must exist before the manifests merge: they join the shared
+`observability-exporter-secrets` ExternalSecret, and a missing property fails
+that whole Secret sync.
 
 #### Home Assistant API Token
 

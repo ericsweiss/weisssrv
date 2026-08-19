@@ -135,6 +135,20 @@ spec:
         - name: homarr
           url: https://dashboard.${cluster_internal_domain}
           module: http_sso
+        # Uptime Kuma, internal PUBLIC router: `/` 302s to the entry status
+        # page, and the probe must FOLLOW it — http_sso accepts the 302
+        # itself, which would stay green even when the redirect target is
+        # broken. RED until the docs/45 first-run checklist sets the entry
+        # status page.
+        - name: uptime-kuma
+          url: https://status.${cluster_internal_domain}
+          module: http_2xx
+        # Uptime Kuma, internal ADMIN router: a separate Traefik router with the
+        # forward-auth middleware, which the `/` probe above never touches. A
+        # 302 to Authentik is the healthy answer.
+        - name: uptime-kuma-admin
+          url: https://status.${cluster_internal_domain}/dashboard
+          module: http_sso
         - name: plex
           url: https://plex.${cluster_internal_domain}
           module: http_sso
@@ -261,6 +275,13 @@ spec:
         - name: homarr-external
           url: https://dashboard.${cluster_external_domain}
           module: http_sso
+        # The public status page — the one target whose whole point is being
+        # reachable WITHOUT a session, so the probe follows the entry-page
+        # redirect to a real 200 (http_sso would bless the 302 alone, masking
+        # a 404 target). RED until the entry status page is set (docs/45).
+        - name: uptime-kuma-external
+          url: https://status.${cluster_external_domain}
+          module: http_2xx
         - name: mealie-external
           url: https://food.${cluster_external_domain}
           module: http_sso

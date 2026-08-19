@@ -44,6 +44,7 @@ locals {
     "media-admins",         # gates the seven Downloads apps; carries NZBGet injection (below)
     "dns-admins",           # gates both AdGuard dashboards; carries AdGuard injection (below)
     "nextcloud-users",      # Nextcloud OIDC + `cloud` binding (docs/35)
+    "status-admins",        # Uptime Kuma admin UI forward-auth + `status` binding (docs/45)
     "traefik-admins",       # Traefik dashboard forward-auth + `traefik` binding
     "vpn-admins",           # wg-easy admin UI + `vpn` binding (docs/38)
   ]

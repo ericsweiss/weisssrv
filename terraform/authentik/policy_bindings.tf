@@ -36,6 +36,7 @@ locals {
     agent   = { application = "agent", group = "hermes-users" }
     git     = { application = "git", group = "gitlab-users" }
     grafana = { application = "grafana", group = "grafana-users" }
+    status  = { application = "status", group = "status-admins" }
     traefik = { application = "traefik", group = "traefik-admins" }
     vpn     = { application = "vpn", group = "vpn-admins" }
 

@@ -1,0 +1,21 @@
+---
+# ClusterIP fronting the Uptime Kuma container's :3001. Consumed by the Traefik
+# IngressRoutes (external status page + internal admin UI) and by the
+# observability ServiceMonitor scraping /metrics
+# (kubernetes/infrastructure/observability/service-monitors/uptime-kuma.yaml).
+apiVersion: v1
+kind: Service
+metadata:
+  name: uptime-kuma
+  namespace: uptime-kuma
+  labels:
+    app.kubernetes.io/name: uptime-kuma
+    app.kubernetes.io/component: monitoring
+spec:
+  selector:
+    app.kubernetes.io/name: uptime-kuma
+  ports:
+    - name: http
+      port: 3001
+      targetPort: http
+  type: ClusterIP

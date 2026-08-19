@@ -436,6 +436,24 @@ Homelab dashboard/launcher for every service in the cluster:
   Nextcloud, and Immich
 - **Documentation**: [docs/41-homarr.md](docs/41-homarr.md)
 
+### Uptime Kuma
+
+Endpoint monitoring and the public status page:
+
+- **URLs**: status.ericsweiss.com (external — **public status page only**),
+  status.esweiss.com (internal — status page plus the admin UI)
+- **Authentication**: Authentik forward-auth (`status-admins` group) on the
+  admin surface only; the status-page paths are unauthenticated on both
+  hostnames and the external hostname has no admin router at all (404). Kuma has
+  no SSO of its own; its single local account sits underneath the outpost
+- **Workload**: raw k3s manifests (`kubernetes/apps/uptime-kuma/`), the upstream
+  `-rootless` image under PSA `restricted`, NFS-backed SQLite state on encrypted
+  `ssd/appdata`
+- **Monitors**: the pod's NetworkPolicy egress is the monitor inventory —
+  public :443, Traefik + both MetalLB VIPs, the two resolvers, the SMTP relay,
+  the six Proxmox APIs and the k3s API VIP. ICMP monitors are unsupported
+- **Documentation**: [docs/45-uptime-kuma.md](docs/45-uptime-kuma.md)
+
 ## Documentation
 
 ### Getting Started
@@ -489,6 +507,7 @@ Homelab dashboard/launcher for every service in the cluster:
 | [38-wireguard-vpn](docs/38-wireguard-vpn.md) | wg-easy internet-exit VPN (two-layer no-LAN egress fence, client onboarding, restore) |
 | [39-windows-vm](docs/39-windows-vm.md) | Windows 11 VM (OVMF/TPM/q35 shell via proxmox_vm, interactive install, RDP) |
 | [41-homarr](docs/41-homarr.md) | Homarr dashboard (raw manifests, Authentik OIDC, NFS SQLite, direct-URL integrations) |
+| [45-uptime-kuma](docs/45-uptime-kuma.md) | Uptime Kuma (endpoint monitoring + public status page; public/admin routing split, forward-auth, NFS SQLite) |
 
 ### Operations and Planning
 

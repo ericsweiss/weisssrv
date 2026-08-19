@@ -1,0 +1,60 @@
+---
+# NFS-backed persistent state for Uptime Kuma — the SQLite DB (monitors,
+# heartbeat history, status pages, notification channels) plus the status-page
+# logo uploads, all under one writable /app/data mount. Lives on the encrypted
+# ssd/appdata dataset, so the nightly ssd/appdata -> archive replication
+# captures it; the export's all_squash maps every write to 1000:2000 and the
+# nas_storage role owns the subdir (nas_storage_appdata_dirs).
+#
+# SQLite-on-NFS is the same trade Homarr and Hindsight take on this export:
+# SQLite tolerates exactly one writer, and replicas: 1 + Recreate
+# (deployment.yaml) guarantee no two pods dual-mount this RWO PV. Kuma writes a
+# heartbeat row per monitor per interval, so it is the busiest writer of the
+# three — docs/45 records the ext4-on-zvol fallback if WAL/locking ever bites.
+#
+# NFS-over-TLS PV; hostname (not IP) + force annotation rationale:
+# apps/download-clients/_nfs-pv/resources.yaml and docs/07.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: uptime-kuma-data
+  annotations:
+    kustomize.toolkit.fluxcd.io/force: "Enabled"
+  labels:
+    type: nfs
+    app: uptime-kuma
+spec:
+  # Pre-bind to the intended claim so no other empty-storageClass PVC can grab
+  # this PV first (which would block Kuma or expose the wrong NFS path).
+  claimRef:
+    namespace: uptime-kuma
+    name: uptime-kuma-data
+  capacity:
+    storage: 4Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  nfs:
+    server: pve-nas-01.${cluster_internal_domain}
+    path: /appdata/uptime-kuma
+  mountOptions:
+    - nfsvers=4.2
+    - hard
+    - noatime
+    - xprtsec=tls
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: uptime-kuma-data
+  namespace: uptime-kuma
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ""
+  resources:
+    requests:
+      storage: 4Gi
+  volumeName: uptime-kuma-data

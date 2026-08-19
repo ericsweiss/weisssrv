@@ -17,4 +17,5 @@ resources:
   - nextcloud.yaml
   - postgres.yaml
   - registry-cache.yaml
+  - uptime-kuma.yaml
   - wg-easy.yaml

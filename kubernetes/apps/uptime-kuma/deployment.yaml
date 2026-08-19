@@ -1,0 +1,145 @@
+---
+# Uptime Kuma (louislam) — a single-container Node.js app serving the monitor
+# dashboard, the public status pages and its own Prometheus /metrics endpoint on
+# :3001. All runtime state is the SQLite DB on the NFS volume (populated through
+# the UI); there is no HelmRelease because no upstream chart is maintained and
+# raw manifests carry the whole app (docs/45).
+#
+# strategy: Recreate + replicas: 1 — the single RWO NFS volume backing the
+# SQLite DB must never be dual-mounted across a rolling update (SQLite is a
+# single-writer store; see storage.yaml).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: uptime-kuma
+  namespace: uptime-kuma
+  labels:
+    app.kubernetes.io/name: uptime-kuma
+    app.kubernetes.io/part-of: uptime-kuma
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: uptime-kuma
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: uptime-kuma
+        app.kubernetes.io/part-of: uptime-kuma
+    spec:
+      # NAS-avoid: state lives on NFS, not a node-local zvol, so nothing ties
+      # this pod to the NAS agent. modern CPU keeps the Node.js image off the
+      # Core2-era legacy nodes.
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: ${cluster_node_label_domain}/nas
+                    operator: DoesNotExist
+      nodeSelector:
+        ${cluster_node_label_domain}/general: "true"
+        ${cluster_node_label_domain}/cpu: "modern"
+      # No in-cluster API access — Kuma probes endpoints, it never reads k8s.
+      automountServiceAccountToken: false
+      # PSA `restricted` needs runAsNonRoot declared here, not merely baked into
+      # the image: admission cannot introspect the image's USER. UID/GID 1000 is
+      # what the `-rootless` variant runs as, and 1000:2000 is exactly what the
+      # NFS export all_squashes every write to (storage.yaml), so the DB files
+      # stay readable by the same identity that wrote them.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 2000
+        seccompProfile:
+          type: RuntimeDefault
+      dnsConfig:
+        options:
+          - name: ndots
+            value: "1"
+          # ClusterFirst pods resolve via the DNAT'd kube-dns ClusterIP; force a
+          # fresh socket for glibc's parallel A/AAAA queries so the conntrack
+          # DNAT-insert race can't cost a ~5s resolver stall. This pod resolves
+          # constantly (every HTTP/TCP monitor target) — kept in sync with
+          # homarr/hermes/mealie.
+          - name: single-request-reopen
+      containers:
+        - name: uptime-kuma
+          # Public image (no imagePullSecret). The `-rootless` variant is the
+          # SAME release built with `USER node`, which is what lets the
+          # namespace enforce PSA restricted (namespace.yaml). Keep the suffix
+          # when bumping uptime_kuma_version — the bare tag runs as root and
+          # would be rejected at admission.
+          image: louislam/uptime-kuma:${uptime_kuma_version}-rootless
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: TZ
+              value: America/Los_Angeles
+            # Explicit, so a future upstream default change cannot move the
+            # port out from under the Service/probes/NetworkPolicy.
+            - name: UPTIME_KUMA_PORT
+              value: "3001"
+            # The SQLite DB + uploads live on the NFS PV mounted here (upstream
+            # default; pinned for the same reason as the port).
+            - name: DATA_DIR
+              value: /app/data
+          ports:
+            - name: http
+              containerPort: 3001
+              protocol: TCP
+          # tcpSocket, not httpGet: `/` is a 302 whose target depends on a
+          # UI-set option (entry page / status-page domain mapping — docs/45),
+          # so a listener-up check is the honest health signal without coupling
+          # pod health to a runtime setting. startupProbe covers the first boot
+          # (SQLite schema migration on the NFS volume).
+          startupProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 10
+            failureThreshold: 30
+          readinessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 4
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 5
+          # Hand-set limit (the VPA is RequestsOnly — docs/33 § Limit
+          # oscillation): 512Mi is a starting ceiling for a Node app whose
+          # footprint scales with monitor count and heartbeat retention, to be
+          # re-derived from the 30d working-set peak once the monitor set
+          # settles. No CPU limit (repo policy — docs/33); memory capped.
+          resources:
+            requests:
+              cpu: 50m
+              memory: 192Mi
+            limits:
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              # ALL, with nothing added back: the rootless image needs no
+              # capability. NET_RAW is the one an ICMP ("ping") monitor would
+              # need — deliberately absent, so use TCP-port/HTTP monitors
+              # instead (docs/45 § Monitor types).
+              drop: ["ALL"]
+            # Node writes its own cache/tmp under the app tree in addition to
+            # the mounted /app/data, so the rootfs stays writable (same as the
+            # other non-s6 Node/web apps here).
+            readOnlyRootFilesystem: false
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: uptime-kuma-data

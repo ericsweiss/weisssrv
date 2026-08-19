@@ -1,0 +1,23 @@
+---
+# VPA: Initial for the uptime-kuma Deployment — resize CPU+memory on natural pod
+# restarts (single stateless-scheduling workload; no HPA owns CPU — mirrors
+# homarr). Auto is wrong here: an eviction interrupts every in-flight probe and
+# resets the monitor state the status page renders.
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: uptime-kuma
+spec:
+  targetRef: {apiVersion: apps/v1, kind: Deployment, name: uptime-kuma}
+  updatePolicy: {updateMode: Initial}
+  resourcePolicy:
+    containerPolicies:
+      # RequestsOnly: on the default RequestsAndLimits the updater rescales the
+      # LIVE limit away from the declared one, so a pod admitted while the
+      # mutating webhook is down runs under its own peak. The limit is hand-set
+      # in deployment.yaml and maxAllowed tracks it exactly (docs/33).
+      - containerName: "*"
+        minAllowed: {cpu: 25m, memory: 128Mi}
+        maxAllowed: {cpu: 1, memory: 512Mi}
+        controlledResources: [cpu, memory]
+        controlledValues: RequestsOnly

@@ -101,6 +101,28 @@ spec:
               broken). See docs/27-gitlab-deployment.md § Registry
               pull-through cache.
 
+        # Uptime Kuma (docs/45): the independent endpoint watchdog and the
+        # public status page. Same deployment-availability shape as the two
+        # above. Warning, not critical — Prometheus itself is what evaluates
+        # this rule, so the PRIMARY alerting path is by definition still up;
+        # what is lost is the second opinion and status.ericsweiss.com. The
+        # blackbox EndpointDown targets cover the ingress path separately, and
+        # this arm is what still fires when the pod cannot schedule at all.
+        - alert: UptimeKumaDown
+          expr: >-
+            kube_deployment_status_replicas_available{namespace="uptime-kuma", deployment="uptime-kuma"} == 0
+            or absent(kube_deployment_status_replicas_available{namespace="uptime-kuma", deployment="uptime-kuma"})
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: '${cluster_runbook_base_url}/45-uptime-kuma.md'
+            summary: 'Uptime Kuma has no available replica'
+            description: >-
+              The uptime-kuma Deployment has 0 available replicas for 15m —
+              no endpoint monitor is running and the public status page is
+              down. See docs/45-uptime-kuma.md.
+
         # The WireGuard endpoint friends and family actually dial is the
         # MetalLB VIP, not the pod: a lost LoadBalancer ingress IP leaves every
         # external client unable to connect while WgEasyDown stays green

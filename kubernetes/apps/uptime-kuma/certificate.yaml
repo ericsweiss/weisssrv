@@ -1,0 +1,37 @@
+---
+# TLS certificates for the Uptime Kuma namespace. Per-host (not wildcard) and in
+# the same namespace as the IngressRoutes that reference them (Traefik reads TLS
+# Secrets only from the route's own namespace).
+
+# External - status.ericsweiss.com
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: uptime-kuma-tls
+  namespace: uptime-kuma
+spec:
+  secretName: uptime-kuma-ericsweiss-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  commonName: "status.${cluster_external_domain}"
+  dnsNames:
+    - "status.${cluster_external_domain}"
+  renewBefore: 720h
+
+---
+# Internal - status.esweiss.com
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: uptime-kuma-tls-internal
+  namespace: uptime-kuma
+spec:
+  secretName: uptime-kuma-esweiss-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  commonName: "status.${cluster_internal_domain}"
+  dnsNames:
+    - "status.${cluster_internal_domain}"
+  renewBefore: 720h

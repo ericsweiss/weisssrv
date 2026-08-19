@@ -273,11 +273,9 @@ remote address, not the header).
 
 ## Planned work
 
-### Applications
-
-- [ ] **Uptime Kuma** — external endpoint monitoring and status page at
-  `status.esweiss.com`. The only queued application — every other planned app has
-  shipped.
+**No application is queued.** Uptime Kuma — the last one — shipped
+([docs/45](45-uptime-kuma.md)); everything below is platform and operations
+work. A new app starts as an entry here.
 
 ### Nextcloud follow-ups (not blockers)
 
@@ -770,7 +768,7 @@ implementation story.
 | GitOps | Flux CD reconciles all of `kubernetes/`; five chained infrastructure stages + apps, plus the off-chain metrics-server stage | [29](29-flux-operations.md) |
 | Observability | Prometheus + Grafana + Loki + Alloy, exporters, dashboards, alert routing | [31](31-observability.md) |
 | Autoscaling | VPA tiers, HPAs, CoreDNS pin, lint invariants | [33](33-autoscaling.md) |
-| Applications | Plex, download/media stack, recipes, Home Assistant, Hermes, Homarr, wg-easy, Immich, Nextcloud, Windows VM | per-app docs 20-24, 35-41 |
+| Applications | Plex, download/media stack, recipes, Home Assistant, Hermes, Homarr, wg-easy, Immich, Nextcloud, Windows VM, Uptime Kuma | per-app docs 20-24, 35-41, [45](45-uptime-kuma.md) |
 | SSO | Authentik as the identity provider; objects codified in `terraform/authentik` | [40](40-authentik-terraform.md) |
 | Storage encryption | Per-dataset ZFS encryption roots, passphrase-from-Connect boot unlock | [32](32-zfs-encryption.md) |
 | Offsite backups | Nightly restic → Backblaze B2, GFS retention, client-side encryption | [42](42-offsite-backup.md) |

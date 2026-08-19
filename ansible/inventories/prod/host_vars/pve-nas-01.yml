@@ -200,6 +200,7 @@ nas_storage_appdata_dirs:
   - hermes
   - hindsight
   - homarr
+  - uptime-kuma
 
 # Logical dumps whose freshness/size is tracked as node_exporter textfile
 # metrics (BackupArtifact* alerts). name = the tank/backups/apps subdir.

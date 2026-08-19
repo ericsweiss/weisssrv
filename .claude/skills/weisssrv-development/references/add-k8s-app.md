@@ -120,6 +120,20 @@ For a new alert:
 ## SSO
 
 - OIDC issuer host is **always** `auth.ericsweiss.com` (external).
+- **Two gate shapes.** An app that speaks OIDC gates itself and takes NO Traefik
+  middleware (homarr, hermes). An app that does not (Traefik dashboard, the *arr
+  UIs, Uptime Kuma) is gated by the `authentik-auth` middleware from the
+  `authentik` namespace — and that needs a **proxy** provider in
+  `providers_proxy.tf` PLUS an entry in the embedded outpost's list in
+  `outpost.tf`; a provider missing from `outpost.tf` plans clean and 404s at the
+  outpost.
+- **A partly-public app is split by ROUTE, not by hostname.**
+  `kubernetes/apps/uptime-kuma/ingress-routes.yaml` is the worked example: a
+  higher-priority route carrying an explicit path allowlist and no auth
+  middleware, plus a lower-priority catch-all carrying it. Publishing only the
+  public route on the external hostname makes the admin surface a Traefik 404
+  from the internet, and `forward_single` then needs one provider (the internal
+  host) rather than two.
 - Authentik applications/providers/group-bindings are **codified in
   `terraform/authentik/`** (`applications.tf`, `providers_oauth2.tf`,
   `providers_proxy.tf`, `providers_saml.tf`, `groups.tf`,

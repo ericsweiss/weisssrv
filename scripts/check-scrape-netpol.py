@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import ipaddress
+import re
 import sys
 
 try:
@@ -112,6 +113,69 @@ def _selects_observability(peer: dict, observability_ns: str) -> bool:
     return name_matched and not extra_requirements
 
 
+# The apiserver's own label validation (validation.IsQualifiedName /
+# IsValidLabelValue): an optional DNS-subdomain prefix, then a 63-char
+# alphanumeric-bounded name; values are 63-char alphanumeric-bounded or empty.
+_LABEL_NAME = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9._-]{0,61}[A-Za-z0-9])?$")
+_LABEL_PREFIX = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$")
+
+
+def _label_key_is_valid(key: object) -> bool:
+    if not isinstance(key, str) or not key:
+        return False
+    prefix, slash, name = key.rpartition("/")
+    if slash and (not prefix or len(prefix) > 253 or not _LABEL_PREFIX.match(prefix)):
+        return False
+    return bool(_LABEL_NAME.match(name))
+
+
+def _label_value_is_valid(value: object) -> bool:
+    return isinstance(value, str) and (value == "" or bool(_LABEL_NAME.match(value)))
+
+
+def _label_selector_is_api_valid(selector: object) -> bool:
+    """Structural validity of a LabelSelector — the COMPLETE check the
+    apiserver applies, so the atomicity rule below cannot be dodged at any
+    level: known keys, typed terms, syntactically valid label keys and
+    values, known operators, and the operator's values-cardinality rules
+    (In/NotIn require non-empty values; Exists/DoesNotExist forbid them).
+    Absent (None) is valid; the API rejects everything else malformed."""
+    if selector is None:
+        return True
+    if not isinstance(selector, dict) or set(selector) - {"matchLabels", "matchExpressions"}:
+        return False
+    labels = selector.get("matchLabels")
+    if labels is not None:
+        if not isinstance(labels, dict):
+            return False
+        if not all(_label_key_is_valid(k) and _label_value_is_valid(v) for k, v in labels.items()):
+            return False
+    exprs = selector.get("matchExpressions")
+    if exprs is not None:
+        if not isinstance(exprs, list):
+            return False
+        for expr in exprs:
+            if not isinstance(expr, dict) or set(expr) - {"key", "operator", "values"}:
+                return False
+            if not _label_key_is_valid(expr.get("key")):
+                return False
+            operator = expr.get("operator")
+            values = expr.get("values")
+            if operator in ("In", "NotIn"):
+                if not (
+                    isinstance(values, list)
+                    and values
+                    and all(_label_value_is_valid(v) for v in values)
+                ):
+                    return False
+            elif operator in ("Exists", "DoesNotExist"):
+                if values not in (None, []):
+                    return False
+            else:
+                return False
+    return True
+
+
 def _rule_ipblocks_cover_both_families(peers: list) -> bool:
     """True when the rule's unexcepted zero-prefix ipBlock peers span IPv4 AND
     IPv6 — together they admit every address, the scraper's included,
@@ -128,7 +192,14 @@ def _rule_ipblocks_cover_both_families(peers: list) -> bool:
             return False
         ip_block = peer.get("ipBlock")
         if ip_block is None:
-            # A pure selector peer — valid, contributes nothing here.
+            # A selector peer contributes nothing here — but only a VALID one
+            # may be skipped: a malformed selector rejects the whole policy,
+            # and skipping it would let sibling /0 peers credit a rule that
+            # never applies.
+            if not _label_selector_is_api_valid(
+                peer.get("namespaceSelector")
+            ) or not _label_selector_is_api_valid(peer.get("podSelector")):
+                return False
             continue
         if (
             not isinstance(ip_block, dict)

@@ -177,6 +177,40 @@ tests:
               namespace: wg-easy
               deployment: wg-easy
 
+  # UptimeKumaDown: same three cases as WgEasyDown, at warning severity — the
+  # empty-vector (Deployment deleted) arm is the one review cannot check by
+  # reading the expression.
+  - interval: 1m
+    input_series:
+      - series: 'kube_deployment_status_replicas_available{namespace="uptime-kuma", deployment="uptime-kuma"}'
+        values: '0+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: UptimeKumaDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: uptime-kuma
+              deployment: uptime-kuma
+  - interval: 1m
+    input_series:
+      - series: 'kube_deployment_status_replicas_available{namespace="uptime-kuma", deployment="uptime-kuma"}'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: UptimeKumaDown
+        exp_alerts: []
+  - interval: 1m
+    input_series: []
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: UptimeKumaDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: uptime-kuma
+              deployment: uptime-kuma
+
   # WgEasyEndpointVipMissing asserts the VIP VALUE, not just that the Service
   # has some ingress IP: a VIP that moved pool leaves WgEasyDown green while
   # every external client fails to connect. A different IP must still fire.

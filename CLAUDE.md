@@ -206,6 +206,7 @@ The k3s layer is `docs/19-k3s-deployment.md`; Flux day-2 ops are
 | Immich (VM .157) | photos.esweiss.com / photos.ericsweiss.com | docs/36 |
 | Hermes Agent + Hindsight memory (`hermes`, `hindsight` ns) | agent.esweiss.com / agent.ericsweiss.com (Hindsight has no ingress) | docs/37 |
 | Homarr | dashboard.esweiss.com / dashboard.ericsweiss.com | docs/41 |
+| Uptime Kuma (`uptime-kuma` ns) | status.esweiss.com (status page + admin UI) / status.ericsweiss.com (**public status page only** — no admin router) | docs/45 |
 | Windows 11 desktop (VM .155) | none — RDP only | docs/39 |
 | Immich ML (LXC .158) | none — LAN API for the Immich VM only | docs/36 |
 
@@ -215,6 +216,10 @@ Cross-cutting facts no single app doc owns:
   external one** (`auth.ericsweiss.com`) even for internal-only apps.
 - Homarr's integrations talk to service URLs directly, bypassing the SSO
   perimeter by design (docs/41).
+- Uptime Kuma is the one app split by AUTHENTICATION rather than by hostname:
+  its status-page paths are unauthenticated on both names while the admin UI
+  exists only on the internal name behind forward-auth, so the external
+  hostname deliberately 404s outside that path allowlist (docs/45).
 - The VM/LXC guests (plex, gitlab, HAOS, nextcloud, immich, immich-ml, windows)
   are Ansible-provisioned and fronted by in-cluster Traefik via the `vm-ingress`
   app — a k3s routing change can break a guest that Ansible never touched.
@@ -223,8 +228,8 @@ Cross-cutting facts no single app doc owns:
   (last entry in `zfs_encryption_guest_vmids`). Remove it from that list to stop
   it starting — do not set `onboot=1` (docs/32, docs/39).
 
-**Planned** — roadmap source of truth is `docs/16-next-steps.md` (Uptime Kuma is
-the one queued app; open non-app work is split across its § Decisions needed,
+**Planned** — roadmap source of truth is `docs/16-next-steps.md` (no app is
+queued any more; open non-app work is split across its § Decisions needed,
 § Pending supervised steps and § Planned work).
 
 ## Common Development Commands

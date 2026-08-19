@@ -140,6 +140,18 @@ locals {
       icon          = "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/traefik.svg"
     }
 
+    # Uptime Kuma admin UI, Terraform-authored (new app, no imports.tf entry).
+    # The launch URL is the INTERNAL host: that is the only one the proxy
+    # provider gates, and the only one serving a dashboard at all (docs/45).
+    status = {
+      name          = "Uptime Kuma"
+      group         = "Software"
+      provider_type = "proxy"
+      provider_key  = "uptime_kuma"
+      launch_url    = "https://status.esweiss.com"
+      icon          = "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/uptime-kuma.svg"
+    }
+
     # Downloads
     movies = {
       name          = "Radarr"

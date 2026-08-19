@@ -182,6 +182,11 @@ adguard_home_rewrites:
   # dashboard.ericsweiss.com is Cloudflare-only (created by external-dns).
   - domain: "dashboard.{{ internal_domain }}"
     answer: "192.168.0.101"
+  # Uptime Kuma (docs/45): status page unauthenticated, admin UI behind
+  # Authentik forward-auth. The external name status.ericsweiss.com is
+  # Cloudflare-only (created by external-dns) and serves the status page only.
+  - domain: "status.{{ internal_domain }}"
+    answer: "192.168.0.101"
   # DOCUMENTED EXCEPTION to the internal-only rule below: auth.ericsweiss.com
   # resolves internally so server-side OIDC discovery/JWKS fetches skip the WAN
   # hairpin (Cloudflare bot protection 403s non-browser user agents). The issuer
