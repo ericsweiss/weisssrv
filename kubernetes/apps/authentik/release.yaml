@@ -122,6 +122,11 @@ spec:
         tag: "${authentik_version}"
 
       env:
+        # Base URL (scheme+host only): advisory in 2026.8, REQUIRED from
+        # 2026.11. The canonical origin is the EXTERNAL issuer host — the
+        # OIDC issuer is always auth.<external> even for internal-only apps.
+        - name: AUTHENTIK_WEB__BASE_URL
+          value: "https://auth.${cluster_external_domain}"
         - name: AUTHENTIK_SECRET_KEY
           valueFrom:
             secretKeyRef:
@@ -229,6 +234,11 @@ spec:
         failureThreshold: 30
 
       env:
+        # Base URL (scheme+host only): advisory in 2026.8, REQUIRED from
+        # 2026.11. The canonical origin is the EXTERNAL issuer host — the
+        # OIDC issuer is always auth.<external> even for internal-only apps.
+        - name: AUTHENTIK_WEB__BASE_URL
+          value: "https://auth.${cluster_external_domain}"
         - name: AUTHENTIK_SECRET_KEY
           valueFrom:
             secretKeyRef:

@@ -184,7 +184,7 @@ kube_vip_version: "v1.2.3"
 flux_version: "2.9.0"
 
 # Authentik SSO identity provider
-authentik_version: "2026.5.6"
+authentik_version: "2026.8.0"
 
 # Postgres for Authentik (bundled with the Helm chart); trixie base.
 # https://hub.docker.com/_/postgres/tags
