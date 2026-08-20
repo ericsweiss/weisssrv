@@ -80,15 +80,27 @@ class TestListUnhealthyPods:
         ).stdout.strip()
         assert out == ""
 
-    def test_terminating_ci_job_pods_are_excused_runner_namespaces_only(self):
+    def test_ci_job_pods_are_excused_in_any_state_runner_namespaces_only(self):
         out = _run(
             "list_unhealthy_pods",
             "gitlab-runner runner-abc-project-4-concurrent-1 1/1 Terminating 0 3m\n"
-            "gitlab-runner-privileged runner-def-concurrent-0 0/2 Terminating 0 1m\n"
-            "downloads sonarr-abc 1/1 Terminating 0 4h\n",
+            "gitlab-runner-privileged runner-def-concurrent-0 0/2 Pending 0 1m\n"
+            "gitlab-runner-privileged runner-ghi-concurrent-2 0/2 ImagePullBackOff 0 9m\n"
+            "downloads sonarr-abc 1/1 Terminating 0 4h\n"
+            "hermes runner-lookalike 0/1 Pending 0 5m\n",
         ).stdout.strip()
         assert "sonarr" in out
-        assert "runner-" not in out
+        assert "runner-lookalike" in out
+        assert "concurrent" not in out
+
+    def test_runner_manager_pods_stay_covered(self):
+        out = _run(
+            "list_unhealthy_pods",
+            "gitlab-runner gitlab-runner-5db45fffdc-zn4r6 0/1 CrashLoopBackOff 4 10m\n"
+            "gitlab-runner-privileged gitlab-runner-privileged-abc 0/1 Pending 0 9m\n",
+        ).stdout.strip()
+        assert "gitlab-runner-5db45fffdc" in out
+        assert "gitlab-runner-privileged-abc" in out
 
     def test_completed_and_succeeded_skipped(self):
         out = _run(
