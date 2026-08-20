@@ -46,6 +46,13 @@ classify_not_ready_nodes() {
 list_unhealthy_pods() {
   awk '
     $4 == "Completed" || $4 == "Succeeded" || $4 == "Error" || $4 == "Failed" { next }
+    # CI job pods are ephemeral by design: one mid-Termination during the
+    # sweep is routine churn, not cluster health, and a DinD teardown can
+    # outlive the 25s grace re-check (false-criticaled the 2026-08-20
+    # update-applications run). Runner namespaces ONLY: a pod stuck
+    # Terminating anywhere else stays a signal — stale NFS handles present
+    # exactly this way.
+    ($1 == "gitlab-runner" || $1 == "gitlab-runner-privileged") && $4 == "Terminating" { next }
     { split($3, a, "/"); if ($4 != "Running" || a[1] != a[2]) print }'
 }
 

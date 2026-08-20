@@ -80,6 +80,16 @@ class TestListUnhealthyPods:
         ).stdout.strip()
         assert out == ""
 
+    def test_terminating_ci_job_pods_are_excused_runner_namespaces_only(self):
+        out = _run(
+            "list_unhealthy_pods",
+            "gitlab-runner runner-abc-project-4-concurrent-1 1/1 Terminating 0 3m\n"
+            "gitlab-runner-privileged runner-def-concurrent-0 0/2 Terminating 0 1m\n"
+            "downloads sonarr-abc 1/1 Terminating 0 4h\n",
+        ).stdout.strip()
+        assert "sonarr" in out
+        assert "runner-" not in out
+
     def test_completed_and_succeeded_skipped(self):
         out = _run(
             "list_unhealthy_pods",
