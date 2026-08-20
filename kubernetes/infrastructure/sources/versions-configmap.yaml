@@ -20,6 +20,7 @@ data:
   docker_engine_containerd_version: 2.2.6-1~debian.13~trixie
   exportarr_version: v2.3.0
   flux_version: 2.9.0
+  garage_version: v2.3.0
   gitlab_agent_helm_version: 2.29.0
   gitlab_runner_helm_version: 0.92.0
   gitlab_version: 19.2.4-ee.0

@@ -1,0 +1,107 @@
+---
+# Garage (garagehq.deuxfleurs.fr) as the runners' S3 cache backend — chosen
+# over MinIO because MinIO's upstream was archived in 2026-04 and this repo
+# does not adopt dead upstreams. v2.3.0+ single-node mode self-initializes:
+# --default-bucket creates GARAGE_DEFAULT_BUCKET owned by the
+# GARAGE_DEFAULT_ACCESS_KEY/SECRET_KEY pair on first boot, so there is no
+# init Job and the 1Password item stays the single source of the key pair.
+#
+# Storage is an emptyDir ON PURPOSE (registry-cache precedent): the content
+# is a CACHE the runners re-derive, and node-local storage avoids the
+# sqlite-on-NFS locking class entirely. A pod reschedule costs one cold
+# pipeline, nothing else.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ci-cache
+  namespace: ci-cache
+  labels:
+    app.kubernetes.io/name: ci-cache
+spec:
+  replicas: 1
+  strategy:
+    # Recreate, not rolling: two garages on one sqlite metadata dir is a
+    # corruption bet, and a cache tolerates the blip.
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ci-cache
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ci-cache
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: garage
+          # Version in all.yml (garage_version), resolved by Flux
+          # postBuild.substituteFrom (cluster-versions ConfigMap).
+          image: dxflrs/garage:${garage_version}
+          imagePullPolicy: IfNotPresent
+          args: ["/garage", "server", "--single-node", "--default-bucket"]
+          env:
+            - name: GARAGE_CONFIG_FILE
+              value: /etc/garage.toml
+            - name: GARAGE_DEFAULT_BUCKET
+              value: runner-cache
+            - name: GARAGE_DEFAULT_ACCESS_KEY
+              valueFrom:
+                secretKeyRef: {name: ci-cache-garage-secrets, key: access-key}
+            - name: GARAGE_DEFAULT_SECRET_KEY
+              valueFrom:
+                secretKeyRef: {name: ci-cache-garage-secrets, key: secret-key}
+            - name: GARAGE_RPC_SECRET
+              valueFrom:
+                secretKeyRef: {name: ci-cache-garage-secrets, key: rpc-secret}
+            - name: GARAGE_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef: {name: ci-cache-garage-secrets, key: admin-token}
+            - name: GARAGE_METRICS_TOKEN
+              valueFrom:
+                secretKeyRef: {name: ci-cache-garage-secrets, key: metrics-token}
+          ports:
+            - {name: s3, containerPort: 3900, protocol: TCP}
+            - {name: admin, containerPort: 3903, protocol: TCP}
+          # /health on the admin port is unauthenticated by design (the data
+          # endpoints are token-gated); startupProbe covers first-boot layout
+          # initialization.
+          startupProbe:
+            httpGet: {path: /health, port: admin}
+            periodSeconds: 5
+            failureThreshold: 24
+          readinessProbe:
+            httpGet: {path: /health, port: admin}
+            periodSeconds: 15
+          livenessProbe:
+            httpGet: {path: /health, port: admin}
+            periodSeconds: 30
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+          volumeMounts:
+            - {name: config, mountPath: /etc/garage.toml, subPath: garage.toml, readOnly: true}
+            - {name: data, mountPath: /var/lib/garage}
+      volumes:
+        - name: config
+          configMap:
+            name: ci-cache-garage-config
+        - name: data
+          emptyDir:
+            # Bound: a runaway cache evicts the pod (cold restart) instead of
+            # filling the node. GitLab's per-cache zips are tens-of-MB class.
+            sizeLimit: 25Gi

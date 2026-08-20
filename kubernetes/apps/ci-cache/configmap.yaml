@@ -1,0 +1,28 @@
+---
+# Garage config. Every SECRET (rpc_secret, admin/metrics tokens, the default
+# S3 key pair) arrives via GARAGE_* env from the ExternalSecret — this file
+# holds only topology. replication_factor 1 + sqlite: this is a CACHE (the
+# runners re-derive anything lost), same durability posture as
+# registry-cache's emptyDir blob store.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ci-cache-garage-config
+  namespace: ci-cache
+data:
+  garage.toml: |
+    metadata_dir = "/var/lib/garage/meta"
+    data_dir = "/var/lib/garage/data"
+    db_engine = "sqlite"
+    replication_factor = 1
+
+    rpc_bind_addr = "127.0.0.1:3901"
+    rpc_public_addr = "127.0.0.1:3901"
+
+    [s3_api]
+    api_bind_addr = "0.0.0.0:3900"
+    s3_region = "garage"
+    root_domain = ".ci-cache.svc"
+
+    [admin]
+    api_bind_addr = "0.0.0.0:3903"

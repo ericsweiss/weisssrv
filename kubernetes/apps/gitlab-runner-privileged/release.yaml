@@ -49,6 +49,11 @@ spec:
 
       executor: kubernetes
 
+      # Same s3access cache credential as the shared runner (one 1P item,
+      # per-namespace ESO copy) — pairs with [runners.cache] below.
+      cache:
+        secretName: s3access
+
       config: |
         # TOML sections are POSITIONAL: every key after a [section] header
         # belongs to that section until the next header, so all scalar
@@ -62,6 +67,17 @@ spec:
           # Keep clones on the LAN path too (see gitlabUrl above). A [[runners]]
           # scalar — must precede the [runners.kubernetes] sub-table.
           clone_url = "https://git.${cluster_internal_domain}"
+
+          # S3 runner cache on the in-cluster garage — see the shared
+          # runner's block for the full rationale (Shared=true: one cache
+          # namespace per key across both runners).
+          [runners.cache]
+            Type = "s3"
+            Shared = true
+            [runners.cache.s3]
+              ServerAddress = "ci-cache.ci-cache.svc.cluster.local:3900"
+              BucketName = "runner-cache"
+              Insecure = true
 
           [runners.kubernetes]
             namespace = "gitlab-runner-privileged"
@@ -94,6 +110,9 @@ spec:
             # them and every job stays at the 1Gi default above.
             memory_limit_overwrite_max_allowed = "6Gi"
             memory_request_overwrite_max_allowed = "2Gi"
+            # CPU ceiling for the lib v0.12.0 per-job declarations; 900m =
+            # the default, so overrides only shrink.
+            cpu_request_overwrite_max_allowed = "900m"
             service_memory_limit_overwrite_max_allowed = "4Gi"
             service_memory_request_overwrite_max_allowed = "1Gi"
 

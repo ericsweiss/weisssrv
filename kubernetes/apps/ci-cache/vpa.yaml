@@ -1,0 +1,18 @@
+---
+# RequestsOnly with maxAllowed.memory == the declared 1Gi limit (docs/33
+# rule): recommendations move requests, never the limit.
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: ci-cache
+  namespace: ci-cache
+spec:
+  targetRef: {apiVersion: apps/v1, kind: Deployment, name: ci-cache}
+  updatePolicy: {updateMode: Initial}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 25m, memory: 64Mi}
+        maxAllowed: {cpu: 1, memory: 1Gi}
+        controlledResources: [cpu, memory]
+        controlledValues: RequestsOnly

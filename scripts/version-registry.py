@@ -87,6 +87,18 @@ _SERVICES: list[dict] = [
         "source_url": "https://github.com/louislam/uptime-kuma/releases",
     },
     {
+        # Garage (kubernetes/apps/ci-cache) — the runners' S3 cache backend.
+        # Docker Hub dxflrs/garage; the pin carries the full vX.Y.Z tag, and
+        # the regex drops the floating majors (v2) and arch variants.
+        # Flux-managed image pin, so it routes through flux:sync-versions.
+        "name": "Garage (CI cache)",
+        "var_name": "garage_version",
+        "category": "dockerhub",
+        "docker_image": "dxflrs/garage",
+        "tag_regex": r"^(v\d+\.\d+\.\d+)$",
+        "source_url": "https://garagehq.deuxfleurs.fr/documentation/",
+    },
+    {
         # Immich app (immich-server + immich-machine-learning images share this
         # tag). The coupled DB/Valkey pins (immich_postgres_version,
         # immich_valkey_version) are NOT tracked here — they must be taken from

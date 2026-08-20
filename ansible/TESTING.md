@@ -25,7 +25,7 @@ The scenarios pull the published `molecule-test` image from weisssrv-lib's
 registry. Override it for a local build:
 
 ```bash
-export MOLECULE_TEST_IMAGE=registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:v0.11.1
+export MOLECULE_TEST_IMAGE=registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:v0.12.1
 ```
 
 The collection itself is installed by molecule's `galaxy` dependency step from

@@ -5,6 +5,7 @@ namespace: gitlab-runner
 resources:
   - namespace.yaml
   - externalsecret.yaml
+  - cache-externalsecret.yaml
   - serviceaccount.yaml
   - release.yaml
   - networkpolicy.yaml

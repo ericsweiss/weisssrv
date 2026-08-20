@@ -1,0 +1,28 @@
+---
+# Garage exposes Prometheus metrics on its admin port, gated by the metrics
+# token (same 1Password item as the server; the observability-side copy rides
+# observability-exporter-secrets). The scrape allow lives in the app's
+# NetworkPolicy (observability -> 3903).
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: ci-cache
+  namespace: observability
+  labels:
+    release: kube-prometheus-stack
+spec:
+  namespaceSelector:
+    matchNames:
+      - ci-cache
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ci-cache
+  endpoints:
+    - port: admin
+      path: /metrics
+      interval: 60s
+      authorization:
+        type: Bearer
+        credentials:
+          name: observability-exporter-secrets
+          key: garage-metrics-token

@@ -73,6 +73,15 @@ spec:
       ports:
         - protocol: TCP
           port: 443
+    # Runner S3 cache (kubernetes/apps/ci-cache): the helper container in the
+    # JOB pod is what uploads/downloads cache archives.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ci-cache
+      ports:
+        - protocol: TCP
+          port: 3900
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0

@@ -1,0 +1,37 @@
+---
+# Ingress: exactly two consumers of the S3 port (the runner JOB pods in both
+# runner namespaces) and the observability scrape of the admin/metrics port.
+# The netpol-baseline component supplies the namespace default-deny this
+# allowlist punches through.
+#
+# Egress: NONE — a single-node garage talks to nobody (its RPC is loopback),
+# so the policy declares egress and lists no rules: deny-all outbound,
+# including DNS.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ci-cache
+  namespace: ci-cache
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: ci-cache
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: gitlab-runner
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: gitlab-runner-privileged
+      ports:
+        - {protocol: TCP, port: 3900}
+    # Prometheus scrape of the token-gated metrics endpoint
+    # (service-monitors/ci-cache.yaml).
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+      ports:
+        - {protocol: TCP, port: 3903}

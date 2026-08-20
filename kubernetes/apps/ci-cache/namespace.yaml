@@ -1,0 +1,10 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ci-cache
+  labels:
+    # PSA restricted: garage runs non-root with a read-only rootfs; the only
+    # writable paths are the two emptyDir mounts below.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest

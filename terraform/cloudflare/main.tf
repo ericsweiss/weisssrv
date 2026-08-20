@@ -13,7 +13,7 @@
 # `include:` list and ansible/requirements.yml only) — bump it by hand together
 # with variables.WEISSSRV_LIB_REF.
 module "zone" {
-  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/cloudflare-zone?ref=v0.11.1"
+  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/cloudflare-zone?ref=v0.12.1"
 
   account_id = var.cloudflare_account_id
   zone_name  = var.external_domain

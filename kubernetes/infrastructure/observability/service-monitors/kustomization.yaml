@@ -18,4 +18,5 @@ resources:
   - postgres.yaml
   - registry-cache.yaml
   - uptime-kuma.yaml
+  - ci-cache.yaml
   - wg-easy.yaml

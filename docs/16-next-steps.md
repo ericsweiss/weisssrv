@@ -135,18 +135,14 @@ across two reboots (`ifquery nic1` clean via the drop-in alone,
 carries the manual stanza; backup at `/root/interfaces.bak` on the host.
 
 
-### Move the wg-easy VIP out of the router's DHCP range
+### ~~Move the wg-easy VIP out of the router's DHCP range~~ — already excluded
 
-`cluster_wg_easy_vip` is `192.168.0.99`, which sits **inside** the router's DHCP
-pool and depends on an uncoded router-side exclusion — documented three times
-(`infrastructure/configs/metallb-ip-pools.yaml`, and docs/38 in both the router
-setup checklist and the gotchas), but a dropped exclusion lets a workstation
-lease collide with an internet-facing endpoint and shows up only as
-`EndpointDown`. Moving it into the static block beside `.100`/`.101` removes the
-dependency entirely. It is a one-line `cluster_wg_easy_vip` change **plus a
-manual router port-forward edit** (51820/udp follows the VIP), which is why it is
-here rather than done: the two must land together or the VPN endpoint is dark in
-between.
+Corrected 2026-08-20: the router's DHCP pool was shrunk to end at .98 when
+wg-easy was set up, so `.99` is NOT inside the pool and no collision exists.
+The residual truth is only that the exclusion lives in router config rather
+than code — carry it into the Ubiquiti gateway migration (the network
+session), where the pools and possibly every VIP get redefined anyway.
+
 
 ---
 
@@ -290,21 +286,22 @@ weekly and each page means a NAS reboot window. To close it:
   STARTTLS with the shared null-client credential.
 
 
-- [ ] Grafana dashboard: the upstream xperimental exporter dashboard uses a
-  `${DS_LOCAL}` import-input datasource that needs adapting for the sidecar.
-  Metrics are queryable in Explore and covered by alerts in the meantime.
+- [x] ~~Grafana dashboard for the Nextcloud exporter~~ DONE 2026-08-20:
+  upstream contrib dashboard imported as
+  `observability/dashboards/nextcloud.json` — datasource fixed to the
+  sidecar's `prometheus` uid, import-inputs dropped, panel variables
+  Flux-escaped (`$${var}`), and the flux-lint keys-check taught to honor
+  that escape (lib v0.12.1 + the Taskfile twin).
 - [ ] Optional Collabora/OnlyOffice office suite (not deployed).
 
 ### CI/CD
 
-- [ ] **Distributed cache backend for the runners.** Every pip/galaxy/toolchain
-  `cache:` block in `.gitlab-ci.yml` is inert because neither runner declares a
-  cache backend — measured, not theoretical: no job restores a cache today.
-  Standing up an in-cluster S3/MinIO target (the `registry-cache` app is the
-  precedent) is the largest safe wall-clock win in the pipeline, and it closes
-  the inert-`cache:` blocks in the same change — see
-  [docs/13](13-ci-cd.md) § Lint Stage. Deferred: needs an S3-compatible store
-  stood up first.
+- [x] ~~**Distributed cache backend for the runners.**~~ DONE 2026-08-20:
+  in-cluster Garage S3 (`kubernetes/apps/ci-cache` — Garage over MinIO, whose
+  upstream was archived 2026-04) with both runners' `[runners.cache]` pointed
+  at it, `Shared = true`. The formerly-inert `cache:` blocks are live;
+  `CiCacheDown` covers the degrade-not-break failure mode.
+
 - [x] ~~**Alert on the runner reaper's partial sweeps.**~~ DONE 2026-08-20:
   `GitlabRunnerReaperPartialSweep` (loki/runner-reaper.yaml) fires on the
   BUDGET STOP line over 25h; the `LokiRulerRulesMissing` count-gate and its

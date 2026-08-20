@@ -49,6 +49,12 @@ spec:
 
       executor: kubernetes
 
+      # Mounts the ESO-synced s3access Secret (chart-mandated
+      # accesskey/secretkey names) into the manager as the cache credential —
+      # pairs with the [runners.cache] block in the config template below.
+      cache:
+        secretName: s3access
+
       config: |
         [[runners]]
           # request_concurrency 1 serializes job acquisition behind GitLab's
@@ -67,6 +73,19 @@ spec:
           # sub-table or they silently land inside it (limits misparsed as
           # pod_labels, pull_policy swallowed by a volume table). Scalars
           # first, sub-tables last.
+          # S3 runner cache on the in-cluster garage (kubernetes/apps/ci-cache):
+          # this is what makes the pipelines' `cache:` blocks real. Shared so
+          # both runners hit one cache namespace per key; Insecure because the
+          # endpoint is plaintext HTTP fenced to the runner namespaces by
+          # NetworkPolicy (the app README carries the trade).
+          [runners.cache]
+            Type = "s3"
+            Shared = true
+            [runners.cache.s3]
+              ServerAddress = "ci-cache.ci-cache.svc.cluster.local:3900"
+              BucketName = "runner-cache"
+              Insecure = true
+
           [runners.kubernetes]
             namespace = "gitlab-runner"
             # Default CI job image, digest-pinned for reproducibility (the
@@ -99,6 +118,10 @@ spec:
             service_memory_limit_overwrite_max_allowed = "4Gi"
             service_memory_request_overwrite_max_allowed = "1Gi"
             memory_request_overwrite_max_allowed = "1Gi"
+            # CPU request ceiling for the lib templates' per-job
+            # KUBERNETES_CPU_REQUEST declarations (lib v0.12.0) — equal to the
+            # default, so overrides only shrink the reservation.
+            cpu_request_overwrite_max_allowed = "500m"
 
             # Job-pod service account: token-less, no RBAC (serviceaccount.yaml)
             # — NOT the manager SA, whose Role could read the runner token and

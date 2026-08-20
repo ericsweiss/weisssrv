@@ -70,6 +70,7 @@ UNTESTED = {
     "MaintenanceRebootDeferred",
     "LokiRequestFailures",
     "RegistryCacheDown",
+    "CiCacheDown",
     "ExternalSecretSyncFailure",
     # Certificate expiry: a plain `<time> - now` threshold per certificate.
     "CertExpiringWarning",

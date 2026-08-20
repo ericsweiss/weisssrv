@@ -101,6 +101,25 @@ spec:
               broken). See docs/27-gitlab-deployment.md § Registry
               pull-through cache.
 
+        # Runner S3 cache (kubernetes/apps/ci-cache). Same degrade-not-break
+        # shape as RegistryCacheDown: a dead cache means every job reinstalls
+        # its toolchain again — slower CI, nothing fails.
+        - alert: CiCacheDown
+          expr: >-
+            kube_deployment_status_replicas_available{namespace="ci-cache", deployment="ci-cache"} == 0
+            or absent(kube_deployment_status_replicas_available{namespace="ci-cache", deployment="ci-cache"})
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: '${cluster_runbook_base_url}/13-ci-cd.md'
+            summary: 'Runner S3 cache (garage) has no available replica'
+            description: >-
+              The ci-cache Deployment has 0 available replicas for 15m —
+              runner cache pulls fail closed and every job reinstalls its
+              pip/galaxy toolchain (slower pipelines, not broken). See
+              kubernetes/apps/ci-cache/README.md.
+
         # Uptime Kuma (docs/45): the independent endpoint watchdog and the
         # public status page. Same deployment-availability shape as the two
         # above. Warning, not critical — Prometheus itself is what evaluates

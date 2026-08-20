@@ -278,10 +278,12 @@ The **Molecule images are no longer built here** — `molecule-ci` and
 
 The pip/galaxy-installing jobs and the toolchain-downloading lint jobs
 (`flux-lint`, `prometheus-config-lint`) declare GitLab `cache:` keyed on their
-pinned inputs. **The caches are declared but currently inert**: neither runner
-has a distributed cache backend configured, so each job still re-downloads its
-dependencies. Standing up an in-cluster S3/MinIO cache backend (the
-`registry-cache` app is the precedent) is the outstanding work — see docs/16.
+pinned inputs, backed by the in-cluster **Garage S3 cache**
+(`kubernetes/apps/ci-cache` — its README carries the design and the
+degrade-not-break posture; `CiCacheDown` alerts on outage). Both runners
+share one bucket (`[runners.cache]` `Shared = true`), so a cache warmed by
+either runner serves both. A cold cache or a dead backend only re-downloads
+dependencies — nothing fails.
 
 #### AI-Review Stage (MRs Only)
 | Job | Triggers | Description |
