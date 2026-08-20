@@ -1,0 +1,23 @@
+# The runner reaper's ONE invisible failure mode: a partial sweep. It exits 0
+# on a clean budget stop and says so only in its log line
+# ("BUDGET STOP after <n>s; not fully reaped this run: <namespaces>"), so a
+# permanently over-budget reaper looks like a clean no-op while orphan job
+# pods/Secrets accumulate (docs/13 § Runner garbage collection; the in-code
+# comment defers exactly this rule here). Evaluated by Loki's ruler like the
+# host-log-staleness group — LokiRulerRulesMissing's count covers this file
+# too (scripts/test_host_log_staleness.py keeps the threshold honest).
+#
+# [25h], not [24h]: the CronJob is daily, and a window equal to the cadence
+# drops the event if evaluation lands a minute late.
+groups:
+  - name: runner-reaper
+    interval: 5m
+    rules:
+      - alert: GitlabRunnerReaperPartialSweep
+        expr: sum(count_over_time({namespace="gitlab-runner-reaper"} |= "BUDGET STOP" [25h])) > 0
+        for: 15m
+        labels: { severity: warning, component: ci }
+        annotations:
+          summary: "Runner reaper hit its budget without finishing a sweep in the last 25h"
+          description: "gitlab-runner-reaper logged a BUDGET STOP: it exited cleanly but did not finish reaping every runner namespace, and repeated stops mean orphan CI pods/Secrets are accumulating unreaped. Read the CronJob logs for the namespaces it skipped; a persistent stop means raising the budget or investigating what bloats the sweep (docs/13 § Runner garbage collection)."
+          runbook_url: "${cluster_runbook_base_url}/13-ci-cd.md"

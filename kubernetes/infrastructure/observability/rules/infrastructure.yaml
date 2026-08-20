@@ -399,13 +399,14 @@ spec:
         # rules (loki/host-log-staleness.yaml) run in Loki's in-process ruler and
         # push straight to Alertmanager, so no Prometheus rule sees them fail.
         #
-        # The `< 23` threshold is the rule count in
-        # loki/host-log-staleness.yaml; scripts/test_host_log_staleness.py
-        # asserts the two stay equal, so adding a host cannot leave a
-        # stale threshold that under-detects.
+        # The `< 24` threshold is the TOTAL rule count across the loki/ rule
+        # files (host-log-staleness.yaml + runner-reaper.yaml);
+        # scripts/test_host_log_staleness.py asserts they stay equal, so
+        # adding a host or a rule file cannot leave a stale threshold that
+        # under-detects.
         - alert: LokiRulerRulesMissing
           expr: >-
-            sum(loki_prometheus_rule_group_rules{job="observability/loki"}) < 23
+            sum(loki_prometheus_rule_group_rules{job="observability/loki"}) < 24
             or absent(loki_prometheus_rule_group_rules{job="observability/loki"})
           for: 15m
           labels:
@@ -414,8 +415,8 @@ spec:
             runbook_url: '${cluster_runbook_base_url}/31-observability.md'
             summary: 'Loki ruler has fewer rules loaded than git ships'
             description: >-
-              Loki's ruler is evaluating fewer than the 23
-              HostLogShippingStale rules in git (or reports none at all).
+              Loki's ruler is evaluating fewer rules than git ships across
+              the loki/ rule files (or reports none at all).
               The per-host "journald shipping stopped" alerts are
               partially or fully disarmed. Check the loki-sc-rules sidecar
               log and that the loki-rules-* ConfigMap still carries the

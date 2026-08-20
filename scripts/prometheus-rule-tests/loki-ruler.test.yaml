@@ -1,8 +1,8 @@
 ---
-# promtool unit tests for the Loki-ruler meta-alerts. The 23
-# HostLogShippingStale rules are evaluated inside Loki and pushed straight to
-# Alertmanager, so Prometheus never sees them — these three rules are the only
-# thing watching that path.
+# promtool unit tests for the Loki-ruler meta-alerts. The 24 rules across the
+# loki/ rule files (23 HostLogShippingStale + the runner-reaper budget alert)
+# are evaluated inside Loki and pushed straight to Alertmanager, so Prometheus
+# never sees them — these three rules are the only thing watching that path.
 rule_files:
   - rules.yaml
 evaluation_interval: 1m
@@ -13,6 +13,8 @@ tests:
     input_series:
       - series: 'loki_prometheus_rule_group_rules{job="observability/loki", user="fake", rule_group="host-log-staleness"}'
         values: '23+0x30'
+      - series: 'loki_prometheus_rule_group_rules{job="observability/loki", user="fake", rule_group="runner-reaper"}'
+        values: '1+0x30'
       - series: 'loki_prometheus_rule_evaluation_failures_total{job="observability/loki", user="fake", rule_group="host-log-staleness"}'
         values: '0+0x30'
       - series: 'loki_prometheus_notifications_errors_total{job="observability/loki", user="fake"}'

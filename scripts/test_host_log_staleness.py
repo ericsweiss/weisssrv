@@ -247,11 +247,38 @@ class TestRulerMetaAlertThreshold:
             f"have no meta-monitoring at all"
         )
 
+    def _extra_ruler_rules(self) -> int:
+        # Every OTHER rule file the loki/ kustomization ships to the ruler also
+        # counts toward the loaded-rule total the threshold watches. Counting a
+        # file the kustomization does NOT ship would inflate the threshold and
+        # latch the meta-alert permanently, so each counted file must appear in
+        # a configMapGenerator entry.
+        loki_dir = ALERT_YML.parent
+        kustomization = yaml.safe_load((loki_dir / "kustomization.yaml").read_text())
+        shipped_files = {
+            f
+            for gen in kustomization.get("configMapGenerator", [])
+            for f in gen.get("files", [])
+        }
+        extra = 0
+        for f in loki_dir.glob("*.yaml"):
+            if f.name in (ALERT_YML.name, "kustomization.yaml", "release.yaml", "storage.yaml"):
+                continue
+            doc = yaml.safe_load(f.read_text())
+            if isinstance(doc, dict) and "groups" in doc:
+                assert f.name in shipped_files, (
+                    f"{f.name} holds ruler rules but no configMapGenerator entry "
+                    f"in loki/kustomization.yaml ships it — the sidecar will never "
+                    f"deliver it and LokiRulerRulesMissing would fire forever."
+                )
+                extra += sum(len(g.get("rules", [])) for g in doc["groups"])
+        return extra
+
     def test_threshold_equals_shipped_rule_count(self):
-        shipped = len(_alert_rules())
+        shipped = len(_alert_rules()) + self._extra_ruler_rules()
         assert self._threshold() == shipped, (
             f"{self.THRESHOLD_ALERT} expects {self._threshold()} ruler rules but "
-            f"host-log-staleness.yaml ships {shipped}. Update the threshold in "
+            f"the loki/ rule files ship {shipped}. Update the threshold in "
             f"observability/rules/infrastructure.yaml, or the alert under-detects "
             f"a partially-delivered rules ConfigMap."
         )

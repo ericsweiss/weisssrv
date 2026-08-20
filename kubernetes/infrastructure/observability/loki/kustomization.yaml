@@ -28,3 +28,11 @@ configMapGenerator:
         loki_rule: "1"
       annotations:
         k8s-sidecar-target-directory: /rules/fake
+  - name: loki-rules-runner-reaper
+    files:
+      - runner-reaper.yaml
+    options:
+      labels:
+        loki_rule: "1"
+      annotations:
+        k8s-sidecar-target-directory: /rules/fake
