@@ -283,11 +283,12 @@ weekly and each page means a NAS reboot window. To close it:
 
 ### Nextcloud follow-ups (not blockers)
 
-- [ ] **Move Nextcloud's outgoing mail onto submission.** `nextcloud_smtp_*` in
-  `group_vars/nextcloud_servers.yml` still points at the relay's port 25 with no
-  SASL, from the era when the relay trusted the LAN in `mynetworks`. It does not
-  any more (docs/10), so use the null-client SASL credentials on 587, the way
-  `gitlab_servers.yml` does.
+- [x] ~~**Move Nextcloud's outgoing mail onto submission.**~~ DONE 2026-08-20:
+  the role gained SASL support in lib v0.11.1 (auth + credentials converge in
+  both directions, stdin-only secret transport, half-set pair and plaintext
+  channel both fail the play) and `nextcloud_servers.yml` now rides 587 +
+  STARTTLS with the shared null-client credential.
+
 
 - [ ] Grafana dashboard: the upstream xperimental exporter dashboard uses a
   `${DS_LOCAL}` import-input datasource that needs adapting for the sidecar.
@@ -304,15 +305,11 @@ weekly and each page means a NAS reboot window. To close it:
   the inert-`cache:` blocks in the same change — see
   [docs/13](13-ci-cd.md) § Lint Stage. Deferred: needs an S3-compatible store
   stood up first.
-- [ ] **Alert on the runner reaper's partial sweeps.** `gitlab-runner-reaper`
-  exits 0 on a clean budget stop and says so only in its log
-  (`BUDGET STOP after <n>s; not fully reaped this run: <namespaces>`), so a
-  permanently over-budget reaper looks like a clean no-op. The prefix is
-  deliberately distinguishable; what is missing is the rule. The mechanism is
-  already there — a LogQL rule in a `loki_rule` ConfigMap next to
-  `observability/loki/host-log-staleness.yaml` — so this is a small,
-  self-contained follow-up rather than new plumbing. See docs/13 § Runner
-  garbage collection.
+- [x] ~~**Alert on the runner reaper's partial sweeps.**~~ DONE 2026-08-20:
+  `GitlabRunnerReaperPartialSweep` (loki/runner-reaper.yaml) fires on the
+  BUDGET STOP line over 25h; the `LokiRulerRulesMissing` count-gate and its
+  guard test cover the new file.
+
 - [ ] **GitLab runner ResourceQuota is overcommitted** — ~46 cores requested
   against 31 allocatable, so a full concurrency burst cannot schedule. Resolving
   it is a capacity decision (lower `concurrent`, lower per-job requests, or more

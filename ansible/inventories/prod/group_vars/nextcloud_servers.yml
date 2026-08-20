@@ -20,10 +20,15 @@ nextcloud_oidc_enabled: true
 nextcloud_oidc_discovery_uri: >-
   https://auth.{{ external_domain }}/application/o/cloud/.well-known/openid-configuration
 
-# Outgoing mail via the relay, plaintext on port 25 (LAN hop).
+# Outgoing mail via the relay on authenticated submission (587 + STARTTLS):
+# the relay stopped trusting the LAN in mynetworks (docs/10), so Nextcloud
+# authenticates with the shared null-client SASL credential, the same way
+# gitlab_servers.yml does. The role asserts the pair + TLS together.
 nextcloud_smtp_host: "{{ postfix_null_client_relay_host }}"
-nextcloud_smtp_port: "25"
-nextcloud_smtp_secure: ""
+nextcloud_smtp_port: "587"
+nextcloud_smtp_secure: "tls"
+nextcloud_smtp_user: "{{ smtp_relay_sasl_user }}"
+nextcloud_smtp_password: "{{ smtp_relay_sasl_password }}"
 nextcloud_mail_from_address: nextcloud
 nextcloud_mail_domain: "{{ external_domain }}"
 
