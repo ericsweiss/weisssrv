@@ -77,6 +77,10 @@ spec:
             [runners.cache.s3]
               ServerAddress = "ci-cache.ci-cache.svc.cluster.local:3900"
               BucketName = "runner-cache"
+              # Must match garage.toml s3_region or sigv4 signatures fail.
+              # (No PathStyle key exists in runner config; the client
+              # auto-selects path-style for a custom cluster-local endpoint.)
+              BucketLocation = "garage"
               Insecure = true
 
           [runners.kubernetes]
