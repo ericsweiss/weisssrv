@@ -60,12 +60,12 @@ vault — stays parked (re-score wf-b#8 residual).
 
 ### ~~`tank/backups` legacy data and `archive` headroom~~ — CLOSED
 
-Decided 2026-08-19: the 2021-22 machine backups stay in all three tiers
-(tank + archive replication + B2). Mechanism (in flight, same wave): the
-nightly restic job excludes those immutable subdirectories and their
-existing B2 data is pinned by forever-kept `legacy`-tagged snapshots
-(docs/42 will carry the detail). `archive` headroom: deliberately
-untracked — revisit holistically only if the pool ever runs hot.
+Decided and shipped 2026-08-19: the 2021-22 machine backups stay in all
+three tiers (tank + archive replication + B2); the nightly restic job
+excludes the immutable subdirectories and their existing B2 data is pinned
+by a forever-kept `legacy`-tagged snapshot (docs/42 § Legacy machine
+backups). `archive` headroom: deliberately untracked — revisit
+holistically only if the pool ever runs hot.
 
 
 ### ~~Opt-agent CPU saturation~~ — resolved by the August placement work
@@ -127,13 +127,13 @@ the vendor flashing tool on a Windows USB stick and a downtime window. The GRO
 disable that stabilises the NIC in the meantime is codified in the `nic_tuning`
 role, so this is a planned maintenance task rather than an emergency.
 
-### pve-nas-01 stale manual config cleanup
+### ~~pve-nas-01 stale manual config cleanup~~ — DONE
 
-The `/etc/network/interfaces` manual GRO-off stanza on pve-nas-01 is still in
-place and must **not** be removed yet. Remove it only after the `nic_tuning`
-drop-in has been redeployed and verified authoritative across a reboot
-(`ifquery nic1` clean, `ethtool -k nic1` showing
-`generic-receive-offload: off`).
+Removed 2026-08-19 after verifying the `nic_tuning` drop-in authoritative
+across two reboots (`ifquery nic1` clean via the drop-in alone,
+`generic-receive-offload: off` live). `/etc/network/interfaces` no longer
+carries the manual stanza; backup at `/root/interfaces.bak` on the host.
+
 
 ### Move the wg-easy VIP out of the router's DHCP range
 

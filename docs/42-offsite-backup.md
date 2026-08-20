@@ -117,6 +117,28 @@ backups under `tank/backups` stay **unexported** — restic still captures them
 via the direct dataset walk (it reads the snapshots locally and needs no export
 at all).
 
+## Legacy machine backups (excluded + pinned)
+
+The immutable 2021-22 machine-backup trees under `tank/backups`
+(`Eric-Laptop`, `Desktop-Backup`, `Amy-Laptop-Old`, `Erics-MBP`, ~767 GB)
+live in all three tiers — tank, the archive replication, and B2 — but the
+nightly restic run **excludes** them (`restic_offsite_excludes`) so it stops
+re-walking ~500k files that can never change. Their B2 data is held by a
+**`legacy`-tagged snapshot** that retention never forgets
+(`restic_offsite_keep_tags`): GFS churn continues around it, and prune keeps
+every pack the pinned snapshot references.
+
+One-time act per pinned generation (already done for the current one):
+
+```bash
+restic-offsitectl snapshots                    # find the last snapshot that still WALKED the trees
+restic-offsitectl restic tag --add legacy <snapshot-id>
+```
+
+New data added under `tank/backups/` OUTSIDE the excluded directories rides
+the nightly run normally. Before ever removing an exclude, confirm the pin
+still exists (`restic-offsitectl restic snapshots --tag legacy`).
+
 ## Security — three independent at-rest layers
 
 1. **Local:** dumps land on `tank/backups` (`aes-256-gcm`); the vzdump target

@@ -426,6 +426,11 @@ tasks:
         echo "Run: export KUBECONFIG=~/.kube/config-k3s"
 
   # === K3s Cluster Operations ===
+  authentik:add-user:
+    desc: Scaffold a managed authentik user into terraform/authentik/users.tf (task authentik:add-user -- <username> --name "Full Name" --email a@b.c [--groups app-x,app-y])
+    cmds:
+      - python3 scripts/authentik-add-user.py {{.CLI_ARGS}}
+
   authentik:status:
     desc: Show Authentik SSO status
     cmds:

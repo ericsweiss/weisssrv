@@ -89,6 +89,13 @@ spec:
             cpu_request = "900m"
             memory_limit = "1Gi"
             memory_request = "384Mi"
+            # Ceilings for the lib templates' per-job KUBERNETES_MEMORY_*
+            # declarations (v0.11.0): without max_allowed the runner ignores
+            # them and every job stays at the 1Gi default above.
+            memory_limit_overwrite_max_allowed = "6Gi"
+            memory_request_overwrite_max_allowed = "2Gi"
+            service_memory_limit_overwrite_max_allowed = "4Gi"
+            service_memory_request_overwrite_max_allowed = "1Gi"
 
             # docker:dind sidecar holding the molecule test containers. Its load
             # is burst-shaped (image unpack, parallel containers), so no

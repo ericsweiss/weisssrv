@@ -53,6 +53,31 @@ Two consequences of the module adoption an operator meets first:
   as a live provider diff, which is why this root passes the flow slugs, signing
   key name, grant types and mapping lists explicitly.
 
+## Managed users
+
+User accounts can be identity-as-code via the module's `users` map —
+`terraform/authentik/users.tf` holds the site entries (credentials NEVER:
+each person sets their own password + MFA through authentik's
+enrollment/recovery flows). Group membership stays on the group
+(`groups.tf` `users` lists), which resolves managed and pre-existing
+usernames alike.
+
+Adding a user is a scaffold + supervised apply:
+
+```bash
+task authentik:add-user -- amy --name "Amy" --email amy@example.com --groups app-mealie
+# follow the printed steps: groups.tf membership, plan, supervised apply,
+# then send the enrollment/recovery link from Directory -> Users
+```
+
+Pre-existing (UI-created) accounts are adopted declaratively: a users.tf
+entry mirroring the live values PLUS an `import {}` block in imports.tf
+(`id` = the user pk, from `/api/v3/core/users/?username=<u>`), landing in
+the same supervised apply — the plan then shows "1 to import" with zero
+changes. `eric` was adopted this way (pk 7); `akadmin` stays deliberately
+unmanaged as the break-glass account. The module puts `prevent_destroy` on
+every user; rename a map key with a `moved {}` block.
+
 ## Routine change flow
 
 1. Edit the module on a feature branch (usual MR workflow — never push main).

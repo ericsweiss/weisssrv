@@ -94,7 +94,7 @@ variables:
   # as a literal and scripts/check-lib-pins.py enforces that they all equal this
   # value and that it is a release tag. Bump here, then `--fix`. See the comment
   # on the include block.
-  WEISSSRV_LIB_REF: "v0.10.0"
+  WEISSSRV_LIB_REF: "v0.11.0"
   # Single source for the Ansible pin the deploy jobs (.deploy-base) pip-install.
   # Keep in step with requirements.txt's ansible pin.
   ANSIBLE_VERSION: "11.6.0"
@@ -1485,7 +1485,7 @@ include:
   # already describe this instance and the cloudflare state; the two drift-plan
   # jobs override the three TF_HTTP_*ADDRESS vars for their own state names.
   - project: eric/weisssrv-lib
-    ref: v0.10.0
+    ref: v0.11.0
     file:
       - /ci/templates/dep-cache.yml
       - /ci/templates/install-1password.yml
@@ -1500,7 +1500,7 @@ include:
   #     selector, allow_failure, MR/main/schedule rules); the hard block comes
   #     from validation-gate needing this job non-optionally.
   - project: eric/weisssrv-lib
-    ref: v0.10.0
+    ref: v0.11.0
     file:
       - /ci/validate/terraform.yml
       - /ci/security/secret-detection.yml
@@ -1508,7 +1508,7 @@ include:
   # yaml-lint: the library default targets `.gitlab/ci/` only; lint all of
   # `.gitlab/` so the agent config is covered alongside the CI fragments.
   - project: eric/weisssrv-lib
-    ref: v0.10.0
+    ref: v0.11.0
     file: /ci/lint/yaml-lint.yml
     inputs:
       targets: "ansible/ kubernetes/ .gitlab-ci.yml .gitlab/"
@@ -1523,7 +1523,7 @@ include:
   # where the library's own pipeline shellchecks it. What is left is scripts/
   # plus the terraform helper scripts the default set missed.
   - project: eric/weisssrv-lib
-    ref: v0.10.0
+    ref: v0.11.0
     file: /ci/lint/shellcheck.yml
     inputs:
       direct_globs: "scripts/*.sh terraform/*/*.sh"
@@ -1541,7 +1541,7 @@ include:
   # walks UP from its cwd, so the config is ./.ansible-lint. It is in `changes:`
   # so a profile edit re-runs the job.
   - project: eric/weisssrv-lib
-    ref: v0.10.0
+    ref: v0.11.0
     file: /ci/lint/ansible-lint.yml
     inputs:
       targets: "ansible/"
@@ -1557,7 +1557,7 @@ include:
   # python-lint: ruff over the helper scripts, using the library's shared
   # profile vendored to this repo's root as ruff.toml.
   - project: eric/weisssrv-lib
-    ref: v0.10.0
+    ref: v0.11.0
     file: /ci/lint/python-lint.yml
     inputs:
       targets: "scripts kubernetes"
@@ -1573,7 +1573,7 @@ include:
   # trigger list has to be `**/*.md`-wide — the library default only covers
   # docs/ + the top-level READMEs.
   - project: eric/weisssrv-lib
-    ref: v0.10.0
+    ref: v0.11.0
     file: /ci/lint/docs-link-check.yml
     inputs:
       changes:
@@ -1599,7 +1599,7 @@ include:
   # its admin PAT from GITLAB_ADMIN_API_TOKEN (see the deploy-gitlab job) to avoid
   # being silently shadowed by this project token.
   - project: eric/weisssrv-lib
-    ref: v0.10.0
+    ref: v0.11.0
     file: /ci/maintenance/version-check.yml
     inputs:
       setup_command: 'pip install --quiet "pyyaml==${PYYAML_VERSION}" requests==2.34.2'
@@ -1626,7 +1626,7 @@ include:
   # copies against it and never skips, so the checkout is a hard requirement of
   # the job (WEISSSRV_LIB_PATH points at it — see the job override below).
   - project: eric/weisssrv-lib
-    ref: v0.10.0
+    ref: v0.11.0
     file: /ci/test/python-tests.yml
     inputs:
       pytest_version: "9.1.1"
@@ -1679,7 +1679,7 @@ include:
   # as `task flux:lint` passes them — an omitted --releases is a FileNotFoundError
   # and an omitted --policy-config silently asserts zero chart-native targets.
   - project: eric/weisssrv-lib
-    ref: v0.10.0
+    ref: v0.11.0
     file: /ci/validate/flux-lint.yml
     inputs:
       substitute: true
@@ -1751,7 +1751,7 @@ include:
   # pipelines). Model, reasoning effort and both timeouts are the library
   # defaults.
   - project: eric/weisssrv-lib
-    ref: v0.10.0
+    ref: v0.11.0
     file: /ci/review/pr-agent.yml
     inputs:
       secrets_source: "env"

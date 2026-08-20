@@ -37,6 +37,14 @@ import {
   id       = each.value
 }
 
+# Managed users (id = user pk). One-time adoption of pre-existing accounts
+# into module.sso's users map — see users.tf for which accounts qualify.
+
+import {
+  to = module.sso.authentik_user.this["eric"]
+  id = "7"
+}
+
 # Proxy providers (id = provider pk)
 
 import {

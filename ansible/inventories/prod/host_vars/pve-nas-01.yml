@@ -810,9 +810,24 @@ restic_offsite_zvol_sources:
     zvol: tank/nextcloud-data/disk
     fstype: ext4
     mount_opts: ro,noload
+# Retention never forgets snapshots tagged `legacy`: they pin the excluded
+# machine-backup trees (above) in B2 while the GFS churn continues around
+# them. Tagging is a one-time operator act per pinned generation:
+# `restic-offsitectl restic tag --add legacy <snapshot-id>` (docs/42).
+restic_offsite_keep_tags:
+  - legacy
 # Churn and cache paths: the databases are covered by their own logical dumps
 # under tank/backups/apps, and Prometheus/Loki/Plex caches are re-derivable.
 restic_offsite_excludes:
+  # Immutable 2021-22 machine backups: kept on tank + archive + B2, but the
+  # nightly walk skips them (~767 GB, ~500k files). Their B2 data is pinned
+  # by a forever-kept snapshot (restic_offsite_keep_tags below + docs/42
+  # § Legacy machine backups) — do NOT remove an exclude without checking
+  # that pin still exists.
+  - /mnt/restic-src/backups/Eric-Laptop/**
+  - /mnt/restic-src/backups/Desktop-Backup/**
+  - /mnt/restic-src/backups/Amy-Laptop-Old/**
+  - /mnt/restic-src/backups/Erics-MBP/**
   - /mnt/restic-src/appdata/prometheus/**
   - /mnt/restic-src/appdata/loki/**
   - /mnt/restic-src/appdata/authentik/postgres/**

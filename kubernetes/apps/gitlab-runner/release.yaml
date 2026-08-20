@@ -96,6 +96,8 @@ spec:
             # declaring KUBERNETES_MEMORY_LIMIT=1Gi stops a 12-job fan-out
             # from bursting the namespace quota at pod creation.
             memory_limit_overwrite_max_allowed = "4Gi"
+            service_memory_limit_overwrite_max_allowed = "4Gi"
+            service_memory_request_overwrite_max_allowed = "1Gi"
             memory_request_overwrite_max_allowed = "1Gi"
 
             # Job-pod service account: token-less, no RBAC (serviceaccount.yaml)

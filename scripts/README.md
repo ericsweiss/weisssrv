@@ -34,6 +34,7 @@ python3 ../weisssrv-lib/scripts/check-vendored-copies.py --repo-root . --list
 | `check-deploy-coverage.sh` | Every changed deploy input is covered by a `deploy-*` job | vendored |
 | `check-deploy-host-coverage.py` | Each CI-deployed playbook's roles really reach every host it claims | local |
 | `check-doc-links.py` | Every relative Markdown link in every tracked `*.md` resolves | vendored |
+| `authentik-add-user.py` | Scaffolds a managed user entry into `terraform/authentik/users.tf` (identity only — membership stays in groups.tf) and prints the supervised-apply + enrollment steps | local |
 | `check-alertmanager-behaviour.py` | Each alert reaches the receiver it should, and every inhibit pair still binds | vendored |
 | `check-ansible-service-names.py` | Every service/systemd task names a systemd unit, not an Ansible role FQCN | local |
 | `check-cluster-literals.py` | The substituted trees spell cluster identity as `cluster-config` placeholders, and that ConfigMap agrees with the Ansible inventory | local |
