@@ -21,7 +21,7 @@ data:
   exportarr_version: v2.3.0
   flux_version: 2.9.0
   gitlab_agent_helm_version: 2.29.0
-  gitlab_runner_helm_version: 0.91.2
+  gitlab_runner_helm_version: 0.92.0
   gitlab_version: 19.2.4-ee.0
   gluetun_version: v3.41.3
   helm_chart_versions_alloy: 1.11.1
@@ -32,8 +32,8 @@ data:
   helm_chart_versions_kured: 6.1.0
   helm_chart_versions_loki: 18.9.0
   helm_chart_versions_metallb: 0.15.3
-  helm_chart_versions_metrics_server: 3.13.1
-  helm_chart_versions_nvidia_device_plugin: 0.19.3
+  helm_chart_versions_metrics_server: 3.14.0
+  helm_chart_versions_nvidia_device_plugin: 0.20.0
   helm_chart_versions_onepassword_connect: 2.4.1
   helm_chart_versions_prometheus_blackbox_exporter: 11.17.2
   helm_chart_versions_prometheus_operator_crds: 31.0.1
@@ -42,7 +42,7 @@ data:
   helm_chart_versions_traefik: 41.2.0
   helm_chart_versions_vpa: 5.0.0
   hermes_camofox_version: 1.13.0
-  hermes_claude_version: 2.1.235
+  hermes_claude_version: 2.1.237
   hermes_codex_version: 0.148.0
   hermes_image_version: v2026.8.18-r1
   hermes_op_version: 2.39.0-1
@@ -83,7 +83,7 @@ data:
   restic_offsite_restic_version: ''
   salt_rim_version: 5.1.0
   sonarr_version: 4.0.19.2979
-  tailscale_version: 1.102.2
+  tailscale_version: 1.102.3
   unbound_exporter_version: 0.6.0
   uptime_kuma_version: 2.5.0
   wg_easy_version: 15.4.0

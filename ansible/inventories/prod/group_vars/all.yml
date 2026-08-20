@@ -156,7 +156,7 @@ adguard_sync_version: "0.9.2"
 # Host-side Alloy apt package (alloy_host role; distinct from the in-cluster
 # helm_chart_versions.alloy chart pin below).
 alloy_host_version: "1.18.1-1"
-tailscale_version: "1.102.2"
+tailscale_version: "1.102.3"
 # qol shell/editor pins. Oh My Zsh publishes no release tags, so the clone is
 # pinned to a commit (https://github.com/ohmyzsh/ohmyzsh/commits/master);
 # Vundle is tagged. Host-side only — not Flux versions.
@@ -235,7 +235,7 @@ plex_version: "1.43.3.10896-cb3ebc72d"
 gitlab_version: "19.2.4-ee.0"
 
 # https://gitlab.com/gitlab-org/charts/gitlab-runner/tags
-gitlab_runner_helm_version: "0.91.2"
+gitlab_runner_helm_version: "0.92.0"
 
 # https://gitlab.com/gitlab-org/charts/gitlab-agent/tags
 gitlab_agent_helm_version: "2.29.0"
@@ -307,7 +307,7 @@ hermes_codex_version: "0.148.0"
 # long-lived OAuth token (CLAUDE_CODE_OAUTH_TOKEN via ESO — no API key; the CLI
 # holds the credential, Hermes only reads stdout). Build-time only — docs/37.
 # https://github.com/anthropics/claude-code (npm @anthropic-ai/claude-code)
-hermes_claude_version: "2.1.235"
+hermes_claude_version: "2.1.237"
 # 1Password CLI (op), baked into the hermes image so Hermes' 1Password skill can
 # drive `op` against the isolated Agent vault (docs/37 §1Password). Value is the
 # full DEB version string, not the bare semver `op --version` reports.
@@ -445,16 +445,18 @@ helm_chart_versions:
   kured: "6.1.0"  # Kubernetes Reboot Daemon (app 1.22.1); owns k3s-node reboots flagged by maintenance
   reloader: "2.2.16"  # stakater/Reloader (app v1.4.20); auto-restarts annotated workloads on ConfigMap change (Secrets excluded via ignoreSecrets)
   # Tailscale K8s operator (appVersion v1.102.2; tracks the host
-  # tailscale_version); exposes internal Traefik + tailnet-dns to the tailnet
+  # tailscale_version, but only once the chart actually publishes — 1.102.3
+  # exists as a host package while its chart does not yet, and flux-lint's
+  # helm-values gate fails a phantom chart version)
   tailscale_operator: "1.102.2"
   # NVIDIA k8s device plugin — advertises nvidia.com/gpu on the labelled GPU node
   # (kubernetes/infrastructure/controllers/nvidia-device-plugin). Chart tracks the
   # plugin appVersion. https://github.com/NVIDIA/k8s-device-plugin/releases
-  nvidia_device_plugin: "0.19.3"
-  # kubernetes-sigs/metrics-server (chart 3.13.1 = app v0.8.1). Replaces the k3s
+  nvidia_device_plugin: "0.20.0"
+  # kubernetes-sigs/metrics-server (chart 3.14.0 = app v0.9.0). Replaces the k3s
   # packaged AddOn, which is disabled on the servers — see
   # kubernetes/infrastructure/controllers/metrics-server/release.yaml.
-  metrics_server: "3.13.1"
+  metrics_server: "3.14.0"
 
 # Created automatically when provisioning VMs/LXCs.
 proxmox_resource_pools:
