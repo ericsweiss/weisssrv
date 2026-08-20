@@ -259,8 +259,14 @@ spec:
     containerPolicies:
       - containerName: "*"
         minAllowed: {cpu: 25m, memory: 64Mi}
+        # RequestsOnly with cap == the declared 1Gi limit (docs/33 rule): the
+        # limit-controlling shape let admission scale the limit DOWN with the
+        # request (pod landed at ~783Mi), and the 88.5.0-era recommendation
+        # (~933Mi) then tripped VPARecommendationExceedsLimit — the next
+        # admission would have ballooned the limit to ~1.9Gi instead.
         maxAllowed: {cpu: 1, memory: 1Gi}
         controlledResources: [cpu, memory]
+        controlledValues: RequestsOnly
 ---
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
