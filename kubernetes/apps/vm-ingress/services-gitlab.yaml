@@ -1,5 +1,5 @@
 ---
-# Services and EndpointSlices for GitLab VM (192.168.0.153)
+# Services and EndpointSlices for GitLab VM (10.0.10.153)
 # GitLab runs outside the cluster; Traefik routes to it via these services
 
 # GitLab Web UI (HTTPS on 443)
@@ -33,7 +33,7 @@ ports:
     protocol: TCP
 endpoints:
   - addresses:
-      - 192.168.0.153
+      - 10.0.10.153
     conditions:
       ready: true
 
@@ -65,7 +65,7 @@ ports:
     protocol: TCP
 endpoints:
   - addresses:
-      - 192.168.0.153
+      - 10.0.10.153
     conditions:
       ready: true
 
@@ -97,6 +97,6 @@ ports:
     protocol: TCP
 endpoints:
   - addresses:
-      - 192.168.0.153
+      - 10.0.10.153
     conditions:
       ready: true

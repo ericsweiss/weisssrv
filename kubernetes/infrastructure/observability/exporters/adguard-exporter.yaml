@@ -39,7 +39,7 @@ spec:
       # Distroless static binary (USER 65532, FROM scratch); no runtime writes.
       automountServiceAccountToken: false
       hostAliases:
-        - ip: "192.168.0.150"
+        - ip: "10.0.10.150"
           hostnames: ["dns-01.${cluster_internal_domain}"]
       securityContext:
         runAsNonRoot: true
@@ -134,7 +134,7 @@ spec:
       # Distroless static binary (USER 65532, FROM scratch); no runtime writes.
       automountServiceAccountToken: false
       hostAliases:
-        - ip: "192.168.0.160"
+        - ip: "10.0.10.160"
           hostnames: ["dns-02.${cluster_internal_domain}"]
       securityContext:
         runAsNonRoot: true

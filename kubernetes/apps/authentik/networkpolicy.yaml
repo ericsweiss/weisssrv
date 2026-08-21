@@ -154,7 +154,7 @@ spec:
 #   outpost reconciliation and needs API access — its SA token is mounted on
 #   purpose, see release.yaml worker.securityContext note)
 # - intra-ns to Postgres
-# - smtp-relay (192.168.0.151) for password reset / notification emails
+# - smtp-relay (10.0.10.151) for password reset / notification emails
 # - Public HTTPS (image pulls happen at kubelet, but the worker fetches
 #   Authentik blueprints + GeoIP DBs over TCP/443 from the internet).
 apiVersion: networking.k8s.io/v1
@@ -188,11 +188,11 @@ spec:
     # The worker uses this for the Kubernetes integration/outpost controller.
     - to:
         - ipBlock:
-            cidr: 192.168.0.222/32
+            cidr: 10.0.10.222/32
         - ipBlock:
-            cidr: 192.168.0.223/32
+            cidr: 10.0.10.223/32
         - ipBlock:
-            cidr: 192.168.0.227/32
+            cidr: 10.0.10.227/32
       ports:
         - protocol: TCP
           port: 6443
@@ -206,7 +206,7 @@ spec:
           port: 5432
     - to:
         - ipBlock:
-            cidr: 192.168.0.151/32
+            cidr: 10.0.10.151/32
       ports:
         # Submission (587/STARTTLS) only — the relay requires SASL auth on 587
         # and no app dials cleartext 25.

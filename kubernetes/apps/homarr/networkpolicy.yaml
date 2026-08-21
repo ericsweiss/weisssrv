@@ -99,7 +99,7 @@ spec:
         # this CNI by the deployed hermes/homarr rules); the VIP ipBlock also
         # admits the pre-DNAT form so a CNI change can't silently break this.
         - ipBlock:
-            cidr: 192.168.0.101/32
+            cidr: 10.0.10.101/32
       ports:
         - protocol: TCP
           port: 443
@@ -118,31 +118,31 @@ spec:
           port: 443
     # 5a. AdGuard Home admin API (both DNS instances)
     - to:
-        - ipBlock: { cidr: 192.168.0.150/32 }
-        - ipBlock: { cidr: 192.168.0.160/32 }
+        - ipBlock: { cidr: 10.0.10.150/32 }
+        - ipBlock: { cidr: 10.0.10.160/32 }
       ports:
         - protocol: TCP
           port: 3000
     # 5b. Proxmox API (any node; six /32 entries for headroom)
     - to:
-        - ipBlock: { cidr: 192.168.0.102/32 }
-        - ipBlock: { cidr: 192.168.0.103/32 }
-        - ipBlock: { cidr: 192.168.0.104/32 }
-        - ipBlock: { cidr: 192.168.0.105/32 }
-        - ipBlock: { cidr: 192.168.0.106/32 }
-        - ipBlock: { cidr: 192.168.0.107/32 }
+        - ipBlock: { cidr: 10.0.10.102/32 }
+        - ipBlock: { cidr: 10.0.10.103/32 }
+        - ipBlock: { cidr: 10.0.10.104/32 }
+        - ipBlock: { cidr: 10.0.10.105/32 }
+        - ipBlock: { cidr: 10.0.10.106/32 }
+        - ipBlock: { cidr: 10.0.10.107/32 }
       ports:
         - protocol: TCP
           port: 8006
     # 5c. Plex media server
     - to:
-        - ipBlock: { cidr: 192.168.0.152/32 }
+        - ipBlock: { cidr: 10.0.10.152/32 }
       ports:
         - protocol: TCP
           port: 32400
     # 5d. Home Assistant
     - to:
-        - ipBlock: { cidr: 192.168.0.154/32 }
+        - ipBlock: { cidr: 10.0.10.154/32 }
       ports:
         - protocol: TCP
           port: 8123

@@ -16,7 +16,7 @@ tests:
   # Reallocated sectors: 24h max-min. A constant historical count is silent.
   - interval: 5m
     input_series:
-      - series: 'smartmon_reallocated_sector_count{instance="192.168.0.102:9101", disk="sda"}'
+      - series: 'smartmon_reallocated_sector_count{instance="10.0.10.102:9101", disk="sda"}'
         values: '8+0x300'
     alert_rule_test:
       - eval_time: 24h
@@ -26,7 +26,7 @@ tests:
   # The same drive gaining one sector inside the window fires.
   - interval: 5m
     input_series:
-      - series: 'smartmon_reallocated_sector_count{instance="192.168.0.102:9101", disk="sda"}'
+      - series: 'smartmon_reallocated_sector_count{instance="10.0.10.102:9101", disk="sda"}'
         values: '8+0x200 9+0x100'
     alert_rule_test:
       - eval_time: 24h
@@ -34,14 +34,14 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
-              instance: 192.168.0.102:9101
+              instance: 10.0.10.102:9101
               disk: sda
 
   # Offline-uncorrectable is an absolute 6h window: any non-zero reading fires,
   # because the counter is reset-on-clean rather than lifetime-cumulative.
   - interval: 5m
     input_series:
-      - series: 'smartmon_offline_uncorrectable_count{instance="192.168.0.102:9101", disk="sdb"}'
+      - series: 'smartmon_offline_uncorrectable_count{instance="10.0.10.102:9101", disk="sdb"}'
         values: '0+0x100'
     alert_rule_test:
       - eval_time: 6h
@@ -50,7 +50,7 @@ tests:
 
   - interval: 5m
     input_series:
-      - series: 'smartmon_offline_uncorrectable_count{instance="192.168.0.102:9101", disk="sdb"}'
+      - series: 'smartmon_offline_uncorrectable_count{instance="10.0.10.102:9101", disk="sdb"}'
         values: '0+0x50 2+0x50'
     alert_rule_test:
       - eval_time: 6h
@@ -58,13 +58,13 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
-              instance: 192.168.0.102:9101
+              instance: 10.0.10.102:9101
               disk: sdb
 
   # Media errors, same shape, on the NVMe attribute set.
   - interval: 5m
     input_series:
-      - series: 'smartmon_media_errors_count{instance="192.168.0.102:9101", disk="nvme0"}'
+      - series: 'smartmon_media_errors_count{instance="10.0.10.102:9101", disk="nvme0"}'
         values: '0+0x100'
     alert_rule_test:
       - eval_time: 6h
@@ -73,7 +73,7 @@ tests:
 
   - interval: 5m
     input_series:
-      - series: 'smartmon_media_errors_count{instance="192.168.0.102:9101", disk="nvme0"}'
+      - series: 'smartmon_media_errors_count{instance="10.0.10.102:9101", disk="nvme0"}'
         values: '0+0x50 1+0x50'
     alert_rule_test:
       - eval_time: 6h
@@ -81,5 +81,5 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
-              instance: 192.168.0.102:9101
+              instance: 10.0.10.102:9101
               disk: nvme0

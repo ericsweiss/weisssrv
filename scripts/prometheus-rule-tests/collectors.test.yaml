@@ -8,7 +8,7 @@ tests:
   # is stale (>15m). A fresh timestamp does not fire.
   - interval: 1m
     input_series:
-      - series: 'postfix_queue_collector_last_success_seconds{instance="192.168.0.151:9101"}'
+      - series: 'postfix_queue_collector_last_success_seconds{instance="10.0.10.151:9101"}'
         values: '-2000+0x10'
     alert_rule_test:
       - eval_time: 6m
@@ -16,12 +16,12 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
-              instance: '192.168.0.151:9101'
+              instance: '10.0.10.151:9101'
 
   - interval: 1m
     input_series:
       # Fresh: timestamp tracks ~now, so time() - ts stays under 900s.
-      - series: 'postfix_queue_collector_last_success_seconds{instance="192.168.0.151:9101"}'
+      - series: 'postfix_queue_collector_last_success_seconds{instance="10.0.10.151:9101"}'
         values: '0+60x10'
     alert_rule_test:
       - eval_time: 6m

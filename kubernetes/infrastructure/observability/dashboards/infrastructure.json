@@ -1729,7 +1729,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "node_zfs_arc_size{instance=\"192.168.0.102:9101\"}",
+          "expr": "node_zfs_arc_size{instance=\"10.0.10.102:9101\"}",
           "legendFormat": "ARC size",
           "refId": "A"
         },
@@ -1738,7 +1738,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "node_zfs_arc_c_max{instance=\"192.168.0.102:9101\"}",
+          "expr": "node_zfs_arc_c_max{instance=\"10.0.10.102:9101\"}",
           "legendFormat": "ARC cap (c_max)",
           "refId": "B"
         }
@@ -1807,7 +1807,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "node_memory_SwapTotal_bytes{instance=\"192.168.0.102:9101\"} - node_memory_SwapFree_bytes{instance=\"192.168.0.102:9101\"}",
+          "expr": "node_memory_SwapTotal_bytes{instance=\"10.0.10.102:9101\"} - node_memory_SwapFree_bytes{instance=\"10.0.10.102:9101\"}",
           "legendFormat": "swap used",
           "refId": "A"
         }

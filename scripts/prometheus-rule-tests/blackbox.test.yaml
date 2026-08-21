@@ -14,11 +14,11 @@ tests:
   # max() aggregation dedups them — a bare vector would error duplicate-series.
   - interval: 1m
     input_series:
-      - series: 'probe_success{instance="192.168.0.155:3389"}'
+      - series: 'probe_success{instance="10.0.10.155:3389"}'
         values: '0+0x40'
-      - series: 'pve_up{id="qemu/155", target="192.168.0.102"}'
+      - series: 'pve_up{id="qemu/155", target="10.0.10.102"}'
         values: '1+0x40'
-      - series: 'pve_up{id="qemu/155", target="192.168.0.107"}'
+      - series: 'pve_up{id="qemu/155", target="10.0.10.107"}'
         values: '1+0x40'
     alert_rule_test:
       - eval_time: 35m
@@ -26,17 +26,17 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
-              instance: '192.168.0.155:3389'
+              instance: '10.0.10.155:3389'
 
   # VM intentionally powered off (both pve_up == 0): RDP down is EXPECTED, so the
   # gate self-silences — no alert.
   - interval: 1m
     input_series:
-      - series: 'probe_success{instance="192.168.0.155:3389"}'
+      - series: 'probe_success{instance="10.0.10.155:3389"}'
         values: '0+0x40'
-      - series: 'pve_up{id="qemu/155", target="192.168.0.102"}'
+      - series: 'pve_up{id="qemu/155", target="10.0.10.102"}'
         values: '0+0x40'
-      - series: 'pve_up{id="qemu/155", target="192.168.0.107"}'
+      - series: 'pve_up{id="qemu/155", target="10.0.10.107"}'
         values: '0+0x40'
     alert_rule_test:
       - eval_time: 35m
@@ -46,11 +46,11 @@ tests:
   # VM up and RDP answering (probe_success==1): no alert.
   - interval: 1m
     input_series:
-      - series: 'probe_success{instance="192.168.0.155:3389"}'
+      - series: 'probe_success{instance="10.0.10.155:3389"}'
         values: '1+0x40'
-      - series: 'pve_up{id="qemu/155", target="192.168.0.102"}'
+      - series: 'pve_up{id="qemu/155", target="10.0.10.102"}'
         values: '1+0x40'
-      - series: 'pve_up{id="qemu/155", target="192.168.0.107"}'
+      - series: 'pve_up{id="qemu/155", target="10.0.10.107"}'
         values: '1+0x40'
     alert_rule_test:
       - eval_time: 35m
@@ -78,7 +78,7 @@ tests:
   # WindowsRdpDown), so a down 3389 probe must NOT fire the catch-all.
   - interval: 1m
     input_series:
-      - series: 'probe_success{instance="192.168.0.155:3389"}'
+      - series: 'probe_success{instance="10.0.10.155:3389"}'
         values: '0+0x20'
     alert_rule_test:
       - eval_time: 12m
@@ -128,7 +128,7 @@ tests:
   # .150 present, .160 removed -> fire, labelled with the missing instance.
   - interval: 1m
     input_series:
-      - series: 'probe_success{instance="192.168.0.150:53"}'
+      - series: 'probe_success{instance="10.0.10.150:53"}'
         values: '1+0x30'
     alert_rule_test:
       - eval_time: 20m
@@ -136,14 +136,14 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
-              instance: '192.168.0.160:53'
+              instance: '10.0.10.160:53'
 
   # Both resolver probes present -> no drift, no alert.
   - interval: 1m
     input_series:
-      - series: 'probe_success{instance="192.168.0.150:53"}'
+      - series: 'probe_success{instance="10.0.10.150:53"}'
         values: '1+0x30'
-      - series: 'probe_success{instance="192.168.0.160:53"}'
+      - series: 'probe_success{instance="10.0.10.160:53"}'
         values: '1+0x30'
     alert_rule_test:
       - eval_time: 20m
@@ -152,19 +152,19 @@ tests:
 
   # NetworkGearProbeFailed: a down UniFi device is still pending at 3m and
   # fires at 7m, labelled with the device that failed. The gateway probe
-  # (192.168.0.1) is the anchoring case for the fully-anchored regex — it must
-  # not also match 192.168.0.150:53 or 192.168.0.155:3389.
+  # (10.0.10.1) is the anchoring case for the fully-anchored regex — it must
+  # not also match 10.0.10.150:53 or 10.0.10.155:3389.
   - interval: 1m
     input_series:
-      - series: 'probe_success{instance="192.168.0.1"}'
+      - series: 'probe_success{instance="10.0.10.1"}'
         values: '0+0x20'
       - series: 'probe_success{instance="10.0.1.2"}'
         values: '1+0x20'
       - series: 'probe_success{instance="10.0.1.3"}'
         values: '1+0x20'
-      - series: 'probe_success{instance="192.168.0.150:53"}'
+      - series: 'probe_success{instance="10.0.10.150:53"}'
         values: '0+0x20'
-      - series: 'probe_success{instance="192.168.0.155:3389"}'
+      - series: 'probe_success{instance="10.0.10.155:3389"}'
         values: '0+0x20'
     alert_rule_test:
       - eval_time: 3m
@@ -175,13 +175,13 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
-              instance: '192.168.0.1'
+              instance: '10.0.10.1'
 
   # Switch and AP both down -> one alert per device, so the summary names the
   # one that failed rather than a collapsed aggregate.
   - interval: 1m
     input_series:
-      - series: 'probe_success{instance="192.168.0.1"}'
+      - series: 'probe_success{instance="10.0.10.1"}'
         values: '1+0x20'
       - series: 'probe_success{instance="10.0.1.2"}'
         values: '0+0x20'
@@ -206,7 +206,7 @@ tests:
   # The 15m hold is pinned by the 10m eval: shortening `for` would fire there.
   - interval: 1m
     input_series:
-      - series: 'probe_success{instance="192.168.0.1"}'
+      - series: 'probe_success{instance="10.0.10.1"}'
         values: '1+0x30'
       - series: 'probe_success{instance="10.0.1.2"}'
         values: '0+0x30'
@@ -224,7 +224,7 @@ tests:
   # Each absent() term needs a case that drops ITS instance, or the term can be
   # deleted outright and the suite still passes — the all-present case only
   # catches a MIS-SPELLED matcher, never a missing one. The gateway leg matters
-  # most: 192.168.0.1 is the address Phase 2 renumbers.
+  # most: 10.0.10.1 is the address Phase 2 renumbered the gateway to.
   - interval: 1m
     input_series:
       - series: 'probe_success{instance="10.0.1.2"}'
@@ -237,12 +237,12 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
-              instance: '192.168.0.1'
+              instance: '10.0.10.1'
 
   # ... and the switch leg.
   - interval: 1m
     input_series:
-      - series: 'probe_success{instance="192.168.0.1"}'
+      - series: 'probe_success{instance="10.0.10.1"}'
         values: '1+0x30'
       - series: 'probe_success{instance="10.0.1.3"}'
         values: '1+0x30'
@@ -257,7 +257,7 @@ tests:
   # All three present -> no drift, no alert.
   - interval: 1m
     input_series:
-      - series: 'probe_success{instance="192.168.0.1"}'
+      - series: 'probe_success{instance="10.0.10.1"}'
         values: '1+0x30'
       - series: 'probe_success{instance="10.0.1.2"}'
         values: '1+0x30'
@@ -271,7 +271,7 @@ tests:
   # All three answering -> silent.
   - interval: 1m
     input_series:
-      - series: 'probe_success{instance="192.168.0.1"}'
+      - series: 'probe_success{instance="10.0.10.1"}'
         values: '1+0x20'
       - series: 'probe_success{instance="10.0.1.2"}'
         values: '1+0x20'
@@ -288,13 +288,13 @@ tests:
   #
   # The included half is pinned with IP-ADDRESSED targets, not just the https
   # one: the exclusion is a regex over dotted quads, so widening it (say to
-  # 192\.168\.0\..*) would swallow real targets while every https assertion
-  # still passed. 192.168.0.161:6443 is the k3s API VIP, whose ONLY alert is
-  # this one; 192.168.0.150:53 also has DNSResolutionDown but pins the second
-  # 192.168.0.1-adjacent spelling the anchored regex must not eat.
+  # 10\.0\.10\..*) would swallow real targets while every https assertion
+  # still passed. 10.0.10.161:6443 is the k3s API VIP, whose ONLY alert is
+  # this one; 10.0.10.150:53 also has DNSResolutionDown but pins the second
+  # 10.0.10.1-adjacent spelling the anchored regex must not eat.
   - interval: 1m
     input_series:
-      - series: 'probe_success{instance="192.168.0.1"}'
+      - series: 'probe_success{instance="10.0.10.1"}'
         values: '0+0x20'
       - series: 'probe_success{instance="10.0.1.2"}'
         values: '0+0x20'
@@ -302,9 +302,9 @@ tests:
         values: '0+0x20'
       - series: 'probe_success{instance="https://plex.esweiss.com"}'
         values: '0+0x20'
-      - series: 'probe_success{instance="192.168.0.161:6443"}'
+      - series: 'probe_success{instance="10.0.10.161:6443"}'
         values: '0+0x20'
-      - series: 'probe_success{instance="192.168.0.150:53"}'
+      - series: 'probe_success{instance="10.0.10.150:53"}'
         values: '0+0x20'
     alert_rule_test:
       - eval_time: 12m
@@ -312,10 +312,10 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
-              instance: '192.168.0.150:53'
+              instance: '10.0.10.150:53'
           - exp_labels:
               severity: warning
-              instance: '192.168.0.161:6443'
+              instance: '10.0.10.161:6443'
           - exp_labels:
               severity: warning
               instance: 'https://plex.esweiss.com'

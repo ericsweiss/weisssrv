@@ -81,11 +81,11 @@ spec:
     # the in-cluster VIP before NetworkPolicy evaluation).
     - to:
         - ipBlock:
-            cidr: 192.168.0.222/32
+            cidr: 10.0.10.222/32
         - ipBlock:
-            cidr: 192.168.0.223/32
+            cidr: 10.0.10.223/32
         - ipBlock:
-            cidr: 192.168.0.227/32
+            cidr: 10.0.10.227/32
       ports:
         - protocol: TCP
           port: 6443

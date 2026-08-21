@@ -1,5 +1,5 @@
 ---
-# Service + EndpointSlice for the Nextcloud VM (192.168.0.156).
+# Service + EndpointSlice for the Nextcloud VM (10.0.10.156).
 # Nextcloud runs outside the cluster on a NAS-pinned VM; the host nginx
 # terminates TLS on 443 with the distributed *.esweiss.com wildcard cert and
 # proxies to the loopback-bound Nextcloud container. Traefik connects with
@@ -31,6 +31,6 @@ ports:
     protocol: TCP
 endpoints:
   - addresses:
-      - 192.168.0.156
+      - 10.0.10.156
     conditions:
       ready: true

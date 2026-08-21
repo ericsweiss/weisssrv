@@ -3,7 +3,7 @@
 # Using ClusterIP services with manual EndpointSlices since these are IP addresses, not DNS names
 # Mealie and Bar Assistant are in the recipes namespace (kubernetes/apps/recipes/)
 
-# Home Assistant on 192.168.0.154:8123
+# Home Assistant on 10.0.10.154:8123
 apiVersion: v1
 kind: Service
 metadata:
@@ -30,12 +30,12 @@ ports:
     protocol: TCP
 endpoints:
   - addresses:
-      - 192.168.0.154
+      - 10.0.10.154
     conditions:
       ready: true
 
 ---
-# Router (UniFi UCG-Fiber gateway) at 192.168.0.1:443 — HTTPS-only web UI, so
+# Router (UniFi UCG-Fiber gateway) at 10.0.10.1:443 — HTTPS-only web UI, so
 # this backend mirrors the adguard-home-0X pattern below rather than the
 # plaintext :80 the retired ASUS served (docs/46).
 apiVersion: v1
@@ -64,12 +64,12 @@ ports:
     protocol: TCP
 endpoints:
   - addresses:
-      - 192.168.0.1
+      - 10.0.10.1
     conditions:
       ready: true
 
 ---
-# Plex on 192.168.0.152:32400
+# Plex on 10.0.10.152:32400
 apiVersion: v1
 kind: Service
 metadata:
@@ -96,12 +96,12 @@ ports:
     protocol: TCP
 endpoints:
   - addresses:
-      - 192.168.0.152
+      - 10.0.10.152
     conditions:
       ready: true
 
 ---
-# AdGuard Home dns-01 on 192.168.0.150:443 (web UI over HTTPS and DoH)
+# AdGuard Home dns-01 on 10.0.10.150:443 (web UI over HTTPS and DoH)
 apiVersion: v1
 kind: Service
 metadata:
@@ -128,12 +128,12 @@ ports:
     protocol: TCP
 endpoints:
   - addresses:
-      - 192.168.0.150
+      - 10.0.10.150
     conditions:
       ready: true
 
 ---
-# AdGuard Home dns-02 on 192.168.0.160:443 (web UI over HTTPS and DoH)
+# AdGuard Home dns-02 on 10.0.10.160:443 (web UI over HTTPS and DoH)
 apiVersion: v1
 kind: Service
 metadata:
@@ -160,6 +160,6 @@ ports:
     protocol: TCP
 endpoints:
   - addresses:
-      - 192.168.0.160
+      - 10.0.10.160
     conditions:
       ready: true

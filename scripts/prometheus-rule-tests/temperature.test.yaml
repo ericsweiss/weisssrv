@@ -16,9 +16,9 @@ tests:
   # (95), so exactly one arm may fire.
   - interval: 1m
     input_series:
-      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="192.168.0.105:9101", chip="platform_coretemp_0"}'
+      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="10.0.10.105:9101", chip="platform_coretemp_0"}'
         values: '91+0x30'
-      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="192.168.0.105:9101", chip="platform_coretemp_0", chip_name="coretemp"}'
+      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="10.0.10.105:9101", chip="platform_coretemp_0", chip_name="coretemp"}'
         values: '1+0x30'
     alert_rule_test:
       - eval_time: 20m
@@ -27,7 +27,7 @@ tests:
           - exp_labels:
               severity: warning
               component: cpu
-              instance: 192.168.0.105:9101
+              instance: 10.0.10.105:9101
       - eval_time: 20m
         alertname: CPUTempCritical
         exp_alerts: []
@@ -36,9 +36,9 @@ tests:
   # the critical arm must fire (and inhibition, not the rule, suppresses warn).
   - interval: 1m
     input_series:
-      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="192.168.0.105:9101", chip="platform_coretemp_0"}'
+      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="10.0.10.105:9101", chip="platform_coretemp_0"}'
         values: '96+0x30'
-      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="192.168.0.105:9101", chip="platform_coretemp_0", chip_name="coretemp"}'
+      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="10.0.10.105:9101", chip="platform_coretemp_0", chip_name="coretemp"}'
         values: '1+0x30'
     alert_rule_test:
       - eval_time: 20m
@@ -47,14 +47,14 @@ tests:
           - exp_labels:
               severity: critical
               component: cpu
-              instance: 192.168.0.105:9101
+              instance: 10.0.10.105:9101
 
   # 88C bursts are normal on the laptop node and must not alert.
   - interval: 1m
     input_series:
-      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="192.168.0.107:9101", chip="platform_coretemp_0"}'
+      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="10.0.10.107:9101", chip="platform_coretemp_0"}'
         values: '88+0x30'
-      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="192.168.0.107:9101", chip="platform_coretemp_0", chip_name="coretemp"}'
+      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="10.0.10.107:9101", chip="platform_coretemp_0", chip_name="coretemp"}'
         values: '1+0x30'
     alert_rule_test:
       - eval_time: 20m
@@ -65,9 +65,9 @@ tests:
   # the join, not the threshold.
   - interval: 1m
     input_series:
-      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="192.168.0.105:9101", chip="hwmon3"}'
+      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="10.0.10.105:9101", chip="hwmon3"}'
         values: '99+0x30'
-      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="192.168.0.105:9101", chip="hwmon3", chip_name="acpitz"}'
+      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="10.0.10.105:9101", chip="hwmon3", chip_name="acpitz"}'
         values: '1+0x30'
     alert_rule_test:
       - eval_time: 20m
@@ -80,9 +80,9 @@ tests:
   # pinned: still pending at 20m, firing at 40m.
   - interval: 1m
     input_series:
-      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="192.168.0.102:9101", chip="nvme_nvme0"}'
+      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="10.0.10.102:9101", chip="nvme_nvme0"}'
         values: '66+0x60'
-      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="192.168.0.102:9101", chip="nvme_nvme0", chip_name="nvme"}'
+      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="10.0.10.102:9101", chip="nvme_nvme0", chip_name="nvme"}'
         values: '1+0x60'
     alert_rule_test:
       - eval_time: 20m
@@ -94,14 +94,14 @@ tests:
           - exp_labels:
               severity: warning
               component: storage
-              instance: 192.168.0.102:9101
+              instance: 10.0.10.102:9101
               chip: nvme_nvme0
 
   - interval: 1m
     input_series:
-      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="192.168.0.102:9101", chip="nvme_nvme0"}'
+      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="10.0.10.102:9101", chip="nvme_nvme0"}'
         values: '55+0x60'
-      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="192.168.0.102:9101", chip="nvme_nvme0", chip_name="nvme"}'
+      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="10.0.10.102:9101", chip="nvme_nvme0", chip_name="nvme"}'
         values: '1+0x60'
     alert_rule_test:
       - eval_time: 40m
@@ -112,9 +112,9 @@ tests:
   # over-temp signal. 51C is over the 50C floor.
   - interval: 1m
     input_series:
-      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="192.168.0.102:9101", chip="platform_drivetemp_1"}'
+      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="10.0.10.102:9101", chip="platform_drivetemp_1"}'
         values: '51+0x30'
-      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="192.168.0.102:9101", chip="platform_drivetemp_1", chip_name="drivetemp"}'
+      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="10.0.10.102:9101", chip="platform_drivetemp_1", chip_name="drivetemp"}'
         values: '1+0x30'
     alert_rule_test:
       - eval_time: 20m
@@ -123,15 +123,15 @@ tests:
           - exp_labels:
               severity: warning
               component: storage
-              instance: 192.168.0.102:9101
+              instance: 10.0.10.102:9101
               chip: platform_drivetemp_1
 
   # A hot SATA drive on a NON-NAS host is outside the instance selector.
   - interval: 1m
     input_series:
-      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="192.168.0.104:9101", chip="platform_drivetemp_1"}'
+      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="10.0.10.104:9101", chip="platform_drivetemp_1"}'
         values: '58+0x30'
-      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="192.168.0.104:9101", chip="platform_drivetemp_1", chip_name="drivetemp"}'
+      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="10.0.10.104:9101", chip="platform_drivetemp_1", chip_name="drivetemp"}'
         values: '1+0x30'
     alert_rule_test:
       - eval_time: 20m
@@ -141,9 +141,9 @@ tests:
   # The critical twins of the two drive arms, each at its own floor.
   - interval: 1m
     input_series:
-      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="192.168.0.102:9101", chip="nvme_nvme0"}'
+      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="10.0.10.102:9101", chip="nvme_nvme0"}'
         values: '76+0x30'
-      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="192.168.0.102:9101", chip="nvme_nvme0", chip_name="nvme"}'
+      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="10.0.10.102:9101", chip="nvme_nvme0", chip_name="nvme"}'
         values: '1+0x30'
     alert_rule_test:
       - eval_time: 20m
@@ -152,14 +152,14 @@ tests:
           - exp_labels:
               severity: critical
               component: storage
-              instance: 192.168.0.102:9101
+              instance: 10.0.10.102:9101
               chip: nvme_nvme0
 
   - interval: 1m
     input_series:
-      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="192.168.0.102:9101", chip="platform_drivetemp_1"}'
+      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="10.0.10.102:9101", chip="platform_drivetemp_1"}'
         values: '56+0x30'
-      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="192.168.0.102:9101", chip="platform_drivetemp_1", chip_name="drivetemp"}'
+      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="10.0.10.102:9101", chip="platform_drivetemp_1", chip_name="drivetemp"}'
         values: '1+0x30'
     alert_rule_test:
       - eval_time: 20m
@@ -168,16 +168,16 @@ tests:
           - exp_labels:
               severity: critical
               component: storage
-              instance: 192.168.0.102:9101
+              instance: 10.0.10.102:9101
               chip: platform_drivetemp_1
 
   # Host-side GPU hwmon: the chip_name alternation is what selects a GPU sensor,
   # so a driver rename (xe -> i915 and back) silently retires this arm.
   - interval: 1m
     input_series:
-      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="192.168.0.106:9101", chip="pci0000:00_0000:01:00:0"}'
+      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="10.0.10.106:9101", chip="pci0000:00_0000:01:00:0"}'
         values: '86+0x30'
-      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="192.168.0.106:9101", chip="pci0000:00_0000:01:00:0", chip_name="nouveau"}'
+      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="10.0.10.106:9101", chip="pci0000:00_0000:01:00:0", chip_name="nouveau"}'
         values: '1+0x30'
     alert_rule_test:
       - eval_time: 20m
@@ -186,7 +186,7 @@ tests:
           - exp_labels:
               severity: warning
               component: gpu
-              instance: 192.168.0.106:9101
+              instance: 10.0.10.106:9101
               chip_name: nouveau
       - eval_time: 20m
         alertname: HostGpuTempCritical
@@ -194,9 +194,9 @@ tests:
 
   - interval: 1m
     input_series:
-      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="192.168.0.106:9101", chip="pci0000:00_0000:01:00:0"}'
+      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="10.0.10.106:9101", chip="pci0000:00_0000:01:00:0"}'
         values: '96+0x30'
-      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="192.168.0.106:9101", chip="pci0000:00_0000:01:00:0", chip_name="nouveau"}'
+      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="10.0.10.106:9101", chip="pci0000:00_0000:01:00:0", chip_name="nouveau"}'
         values: '1+0x30'
     alert_rule_test:
       - eval_time: 20m
@@ -205,7 +205,7 @@ tests:
           - exp_labels:
               severity: critical
               component: gpu
-              instance: 192.168.0.106:9101
+              instance: 10.0.10.106:9101
               chip_name: nouveau
 
   # In-cluster DCGM ladder: no join, a plain aggregate, so the labels are the
@@ -241,9 +241,9 @@ tests:
   # than chip.
   - interval: 1m
     input_series:
-      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="192.168.0.103:9101", chip="pci0000:00_0000:00:1f:6"}'
+      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="10.0.10.103:9101", chip="pci0000:00_0000:00:1f:6"}'
         values: '92+0x30'
-      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="192.168.0.103:9101", chip="pci0000:00_0000:00:1f:6", chip_name="nic_temp"}'
+      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="10.0.10.103:9101", chip="pci0000:00_0000:00:1f:6", chip_name="nic_temp"}'
         values: '1+0x30'
     alert_rule_test:
       - eval_time: 20m
@@ -252,5 +252,5 @@ tests:
           - exp_labels:
               severity: warning
               component: network
-              instance: 192.168.0.103:9101
+              instance: 10.0.10.103:9101
               chip_name: nic_temp

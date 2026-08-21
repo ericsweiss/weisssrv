@@ -1,6 +1,6 @@
 ---
 # Postfix relay health from the postfix-queue textfile collector (smtp_relay
-# role, scraped from 192.168.0.151:9101). All alert email egress flows through
+# role, scraped from 10.0.10.151:9101). All alert email egress flows through
 # this one relay. Runbooks: docs/12-runbooks.md § SMTP relay.
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule

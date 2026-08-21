@@ -1,5 +1,5 @@
 ---
-# Scrape the nextcloud-exporter running on the Nextcloud VM (192.168.0.156).
+# Scrape the nextcloud-exporter running on the Nextcloud VM (10.0.10.156).
 # The exporter serves plain HTTP on :9205 (bound to all interfaces; firewall
 # sg-nextcloud opens 9205 from k3s_nodes only). Pod scrape traffic leaves the
 # cluster masqueraded to node IPs in the LAN /24, so no token/TLS is needed —
@@ -34,7 +34,7 @@ ports:
     port: 9205
     protocol: TCP
 endpoints:
-  - addresses: ["192.168.0.156"]
+  - addresses: ["10.0.10.156"]
     conditions: {ready: true}
 
 ---

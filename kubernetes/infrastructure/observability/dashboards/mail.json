@@ -47,7 +47,7 @@
       },
       "title": "Postfix Daemon",
       "type": "stat",
-      "description": "postfix_up from the Postfix exporter on smtp-relay (192.168.0.151:9101) — reflects actual daemon health, not just LXC power state.",
+      "description": "postfix_up from the Postfix exporter on smtp-relay (10.0.10.151:9101) — reflects actual daemon health, not just LXC power state.",
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },

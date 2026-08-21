@@ -150,15 +150,15 @@ spec:
         - alert: WgEasyEndpointVipMissing
           expr: >-
             absent(kube_service_status_load_balancer_ingress{namespace="wg-easy",
-            service="wg-easy", ip="192.168.0.99"})
+            service="wg-easy", ip="10.0.10.99"})
           for: 10m
           labels:
             severity: critical
           annotations:
             runbook_url: '${cluster_runbook_base_url}/38-wireguard-vpn.md'
-            summary: 'wg-easy WAN endpoint VIP 192.168.0.99 is not assigned'
+            summary: 'wg-easy WAN endpoint VIP 10.0.10.99 is not assigned'
             description: >-
-              The wg-easy LoadBalancer Service no longer carries 192.168.0.99 —
+              The wg-easy LoadBalancer Service no longer carries 10.0.10.99 —
               the WAN WireGuard endpoint (vpn.${cluster_external_domain}:51820/udp) is
               unreachable for every external client. Check MetalLB's
               IPAddressPool/L2Advertisement and the Service in
@@ -172,16 +172,16 @@ spec:
         - alert: TraefikPublicVipMissing
           expr: >-
             absent(kube_service_status_load_balancer_ingress{namespace="traefik",
-            service="traefik", ip="192.168.0.100"})
+            service="traefik", ip="10.0.10.100"})
           for: 10m
           labels:
             severity: critical
           annotations:
             runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
-            summary: 'Traefik public VIP 192.168.0.100 is not assigned'
+            summary: 'Traefik public VIP 10.0.10.100 is not assigned'
             description: >-
               The traefik LoadBalancer Service no longer carries
-              192.168.0.100 — every *.${cluster_external_domain} route is unreachable.
+              10.0.10.100 — every *.${cluster_external_domain} route is unreachable.
               Check MetalLB's IPAddressPool/L2Advertisement and the speaker
               DaemonSet before treating the downstream EndpointDown alerts as
               app failures.
@@ -189,16 +189,16 @@ spec:
         - alert: TraefikInternalVipMissing
           expr: >-
             absent(kube_service_status_load_balancer_ingress{namespace="traefik",
-            service="traefik-internal", ip="192.168.0.101"})
+            service="traefik-internal", ip="10.0.10.101"})
           for: 10m
           labels:
             severity: critical
           annotations:
             runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
-            summary: 'Traefik internal VIP 192.168.0.101 is not assigned'
+            summary: 'Traefik internal VIP 10.0.10.101 is not assigned'
             description: >-
               The traefik-internal LoadBalancer Service no longer carries
-              192.168.0.101 — every *.${cluster_internal_domain} route is unreachable,
+              10.0.10.101 — every *.${cluster_internal_domain} route is unreachable,
               including the VM/LXC guests fronted by vm-ingress. Check
               MetalLB's IPAddressPool/L2Advertisement and the speaker
               DaemonSet.

@@ -8,11 +8,11 @@ tests:
   # 2 of 3 members down => only 1 up < ceil(3/2)=2 => fires after 3m.
   - interval: 1m
     input_series:
-      - series: 'up{job="kube-etcd", instance="192.168.0.222:2381"}'
+      - series: 'up{job="kube-etcd", instance="10.0.10.222:2381"}'
         values: '1+0x10'
-      - series: 'up{job="kube-etcd", instance="192.168.0.223:2381"}'
+      - series: 'up{job="kube-etcd", instance="10.0.10.223:2381"}'
         values: '0+0x10'
-      - series: 'up{job="kube-etcd", instance="192.168.0.227:2381"}'
+      - series: 'up{job="kube-etcd", instance="10.0.10.227:2381"}'
         values: '0+0x10'
     alert_rule_test:
       - eval_time: 5m
@@ -27,11 +27,11 @@ tests:
   # here, not above — pins the firing boundary against off-by-one edits.
   - interval: 1m
     input_series:
-      - series: 'up{job="kube-etcd", instance="192.168.0.222:2381"}'
+      - series: 'up{job="kube-etcd", instance="10.0.10.222:2381"}'
         values: '1+0x10'
-      - series: 'up{job="kube-etcd", instance="192.168.0.223:2381"}'
+      - series: 'up{job="kube-etcd", instance="10.0.10.223:2381"}'
         values: '0+0x10'
-      - series: 'up{job="kube-etcd", instance="192.168.0.227:2381"}'
+      - series: 'up{job="kube-etcd", instance="10.0.10.227:2381"}'
         values: '1+0x10'
     alert_rule_test:
       - eval_time: 5m

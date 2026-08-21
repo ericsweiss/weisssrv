@@ -62,9 +62,9 @@ the rewrite list, so a hand-added entry is either reverted or silently diverges.
 **Internal (AdGuard Home)** — `ansible/inventories/prod/group_vars/dns.yml`,
 shipped by `task dns:deploy`:
 
-- `auth.esweiss.com` → `192.168.0.101` (the **internal** Traefik VIP, like every
+- `auth.esweiss.com` → `10.0.10.101` (the **internal** Traefik VIP, like every
   other Traefik-fronted internal host).
-- `auth.ericsweiss.com` → `192.168.0.101` as well. This is a deliberate,
+- `auth.ericsweiss.com` → `10.0.10.101` as well. This is a deliberate,
   documented exception to the "no rewrite for the external domain" rule:
   server-side OIDC backends (hermes, immich, nextcloud, grafana) fetch
   discovery/JWKS from the **issuer host**, which must stay the external name for

@@ -1,6 +1,6 @@
 ---
 # hwmon thermals from job="node-exporter-host". EVERY rule here is scoped to the
-# six bare-metal Proxmox hosts (192.168.0.102-107:9101): the unprivileged LXCs
+# six bare-metal Proxmox hosts (10.0.10.102-107:9101): the unprivileged LXCs
 # (dns-01/dns-02/smtp-relay) run the same exporter and read their HOST's
 # /sys/class/hwmon, so an unscoped rule pages twice for one physical sensor and
 # names a container that has no CPU.
@@ -21,7 +21,7 @@ spec:
         - alert: SATADriveTempWarning
           expr: >-
             max by (instance, chip) (
-              node_hwmon_temp_celsius{job="node-exporter-host", instance=~"192\\.168\\.0\\.102:.*"}
+              node_hwmon_temp_celsius{job="node-exporter-host", instance=~"10\\.0\\.10\\.102:.*"}
               * on (instance, chip) group_left(chip_name)
               node_hwmon_chip_names{job="node-exporter-host", chip_name=~"drivetemp.*"}
             ) >= 50
@@ -43,7 +43,7 @@ spec:
         - alert: SATADriveTempCritical
           expr: >-
             max by (instance, chip) (
-              node_hwmon_temp_celsius{job="node-exporter-host", instance=~"192\\.168\\.0\\.102:.*"}
+              node_hwmon_temp_celsius{job="node-exporter-host", instance=~"10\\.0\\.10\\.102:.*"}
               * on (instance, chip) group_left(chip_name)
               node_hwmon_chip_names{job="node-exporter-host", chip_name=~"drivetemp.*"}
             ) >= 55
@@ -68,7 +68,7 @@ spec:
         - alert: NVMeDriveTempWarning
           expr: >-
             max by (instance, chip) (
-              node_hwmon_temp_celsius{job="node-exporter-host", instance=~"192\\.168\\.0\\.10[2-7]:9101"}
+              node_hwmon_temp_celsius{job="node-exporter-host", instance=~"10\\.0\\.10\\.10[2-7]:9101"}
               * on (instance, chip) group_left(chip_name)
               node_hwmon_chip_names{job="node-exporter-host", chip_name="nvme"}
             ) >= 65
@@ -95,7 +95,7 @@ spec:
         - alert: NVMeDriveTempCritical
           expr: >-
             max by (instance, chip) (
-              node_hwmon_temp_celsius{job="node-exporter-host", instance=~"192\\.168\\.0\\.10[2-7]:9101"}
+              node_hwmon_temp_celsius{job="node-exporter-host", instance=~"10\\.0\\.10\\.10[2-7]:9101"}
               * on (instance, chip) group_left(chip_name)
               node_hwmon_chip_names{job="node-exporter-host", chip_name="nvme"}
             ) >= 75
@@ -121,7 +121,7 @@ spec:
         - alert: CPUTempWarning
           expr: >-
             max by (instance) (
-              node_hwmon_temp_celsius{job="node-exporter-host", instance=~"192\\.168\\.0\\.10[2-7]:9101"}
+              node_hwmon_temp_celsius{job="node-exporter-host", instance=~"10\\.0\\.10\\.10[2-7]:9101"}
               * on (instance, chip) group_left(chip_name)
               node_hwmon_chip_names{job="node-exporter-host", chip_name="coretemp"}
             ) >= 90
@@ -140,7 +140,7 @@ spec:
         - alert: CPUTempCritical
           expr: >-
             max by (instance) (
-              node_hwmon_temp_celsius{job="node-exporter-host", instance=~"192\\.168\\.0\\.10[2-7]:9101"}
+              node_hwmon_temp_celsius{job="node-exporter-host", instance=~"10\\.0\\.10\\.10[2-7]:9101"}
               * on (instance, chip) group_left(chip_name)
               node_hwmon_chip_names{job="node-exporter-host", chip_name="coretemp"}
             ) >= 95
@@ -162,7 +162,7 @@ spec:
         - alert: HostGpuTempWarning
           expr: >-
             max by (instance, chip_name) (
-              node_hwmon_temp_celsius{job="node-exporter-host", instance=~"192\\.168\\.0\\.10[2-7]:9101"}
+              node_hwmon_temp_celsius{job="node-exporter-host", instance=~"10\\.0\\.10\\.10[2-7]:9101"}
               * on (instance, chip) group_left(chip_name)
               node_hwmon_chip_names{job="node-exporter-host", chip_name=~"xe|nouveau|nvidia|amdgpu|radeon"}
             ) >= 85
@@ -183,7 +183,7 @@ spec:
         - alert: HostGpuTempCritical
           expr: >-
             max by (instance, chip_name) (
-              node_hwmon_temp_celsius{job="node-exporter-host", instance=~"192\\.168\\.0\\.10[2-7]:9101"}
+              node_hwmon_temp_celsius{job="node-exporter-host", instance=~"10\\.0\\.10\\.10[2-7]:9101"}
               * on (instance, chip) group_left(chip_name)
               node_hwmon_chip_names{job="node-exporter-host", chip_name=~"xe|nouveau|nvidia|amdgpu|radeon"}
             ) >= 95
@@ -206,7 +206,7 @@ spec:
         - alert: NICTempWarning
           expr: >-
             max by (instance, chip_name) (
-              node_hwmon_temp_celsius{job="node-exporter-host", instance=~"192\\.168\\.0\\.10[2-7]:9101"}
+              node_hwmon_temp_celsius{job="node-exporter-host", instance=~"10\\.0\\.10\\.10[2-7]:9101"}
               * on (instance, chip) group_left(chip_name)
               node_hwmon_chip_names{job="node-exporter-host", chip_name=~"nic.*"}
             ) >= 90

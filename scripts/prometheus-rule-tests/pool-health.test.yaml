@@ -11,7 +11,7 @@ tests:
   # ZFSPoolNotOnline: health_code is 0 for ONLINE, non-zero for DEGRADED/worse.
   - interval: 1m
     input_series:
-      - series: 'zfs_pool_status_health_code{pool="tank", instance="192.168.0.102:9101"}'
+      - series: 'zfs_pool_status_health_code{pool="tank", instance="10.0.10.102:9101"}'
         values: '2+0x10'
     alert_rule_test:
       - eval_time: 6m
@@ -20,12 +20,12 @@ tests:
           - exp_labels:
               severity: critical
               pool: tank
-              instance: '192.168.0.102:9101'
+              instance: '10.0.10.102:9101'
 
   # An ONLINE pool (code 0) must never fire it — the `> 0` bound is the whole rule.
   - interval: 1m
     input_series:
-      - series: 'zfs_pool_status_health_code{pool="tank", instance="192.168.0.102:9101"}'
+      - series: 'zfs_pool_status_health_code{pool="tank", instance="10.0.10.102:9101"}'
         values: '0+0x10'
     alert_rule_test:
       - eval_time: 6m
@@ -35,7 +35,7 @@ tests:
   # A pool that degrades must wait out `for: 5m` before paging.
   - interval: 1m
     input_series:
-      - series: 'zfs_pool_status_health_code{pool="archive", instance="192.168.0.102:9101"}'
+      - series: 'zfs_pool_status_health_code{pool="archive", instance="10.0.10.102:9101"}'
         values: '0 0 2 2 2 2 2 2 2 2'
     alert_rule_test:
       - eval_time: 5m
@@ -47,12 +47,12 @@ tests:
           - exp_labels:
               severity: critical
               pool: archive
-              instance: '192.168.0.102:9101'
+              instance: '10.0.10.102:9101'
 
   # ZFSPoolDataErrors: permanent, unrecoverable entries from `zpool status -v`.
   - interval: 1m
     input_series:
-      - series: 'zfs_pool_status_data_errors{pool="tank", instance="192.168.0.102:9101"}'
+      - series: 'zfs_pool_status_data_errors{pool="tank", instance="10.0.10.102:9101"}'
         values: '3+0x10'
     alert_rule_test:
       - eval_time: 6m
@@ -61,11 +61,11 @@ tests:
           - exp_labels:
               severity: critical
               pool: tank
-              instance: '192.168.0.102:9101'
+              instance: '10.0.10.102:9101'
 
   - interval: 1m
     input_series:
-      - series: 'zfs_pool_status_data_errors{pool="tank", instance="192.168.0.102:9101"}'
+      - series: 'zfs_pool_status_data_errors{pool="tank", instance="10.0.10.102:9101"}'
         values: '0+0x10'
     alert_rule_test:
       - eval_time: 6m
@@ -76,9 +76,9 @@ tests:
   # vdev must still trip it (the sum-by is what makes per-device labels drop out).
   - interval: 1m
     input_series:
-      - series: 'zfs_pool_status_errors_total{pool="archive", instance="192.168.0.102:9101", device="sdb", type="read"}'
+      - series: 'zfs_pool_status_errors_total{pool="archive", instance="10.0.10.102:9101", device="sdb", type="read"}'
         values: '0+0x10'
-      - series: 'zfs_pool_status_errors_total{pool="archive", instance="192.168.0.102:9101", device="sdc", type="cksum"}'
+      - series: 'zfs_pool_status_errors_total{pool="archive", instance="10.0.10.102:9101", device="sdc", type="cksum"}'
         values: '4+0x10'
     alert_rule_test:
       - eval_time: 6m
@@ -87,13 +87,13 @@ tests:
           - exp_labels:
               severity: warning
               pool: archive
-              instance: '192.168.0.102:9101'
+              instance: '10.0.10.102:9101'
 
   # SMARTDeviceUnhealthy: min_over_time rides through standby gaps, so one
   # FAILED sample keeps the alert firing for the whole 6h window.
   - interval: 1m
     input_series:
-      - series: 'smartmon_device_smart_healthy{device="sda", instance="192.168.0.102:9101"}'
+      - series: 'smartmon_device_smart_healthy{device="sda", instance="10.0.10.102:9101"}'
         values: '1 1 0 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1'
     alert_rule_test:
       - eval_time: 18m
@@ -102,12 +102,12 @@ tests:
           - exp_labels:
               severity: warning
               device: sda
-              instance: '192.168.0.102:9101'
+              instance: '10.0.10.102:9101'
 
   # A drive healthy for the whole window never trips it.
   - interval: 1m
     input_series:
-      - series: 'smartmon_device_smart_healthy{device="sda", instance="192.168.0.102:9101"}'
+      - series: 'smartmon_device_smart_healthy{device="sda", instance="10.0.10.102:9101"}'
         values: '1+0x20'
     alert_rule_test:
       - eval_time: 18m
@@ -118,7 +118,7 @@ tests:
   # in the window is enough (pending sectors do not un-happen).
   - interval: 1m
     input_series:
-      - series: 'smartmon_current_pending_sector_count{device="sdd", instance="192.168.0.102:9101"}'
+      - series: 'smartmon_current_pending_sector_count{device="sdd", instance="10.0.10.102:9101"}'
         values: '0 0 8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0'
     alert_rule_test:
       - eval_time: 18m
@@ -127,11 +127,11 @@ tests:
           - exp_labels:
               severity: warning
               device: sdd
-              instance: '192.168.0.102:9101'
+              instance: '10.0.10.102:9101'
 
   - interval: 1m
     input_series:
-      - series: 'smartmon_current_pending_sector_count{device="sdd", instance="192.168.0.102:9101"}'
+      - series: 'smartmon_current_pending_sector_count{device="sdd", instance="10.0.10.102:9101"}'
         values: '0+0x20'
     alert_rule_test:
       - eval_time: 18m

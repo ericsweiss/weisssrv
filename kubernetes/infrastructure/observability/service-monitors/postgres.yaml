@@ -38,8 +38,8 @@ spec:
       path: /metrics
 
 ---
-# Nextcloud VM (192.168.0.156), Immich VM (192.168.0.157) and the GitLab omnibus
-# VM (192.168.0.153). One selectorless headless Service per host so each keeps a
+# Nextcloud VM (10.0.10.156), Immich VM (10.0.10.157) and the GitLab omnibus
+# VM (10.0.10.153). One selectorless headless Service per host so each keeps a
 # distinct `job` label, which is what the alert descriptions name.
 apiVersion: v1
 kind: Service
@@ -70,7 +70,7 @@ ports:
     port: 9187
     protocol: TCP
 endpoints:
-  - addresses: ["192.168.0.156"]
+  - addresses: ["10.0.10.156"]
     conditions: {ready: true}
 
 ---
@@ -103,7 +103,7 @@ ports:
     port: 9187
     protocol: TCP
 endpoints:
-  - addresses: ["192.168.0.157"]
+  - addresses: ["10.0.10.157"]
     conditions: {ready: true}
 
 ---
@@ -136,7 +136,7 @@ ports:
     port: 9187
     protocol: TCP
 endpoints:
-  - addresses: ["192.168.0.153"]
+  - addresses: ["10.0.10.153"]
     conditions: {ready: true}
 
 ---

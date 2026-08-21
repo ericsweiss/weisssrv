@@ -25,7 +25,7 @@ spec:
     - Egress
 ---
 # The shared runner manager long-polls GitLab (git.esweiss.com, which AdGuard
-# rewrites to the internal Traefik VIP 192.168.0.101) and talks to the kube-API
+# rewrites to the internal Traefik VIP 10.0.10.101) and talks to the kube-API
 # to spawn job pods. The VIP is allowed both as an ipBlock and via the traefik
 # namespace pods: kube-proxy may DNAT the LoadBalancer VIP to a Traefik pod IP
 # before policy evaluation (same reason the kube-API rules below target node
@@ -61,18 +61,18 @@ spec:
     # 6443 — a 10.43.0.1/32 rule never matches the post-DNAT packet.
     - to:
         - ipBlock:
-            cidr: 192.168.0.222/32
+            cidr: 10.0.10.222/32
         - ipBlock:
-            cidr: 192.168.0.223/32
+            cidr: 10.0.10.223/32
         - ipBlock:
-            cidr: 192.168.0.227/32
+            cidr: 10.0.10.227/32
       ports:
         - protocol: TCP
           port: 6443
     # GitLab via the internal Traefik VIP (pre-DNAT) or Traefik pods (post-DNAT).
     - to:
         - ipBlock:
-            cidr: 192.168.0.101/32
+            cidr: 10.0.10.101/32
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: traefik
@@ -128,17 +128,17 @@ spec:
     # 6443 — a 10.43.0.1/32 rule never matches the post-DNAT packet.
     - to:
         - ipBlock:
-            cidr: 192.168.0.222/32
+            cidr: 10.0.10.222/32
         - ipBlock:
-            cidr: 192.168.0.223/32
+            cidr: 10.0.10.223/32
         - ipBlock:
-            cidr: 192.168.0.227/32
+            cidr: 10.0.10.227/32
       ports:
         - protocol: TCP
           port: 6443
     - to:
         - ipBlock:
-            cidr: 192.168.0.101/32
+            cidr: 10.0.10.101/32
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: traefik

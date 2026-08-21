@@ -1,6 +1,6 @@
 ---
 # IngressRoutes for GitLab services
-# Routes traffic from Traefik to GitLab VM (192.168.0.153)
+# Routes traffic from Traefik to GitLab VM (10.0.10.153)
 
 # GitLab Web UI
 

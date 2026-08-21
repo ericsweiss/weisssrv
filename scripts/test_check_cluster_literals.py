@@ -30,17 +30,17 @@ CLUSTER_CONFIG = textwrap.dedent(
       cluster_internal_domain: "example.lan"
       cluster_external_domain: "example.com"
       cluster_node_label_domain: "example.lan"
-      cluster_lan_cidr: "192.168.0.0/24"
+      cluster_lan_cidr: "10.0.10.0/24"
       cluster_home_cidr: "10.0.20.0/24"
       cluster_home_admin_cidr: "10.0.20.8/29"
       cluster_pod_cidr: "10.42.0.0/16"
       cluster_service_cidr: "10.43.0.0/16"
       cluster_tailnet_cidr: "100.64.0.0/10"
-      cluster_metallb_public_vip: "192.168.0.100"
-      cluster_metallb_internal_vip: "192.168.0.101"
-      cluster_wg_easy_vip: "192.168.0.99"
-      cluster_api_vip: "192.168.0.161"
-      cluster_upstream_dns_servers: "192.168.0.150 192.168.0.160"
+      cluster_metallb_public_vip: "10.0.10.100"
+      cluster_metallb_internal_vip: "10.0.10.101"
+      cluster_wg_easy_vip: "10.0.10.99"
+      cluster_api_vip: "10.0.10.161"
+      cluster_upstream_dns_servers: "10.0.10.150 10.0.10.160"
     """
 )
 
@@ -48,9 +48,9 @@ DNS_YML = textwrap.dedent(
     """\
     adguard_home_rewrites:
       - domain: app.example.lan
-        answer: "192.168.0.101"
+        answer: "10.0.10.101"
       - domain: pub.example.lan
-        answer: "192.168.0.100"
+        answer: "10.0.10.100"
     """
 )
 
@@ -77,15 +77,15 @@ ALL_YML = textwrap.dedent(
     internal_domain: example.lan
     external_domain: example.com
     dns_servers:
-      - 192.168.0.150
-      - 192.168.0.160
+      - 10.0.10.150
+      - 10.0.10.160
     """
 )
 
 K3S_YML = (
     'k3s_cluster_cidr: "10.42.0.0/16"\n'
     'k3s_service_cidr: "10.43.0.0/16"\n'
-    'k3s_api_vip: 192.168.0.161\n'
+    'k3s_api_vip: 10.0.10.161\n'
 )
 
 
@@ -185,9 +185,9 @@ def test_address_literal_is_reported(repo: Path) -> None:
         kind: Service
         metadata:
           annotations:
-            metallb.io/loadBalancerIPs: 192.168.0.101
+            metallb.io/loadBalancerIPs: 10.0.10.101
         """)
-    assert any("192.168.0.101" in v for v in run(repo))
+    assert any("10.0.10.101" in v for v in run(repo))
 
 
 def test_address_literal_is_exempt_inside_a_networkpolicy(repo: Path) -> None:
@@ -197,7 +197,7 @@ def test_address_literal_is_exempt_inside_a_networkpolicy(repo: Path) -> None:
         spec:
           egress:
             - to:
-                - ipBlock: {cidr: 192.168.0.101/32}
+                - ipBlock: {cidr: 10.0.10.101/32}
         """)
     assert run(repo) == []
 
@@ -210,7 +210,7 @@ def test_address_literal_is_exempt_in_the_rules_tree(repo: Path) -> None:
           groups:
             - name: vip
               rules:
-                - expr: absent(x{ip="192.168.0.101"})
+                - expr: absent(x{ip="10.0.10.101"})
         """)
     assert run(repo) == []
 
@@ -221,7 +221,7 @@ def test_unadopted_address_is_not_reported(repo: Path) -> None:
         apiVersion: discovery.k8s.io/v1
         kind: EndpointSlice
         endpoints:
-          - addresses: ["192.168.0.157"]
+          - addresses: ["10.0.10.157"]
         """)
     assert run(repo) == []
 
@@ -232,13 +232,13 @@ def test_inventory_drift_is_reported(repo: Path) -> None:
 
 
 def test_dns_server_drift_is_reported(repo: Path) -> None:
-    (repo / gate.ANSIBLE_ALL).write_text(ALL_YML.replace("192.168.0.160", "192.168.0.161"))
+    (repo / gate.ANSIBLE_ALL).write_text(ALL_YML.replace("10.0.10.160", "10.0.10.161"))
     assert any("cluster_upstream_dns_servers" in v for v in run(repo))
 
 
 def test_metallb_vip_drift_is_reported(repo: Path) -> None:
     """The VIPs mirror as AdGuard rewrite answers, not as a named inventory key."""
-    (repo / gate.ANSIBLE_DNS).write_text(DNS_YML.replace("192.168.0.101", "192.168.0.109"))
+    (repo / gate.ANSIBLE_DNS).write_text(DNS_YML.replace("10.0.10.101", "10.0.10.109"))
     assert any("cluster_metallb_internal_vip" in v for v in run(repo))
 
 
