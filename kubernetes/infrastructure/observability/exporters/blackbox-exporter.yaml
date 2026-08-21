@@ -34,6 +34,23 @@ spec:
       retries: 3
       remediateLastFailure: true
   values:
+    # The icmp_ping module needs a socket the chart's default securityContext
+    # cannot open: it drops ALL capabilities (so no CAP_NET_RAW, so no
+    # `ip4:icmp` raw socket) and runs as uid/gid 1000. blackbox_exporter tries
+    # an UNPRIVILEGED ICMP datagram socket first on Linux, which needs the
+    # running gid to fall inside net.ipv4.ping_group_range — Debian ships
+    # "1 0" (an empty range), so without this every icmp probe fails with
+    # "socket: operation not permitted" and NetworkGearProbeFailed fires
+    # forever on healthy gear.
+    #
+    # ping_group_range is one of the kubelet's SAFE sysctls (namespaced, no
+    # effect outside the pod), so it needs no node-side allowlist — and it is
+    # the reason NET_RAW is NOT granted here: a capability would apply to every
+    # socket the container opens, this applies to ping sockets only.
+    podSecurityContext:
+      sysctls:
+        - name: net.ipv4.ping_group_range
+          value: "0 2147483647"
     config:
       modules:
         http_2xx:
@@ -228,10 +245,14 @@ spec:
         # gateway's controller — so liveness is the only signal available, and
         # the gateway is probed the same way for a uniform NetworkGearProbeFailed
         # expression. The two mgmt addresses sit on VLAN 1 (10.0.1.0/24), which
-        # the cluster reaches through the gateway.
+        # the cluster reaches through the gateway — the `homelab-to-internal-icmp`
+        # policy pair in terraform/unifi/networks.tf is what lets it.
         #
-        # EXPECTED RED until the UniFi cutover (docs/46): the switch and AP do
-        # not answer at these addresses while the ASUS router is still in place.
+        # Pre-cutover and pre-adoption expectations (which of these are EXPECTED
+        # RED, for how long, and what clears each one) are owned by docs/46
+        # § Expected breakage between merge and cutover — not restated here,
+        # because a transitional note next to a live alert target is read as
+        # sanction long after it stops being true.
         - name: unifi-gateway
           url: 192.168.0.1
           module: icmp_ping
