@@ -1274,10 +1274,31 @@ the migration is:
 
 1. dual-address everything while the old gateway is still live (reversible, no
    outage),
-2. flip the gateway (short outage — off-subnet only),
+2. flip the gateway (off-subnet outage — the table below is what that really
+   costs, and it is not small),
 3. drop the old addresses host by host (no outage),
 4. move the things that are addresses-in-config rather than addresses-on-wire
    (corosync, k3s, VIPs, NFS, DNS, Tailscale).
+
+**What is actually down, and for how long.** "Short outage" describes VLAN 10's
+own traffic, not the estate. Be honest about the rest before the window opens:
+
+| What | Down from | Back at | Why |
+|---|---|---|---|
+| Off-subnet egress from hosts/guests (internet, other VLANs, tailnet) | step 2 apply | step 2.4/2.5 (minutes) | Default routes are repaired immediately after the apply |
+| **Everything inbound from the internet** — all five WAN forwards: `*.ericsweiss.com`, Plex remote, `ssh -p 2222 git@git.ericsweiss.com`, the wg-easy endpoint | step 2 apply | step 2.8 if the early VIP restore is done (minutes), otherwise step 7 (hours) | The gateway cannot forward to `192.168.0.100` once VLAN 10 *is* `10.0.10.0/24`. The forward targets in the same apply are not the cause and re-pointing them is not the cure — nothing answers on the new VIPs until MetalLB re-announces them |
+| DNS on the IoT / Guest / Work VLANs | step 2 apply | step 2.6 (minutes, once clients re-DHCP) | Those clients hold leases naming `192.168.0.150`/`.160`; after the flip the gateway has no route to that subnet at all |
+| Home Assistant | step 2.7 | step 2.7 (one reboot) | HAOS is the one guest that cannot be dual-addressed — see that step |
+
+Two consequences to arrange **before** the window:
+
+- **The wg-easy fallback is gone for the whole inbound gap**, and step 9 puts
+  Tailscale in flux too. Confirm one out-of-band admin path that this plan does
+  not touch — Tailscale on a host you are not migrating that hour, plus a
+  physical console — and prove it works before the first command.
+- **Tell the household.** Remote Plex, external `*.ericsweiss.com` and the VPN
+  all stop answering at step 2 and stay down until the VIPs move. Nothing in
+  this runbook makes that invisible.
 
 ### Repo/CI posture for the whole window
 
@@ -1285,10 +1306,16 @@ the migration is:
   CI deploy jobs run on merge to `main` and would fan out to whichever addresses
   the inventory names, on their own schedule. Merge the MR *after* the fleet is
   on the new addresses and the validation matrix is green.
-- **Suspend Flux before the coordinated moment** (`task flux:suspend`) so the
-  `cluster-config` change — `cluster_lan_cidr`, all four VIPs, the resolver
-  pair — lands when you say so, not when the poll fires. `task flux:resume` +
-  `task flux:reconcile` at step 7.
+- **Suspend Flux before step 2, not before step 7** (`task flux:suspend`). Two
+  reasons: the `cluster-config` change — `cluster_lan_cidr`, all four VIPs, the
+  resolver pair — must land when you say so rather than when the poll fires,
+  *and* the early VIP restore at step 2.8 patches live resources that
+  kustomize-controller would otherwise drift-revert within a minute.
+  `task flux:resume` + `task flux:reconcile` at step 7.
+- **Confirm the out-of-band admin path before the first command.** wg-easy is
+  down for the inbound gap (§ Why this cannot be a rolling change) and step 9
+  puts Tailscale in flux, so the fallback has to be something this plan is not
+  touching that hour — plus a physical console.
 - Keep a **Home-VLAN admin station** (`10.0.20.8/29`, already in `admin_lan`).
   It reaches the homelab through the gateway, so it survives the flip as soon as
   the hosts carry their new addresses — which is exactly why step 1 comes first.
@@ -1301,55 +1328,222 @@ the migration is:
 ### Step 1 — dual-address every host and guest (no outage, reversible)
 
 For each Proxmox host, in `/etc/network/interfaces`, add the new address as a
-*secondary* on the existing bridge, leaving the primary and the default route
-alone:
+**second `address` line inside the existing stanza** — not a second stanza:
 
 ```
 auto vmbr0
 iface vmbr0 inet static
     address 192.168.0.102/24
+    address 10.0.10.102/24
     gateway 192.168.0.1
     bridge-ports nic1.10
     bridge-stp off
     bridge-fd 0
-
-# added for Phase 2 — no gateway on this one yet
-iface vmbr0 inet static
-    address 10.0.10.102/24
 ```
+
+`address` is a **list** attribute in ifupdown2 (what Proxmox VE ships in place
+of classic ifupdown), so repeating it is the documented way to give an interface
+several addresses; the Debian `interfaces(5)` page for ifupdown2 shows exactly
+this shape in its own samples — `iface br0` and `iface lo` each carry two
+`address` lines. A duplicate `iface vmbr0 inet static` block is *not* that form:
+ifupdown2 builds one object per interface name, so the second block is merged or
+dropped rather than applied, and with classic ifupdown it would need its own
+`auto`/alias to come up at all. Either way you get one address and a check that
+says so.
+
+Do **one host first**, from the console, and treat the reload as the real proof —
+this is the only claim in Phase 2 that cannot be verified from the repo:
 
 ```bash
 cp /etc/network/interfaces /root/interfaces.pre-renumber
 # edit, then:
+ifreload -a -n                # dry run: prints what it would do, changes nothing
 ifreload -a
-ip -br addr show vmbr0        # both addresses present
+ip -br addr show vmbr0        # BOTH addresses on the one interface, e.g.
+                              # vmbr0 UP 192.168.0.102/24 10.0.10.102/24
+ping -c1 192.168.0.1          # the old gateway still answers
 ```
 
-Do the same inside every guest that is statically addressed (dns-01/02,
-smtp-relay, gitlab, nextcloud, immich, immich-ml, windows, and the k3s nodes —
-their cloud-init config is the source, but a live `ip addr add 10.0.10.<n>/24
-dev <iface>` is enough for the window and is made permanent in step 4). Home
-Assistant's address is set in its own console UI (docs/24).
+If `ip -br addr show vmbr0` prints only one address, stop: nothing later in this
+plan works without the overlap. Restore `/root/interfaces.pre-renumber`,
+`ifreload -a`, and resolve the syntax before touching a second host.
 
-Verify before going further: from any host, ping every other host on **both**
-addresses. A host that answers on only one is a host you are about to lose.
+Then dual-address **every statically addressed guest**, by class. All of these
+are live-only changes; the permanent form lands in step 5. Run them from the
+guest's Proxmox host (`pct`/`qm` need no working guest network) or over SSH to
+the guest's *old* address:
 
-### Step 2 — flip the gateway (short off-subnet outage)
+| Class | Guests | Command |
+|---|---|---|
+| LXC | dns-01 `.150`, dns-02 `.160`, smtp-relay `.151`, plex `.152`, immich-ml `.158` | `pct exec <vmid> -- ip addr add 10.0.10.<n>/24 dev eth0` |
+| cloud-init VM | gitlab `.153`, nextcloud `.156`, immich `.157`, k3s servers `.222`/`.223`/`.227`, k3s agents `.202`-`.207` | `ssh eric@192.168.0.<n> 'sudo ip addr add 10.0.10.<n>/24 dev ens18'` (confirm the interface name with `ip -br link`) |
+| Windows | windows `.155` | at an elevated prompt: `netsh interface ipv4 add address name="Ethernet" address=10.0.10.155 mask=255.255.255.0` |
+| HAOS | home `.154` | **cannot be dual-addressed — skip it here; step 2.7 flips it** |
 
-1. Update the `UniFi Controller` 1Password item's `url` field to
-   `https://10.0.10.1` **first** — every plan after the flip connects there.
-   (`op item edit "UniFi Controller" url=https://10.0.10.1`.)
-2. From the Home-VLAN admin station: `task terraform:unifi-plan`. The homelab
-   network must show an **in-place update** of `subnet` and the DHCP scope, plus
-   the port-forward target updates. A `-/+ replace` on `unifi_network.this
-   ["homelab"]` means `prevent_destroy` is about to abort the apply — stop and
-   re-read; a replace loses the network's ID and every reference to it.
-3. Supervised `task terraform:unifi-apply`.
-4. On each host: `ip route replace default via 10.0.10.1` (the permanent edit is
-   step 3). Confirm internet egress from one host before touching the rest.
+`ha network update` *replaces* an interface's IPv4 configuration rather than
+adding to it, and HAOS exposes no add-a-secondary form, so Home Assistant is the
+one guest that takes a coordinated flip instead of an overlap (docs/24).
 
-Everything inside VLAN 10 kept working across the apply — only the default route
-moved.
+Verify before going further: from any host, ping every other host **and every
+guest** on **both** addresses. A machine that answers on only one is a machine
+you are about to lose.
+
+```bash
+for n in 102 103 104 105 106 107 150 151 152 153 155 156 157 158 202 203 204 205 206 207 222 223 227; do
+  for net in 192.168.0 10.0.10; do
+    ping -c1 -W1 "$net.$n" >/dev/null 2>&1 || echo "MISSING $net.$n"
+  done
+done
+```
+
+### Step 2 — flip the gateway (the loudest step in the plan)
+
+The apply itself takes seconds. Steps 2.4 to 2.8 are what turn the estate back
+on afterwards, and none of them are optional — **do not stop at 2.3**. Read
+§ Why this cannot be a rolling change for what is down between here and 2.8.
+
+**2.1 — move the controller's own address.** Update the `UniFi Controller`
+1Password item's `url` field **first**; every plan after the flip connects
+there.
+
+```bash
+op item edit "UniFi Controller" --vault Homelab url=https://10.0.10.1
+```
+
+**2.2 — plan.** From the Home-VLAN admin station: `task terraform:unifi-plan`.
+The homelab network must show an **in-place update** of `subnet` and the DHCP
+scope, plus the port-forward target updates. A `-/+ replace` on
+`unifi_network.this["homelab"]` means `prevent_destroy` is about to abort the
+apply — stop and re-read; a replace loses the network's ID and every reference
+to it.
+
+**2.3 — apply.** Supervised `task terraform:unifi-apply`. From this second, the
+gateway answers on `10.0.10.1` and nothing else in the estate has a default
+route.
+
+**2.4 — host default routes.** On each Proxmox host (the permanent edit is step
+3):
+
+```bash
+ip route replace default via 10.0.10.1
+ping -c1 1.1.1.1 && getent hosts deb.debian.org    # egress + resolution
+```
+
+**2.5 — guest default routes, resolvers first.** Every guest still carries
+`gateway 192.168.0.1`, which no longer exists. Repair them here, not in step 5:
+until this is done dns-01/dns-02 cannot reach their DoT upstreams, so *every
+non-rewritten name in the estate stops resolving* — and smtp-relay (alert mail),
+acme.sh, GitLab, Nextcloud, Immich and every k3s node's egress go with it.
+
+Order is not negotiable — **the two resolvers first**, then gate on them:
+
+```bash
+# dns-01 (.150) and dns-02 (.160) — from their Proxmox hosts
+pct exec 150 -- ip route replace default via 10.0.10.1
+pct exec 160 -- ip route replace default via 10.0.10.1
+
+# GATE: real recursion through each resolver before anything else moves
+dig @10.0.10.150 example.com +short
+dig @10.0.10.160 example.com +short
+```
+
+Both must return an address. If either does not, fix it before continuing —
+everything below assumes working resolution.
+
+Then the rest, same command per class as step 1:
+
+```bash
+# remaining LXC guests: smtp-relay 151, plex 152, immich-ml 158
+for v in 151 152 158; do pct exec "$v" -- ip route replace default via 10.0.10.1; done
+
+# cloud-init VMs and k3s nodes, over SSH to their new addresses
+for n in 153 156 157 202 203 204 205 206 207 222 223 227; do
+  ssh "eric@10.0.10.$n" 'sudo ip route replace default via 10.0.10.1' || echo "FAILED .$n"
+done
+
+# windows .155, at an elevated prompt:
+#   route delete 0.0.0.0 && route -p add 0.0.0.0 mask 0.0.0.0 10.0.10.1
+```
+
+**2.6 — make the client VLANs re-DHCP.** IoT, Guest and Work clients hold leases
+naming `192.168.0.150`/`.160`. Their own VLAN did not change, so they will not
+re-DHCP on their own — and the gateway now has no route to that subnet at all,
+so those three VLANs have *no* DNS until each lease renews (24 h by default).
+The DNS allow policies moving to the new resolver addresses in the same apply is
+a detail; the missing route is the outage.
+
+Force the renewal instead of waiting:
+
+```
+Controller → Settings → WiFi → 3601-IoT / kugel-tikka-masala / 3601-Work:
+  toggle "Enable" off, save, on, save.        # every client re-associates and re-DHCPs
+Controller → the wired IoT access ports (2.5G-3, and any other IoT/Work port):
+  toggle the port off/on, or power-cycle PoE. # wired IoT gear, e.g. the Hue bridge
+```
+
+Then **walk one client per VLAN** and confirm both halves:
+
+```bash
+# on a client joined to each of iot / guest / work
+ipconfig /all | findstr "DNS"    # or: resolvectl status / cat /etc/resolv.conf
+dig @10.0.10.150 git.esweiss.com +short
+```
+
+The lease must name `10.0.10.150`/`.160` and the query must answer. If
+re-associating the whole house is impractical, the alternative is to shorten
+`dhcp.leasetime` on those three networks (module input, default `24h0m0s`) in a
+supervised apply a day *before* the window and put it back afterwards — two
+extra applies, but no walking.
+
+**2.7 — Home Assistant (coordinated flip).** HAOS cannot hold two addresses, so
+it moves now, in one step, from its console (Proxmox → VM 154 → Console):
+
+```
+ha > network info                       # note the interface name (e.g. enp0s18)
+ha > network update <interface> --ipv4-method static \
+       --ipv4-address 10.0.10.154/24 \
+       --ipv4-gateway 10.0.10.1 \
+       --ipv4-nameserver 10.0.10.150 --ipv4-nameserver 10.0.10.160
+ha > host reboot
+```
+
+Then from a host: `ping -c1 10.0.10.154` and `curl -sk -o /dev/null -w '%{http_code}\n' http://10.0.10.154:8123`.
+HA is a Proxmox HA resource — confirm it is still `ignored`/paused per the
+cutover HA-pause procedure, or that a reboot will not trigger a recovery, before
+issuing `host reboot`.
+
+**2.8 — restore inbound early (strongly recommended).** All five WAN forwards
+are dead from 2.3 until MetalLB announces the VIPs on the new subnet. Left to
+step 7 that is hours. The nodes are already dual-addressed, so the VIPs can move
+now — Flux is suspended (§ Repo/CI posture), so these patches stand until step 7
+reconciles the same values from `cluster-config` and makes them a no-op:
+
+```bash
+# pools first, then the Services that claim them; wg-easy first so the VPN
+# fallback comes back before anything else.
+kubectl -n metallb-system patch ipaddresspool vpn-pool      --type merge -p '{"spec":{"addresses":["10.0.10.99/32"]}}'
+kubectl -n metallb-system patch ipaddresspool public-pool   --type merge -p '{"spec":{"addresses":["10.0.10.100/32"]}}'
+kubectl -n metallb-system patch ipaddresspool internal-pool --type merge -p '{"spec":{"addresses":["10.0.10.101/32"]}}'
+
+kubectl -n wg-easy annotate svc wg-easy          metallb.io/loadBalancerIPs=10.0.10.99  --overwrite
+kubectl -n traefik annotate svc traefik          metallb.io/loadBalancerIPs=10.0.10.100 --overwrite
+kubectl -n traefik annotate svc traefik-internal metallb.io/loadBalancerIPs=10.0.10.101 --overwrite
+
+kubectl get svc -A -o wide | grep LoadBalancer   # EXTERNAL-IP on all three is 10.0.10.x
+curl -I -m5 https://<public-address>             # from off-net: the forwards work again
+```
+
+Only the three VIPs move here. The **rest** of `cluster-config` waits for step 7
+on purpose: `cluster_lan_cidr` is one key feeding ~15 NetworkPolicy `ipBlock`
+sets and the `vm-ingress` EndpointSlices, and until steps 5-6 make `10.0.10.x`
+the *primary* address on every node and guest, some traffic still sources from
+`192.168.0.x` and a `10.0.10.0/24`-only allowlist would drop it.
+
+If you skip 2.8, say so out loud: the household loses external access for the
+rest of the window and the VPN fallback with it.
+
+Everything inside VLAN 10 kept working across the apply itself — what moved was
+every route *out* of it, which is why 2.4 through 2.8 exist.
 
 ### Step 3 — make the new address primary, host by host
 
@@ -1390,14 +1584,62 @@ the low-risk path.
 If quorum is lost mid-edit the recovery is `pvecm expected 1` on one node,
 restore `/root/corosync.conf.pre-renumber`, restart `corosync` + `pve-cluster`.
 
+### Step 4b — move the k3s API VIP (once, before any node is redeployed)
+
+**This is the single API-VIP step, and it comes before step 5, not after step
+6.** Every node config on this branch — server *and* agent — templates
+`server: https://{{ k3s_api_vip }}:6443` from one variable, which is
+`10.0.10.161` here. So the first node redeployed from the branch already tries
+to reach the new VIP: if it does not exist yet, that node hangs. There is no
+per-node override to bridge with (see step 6).
+
+All three servers are still up and, since step 1, dual-addressed — `10.0.10.161`
+is announceable on the same L2 they already sit on. So move it now, while
+nothing is drained:
+
+```bash
+# etcd gate first (step 6 has the full command block) — 3 healthy members
+sudo -E etcdctl endpoint health --cluster --write-out=table
+
+ansible-playbook ansible/playbooks/k3s.yml --limit k3s_servers   # from the branch
+
+# kube-vip re-elects and ARPs the new VIP; the old one stops being announced
+curl -sk https://10.0.10.161:6443/readyz          # "ok"
+task k3s:kubeconfig                                # kubeconfig follows the VIP
+kubectl get nodes                                  # all 9 still Ready
+sudo -E etcdctl endpoint health --cluster --write-out=table
+```
+
+The play already runs `k3s_servers` at `serial: 1`, so expect a few seconds of
+API unavailability per server rather than all at once; do not proceed until
+`kubectl get nodes` is clean. Rollback is the same play from `main`, which puts
+`k3s_api_vip` back to `192.168.0.161` — the server VMs still hold both addresses
+until step 5, so this stays reversible up to that point.
+
 ### Step 5 — guests, then k3s agents (one at a time)
 
-Guests first: for each statically addressed guest, make `10.0.10.<n>` primary
-(console or cloud-init redeploy per docs/19), then run the playbook that owns it
-from the branch. **dns-01 and dns-02 come first** — everything downstream
-resolves through them, and their own `acme_certs_distribution_targets` list (in
-`host_vars/dns-01.yml`) now names the new addresses, so the cert push has to be
-re-run after they move: `task dns:deploy`, then the cert distribution.
+Routes and DNS are already correct inside every guest — step 2.5 did that, and
+Home Assistant took its whole flip at 2.7. What is left here is making the new
+address **permanent** (so a reboot or a rebuild keeps it) and dropping the old
+one. Per class:
+
+| Class | Permanent form |
+|---|---|
+| LXC | on the host: `pct config <vmid> \| grep ^net0` → re-set that *whole* line with only `ip=`/`gw=` changed (`pct set <vmid> --net0 name=eth0,bridge=vmbr0,hwaddr=<unchanged>,ip=10.0.10.<n>/24,gw=10.0.10.1`), then `pct reboot <vmid>`. Keeping `hwaddr` matters — a new MAC invalidates the UniFi reservation and the DHCP-independent identity the firewall aliases assume |
+| cloud-init VM | on the host: `qm set <vmid> --ipconfig0 ip=10.0.10.<n>/24,gw=10.0.10.1`, **and** fix the guest's own on-disk config in the same visit (`/etc/network/interfaces.d/50-cloud-init.cfg` or the netplan file) so it survives whether or not cloud-init re-runs the network module at boot; reboot and confirm with `ip -br addr` |
+| Windows | at an elevated prompt: `netsh interface ipv4 delete address name="Ethernet" address=192.168.0.155` (the secondary added in step 1 is already the working one) |
+| HAOS | nothing — done at 2.7 |
+
+Also fix `/etc/resolv.conf` (or the LXC/cloud-init nameserver field) in the same
+edit: an entry naming `192.168.0.150` keeps working only while the resolvers
+still hold their old secondary, and breaks the moment they drop it below.
+
+**dns-01 and dns-02 come first** — everything downstream resolves through them,
+and their own `acme_certs_distribution_targets` list (in `host_vars/dns-01.yml`)
+now names the new addresses, so the cert push has to be re-run after they move:
+`task dns:deploy`, then the cert distribution.
+
+Then run the playbook that owns each guest, from the branch.
 
 Then the AdGuard rewrites: `group_vars/dns.yml` carries ~50 A rewrites plus the
 28 PTR rules, which have moved from `<n>.0.168.192.in-addr.arpa` to
@@ -1421,25 +1663,67 @@ half-migrated node shows up as pod-to-pod packet loss, not as a `NotReady`.
 
 ### Step 6 — k3s servers (one at a time) and the API VIP
 
-Quorum is 2 of 3; move one server at a time and never start the next until
-`kubectl get node` shows all three `Ready` and
-`kubectl -n kube-system exec <etcd-pod-or-host> -- k3s etcd-snapshot ls` (or
-`journalctl -u k3s`) shows a healthy 3-member cluster.
+**The VIP has already moved** — step 4b did it, before any node was redeployed
+from the branch, and every node migrated in step 5 is already joining through
+`10.0.10.161`. There is no VIP action in this step and no second `task
+k3s:deploy` pass for it: a server rejoining here dials the live new VIP like
+everything else. If `curl -sk https://10.0.10.161:6443/readyz` does not answer
+before you start, go back to step 4b — do not migrate a server into a VIP that
+is not there.
 
-An embedded-etcd member cannot change its peer URL in place. For each server:
+**Health gate — etcd membership, not the Kubernetes API.** `k3s etcd-snapshot
+ls` lists snapshot *files* and succeeds happily on a one-member cluster; there
+is no etcd pod to `exec` into either, because k3s runs etcd inside the k3s
+process. Ask etcd directly, on any surviving server:
+
+```bash
+# etcdctl is not shipped with k3s: `apt-get install -y etcd-client` on one
+# server, once, or run it from an etcd image. Certs are k3s's own.
+export ETCDCTL_API=3
+export ETCDCTL_ENDPOINTS=https://127.0.0.1:2379
+export ETCDCTL_CACERT=/var/lib/rancher/k3s/server/tls/etcd/server-ca.crt
+export ETCDCTL_CERT=/var/lib/rancher/k3s/server/tls/etcd/server-client.crt
+export ETCDCTL_KEY=/var/lib/rancher/k3s/server/tls/etcd/server-client.key
+
+sudo -E etcdctl endpoint health --cluster --write-out=table   # 3 rows, all true
+sudo -E etcdctl member list --write-out=table                 # 3 members, no "unstarted"
+```
+
+Three healthy members with the addresses you expect — anything less and you stop.
+`kubectl get nodes -o wide` alongside it is a useful cross-check but is **not**
+the gate: the API server answers on a single-member etcd exactly as it does on
+three.
+
+An embedded-etcd member cannot change its peer URL in place. Quorum is 2 of 3,
+so move **one server at a time**, running the gate above before and after each:
 
 1. `kubectl drain <server> --ignore-daemonsets --delete-emptydir-data`
 2. Stop k3s on it, remove it from the cluster (`kubectl delete node <server>`),
    and wipe `/var/lib/rancher/k3s/server/db/etcd` so it rejoins as a fresh
    member rather than an unreachable one.
-3. Re-IP the VM, then re-run the k3s play for that host from the branch; it
-   rejoins via the `server:` URL and re-adds itself as an etcd member.
-4. Confirm 3 members, then uncordon.
+3. Re-IP the VM (step 5's cloud-init form), then re-run the k3s play for that
+   host from the branch:
 
-The **kube-vip API VIP** (`k3s_api_vip`, now `10.0.10.161`) and every node's
-`server:` URL move together — that is one `task k3s:deploy` pass across the
-whole cluster once the last server is on its new address, not a per-node change.
-Re-fetch the kubeconfig afterwards (`task k3s:kubeconfig`).
+   ```bash
+   ansible-playbook ansible/playbooks/k3s.yml --limit <server>
+   ```
+
+   It rejoins through `10.0.10.161`, which step 4b made live. The role has **no
+   per-node join-URL input** — `server:` is templated from `k3s_api_vip` in both
+   the server and agent configs, and that same variable feeds the kube-vip
+   manifest and the apiserver TLS SANs. That is precisely why the VIP cannot be
+   left until the end: there is no "join via a concrete server address" lever to
+   bridge the gap with.
+4. Re-run the etcd gate: 3 healthy members, the moved one among them. Then
+   uncordon.
+
+After the third server, confirm the whole cluster once:
+
+```bash
+task k3s:kubeconfig    # re-fetch — the kubeconfig points at the VIP
+kubectl get nodes -o wide                                     # 9 Ready, all 10.0.10.x
+sudo -E etcdctl endpoint health --cluster --write-out=table   # 3 healthy
+```
 
 ### Step 7 — the coordinated Flux moment
 
@@ -1447,14 +1731,24 @@ With every node on `10.0.10.x`:
 
 1. `task flux:resume`, push the branch, `task flux:reconcile`.
 2. `cluster-config` carries the new `cluster_lan_cidr`, the three MetalLB VIPs
-   and the API VIP; MetalLB re-announces `.99`/`.100`/`.101` on the new subnet
-   as the pools reconcile. Watch `kubectl -n metallb-system get
-   ipaddresspool,l2advertisement` and then the Traefik services' `EXTERNAL-IP`.
+   and the API VIP. If step 2.8 already patched the pools this is a no-op that
+   simply puts Flux back in charge of values it now agrees with; if it did not,
+   this is the moment inbound comes back. Either way, watch `kubectl -n
+   metallb-system get ipaddresspool,l2advertisement` and then the Traefik
+   services' `EXTERNAL-IP`.
 3. The ~15 NetworkPolicy `ipBlock` sets, the `vm-ingress` EndpointSlices and the
    observability targets all move in the same reconcile. Expect a burst of
    `EndpointDown`/`BlackboxProbeFailed` while Prometheus re-resolves; it should
    clear inside two scrape intervals.
 4. `task flux:status`, then `task flux:verify`.
+5. Fix the application settings that name the subnet rather than resolve it —
+   the network is correct at this point and these are what still looks broken:
+   **Plex → Settings → Network → LAN Networks**, replacing the cutover-night
+   `192.168.0.0/24` entry with `10.0.10.0/24` so the list reads
+   `10.0.10.0/24,10.0.20.0/24,10.0.30.0/24` (docs/20; without it every client is
+   treated as remote — quality caps and transcodes where there used to be direct
+   play). Re-check the § Cutover step 11 list for anything else configured by
+   address.
 
 ### Step 8 — NFS remounts
 
@@ -1481,17 +1775,47 @@ advertise, so the new route is auto-approved rather than sitting pending.
 
 ### Step 10 — validation, then merge
 
-Re-run the § Validation matrix above in full — every row still applies, and
-rows 2, 7, 9, 10, 11, 13 and 17 are the ones this phase can break. Add:
+Re-run the § Validation matrix above in full — every row still applies. The ones
+this phase can break are the rows that name a homelab address or a VIP: 3
+(resolver reach), 8 (external DNS fenced — its `dig` control), 10 (Plex direct
+play, via LAN Networks), 12/13/14 (internal ingress, appliance UIs, admin
+surfaces — the VIP and the `admin_lan` membership), 15/16 (port forwards and
+wg-easy — the MetalLB VIPs), 17 (Tailscale routes), 18 (gear probes — the
+gateway target moved), 23 (drift plan) and 24 (cluster health). Row 2 is a
+cutover-night check and does not re-run here. Add:
 
 | # | Check | How | Expected |
 |---|---|---|---|
-| P2-1 | No stragglers | `grep -rIn "192\.168\.0\." ansible/ kubernetes/ terraform/ scripts/ Taskfile.yml docs/ \| grep -v "192\.168\.0\.0/16"` | Only the deliberate `/16` egress `except` entries |
+| P2-1 | No stragglers, **both spellings** | the two greps below | Only the deliberate `/16` egress `except` entries and labelled Phase-1/historical prose |
 | P2-2 | Reverse DNS | `dig -x 10.0.10.153 @10.0.10.150 +short` | `gitlab.esweiss.com.` |
 | P2-3 | Gate agreement | `python3 scripts/check-cluster-literals.py` | Pass — `cluster-config` and the inventory agree |
 | P2-4 | Address book | `task hosts:sync` | No diff in `scripts/hosts.env` |
 | P2-5 | Corosync | `corosync-cfgtool -s` on every host | One link, new addresses, all `connected` |
-| P2-6 | etcd | 3 healthy members, all `10.0.10.x` | Quorum intact |
+| P2-6 | etcd | `etcdctl endpoint health --cluster` + `member list` (step 6's block) | 3 healthy members, all `10.0.10.x` |
+| P2-7 | Client-VLAN DNS | On one client each of iot/guest/work: leased DNS servers, then `dig @10.0.10.150 git.esweiss.com` | Lease names `10.0.10.150`/`.160`; the query answers (step 2.6) |
+| P2-8 | Inbound restored | From off-net: `curl -I https://<public>`, Plex remote, `ssh -p 2222 git@git.ericsweiss.com`, a wg-easy handshake | All four succeed — the WAN forwards and the MetalLB VIPs agree |
+| P2-9 | Home Assistant | `ping 10.0.10.154`, then `https://home.esweiss.com` | Reachable at the new address, ingress intact (step 2.7) |
+
+P2-1 is **two** greps, because the old subnet has two spellings in this repo and
+the plain one finds only the easy half:
+
+```bash
+# 1. both spellings at once. `(\\)*` absorbs the escaped form; the second grep
+#    drops the deliberate RFC1918 /16 `except` entries in the netpol components.
+grep -rIn -E '192(\\)*\.168(\\)*\.0(\\)*\.' \
+  ansible/ kubernetes/ terraform/ scripts/ Taskfile.yml docs/ \
+  | grep -vE '192(\\)*\.168(\\)*\.0(\\)*\.0/16'
+
+# 2. the escaped spelling on its own — Prometheus rule expressions, promtool
+#    fixtures and Grafana dashboard JSON carry addresses as `192\\.168\\.0\\.`
+#    (two literal backslashes per dot). This must return NOTHING.
+grep -rIn '192\\\\\.168\\\\\.0\\\\\.' kubernetes/ scripts/
+```
+
+Grep 1 legitimately keeps hits in `docs/` and `terraform/unifi/README.md`: the
+cutover runbook and the Phase 2 narrative describe the pre-renumber world on
+purpose. Every one of those must read as a labelled historical or cutover-night
+statement — if a hit is a live instruction, it is a straggler.
 
 Then merge the MR. The post-merge deploy pipeline is now a no-op re-run against
 the fleet you have already moved, which is the state you want it in.
@@ -1502,12 +1826,19 @@ The further in, the more this is a roll-*forward* migration — but each step ha
 its own reversal, and steps 1-2 are cheap:
 
 - **Before step 3**: revert the gateway (`local.networks.homelab.subnet` back to
-  `192.168.0.1/24`, supervised apply, `url` field back). Hosts still hold both
-  addresses; nothing else changed.
+  `192.168.0.1/24`, supervised apply, `url` field back), undo the 2.8 MetalLB
+  patches the same way (`kubectl patch`/`annotate` back to `192.168.0.x`, or
+  just `task flux:resume` + reconcile from `main`), and put HAOS back with the
+  same `ha network update` at 2.7. Hosts and guests still hold both addresses;
+  nothing else changed. HAOS is the only piece that took a one-way flip, and its
+  reversal is one console command plus a reboot.
 - **Step 3**: `cp /root/interfaces.pre-renumber /etc/network/interfaces &&
   ifreload -a` on the affected host — from the console.
 - **Step 4**: restore the saved `corosync.conf`, `pvecm expected 1` if quorum is
   gone, restart `corosync` and `pve-cluster`.
+- **Step 4b**: re-run the k3s play for `k3s_servers` from `main` — the VIP goes
+  back to `192.168.0.161`, which is still announceable while the server VMs hold
+  both addresses (i.e. until step 5).
 - **Steps 5-6**: a drained node that will not rejoin is a rebuild, not a
   rollback — `task k3s:deploy` for that node against the old address, or restore
   the etcd snapshot from `task k3s:backup` (docs/19).
@@ -1517,9 +1848,11 @@ its own reversal, and steps 1-2 are cheap:
 One requirement on that MR belongs here, because it is the trap this repo has
 already hit once: the straggler sweep for `192.168.0.` must match the
 **escaped-regex spelling** as well as the plain one. Prometheus rule
-expressions carry addresses as `192\\.168\\.0\\.` (two literal backslashes per
-dot in the YAML), so a `grep -rIn "192\.168\.0\."` finds every easy occurrence
-and none of the hard ones.
+expressions, promtool fixtures and Grafana dashboard JSON carry addresses as
+`192\\.168\\.0\\.` (two literal backslashes per dot), so a
+`grep -rIn "192\.168\.0\."` finds every easy occurrence and none of the hard
+ones. Validation row P2-1 above runs both greps; that is the check, not this
+paragraph.
 
 ---
 
