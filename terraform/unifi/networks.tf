@@ -70,7 +70,9 @@ locals {
       subnet        = "10.0.20.1/24"
       domain_name   = "esweiss.com"
       igmp_snooping = true
-      dhcp          = { start = "10.0.20.50", stop = "10.0.20.249", dns_servers = local.dns_ips }
+      # The pool stops at .199 so the two Home reservations (.200, .211) and the
+      # admin block at .8-.15 both sit outside it — see `clients` below.
+      dhcp = { start = "10.0.20.50", stop = "10.0.20.199", dns_servers = local.dns_ips }
     }
 
     # Per-network IGMP snooping is set here for older controllers; the effective
@@ -85,7 +87,10 @@ locals {
       subnet        = "10.0.30.1/24"
       domain_name   = "esweiss.com"
       igmp_snooping = true
-      dhcp          = { start = "10.0.30.50", stop = "10.0.30.249", dns_servers = local.dns_ips }
+      # A 50-address dynamic range, because every IoT device that matters is
+      # already reserved: the pool stops at .99 so the Hue bridge (.3) sits
+      # below it and the Kasa/Hyperion/WLED reservations (.120-.215) above it.
+      dhcp = { start = "10.0.30.50", stop = "10.0.30.99", dns_servers = local.dns_ips }
     }
 
     # `purpose` stays "corporate" even though this is the guest VLAN: the
@@ -257,9 +262,9 @@ locals {
     # an unthrottled login form at https://10.0.40.1.
     #
     # tcp only, and only the console ports: DHCP is broadcast before the client
-    # has an address and is unaffected, ICMP to the gateway stays up for
-    # troubleshooting, and none of these three zones uses the gateway as a
-    # resolver (DHCP hands them .150/.160).
+    # has an address and is unaffected, and ICMP to the gateway stays up for
+    # troubleshooting. The gateway's own DNS forwarder is a separate default
+    # -allow path and is fenced by the `*-to-gateway-dns` BLOCKs below.
     {
       name        = "guest-to-gateway-mgmt"
       action      = "BLOCK"
@@ -290,16 +295,28 @@ locals {
     # DHCP option 6 is a suggestion. Chromecast/Google Home hardware queries
     # 8.8.8.8 regardless, and most smart TVs ship a vendor resolver — so without
     # these the VLANs that are supposed to be filtered and logged by AdGuard are
-    # the ones most likely to bypass it. Blocking :53 and :853 to External
-    # forces the weisssrv resolvers or nothing.
+    # the ones most likely to bypass it.
+    #
+    # There are TWO ways off the resolvers, and both are default-allow: a public
+    # resolver out through External, and the gateway's own forwarder, which a
+    # UniFi OS gateway answers on EVERY VLAN's .1 and which forwards to the WAN
+    # DNS servers (1.1.1.1/9.9.9.9 — docs/46 § Site settings), i.e. straight
+    # past AdGuard. Both are blocked below; together they are what makes
+    # "the weisssrv resolvers or nothing" true on these three VLANs.
+    #
+    # Logged, like the gateway-console BLOCKs above: a device that has quietly
+    # lost name resolution is diagnosed from the gateway's firewall log, and
+    # these are the drops that explain it.
     #
     # DoH on :443 is NOT covered — it is indistinguishable from ordinary HTTPS
     # at this layer and closing it needs the IDS/IPS or a blocklist (docs/46).
-    # Homelab is exempt: Unbound itself has to reach the internet.
+    # Homelab is exempt: Unbound itself has to reach the internet, and the mgmt
+    # VLAN is deliberately pointed at public resolvers (see `default` above).
     {
       name        = "guest-to-external-dns"
       action      = "BLOCK"
       protocol    = "tcp_udp"
+      logging     = true
       source      = { zone = "guest" }
       destination = { zone = "external", port = "53,853" }
     },
@@ -307,6 +324,7 @@ locals {
       name        = "iot-to-external-dns"
       action      = "BLOCK"
       protocol    = "tcp_udp"
+      logging     = true
       source      = { zone = "iot" }
       destination = { zone = "external", port = "53,853" }
     },
@@ -314,8 +332,37 @@ locals {
       name        = "work-to-external-dns"
       action      = "BLOCK"
       protocol    = "tcp_udp"
+      logging     = true
       source      = { zone = "work" }
       destination = { zone = "external", port = "53,853" }
+    },
+    # The gateway half. tcp_udp rather than the tcp of the console BLOCKs
+    # because DNS is udp first; DHCP (udp 67/68) is untouched, and nothing on
+    # these VLANs may use the gateway as a resolver — DHCP hands them
+    # .150/.160 and that is the only answer they are meant to get.
+    {
+      name        = "guest-to-gateway-dns"
+      action      = "BLOCK"
+      protocol    = "tcp_udp"
+      logging     = true
+      source      = { zone = "guest" }
+      destination = { zone = "gateway", port = "53,853" }
+    },
+    {
+      name        = "iot-to-gateway-dns"
+      action      = "BLOCK"
+      protocol    = "tcp_udp"
+      logging     = true
+      source      = { zone = "iot" }
+      destination = { zone = "gateway", port = "53,853" }
+    },
+    {
+      name        = "work-to-gateway-dns"
+      action      = "BLOCK"
+      protocol    = "tcp_udp"
+      logging     = true
+      source      = { zone = "work" }
+      destination = { zone = "gateway", port = "53,853" }
     },
   ]
 
@@ -331,11 +378,22 @@ locals {
   # deliberately absent — a reservation for an address the host also configures
   # itself is two sources of truth for one address.
   #
-  # Every reservation here sits OUTSIDE its network's DHCP pool, which is
-  # deliberate: a reservation inside the pool can collide with a lease the
-  # server has already handed out. The pools start at .50 (.100 on mgmt) and the
-  # reserved addresses live below that, in the same subnet — which is what the
-  # server requires, and the only thing it requires.
+  # INVARIANT: every reservation sits OUTSIDE its network's DHCP pool, and the
+  # pool bounds in `local.networks` are what enforce it. A reservation inside
+  # the pool can collide with a lease the server has already handed out; being
+  # in the same SUBNET is the only thing the server itself requires.
+  #
+  # The reservations are the last octets these devices already had on the flat
+  # LAN, so the pools are bounded around them rather than the other way round:
+  #
+  #   home  .50-.199 — macbook .10 below; hdhr .200 and the bedroom Hyperion
+  #                    .211 above
+  #   iot   .50-.99  — hue .3 below; the Kasa plugs .120-.127, the living-room
+  #                    Hyperion .210 and the WLED controllers .213-.215 above
+  #   mgmt  .100-.199 — the switch .2 and the AP .3 below
+  #
+  # ADDING ONE: pick an address outside the pool for its network, or move the
+  # pool bound in `local.networks` first. Both halves are one plan.
   clients = {
     # Home (VLAN 20)
     hdhr = {
