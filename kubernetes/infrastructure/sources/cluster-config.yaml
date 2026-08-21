@@ -60,6 +60,14 @@ data:
   cluster_node_label_domain: "esweiss.com"
 
   cluster_lan_cidr: "192.168.0.0/24"
+  # The Home VLAN (UniFi VLAN 20 — docs/46): personal client devices, a zone of
+  # its own behind the gateway's zone-based firewall. Trusted enough to reach
+  # the internal ingress allowlists (configs/traefik-middlewares.yaml) and
+  # nothing else; the Proxmox firewall grants it the same service ports through
+  # the `lan_clients` ipset, not through admin_lan. Deliberately WITHOUT an
+  # Ansible-inventory counterpart: no host this repo manages lives on it, so
+  # there is nothing for check-cluster-literals.py to cross-check it against.
+  cluster_home_cidr: "10.0.20.0/24"
   cluster_pod_cidr: "10.42.0.0/16"
   cluster_service_cidr: "10.43.0.0/16"
   # CGNAT range (RFC 6598) that Tailscale allocates from — a constant, kept here

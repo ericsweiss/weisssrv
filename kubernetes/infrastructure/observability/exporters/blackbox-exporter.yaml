@@ -2,7 +2,9 @@
 # Blackbox exporter + its probe target list. Every https target feeds the generic
 # EndpointDown alert; the three load-bearing hostnames also feed
 # EndpointDownCritical, and every *.ericsweiss.com target feeds
-# BlackboxCertExpiringSoon (rules/monitoring.yaml).
+# BlackboxCertExpiringSoon (rules/monitoring.yaml). The icmp_ping targets are
+# the exception: they are excluded from EndpointDown and feed the purpose-built
+# NetworkGearProbeFailed instead.
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -221,6 +223,24 @@ spec:
         - name: windows-rdp
           url: 192.168.0.155:3389
           module: tcp_connect
+        # UniFi network gear (docs/46). ICMP, not tcp_connect: the switch and AP
+        # expose no management port worth probing — they are adopted by the
+        # gateway's controller — so liveness is the only signal available, and
+        # the gateway is probed the same way for a uniform NetworkGearProbeFailed
+        # expression. The two mgmt addresses sit on VLAN 1 (10.0.1.0/24), which
+        # the cluster reaches through the gateway.
+        #
+        # EXPECTED RED until the UniFi cutover (docs/46): the switch and AP do
+        # not answer at these addresses while the ASUS router is still in place.
+        - name: unifi-gateway
+          url: 192.168.0.1
+          module: icmp_ping
+        - name: unifi-switch
+          url: 10.0.1.2
+          module: icmp_ping
+        - name: unifi-ap
+          url: 10.0.1.3
+          module: icmp_ping
         # GitLab Container Registry: its own router and certificate, which the
         # git.esweiss.com probe does not cover (a broken registry otherwise
         # surfaces only as a mid-pipeline ImagePullBackOff). http_sso tolerates

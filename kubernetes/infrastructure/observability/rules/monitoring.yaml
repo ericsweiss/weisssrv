@@ -361,11 +361,19 @@ spec:
           # routed to the purpose-built WindowsRdpDown (30m) below: it's an
           # on-demand desktop that is legitimately powered off much of the
           # time, so a catch-all warning would be noise.
+          # The three UniFi ICMP targets (gateway 192.168.0.1, switch 10.0.1.2,
+          # AP 10.0.1.3) are excluded for the other reason: NetworkGearProbeFailed
+          # below is the same warning tier on the same signal, so leaving them in
+          # here would double-fire one cause. Unlike EndpointDownCritical — which
+          # deliberately co-fires at a HIGHER tier — that pair adds no escalation.
           # for: 10m (not 5m): the warning tier absorbs brief intermittent
           # probe dips (an SSO-fronted *arr that momentarily 5xx's) that a
           # 5m hold re-fires on. The load-bearing three still page fast —
           # EndpointDownCritical below stays at 5m.
-          expr: max by (instance) (probe_success{instance!="192.168.0.155:3389"}) == 0
+          expr: >-
+            max by (instance) (
+              probe_success{instance!~"192\\.168\\.0\\.155:3389|192\\.168\\.0\\.1|10\\.0\\.1\\.(2|3)"}
+            ) == 0
           for: 10m
           labels:
             severity: warning
@@ -490,6 +498,35 @@ spec:
               blackbox target was removed or renamed, and the
               DNSResolutionDown aggregate no longer covers this resolver.
               Restore the target in exporters/blackbox-exporter.yaml.
+
+        # The UniFi tier (docs/46): gateway 192.168.0.1, switch 10.0.1.2, AP
+        # 10.0.1.3. ICMP is all these devices offer — the switch and AP are
+        # controller-adopted with no management port of their own.
+        #
+        # Warning, not critical, and deliberately the STATEMENT OF CAUSE rather
+        # than the pager: losing the gateway breaks WAN and inter-VLAN traffic
+        # but not the homelab LAN segment itself, so it surfaces as a flood of
+        # *.ericsweiss.com EndpointDown warnings with no named cause. Keeping it
+        # at the same tier as that flood also stops an operator-initiated
+        # firmware reboot from paging email (auto-upgrade is off — docs/46).
+        # These instances are excluded from EndpointDown so one cause fires once.
+        - alert: NetworkGearProbeFailed
+          expr: >-
+            max by (instance) (
+              probe_success{instance=~"192\\.168\\.0\\.1|10\\.0\\.1\\.(2|3)"}
+            ) == 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: '${cluster_runbook_base_url}/46-unifi-network.md'
+            summary: 'UniFi device {{ $labels.instance }} is not answering ICMP'
+            description: >-
+              The ICMP blackbox probe for {{ $labels.instance }} has failed for
+              5 minutes — the UniFi gateway, switch or access point is down,
+              rebooting, or has lost its uplink. Expect WAN and inter-VLAN
+              breakage (and, for the AP, every wireless client) until it
+              returns. See docs/46-unifi-network.md.
 
         - alert: BlackboxExporterDown
           expr: absent(up{job=~".*blackbox.*"} == 1)

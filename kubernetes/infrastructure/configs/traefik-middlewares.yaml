@@ -5,11 +5,17 @@
 # fails closed — Traefik disables the router and the route 404s until it
 # reconciles. Middlewares used only by apps stay in apps/vm-ingress/middleware.yaml.
 
-# IP allowlist for internal-only services (LAN + Tailscale + in-cluster pods).
+# IP allowlist for internal-only services (homelab LAN + Home VLAN + Tailscale +
+# in-cluster pods).
 # The pod CIDR is included because traefik-internal runs
 # externalTrafficPolicy: Local, so in-cluster callers (e.g. blackbox-exporter
 # probing https://git.esweiss.com) arrive with a pod source IP. That CIDR is
 # routable only inside the CNI overlay, so it cannot be spoofed from outside.
+# The Home VLAN is a separate UniFi zone (docs/46) whose devices are the ones
+# these routes exist for — phones, laptops, TVs — so it is allowlisted here even
+# though nothing this repo manages lives on it. Every other VLAN (IoT, Guest,
+# Work) is deliberately absent: the gateway's inter-zone deny is the first gate,
+# this list the second.
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:
@@ -19,6 +25,7 @@ spec:
   ipAllowList:
     sourceRange:
       - ${cluster_lan_cidr}     # Local LAN
+      - ${cluster_home_cidr}    # Home VLAN (UniFi VLAN 20 — docs/46)
       - ${cluster_tailnet_cidr}      # Tailscale CGNAT range
       - ${cluster_pod_cidr}       # K3s pod CIDR (see k3s_cluster_cidr in group_vars)
 
@@ -27,6 +34,9 @@ spec:
 # only gates are the IP allowlist plus the backend's own login, where an
 # in-cluster pod reaching the route would be a real escalation — 1Password
 # Connect, and the router/AdGuard appliance UIs that have no forward-auth.
+# "Strict" is about the POD CIDR, not the Home VLAN: the admin workstation these
+# routes are driven from sits on VLAN 20, so dropping it here would leave the
+# appliance UIs reachable only over Tailscale.
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:
@@ -36,6 +46,7 @@ spec:
   ipAllowList:
     sourceRange:
       - ${cluster_lan_cidr}     # Local LAN
+      - ${cluster_home_cidr}    # Home VLAN (UniFi VLAN 20 — docs/46)
       - ${cluster_tailnet_cidr}      # Tailscale CGNAT range
 
 ---

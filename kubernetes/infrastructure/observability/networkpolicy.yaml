@@ -5,9 +5,13 @@
 # Traefik IngressRoute, not the ClusterIP.
 #
 # Egress is deliberately unrestricted: the exporters reach many LAN hosts
-# (Proxmox API, AdGuard, Unbound, Plex, ZFS), Alertmanager reaches smtp-relay and
+# (Proxmox API, AdGuard, Unbound, Plex, ZFS, and the UniFi gear on the VLAN 1
+# management subnet 10.0.1.0/24 — docs/46), Alertmanager reaches smtp-relay and
 # Discord, and Prometheus remote-scrapes the host node-exporters, so a
-# default-deny-egress would mean enumerating the whole LAN surface.
+# default-deny-egress would mean enumerating the whole LAN surface. There is
+# therefore no egress allowlist here for a new probe target to be added to; a
+# future default-deny-egress in this namespace must enumerate 10.0.1.0/24 with
+# the rest.
 
 ---
 # Allow all intra-namespace ingress so the stack keeps working: Prometheus
