@@ -535,6 +535,25 @@ proxmox_firewall_smb_client_cidrs:
 proxmox_firewall_wan_wireguard_vips:
   - 192.168.0.99
 
+# Source sets for the two rule groups the collection renders itself but the
+# site re-scopes: sg-dns's `:53` (tcp+udp) and the whole of
+# sg-k3s-ingress-int (`:80`/`:443`). Both default to [admin_ts, admin_lan] in
+# the role, so naming the client sets here is what lets a VLAN outside
+# admin_lan resolve or reach the internal Traefik VIP at all
+# (weisssrv.infra v0.13.0; docs/11-firewall.md § Client scopes).
+#
+# :53 takes dns_clients — UniFi DHCP hands the weisssrv resolvers to every
+# VLAN, including the ones with no other homelab access. The internal ingress
+# takes lan_clients — Home-VLAN devices only; IoT/Guest/Work reach nothing but
+# the ports named for them. admin_ts stays on both so the tailnet is unchanged.
+proxmox_firewall_dns_client_sources:
+  - admin_ts
+  - dns_clients
+
+proxmox_firewall_k3s_ingress_int_sources:
+  - admin_ts
+  - lan_clients
+
 # Resolver admin surfaces rendered into sg-dns ({port, sources[], comment?}).
 # The role default is the two admin sets only.
 #

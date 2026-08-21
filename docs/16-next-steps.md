@@ -31,10 +31,6 @@ Still open behind it:
 
 - The **cutover itself** is a supervised window (see docs/46), and the
   switch/AP blackbox probes are expected red until it runs.
-- `sg-dns`'s `:53` rules and `sg-k3s-ingress-int` are rendered by the
-  collection against `admin_lan` with no variable to re-point them, so the
-  client VLANs cannot reach the resolvers or the internal Traefik VIP until the
-  `proxmox_firewall` role grows that knob (docs/11 § Client scopes).
 - The Windows VM (.155, [docs/39](39-windows-vm.md)) still sits on the homelab
   VLAN; moving it to Home is a follow-up, not a blocker.
 - Phase 2 — renumbering the homelab from `192.168.0.0/24` to `10.0.10.0/24` —
@@ -303,11 +299,12 @@ Design, runbook and the codified-vs-manual contract:
   gear is observed only by ICMP blackbox probes feeding
   `NetworkGearProbeFailed`; per-port throughput, PoE draw, AP client counts
   and WAN health are not collected.
-- [ ] **Re-scope the role-owned rules** — `sg-dns`'s `:53` and
-  `sg-k3s-ingress-int` still source from `admin_lan`
-  ([docs/11](11-firewall.md) § Client scopes); they need a
-  `proxmox_firewall` knob before client VLANs can resolve or reach the
-  internal ingress VIP.
+- [x] ~~**Re-scope the role-owned rules.**~~ DONE 2026-08-21: `weisssrv.infra`
+  v0.13.0 added `proxmox_firewall_dns_client_sources` and
+  `proxmox_firewall_k3s_ingress_int_sources` (both defaulting to the old
+  `[admin_ts, admin_lan]`), and this repo points `sg-dns`'s `:53` at
+  `dns_clients` and `sg-k3s-ingress-int` at `lan_clients`
+  ([docs/11](11-firewall.md) § Client scopes).
 - [ ] **Move the Windows VM (.155) to the Home VLAN** — it is a client
   machine sitting on the homelab segment ([docs/39](39-windows-vm.md)).
 

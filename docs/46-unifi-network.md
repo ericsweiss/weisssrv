@@ -275,7 +275,12 @@ Phase 1 touches the repo in four places; each is documented where it lives.
 - **Proxmox firewall** ([docs/11-firewall.md](11-firewall.md) § Client scopes):
   `admin_lan` shrinks to true admin surfaces and gains the `10.0.20.8/29`
   admin-device block; new `lan_clients` and `dns_clients` ipsets carry the
-  service and resolver scopes. `ssh_authorized_keys` `from=`,
+  service and resolver scopes. The two rule groups the collection renders
+  itself follow via role variables (`weisssrv.infra` v0.13.0):
+  `proxmox_firewall_dns_client_sources` puts `sg-dns`'s `:53` on
+  `dns_clients`, and `proxmox_firewall_k3s_ingress_int_sources` puts
+  `sg-k3s-ingress-int` on `lan_clients`, so every VLAN can resolve and Home
+  can reach the internal Traefik VIP. `ssh_authorized_keys` `from=`,
   `base_fail2ban_ignoreip` and `gitlab_ssh_allowed_users` mirror the admin
   split at the sshd layer.
 - **Traefik internal allowlists**: `lan-tailscale-only` and

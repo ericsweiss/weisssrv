@@ -88,13 +88,21 @@ discovery rules rather than in any set: multicast discovery is the only thing
 IoT devices may reach on those guests, and folding the VLAN into `lan_clients`
 would silently grant them the web UIs too.
 
-> **Rule sources the site cannot re-scope yet.** `sg-dns`'s `:53` rules and the
-> whole of `sg-k3s-ingress-int` (`:80`/`:443`) are written by the collection's
-> `cluster.fw.j2` against `admin_lan`, with no variable to point them at
-> `dns_clients` / `lan_clients`. Until the role grows that knob, client VLANs
-> reach the resolvers and the internal Traefik VIP only if their subnet is in
-> `admin_lan` — which is exactly what the split is trying to avoid. Verify with
-> `pve-firewall compile` on a node before trusting a client VLAN to resolve.
+Two of those rule groups are written by the collection's `cluster.fw.j2`, not by
+site data, so they are re-scoped through role variables rather than
+`proxmox_firewall_security_groups`. `weisssrv.infra` v0.13.0 added both; each
+name in the list renders as one `+dc/<name>` source in the rule shape the
+template already used, and both default to `[admin_ts, admin_lan]` so an
+unset site renders exactly what it rendered before.
+
+| Variable | Rules it scopes | Value here |
+|---|---|---|
+| `proxmox_firewall_dns_client_sources` | `sg-dns` `:53` tcp+udp | `["admin_ts", "dns_clients"]` |
+| `proxmox_firewall_k3s_ingress_int_sources` | all of `sg-k3s-ingress-int` (`:80`/`:443`) | `["admin_ts", "lan_clients"]` |
+
+`admin_ts` stays on both — the tailnet reaches the resolvers and the internal
+ingress exactly as before — and `admin_lan` drops off because `dns_clients` and
+`lan_clients` both contain it.
 
 **`admin_ts` is deliberately the full CGNAT range** (`100.64.0.0/10`), not
 per-device 100.x pins. Accepted risk: this is a single-owner tailnet
