@@ -29,10 +29,10 @@
 #   main                 the same checks, then validation-gate, the deploy jobs
 #                        each path-gated on its own inputs, and the verify stage
 #                        (which runs even when a deploy failed).
-#   schedule             version-check, secret detection and the three drift
-#                        plans (tailscale, authentik, b2 — docs/13 § Validate
-#                        Stage). Everything else is when: never, except two
-#                        typed schedules:
+#   schedule             version-check, secret detection and the four drift
+#                        plans (tailscale, authentik, unifi, b2 — docs/13
+#                        § Validate Stage). Everything else is when: never,
+#                        except two typed schedules:
 #                          SCHEDULE_TYPE=full-test    integration tests,
 #                                                     unfiltered, as an
 #                                                     external-dependency canary
@@ -1539,8 +1539,9 @@ include:
   - local: .gitlab/ci/integration-jobs.yml
 
   # Reusable fragments, no jobs of their own. terraform-http-backend's defaults
-  # already describe this instance and the cloudflare state; the two drift-plan
-  # jobs override the three TF_HTTP_*ADDRESS vars for their own state names.
+  # already describe this instance and the cloudflare state; the three
+  # terraform drift-plan jobs (tailscale, authentik, unifi) override the three
+  # TF_HTTP_*ADDRESS vars for their own state names.
   - project: eric/weisssrv-lib
     ref: v0.13.0
     file:

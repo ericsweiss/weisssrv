@@ -28,9 +28,10 @@ module "network" {
 
   # Built-in zone DISPLAY NAMES on this controller, passed explicitly rather
   # than inherited from the module defaults: the names are locale- and
-  # controller-dependent, `internal` is what `internal-to-homelab-dns` resolves
-  # against, and a library default change must never repoint a live policy on a
-  # ref bump. Confirmed against the console before the first apply (docs/46).
+  # controller-dependent, `internal` is what the `homelab-to-internal-icmp` /
+  # `internal-to-homelab-icmp` pair resolves against, and a library default
+  # change must never repoint a live policy on a ref bump. Confirmed against
+  # the console before the first apply (docs/46).
   builtin_zone_names = {
     internal = "Internal"
     external = "External"

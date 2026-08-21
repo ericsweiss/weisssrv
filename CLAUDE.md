@@ -374,10 +374,13 @@ Quick reference (full host-by-host topology in `docs/01-overview.md`):
 - K3s: API VIP `.161`; servers `.222`/`.223`/`.227`; agents `.202-.207`;
   MetalLB VIPs `.100` (public) / `.101` (internal) / `.99` (wg-easy endpoint).
 
-Firewall IP sets and security groups (`admin_lan`, `admin_ts`, `core-cluster`,
-`k3s_nodes`, `pve_hosts`, `nfs_clients`, `smb_clients`) are documented in
-`docs/11-firewall.md`; the rules are rendered by the collection's
-`proxmox_firewall` role from `hosts.yml` / `group_vars`.
+Firewall IP sets are three concentric client scopes (`admin_lan` ⊂
+`lan_clients` ⊂ `dns_clients` — admin ports, user-facing service ports,
+resolver `:53`) plus the membership sets derived from inventory (`admin_ts`,
+`core-cluster`, `k3s_nodes`, `pve_hosts`, `nfs_clients`, `smb_clients`).
+`docs/11-firewall.md` is the inventory of record for both those and the
+security groups; the rules are rendered by the collection's `proxmox_firewall`
+role from `hosts.yml` / `group_vars`.
 
 ## Ansible roles
 

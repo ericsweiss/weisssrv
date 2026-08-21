@@ -80,7 +80,7 @@ all — destroy drops the state entry and changes nothing on the controller.
 |---|---|---|---|
 | Networks (VLANs + DHCP scopes) | 6 | `module.network.unifi_network.this[<key>]` | `local.networks` |
 | Custom firewall zones | 5 | `module.network.unifi_firewall_zone.this[<name>]` | `local.zones` |
-| Zone policies | 17 | `module.network.unifi_firewall_policy.this[<name>]` | `local.policies` |
+| Zone policies | 20 | `module.network.unifi_firewall_policy.this[<name>]` | `local.policies` |
 | WLANs | 4 | `module.network.unifi_wlan.this[<key>]` | `wlans` in `main.tf` |
 | Client reservations | 15 | `module.network.unifi_client.this[<key>]` | `local.clients` |
 | WAN port forwards | 5 | `module.network.unifi_port_forward.this[<key>]` | `local.port_forwards` |
@@ -107,13 +107,16 @@ pair exists so the blackbox probes for the switch and the AP can reach them.
 Anything else between internal zones is blocked, including iot→home,
 work→anything else, guest→anything else, and home→work.
 
-The six `BLOCK` entries narrow the two default-allow paths an `ALLOW` list
+The nine `BLOCK` entries narrow the two default-allow paths an `ALLOW` list
 cannot touch: `{guest,iot,work}-to-gateway-mgmt` keeps the console login off
-those VLANs' own gateway addresses, and `{guest,iot,work}-to-external-dns` stops
-a device with a hardcoded resolver from bypassing AdGuard on `:53`/`:853`.
+those VLANs' own gateway addresses, and `{guest,iot,work}-to-external-dns` plus
+`{guest,iot,work}-to-gateway-dns` close both ways a device with a hardcoded
+resolver could bypass AdGuard on `:53`/`:853` — a public resolver out through
+External, and the gateway's own forwarder answering on each VLAN's `.1`.
 Zone-per-VLAN is what makes the provider's inability to order rules irrelevant:
 the allowances are against a deny rather than a first-match list, and each
-`BLOCK` targets a zone-pair that no `ALLOW` here touches.
+`BLOCK` targets a zone-pair that no `ALLOW` here touches (the two Gateway
+groups are disjoint by port).
 
 ## What is deliberately UNMANAGED (and why)
 
@@ -290,8 +293,10 @@ controller-side object is recreated.
 - **A guest VLAN is `purpose = "corporate"`.** `guest` only sticks while the
   network is in the controller's own Hotspot zone; anywhere else the controller
   rewrites it and the apply fails with an inconsistent-result error.
-- **`create_allow_respond` is rejected for ICMP.** Nothing here is ICMP; an
-  ICMP allowance needs an explicit reverse policy instead.
+- **`create_allow_respond` is rejected for ICMP.** An ICMP allowance needs an
+  explicit reverse policy instead, which is why `homelab-to-internal-icmp` and
+  `internal-to-homelab-icmp` are a pair rather than one policy — the module
+  also forces the attribute off for anything that is not an `ALLOW`.
 - **An empty `dhcp_server.dns_servers` never converges** (upstream #429) — the
   module sends `null` instead, so "no DHCP DNS" is an empty list here.
 

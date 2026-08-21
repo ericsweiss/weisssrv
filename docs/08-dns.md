@@ -47,7 +47,9 @@ worth holding on to:
   ipset ([docs/11-firewall.md](11-firewall.md)). The admin surfaces (`:853`
   DoT, `:3000` API, `:443` UI) stay on the admin sets — a guest device resolves
   names and can do nothing else here. Those VLANs are also **blocked from
-  reaching any external resolver** on `:53`/`:853`, so a device with a
+  reaching any other resolver** on `:53`/`:853` — both an external one and the
+  gateway's own forwarder answering on each VLAN's `.1`, which would otherwise
+  reach the WAN DNS servers straight past AdGuard — so a device with a
   hardcoded `8.8.8.8` gets the weisssrv resolvers or nothing (docs/46
   § Zones and policies).
 - The **management VLAN does not use them either**, and neither does the

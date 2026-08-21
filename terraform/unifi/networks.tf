@@ -516,7 +516,7 @@ locals {
     # The admin workstation's reservation, which the Proxmox firewall's
     # `admin_lan` 10.0.20.8/29 block is sized for. MAC unknown until the machine
     # associates with the new Home SSID — read it from the controller's client
-    # list and uncomment (docs/46 § Cutover).
+    # list and uncomment (docs/46 § Post-cutover checklist).
     #
     # macbook = {
     #   mac      = "00:00:00:00:00:00"

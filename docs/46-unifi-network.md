@@ -113,8 +113,8 @@ Subnets are written in the provider's **gateway form** (the host part of
 |---|---|---|---|---|---|
 | `default` | Default | 1 (built-in) | `10.0.1.1/24` | `.100`-`.199` | Management: gateway, switch, AP. Imported, not created (`name=Default`). DHCP DNS is `1.1.1.1`/`9.9.9.9`, not the resolvers |
 | `homelab` | Homelab | 10 | `192.168.0.1/24` | `.2`-`.98` | Hosts, guests, k3s, VIPs. Phase 2 → `10.0.10.1/24` |
-| `home` | Home | 20 | `10.0.20.1/24` | `.50`-`.249` | Personal client devices |
-| `iot` | IoT | 30 | `10.0.30.1/24` | `.50`-`.249` | IGMP snooping on (as does Home — the two ends of the casting path) |
+| `home` | Home | 20 | `10.0.20.1/24` | `.50`-`.199` | Personal client devices. Pool stops at `.199` — the reservations sit above it (§ DHCP reservations) |
+| `iot` | IoT | 30 | `10.0.30.1/24` | `.50`-`.99` | IGMP snooping on (as does Home — the two ends of the casting path). A 50-address dynamic range: every IoT device that matters is reserved at `.120`+ |
 | `guest` | Guest | 40 | `10.0.40.1/24` | `.50`-`.249` | `purpose = corporate` — see below |
 | `work` | Work | 50 | `10.0.50.1/24` | `.50`-`.249` | |
 
@@ -204,12 +204,13 @@ except where noted):
 | 10 | homelab → Internal | icmp → `10.0.1.2`/`.3` | The blackbox switch/AP probes: they run in a pod, so their echo requests arrive from VLAN 10 |
 | 11 | Internal → homelab | icmp from `10.0.1.2`/`.3` | The echo *replies*. `create_allow_respond` is rejected for icmp, so the return direction is its own policy |
 
-**Six `BLOCK` entries** — narrowing the two default-allow paths:
+**Nine `BLOCK` entries** — narrowing the two default-allow paths:
 
 | # | From → To | Scope | Why |
 |---|---|---|---|
 | 12-14 | {guest,iot,work} → Gateway | tcp `22,80,443`, logged | On a Cloud Gateway the console is a gateway service on *every* VLAN's own gateway address, so without these a guest with the WLAN PSK gets a login form at `https://10.0.40.1`. DHCP is broadcast before the client has an address and is unaffected; ICMP to the gateway stays up for troubleshooting |
-| 15-17 | {guest,iot,work} → External | tcp/udp `53,853`, logged | DHCP option 6 is a suggestion: Chromecast hardware queries `8.8.8.8` regardless and most TVs ship a vendor resolver. Blocking `:53`/`:853` outbound forces the weisssrv resolvers or nothing. Homelab is exempt — Unbound itself has to reach the internet |
+| 15-17 | {guest,iot,work} → External | tcp/udp `53,853`, logged | DHCP option 6 is a suggestion: Chromecast hardware queries `8.8.8.8` regardless and most TVs ship a vendor resolver, so `:53`/`:853` outbound is fenced. Homelab is exempt — Unbound itself has to reach the internet |
+| 18-20 | {guest,iot,work} → Gateway | tcp/udp `53,853`, logged | The other way off the resolvers: a UniFi OS gateway answers DNS on *every* VLAN's own `.1` and forwards to the WAN DNS servers (`1.1.1.1`/`9.9.9.9`, § Site settings), i.e. straight past AdGuard. Rows 15-17 and these together are what make "the weisssrv resolvers or nothing" true. DHCP (udp `67`/`68`) is untouched |
 
 DoH on `:443` is **not** covered: it is indistinguishable from ordinary HTTPS at
 this layer, and closing it needs the IDS/IPS or a blocklist (§ Day-2).
@@ -243,8 +244,10 @@ read-only and new policies append to the end of their zone-pair (upstream
 #407). The set above is order-independent by construction: the `ALLOW`s are
 allowances against a default deny rather than entries in a first-match list,
 and each `BLOCK` targets a zone-pair (→ Gateway, → External) that no `ALLOW`
-here touches. If that ever stops being true — an `ALLOW` and a `BLOCK` on the
-same zone-pair — the ordering becomes a UI step and this page must record it.
+here touches (the two Gateway groups are disjoint by port: `22,80,443` tcp
+against `53,853` tcp/udp). If that ever stops being true — an `ALLOW` and a
+`BLOCK` on the same zone-pair — the ordering becomes a UI step and this page
+must record it.
 
 ### Wireless
 
@@ -306,14 +309,27 @@ happens anyway: **Tailscale** (`admin_ts` is unaffected by any of this).
 Three reservations exist as **commented exemplars** in the root because their
 MACs are unknown until the hardware is in hand: the switch at `10.0.1.2`, the
 AP at `10.0.1.3` (both learned at adoption) and the admin MacBook at
-`10.0.20.10`. Fill them in during bench pre-provisioning — the first two are
-the blackbox probe targets, and the third is what makes the `10.0.20.8/29`
-admin block in the Proxmox firewall mean anything.
+`10.0.20.10`. The first two — the blackbox probe targets — are filled in during
+bench pre-provisioning (§ Bench pre-provisioning, step 6). The third has to
+wait for cutover: the MacBook's MAC is only known once it associates with the
+new Home SSID, and it is what makes the `10.0.20.8/29` admin block in the
+Proxmox firewall mean anything (§ Post-cutover checklist).
 
-Reservations deliberately sit **outside** each network's DHCP pool (pools start
-at `.50`, `.100` on mgmt; reservations live below that in the same subnet). A
-reservation inside the pool can collide with a lease the server has already
-handed out; being in the subnet is the only thing the server actually requires.
+Every reservation sits **outside** its network's DHCP pool, and the pool bounds
+in `local.networks` are what enforce it — a reservation inside the pool can
+collide with a lease the server has already handed out, while being in the same
+*subnet* is the only thing the server itself requires. The reservations keep
+the last octet each device had on the flat LAN, so the pools are bounded around
+them rather than the other way round:
+
+| Network | Pool | Below it | Above it |
+|---|---|---|---|
+| home | `.50`-`.199` | macbook `.10` | hdhr `.200`, eric-bedroom-hyperion `.211` |
+| iot | `.50`-`.99` | hue `.3` | K125M-0…7 `.120`-`.127`, living-room-hyperion `.210`, WLED `.213`-`.215` |
+| default (mgmt) | `.100`-`.199` | switch `.2`, AP `.3` | — |
+
+Adding a reservation means picking an address outside the pool for its network,
+or moving the pool bound in `local.networks` first — both halves are one plan.
 
 > **Trap:** `unifi_client` in-place **updates fail** on this provider version
 > (upstream #428, `inconsistent result after apply: .last_ip`). Changing a
@@ -604,7 +620,6 @@ task terraform:unifi-init
 #    (no site: prefix, dashes rejected).
 task terraform:unifi-import -- 'module.network.unifi_network.this["default"]' name=Default
 task terraform:unifi-import -- 'module.network.unifi_setting.site' default
-task terraform:unifi-import -- 'module.network.unifi_client.this["hdhr"]' 00:18:DD:0A:37:45
 
 # 2. Plan, and ASSERT: no `create` for unifi_network.this["default"].
 task terraform:unifi-plan     # read every line
@@ -615,6 +630,13 @@ task terraform:unifi-apply -- -target='module.network.unifi_firewall_zone.this["
 # 4. …probe, then the rest.
 task terraform:unifi-apply    # supervised: type "apply", then "yes" at terraform's own prompt
 ```
+
+**Clients are deliberately not in that list.** The module sets `allow_existing`,
+so a create ADOPTS whatever the controller already knows — and on the bench it
+knows none of them, because the apartment's devices are still behind the ASUS.
+Import a client only once the controller has seen it (after cutover, and only
+to have it tracked from the plan rather than adopted on the first apply):
+`task terraform:unifi-import -- 'module.network.unifi_client.this["hdhr"]' 00:18:DD:0A:37:45`.
 
 (`terraform/unifi/README.md` § Adopting the live site carries the full import
 recipe — every pre-existing network, zone and WLAN, and where the ids come
@@ -846,11 +868,19 @@ The three items in § Expected breakage were true *on purpose* before the
 window. Each one has to be actively retired, or the next person reads a stale
 allowance as a sanctioned state:
 
-- [ ] **Fill in the three commented reservations** (switch `10.0.1.2`, AP
-  `10.0.1.3`, admin MacBook `10.0.20.10`) in `terraform/unifi/networks.tf` with
-  the MACs the controller now reports, and supervised-apply. Until this lands
-  the gear holds pool leases and `NetworkGearProbeFailed` stays red for the two
-  device targets — a fill-in, not a cabling hunt.
+- [ ] **Confirm the two mgmt reservations are live** — the switch and AP entries
+  were filled in and applied during § Bench pre-provisioning (step 6), so this
+  is a verification, not work: `10.0.1.2` and `10.0.1.3` answer, and the
+  controller's client list shows both as fixed rather than pool leases. If they
+  are still commented out in `terraform/unifi/networks.tf`, that is bench work
+  that was skipped — `NetworkGearProbeFailed` staying red for the two device
+  targets is then a fill-in, not a cabling hunt.
+- [ ] **Fill in the admin MacBook reservation** (`10.0.20.10`) in
+  `terraform/unifi/networks.tf` and supervised-apply. This one genuinely cannot
+  be done before cutover: the MAC is whatever the machine presents once it
+  associates with the new Home SSID (§ DHCP reservations — check Private Wi-Fi
+  Address first). Until it lands the MacBook holds a pool address outside
+  `10.0.20.8/29` and has no admin reach except over Tailscale.
 - [ ] **Expire the `NetworkGearProbeFailed` silence** rather than renewing it,
   and confirm all three probes are green (validation row 18).
 - [ ] **`router.esweiss.com` serves the UCG UI** over the `unifi-self-signed`
@@ -879,6 +909,7 @@ correct segmentation produces — several rows are *failures by design*.
 | 6 | Work containment | Same from Work | Only `:53` succeeds |
 | 7 | Gateway console fenced | From guest/iot/work: `curl -m5 -k https://<that VLAN's .1>` and `ssh <that VLAN's .1>` | Both **fail** (BLOCK rows 12-14). `ping <that VLAN's .1>` still works — icmp is deliberately left up |
 | 8 | External DNS fenced | From guest/iot/work: `dig @8.8.8.8 example.com`, `dig +tls @8.8.8.8 example.com` | Both **fail/time out** (BLOCK rows 15-17); `dig @192.168.0.150` still answers |
+| 8b | Gateway resolver fenced | From guest/iot/work: `dig @<that VLAN's .1> example.com` | **Fails/times out** (BLOCK rows 18-20). Confirm on the bench *before* cutover that the gateway answers this at all with the BLOCKs removed — the rows exist because a UniFi OS gateway normally does, and a bench `dig` is how that is established rather than assumed |
 | 9a | Casting — the half that works | Cast a YouTube or Plex stream from a Home phone to an IoT TV/speaker | Device is discovered (mDNS reflector) and plays |
 | 9b | Casting — the half that does not | Screen-mirror / cast a local photo from the same phone; AirPlay to two speakers at once | **Fails, by design** — the receiver would have to open a connection back to Home, and AirPlay 2 needs PTP multicast that does not route |
 | 10 | Plex local stream | Play from a TV — **wireless TVs are on IoT, wired ones are on Home** (§ Accepted trust decisions); test whichever the household actually has | Direct play from `192.168.0.152:32400`, no transcode-over-WAN. If it transcodes, check Plex's LAN Networks setting (cutover step 11) before suspecting the network |

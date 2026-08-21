@@ -27,8 +27,9 @@ Two consequences:
 
 - **The ref is bumped by hand.** `scripts/check-lib-pins.py` gates the
   `include:` list and `ansible/requirements.yml`; it does not read Terraform
-  module sources. Bump `?ref=` in `main.tf` and `terraform/tailscale/main.tf`
-  in the same MR as `variables.WEISSSRV_LIB_REF`.
+  module sources. Bump `?ref=` in this `main.tf` and in every other root's
+  `main.tf` under `terraform/` in the same MR as `variables.WEISSSRV_LIB_REF`
+  — `scripts/test_site_configs.py` fails if any of them disagrees.
 - **`terraform init` clones `weisssrv-lib` over HTTPS.** In CI that is already
   covered: `.gitlab-ci.yml`'s global `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_0` pair
   rewrites credential-less `https://$CI_SERVER_HOST/` URLs to the job token (the
@@ -112,8 +113,10 @@ task terraform:apply    # normally unnecessary — CI applies on merge to main
 ```
 
 > The **unprefixed** `terraform:*` tasks are this (Cloudflare) module; the
-> siblings are `terraform:tailscale-*` and `terraform:authentik-*`. So
-> `task terraform:apply` right after editing `terraform/authentik` applies
+> siblings are `terraform:tailscale-*`, `terraform:authentik-*` and
+> `terraform:unifi-*`. So `task terraform:apply` right after editing
+> `terraform/authentik` — or `terraform/unifi`, where a wrong apply is a LAN you
+> cannot reach the gateway from — applies
 > **Cloudflare** (the task sets its own directory, regardless of `pwd`), against
 > whatever plan is on disk, and unlike the prefixed tasks it carries no
 > `-auto-approve` refusal guard.
