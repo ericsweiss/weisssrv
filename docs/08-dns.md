@@ -33,6 +33,25 @@ LAN Clients
 | dns-01 | 192.168.0.150 | Primary, runs acme.sh and sync |
 | dns-02 | 192.168.0.160 | Replica, synced from dns-01 |
 
+### Who gets handed these resolvers
+
+Both addresses are handed out as the DHCP DNS servers on **every** UniFi VLAN —
+Default/mgmt, Homelab, Home, IoT, Guest and Work — together with the
+`esweiss.com` search domain, so split-horizon resolution behaves identically on
+all of them ([docs/46-unifi-network.md](46-unifi-network.md) § Networks). Two
+consequences worth holding on to:
+
+- The resolvers are the one weisssrv service every client VLAN may reach. The
+  zone firewall allows `:53` from IoT/Guest/Work/Internal to the homelab zone
+  and nothing else, and the Proxmox firewall mirrors that with the
+  `dns_clients` ipset ([docs/11-firewall.md](11-firewall.md)). The admin
+  surfaces (`:853` DoT, `:3000` API, `:443` UI) stay on the admin sets — a
+  guest device resolves names and can do nothing else here.
+- The **gateway itself** does not use them. Its WAN DNS is set to plain
+  `1.1.1.1` / `9.9.9.9` in the UniFi UI, deliberately, because pointing the
+  gateway at LXCs living behind it is a bootstrap loop. Clients are unaffected;
+  only the gateway's own lookups bypass AdGuard.
+
 ## Unbound Configuration
 
 Unbound runs on localhost:5335 and is only accessible to AdGuard Home.
@@ -316,5 +335,6 @@ journalctl -u adguardhome-sync -f
 
 - [docs/01-overview.md](01-overview.md) — split-horizon DNS and topology
 - [docs/09-certs.md](09-certs.md) — DNS-01 certificate issuance
-- [docs/11-firewall.md](11-firewall.md) — `sg-dns` and the admin sources
+- [docs/11-firewall.md](11-firewall.md) — `sg-dns`, the admin sources and the `dns_clients` scope
+- [docs/46-unifi-network.md](46-unifi-network.md) — the per-VLAN DHCP settings that hand out these resolvers
 - [docs/12-runbooks.md](12-runbooks.md) — updating DNS records

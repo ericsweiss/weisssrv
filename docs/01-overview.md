@@ -5,9 +5,13 @@
 ```
 Internet
     |
-[Router/Firewall] - Asus GT-AX11000 Pro (192.168.0.1)
+[Gateway/Firewall] - UniFi UCG-Fiber (192.168.0.1 on VLAN 10; 10.0.1.1 on VLAN 1)
     |
-[192.168.0.0/24] ---- Core LAN
+[USW-Pro-XG-8-PoE] --- trunk (native VLAN 1, tagged 10/20/30/40/50)
+    |                       |
+    |                       +-- [U7 Pro XGS] --- wireless: Home/IoT/Guest/Work
+    |
+[VLAN 10 - 192.168.0.0/24] ---- Homelab (hosts, guests, k3s, VIPs)
     |
     +-- Proxmox Cluster (6 nodes, cluster name: weisssrv)
     |   +-- pve-nas-01    (192.168.0.102) - NAS + Storage
@@ -52,6 +56,28 @@ Internet
         +-- vip-internal  (192.168.0.101) - MetalLB internal services
         +-- k3s-api       (192.168.0.161) - kube-vip K3s API HA endpoint
 ```
+
+### VLANs
+
+The estate is segmented by the UniFi tier — one zone per VLAN, inter-zone
+default-deny, everything the provider supports codified in `terraform/unifi/`.
+[docs/46-unifi-network.md](46-unifi-network.md) is canonical for the zone
+policy matrix, the physical port map, and the cutover/validation runbook.
+
+| VLAN | Network | Subnet | Gateway | DHCP pool | Carries |
+|---|---|---|---|---|---|
+| 1 | Default (mgmt) | 10.0.1.0/24 | 10.0.1.1 | .100-.199 | Gateway, switch (.2), AP (.3) |
+| 10 | Homelab | 192.168.0.0/24 | 192.168.0.1 | .2-.98 | Everything in the tree above (Phase 2 renumbers this to 10.0.10.0/24) |
+| 20 | Home | 10.0.20.0/24 | 10.0.20.1 | .50-.249 | Personal client devices; `10.0.20.8/29` is the admin-device block |
+| 30 | IoT | 10.0.30.0/24 | 10.0.30.1 | .50-.249 | TVs, WLED, Kasa, Hue, Hyperion |
+| 40 | Guest | 10.0.40.0/24 | 10.0.40.1 | .50-.249 | Guest WLAN — DNS out, nothing else |
+| 50 | Work | 10.0.50.0/24 | 10.0.50.1 | .50-.249 | Work devices — DNS out, nothing else |
+
+Every VLAN resolves through the weisssrv resolvers (`.150`/`.160`, handed out
+by UniFi DHCP), so split-horizon DNS behaves identically on all of them.
+pve-nas-01 reaches VLAN 10 over a tagged sub-interface (`vmbr0` bridges
+`nic1.10`) because its run shares a port with Home; every other host is on an
+untagged VLAN 10 access port.
 
 **NIC note**: the three OptiPlex compute nodes (pve-opt-01/02/03, .104/.105/.106)
 uplink through a **2-NIC active-backup bond** (`nic0`/`nic1`, hand-maintained in
@@ -147,7 +173,10 @@ Hot Tier (NVMe)                 Cold Tier (HDD)
 2. **SSH Hardening**: Key-only auth, fail2ban on all hosts
 3. **TLS Everywhere**: ACME certificates for internal services
 4. **Secrets Management**: 1Password CLI for runtime secret injection
-5. **Future**: Network segmentation with VLANs (IoT, guest, management) planned
+5. **Network segmentation**: UniFi VLANs with a zone-per-VLAN firewall — client
+   devices (Home/IoT/Guest/Work) reach service ports only, and the management
+   plane only from the admin block ([docs/46](46-unifi-network.md),
+   [docs/11](11-firewall.md))
 
 ## Implementation Status
 
@@ -161,6 +190,7 @@ canonical home for implementation status.
 ## Related documentation
 
 - [docs/00-hardware-setup.md](00-hardware-setup.md) — hardware inventory and Proxmox install
+- [docs/46-unifi-network.md](46-unifi-network.md) — the UniFi tier: VLANs, zone firewall, port map, cutover runbook
 - [docs/11-firewall.md](11-firewall.md) — firewall IP sets and security groups
 - [docs/19-k3s-deployment.md](19-k3s-deployment.md) — the k3s cluster layer
 - [docs/16-next-steps.md](16-next-steps.md) — remaining work and accepted risks

@@ -15,33 +15,39 @@ done.
 Each item below is a real, documented gap that needs an explicit call — usually
 a hardware spend or a posture change — rather than an implementation task.
 
-### Network segmentation / admin-IPSet tightening
+### Network segmentation / admin-IPSet tightening — DECIDED, shipping with the UniFi migration
 
-- **Current state**: the whole estate is one flat L2 `192.168.0.0/24` (single
-  `vmbr0`, `vlan: null`) shared with Home-Assistant-managed IoT and the
-  Windows 11 VM (.155, now IaC-provisioned — [docs/39](39-windows-vm.md) — but
-  still on the flat LAN). The `admin_lan` firewall IPSet is
-  the entire /24, so SSH (22), the Proxmox API (8006), the kube-apiserver
-  (6443), RDP (3389), and the AdGuard admin plane (:3000/:443/:853) accept from
-  every device on the LAN. The services stay authenticated, so this is a
-  defense-in-depth / L3-reachability gap, not direct compromise. See
-  [docs/11-firewall.md](11-firewall.md) and [docs/06-zfs.md](06-zfs.md)
-  ("Encryption Posture", LAN-trust model). VLANs are listed as "planned" below
-  (Security Hardening) but never implemented.
-- **Proposed change**: implement the planned management/IoT/guest VLANs and
-  re-scope `admin_lan` to a management VLAN or an explicit small admin-host set.
-  Interim (no VLAN hardware change): tighten the highest-value ports
-  (8006/6443/22/3389) to a dedicated admin IPSet of specific workstation IPs,
-  leaning on Tailscale (`admin_ts`) for remote admin.
-- **Decision needed**: buy/configure a VLAN-capable switch and re-IP into
-  segments, or take the interim IPSet tightening now.
+Decided 2026-08-21: buy the VLAN-capable tier and segment. The UniFi
+UCG-Fiber + USW-Pro-XG-8-PoE + U7 Pro XGS replace the Asus/unmanaged-switch
+tier, each VLAN is its own firewall zone with inter-zone default-deny, and
+`admin_lan` shrinks from the flat `/24` to the homelab LAN plus the
+`10.0.20.8/29` admin-device block on the Home VLAN. Client devices reach
+service ports through the new `lan_clients` set and the resolvers through
+`dns_clients`, never the management plane. Design, port map, cutover and
+validation: [docs/46-unifi-network.md](46-unifi-network.md); the sets
+themselves: [docs/11-firewall.md](11-firewall.md) § Client scopes.
+
+Still open behind it:
+
+- The **cutover itself** is a supervised window (see docs/46), and the
+  switch/AP blackbox probes are expected red until it runs.
+- `sg-dns`'s `:53` rules and `sg-k3s-ingress-int` are rendered by the
+  collection against `admin_lan` with no variable to re-point them, so the
+  client VLANs cannot reach the resolvers or the internal Traefik VIP until the
+  `proxmox_firewall` role grows that knob (docs/11 § Client scopes).
+- The Windows VM (.155, [docs/39](39-windows-vm.md)) still sits on the homelab
+  VLAN; moving it to Home is a follow-up, not a blocker.
+- Phase 2 — renumbering the homelab from `192.168.0.0/24` to `10.0.10.0/24` —
+  ships as its own MR after Phase 1 validates (docs/46 § Phase 2).
 
 ### Network-fabric SPOF: second switch + corosync ring — deferred indefinitely
 
-May eventually happen, but not planned for any near-term window. Note: the
-2026-08 Ubiquiti wave (Cloud Fiber Gateway + Pro XG 8 PoE + U7 Pro XGS)
-replaces the gateway/switch tier and is the natural carrier for the network
-segmentation work — a later session.
+May eventually happen, but not planned for any near-term window. The 2026-08
+Ubiquiti wave (Cloud Fiber Gateway + Pro XG 8 PoE + U7 Pro XGS) has now landed
+and carried the segmentation work ([docs/46](46-unifi-network.md)); it also
+makes a second ring cheaper to add later, since the managed switch has a spare
+SFP+ and 5406 stays reserved for ring1. Still deferred: one switch remains a
+single point of failure for the whole estate.
 
 
 ### UPS for the NAS — deferred indefinitely
@@ -98,8 +104,10 @@ play, green on all six), route approval verified riding the tag
 (single-primary failover intact), Tailscale SSH + kube-API verified, and the
 owner entry removed from `autoApprovers.routes` — an untagged device can no
 longer self-approve the LAN route. Drift watch: `tailscale-drift-plan` stays
-the signal; the `admin_ts` firewall-set revisit remains folded into the
-Ubiquiti network session.
+the signal. The `admin_ts` firewall-set revisit was taken up in the Ubiquiti
+session and **concluded with no change**: the ACL policy already enforces
+device/user granularity, so narrowing the ipset would duplicate that layer
+while adding DR-lockout risk ([docs/11](11-firewall.md) § IPSets).
 
 
 ### ~~AQC113 firmware update (pve-nas-01)~~ — CLOSED 2026-08-20 (stays at 1.5.38)
@@ -129,9 +137,11 @@ carries the manual stanza; backup at `/root/interfaces.bak` on the host.
 
 Corrected 2026-08-20: the router's DHCP pool was shrunk to end at .98 when
 wg-easy was set up, so `.99` is NOT inside the pool and no collision exists.
-The residual truth is only that the exclusion lives in router config rather
-than code — carry it into the Ubiquiti gateway migration (the network
-session), where the pools and possibly every VIP get redefined anyway.
+Closed 2026-08-21: the residual "it lives in router config, not code" half is
+gone — the Homelab VLAN's pool is declared as `192.168.0.2`-`192.168.0.98` in
+`terraform/unifi/`, so the exclusion of `.99` (and of the `.100`/`.101`/`.161`
+VIPs) is now codified and drift-checked ([docs/46](46-unifi-network.md)
+§ Networks).
 
 
 ---
@@ -193,8 +203,12 @@ Traefik → backend hop is plaintext any more. What remains:
 
 - **Immich VM (.157) → Immich ML LXC (.158) :3003** — every photo byte, plain
   HTTP, scoped to the one source by `sg-immich-ml` (docs/36).
-- **Router** — hardware/firmware-dependent. Configure manually if the router
-  exposes an HTTPS UI; otherwise leave plain HTTP behind Traefik (lan-only).
+- **Gateway UI (`router.esweiss.com`)** — closed as a plaintext hop 2026-08-21:
+  the UniFi UCG serves its UI over HTTPS only, so Traefik reaches it on `:443`.
+  The residual is that the certificate is the gateway's own self-signed one, so
+  that single backend uses a dedicated `unifi-self-signed` ServersTransport
+  with `insecureSkipVerify` ([docs/46](46-unifi-network.md)) — one LAN hop to
+  the default gateway itself, behind `lan-tailscale-strict`.
 
 The adguard-exporter hop is closed: it scrapes `https://dns-0X.esweiss.com` via
 `hostAliases`, and `k3s_nodes` no longer appears on AdGuard's :3000 rule, which
@@ -267,6 +281,35 @@ weekly and each page means a NAS reboot window. To close it:
    reboot cadence and (optionally) `slub_nomerge`. (The delegations toggle
    is already retired — 2026-08-20, after it was exonerated for the leak
    and proven to cause the *arr SQLite-on-NFS stall regression; docs/06.)
+
+### UniFi network follow-ups (opened by the 2026-08-21 migration)
+
+Design, runbook and the codified-vs-manual contract:
+[docs/46-unifi-network.md](46-unifi-network.md).
+
+- [ ] **Phase 2 — renumber the homelab** `192.168.0.0/24` → `10.0.10.0/24`
+  (last octet preserved everywhere). Drafted on `feat/homelab-renumber`;
+  raised as its own MR once Phase 1 is validated in production.
+- [ ] **Enable IPS after burn-in.** Ships as `ips_mode = "ids"`; flip to
+  `"ips"` in `terraform/unifi/` after a week of reading detections. Upstream
+  #381 means alert suppressions stay a UI concern.
+- [ ] **Provider bump when the blockers clear.** Three things are UI-only at
+  `ubiquiti-community/unifi` 0.55.0 and worth re-testing on each release:
+  6 GHz on the WLANs (#406 — creation fails with `6g` in the band set),
+  switch port/native-VLAN management (#438/#430/#431 make
+  `unifi_device.port_override` unsafe), and firewall-policy ordering (#407).
+  `unifi_client` in-place updates (#428) are the day-to-day annoyance.
+- [ ] **UniFi metrics into Prometheus** (unpoller or equivalent). Today the
+  gear is observed only by ICMP blackbox probes feeding
+  `NetworkGearProbeFailed`; per-port throughput, PoE draw, AP client counts
+  and WAN health are not collected.
+- [ ] **Re-scope the role-owned rules** — `sg-dns`'s `:53` and
+  `sg-k3s-ingress-int` still source from `admin_lan`
+  ([docs/11](11-firewall.md) § Client scopes); they need a
+  `proxmox_firewall` knob before client VLANs can resolve or reach the
+  internal ingress VIP.
+- [ ] **Move the Windows VM (.155) to the Home VLAN** — it is a client
+  machine sitting on the homelab segment ([docs/39](39-windows-vm.md)).
 
 ### Nextcloud follow-ups (not blockers)
 
@@ -608,9 +651,11 @@ MR's deploy runbook, which is not tracked in git):
 
 ### Security hardening
 
-- [ ] Network segmentation with VLANs (IoT, guest, management) — detail and the
-  interim admin-IPSet option are under
-  [Network segmentation](#network-segmentation--admin-ipset-tightening) above.
+- [x] Network segmentation with VLANs (IoT, guest, management) — decided and
+  codified with the UniFi migration; see
+  [Network segmentation](#network-segmentation--admin-ipset-tightening--decided-shipping-with-the-unifi-migration)
+  above and [docs/46-unifi-network.md](46-unifi-network.md). The remaining work
+  is the supervised cutover and Phase 2's renumber.
 - [ ] **Agent guardrails: add the cluster-mutating verbs to `deny` in the tracked
   `.claude/settings.json`.** Its 17 deny rules already cover the irreversible
   verbs (delete ns/pvc/pv, `helm uninstall`, `terraform destroy`,

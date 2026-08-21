@@ -148,7 +148,8 @@ weisssrv/
 ├── terraform/
 │   ├── cloudflare/           # Cloudflare DNS management
 │   ├── tailscale/            # Tailnet ACL policy-as-code (SSH rules, subnet-route auto-approval)
-│   └── authentik/            # Authentik SSO state as code (applications, providers, groups)
+│   ├── authentik/            # Authentik SSO state as code (applications, providers, groups)
+│   └── unifi/                # UniFi network state as code (VLANs, firewall zones/policies, WLANs, port forwards)
 ├── kubernetes/               # Flux-managed cluster state
 │   ├── clusters/weisssrv/    # Flux bootstrap + top-level Kustomizations
 │   ├── infrastructure/       # Platform — five subdirectories (sources, crds, controllers, configs, observability)
@@ -477,6 +478,7 @@ Endpoint monitoring and the public status page:
 | [09-certs](docs/09-certs.md) | TLS certificates (acme.sh + distribution) |
 | [10-mail](docs/10-mail.md) | Mail relay configuration |
 | [11-firewall](docs/11-firewall.md) | Proxmox firewall (IPSets + Security Groups) |
+| [46-unifi-network](docs/46-unifi-network.md) | UniFi gateway/switch/AP tier: VLANs, zone-based firewall, WLANs, port map, bench pre-provisioning + cutover runbook |
 
 ### Platform (k3s, Flux, observability, SSO, GPU)
 
@@ -541,7 +543,7 @@ Endpoint monitoring and the public status page:
 | [kubernetes/README](kubernetes/README.md) | Flux tree layout, reconcile order, namespace ownership |
 | [kubernetes/clusters/weisssrv/tenants/README](kubernetes/clusters/weisssrv/tenants/README.md) | Onboarding a tenant repo's Flux Kustomization (walkthrough: docs/30) |
 | `kubernetes/apps/<app>/README.md` (one per app that has notes — see `kubernetes/apps/`) | Per-app notes; [authentik](kubernetes/apps/authentik/README.md) is the **canonical** Authentik doc (its Terraform layer is docs/40) |
-| [terraform/cloudflare/README](terraform/cloudflare/README.md), [terraform/tailscale/README](terraform/tailscale/README.md), [terraform/authentik/README](terraform/authentik/README.md) | Per-module ownership, plan/apply rules, import + DR recipes |
+| [terraform/cloudflare/README](terraform/cloudflare/README.md), [terraform/tailscale/README](terraform/tailscale/README.md), [terraform/authentik/README](terraform/authentik/README.md), [terraform/unifi/README](terraform/unifi/README.md) | Per-module ownership, plan/apply rules, import + DR recipes |
 | [kubernetes/components/README](kubernetes/components/README.md) | The reusable Kustomize components (netpol-baseline, the three netpol-egress-*, gitlab-runner-common) and when to take one rather than an inline policy |
 | [scripts/README](scripts/README.md) | Every script, grouped by purpose, with its origin (local / dual-maintained / vendored) |
 | [docker/hermes-agent/README](docker/hermes-agent/README.md), [docker/camofox-browser/README](docker/camofox-browser/README.md) | The two app images this repo builds |

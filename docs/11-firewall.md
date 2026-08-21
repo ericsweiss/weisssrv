@@ -49,19 +49,62 @@ IPSets define groups of IPs for use in rules. IPSets are **dynamically generated
 #   ssh pve-nas-01 "sudo sed -n '/IPSET nfs_clients/,/^\[/p' /etc/pve/firewall/cluster.fw"
 
 [IPSET smb_clients]
-# Hosts allowed SMB access
+# Client subnets allowed SMB access (proxmox_firewall_smb_client_cidrs)
 192.168.0.0/24
+10.0.20.0/24
 ```
 
 The `dc/` scope prefix appears only when rules *reference* an ipset
 (`-source +dc/k3s_nodes`), never in the declaration header.
+
+### Client scopes: `admin_lan` vs `lan_clients` vs `dns_clients`
+
+With the LAN segmented into UniFi VLANs
+([docs/46-unifi-network.md](46-unifi-network.md)) a single "the LAN" set no
+longer describes anything useful: a phone on the Home VLAN should reach Home
+Assistant's web UI and never the Proxmox API, and an IoT plug should reach a
+resolver and nothing else. Three sets carry those scopes, defined in
+`group_vars/all.yml` (`proxmox_firewall_admin_lan_cidrs` and the
+`firewall_ipset_special_entries` keys `lan_clients` / `dns_clients` — a key no
+inventory host references creates the set outright).
+
+| Set | Members | Used by |
+|---|---|---|
+| `admin_lan` | `192.168.0.0/24`, `10.0.20.8/29` | The management plane: `:22`, `:8006`, `:6443`, `:3389`, `:22222`, the AdGuard `:3000`/`:443`/`:853` admin surfaces, GitLab `:22` |
+| `lan_clients` | `192.168.0.0/24`, `10.0.20.0/24` | User-facing service ports: HAOS `:8123`, GitLab web `:80`/`:443`, Nextcloud/Immich `:443`, Plex + HAOS discovery, and (as `smb_clients`) SMB `:445` |
+| `dns_clients` | `192.168.0.0/24`, `10.0.1.0/24`, `10.0.20.0/24`, `10.0.30.0/24`, `10.0.40.0/24`, `10.0.50.0/24` | Resolver `:53` only — every VLAN uses the weisssrv resolvers |
+
+Read them as three concentric scopes: `admin_lan` ⊂ `lan_clients` ⊂
+`dns_clients`. A port that moves outward needs no second admin rule; a port
+that stays admin-scoped is a deliberate statement that client VLANs have no
+business there. The `10.0.20.8/29` block is the admin-device reservation range
+on the Home VLAN — the workstation the estate is administered from — and the
+sshd layer mirrors it exactly (`ssh_authorized_keys` `from=`,
+`base_fail2ban_ignoreip`, `gitlab_ssh_allowed_users`), so a Home-VLAN device
+outside the /29 is refused twice.
+
+The IoT VLAN (`10.0.30.0/24`) appears **inline** in the `sg-haos` and `sg-plex`
+discovery rules rather than in any set: multicast discovery is the only thing
+IoT devices may reach on those guests, and folding the VLAN into `lan_clients`
+would silently grant them the web UIs too.
+
+> **Rule sources the site cannot re-scope yet.** `sg-dns`'s `:53` rules and the
+> whole of `sg-k3s-ingress-int` (`:80`/`:443`) are written by the collection's
+> `cluster.fw.j2` against `admin_lan`, with no variable to point them at
+> `dns_clients` / `lan_clients`. Until the role grows that knob, client VLANs
+> reach the resolvers and the internal Traefik VIP only if their subnet is in
+> `admin_lan` — which is exactly what the split is trying to avoid. Verify with
+> `pve-firewall compile` on a node before trusting a client VLAN to resolve.
 
 **`admin_ts` is deliberately the full CGNAT range** (`100.64.0.0/10`), not
 per-device 100.x pins. Accepted risk: this is a single-owner tailnet
 (docs/05-tailscale.md), per-device pins are brittle (onboarding/DR lockout)
 and partly moot — subnet-router SNAT means tailnet traffic to guests arrives
 as `admin_lan` anyway. Tailnet-side ACL tightening is codified in
-`terraform/tailscale/`. Revisit if the tailnet ever gains non-admin members.
+`terraform/tailscale/`. The VLAN migration re-opened and **closed** this
+question: the tailnet ACL already enforces device/user granularity, so
+narrowing the ipset would duplicate that layer while adding DR-lockout risk.
+Revisit only if the tailnet ever gains non-admin members.
 
 ### Security Groups
 
@@ -208,10 +251,13 @@ in `group_vars/all.yml`):
 ```ini
 [group sg-plex]
 
-IN ACCEPT -source +dc/admin_lan -p tcp -dport 32469 -log nolog      # DLNA
-IN ACCEPT -source +dc/admin_lan -p udp -dport 32410:32414 -log nolog # GDM
-IN ACCEPT -source +dc/admin_lan -p udp -dport 1900 -log nolog       # SSDP
-IN ACCEPT -p tcp -dport 32400 -log nolog                             # Plex Web (public)
+IN ACCEPT -source +dc/lan_clients -p tcp -dport 32469 -log nolog      # DLNA
+IN ACCEPT -source 10.0.30.0/24 -p tcp -dport 32469 -log nolog         # DLNA from IoT TVs
+IN ACCEPT -source +dc/lan_clients -p udp -dport 32410:32414 -log nolog # GDM
+IN ACCEPT -source 10.0.30.0/24 -p udp -dport 32410:32414 -log nolog
+IN ACCEPT -source +dc/lan_clients -p udp -dport 1900 -log nolog       # SSDP
+IN ACCEPT -source 10.0.30.0/24 -p udp -dport 1900 -log nolog
+IN ACCEPT -p tcp -dport 32400 -log nolog                              # Plex Web (public)
 ```
 
 **sg-host-egress** - Host-originated egress allowlist (hosts only, paired
@@ -404,9 +450,17 @@ the source of truth):
 - `core-cluster` - All core infrastructure (Proxmox, DNS, SMTP, services, k3s) (generated)
 - `k3s_nodes` - Kubernetes nodes (generated)
 - `nfs_clients` - Hosts allowed NFS access (generated)
-- `admin_lan` - The whole LAN /24, admin/management sources (in-template)
+- `admin_lan` - Admin/management sources: the homelab LAN + the Home-VLAN admin
+  block (in-template, members from `proxmox_firewall_admin_lan_cidrs`)
 - `admin_ts` - The full Tailscale CGNAT range 100.64.0.0/10 (in-template)
-- `smb_clients` - Hosts allowed SMB access, the whole LAN /24 (in-template)
+- `smb_clients` - Client subnets allowed SMB access
+  (`proxmox_firewall_smb_client_cidrs`, in-template)
+- `lan_clients` - Service-port scope: homelab LAN + Home VLAN (special entries)
+- `dns_clients` - Resolver scope: every VLAN (special entries)
+
+The last two carry no inventory hosts at all — they exist purely as
+`firewall_ipset_special_entries` keys, which is how a site declares a named set
+of arbitrary CIDRs. See § Client scopes above for what each one is for.
 
 **Special Entries (VIPs, non-host IPs):**
 
@@ -574,6 +628,7 @@ nano /etc/pve/firewall/cluster.fw
 ## Related documentation
 
 - [docs/01-overview.md](01-overview.md) — network topology and IP allocation
+- [docs/46-unifi-network.md](46-unifi-network.md) — the VLANs and the zone firewall these sets mirror
 - [docs/05-tailscale.md](05-tailscale.md) — the tailnet ACL, the other access layer
 - [docs/13-ci-cd.md](13-ci-cd.md) — runner network boundaries
 - [docs/12-runbooks.md](12-runbooks.md) — connectivity troubleshooting
