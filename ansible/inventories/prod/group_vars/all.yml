@@ -291,17 +291,17 @@ proxmox_vm_virtio_win_checksum: "sha256:e14cf2b94492c3e925f0070ba7fdfedeb2048c91
 # and builds THEIR Dockerfile. The value is the upstream RELEASE TAG (used
 # verbatim as `git clone --branch` and as the built image tag), NOT the semver
 # whl version.
-hermes_version: "v2026.8.18"
+hermes_version: "v2026.8.19"
 # Immutable commit the pinned tag must resolve to — build-hermes-agent refuses
 # to build on a mismatch (moved/compromised tag defence). Lockstep with
 # hermes_version.
-hermes_git_sha: "e624e9fde561e1add9388384012b295fde669ade"
+hermes_git_sha: "fcbd1076a93841fa88855acce810e342a5b78101"
 # PUBLISHED image tag = <hermes_version>-r<N>. The image is upstream + our
 # patches (docker/hermes-agent/patches/), so a patch change without an upstream
 # bump MUST produce a new tag or the nodes' IfNotPresent cache keeps serving the
 # unpatched image. Bump -rN when patches change; reset to -r1 on a
 # hermes_version bump. CI asserts the prefix matches hermes_version.
-hermes_image_version: "v2026.8.18-r1"
+hermes_image_version: "v2026.8.19-r1"
 # OpenAI Codex CLI, baked into the hermes image by Dockerfile.codex. Requires
 # >=0.130.0 for the Hermes runtime. Build-time only — not substituted into any
 # manifest. https://github.com/openai/codex/releases (npm @openai/codex)

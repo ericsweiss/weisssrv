@@ -45,9 +45,9 @@ data:
   hermes_camofox_version: 1.13.0
   hermes_claude_version: 2.1.238
   hermes_codex_version: 0.149.0
-  hermes_image_version: v2026.8.18-r1
+  hermes_image_version: v2026.8.19-r1
   hermes_op_version: 2.39.0-1
-  hermes_version: v2026.8.18
+  hermes_version: v2026.8.19
   hindsight_llamacpp_version: b10068
   hindsight_version: 0.9.1
   homarr_version: v1.75.0
