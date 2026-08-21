@@ -56,10 +56,9 @@ worth holding on to:
   *above* the resolvers, which are LXCs behind them, so pointing them at
   `.150`/`.160` is a bootstrap loop. Nothing on VLAN 1 needs split-horizon
   answers — and because of that there is no `Internal → homelab :53` zone
-  policy at all. The `10.0.1.0/24` entry in the `dns_clients` ipset is
-  deliberately inert: it keeps the set a complete statement of "which subnets
-  may resolve", so re-pointing a management device at AdGuard is a one-line
-  zone-policy change rather than two edits.
+  policy at all, and `10.0.1.0/24` is deliberately **not** a member of the
+  `dns_clients` ipset. Re-pointing a management device at AdGuard would take
+  both edits: the zone policy and the ipset entry.
 - Guests resolving through AdGuard means visitors inherit the household
   ad-blocking — the reason the guest `:53` allowance exists — and can
   *enumerate* internal names from the rewrites. They cannot reach any of them;

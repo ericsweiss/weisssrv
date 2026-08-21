@@ -62,9 +62,13 @@ in `local.networks` / `local.zones` is a `moved {}` block, which
 
 ```bash
 task terraform:unifi-init
-op run -- terraform state rm 'module.network.unifi_network.this["<key>"]'
+task terraform:unifi-state -- state rm 'module.network.unifi_network.this["<key>"]'
 # then delete the map entry here, and delete the network in the controller
 ```
+
+Go through the task, not a bare `op run -- terraform state rm`: the GitLab HTTP
+state backend's credentials live only in the task's `env:` anchor and are not
+persisted by `terraform init`, so a bare invocation answers 401.
 
 Nothing else is protected, deliberately: a removed **policy** fails closed (it
 is an allowance against a default deny), and `unifi_setting` has no delete at
@@ -254,8 +258,13 @@ its address is therefore a replace:
 
 ```bash
 task terraform:unifi-init
-op run -- terraform apply -replace='module.network.unifi_client.this["hue"]'
+task terraform:unifi-apply -- -replace='module.network.unifi_client.this["hue"]'
 ```
+
+The extra arguments ride through the supervised apply task, which is also where
+the state-backend credentials come from — a bare
+`op run -- terraform apply -replace=…` answers 401 (they live in the task's
+`env:` anchor and `terraform init` does not persist them).
 
 The client is re-adopted by MAC, so the device is untouched; only the
 controller-side object is recreated.

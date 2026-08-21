@@ -496,17 +496,14 @@ firewall_ipset_special_entries:
   # surface. Wider than lan_clients on purpose, and only ever referenced
   # from :53.
   #
-  # 10.0.1.0/24 (mgmt) is the exception and is currently INERT: that VLAN's DHCP
-  # hands out public resolvers to avoid a bootstrap loop, and no UniFi zone
-  # policy admits Internal -> homelab (terraform/unifi/networks.tf), so nothing
-  # from it can reach :53 here. Kept so the set stays the complete statement of
-  # "which subnets may resolve", and so re-pointing a mgmt device at AdGuard is
-  # a one-line zone-policy change rather than two.
+  # The Default/mgmt VLAN (10.0.1.0/24) is deliberately NOT a member: its DHCP
+  # hands out public resolvers to avoid a bootstrap loop (the resolvers are LXCs
+  # behind the gear on that VLAN), and no UniFi zone policy admits
+  # Internal -> homelab (terraform/unifi/networks.tf). Re-pointing a management
+  # device at AdGuard means adding the zone policy AND the entry here.
   dns_clients:
     - ip: 192.168.0.0/24
       comment: homelab LAN
-    - ip: 10.0.1.0/24
-      comment: Default/mgmt VLAN 1
     - ip: 10.0.20.0/24
       comment: Home VLAN 20
     - ip: 10.0.30.0/24

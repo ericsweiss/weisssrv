@@ -648,9 +648,16 @@ network is a loop, not a diff.
 The same membership is visible in Terraform state after the apply, at
 `module.network.data.unifi_firewall_zone.builtin["internal"]` — a
 module-internal data source, so it is **not** reachable from `terraform
-console`, which evaluates in root scope. Reading it needs the state-backend
-variables the Taskfile anchor injects, which is why the console and the API are
-the recipes given above.
+console`, which evaluates in root scope, and reading it needs the state-backend
+variables the Taskfile anchor injects. That is what `terraform:unifi-state`
+carries, so the state answer is one line too:
+
+```bash
+task terraform:unifi-state -- state show 'module.network.data.unifi_firewall_zone.builtin["internal"]'
+```
+
+Use it as the cross-check, not the primary: it reports what the last refresh
+wrote into state, while the `curl` recipe above reads the controller itself.
 
 Also verify at first plan that the built-in zone display names really are
 `Internal` / `External` / `Gateway` on this controller, and that the client QoS

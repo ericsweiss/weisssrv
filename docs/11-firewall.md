@@ -72,7 +72,7 @@ inventory host references creates the set outright).
 |---|---|---|
 | `admin_lan` | `192.168.0.0/24`, `10.0.20.8/29` | The management plane: `:22`, `:8006`, `:6443`, `:3389`, `:22222`, the AdGuard `:3000`/`:443`/`:853` admin surfaces, GitLab `:22` |
 | `lan_clients` | `192.168.0.0/24`, `10.0.20.0/24` | User-facing service ports: HAOS `:8123`, GitLab web `:80`/`:443`, Nextcloud/Immich `:443`, Plex + HAOS discovery, and (as `smb_clients`) SMB `:445` |
-| `dns_clients` | `192.168.0.0/24`, `10.0.1.0/24`, `10.0.20.0/24`, `10.0.30.0/24`, `10.0.40.0/24`, `10.0.50.0/24` | Resolver `:53` only — every *client* VLAN uses the weisssrv resolvers. `10.0.1.0/24` (mgmt) is deliberately inert: that VLAN's DHCP hands out public resolvers and no zone policy admits Internal → homelab, so nothing from it can arrive here |
+| `dns_clients` | `192.168.0.0/24`, `10.0.20.0/24`, `10.0.30.0/24`, `10.0.40.0/24`, `10.0.50.0/24` | Resolver `:53` only — every *client* VLAN uses the weisssrv resolvers. The Default/mgmt VLAN (`10.0.1.0/24`) is deliberately **not** a member: its DHCP hands out public resolvers and no zone policy admits Internal → homelab, so nothing from it can arrive here anyway |
 
 Read them as three concentric scopes: `admin_lan` ⊂ `lan_clients` ⊂
 `dns_clients`. A port that moves outward needs no second admin rule; a port

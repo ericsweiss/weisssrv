@@ -1900,6 +1900,27 @@ tasks:
         fi
       - op run -- terraform import {{.CLI_ARGS}}
 
+  terraform:unifi-state:
+    desc: "Run a `terraform state` subcommand against the UniFi state (state surgery / read-only state inspection) — usage: task terraform:unifi-state -- state show <address>"
+    dir: "{{.TERRAFORM_DIR}}/unifi"
+    env: *tf_unifi_env
+    preconditions: *tf_preconditions
+    cmds:
+      # `state list/show/rm` never touch the controller, but they DO read the
+      # GitLab HTTP state backend, whose credentials live only in this env
+      # anchor — `terraform init` does not persist TF_HTTP_USERNAME/PASSWORD, so
+      # a bare `op run -- terraform state ...` answers 401. Passthrough, not a
+      # wrapper: `state rm` stops managing an object and leaves it live
+      # (terraform/unifi/README.md § Guardrails), `state show` is the only way
+      # to read a module-internal address (docs/46 zone probe).
+      - |
+        if [ -z "{{.CLI_ARGS}}" ]; then
+          echo "Usage: task terraform:unifi-state -- <terraform subcommand> [args]"
+          echo "Example: task terraform:unifi-state -- state show 'module.network.data.unifi_firewall_zone.builtin[\"internal\"]'"
+          exit 1
+        fi
+      - op run -- terraform {{.CLI_ARGS}}
+
   # --- Backblaze B2 offsite-backup bucket settings (raw API; SUPERVISED apply) ---
   # scripts/b2-bucket-drift.py is the codified bucket config (it replaced the
   # terraform/b2 module after the Backblaze provider's READ path went blind
