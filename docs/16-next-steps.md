@@ -102,12 +102,20 @@ the signal; the `admin_ts` firewall-set revisit remains folded into the
 Ubiquiti network session.
 
 
-### AQC113 firmware update (pve-nas-01)
+### ~~AQC113 firmware update (pve-nas-01)~~ — CLOSED 2026-08-20 (stays at 1.5.38)
 
-Update the AQC113 NIC firmware from `1.5.38` to `1.5.45` on pve-nas-01. Needs
-the vendor flashing tool on a Windows USB stick and a downtime window. The GRO
-disable that stabilises the NIC in the meantime is codified in the `nic_tuning`
-role, so this is a planned maintenance task rather than an emergency.
+Attempted and deliberately closed. The 1.5.48 attempt proved vendor firmware
+packages carry per-board MAC/PHY provisioning: flashing the only published
+1.5.48 image (a raw Lenovo-Vulcan clx) left the PHY unable to train — no link
+even after a cold boot. Recovery used the 1.5.38 package's proper toolkit
+(`customclx2` + `updatedata.xml`, whose bdp id=8 exactly matches this card's
+generic `1d6a:0001` subsystem) to build a board-customized image; the card is
+now at **1.5.38 factory-equivalent, freshly provisioned, 10G verified**. No
+further firmware work is planned: the GRO disable in `nic_tuning` keeps the
+NIC stable (0 recurrences since codified) and no published upgrade offers a
+fix worth the risk. The working flash procedure (VM PCI-passthrough — Hiren's
+PE cannot start the miniport) is recorded in the ops memory if it is ever
+needed again.
 
 ### ~~pve-nas-01 stale manual config cleanup~~ — DONE
 

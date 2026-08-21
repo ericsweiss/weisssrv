@@ -164,7 +164,7 @@ qol_omz_commit: "061f773dd356df52a8bccd5e73377c012f97ef14"
 qol_vundle_version: "v0.10.2"
 # CoreDNS image for the tailnet-dns split-horizon resolver (kubernetes/apps/
 # tailnet-dns). Pinned to the rancher mirror k3s already caches on every node.
-coredns_tailnet_version: "1.14.6"
+coredns_tailnet_version: "1.14.7"
 debian_version: "13"
 # Proxmox LXC root template (pveam appliance). Authoritative pin — mirrors the
 # proxmox_lxc role default (bump both together). Upstream silently rotates the
@@ -220,10 +220,10 @@ wg_easy_version: "15.4.0"
 # Meilisearch: https://github.com/meilisearch/meilisearch/releases (pinned to 1.15.x for Bar Assistant compat)
 # Redis: https://hub.docker.com/_/redis/tags (Alpine variant)
 mealie_version: "v3.23.1"
-bar_assistant_version: "6.1.0"
-salt_rim_version: "5.1.0"
+bar_assistant_version: "6.2.0"
+salt_rim_version: "5.2.0"
 meilisearch_version: "v1.15.2"
-redis_version: "8.10.0-alpine"
+redis_version: "8.10.1-alpine"
 
 # Plex Media Server version (apt-managed via official repository)
 plex_version: "1.43.3.10896-cb3ebc72d"
@@ -232,13 +232,13 @@ plex_version: "1.43.3.10896-cb3ebc72d"
 # https://packages.gitlab.com/gitlab/gitlab-ee
 # Applied by task gitlab:deploy / the deploy-gitlab CI job; the maintenance
 # apt-upgrade honours the gitlab-ee package hold and will not bump it.
-gitlab_version: "19.2.4-ee.0"
+gitlab_version: "19.3.0-ee.0"
 
 # https://gitlab.com/gitlab-org/charts/gitlab-runner/tags
 gitlab_runner_helm_version: "0.92.0"
 
 # https://gitlab.com/gitlab-org/charts/gitlab-agent/tags
-gitlab_agent_helm_version: "2.29.0"
+gitlab_agent_helm_version: "2.30.0"
 
 # In-cluster pull-through registry cache for CI (docs/27 § Registry pull-through
 # cache). Bare X.Y.Z tag. https://hub.docker.com/_/registry/tags
@@ -301,13 +301,13 @@ hermes_image_version: "v2026.8.18-r1"
 # OpenAI Codex CLI, baked into the hermes image by Dockerfile.codex. Requires
 # >=0.130.0 for the Hermes runtime. Build-time only — not substituted into any
 # manifest. https://github.com/openai/codex/releases (npm @openai/codex)
-hermes_codex_version: "0.148.0"
+hermes_codex_version: "0.149.0"
 # Claude Code CLI, baked into the hermes image alongside the Codex CLI so Hermes
 # can delegate coding tasks headlessly (`claude -p`), authenticated with a
 # long-lived OAuth token (CLAUDE_CODE_OAUTH_TOKEN via ESO — no API key; the CLI
 # holds the credential, Hermes only reads stdout). Build-time only — docs/37.
 # https://github.com/anthropics/claude-code (npm @anthropic-ai/claude-code)
-hermes_claude_version: "2.1.237"
+hermes_claude_version: "2.1.238"
 # 1Password CLI (op), baked into the hermes image so Hermes' 1Password skill can
 # drive `op` against the isolated Agent vault (docs/37 §1Password). Value is the
 # full DEB version string, not the bare semver `op --version` reports.
@@ -431,11 +431,11 @@ helm_chart_versions:
   # images per upstream. Re-evaluate when the fix lands.
   # Upstream issue: https://github.com/metallb/metallb/issues/3063
   metallb: "0.15.3"
-  traefik: "41.2.0"  # App version v3.7.10 (chart 41.x: logs.general->log, logs.access->accessLog)
+  traefik: "41.3.0"  # App version v3.7.11 (chart 41.x: logs.general->log, logs.access->accessLog)
   cert_manager: "v1.21.1"
   external_dns: "1.21.1"  # App version 0.20.0
   external_secrets: "2.9.0"  # ESO with 1Password Connect provider
-  kube_prometheus_stack: "88.5.0"  # prometheus-operator v0.93.1 (additive CRD fields; crds: CreateReplace)
+  kube_prometheus_stack: "88.5.3"  # prometheus-operator v0.93.1 (additive CRD fields; crds: CreateReplace)
   # prometheus-community/prometheus-operator-crds chart. Owns the
   # monitoring.coreos.com CRDs in the dedicated infrastructure-crds stage so
   # controllers (Traefik's ServiceMonitor) reconcile before kube-prometheus-stack
@@ -443,18 +443,17 @@ helm_chart_versions:
   # 88.5.0's operator v0.93.1 (CRDs may lead the operator, never trail). COUPLING: bump in lockstep with kube_prometheus_stack so the
   # CRD set stays version-matched to the operator kps deploys (docs/12).
   prometheus_operator_crds: "31.0.1"
-  loki: "18.9.0"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0); 18.0.0 = dashboard-gen only
+  loki: "18.11.0"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0); 18.0.0 = dashboard-gen only
   alloy: "1.11.1"
   prometheus_blackbox_exporter: "11.17.2"
   onepassword_connect: "2.4.1"
   vpa: "5.0.0"  # chart major = app 1.7.1; every values key this repo sets is unchanged in 5.x
   kured: "6.1.0"  # Kubernetes Reboot Daemon (app 1.22.1); owns k3s-node reboots flagged by maintenance
   reloader: "2.2.16"  # stakater/Reloader (app v1.4.20); auto-restarts annotated workloads on ConfigMap change (Secrets excluded via ignoreSecrets)
-  # Tailscale K8s operator (appVersion v1.102.2; tracks the host
-  # tailscale_version, but only once the chart actually publishes — 1.102.3
-  # exists as a host package while its chart does not yet, and flux-lint's
+  # Tailscale K8s operator (appVersion v1.102.3; tracks the host
+  # tailscale_version, but only once the chart actually publishes — flux-lint's
   # helm-values gate fails a phantom chart version)
-  tailscale_operator: "1.102.2"
+  tailscale_operator: "1.102.3"
   # NVIDIA k8s device plugin — advertises nvidia.com/gpu on the labelled GPU node
   # (kubernetes/infrastructure/controllers/nvidia-device-plugin). Chart tracks the
   # plugin appVersion. https://github.com/NVIDIA/k8s-device-plugin/releases
