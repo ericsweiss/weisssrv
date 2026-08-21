@@ -653,7 +653,7 @@ variables the Taskfile anchor injects. That is what `terraform:unifi-state`
 carries, so the state answer is one line too:
 
 ```bash
-task terraform:unifi-state -- state show 'module.network.data.unifi_firewall_zone.builtin["internal"]'
+task terraform:unifi-state -- show 'module.network.data.unifi_firewall_zone.builtin["internal"]'
 ```
 
 Use it as the cross-check, not the primary: it reports what the last refresh

@@ -62,7 +62,7 @@ in `local.networks` / `local.zones` is a `moved {}` block, which
 
 ```bash
 task terraform:unifi-init
-task terraform:unifi-state -- state rm 'module.network.unifi_network.this["<key>"]'
+task terraform:unifi-state -- rm 'module.network.unifi_network.this["<key>"]'
 # then delete the map entry here, and delete the network in the controller
 ```
 
