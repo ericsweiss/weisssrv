@@ -135,9 +135,10 @@ locals {
   # The policy set. Two kinds of entry live here:
   #
   #   ALLOW — an allowance against the inter-zone default deny. Everything NOT
-  #   listed is denied: iot->home, iot->work, work->anything but DNS,
-  #   guest->anything but DNS + HTTP(S) out, home->work, and every reverse
-  #   direction that is not a stateful response.
+  #   listed is denied: iot->home, iot->work, work->any internal zone but the
+  #   resolvers, guest->any internal zone but the resolvers, home->work, and
+  #   every reverse direction that is not a stateful response. (Internet egress
+  #   is the External default-allow, minus the DNS BLOCKs below.)
   #
   #   BLOCK — a narrowing of the two paths UniFi allows by DEFAULT and no ALLOW
   #   entry can take away: every zone reaches External, and every zone reaches
