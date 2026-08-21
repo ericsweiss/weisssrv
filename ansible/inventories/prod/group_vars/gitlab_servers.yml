@@ -93,10 +93,13 @@ gitlab_nginx_real_ip_trusted_addresses:
 
 # gitlab_ssh_port (2222) is WAN-facing and REDIRECTs to the system sshd, so
 # without this every local account would accept internet pubkey attempts.
+# The admin patterns track proxmox_firewall_admin_lan_cidrs: the homelab LAN
+# plus the /29 admin-device block on the Home VLAN, never the whole VLAN.
 gitlab_ssh_allowusers_enabled: true
 gitlab_ssh_allowed_users:
   - git
   - "{{ admin_user }}@192.168.0.0/24"
+  - "{{ admin_user }}@10.0.20.8/29"
   - "{{ admin_user }}@100.64.0.0/10"
 
 # Publish Omnibus's bundled postgres_exporter for the in-cluster Prometheus
