@@ -1305,7 +1305,8 @@ own traffic, not the estate. Be honest about the rest before the window opens:
 | DNS on the IoT / Guest / Work VLANs | step 2 apply | step 2.6 (minutes, once clients re-DHCP) | Those clients hold leases naming `192.168.0.150`/`.160`; after the flip the gateway has no route to that subnet at all |
 | Home Assistant **on its own address** (`http://10.0.10.154:8123`, the app on the LAN) | step 2.7 | step 2.7 (one reboot) | HAOS is the one guest that cannot be dual-addressed — see that step |
 | Home Assistant **through Traefik** — `home.esweiss.com` / `home.ericsweiss.com`, and the five HA-bypass IngressRoutes (tv/movies/nzbget/qbittorrent/music) | step 2.7 | step 7 (the Flux reconcile) | Flux is suspended, so the live cluster still publishes the EndpointSlice address `192.168.0.154` (`apps/vm-ingress/services-default.yaml`) and still matches `ClientIP(192.168.0.154/32)` (`apps/download-clients/ingress-routes-ha-bypass.yaml`). Those are per-guest literals, not `${cluster_*}` placeholders, so they move only when the branch itself reconciles. Expect 502 on the two hostnames and HA's *arr integrations falling through to the SSO route |
-| The other vm-ingress guests through Traefik — plex, gitlab, nextcloud, immich | step 5 (when each drops its old address) | step 7 | Same EndpointSlice mechanism. Reaching them by address inside VLAN 10 keeps working throughout |
+| The other vm-ingress guests through Traefik — plex, gitlab, nextcloud, immich, and the two AdGuard dashboards (`dns-01`/`dns-02.esweiss.com`) | step 5 (when each drops its old address) | step 7 | Same EndpointSlice mechanism. Reaching them by address inside VLAN 10 keeps working throughout |
+| `router.esweiss.com` (the UCG console through Traefik) | step 2 apply | step 7 | Its EndpointSlice still names `192.168.0.1` while Flux is suspended. The console itself stays reachable directly at `https://10.0.10.1` from the admin station |
 
 Two consequences to arrange **before** the window:
 
@@ -1396,7 +1397,13 @@ touching that hour — plus a physical console.
 **5. Keep a Home-VLAN admin station** (`10.0.20.8/29`, already in `admin_lan`).
 It reaches the homelab through the gateway, so it survives the flip as soon as
 the hosts carry their new addresses — which is exactly why step 1 comes first.
-Every Ansible and `kubectl` step below runs from here.
+Every Ansible step below runs from here. **`kubectl` is the exception between
+2.3 and step 4**: the kubeconfig names the API VIP `192.168.0.161`, which the
+gateway no longer routes once VLAN 10 is `10.0.10.0/24` — run the kubectl
+commands in 2.8/2.9 from a Proxmox host (the VIP stays on-link there while the
+hosts hold both addresses), or over the Tailscale subnet route if item 4's
+out-of-band path is up. Step 4 moves the VIP and `task k3s:kubeconfig` restores
+the admin station's access.
 
 **6. Keep a console path** to pve-nas-01 and at least one other host.
 IPMI/monitor + keyboard; the whole plan assumes you can recover a host whose
@@ -1633,7 +1640,11 @@ flux get helmreleases -n traefik
 ```
 
 With those suspended the patches stand until step 7 reconciles the same values
-from `cluster-config` and makes them a no-op:
+from `cluster-config` and makes them a no-op.
+
+**Where to run this:** not the admin station — the kubeconfig still names the
+API VIP `192.168.0.161`, unroutable from VLAN 20 until step 4 (§ posture
+item 5). Run these from a Proxmox host, where the VIP is still on-link:
 
 ```bash
 # pools first, then the Services that claim them; wg-easy first so the VPN
@@ -1685,7 +1696,7 @@ carries `10.0.10.x`-only membership:
   `nas_storage_exports` and is evaluated per client source address. From step 5
   the k3s nodes and app guests source from `10.0.10.x`, which the deployed
   export list does not name: new mounts get `EACCES` and established ones break.
-  That covers every k3s NFS PV, all six hosts' `/export/backups-proxmox`, and
+  That covers every k3s NFS PV, all six hosts' `/export/tank-proxmox`, and
   HAOS's plaintext `/export/media` mount — HAOS flipped back at 2.7.
 
 Both are pushed here as a **transitional superset** naming both subnets, and
@@ -1774,7 +1785,8 @@ ssh eric@10.0.10.104 'grep -c 192.168.0. /etc/pve/firewall/cluster.fw'   # non-z
 ```
 
 Then confirm the firewall did not lock you out of anything already working:
-`pvecm status` still 6/6, `kubectl get nodes` still 9/9 Ready, and an existing
+`pvecm status` still 6/6, `kubectl get nodes` still 9/9 Ready (from a Proxmox
+host — the 2.8 kubectl-locality note applies until step 4), and an existing
 NFS-backed pod still reads its volume.
 
 ### Step 3 — corosync ring migration (add a link, then drop the old one)
@@ -2024,13 +2036,13 @@ Re-check the NIC-offload pins afterwards (`ethtool -k nic1`, `cat
 
 **pve-nas-01 is the special one.** Dropping `192.168.0.102` invalidates every
 NFS mount still established against that address — Proxmox marks the
-`backups-proxmox` storage inactive on the other five hosts, and any pod holding
+`tank-proxmox` storage inactive on the other five hosts, and any pod holding
 a stale handle needs **deleting**, not restarting (docs/12; a Flux-managed
 workload drift-reverts a `rollout restart`). Do it last, and expect to work
 through the remount list at step 8:
 
 ```bash
-pvesm status                       # on each host: backups-proxmox active again
+pvesm status                       # on each host: tank-proxmox active again
 kubectl get pods -A | grep -vE 'Running|Completed'
 ```
 
@@ -2051,15 +2063,22 @@ converged by hand.
    flux get sources git flux-system      # revision is the merge commit
    ```
 
-2. Resume in the reverse order of § Repo/CI posture item 2, then reconcile:
+2. Resume the four Kustomizations, reconcile, and only **then** resume the
+   traefik HelmRelease — waking it any earlier lets helm-controller's drift
+   detection re-assert the old chart-rendered VIP annotation
+   (`192.168.0.100`) and undo 2.8. It must come back only after
+   `infrastructure-controllers` has applied the `10.0.10.x`-substituted
+   HelmRelease:
 
    ```bash
-   task flux:resume -- traefik/helmrelease/traefik
-   task flux:resume -- flux-system/kustomization/apps
-   task flux:resume -- flux-system/kustomization/infrastructure-controllers
-   task flux:resume -- flux-system/kustomization/infrastructure-configs
    task flux:resume -- flux-system/kustomization/flux-system
+   task flux:resume -- flux-system/kustomization/infrastructure-configs
+   task flux:resume -- flux-system/kustomization/infrastructure-controllers
+   task flux:resume -- flux-system/kustomization/apps
    task flux:reconcile
+   # verify the rendered HelmRelease now carries the new VIP before waking it:
+   kubectl -n traefik get helmrelease traefik -o yaml | grep 10.0.10.100
+   task flux:resume -- traefik/helmrelease/traefik
    ```
 
 3. `cluster-config` carries the new `cluster_lan_cidr`, the three MetalLB VIPs
@@ -2117,7 +2136,7 @@ Flux-managed workload drift-reverts a `rollout restart`:
 
 ```bash
 kubectl get pods -A | grep -vE 'Running|Completed'
-pvesm status          # on each host: backups-proxmox active
+pvesm status          # on each host: tank-proxmox active
 ```
 
 ### Step 9 — Tailscale (supervised, can sever remote admin)
@@ -2208,8 +2227,12 @@ its own reversal, and steps 1-2 are cheap:
   with the same `ha network update` at 2.7. Hosts and guests still hold both
   addresses; nothing else changed. HAOS is the only piece that took a one-way
   flip, and its reversal is one console command plus a reboot. The 2.9
-  transition pushes are supersets — they need no reversal, but re-running them
-  without `-e` restores the `main` values.
+  transition pushes are supersets — they need no reversal. If you want the
+  pre-window membership back, deploy the same two plays **from a `main`
+  checkout**: re-running them from this branch without `-e` installs the
+  `10.0.10.x`-only sets, which would drop corosync (still on `192.168.0.x`
+  ring addresses) and de-authorize every NFS mount still established against
+  `192.168.0.102` — the exact breakage 2.9 exists to prevent.
 - **Step 3** (corosync): restore the saved `/root/corosync.conf.pre-renumber`,
   `pvecm expected 1` if quorum is gone, restart `corosync` and `pve-cluster`.
   Every host still holds both addresses at this point, which is why this
