@@ -649,8 +649,8 @@ locals {
   # source restriction lives in the Proxmox firewall and the k8s
   # NetworkPolicies, not in a per-forward allowlist nothing else can see.
   #
-  # The map key is the forward's name in the UI. Targets are homelab addresses,
-  # so Phase 2 renumbers all five.
+  # The map key is the forward's name in the UI. Targets are homelab addresses;
+  # all five moved in the Phase 2 renumber (docs/46 § Phase 2).
   port_forwards = {
     # Traefik's public MetalLB VIP (10.0.10.100) — every *.ericsweiss.com name.
     http  = { wan_port = "80", ip = "10.0.10.100", port = "80" }

@@ -372,8 +372,12 @@ re-issued a config.
 
 ## Gotchas
 
-- **`.99` is in the DHCP range** (`.1–99`). It MUST be excluded from the router's
-  DHCP pool or a client will collide with the VIP.
+- **`.99` sits just above the DHCP pool, by design.** The Homelab VLAN's scope
+  is `10.0.10.2`–`10.0.10.98` in `terraform/unifi/networks.tf`
+  (`local.networks.homelab.dhcp`), so `.99` can never be leased — codified, not
+  an operator step, and `unifi-drift-plan` flags a UI edit that widens it.
+  Widening the pool past `.98` would let a client lease collide with the VIP,
+  which is invisible except as `EndpointDown`.
 - **flannel owns node `:51820/udp`**. The WAN firewall rule is `-dest`-scoped to
   the `.99` VIP so it never exposes flannel's inter-node WireGuard. Do not
   broaden it to a bare `-dport 51820`.
