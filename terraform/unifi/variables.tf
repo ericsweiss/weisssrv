@@ -25,6 +25,23 @@ variable "unifi_api_key" {
   }
 }
 
+variable "unifi_allow_insecure" {
+  description = <<-EOT
+    Skip TLS verification against the controller. Defaults ON because the
+    console serves its own self-signed certificate on the LAN address and
+    `unifi_api_url` IS that address — there is no name to issue a real cert for,
+    so verification would fail every plan.
+
+    It is an input rather than a literal so the two cases that CAN verify are a
+    `TF_VAR_unifi_allow_insecure=false` away: a console fronted by a real
+    certificate, and a DR bootstrap through an SSH tunnel whose far end presents
+    one. Every plan and apply sends the API key and, on a WLAN change, the four
+    PSKs over this session.
+  EOT
+  type        = bool
+  default     = true
+}
+
 # WLAN pre-shared keys
 # One sensitive variable per SSID, injected by the Taskfile / CI via `op run`
 # from the `WiFi <ssid>` items in the Homelab vault

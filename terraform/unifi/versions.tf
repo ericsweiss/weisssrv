@@ -35,7 +35,7 @@ provider "unifi" {
   api_url = var.unifi_api_url
   api_key = var.unifi_api_key
 
-  # The console serves its own self-signed certificate on the LAN address, and
-  # the api_url is that address — there is no name to issue a real cert for.
-  allow_insecure = true
+  # Self-signed controller certificate on a LAN address — see the variable's
+  # description for why this defaults on and when to turn it off.
+  allow_insecure = var.unifi_allow_insecure
 }

@@ -1783,8 +1783,10 @@ tasks:
           echo "ERROR: terraform:authentik-apply is a supervised operator step; run it from a terminal." >&2
           exit 2
         fi
+        # Unanchored — see terraform:unifi-apply for why the space-delimited
+        # form lets `-auto-approve=true` through.
         case " {{.CLI_ARGS}} " in
-          *" -auto-approve "*|*" --auto-approve "*)
+          *auto-approve*)
             echo "ERROR: -auto-approve is refused here; approve the plan interactively." >&2
             exit 2 ;;
         esac
@@ -1864,8 +1866,12 @@ tasks:
           echo "ERROR: terraform:unifi-apply is a supervised operator step; run it from a terminal." >&2
           exit 2
         fi
+        # Unanchored on purpose: Task shell-quotes each CLI arg before
+        # interpolation, so a space-delimited pattern misses the equally valid
+        # `-auto-approve=true` (it renders as '-auto-approve=true', quotes and
+        # all). Matches terraform:tailscale-apply.
         case " {{.CLI_ARGS}} " in
-          *" -auto-approve "*|*" --auto-approve "*)
+          *auto-approve*)
             echo "ERROR: -auto-approve is refused here; approve the plan interactively." >&2
             exit 2 ;;
         esac

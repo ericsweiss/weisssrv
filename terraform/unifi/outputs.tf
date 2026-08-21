@@ -2,11 +2,11 @@
 # import commands, the API cross-checks and the drift triage in docs/46 need,
 # and none of them is derivable from this configuration.
 #
-# Outputs make the FIRST plan non-empty ("Changes to Outputs"), which is why
-# terraform/authentik has none — but this root's first plan creates the whole
-# site anyway, so the outputs land with the initial supervised apply and every
-# `unifi-drift-plan` run after it is clean. Do not add an output later without
-# expecting one non-empty plan.
+# ADDING an output makes the next plan non-empty ("Changes to Outputs"), which
+# on a drift-plan job reads as drift. These land with the initial supervised
+# apply that creates the whole site, so every `unifi-drift-plan` run after it is
+# clean — but adding one LATER costs one yellow drift plan, so do it together
+# with a change that is being applied anyway.
 
 output "network_ids" {
   description = "Controller network id per `local.networks` key."
