@@ -295,10 +295,33 @@ Phase 1 touches the repo in four places; each is documented where it lives.
   plaintext `:80` the ASUS served.
 - **Observability** ([docs/31-observability.md](31-observability.md)): ICMP
   blackbox probes for `192.168.0.1`, `10.0.1.2` and `10.0.1.3` feed the
-  `NetworkGearProbeFailed` alert (warning, 5m). Those instances are excluded
-  from the `EndpointDown` catch-all so one cause fires once. **The switch and
-  AP probes are expected RED until the cutover completes** — they do not exist
-  at those addresses yet.
+  `NetworkGearProbeFailed` alert (warning, 5m), with
+  `NetworkGearProbeMissing` (warning, 15m) behind it as the drift guard for the
+  pattern-matched target set. Those instances are excluded from the
+  `EndpointDown` catch-all so one cause fires once.
+
+### Expected breakage between merge and cutover
+
+The repo lands before the hardware does. Two things are wrong in that window on
+purpose; neither is an incident, and neither needs a revert.
+
+- **`NetworkGearProbeFailed` fires for `10.0.1.2` and `10.0.1.3`.** Nothing
+  answers at the switch and AP addresses until the gear is cabled in
+  (`192.168.0.1` keeps answering — the ASUS holds that address until step 3 of
+  the cutover). It is a warning, so it does not page and letting it sit is a
+  valid choice; silence it if the noise is in the way, renewing until the
+  window:
+
+  ```bash
+  task observability:silence ALERT=NetworkGearProbeFailed DURATION=7d
+  ```
+
+- **`router.esweiss.com` returns 502.** The `vm-ingress` backend for that one
+  hostname now expects the UCG's HTTPS UI on `:443` (via the
+  `unifi-self-signed` ServersTransport), and the ASUS serves its UI on
+  plaintext `:80`. The old UI stays reachable at `http://192.168.0.1`
+  meanwhile; no other route touches this backend. It clears itself the moment
+  the UCG takes over the gateway address.
 
 ---
 
@@ -370,15 +393,15 @@ Two things must happen in a specific order on the first run:
 import id:
 
 ```bash
-terraform import 'module.network.unifi_network.this["default"]' name=Default
+task terraform:unifi-import -- 'module.network.unifi_network.this["default"]' name=Default
 ```
 
 Site settings import by **site name** (`id == site`), and clients import by
 **colon-separated MAC only** (no `site:` prefix, dashes rejected):
 
 ```bash
-terraform import 'module.network.unifi_setting.mgmt' default
-terraform import 'module.network.unifi_client.this["hdhr"]' 00:18:DD:0A:37:45
+task terraform:unifi-import -- 'module.network.unifi_setting.site' default
+task terraform:unifi-import -- 'module.network.unifi_client.this["hdhr"]' 00:18:DD:0A:37:45
 ```
 
 **Probe zone membership before creating the second zone.** It is unverified

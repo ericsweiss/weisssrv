@@ -2,8 +2,9 @@
 # promtool unit tests for the blackbox/endpoint alerts. Pins the load-bearing
 # firing boundaries: the WindowsRdpDown power-state gate, the EndpointDown
 # 10m warning hold, the edge-cert expiry scope, the DNS-probe absent() guard,
-# and the NetworkGearProbeFailed hold plus the EndpointDown exclusion that keeps
-# a failed UniFi device from firing both.
+# the NetworkGearProbeFailed hold plus the EndpointDown exclusion that keeps
+# a failed UniFi device from firing both, and the NetworkGearProbeMissing
+# absent() guard behind that pattern-matched aggregate.
 rule_files:
   - rules.yaml
 evaluation_interval: 1m
@@ -196,6 +197,38 @@ tests:
           - exp_labels:
               severity: warning
               instance: '10.0.1.3'
+
+  # NetworkGearProbeMissing fires when any one of the three device probes has no
+  # series at all. Gateway + switch present, AP target dropped -> fire, labelled
+  # with the missing instance. A FAILING probe (switch at 0) is deliberately not
+  # a missing one — that is NetworkGearProbeFailed's job.
+  - interval: 1m
+    input_series:
+      - series: 'probe_success{instance="192.168.0.1"}'
+        values: '1+0x30'
+      - series: 'probe_success{instance="10.0.1.2"}'
+        values: '0+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: NetworkGearProbeMissing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: '10.0.1.3'
+
+  # All three present -> no drift, no alert.
+  - interval: 1m
+    input_series:
+      - series: 'probe_success{instance="192.168.0.1"}'
+        values: '1+0x30'
+      - series: 'probe_success{instance="10.0.1.2"}'
+        values: '1+0x30'
+      - series: 'probe_success{instance="10.0.1.3"}'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: NetworkGearProbeMissing
+        exp_alerts: []
 
   # All three answering -> silent.
   - interval: 1m

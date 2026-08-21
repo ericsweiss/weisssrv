@@ -1875,6 +1875,25 @@ tasks:
         [ "$confirm" = "apply" ] || { echo "Aborted."; exit 1; }
       - op run -- terraform apply {{.CLI_ARGS}}
 
+  terraform:unifi-import:
+    desc: "One-time/DR state bootstrap: terraform-import one pre-existing controller object (read-only against the API; writes only Terraform state) — usage: task terraform:unifi-import -- <address> <id>"
+    dir: "{{.TERRAFORM_DIR}}/unifi"
+    env: *tf_unifi_env
+    preconditions: *tf_preconditions
+    cmds:
+      # No import.sh counterpart to authentik's: that root imports a fixed
+      # inventory from imports.tf, while the UniFi ids are read off the live
+      # controller one object at a time, so the address and id arrive as
+      # CLI_ARGS. The ordered sequence — Default network first, then the rest —
+      # is terraform/unifi/README.md § Adopting the live site.
+      - |
+        if [ -z "{{.CLI_ARGS}}" ]; then
+          echo "Usage: task terraform:unifi-import -- <address> <id>"
+          echo "Example: task terraform:unifi-import -- 'module.network.unifi_network.this[\"default\"]' name=Default"
+          exit 1
+        fi
+      - op run -- terraform import {{.CLI_ARGS}}
+
   # --- Backblaze B2 offsite-backup bucket settings (raw API; SUPERVISED apply) ---
   # scripts/b2-bucket-drift.py is the codified bucket config (it replaced the
   # terraform/b2 module after the Backblaze provider's READ path went blind

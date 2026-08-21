@@ -211,18 +211,18 @@ them. Import first:
 task terraform:unifi-init
 
 # The built-in Default network — the only resource with name= import support.
-op run -- terraform import 'module.network.unifi_network.this["default"]' name=Default
+task terraform:unifi-import -- 'module.network.unifi_network.this["default"]' name=Default
 
 # Everything else with an id: <id>, or <site>:<id>.
-op run -- terraform import 'module.network.unifi_network.this["iot"]' 5dc28e5e9106d105bdc87217
-op run -- terraform import 'module.network.unifi_firewall_zone.this["iot"]' default:5f3e9b2c4ee8cb0f1f4a1234
-op run -- terraform import 'module.network.unifi_wlan.this["home"]' 5dc28e5e9106d105bdc87218
+task terraform:unifi-import -- 'module.network.unifi_network.this["iot"]' 5dc28e5e9106d105bdc87217
+task terraform:unifi-import -- 'module.network.unifi_firewall_zone.this["iot"]' default:5f3e9b2c4ee8cb0f1f4a1234
+task terraform:unifi-import -- 'module.network.unifi_wlan.this["home"]' 5dc28e5e9106d105bdc87218
 
 # Clients import by MAC, and the MAC MUST contain colons (no site:id form).
-op run -- terraform import 'module.network.unifi_client.this["hue"]' 00:17:88:7E:C7:A2
+task terraform:unifi-import -- 'module.network.unifi_client.this["hue"]' 00:17:88:7E:C7:A2
 
 # The settings resource's id IS the site name.
-op run -- terraform import module.network.unifi_setting.site default
+task terraform:unifi-import -- module.network.unifi_setting.site default
 ```
 
 Ids come from the controller API (`/proxy/network/v2/api/site/default/...`) or
