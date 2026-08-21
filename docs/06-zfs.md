@@ -735,11 +735,19 @@ Standing posture until the tenant is isolated and a fixed kernel ships
 of the 7.0.14 line; note the earlier assumption that kernel 7.1.3's NFSD
 fixes cover this is RETRACTED — the leaking path is not proven to be nfsd):
 
-- **`nas_storage_nfs_disable_delegations: true`** in
-  `host_vars/pve-nas-01.yml` persists `fs.leases-enable=0`. Shipped as the
-  first mitigation attempt; measurement afterwards showed the leak survives
-  with zero delegations, so this is retained as hygiene (it removed ~5 000
-  standing write delegations and one suspect allocation path), not as the fix.
+- ~~`nas_storage_nfs_disable_delegations: true`~~ **RETIRED 2026-08-20.**
+  Shipped as the first mitigation attempt; measurement showed the leak
+  survives with zero delegations, and `slub_nomerge` then exonerated
+  delegations entirely (tenant: `skbuff_ext_cache`). Worse, the switch had a
+  real cost: without write delegations, every SQLite transaction in the *arr
+  apps issues server-side LOCK/LOCKU RPCs, and each unlock waits for all
+  in-flight I/O on the file (`do_unlk` → `nfs_iocounter_wait`) — 15-30 s
+  stalls, `database is locked` cascades, and liveness-probe kill loops
+  across sonarr/radarr/lidarr from the moment the sysctl went live
+  (2026-08-19 06:00Z, confirmed by the node `node_nfs_requests_total`
+  Lock-rate stepping 0 → 8-11/s cluster-wide at that minute). The toggle is
+  `false` again; delegations return on file reopen after
+  `sysctl -w fs.leases-enable=1` (or a reboot clears the live value).
 - **The `HostSlabLeakSuspected` alert** (SUnreclaim minus ARC above 16 GiB
   for 24 h) is the reboot pager: at the measured ~4 GiB/day it fires roughly
   weekly, and firing means *schedule the NAS reboot window now* — a reboot
@@ -756,9 +764,9 @@ fixes cover this is RETRACTED — the leaking path is not proven to be nfsd):
   `bpftrace -e 'kprobe:<suspect_alloc> { @[kstack(8)] = count(); }'`
   against alloc/free pairs, compared with the slab object delta over the
   same window.
-- Remove the toggle and retire the cadence only when the leaking cache is
-  identified, the running kernel carries its upstream fix, **and** a week of
-  flat slab confirms it (tracking item: docs/16).
+- Retire the reboot cadence (and optionally `slub_nomerge`) only when the
+  running kernel carries the br_netfilter/skb_ext fix **and** a week of flat
+  `skbuff_ext_cache` confirms it (tracking item: docs/16).
 
 ```bash
 # View ARC size + hit ratio

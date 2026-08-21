@@ -256,8 +256,9 @@ weekly and each page means a NAS reboot window. To close it:
    (`apt-get changelog proxmox-kernel-7.0`), and consider reporting
    upstream with the captured stacks (docs/06 has the fingerprint); after
    a fixed kernel installs, a week of flat `skbuff_ext_cache` retires the
-   reboot cadence, the delegations toggle, and (optionally)
-   `slub_nomerge`.
+   reboot cadence and (optionally) `slub_nomerge`. (The delegations toggle
+   is already retired — 2026-08-20, after it was exonerated for the leak
+   and proven to cause the *arr SQLite-on-NFS stall regression; docs/06.)
 
 ### Nextcloud follow-ups (not blockers)
 

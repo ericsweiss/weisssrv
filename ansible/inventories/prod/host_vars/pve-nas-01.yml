@@ -274,13 +274,17 @@ nas_storage_archive_backup_sources:
 # update-initramfs handler so it applies at early boot.
 nas_storage_zfs_arc_max_bytes: 12884901888
 
-# NFSv4 delegation kill-switch (fs.leases-enable=0, persisted via sysctl.d).
-# The running kernel's nfsd leaks one unreclaimable file_lock per GETATTR
-# delegation-conflict check — 33 GiB of slab in 9 days against ~5k standing
-# write delegations from the k3s NFS clients (2026-08-18 incident, docs/06
-# § Kernel file_lock slab leak). Remove only per the criteria there: a fixed
-# kernel AND a week of flat file_lock_cache.
-nas_storage_nfs_disable_delegations: true
+# NFSv4 delegation kill-switch: RETIRED 2026-08-20 (docs/06 § Kernel 192-byte
+# slab leak). Shipped 2026-08-19 on the file_lock/nfsd theory; slub_nomerge
+# then proved the leaking slab is skbuff_ext_cache (br_netfilter), delegations
+# exonerated — and the switch itself caused a severe regression: without
+# write delegations every *arr SQLite transaction issues real NFS LOCK/LOCKU
+# RPCs whose unlocks drain all in-flight file I/O (do_unlk ->
+# nfs_iocounter_wait), stalling the apps 15-30 s per background job. False
+# removes the sysctl.d drop-in only; the live value returns to 1 via
+# `sysctl -w fs.leases-enable=1` or the next reboot, and clients re-acquire
+# delegations as files are reopened (pod restart / remount).
+nas_storage_nfs_disable_delegations: false
 
 # Nightly /etc/pve archive into the offsite-eligible landing zone. pmxcfs is
 # cluster-shared, so archiving it from this one node covers the whole cluster —
