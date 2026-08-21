@@ -39,7 +39,7 @@ acme_certs_local_reload_command: "systemctl restart AdGuardHome"
 #     prepend it (compound shell constructs reject `sudo if`).
 acme_certs_distribution_targets:
   - host: dns-02
-    ip: 192.168.0.160
+    ip: 10.0.10.160
     host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEWbN0fb8eOTlPeHMQ/sZ+vkEgtSPAnZ7OiZjYsAcAyu"
     cert_dir: /opt/AdGuardHome/certs
     owner: root
@@ -48,7 +48,7 @@ acme_certs_distribution_targets:
     key_mode: "0640"
     restart_service: AdGuardHome
   - host: smtp-relay
-    ip: 192.168.0.151
+    ip: 10.0.10.151
     host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIK7o0NXu/ZssOvC0quOLUWBVm9q4l15hiHJ4LoVfHG98"
     cert_dir: /etc/postfix/tls
     owner: root
@@ -59,7 +59,7 @@ acme_certs_distribution_targets:
   # GitLab: cert lives in /etc/gitlab/ssl, referenced by gitlab.rb.
   # `gitlab-ctl hup nginx` reloads nginx without a full reconfigure.
   - host: gitlab
-    ip: 192.168.0.153
+    ip: 10.0.10.153
     host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEVffoT/Az9ZPPECl054HTf4HxzlKL6sTcs6OVe3bQTi"
     cert_dir: /etc/gitlab/ssl
     owner: root
@@ -74,7 +74,7 @@ acme_certs_distribution_targets:
   # succeed for cloud.esweiss.com. host_key captured post-provision via
   # `task certs:show-host-keys`. See docs/35-nextcloud.md.
   - host: nextcloud
-    ip: 192.168.0.156
+    ip: 10.0.10.156
     host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFSwM0yVCXOQ6t0PO2o54hGwdYvXcy/eZ/+rU4gtG11P"
     cert_dir: /etc/ssl/nextcloud
     owner: root
@@ -88,7 +88,7 @@ acme_certs_distribution_targets:
   # Traefik's vm-tls-wildcard backend validation succeed for photos.esweiss.com.
   # host_key captured post-provision via `task certs:show-host-keys`. See docs/36-immich.md.
   - host: immich
-    ip: 192.168.0.157
+    ip: 10.0.10.157
     host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKpGixylnIRe8EO9BLIeDB2xg1fF7xKMy3vTjpDmpU2m"
     cert_dir: /etc/nginx/ssl
     owner: root
@@ -117,7 +117,7 @@ acme_certs_distribution_targets:
   # `|| true`). The former &tlshd_reload anchor is gone now that pve-nas-01 is
   # the sole NFS-TLS endpoint.
   - host: pve-nas-01
-    ip: 192.168.0.102
+    ip: 10.0.10.102
     host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGxyeQZee3W3aQ0EpeY5sLONaZB1Zy4eKoMAeSLnbRCr"
     cert_dir: /etc/ssl/private
     owner: root
@@ -135,7 +135,7 @@ acme_certs_distribution_targets:
   # the renewed PEM pair, atomically swaps it into place, and restarts
   # plexmediaserver.
   - host: plex
-    ip: 192.168.0.152
+    ip: 10.0.10.152
     host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIO41P4DvFdeHkZW7Np3w71NH7WV2gGr2BQISIyjyeozB"
     cert_dir: /etc/ssl/plex
     # root-owned with plex group read — see plex role configure.yml.
@@ -149,7 +149,7 @@ acme_certs_distribution_targets:
   # configuration.yaml's http: ssl_certificate / ssl_key. `ha core
   # restart` re-reads config and the new cert on the next bind.
   - host: home
-    ip: 192.168.0.154
+    ip: 10.0.10.154
     ssh_port: 22222
     ssh_user: root
     ssh_no_sudo: true

@@ -66,7 +66,7 @@ def test_a_plaintext_pv_fails():
 
 
 def test_an_ip_server_fails():
-    result = _run(GOOD.replace("pve-nas-01.esweiss.com", "192.168.0.102"))
+    result = _run(GOOD.replace("pve-nas-01.esweiss.com", "10.0.10.102"))
     assert result.returncode == 1
     assert "no IP SAN" in result.stderr
 

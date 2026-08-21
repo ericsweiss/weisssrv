@@ -10,7 +10,7 @@ immich_external_url: "https://photos.{{ external_domain }}"
 # ML endpoint order IS the failover contract: the GPU OpenVINO LXC (.158) first,
 # the in-VM CPU container second.
 immich_ml_urls:
-  - "http://192.168.0.158:3003"
+  - "http://10.0.10.158:3003"
   - "http://immich-machine-learning:3003"
 
 # SSO (Authentik OIDC). The issuer host is ALWAYS the external one.

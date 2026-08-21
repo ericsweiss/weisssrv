@@ -7,8 +7,8 @@ external_domain: ericsweiss.com
 
 # DNS servers
 dns_servers:
-  - 192.168.0.150
-  - 192.168.0.160
+  - 10.0.10.150
+  - 10.0.10.160
 
 # Hosts that are KNOWINGLY out of the fleet (hardware work, decommissioning) and
 # may therefore be skipped by base.yml / site.yml without failing the run.
@@ -44,8 +44,8 @@ deploy_expected_absent_hosts: []
 # proxmox_lxc asserts proxmox_lxc_gateway and proxmox_vm asserts
 # proxmox_vm_cloudinit_gateway at role entry (both were site-specific role
 # defaults before the weisssrv.infra extraction).
-proxmox_lxc_gateway: 192.168.0.1
-proxmox_vm_cloudinit_gateway: 192.168.0.1
+proxmox_lxc_gateway: 10.0.10.1
+proxmox_vm_cloudinit_gateway: 10.0.10.1
 
 # Proxmox storage default per proxmox_role; override per guest with
 # proxmox_storage (VMs) / proxmox_lxc_storage (LXC). Pool geometry: docs/06.
@@ -75,7 +75,7 @@ ssh_pubkey_authentication: true
 # in host_vars/home.yml) and the acme_certs cert push (via the `home`
 # entry in acme_certs_distribution_targets in host_vars/dns-01.yml). Rotate
 # here once after a HAOS rebuild:
-#   ssh-keyscan -t ed25519 -p 22222 192.168.0.154
+#   ssh-keyscan -t ed25519 -p 22222 10.0.10.154
 # Paste only the algorithm + base64 key (no leading "[host]:port").
 haos_ssh_host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKcIncJ961hzakmaNlj9Nw6zwOWRZm0sEYgDntiKDb9O"
 
@@ -90,7 +90,7 @@ haos_ssh_host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKcIncJ961hzakmaNlj9Nw6z
 # (proxmox_firewall_admin_lan_cidrs): only the /29, never the whole Home VLAN.
 ssh_authorized_keys:
   - >-
-    from="192.168.0.0/24,10.0.20.8/29,100.64.0.0/10,10.42.0.0/16"
+    from="10.0.10.0/24,10.0.20.8/29,100.64.0.0/10,10.42.0.0/16"
     {{ lookup('ansible.builtin.env', 'SSH_PUBLIC_KEY') or undef(hint='SSH_PUBLIC_KEY env var must be set') }}
 
 # fail2ban never-ban list. The role default is loopback only; the LAN, the admin
@@ -100,7 +100,7 @@ ssh_authorized_keys:
 base_fail2ban_ignoreip:
   - 127.0.0.1/8
   - ::1
-  - 192.168.0.0/24
+  - 10.0.10.0/24
   - 10.0.20.8/29
   - 100.64.0.0/10
 
@@ -480,14 +480,14 @@ proxmox_resource_pools:
 # the set outright (docs/11-firewall.md).
 firewall_ipset_special_entries:
   k3s_nodes:
-    - ip: 192.168.0.161
+    - ip: 10.0.10.161
       comment: k3s API VIP
   # SERVICE scope, the counterpart to admin_lan: the client subnets allowed at
   # user-facing app ports (Traefik 80/443, Home Assistant 8123, GitLab web,
   # Nextcloud/Immich 443, Plex + HAOS discovery, SMB). Deliberately excludes
   # IoT/Guest/Work — those reach only the ports named for them explicitly.
   lan_clients:
-    - ip: 192.168.0.0/24
+    - ip: 10.0.10.0/24
       comment: homelab LAN
     - ip: 10.0.20.0/24
       comment: Home VLAN 20 (trusted personal devices)
@@ -502,7 +502,7 @@ firewall_ipset_special_entries:
   # Internal -> homelab (terraform/unifi/networks.tf). Re-pointing a management
   # device at AdGuard means adding the zone policy AND the entry here.
   dns_clients:
-    - ip: 192.168.0.0/24
+    - ip: 10.0.10.0/24
       comment: homelab LAN
     - ip: 10.0.20.0/24
       comment: Home VLAN 20
@@ -524,7 +524,7 @@ firewall_ipset_special_entries:
 # CGNAT range) — single-owner tailnet, per-device pins risk DR lockout, and the
 # Tailscale ACL policy already enforces device/user granularity (docs/05).
 proxmox_firewall_admin_lan_cidrs:
-  - 192.168.0.0/24
+  - 10.0.10.0/24
   - 10.0.20.8/29
 
 # SMB clients, NOT inheriting admin_lan: file shares are a service surface, so
@@ -540,7 +540,7 @@ proxmox_firewall_smb_client_cidrs: "{{ firewall_ipset_special_entries.lan_client
 # WAN rule to the VIP so it never opens a node's own :51820/udp (flannel
 # wireguard-native). docs/38.
 proxmox_firewall_wan_wireguard_vips:
-  - 192.168.0.99
+  - 10.0.10.99
 
 # Source sets for the two rule groups the collection renders itself but the
 # site re-scopes: sg-dns's `:53` (tcp+udp) and the whole of
@@ -674,7 +674,7 @@ proxmox_firewall_security_groups:
       # security boundary: admit ONLY the Immich VM (.157), its sole legitimate
       # consumer. No admin/LAN debug access on purpose — probe it from the VM or
       # over an SSH loopback (SSH/ICMP admin comes from sg-vm-admin).
-      - "IN ACCEPT -source 192.168.0.157 -p tcp -dport 3003 -log nolog"
+      - "IN ACCEPT -source 10.0.10.157 -p tcp -dport 3003 -log nolog"
 
   - name: sg-haos
     rules:

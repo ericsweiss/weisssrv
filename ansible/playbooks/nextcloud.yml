@@ -1,7 +1,7 @@
 ---
 # Nextcloud deployment playbook
 #
-# Provisions the Nextcloud VM (192.168.0.156) and deploys the Docker Compose
+# Provisions the Nextcloud VM (10.0.10.156) and deploys the Docker Compose
 # stack. Nextcloud state rides ZFS zvol passthrough disks only (no NFS).
 #
 # Prerequisites:

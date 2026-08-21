@@ -359,8 +359,8 @@ nfs_tls_is_server: true
 # NFS exports.
 # Convention for every k3s/app export: owner 1000 (eric), group 2000 (media),
 # mode 02775 (setgid so the group is inherited).
-# k3s client blocks: 192.168.0.200/29 = agents; 192.168.0.220/29 = servers
-# .222/.223 (masks to .216-.223, NOT .227); 192.168.0.227/32 = k3s-srv-prec-01,
+# k3s client blocks: 10.0.10.200/29 = agents; 10.0.10.220/29 = servers
+# .222/.223 (masks to .216-.223, NOT .227); 10.0.10.227/32 = k3s-srv-prec-01,
 # which sits outside both /29s and must therefore be listed explicitly on every
 # k3s export — pod-mounted PVs must not lose their mount if a pod ever lands on
 # a server.
@@ -377,19 +377,19 @@ nas_storage_exports:
   # pseudo-root entirely.
   - path: /export
     clients:
-      - spec: "192.168.0.102/32"
+      - spec: "10.0.10.102/32"
         options: "ro,sync,hide,no_subtree_check,fsid=0,sec=sys,root_squash"
-      - spec: "192.168.0.103/32"
+      - spec: "10.0.10.103/32"
         options: "ro,sync,hide,no_subtree_check,fsid=0,sec=sys,root_squash"
-      - spec: "192.168.0.104/32"
+      - spec: "10.0.10.104/32"
         options: "ro,sync,hide,no_subtree_check,fsid=0,sec=sys,root_squash"
-      - spec: "192.168.0.105/32"
+      - spec: "10.0.10.105/32"
         options: "ro,sync,hide,no_subtree_check,fsid=0,sec=sys,root_squash"
-      - spec: "192.168.0.106/32"
+      - spec: "10.0.10.106/32"
         options: "ro,sync,hide,no_subtree_check,fsid=0,sec=sys,root_squash"
-      - spec: "192.168.0.107/32"
+      - spec: "10.0.10.107/32"
         options: "ro,sync,hide,no_subtree_check,fsid=0,sec=sys,root_squash"
-      - spec: "192.168.0.154/32"
+      - spec: "10.0.10.154/32"
         options: "ro,sync,hide,no_subtree_check,fsid=0,sec=sys,root_squash"
       # App VMs (.153 gitlab, .156 nextcloud, .157 immich) traverse the fsid=0
       # pseudo-root into their OWN /export/backups-apps/<app> export (each scoped
@@ -397,23 +397,23 @@ nas_storage_exports:
       # home-assistant. /export/backups-apps itself is a plain dir on this root fs,
       # so pseudo-root traversal reaches each per-app export without exporting the
       # parent (which is what isolates the apps from each other).
-      - spec: "192.168.0.153/32"
+      - spec: "10.0.10.153/32"
         options: "ro,sync,hide,no_subtree_check,fsid=0,sec=sys,root_squash"
-      - spec: "192.168.0.156/32"
+      - spec: "10.0.10.156/32"
         options: "ro,sync,hide,no_subtree_check,fsid=0,sec=sys,root_squash"
-      - spec: "192.168.0.157/32"
+      - spec: "10.0.10.157/32"
         options: "ro,sync,hide,no_subtree_check,fsid=0,sec=sys,root_squash"
-      - spec: "192.168.0.200/29"
+      - spec: "10.0.10.200/29"
         options: "ro,sync,hide,no_subtree_check,fsid=0,sec=sys,root_squash"
-      # k3s servers (.222/.223/.227) as explicit /32s. 192.168.0.220/29 masks to
+      # k3s servers (.222/.223/.227) as explicit /32s. 10.0.10.220/29 masks to
       # .216-.223 and does NOT cover .227 (prec-01); with the explicit fsid=0
       # export disabling the synthesized pseudo-root, a server missing here can
       # not traverse into /export/k3s-etcd (off-node etcd snapshot copy).
-      - spec: "192.168.0.222/32"
+      - spec: "10.0.10.222/32"
         options: "ro,sync,hide,no_subtree_check,fsid=0,sec=sys,root_squash"
-      - spec: "192.168.0.223/32"
+      - spec: "10.0.10.223/32"
         options: "ro,sync,hide,no_subtree_check,fsid=0,sec=sys,root_squash"
-      - spec: "192.168.0.227/32"
+      - spec: "10.0.10.227/32"
         options: "ro,sync,hide,no_subtree_check,fsid=0,sec=sys,root_squash"
 
   # K3s/app RW exports. all_squash + anonuid/anongid maps every client (root
@@ -427,11 +427,11 @@ nas_storage_exports:
     mode: "02775"
     xprtsec: "tls"
     clients:
-      - spec: "192.168.0.200/29"
+      - spec: "10.0.10.200/29"
         options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=11"
-      - spec: "192.168.0.220/29"
+      - spec: "10.0.10.220/29"
         options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=11"
-      - spec: "192.168.0.227/32"
+      - spec: "10.0.10.227/32"
         options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=11"
 
   - path: /export/share
@@ -441,11 +441,11 @@ nas_storage_exports:
     mode: "02775"
     xprtsec: "tls"  # require TLS — see /export/appdata note above
     clients:
-      - spec: "192.168.0.200/29"
+      - spec: "10.0.10.200/29"
         options: "rw,sync,no_subtree_check,root_squash,fsid=12"
-      - spec: "192.168.0.220/29"
+      - spec: "10.0.10.220/29"
         options: "rw,sync,no_subtree_check,root_squash,fsid=12"
-      - spec: "192.168.0.227/32"
+      - spec: "10.0.10.227/32"
         options: "rw,sync,no_subtree_check,root_squash,fsid=12"
 
   # Unified media export (the mergerfs union). xprtsec is PER CLIENT, so the
@@ -462,16 +462,16 @@ nas_storage_exports:
     group: 2000
     mode: "02775"
     clients:
-      - spec: "192.168.0.200/29"
+      - spec: "10.0.10.200/29"
         options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=20"
         xprtsec: "tls"
-      - spec: "192.168.0.220/29"
+      - spec: "10.0.10.220/29"
         options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=20"
         xprtsec: "tls"
-      - spec: "192.168.0.227/32"
+      - spec: "10.0.10.227/32"
         options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=20"
         xprtsec: "tls"
-      - spec: "192.168.0.154/32"  # HAOS — plaintext (no xprtsec; see comment above)
+      - spec: "10.0.10.154/32"  # HAOS — plaintext (no xprtsec; see comment above)
         options: "ro,sync,no_subtree_check,root_squash,fsid=20"
 
   # Off-node k3s etcd snapshot copies (docs/17). Servers only (.222/.223/.227),
@@ -487,11 +487,11 @@ nas_storage_exports:
     mode: "0700"
     xprtsec: "tls"
     clients:
-      - spec: "192.168.0.222/32"
+      - spec: "10.0.10.222/32"
         options: "rw,sync,no_subtree_check,no_root_squash,fsid=15"
-      - spec: "192.168.0.223/32"
+      - spec: "10.0.10.223/32"
         options: "rw,sync,no_subtree_check,no_root_squash,fsid=15"
-      - spec: "192.168.0.227/32"
+      - spec: "10.0.10.227/32"
         options: "rw,sync,no_subtree_check,no_root_squash,fsid=15"
 
   # Offsite-eligible logical-dump landing zone (tank/backups/apps -> B2), one
@@ -510,11 +510,11 @@ nas_storage_exports:
     mode: "02775"
     xprtsec: "tls"
     clients:
-      - spec: "192.168.0.200/29"
+      - spec: "10.0.10.200/29"
         options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=16"
-      - spec: "192.168.0.220/29"
+      - spec: "10.0.10.220/29"
         options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=16"
-      - spec: "192.168.0.227/32"
+      - spec: "10.0.10.227/32"
         options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=16"
 
   - path: /export/backups-apps/mealie
@@ -525,11 +525,11 @@ nas_storage_exports:
     mode: "02775"
     xprtsec: "tls"
     clients:
-      - spec: "192.168.0.200/29"
+      - spec: "10.0.10.200/29"
         options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=17"
-      - spec: "192.168.0.220/29"
+      - spec: "10.0.10.220/29"
         options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=17"
-      - spec: "192.168.0.227/32"
+      - spec: "10.0.10.227/32"
         options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=17"
 
   # gitlab (.153) — TLS on the wire (VM runs tlshd via nfs_tls).
@@ -541,7 +541,7 @@ nas_storage_exports:
     mode: "02775"
     xprtsec: "tls"
     clients:
-      - spec: "192.168.0.153/32"
+      - spec: "10.0.10.153/32"
         options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=18"
 
   # immich (.157) — TLS on the wire (VM runs tlshd via nfs_tls).
@@ -553,7 +553,7 @@ nas_storage_exports:
     mode: "02775"
     xprtsec: "tls"
     clients:
-      - spec: "192.168.0.157/32"
+      - spec: "10.0.10.157/32"
         options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=19"
 
   # nextcloud (.156) — TLS on the wire (VM runs tlshd via nfs_tls).
@@ -565,7 +565,7 @@ nas_storage_exports:
     mode: "02775"
     xprtsec: "tls"
     clients:
-      - spec: "192.168.0.156/32"
+      - spec: "10.0.10.156/32"
         options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=21"
 
   # home-assistant (.154) — PLAINTEXT. HAOS Supervisor hardcodes its NFS mount and
@@ -579,7 +579,7 @@ nas_storage_exports:
     group: 2000
     mode: "02775"
     clients:
-      - spec: "192.168.0.154/32"
+      - spec: "10.0.10.154/32"
         options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=22"
 
   # Proxmox backup target (requires no_root_squash). REQUIRES TLS: every PVE host
@@ -593,17 +593,17 @@ nas_storage_exports:
     mode: "02775"
     xprtsec: "tls"
     clients:
-      - spec: "192.168.0.102/32"
+      - spec: "10.0.10.102/32"
         options: "rw,sync,no_subtree_check,no_root_squash,fsid=14"
-      - spec: "192.168.0.103/32"
+      - spec: "10.0.10.103/32"
         options: "rw,sync,no_subtree_check,no_root_squash,fsid=14"
-      - spec: "192.168.0.104/32"
+      - spec: "10.0.10.104/32"
         options: "rw,sync,no_subtree_check,no_root_squash,fsid=14"
-      - spec: "192.168.0.105/32"
+      - spec: "10.0.10.105/32"
         options: "rw,sync,no_subtree_check,no_root_squash,fsid=14"
-      - spec: "192.168.0.106/32"
+      - spec: "10.0.10.106/32"
         options: "rw,sync,no_subtree_check,no_root_squash,fsid=14"
-      - spec: "192.168.0.107/32"
+      - spec: "10.0.10.107/32"
         options: "rw,sync,no_subtree_check,no_root_squash,fsid=14"
 
 # Samba shares: the "nas" user with the "media" group (GID 2000).
