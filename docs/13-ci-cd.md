@@ -298,6 +298,7 @@ dependencies — nothing fails.
 | `terraform-plan` | terraform/cloudflare/** + 1Password | Full Cloudflare plan with credentials (tailscale changes no longer re-plan the Cloudflare module). Its MR rule is **inert** while `OP_SERVICE_ACCOUNT_TOKEN` is protected — see the credential note below |
 | `tailscale-drift-plan` | terraform/tailscale/** on **main** (token-guarded) + schedules | Read-only `terraform plan` of the tailnet ACL module against its own state backend; advisory (`allow_failure: true`), deliberately outside validation-gate. No MR rule — see the credential note below |
 | `authentik-drift-plan` | terraform/authentik/** on **main** (token-guarded) + schedules | Read-only `terraform plan` of the Authentik SSO module against its own state path; catches out-of-band Admin-UI edits. Advisory, outside validation-gate. The apply stays a supervised `task terraform:authentik-apply` (docs/40). No MR rule — see the credential note below |
+| `unifi-drift-plan` | terraform/unifi/** on **main** (token-guarded) + schedules | Read-only `terraform plan` of the UniFi network module (VLANs, firewall zones and policies, WLANs) against its own state path; catches out-of-band UniFi-console edits. Advisory, outside validation-gate. The apply stays a supervised `task terraform:unifi-apply` (docs/46). No MR rule — see the credential note below |
 | `b2-drift-plan` | scripts/b2-bucket-drift.py on **main** (token-guarded) + schedules | Read-only diff of the `weisssrv-backup` B2 bucket settings against the codified config via the raw B2 API (no terraform — see docs/42). Advisory; reconciling is the supervised `task b2:apply`. No MR rule — see the credential note below |
 
 > **Vault reads on merge-request pipelines.** `OP_SERVICE_ACCOUNT_TOKEN` **must
@@ -320,10 +321,11 @@ dependencies — nothing fails.
 >   needed the vault, and gating on a variable that no longer exists on MR refs
 >   would have silently deleted the job.
 >
-> The three advisory drift plans do not run on MRs at all: their real detector is
+> The four advisory drift plans do not run on MRs at all: their real detector is
 > the schedule and their applies are supervised, so the MR run bought nothing
 > against the exposure (`authentik-drift-plan` alone read ~13 vault secrets,
-> every OIDC client secret among them).
+> every OIDC client secret among them, and `unifi-drift-plan` reads the gateway
+> API key plus every WLAN pre-shared key).
 >
 > Protection is a **project setting**, not something `.gitlab-ci.yml` can assert.
 > If Settings → CI/CD → Variables ever shows the token unprotected, this whole
@@ -510,7 +512,7 @@ in this stage (see [Version bump bot](#version-bump-bot) below).
 |---------|------|
 | Merge request | Lint, validate (including the credential-free `deploy-preflight`; drift plans excluded and `terraform-plan`'s rule inert), test (integration matrix excluded), security, AI review — no deploy, no verify |
 | Push to main | Full validation including the integration matrix, then `validation-gate`, the path-gated deploys, and the `verify` stage (which runs regardless of the deploy stage's outcome) |
-| Scheduled | Version checking, secret detection, and the three advisory drift plans — `tailscale-drift-plan`, `authentik-drift-plan`, `b2-drift-plan` (each when its token is present). All other jobs (lint, validate, test, ai-review, gate, deploy, maintenance) are excluded — **except** two `SCHEDULE_TYPE`-scoped opt-ins: `SCHEDULE_TYPE=full-test` also runs `integration-tests` as an external-dependency canary (catches upstream image/package breakage between code changes), and `SCHEDULE_TYPE=version-bump` runs `version-bump-bot` (below). |
+| Scheduled | Version checking, secret detection, and the four advisory drift plans — `tailscale-drift-plan`, `authentik-drift-plan`, `unifi-drift-plan`, `b2-drift-plan` (each when its token is present). All other jobs (lint, validate, test, ai-review, gate, deploy, maintenance) are excluded — **except** two `SCHEDULE_TYPE`-scoped opt-ins: `SCHEDULE_TYPE=full-test` also runs `integration-tests` as an external-dependency canary (catches upstream image/package breakage between code changes), and `SCHEDULE_TYPE=version-bump` runs `version-bump-bot` (below). |
 | Manual (web) | Lint, validate, test stages only. AI review, deploy, gate, and maintenance jobs are excluded. Security (`secret_detection`) runs if branch is `main`. |
 
 ## Deployment Pipeline
@@ -711,6 +713,8 @@ Items" for the complete list of items referenced by ExternalSecrets in the clust
 | SSH Key | `private key` | Ansible deployments |
 | Cloudflare Terraform Token | `credential`, `username` | Terraform `terraform-plan` / `deploy-terraform` |
 | Tailscale OAuth | `client id`, `credential` | `tailscale-drift-plan` (read-only ACL drift plan) |
+| UniFi Controller | `url`, `api-key` | `unifi-drift-plan` (read-only network drift plan) |
+| WiFi TheRevengers, WiFi 3601-IoT, WiFi kugel-tikka-masala, WiFi 3601-Work | `password` | `unifi-drift-plan` — the four SSID pre-shared keys the plan needs to compare WLANs |
 | GitLab API Token | `credential` | `deploy-gitlab` (`GITLAB_ADMIN_API_TOKEN`) and `task gitlab:deploy` — an **instance-admin** PAT |
 | GitHub Token | `credential` | `version-bump-bot` (via `task maintenance:update-all-versions`, which runs its checker under `op run`) |
 | GitLab Version Bump Bot Token | `credential` | `version-bump-bot` — the item of record for the `VERSION_BUMP_BOT_TOKEN` CI variable, which is what the job actually reads |

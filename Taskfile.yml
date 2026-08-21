@@ -1802,6 +1802,79 @@ tasks:
     cmds:
       - op run -- ./import.sh
 
+  # --- UniFi network module (separate state name; SUPERVISED apply) ---
+  # Mirrors the tailscale/authentik terraform:* tasks but points at
+  # terraform/unifi, its own GitLab state name, and the UniFi controller API key
+  # plus the four SSID pre-shared keys (the 1Password items docs/46 has the
+  # operator create on the bench). This module owns the VLANs, the zone firewall
+  # and the WLANs: an unreviewed apply can take the whole house off the network
+  # and leave no path back to the controller, so read the plan before
+  # confirming. See terraform/unifi/README.md.
+  terraform:unifi-init:
+    desc: Initialize Terraform for the UniFi network module (GitLab state backend)
+    dir: "{{.TERRAFORM_DIR}}/unifi"
+    # Anchor shared by terraform:unifi-init/plan/apply — the controller
+    # credentials, the per-SSID passphrases and the unifi-specific HTTP state
+    # name in one place. Each SSID is its own variable because one TF_VAR cannot
+    # carry four separate op:// references; adding a WLAN adds a line here AND
+    # in the unifi-drift-plan job (terraform/unifi/README.md § Adding a VLAN).
+    # TF_VAR_unifi_api_url is the PRODUCTION gateway address — while the gateway
+    # is still on the bench, override it per invocation rather than editing the
+    # 1Password item (docs/46 § Bench pre-provisioning).
+    env: &tf_unifi_env
+      TF_VAR_unifi_api_url: op://Homelab/UniFi Controller/url
+      TF_VAR_unifi_api_key: op://Homelab/UniFi Controller/api-key
+      TF_VAR_wlan_passphrase_home: op://Homelab/WiFi TheRevengers/password
+      TF_VAR_wlan_passphrase_iot: op://Homelab/WiFi 3601-IoT/password
+      TF_VAR_wlan_passphrase_guest: op://Homelab/WiFi kugel-tikka-masala/password
+      TF_VAR_wlan_passphrase_work: op://Homelab/WiFi 3601-Work/password
+      TF_HTTP_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/unifi"
+      TF_HTTP_LOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/unifi/lock"
+      TF_HTTP_UNLOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/unifi/lock"
+      TF_HTTP_USERNAME: "terraform"
+      TF_HTTP_PASSWORD: "op://Homelab/GitLab Terraform State Token/credential"
+      TF_HTTP_LOCK_METHOD: "POST"
+      TF_HTTP_UNLOCK_METHOD: "DELETE"
+    preconditions: *tf_preconditions
+    cmds:
+      - op run -- terraform init {{.CLI_ARGS}}
+
+  terraform:unifi-plan:
+    desc: "Plan UniFi network changes (read-only diff vs the live controller: networks, zones, policies, WLANs)"
+    dir: "{{.TERRAFORM_DIR}}/unifi"
+    env: *tf_unifi_env
+    preconditions: *tf_preconditions
+    cmds:
+      - op run -- terraform plan {{.CLI_ARGS}}
+
+  terraform:unifi-apply:
+    desc: "SUPERVISED: apply UniFi network changes (VLANs/zones/firewall policies/WLANs) — review terraform:unifi-plan first"
+    dir: "{{.TERRAFORM_DIR}}/unifi"
+    env: *tf_unifi_env
+    preconditions: *tf_preconditions
+    cmds:
+      # Hard guard: this module owns every VLAN, the zone-based firewall and the
+      # SSIDs, so an unreviewed apply can sever routing to the controller itself
+      # (recovery is then physical). Interactive confirmation, and never
+      # -auto-approve (terraform's own prompt is the second gate). CI never runs
+      # this task — unifi-drift-plan plans and stops.
+      - |
+        set -eu
+        if [ ! -t 0 ]; then
+          echo "ERROR: terraform:unifi-apply is a supervised operator step; run it from a terminal." >&2
+          exit 2
+        fi
+        case " {{.CLI_ARGS}} " in
+          *" -auto-approve "*|*" --auto-approve "*)
+            echo "ERROR: -auto-approve is refused here; approve the plan interactively." >&2
+            exit 2 ;;
+        esac
+        echo "About to apply terraform/unifi — this rewrites live VLANs, firewall zones/policies and WLANs."
+        printf 'Type "apply" to continue: '
+        read -r confirm
+        [ "$confirm" = "apply" ] || { echo "Aborted."; exit 1; }
+      - op run -- terraform apply {{.CLI_ARGS}}
+
   # --- Backblaze B2 offsite-backup bucket settings (raw API; SUPERVISED apply) ---
   # scripts/b2-bucket-drift.py is the codified bucket config (it replaced the
   # terraform/b2 module after the Backblaze provider's READ path went blind
@@ -1841,7 +1914,7 @@ tasks:
     dir: "{{.TERRAFORM_DIR}}"
     cmds:
       # Run from terraform/ so -recursive covers every module (cloudflare +
-      # tailscale + authentik), matching the CI terraform-fmt job.
+      # tailscale + authentik + unifi), matching the CI terraform-fmt job.
       - terraform fmt -recursive
 
   terraform:fmt-check:

@@ -6,7 +6,7 @@
 #
 # The module grew what this site's shapes need in v0.7.0: `prevent_destroy` on every object, `custom_scope_mappings`
 # (Mealie's asserted-verified email scope) and the unbound-application
-# precondition. All three terraform roots now pin the same release as
+# precondition. Every terraform root now pins the same release as
 # WEISSSRV_LIB_REF — the pins are bumped by hand (check-lib-pins.py does not
 # read module sources), and scripts/test_site_configs.py fails a missed one.
 #
@@ -19,7 +19,7 @@
 # for every provider here, and a library default change must never repoint them
 # on a ref bump. Same reasoning as terraform/cloudflare's zone_settings.
 module "sso" {
-  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/authentik-sso?ref=v0.12.1"
+  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/authentik-sso?ref=v0.13.0"
 
   authorization_flow_slug = "default-provider-authorization-implicit-consent"
   invalidation_flow_slug  = "default-provider-invalidation-flow"

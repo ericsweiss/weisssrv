@@ -94,7 +94,7 @@ variables:
   # as a literal and scripts/check-lib-pins.py enforces that they all equal this
   # value and that it is a release tag. Bump here, then `--fix`. See the comment
   # on the include block.
-  WEISSSRV_LIB_REF: "v0.12.1"
+  WEISSSRV_LIB_REF: "v0.13.0"
   # Single source for the Ansible pin the deploy jobs (.deploy-base) pip-install.
   # Keep in step with requirements.txt's ansible pin.
   ANSIBLE_VERSION: "11.6.0"
@@ -259,6 +259,9 @@ workflow:
 .paths-terraform-authentik:
   changes:
     - terraform/authentik/**/*
+.paths-terraform-unifi:
+  changes:
+    - terraform/unifi/**/*
 .paths-b2-drift:
   changes:
     - scripts/b2-bucket-drift.py
@@ -1154,6 +1157,60 @@ authentik-drift-plan:
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes: !reference [.paths-terraform-authentik, changes]
 
+# Read-only drift `terraform plan` for the UniFi network module against the live
+# controller. Never applies from CI: the apply is `task terraform:unifi-apply`,
+# which refuses to run non-interactively (see terraform/unifi/README.md). A
+# non-empty plan = a UniFi-console edit drifted from the codified VLANs, zones,
+# firewall policies or WLANs; allow_failure so drift, or a plan hiccup, surfaces
+# without blocking CI. Mirrors authentik-drift-plan (op-injected creds +
+# TF_HTTP_* backend), scoped to the unifi module + its own state name.
+unifi-drift-plan:
+  # Shared HTTP-backend auth/lock settings come from .terraform-http-backend;
+  # only the unifi state path is overridden here.
+  extends: .terraform-http-backend
+  needs: []
+  stage: validate
+  image:
+    name: hashicorp/terraform:1.15
+    entrypoint: [""]
+  variables:
+    TF_HTTP_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/${CI_PROJECT_ID}/terraform/state/unifi"
+    TF_HTTP_LOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/${CI_PROJECT_ID}/terraform/state/unifi/lock"
+    TF_HTTP_UNLOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/${CI_PROJECT_ID}/terraform/state/unifi/lock"
+  before_script:
+    - !reference [.install-1password-alpine, before_script]
+  script:
+    - cd terraform/unifi
+    # -lockfile=readonly: CI must not rewrite .terraform.lock.hcl (committed
+    # provider hashes; a CI-side change would mask supply-chain drift).
+    - terraform init -lockfile=readonly
+    - |
+      export TF_VAR_unifi_api_url=$(op read "op://Homelab/UniFi Controller/url")
+      export TF_VAR_unifi_api_key=$(op read "op://Homelab/UniFi Controller/api-key")
+      # One export per SSID — the passphrase variables are separate because a
+      # single TF_VAR cannot carry four op:// references. Keep in step with the
+      # Taskfile's &tf_unifi_env anchor; a missing one fails the plan on the
+      # variable's own length validation, which names this job.
+      export TF_VAR_wlan_passphrase_home=$(op read "op://Homelab/WiFi TheRevengers/password")
+      export TF_VAR_wlan_passphrase_iot=$(op read "op://Homelab/WiFi 3601-IoT/password")
+      export TF_VAR_wlan_passphrase_guest=$(op read "op://Homelab/WiFi kugel-tikka-masala/password")
+      export TF_VAR_wlan_passphrase_work=$(op read "op://Homelab/WiFi 3601-Work/password")
+      # Plan only, never apply — surfaces drift instead of silently reverting it.
+      # -detailed-exitcode: drift exits 2 (plain plan exits 0 on a non-empty
+      # diff), so allow_failure can actually render the yellow drift signal.
+      terraform plan -input=false -no-color -lock-timeout=120s -detailed-exitcode
+  # Advisory drift signal only — never blocks CI (apply stays supervised).
+  allow_failure: true
+  rules:
+    # Schedule is the real detector: no changes: filter, so it catches
+    # out-of-band console edits when nothing in-repo changed.
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $OP_SERVICE_ACCOUNT_TOKEN'
+    # Post-merge, before the supervised apply. NO merge_request_event rule: this
+    # job reads the controller API key and all four WLAN pre-shared keys, and
+    # must not do that in a job running an unmerged branch's code.
+    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
+      changes: !reference [.paths-terraform-unifi, changes]
+
 # Read-only drift check for the B2 backup-bucket settings against the live
 # bucket via the raw B2 API (scripts/b2-bucket-drift.py — the codified config;
 # it replaced the terraform/b2 module after the Backblaze provider's READ path
@@ -1485,7 +1542,7 @@ include:
   # already describe this instance and the cloudflare state; the two drift-plan
   # jobs override the three TF_HTTP_*ADDRESS vars for their own state names.
   - project: eric/weisssrv-lib
-    ref: v0.12.1
+    ref: v0.13.0
     file:
       - /ci/templates/dep-cache.yml
       - /ci/templates/install-1password.yml
@@ -1500,7 +1557,7 @@ include:
   #     selector, allow_failure, MR/main/schedule rules); the hard block comes
   #     from validation-gate needing this job non-optionally.
   - project: eric/weisssrv-lib
-    ref: v0.12.1
+    ref: v0.13.0
     file:
       - /ci/validate/terraform.yml
       - /ci/security/secret-detection.yml
@@ -1508,7 +1565,7 @@ include:
   # yaml-lint: the library default targets `.gitlab/ci/` only; lint all of
   # `.gitlab/` so the agent config is covered alongside the CI fragments.
   - project: eric/weisssrv-lib
-    ref: v0.12.1
+    ref: v0.13.0
     file: /ci/lint/yaml-lint.yml
     inputs:
       targets: "ansible/ kubernetes/ .gitlab-ci.yml .gitlab/"
@@ -1523,7 +1580,7 @@ include:
   # where the library's own pipeline shellchecks it. What is left is scripts/
   # plus the terraform helper scripts the default set missed.
   - project: eric/weisssrv-lib
-    ref: v0.12.1
+    ref: v0.13.0
     file: /ci/lint/shellcheck.yml
     inputs:
       direct_globs: "scripts/*.sh terraform/*/*.sh"
@@ -1541,7 +1598,7 @@ include:
   # walks UP from its cwd, so the config is ./.ansible-lint. It is in `changes:`
   # so a profile edit re-runs the job.
   - project: eric/weisssrv-lib
-    ref: v0.12.1
+    ref: v0.13.0
     file: /ci/lint/ansible-lint.yml
     inputs:
       targets: "ansible/"
@@ -1557,7 +1614,7 @@ include:
   # python-lint: ruff over the helper scripts, using the library's shared
   # profile vendored to this repo's root as ruff.toml.
   - project: eric/weisssrv-lib
-    ref: v0.12.1
+    ref: v0.13.0
     file: /ci/lint/python-lint.yml
     inputs:
       targets: "scripts kubernetes"
@@ -1573,7 +1630,7 @@ include:
   # trigger list has to be `**/*.md`-wide — the library default only covers
   # docs/ + the top-level READMEs.
   - project: eric/weisssrv-lib
-    ref: v0.12.1
+    ref: v0.13.0
     file: /ci/lint/docs-link-check.yml
     inputs:
       changes:
@@ -1599,7 +1656,7 @@ include:
   # its admin PAT from GITLAB_ADMIN_API_TOKEN (see the deploy-gitlab job) to avoid
   # being silently shadowed by this project token.
   - project: eric/weisssrv-lib
-    ref: v0.12.1
+    ref: v0.13.0
     file: /ci/maintenance/version-check.yml
     inputs:
       setup_command: 'pip install --quiet "pyyaml==${PYYAML_VERSION}" requests==2.34.2'
@@ -1626,7 +1683,7 @@ include:
   # copies against it and never skips, so the checkout is a hard requirement of
   # the job (WEISSSRV_LIB_PATH points at it — see the job override below).
   - project: eric/weisssrv-lib
-    ref: v0.12.1
+    ref: v0.13.0
     file: /ci/test/python-tests.yml
     inputs:
       pytest_version: "9.1.1"
@@ -1679,7 +1736,7 @@ include:
   # as `task flux:lint` passes them — an omitted --releases is a FileNotFoundError
   # and an omitted --policy-config silently asserts zero chart-native targets.
   - project: eric/weisssrv-lib
-    ref: v0.12.1
+    ref: v0.13.0
     file: /ci/validate/flux-lint.yml
     inputs:
       substitute: true
@@ -1751,7 +1808,7 @@ include:
   # pipelines). Model, reasoning effort and both timeouts are the library
   # defaults.
   - project: eric/weisssrv-lib
-    ref: v0.12.1
+    ref: v0.13.0
     file: /ci/review/pr-agent.yml
     inputs:
       secrets_source: "env"
