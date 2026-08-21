@@ -140,7 +140,7 @@ carries the manual stanza; backup at `/root/interfaces.bak` on the host.
 Corrected 2026-08-20: the router's DHCP pool was shrunk to end at .98 when
 wg-easy was set up, so `.99` is NOT inside the pool and no collision exists.
 Closed 2026-08-21: the residual "it lives in router config, not code" half is
-gone — the Homelab VLAN's pool is declared as `192.168.0.2`-`192.168.0.98` in
+gone — the Homelab VLAN's pool is declared as `10.0.10.2`-`10.0.10.98` in
 `terraform/unifi/`, so the exclusion of `.99` (and of the `.100`/`.101`/`.161`
 VIPs) is now codified and drift-checked ([docs/46](46-unifi-network.md)
 § Networks).

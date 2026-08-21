@@ -145,7 +145,7 @@ roles lives in `docs/01-overview.md`; `ansible/inventories/prod/hosts.yml` is
 the machine-readable source.
 
 Cluster features:
-- **kube-vip** - API VIP at 192.168.0.161
+- **kube-vip** - API VIP at 10.0.10.161
 - **MetalLB** - LoadBalancer IPs; pools are defined in
   `kubernetes/infrastructure/configs/metallb-ip-pools.yaml` (.100 public, .101
   internal, .99 wg-easy UDP endpoint)
@@ -242,15 +242,15 @@ task k3s:provision-vms
 
 ```bash
 # Test SSH access to all VMs
-ssh eric@192.168.0.222  # k3s-srv-nas-01
-ssh eric@192.168.0.202  # k3s-agt-nas-01
-ssh eric@192.168.0.206  # k3s-agt-opt-03
+ssh eric@10.0.10.222  # k3s-srv-nas-01
+ssh eric@10.0.10.202  # k3s-agt-nas-01
+ssh eric@10.0.10.206  # k3s-agt-opt-03
 
 # Verify VMs can reach the internet
-ssh eric@192.168.0.222 "ping -c 3 1.1.1.1"
+ssh eric@10.0.10.222 "ping -c 3 1.1.1.1"
 
 # Verify DNS resolution
-ssh eric@192.168.0.222 "dig google.com"
+ssh eric@10.0.10.222 "dig google.com"
 ```
 
 ## Phase 2: K3s Cluster Deployment
@@ -290,7 +290,7 @@ kubectl get nodes -o wide
 kubectl get nodes
 
 # Check kube-vip VIP is active
-ping -c 3 192.168.0.161
+ping -c 3 10.0.10.161
 
 # Check system pods
 kubectl get pods -A
@@ -405,9 +405,9 @@ Verify key endpoints:
 
 ```bash
 # LoadBalancer VIPs
-kubectl get svc -n traefik    # EXTERNAL-IP 192.168.0.100
-curl -k http://192.168.0.100  # Traefik 404
-curl -k http://192.168.0.101  # Traefik 404
+kubectl get svc -n traefik    # EXTERNAL-IP 10.0.10.100
+curl -k http://10.0.10.100  # Traefik 404
+curl -k http://10.0.10.101  # Traefik 404
 
 # CoreDNS
 kubectl get pods -n kube-system -l k8s-app=kube-dns
@@ -458,22 +458,22 @@ kubectl get certificate -A
 
 ```bash
 # Test API VIP
-curl -k https://192.168.0.161:6443
+curl -k https://10.0.10.161:6443
 
 # Test Traefik LoadBalancer
-curl http://192.168.0.100
+curl http://10.0.10.100
 
 # Ping from external host
-ping 192.168.0.161  # API VIP
-ping 192.168.0.100  # Traefik LoadBalancer
+ping 10.0.10.161  # API VIP
+ping 10.0.10.100  # Traefik LoadBalancer
 ```
 
 ### DNS
 
 ```bash
 # Internal DNS (AdGuard Home)
-dig k3s-srv-nas-01.esweiss.com @192.168.0.150
-dig k3s.esweiss.com @192.168.0.150
+dig k3s-srv-nas-01.esweiss.com @10.0.10.150
+dig k3s.esweiss.com @10.0.10.150
 
 # External DNS (verify external-dns logs)
 kubectl logs -n external-dns -l app.kubernetes.io/name=external-dns -f
@@ -484,7 +484,7 @@ kubectl logs -n external-dns -l app.kubernetes.io/name=external-dns -f
 ### Tailscale (nothing to do here)
 
 Tailscale runs on the **Proxmox hosts only** — they are the subnet routers that
-advertise `192.168.0.0/24` to the tailnet, so the k3s VMs are reachable over
+advertise `10.0.10.0/24` to the tailnet, so the k3s VMs are reachable over
 Tailscale without running the daemon themselves. Do not run `tailscale up
 --accept-routes` on a subnet router: `group_vars/proxmox.yml` and
 `docs/05-tailscale.md` forbid accepting routes on these hosts.
@@ -593,22 +593,22 @@ ssh pve-nas-01 "journalctl -u pve-cluster -f"
 ssh pve-nas-01 "qm status 222"
 
 # Check cloud-init logs on VM
-ssh eric@192.168.0.222 "sudo cat /var/log/cloud-init-output.log"
+ssh eric@10.0.10.222 "sudo cat /var/log/cloud-init-output.log"
 ```
 
 ### K3s Installation Failed
 
 ```bash
 # Check k3s service on server
-ssh eric@192.168.0.222 "sudo systemctl status k3s"
-ssh eric@192.168.0.222 "sudo journalctl -u k3s -n 50"
+ssh eric@10.0.10.222 "sudo systemctl status k3s"
+ssh eric@10.0.10.222 "sudo journalctl -u k3s -n 50"
 
 # Check k3s-agent service on agents
-ssh eric@192.168.0.202 "sudo systemctl status k3s-agent"
-ssh eric@192.168.0.202 "sudo journalctl -u k3s-agent -n 50"
+ssh eric@10.0.10.202 "sudo systemctl status k3s-agent"
+ssh eric@10.0.10.202 "sudo journalctl -u k3s-agent -n 50"
 
 # Check kube-vip manifest
-ssh eric@192.168.0.222 "sudo cat /var/lib/rancher/k3s/server/manifests/kube-vip.yaml"
+ssh eric@10.0.10.222 "sudo cat /var/lib/rancher/k3s/server/manifests/kube-vip.yaml"
 ```
 
 ### kube-vip Not Assigning VIP
@@ -621,7 +621,7 @@ kubectl logs -n kube-system -l app=kube-vip
 kubectl get pods -n kube-system | grep kube-vip
 
 # Manually ping VIP
-ping 192.168.0.161
+ping 10.0.10.161
 ```
 
 ### MetalLB Not Assigning IPs
@@ -756,8 +756,8 @@ addresses below are the reserved slots a 3 → 5 server expansion would claim.
 
 | Node | IP | VMID | Proxmox Host | Purpose |
 |------|-----|------|--------------|---------|
-| k3s-srv-opt-01 | 192.168.0.224 | 224 | pve-opt-01 | HA server #4 |
-| k3s-srv-opt-02 | 192.168.0.225 | 225 | pve-opt-02 | HA server #5 |
+| k3s-srv-opt-01 | 10.0.10.224 | 224 | pve-opt-01 | HA server #4 |
+| k3s-srv-opt-02 | 10.0.10.225 | 225 | pve-opt-02 | HA server #5 |
 
 Both hosts already carry an agent, so an expansion means adding a **second**
 guest on each — check the memory budget for those 14-15 GiB hosts first

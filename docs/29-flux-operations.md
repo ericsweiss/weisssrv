@@ -373,8 +373,8 @@ The canonical app pattern is `kubernetes/apps/authentik/` — copy its structure
      `kubernetes/components/netpol-baseline` component (default-deny-ingress)
      via `components:` in the app's `kustomization.yaml`, then add an explicit
      `default-deny-egress` with scoped allows. Standard allows: kube-dns; the
-     apiserver as the **node IPs** `192.168.0.222/223/227:6443` (not the
-     service VIP); `192.168.0.151:587` if the app sends mail; public HTTPS as
+     apiserver as the **node IPs** `10.0.10.222/223/227:6443` (not the
+     service VIP); `10.0.10.151:587` if the app sends mail; public HTTPS as
      `0.0.0.0/0` **except** `[10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16,
      100.64.0.0/10, 169.254.0.0/16]`. Add a scrape-allow from the
      `observability` namespace. Copy the shape from
@@ -400,7 +400,7 @@ The canonical app pattern is `kubernetes/apps/authentik/` — copy its structure
      Grafana dashboard only if a good upstream one exists (ConfigMap sidecar via
      `configMapGenerator` in `observability/dashboards/`).
    - **DNS**: internal = an `adguard_home_rewrites` entry in `group_vars/dns.yml`
-     (answer `192.168.0.101` for anything Traefik-fronted). External = the
+     (answer `10.0.10.101` for anything Traefik-fronted). External = the
      external-dns annotation above — no Terraform edit — unless it needs a
      nested subdomain or a DNS-only record, which goes in
      `terraform/cloudflare/dns.tf`.

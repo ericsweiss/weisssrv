@@ -30,7 +30,7 @@
 ## kubeconfig
 
 - Fetch with `task k3s:kubeconfig` — it SSHes the first reachable k3s server,
-  rewrites the API endpoint to the VIP `192.168.0.161`, and writes
+  rewrites the API endpoint to the VIP `10.0.10.161`, and writes
   `~/.kube/config-k3s` (mode 600).
 - Use it per-command or per-shell: `export KUBECONFIG=~/.kube/config-k3s`. The
   app/observability task wrappers assume this is set and fail fast otherwise.

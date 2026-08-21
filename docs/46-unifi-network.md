@@ -14,9 +14,12 @@ step in this page's runbook**. The split is not aesthetic — § Codified vs
 manual is the contract, and a UI change to something in the codified column is
 drift that the next plan will try to revert.
 
-**Migration state.** Phase 1 (this document) introduces the VLANs while the
-homelab stays on `192.168.0.0/24`. Phase 2 renumbers it to `10.0.10.0/24` and
-ships as its own MR after Phase 1 has been validated — § Phase 2.
+**Migration state.** Phase 1 introduced the VLANs while the homelab stayed on
+`192.168.0.0/24`. Phase 2 renumbers it to `10.0.10.0/24`, preserving every last
+octet; it ships as its own MR after Phase 1 has been validated in production.
+**This document is the Phase 2 branch's copy** — every address below is already
+the post-renumber one, and § Phase 2 owns the sequence that gets the fleet
+there. On `main` (Phase 1) the same tables read `192.168.0.x`.
 
 ---
 
@@ -154,13 +157,13 @@ Subnets are written in the provider's **gateway form** (the host part of
 | Key | Name | VLAN | Subnet | DHCP pool | Notes |
 |---|---|---|---|---|---|
 | `default` | Default | 1 (built-in) | `10.0.1.1/24` | `.100`-`.199` | Management: gateway, switch, AP. Imported, not created (`name=Default`). DHCP DNS is `1.1.1.1`/`9.9.9.9`, not the resolvers |
-| `homelab` | Homelab | 10 | `192.168.0.1/24` | `.2`-`.98` | Hosts, guests, k3s, VIPs. Phase 2 → `10.0.10.1/24` |
+| `homelab` | Homelab | 10 | `10.0.10.1/24` | `.2`-`.98` | Hosts, guests, k3s, VIPs. Was `192.168.0.1/24` until Phase 2 |
 | `home` | Home | 20 | `10.0.20.1/24` | `.50`-`.199` | Personal client devices. Pool stops at `.199` — the reservations sit above it (§ DHCP reservations) |
 | `iot` | IoT | 30 | `10.0.30.1/24` | `.50`-`.99` | IGMP snooping on (as does Home — the two ends of the casting path). A 50-address dynamic range: every IoT device that matters is reserved at `.120`+ |
 | `guest` | Guest | 40 | `10.0.40.1/24` | `.50`-`.249` | `purpose = corporate` — see below |
 | `work` | Work | 50 | `10.0.50.1/24` | `.50`-`.249` | |
 
-Every **client** VLAN hands out `192.168.0.150` / `192.168.0.160` as DHCP DNS
+Every **client** VLAN hands out `10.0.10.150` / `10.0.10.160` as DHCP DNS
 and `esweiss.com` as the domain, so split-horizon resolution
 ([docs/08-dns.md](08-dns.md)) works identically on all of them.
 
@@ -279,7 +282,8 @@ Accepted, with eyes open:
 
 The resolver, Plex and Home Assistant addresses and the two management-device
 addresses are `locals` in the root (`dns_ips`, `plex_ip`, `ha_ip`,
-`mgmt_device_ips`) — one edit point for Phase 2.
+`mgmt_device_ips`) — the single edit point Phase 2 used, and the one any
+later homelab re-address uses.
 
 **Policy ordering is not codifiable.** `unifi_firewall_policy.index` is
 read-only and new policies append to the end of their zone-pair (upstream
@@ -425,13 +429,15 @@ there as a UI setting, per the note under § Networks.
 
 | Name | WAN | → | Notes |
 |---|---|---|---|
-| http | tcp `80` | `192.168.0.100:80` | Public MetalLB VIP |
-| https | tcp `443` | `192.168.0.100:443` | Public MetalLB VIP |
-| plex | tcp `32400` | `192.168.0.152:32400` | docs/20 |
-| gitlab-ssh | tcp `2222` | `192.168.0.153:2222` | Forwarded 2222→2222; the guest's own iptables PREROUTING rule redirects 2222→22, where sshd actually listens (docs/27 § Git SSH) |
-| wg | **udp** `51820` | `192.168.0.99:51820` | wg-easy VIP — UDP, not TCP (docs/38) |
+| http | tcp `80` | `10.0.10.100:80` | Public MetalLB VIP |
+| https | tcp `443` | `10.0.10.100:443` | Public MetalLB VIP |
+| plex | tcp `32400` | `10.0.10.152:32400` | docs/20 |
+| gitlab-ssh | tcp `2222` | `10.0.10.153:2222` | Forwarded 2222→2222; the guest's own iptables PREROUTING rule redirects 2222→22, where sshd actually listens (docs/27 § Git SSH) |
+| wg | **udp** `51820` | `10.0.10.99:51820` | wg-easy VIP — UDP, not TCP (docs/38) |
 
-Phase 2 keeps the same last octets in `10.0.10.0/24`.
+Every target is a `local` reference (`dns_ips`, `plex_ip`) or a VIP, so Phase 2
+moved all five by editing the two locals and the subnet — the last octets are
+unchanged from the `192.168.0.0/24` era.
 
 ### Site settings
 
@@ -539,7 +545,7 @@ Phase 1 touches the repo in four places; each is documented where it lives.
   self-signed certificate the acme.sh wildcard cannot cover), replacing the
   plaintext `:80` the ASUS served.
 - **Observability** ([docs/31-observability.md](31-observability.md)): ICMP
-  blackbox probes for `192.168.0.1`, `10.0.1.2` and `10.0.1.3` feed the
+  blackbox probes for `10.0.10.1`, `10.0.1.2` and `10.0.1.3` feed the
   `NetworkGearProbeFailed` alert (warning, 5m), with
   `NetworkGearProbeMissing` (warning, 15m) behind it as the drift guard for the
   pattern-matched target set. Those instances are excluded from the
@@ -554,9 +560,11 @@ different expected-yellow with a different end date.
 
 - **`router.esweiss.com` returned 502** while the ASUS served its UI on
   plaintext `:80` and the `vm-ingress` backend expected the UCG's HTTPS UI on
-  `:443` (via the `unifi-self-signed` ServersTransport). **Resolved** — it
-  cleared itself when the UCG took over the gateway address, as predicted. No
-  repo change was involved.
+  `:443` (via the `unifi-self-signed` ServersTransport). **Resolved** at cutover
+  when the UCG took over the gateway address — and **this branch brings it
+  back**: the backend is renumbered to `10.0.10.1`, which nothing serves until
+  § Phase 2 step 2 moves the gateway onto the new subnet. It clears itself at
+  that flip; no other route touches this backend.
 
 - **`NetworkGearProbeFailed` fires for `10.0.1.2` and `10.0.1.3`.** Still true,
   for a narrowed reason: the switch and the AP are adopted and their
@@ -570,7 +578,10 @@ different expected-yellow with a different end date.
   task observability:silence ALERT=NetworkGearProbeFailed DURATION=7d
   ```
 
-  `192.168.0.1` (the gateway) is green and has been since cutover.
+  The gateway probe was green from cutover on `192.168.0.1` — but this branch
+  renumbers the target to `10.0.10.1`, so between this MR's merge and § Phase 2
+  step 2 the gateway probe is red as well, for the same nothing-answers-yet
+  reason.
 
 - **`unifi-drift-plan` is yellow on every pipeline.** The job runs
   `terraform plan -detailed-exitcode` and carries `allow_failure: true`, so
@@ -616,7 +627,7 @@ serving the house throughout.
 
    ```bash
    op item create --category login --vault Homelab --title "UniFi Controller" \
-     username=terraform url=https://192.168.0.1 password=<local-admin-password> \
+     username=terraform url=https://10.0.10.1 password=<local-admin-password> \
      api-key=<integrations-api-key>
 
    op item create --category login --vault Homelab --title "WiFi 3601-IoT" \
@@ -647,7 +658,7 @@ serving the house throughout.
    `UniFi Controller` item above: fill both fields in the app after creating
    the item skeleton.
 
-   `url` is the **production** address (`https://192.168.0.1`). While the
+   `url` is the **production** address (`https://10.0.10.1`). While the
    gateway is still on the bench, override it per invocation with
    `TF_VAR_unifi_api_url=https://<bench-address>` rather than editing the item.
 
@@ -748,7 +759,10 @@ gymnastics in either:
 # browser: Settings → Security → Zone Matrix → open `Internal` and read its
 # network list.
 
-# Or the same fact from the API, with the key already in the vault:
+# Or the same fact from the API, with the key already in the vault. The host in
+# the URL is the gateway's address AT THAT MOMENT — `192.168.0.1` on cutover
+# night, `10.0.10.1` once § Phase 2 step 2 has flipped the subnet; it is also
+# the `url` field of the `UniFi Controller` 1Password item:
 UNIFI_API_KEY="op://Homelab/UniFi Controller/api-key" op run -- sh -c \
   'curl -sk -H "X-API-KEY: $UNIFI_API_KEY" \
      https://192.168.0.1/proxy/network/v2/api/site/default/firewall/zone' \
@@ -883,8 +897,8 @@ shove).
    # before
    auto vmbr0
    iface vmbr0 inet static
-       address 192.168.0.102/24
-       gateway 192.168.0.1
+       address 10.0.10.102/24
+       gateway 10.0.10.1
        bridge-ports nic1
        bridge-stp off
        bridge-fd 0
@@ -899,8 +913,8 @@ shove).
 
    auto vmbr0
    iface vmbr0 inet static
-       address 192.168.0.102/24
-       gateway 192.168.0.1
+       address 10.0.10.102/24
+       gateway 10.0.10.1
        bridge-ports nic1.10
        bridge-stp off
        bridge-fd 0
@@ -910,8 +924,8 @@ shove).
    cp /etc/network/interfaces /root/interfaces.pre-vlan
    # edit, then:
    ifreload -a
-   ip -br addr show vmbr0            # 192.168.0.102/24 still present
-   ping -c3 192.168.0.1
+   ip -br addr show vmbr0            # 10.0.10.102/24 still present
+   ping -c3 10.0.10.1
    ```
 
    The host IP and every guest stay unchanged — only the bridge's uplink moves.
@@ -955,7 +969,9 @@ shove).
     correct at this point and these are the things that still look broken:
 
     - **Plex → Settings → Network → LAN Networks**: set
-      `192.168.0.0/24,10.0.20.0/24,10.0.30.0/24` (add `10.0.10.0/24` at Phase 2).
+      `192.168.0.0/24,10.0.20.0/24,10.0.30.0/24` — the homelab entry is the
+      **pre-renumber** subnet because this step runs on cutover night; § Phase 2
+      step 7 replaces it with `10.0.10.0/24`.
       Plex calls a client "local" only if its address is in that list; every
       phone, laptop and TV now reaches it from a different subnet, so without
       this they are treated as *remote* — remote quality caps, transcodes where
@@ -1155,17 +1171,17 @@ pin bump and the apply that lands the mgmt reservations.
 | # | Check | How | Expected |
 |---|---|---|---|
 | 1 | Per-VLAN DHCP | Join each SSID / plug into each access port | Address from the right pool, DNS `.150`/`.160`, domain `esweiss.com` (the **mgmt** VLAN is the exception: `1.1.1.1`/`9.9.9.9`) |
-| 2 | Stranded wired leases | Controller client list after step 6 | Every wired device on the Connection A run has a `10.0.20.x` address — no `192.168.0.x` client outside VLAN 10. **Gated:** while port 7 is native Homelab this run is legitimately on VLAN 10, so the row only becomes meaningful after the Connection A finale |
-| 3 | Resolver reach from every VLAN | `dig @192.168.0.150 git.esweiss.com` from home/iot/guest/work | Answer on all four |
+| 2 | Stranded wired leases | Controller client list after step 6 | Every wired device on the Connection A run has a `10.0.20.x` address — no VLAN-10 address (`192.168.0.x` on cutover night, `10.0.10.x` after § Phase 2) outside VLAN 10. **Gated:** while port 7 is native Homelab this run is legitimately on VLAN 10, so the row only becomes meaningful after the Connection A finale |
+| 3 | Resolver reach from every VLAN | `dig @10.0.10.150 git.esweiss.com` from home/iot/guest/work | Answer on all four |
 | 4 | Guest containment | From guest: `curl -m5 https://git.esweiss.com`, ping another guest client | Both **fail** (DNS resolves, everything else denied; L2 isolation blocks the peer) |
 | 5 | IoT containment | From an IoT device: reach anything on Home or `:443` on homelab | **Fails**; only `:53`, Plex `:32400` and HA `:8123` succeed |
 | 6 | Work containment | Same from Work | Only `:53` succeeds |
 | 7 | Gateway console fenced | From guest/iot/work: `curl -m5 -k https://<that VLAN's .1>` and `ssh <that VLAN's .1>` | Both **fail** (BLOCK rows 12-14). `ping <that VLAN's .1>` still works — icmp is deliberately left up |
-| 8 | External DNS fenced | From guest/iot/work: `dig @8.8.8.8 example.com`, `dig +tls @8.8.8.8 example.com` | Both **fail/time out** (BLOCK rows 15-17); `dig @192.168.0.150` still answers |
+| 8 | External DNS fenced | From guest/iot/work: `dig @8.8.8.8 example.com`, `dig +tls @8.8.8.8 example.com` | Both **fail/time out** (BLOCK rows 15-17); `dig @10.0.10.150` still answers |
 | 8b | Gateway resolver fenced | From guest/iot/work: `dig @<that VLAN's .1> example.com` | **Fails/times out** (BLOCK rows 18-20). Confirm on the bench *before* cutover that the gateway answers this at all with the BLOCKs removed — the rows exist because a UniFi OS gateway normally does, and a bench `dig` is how that is established rather than assumed |
 | 9a | Casting — the half that works | Cast a YouTube or Plex stream from a Home phone to an IoT TV/speaker | Device is discovered (site-level mDNS reflection) and plays |
 | 9b | Casting — the half that does not | Screen-mirror / cast a local photo from the same phone; AirPlay to two speakers at once | **Fails, by design** — the receiver would have to open a connection back to Home, and AirPlay 2 needs PTP multicast that does not route |
-| 10 | Plex local stream | Play from a TV — the Vizio pair and the Amazon units are reserved onto IoT, though the wired one only lands there if MAC-based assignment takes (§ DHCP reservations); check the client list for which VLAN it is actually on, then test | Direct play from `192.168.0.152:32400`, no transcode-over-WAN, from **either** VLAN — `iot-to-homelab-plex` and `home → homelab` both allow it. If it transcodes, check Plex's LAN Networks setting (cutover step 11) before suspecting the network |
+| 10 | Plex local stream | Play from a TV — the Vizio pair and the Amazon units are reserved onto IoT, though the wired one only lands there if MAC-based assignment takes (§ DHCP reservations); check the client list for which VLAN it is actually on, then test | Direct play from `10.0.10.152:32400`, no transcode-over-WAN, from **either** VLAN — `iot-to-homelab-plex` and `home → homelab` both allow it. If it transcodes, check Plex's LAN Networks setting (cutover step 11) before suspecting the network |
 | 11 | HDHomeRun | Live TV in Plex | Tuner reachable at `10.0.20.200` (configured by IP) |
 | 12 | Internal ingress from Home | Browse `https://grafana.esweiss.com` from a Home laptop | 200 — the `cluster_home_cidr` allowlist entry |
 | 13 | Appliance UIs from Home | Browse `https://router.esweiss.com` from a **non**-admin Home device, then from the admin MacBook | Non-admin **fails** (`lan-tailscale-strict` is the `10.0.20.8/29` block); admin succeeds |
@@ -1229,20 +1245,274 @@ nothing else.
 
 ## Phase 2 — homelab renumber
 
-Phase 2 moves the homelab from `192.168.0.0/24` to `10.0.10.0/24`, preserving
-every last octet (hosts `.102`-`.107`, guests `.150`-`.160`, k3s
-`.202`-`.207`/`.222`/`.223`/`.227`, VIPs `.99`/`.100`/`.101`/`.161`). It is a
-separate MR raised only after Phase 1 has been validated in production, because
-it touches inventory, DNS (~50 rewrites plus the PTR rules), the k3s VIP,
-NFS export matrices, ~15 NetworkPolicy `ipBlock` sets, observability literals,
-the Tailscale policy and this repo's own `terraform/unifi` site data at once.
+> **This ordering is a DRAFT written before the window, for review during the
+> Phase 2 session.** Nothing below is a script to run unattended. Every step
+> gets live re-verification against the actual cluster state at the moment it
+> runs — addresses, quorum, etcd membership and Flux health all move between
+> the day this was written and the day it is executed. Re-read § Rollback in
+> this section before the first command.
 
-The full supervised ordering — UniFi subnet flip, Proxmox hosts one at a time
-with the corosync re-IP procedure, guests, k3s agents drain-and-recreate, k3s
-servers one at a time with etcd member replacement, MetalLB/kube-vip at the
-coordinated moment, NFS remounts after DNS — is drafted on the
-`feat/homelab-renumber` branch as a new section of this document. Read it there
-when that MR opens; every step gets live re-verification before execution.
+Phase 2 moves the homelab from `192.168.0.0/24` to `10.0.10.0/24` on the same
+VLAN 10, preserving every last octet: hosts `.102`-`.107`, guests `.150`-`.160`,
+k3s `.202`-`.207`/`.222`/`.223`/`.227`, VIPs `.99`/`.100`/`.101`/`.161`. Nothing
+about the physical layer, the VLAN tags or the zone policies changes — only the
+addressing inside VLAN 10, and the handful of places that name a homelab address
+from outside it.
+
+### Why this cannot be a rolling change
+
+A UniFi network carries exactly one subnet. The moment `local.networks.homelab.
+subnet` flips, the gateway stops answering on `192.168.0.1` and starts answering
+on `10.0.10.1` — every default route in the homelab dies at once, and there is
+no overlap window to be had from the gateway side.
+
+The overlap has to come from the *hosts*: VLAN 10 is one broadcast domain, so a
+host holding `192.168.0.102/24` **and** `10.0.10.102/24` can talk to every other
+dual-addressed host on either subnet without any router at all. Only off-subnet
+traffic (internet, other VLANs, the tailnet) needs the gateway. So the shape of
+the migration is:
+
+1. dual-address everything while the old gateway is still live (reversible, no
+   outage),
+2. flip the gateway (short outage — off-subnet only),
+3. drop the old addresses host by host (no outage),
+4. move the things that are addresses-in-config rather than addresses-on-wire
+   (corosync, k3s, VIPs, NFS, DNS, Tailscale).
+
+### Repo/CI posture for the whole window
+
+- **Run the Ansible steps from the branch, locally — do not merge first.** The
+  CI deploy jobs run on merge to `main` and would fan out to whichever addresses
+  the inventory names, on their own schedule. Merge the MR *after* the fleet is
+  on the new addresses and the validation matrix is green.
+- **Suspend Flux before the coordinated moment** (`task flux:suspend`) so the
+  `cluster-config` change — `cluster_lan_cidr`, all four VIPs, the resolver
+  pair — lands when you say so, not when the poll fires. `task flux:resume` +
+  `task flux:reconcile` at step 7.
+- Keep a **Home-VLAN admin station** (`10.0.20.8/29`, already in `admin_lan`).
+  It reaches the homelab through the gateway, so it survives the flip as soon as
+  the hosts carry their new addresses — which is exactly why step 1 comes first.
+- Keep a **console path** to pve-nas-01 and at least one other host. IPMI/monitor
+  + keyboard; the whole plan assumes you can recover a host whose `interfaces`
+  file you have just broken.
+- Take the backups: UniFi `.unf`, `task k3s:backup` (etcd snapshot), and a
+  `/etc/network/interfaces` + `/etc/corosync/corosync.conf` copy per host.
+
+### Step 1 — dual-address every host and guest (no outage, reversible)
+
+For each Proxmox host, in `/etc/network/interfaces`, add the new address as a
+*secondary* on the existing bridge, leaving the primary and the default route
+alone:
+
+```
+auto vmbr0
+iface vmbr0 inet static
+    address 192.168.0.102/24
+    gateway 192.168.0.1
+    bridge-ports nic1.10
+    bridge-stp off
+    bridge-fd 0
+
+# added for Phase 2 — no gateway on this one yet
+iface vmbr0 inet static
+    address 10.0.10.102/24
+```
+
+```bash
+cp /etc/network/interfaces /root/interfaces.pre-renumber
+# edit, then:
+ifreload -a
+ip -br addr show vmbr0        # both addresses present
+```
+
+Do the same inside every guest that is statically addressed (dns-01/02,
+smtp-relay, gitlab, nextcloud, immich, immich-ml, windows, and the k3s nodes —
+their cloud-init config is the source, but a live `ip addr add 10.0.10.<n>/24
+dev <iface>` is enough for the window and is made permanent in step 4). Home
+Assistant's address is set in its own console UI (docs/24).
+
+Verify before going further: from any host, ping every other host on **both**
+addresses. A host that answers on only one is a host you are about to lose.
+
+### Step 2 — flip the gateway (short off-subnet outage)
+
+1. Update the `UniFi Controller` 1Password item's `url` field to
+   `https://10.0.10.1` **first** — every plan after the flip connects there.
+   (`op item edit "UniFi Controller" url=https://10.0.10.1`.)
+2. From the Home-VLAN admin station: `task terraform:unifi-plan`. The homelab
+   network must show an **in-place update** of `subnet` and the DHCP scope, plus
+   the port-forward target updates. A `-/+ replace` on `unifi_network.this
+   ["homelab"]` means `prevent_destroy` is about to abort the apply — stop and
+   re-read; a replace loses the network's ID and every reference to it.
+3. Supervised `task terraform:unifi-apply`.
+4. On each host: `ip route replace default via 10.0.10.1` (the permanent edit is
+   step 3). Confirm internet egress from one host before touching the rest.
+
+Everything inside VLAN 10 kept working across the apply — only the default route
+moved.
+
+### Step 3 — make the new address primary, host by host
+
+One host at a time, watching quorum from a *different* host
+(`pvecm status`, expect 6/6 the whole way):
+
+```bash
+# swap the two stanzas so 10.0.10.<n>/24 is the primary and carries
+# `gateway 10.0.10.1`; delete the 192.168.0.<n> stanza
+ifreload -a
+ip -br addr show vmbr0
+ping -c3 10.0.10.1
+```
+
+Update `/etc/hosts` on the same host in the same edit — Proxmox resolves its own
+node name through it and a stale entry breaks `pvecm`/`pveproxy` in confusing
+ways.
+
+Re-check the NIC-offload pins afterwards (`ethtool -k nic1`, `cat
+/proc/net/bonding/bond0`) — docs/34.
+
+### Step 4 — corosync ring migration (add a link, then drop the old one)
+
+Do **not** rewrite `ring0_addr` in place. Add the new addresses as a second
+link, verify both rings, then remove the first — the second corosync port
+(`5406`) is already open in the Proxmox firewall rules, which is what makes this
+the low-risk path.
+
+1. Edit `/etc/pve/corosync.conf` (the cluster-wide copy, **not**
+   `/etc/corosync/corosync.conf`): bump `config_version`, add
+   `ring1_addr: 10.0.10.<n>` to every node, and add the matching
+   `interface { linknumber: 1 }` to `totem`.
+2. `corosync-cfgtool -s` on every node: two rings, both `connected`.
+3. Only then, in a second edit (bump `config_version` again), remove
+   `ring0_addr` / linknumber 0 and renumber the surviving link.
+4. `pvecm status` after each edit — 6/6, and no node showing a stale ring.
+
+If quorum is lost mid-edit the recovery is `pvecm expected 1` on one node,
+restore `/root/corosync.conf.pre-renumber`, restart `corosync` + `pve-cluster`.
+
+### Step 5 — guests, then k3s agents (one at a time)
+
+Guests first: for each statically addressed guest, make `10.0.10.<n>` primary
+(console or cloud-init redeploy per docs/19), then run the playbook that owns it
+from the branch. **dns-01 and dns-02 come first** — everything downstream
+resolves through them, and their own `acme_certs_distribution_targets` list (in
+`host_vars/dns-01.yml`) now names the new addresses, so the cert push has to be
+re-run after they move: `task dns:deploy`, then the cert distribution.
+
+Then the AdGuard rewrites: `group_vars/dns.yml` carries ~50 A rewrites plus the
+28 PTR rules, which have moved from `<n>.0.168.192.in-addr.arpa` to
+`<n>.10.0.10.in-addr.arpa`. Push them with `task dns:deploy` once both resolvers
+are on their new addresses — before this point clients resolve to addresses that
+are still secondary-only, which works but hides mistakes.
+
+k3s agents, **one node at a time**:
+
+```bash
+kubectl drain <node> --ignore-daemonsets --delete-emptydir-data
+# re-IP the VM (console or recreate per docs/19), then from the branch:
+ansible-playbook ansible/playbooks/k3s.yml --limit <node>       # or task k3s:deploy
+kubectl get node <node> -o wide     # INTERNAL-IP is the new address
+kubectl uncordon <node>
+```
+
+Wait for the node to go `Ready` and for its pods to settle before the next one.
+The flannel wireguard-native peers re-key from the node's `InternalIP`, so a
+half-migrated node shows up as pod-to-pod packet loss, not as a `NotReady`.
+
+### Step 6 — k3s servers (one at a time) and the API VIP
+
+Quorum is 2 of 3; move one server at a time and never start the next until
+`kubectl get node` shows all three `Ready` and
+`kubectl -n kube-system exec <etcd-pod-or-host> -- k3s etcd-snapshot ls` (or
+`journalctl -u k3s`) shows a healthy 3-member cluster.
+
+An embedded-etcd member cannot change its peer URL in place. For each server:
+
+1. `kubectl drain <server> --ignore-daemonsets --delete-emptydir-data`
+2. Stop k3s on it, remove it from the cluster (`kubectl delete node <server>`),
+   and wipe `/var/lib/rancher/k3s/server/db/etcd` so it rejoins as a fresh
+   member rather than an unreachable one.
+3. Re-IP the VM, then re-run the k3s play for that host from the branch; it
+   rejoins via the `server:` URL and re-adds itself as an etcd member.
+4. Confirm 3 members, then uncordon.
+
+The **kube-vip API VIP** (`k3s_api_vip`, now `10.0.10.161`) and every node's
+`server:` URL move together — that is one `task k3s:deploy` pass across the
+whole cluster once the last server is on its new address, not a per-node change.
+Re-fetch the kubeconfig afterwards (`task k3s:kubeconfig`).
+
+### Step 7 — the coordinated Flux moment
+
+With every node on `10.0.10.x`:
+
+1. `task flux:resume`, push the branch, `task flux:reconcile`.
+2. `cluster-config` carries the new `cluster_lan_cidr`, the three MetalLB VIPs
+   and the API VIP; MetalLB re-announces `.99`/`.100`/`.101` on the new subnet
+   as the pools reconcile. Watch `kubectl -n metallb-system get
+   ipaddresspool,l2advertisement` and then the Traefik services' `EXTERNAL-IP`.
+3. The ~15 NetworkPolicy `ipBlock` sets, the `vm-ingress` EndpointSlices and the
+   observability targets all move in the same reconcile. Expect a burst of
+   `EndpointDown`/`BlackboxProbeFailed` while Prometheus re-resolves; it should
+   clear inside two scrape intervals.
+4. `task flux:status`, then `task flux:verify`.
+
+### Step 8 — NFS remounts
+
+The k3s NFS PVs mount **by hostname** (`pve-nas-01.esweiss.com`) with
+`xprtsec: tls`, so this step is strictly after the DNS rewrites are live. Push
+the new export matrix (`host_vars/pve-nas-01.yml`: the `.200/29` + `.220/29` +
+`.227/32` blocks and every per-guest `/32`) with the NAS play, then `exportfs
+-ra` on the NAS. A pod holding a stale handle needs **deleting**, not
+restarting (docs/12) — and remember a Flux-managed workload drift-reverts a
+`rollout restart`.
+
+### Step 9 — Tailscale (supervised, can sever remote admin)
+
+Order matters: apply the **policy first**, then change what the subnet routers
+advertise, so the new route is auto-approved rather than sitting pending.
+
+1. `task terraform:tailscale-plan` → review → supervised apply. The policy now
+   names `10.0.10.0/24` in ACL rule 2's `dst` and in `autoApprovers.routes`.
+2. Re-run the Proxmox play so `tailscale_advertise_routes` advertises
+   `10.0.10.0/24`.
+3. `tailscale status` on a host and, from a tailnet client, reach a homelab
+   service by its internal name. Only then remove the old route from the
+   admin console if it lingers.
+
+### Step 10 — validation, then merge
+
+Re-run the § Validation matrix above in full — every row still applies, and
+rows 2, 7, 9, 10, 11, 13 and 17 are the ones this phase can break. Add:
+
+| # | Check | How | Expected |
+|---|---|---|---|
+| P2-1 | No stragglers | `grep -rIn "192\.168\.0\." ansible/ kubernetes/ terraform/ scripts/ Taskfile.yml docs/ \| grep -v "192\.168\.0\.0/16"` | Only the deliberate `/16` egress `except` entries |
+| P2-2 | Reverse DNS | `dig -x 10.0.10.153 @10.0.10.150 +short` | `gitlab.esweiss.com.` |
+| P2-3 | Gate agreement | `python3 scripts/check-cluster-literals.py` | Pass — `cluster-config` and the inventory agree |
+| P2-4 | Address book | `task hosts:sync` | No diff in `scripts/hosts.env` |
+| P2-5 | Corosync | `corosync-cfgtool -s` on every host | One link, new addresses, all `connected` |
+| P2-6 | etcd | 3 healthy members, all `10.0.10.x` | Quorum intact |
+
+Then merge the MR. The post-merge deploy pipeline is now a no-op re-run against
+the fleet you have already moved, which is the state you want it in.
+
+### Rollback
+
+The further in, the more this is a roll-*forward* migration — but each step has
+its own reversal, and steps 1-2 are cheap:
+
+- **Before step 3**: revert the gateway (`local.networks.homelab.subnet` back to
+  `192.168.0.1/24`, supervised apply, `url` field back). Hosts still hold both
+  addresses; nothing else changed.
+- **Step 3**: `cp /root/interfaces.pre-renumber /etc/network/interfaces &&
+  ifreload -a` on the affected host — from the console.
+- **Step 4**: restore the saved `corosync.conf`, `pvecm expected 1` if quorum is
+  gone, restart `corosync` and `pve-cluster`.
+- **Steps 5-6**: a drained node that will not rejoin is a rebuild, not a
+  rollback — `task k3s:deploy` for that node against the old address, or restore
+  the etcd snapshot from `task k3s:backup` (docs/19).
+- **Step 7**: `task flux:suspend` stops the bleeding; the previous
+  `cluster-config` is one `git revert` away.
 
 One requirement on that MR belongs here, because it is the trap this repo has
 already hit once: the straggler sweep for `192.168.0.` must match the

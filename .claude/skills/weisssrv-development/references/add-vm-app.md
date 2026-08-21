@@ -77,7 +77,7 @@ there, get a tag cut, then land the pin bump plus everything else in one MR here
 14. **Certificate** — per-host cert (`letsencrypt-prod`, `renewBefore: 720h`) as
     for a k8s app when Traefik terminates TLS.
 15. **DNS** — internal `adguard_home_rewrites` in `group_vars/dns.yml` (answer
-    `192.168.0.101` for Traefik-fronted; direct guest IP only for non-HTTP);
+    `10.0.10.101` for Traefik-fronted; direct guest IP only for non-HTTP);
     external via the external-dns annotation, or `terraform/cloudflare/dns.tf`
     for a nested/DNS-only record.
 16. **Observability** — logs via the `alloy_host` role on the guest (ships

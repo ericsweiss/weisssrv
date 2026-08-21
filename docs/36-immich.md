@@ -5,8 +5,8 @@ a Docker Compose stack on a dedicated NAS-pinned Debian VM and fronted by a host
 nginx that terminates the wildcard TLS. SSO-only via Authentik OIDC.
 
 - **Web**: `https://photos.esweiss.com` (internal) / `https://photos.ericsweiss.com` (external)
-- **VM**: `immich`, `192.168.0.157`, vmid 157 on `pve-nas-01`
-- **GPU ML LXC**: `immich-ml`, `192.168.0.158`, vmid 158 on `pve-nas-01` (Intel Arc B580, OpenVINO)
+- **VM**: `immich`, `10.0.10.157`, vmid 157 on `pve-nas-01`
+- **GPU ML LXC**: `immich-ml`, `10.0.10.158`, vmid 158 on `pve-nas-01` (Intel Arc B580, OpenVINO)
 - **Ansible**: roles `weisssrv.infra.immich` + `weisssrv.infra.immich_ml` (weisssrv-lib), playbooks `ansible/playbooks/{immich,immich-ml}.yml`, `task immich:*` / `task immich-ml:*`
 - **Ingress**: `kubernetes/apps/vm-ingress/{services-immich,immich}.yaml`
 
@@ -29,7 +29,7 @@ Client ──(photos.esweiss.com → AdGuard → .101)────────�
                                 └── redis     (Valkey)
                                                            │
                               machineLearning.urls (tried in order):
-                                1▶ http://192.168.0.158:3003 ── immich-ml LXC
+                                1▶ http://10.0.10.158:3003 ── immich-ml LXC
                                    (Arc B580 /dev/dri, OpenVINO — PRIMARY)
                                 2▶ http://immich-machine-learning:3003
                                    (in-VM CPU container — FAILOVER)
@@ -47,7 +47,7 @@ which is why the VM stays sized 6 vCPU / 12 GB.
 
 ## GPU machine learning (immich-ml LXC)
 
-A dedicated LXC (`immich-ml`, vmid 158, `192.168.0.158`, 4 cores / 8 GB / 64 GB
+A dedicated LXC (`immich-ml`, vmid 158, `10.0.10.158`, 4 cores / 8 GB / 64 GB
 rootfs on `local-lvm`) runs the `immich-machine-learning:<immich_version>-openvino`
 container under docker compose (`immich_ml` role, `task immich-ml:*`).
 
@@ -174,7 +174,7 @@ keeps its own `archsync` grandfather set.
 - **Database only** (roll back a corruption): stop the stack, restore the
   Postgres data zvol from archive, **or** replay a pg_dumpall:
   ```bash
-  ssh eric@192.168.0.157
+  ssh eric@10.0.10.157
   cd /mnt/immich-app/compose
   sudo docker compose stop immich-server immich-machine-learning
   gunzip -c /mnt/immich-app/backups/immich-<ts>.sql.gz \
@@ -186,8 +186,8 @@ keeps its own `archsync` grandfather set.
 
 ## DNS & ingress
 
-- **Internal** (`photos.esweiss.com`): AdGuard rewrite → `192.168.0.101`
-  (Traefik-internal VIP). A direct `immich.esweiss.com` → `192.168.0.157` rewrite
+- **Internal** (`photos.esweiss.com`): AdGuard rewrite → `10.0.10.101`
+  (Traefik-internal VIP). A direct `immich.esweiss.com` → `10.0.10.157` rewrite
   (+ PTR) exists for admin/SSH convenience. `group_vars/dns.yml`.
 - **External** (`photos.ericsweiss.com`): a **DNS-only** Cloudflare CNAME →
   `direct.ericsweiss.com` (`terraform/cloudflare/dns.tf`, `local.dns_records["photos"]`,
@@ -200,7 +200,7 @@ keeps its own `archsync` grandfather set.
   external route → `hsts-header` + `ericsweiss-com-tls`; internal route →
   `lan-tailscale-only` + `hsts-header` + `esweiss-com-tls`. Both `scheme: https`
   + `serversTransport: vm-tls-wildcard` to the `immich-backend` Service
-  (EndpointSlice → `192.168.0.157:443`).
+  (EndpointSlice → `10.0.10.157:443`).
 - **TLS on the VM**: the host nginx serves the `*.esweiss.com` wildcard cert
   distributed by `acme_certs` (see Deploy). Traefik validates the backend against
   `serverName: vm.esweiss.com` (covered by the wildcard) — no `insecureSkipVerify`.
@@ -311,7 +311,7 @@ exists:
    key and paste it into the (currently commented) `immich` entry in
    `ansible/inventories/prod/host_vars/dns-01.yml`:
    ```bash
-   ssh-keyscan -t ed25519 192.168.0.157        # or: task certs:show-host-keys
+   ssh-keyscan -t ed25519 10.0.10.157        # or: task certs:show-host-keys
    ```
    Uncomment the block, set the real `host_key`, then:
    ```bash
@@ -398,7 +398,7 @@ automatic phone-photo sync.
 
 - **`photos.*` returns 502 via Traefik**: the VM nginx is serving the self-signed
   placeholder (cert not yet pushed) — run step 3 (Deploy). Confirm with
-  `openssl s_client -connect 192.168.0.157:443 -servername vm.esweiss.com`.
+  `openssl s_client -connect 10.0.10.157:443 -servername vm.esweiss.com`.
 - **Locked out (OIDC broken)**: use `…/auth/login?autoLaunch=0`, or redeploy in
   bootstrap mode.
 - **Uploads fail at ~100 MB externally**: the `photos` record got re-proxied

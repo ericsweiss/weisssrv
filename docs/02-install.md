@@ -151,9 +151,9 @@ eval "$(ssh-agent -s)"
 ssh-add ~/.ssh/id_ed25519
 
 # Test SSH to homelab (should work if key is deployed)
-ssh eric@192.168.0.102  # pve-nas-01
-ssh eric@192.168.0.106  # pve-opt-03
-ssh eric@192.168.0.150  # dns-01
+ssh eric@10.0.10.102  # pve-nas-01
+ssh eric@10.0.10.106  # pve-opt-03
+ssh eric@10.0.10.150  # dns-01
 ```
 
 **If SSH fails**, ensure keys are deployed on all nodes (see [Homelab Node Preparation](#homelab-node-preparation)).
@@ -234,11 +234,11 @@ Root SSH login is disabled on all hosts.
 
 ```bash
 # From your laptop - all hosts use eric user
-ssh eric@192.168.0.102  # pve-nas-01
-ssh eric@192.168.0.106  # pve-opt-03
-ssh eric@192.168.0.150  # dns-01
-ssh eric@192.168.0.160  # dns-02
-ssh eric@192.168.0.151  # smtp-relay
+ssh eric@10.0.10.102  # pve-nas-01
+ssh eric@10.0.10.106  # pve-opt-03
+ssh eric@10.0.10.150  # dns-01
+ssh eric@10.0.10.160  # dns-02
+ssh eric@10.0.10.151  # smtp-relay
 ```
 
 If SSH fails, see [Bootstrapping New Systems](18-bootstrap-new-systems.md) for setup instructions.
@@ -270,13 +270,13 @@ For existing Proxmox hosts, configure passwordless sudo manually (one-time setup
 
 ```bash
 # pve-nas-01
-ssh eric@192.168.0.102
+ssh eric@10.0.10.102
 echo 'eric ALL=(ALL) NOPASSWD: ALL' | sudo tee /etc/sudoers.d/eric
 sudo chmod 440 /etc/sudoers.d/eric
 exit
 
 # pve-opt-03
-ssh eric@192.168.0.106
+ssh eric@10.0.10.106
 echo 'eric ALL=(ALL) NOPASSWD: ALL' | sudo tee /etc/sudoers.d/eric
 sudo chmod 440 /etc/sudoers.d/eric
 exit
@@ -287,13 +287,13 @@ exit
 ### Verify Firewall Allows Ansible SSH
 
 The firewall should already allow SSH from:
-- LAN (192.168.0.0/24)
+- LAN (10.0.10.0/24)
 - Tailscale (100.64.0.0/10)
 
 **Test from your laptop**:
 ```bash
 # Should succeed if you're on LAN
-ssh eric@192.168.0.102
+ssh eric@10.0.10.102
 
 # Or via Tailscale
 ssh eric@pve-nas-01.<tailnet>.ts.net  # replace <tailnet> with your tailnet name
@@ -369,7 +369,7 @@ ansible-playbook ansible/playbooks/base.yml
 **Verify**:
 ```bash
 # SSH should still work
-ssh eric@192.168.0.102
+ssh eric@10.0.10.102
 
 # Check installed packages
 ansible all -m shell -a "which nvim htop"
@@ -382,10 +382,10 @@ ansible all -m shell -a "which nvim htop"
 task storage:deploy
 
 # Verify NFS exports
-showmount -e 192.168.0.102
+showmount -e 10.0.10.102
 
 # Verify Samba
-smbclient -L //192.168.0.102 -N
+smbclient -L //10.0.10.102 -N
 ```
 
 ### Phase 6: Deploy DNS Stack
@@ -398,8 +398,8 @@ ansible-playbook ansible/playbooks/dns.yml --check
 ansible-playbook ansible/playbooks/dns.yml
 
 # Verify DNS works
-dig @192.168.0.150 esweiss.com
-kdig @192.168.0.150 -p 853 +tls esweiss.com
+dig @10.0.10.150 esweiss.com
+kdig @10.0.10.150 -p 853 +tls esweiss.com
 ```
 
 ### Phase 7: Deploy Full Stack
@@ -449,31 +449,31 @@ state: [19-k3s-deployment.md](19-k3s-deployment.md), then
 
 ```bash
 # All hosts should be accessible using eric user
-ssh eric@192.168.0.102  # pve-nas-01
-ssh eric@192.168.0.106  # pve-opt-03
-ssh eric@192.168.0.150  # dns-01
-ssh eric@192.168.0.160  # dns-02
-ssh eric@192.168.0.151  # smtp-relay
+ssh eric@10.0.10.102  # pve-nas-01
+ssh eric@10.0.10.106  # pve-opt-03
+ssh eric@10.0.10.150  # dns-01
+ssh eric@10.0.10.160  # dns-02
+ssh eric@10.0.10.151  # smtp-relay
 ```
 
 ### 2. DNS Resolution
 
 ```bash
 # Test DNS
-dig @192.168.0.150 esweiss.com
-dig @192.168.0.150 dns-01.esweiss.com
+dig @10.0.10.150 esweiss.com
+dig @10.0.10.150 dns-01.esweiss.com
 
 # Test DoT
-kdig @192.168.0.150 -p 853 +tls esweiss.com
+kdig @10.0.10.150 -p 853 +tls esweiss.com
 
 # Test from another machine
-dig @192.168.0.150 google.com
+dig @10.0.10.150 google.com
 ```
 
 ### 3. AdGuard Home
 
 ```bash
-# Access web UI (or http://192.168.0.150:3000 for direct access — port 3000 is plain HTTP)
+# Access web UI (or http://10.0.10.150:3000 for direct access — port 3000 is plain HTTP)
 open https://dns-01.esweiss.com
 
 # Verify custom rules are present
@@ -485,20 +485,20 @@ open https://dns-01.esweiss.com
 
 ```bash
 # Check cert expiry
-ssh eric@192.168.0.150 "sudo openssl x509 -in /opt/AdGuardHome/certs/fullchain.pem -noout -dates"
+ssh eric@10.0.10.150 "sudo openssl x509 -in /opt/AdGuardHome/certs/fullchain.pem -noout -dates"
 
 # Test DoT with TLS
-kdig @192.168.0.150 -p 853 +tls esweiss.com
+kdig @10.0.10.150 -p 853 +tls esweiss.com
 
 # Test SMTP TLS
-openssl s_client -connect 192.168.0.151:587 -starttls smtp
+openssl s_client -connect 10.0.10.151:587 -starttls smtp
 ```
 
 ### 5. NFS Exports
 
 ```bash
 # List exports (from a host in one of the allowed client sets)
-showmount -e 192.168.0.102
+showmount -e 10.0.10.102
 
 # Expect the pseudo-root plus the child exports defined by
 # nas_storage_exports in host_vars/pve-nas-01.yml — /export, /export/appdata,
@@ -512,15 +512,15 @@ showmount -e 192.168.0.102
 
 ```bash
 # Check firewall status
-ssh eric@192.168.0.102 "sudo pve-firewall status"
+ssh eric@10.0.10.102 "sudo pve-firewall status"
 
 # View rules
-ssh eric@192.168.0.102 "sudo cat /etc/pve/firewall/cluster.fw"
+ssh eric@10.0.10.102 "sudo cat /etc/pve/firewall/cluster.fw"
 
 # Test connectivity to allowed ports
-nc -zv 192.168.0.150 53    # DNS
-nc -zv 192.168.0.150 853   # DoT
-nc -zv 192.168.0.150 3000  # AdGuard admin
+nc -zv 10.0.10.150 53    # DNS
+nc -zv 10.0.10.150 853   # DoT
+nc -zv 10.0.10.150 3000  # AdGuard admin
 ```
 
 ### 7. Collect Current State
@@ -542,7 +542,7 @@ cat CLUSTER_STATUS.txt
 **Solutions**:
 1. **Check SSH manually**:
    ```bash
-   ssh eric@192.168.0.102
+   ssh eric@10.0.10.102
    ```
 
 2. **Verify inventory**:
@@ -653,19 +653,19 @@ cat CLUSTER_STATUS.txt
 
 ```bash
 # Check Proxmox firewall status
-ssh eric@192.168.0.102 "sudo pve-firewall status"
+ssh eric@10.0.10.102 "sudo pve-firewall status"
 
 # View active firewall rules
-ssh eric@192.168.0.102 "sudo iptables -S PVEFW-HOST-IN"
+ssh eric@10.0.10.102 "sudo iptables -S PVEFW-HOST-IN"
 
 # Verify security group assignments
-ssh eric@192.168.0.102 "sudo cat /etc/pve/nodes/\$(hostname)/host.fw"
+ssh eric@10.0.10.102 "sudo cat /etc/pve/nodes/\$(hostname)/host.fw"
 
 # Temporarily disable firewall for debugging (CAREFUL)
-ssh eric@192.168.0.102 "sudo pve-firewall stop"
+ssh eric@10.0.10.102 "sudo pve-firewall stop"
 
 # Re-enable when fixed
-ssh eric@192.168.0.102 "sudo pve-firewall start"
+ssh eric@10.0.10.102 "sudo pve-firewall start"
 ```
 
 ## Quick Reference

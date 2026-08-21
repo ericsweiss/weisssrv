@@ -39,7 +39,7 @@ GitLab is deployed as a standalone VM on pve-nas-01 with:
                             |
                    +--------v--------+
                    |   GitLab VM     |
-                   | 192.168.0.153   |
+                   | 10.0.10.153   |
                    |   pve-nas-01    |
                    +-----------------+
 ```
@@ -48,7 +48,7 @@ GitLab is deployed as a standalone VM on pve-nas-01 with:
 
 | Component | Value |
 |-----------|-------|
-| IP Address | 192.168.0.153 |
+| IP Address | 10.0.10.153 |
 | Proxmox Host | pve-nas-01 |
 | Root Disk | ssd pool (100GB) - OS, GitLab binaries, configs |
 | Repo Disk | ssd pool (200GB zvol) - Git repositories |
@@ -411,7 +411,7 @@ the rest are served over the LAN.
 - Cache storage is a node-local `emptyDir` (10Gi cap) — disposable, re-warms on
   the next pull; no NFS/zvol, nothing to back up.
 - **Upstream path**: the pod pins `registry.git.ericsweiss.com` → the internal
-  Traefik VIP `192.168.0.101` via `hostAliases` (the pod-scope twin of the
+  Traefik VIP `10.0.10.101` via `hostAliases` (the pod-scope twin of the
   node-level `k3s_registry_host_pins`), so the upstream fetch stays on the
   internal Traefik path instead of hairpinning the flaky external/Cloudflare DNS.
   Egress is default-deny + DNS + `:443` to the `traefik` namespace only.
@@ -551,7 +551,7 @@ The wrapper writes `/var/lib/node_exporter/gitlab_backup.prom` with:
 scraped alongside the host's other metrics. Prometheus discovers the VM via the
 shared `node-exporter-host` Service/Endpoints
 (`kubernetes/infrastructure/observability/exporters/node-exporter-host.yaml`),
-which lists 192.168.0.153 among its Endpoints addresses. The `sg-metrics`
+which lists 10.0.10.153 among its Endpoints addresses. The `sg-metrics`
 security group already authorizes the 9101 scrape from the k3s nodes, so no
 firewall change is needed.
 
@@ -640,7 +640,7 @@ ssh gitlab "sudo gitlab-ctl tail gitlab-pages"
 
 Both runners use `https://git.esweiss.com` for `gitlabUrl` and `clone_url` —
 the LAN path via the AdGuard rewrite to the internal Traefik VIP (.101). If a
-runner cannot connect, verify pods resolve `git.esweiss.com` to 192.168.0.101
+runner cannot connect, verify pods resolve `git.esweiss.com` to 10.0.10.101
 (CoreDNS forwards to AdGuard on the k3s nodes' resolvers).
 
 ```bash
@@ -668,8 +668,8 @@ kubectl get secret -n gitlab-runner
 
 - **Unified URL**: `git.ericsweiss.com` works for both HTTPS and SSH (port 2222)
 - **LAN (internal)**: `git.esweiss.com` resolves to the **internal Traefik VIP**
-  (192.168.0.101), so it is an HTTPS name only. For direct port-22 SSH to the VM
-  use `gitlab.esweiss.com` (192.168.0.153), the guest's own rewrite
+  (10.0.10.101), so it is an HTTPS name only. For direct port-22 SSH to the VM
+  use `gitlab.esweiss.com` (10.0.10.153), the guest's own rewrite
 - **External (internet)**: Use `git.ericsweiss.com` on port 2222 (DNS-only, same as web URL)
 
 **Architecture:** `git.ericsweiss.com` is DNS-only (not Cloudflare-proxied), allowing both
@@ -743,9 +743,9 @@ the LAN, use the split config above (`gitlab.esweiss.com`, port 22, straight to 
 External access on 2222 is unaffected.
 
 **Why did the universal config use port 2222 internally?** `git.esweiss.com`
-resolves to the internal Traefik VIP (192.168.0.101), which serves HTTPS only —
+resolves to the internal Traefik VIP (10.0.10.101), which serves HTTPS only —
 no SSH listener on any port — so SSH always had to reach the VM another way: the
-VM's own name is `gitlab.esweiss.com` (192.168.0.153), and the external path
+VM's own name is `gitlab.esweiss.com` (10.0.10.153), and the external path
 rode hairpin NAT. With hairpin gone, the split config is the only working LAN
 path. The iptables PREROUTING rule on the GitLab VM still redirects port 2222 to
 port 22 regardless of source, so external clients on 2222 are unaffected.
@@ -839,7 +839,7 @@ Pages are available at:
    Because the WAN-exposed 2222 redirects into the same system sshd as port 22,
    the admin-only intent is additionally **enforced in sshd itself** via an
    `AllowUsers` drop-in (`gitlab_ssh_allowusers_enabled`, on by default):
-   `git` may log in from anywhere, the admin user only from `192.168.0.0/24`
+   `git` may log in from anywhere, the admin user only from `10.0.10.0/24`
    and `100.64.0.0/10` (the full Tailscale CGNAT range). Without it, every
    local account would accept internet pubkey auth attempts via 2222.
 5. **Secrets**: All credentials via 1Password; never committed to git

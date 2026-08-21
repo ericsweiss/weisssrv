@@ -1,6 +1,6 @@
 # Windows 11 VM
 
-A NAS-pinned Windows 11 Pro VM (`windows`, VMID 155, `192.168.0.155`) on
+A NAS-pinned Windows 11 Pro VM (`windows`, VMID 155, `10.0.10.155`) on
 `pve-nas-01`, provisioned as Infrastructure-as-Code down to a bootable
 installer, then **installed and activated interactively** by the operator.
 Reachable over RDP at `windows.esweiss.com:3389` from the LAN and over
@@ -16,7 +16,7 @@ are manual, one-time, human steps documented below.
 
 | Property | Value |
 |----------|-------|
-| VMID / IP | 155 / 192.168.0.155 (`windows.esweiss.com`) |
+| VMID / IP | 155 / 10.0.10.155 (`windows.esweiss.com`) |
 | Host | pve-nas-01 (NAS-pinned, `proxmox_vm_cpu_type: host`, no live migration) |
 | vCPU / RAM | 8 cores / 16 GiB |
 | Disk | 250 GiB empty zvol on the **encrypted** `ssd` pool |
@@ -42,7 +42,7 @@ are manual, one-time, human steps documented below.
 | RDP monitoring | `kubernetes/infrastructure/observability/exporters/blackbox-exporter.yaml` (`windows-rdp` target) + `WindowsRdpDown` alert (fires only while the VM is powered on, so a deliberate shutdown stays quiet) |
 
 There is **no** Kubernetes/Traefik object for this VM: RDP is not HTTP, so
-access is a direct L3 connection to `192.168.0.155:3389`, gated purely at the
+access is a direct L3 connection to `10.0.10.155:3389`, gated purely at the
 Proxmox guest firewall. There are **no** external-dns / Cloudflare records —
 `windows.esweiss.com` (internal AdGuard rewrite) only.
 
@@ -115,7 +115,7 @@ idempotent — an existing VM is never re-clobbered (create-time-only semantics)
 ### 3. Boot + install Windows (interactive, via the Proxmox console)
 
 1. Start the VM and open its console (Proxmox UI → VM 155 → Console), or
-   `ssh eric@192.168.0.102 "sudo qm start 155"`.
+   `ssh eric@10.0.10.102 "sudo qm start 155"`.
 2. Press a key to boot from the install CD. Proceed to "Where do you want to
    install Windows?" — **no disk is listed** because Windows has no in-box
    VirtIO SCSI driver.
@@ -125,12 +125,12 @@ idempotent — an existing VM is never re-clobbered (create-time-only semantics)
 4. After the desktop is up, install the rest of the VirtIO drivers and the
    guest agent: open the VirtIO CD and run **`virtio-win-guest-tools.exe`**
    (installs `netkvm` NIC driver, balloon, QEMU guest agent, etc.). The NIC
-   comes up and the VM gets `192.168.0.155` (set a **static IP** of
-   `192.168.0.155/24`, gw `192.168.0.1`, DNS `192.168.0.150` / `192.168.0.160`,
+   comes up and the VM gets `10.0.10.155` (set a **static IP** of
+   `10.0.10.155/24`, gw `10.0.10.1`, DNS `10.0.10.150` / `10.0.10.160`,
    or reserve `.155` for the VM's MAC in your router's DHCP).
 
 > **DNS note — disable encrypted DNS (DoH/DoT).** The VM must resolve through
-> the homelab AdGuard servers (`192.168.0.150` / `.160`) in **plaintext**. In
+> the homelab AdGuard servers (`10.0.10.150` / `.160`) in **plaintext**. In
 > Windows 11 (*Settings → Network & internet → Ethernet → DNS server
 > assignment → Edit*) set **DNS over HTTPS = Off** for the adapter, and do not
 > enable any third-party DoH/DoT resolver. Encrypted DNS bypasses AdGuard
@@ -152,7 +152,7 @@ Once Windows boots from disk, drop the install CD from the boot order so the VM
 doesn't try the installer on the next power-cycle:
 
 ```bash
-ssh eric@192.168.0.102 "sudo qm set 155 --boot order=scsi0"
+ssh eric@10.0.10.102 "sudo qm set 155 --boot order=scsi0"
 ```
 
 (Optionally detach the CDROMs entirely later: `qm set 155 --ide2 none --ide0 none`.)
@@ -183,7 +183,7 @@ pushed pve-nas-01's slice of the nightly vzdump past the 06:00 media-mover /
 ```bash
 # On pve-nas-01, after a nightly run: how long did the last backup take, and
 # did the I/O-pressure alert stay quiet through the window?
-ssh eric@192.168.0.102 "journalctl -u 'vzdump*' --since yesterday | tail"
+ssh eric@10.0.10.102 "journalctl -u 'vzdump*' --since yesterday | tail"
 ```
 
 If pve-nas-01's backup now finishes after ~05:45, exclude VMID 155 or move it to
@@ -211,7 +211,7 @@ To stop it auto-starting, remove `155` from that list — do not touch `onboot`.
 You can start or stop it by hand at any time:
 
 - **Proxmox UI**: VM 155 → **Start**.
-- **CLI**: `ssh eric@192.168.0.102 "sudo qm start 155"`.
+- **CLI**: `ssh eric@10.0.10.102 "sudo qm start 155"`.
 
 **No manual decryption is needed.** The disks live on the encrypted `ssd` pool,
 which is unlocked once at NAS boot (key from 1Password Connect, docs/32) for all
@@ -224,7 +224,7 @@ NAS boot, which auto-starts it as described above.
 
 ## Access paths
 
-- **LAN**: RDP client → `windows.esweiss.com` (AdGuard rewrite → `192.168.0.155`)
+- **LAN**: RDP client → `windows.esweiss.com` (AdGuard rewrite → `10.0.10.155`)
   → `:3389`. Allowed from `admin_lan` — the whole homelab `/24` plus the
   `10.0.20.8/29` admin block on the Home VLAN ([docs/11](11-firewall.md)
   § Client scopes).
@@ -232,7 +232,7 @@ NAS boot, which auto-starts it as described above.
   range (`admin_ts`, `100.64.0.0/10`) is allowed to 3389. No public/WAN
   exposure.
 
-> **Hardening note.** `admin_lan` is the homelab `192.168.0.0/24` plus the
+> **Hardening note.** `admin_lan` is the homelab `10.0.10.0/24` plus the
 > `10.0.20.8/29` admin block, so RDP still accepts from every device on the
 > homelab segment (defense-in-depth gap, not direct compromise — NLA still
 > authenticates). No client-VLAN device outside that /29 reaches it at all:
@@ -264,7 +264,7 @@ this repo:
 2. Open 3389's sibling scrape port on the guest firewall: add a rule to
    `[group sg-windows]` in `cluster.fw.j2` allowing `9182/tcp` from
    `+dc/k3s_nodes` (so Prometheus can reach it), then `task windows:provision`.
-3. Add a static scrape target / `Probe`/`ScrapeConfig` for `192.168.0.155:9182`
+3. Add a static scrape target / `Probe`/`ScrapeConfig` for `10.0.10.155:9182`
    in the observability stack, plus a NetworkPolicy scrape-allow if needed.
 
 ## Idempotence & recreation
@@ -286,7 +286,7 @@ this repo:
 | Windows did not come up after a NAS reboot | 155 is in `zfs_encryption_guest_vmids` and starts last in that cohort, so this is a fault, not the design. Check `systemctl status pve-start-encrypted-guests` and `journalctl -t zfs-start-encrypted-guests`; if the `ssd` pool failed to unlock, every other `ssd` guest is down too, so it is not Windows-specific (docs/32). `qm start 155` still works by hand. |
 | `qm start 155` fails with a storage/volume error | The `ssd` pool didn't unlock at boot — check `systemctl status zfs-mount-encrypted` and 1Password Connect reachability (docs/32). Every other `ssd` guest would be down too, so this is not Windows-specific. |
 | RDP refused | RDP not enabled / NLA blocking / account has no password (step 4). |
-| Microsoft-account login / activation / Windows Update fails, or `*.esweiss.com` won't resolve | Encrypted DNS (DoH/DoT) is enabled, bypassing AdGuard — set **DNS over HTTPS = Off** and use plaintext DNS to `192.168.0.150` / `.160` (step 4 DNS note). |
+| Microsoft-account login / activation / Windows Update fails, or `*.esweiss.com` won't resolve | Encrypted DNS (DoH/DoT) is enabled, bypassing AdGuard — set **DNS over HTTPS = Off** and use plaintext DNS to `10.0.10.150` / `.160` (step 4 DNS note). |
 
 ## Related documentation
 

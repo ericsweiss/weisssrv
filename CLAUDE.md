@@ -361,14 +361,17 @@ export CLOUDFLARE_API_TOKEN=$(op read "op://Homelab/Cloudflare DNS Token/credent
 - **External** (`*.ericsweiss.com`): Cloudflare (Terraform) → public/VIP IPs
 
 **Current DNS servers**:
-- Primary: 192.168.0.150 (dns-01)
-- Secondary: 192.168.0.160 (dns-02)
+- Primary: 10.0.10.150 (dns-01)
+- Secondary: 10.0.10.160 (dns-02)
 - Upstream: Unbound on 127.0.0.1:5335 (DoT to Cloudflare/Google)
 
 ## Network / IP Allocation
 
 Quick reference (full host-by-host topology in `docs/01-overview.md`):
 
+- The homelab is `10.0.10.0/24` (UniFi VLAN 10 — docs/46; renumbered from
+  `192.168.0.0/24`, every last octet preserved). Every address below is a host
+  part in that /24.
 - Proxmox hosts `.102-.107`; DNS `.150`/`.160`; SMTP `.151`; service guests
   `.152-.158` (plex, gitlab, HAOS, windows, nextcloud, immich, immich-ml).
 - K3s: API VIP `.161`; servers `.222`/`.223`/`.227`; agents `.202-.207`;

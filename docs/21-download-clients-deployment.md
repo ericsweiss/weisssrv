@@ -169,25 +169,25 @@ ssh pve-nas-01 "sudo chmod -R 2775 /mnt/nvme/media/"
 
 Add DNS rewrites to `adguard_home_rewrites` in
 `ansible/inventories/prod/group_vars/dns.yml`, pointing every service at the
-internal Traefik VIP (192.168.0.101), then `task dns:deploy`. The role deletes
+internal Traefik VIP (10.0.10.101), then `task dns:deploy`. The role deletes
 any rewrite not in the codified list, so a UI-added entry is reverted on the next
 deploy (docs/08 § DNS rewrites):
 
 ```yaml
 - domain: nzbget.esweiss.com
-  answer: 192.168.0.101
+  answer: 10.0.10.101
 - domain: qbittorrent.esweiss.com
-  answer: 192.168.0.101
+  answer: 10.0.10.101
 - domain: prowlarr.esweiss.com
-  answer: 192.168.0.101
+  answer: 10.0.10.101
 - domain: tv.esweiss.com           # Sonarr
-  answer: 192.168.0.101
+  answer: 10.0.10.101
 - domain: movies.esweiss.com       # Radarr
-  answer: 192.168.0.101
+  answer: 10.0.10.101
 - domain: music.esweiss.com        # Lidarr
-  answer: 192.168.0.101
+  answer: 10.0.10.101
 - domain: pulsarr.esweiss.com
-  answer: 192.168.0.101
+  answer: 10.0.10.101
 ```
 
 ## Deployment
@@ -653,7 +653,7 @@ substituted from `cluster-config`:
 | CIDR | Why |
 |---|---|
 | `10.42.0.0/16` (`cluster_pod_cidr`) | the source IP of a Traefik-forwarded request |
-| `192.168.0.0/24` (`cluster_lan_cidr`) | direct LAN access |
+| `10.0.10.0/24` (`cluster_lan_cidr`) | direct LAN access |
 | `100.64.0.0/10` (`cluster_tailnet_cidr`) | Tailscale CGNAT |
 
 **Trust model and residual risk.** The bypass is wider than "Traefik's pod IP":

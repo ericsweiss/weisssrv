@@ -48,9 +48,9 @@ radius of a pve-nas-01 outage. `docs/01-overview.md` is canonical for topology.
 
 ### Design Principles
 
-- **Servers (.22X range)**: Control plane nodes in 192.168.0.220/29, VMIDs match last octet
-- **Agents (.20X range)**: Worker nodes in 192.168.0.200/29, VMIDs match last octet
-- **Proxmox hosts (.10X range)**: Physical hosts use 192.168.0.102-109
+- **Servers (.22X range)**: Control plane nodes in 10.0.10.220/29, VMIDs match last octet
+- **Agents (.20X range)**: Worker nodes in 10.0.10.200/29, VMIDs match last octet
+- **Proxmox hosts (.10X range)**: Physical hosts use 10.0.10.102-109
 
 ### Proxmox Host Allocation
 
@@ -315,13 +315,13 @@ Follow `docs/00-hardware-setup.md` for the full Proxmox installation procedure. 
 
 | Host | IP | FQDN |
 |------|-----|------|
-| pve-laptop-01 | 192.168.0.103/24 | pve-laptop-01.esweiss.com |
-| pve-opt-01 | 192.168.0.104/24 | pve-opt-01.esweiss.com |
-| pve-opt-02 | 192.168.0.105/24 | pve-opt-02.esweiss.com |
-| pve-opt-03 | 192.168.0.106/24 | pve-opt-03.esweiss.com |
-| pve-prec-01 | 192.168.0.107/24 | pve-prec-01.esweiss.com |
+| pve-laptop-01 | 10.0.10.103/24 | pve-laptop-01.esweiss.com |
+| pve-opt-01 | 10.0.10.104/24 | pve-opt-01.esweiss.com |
+| pve-opt-02 | 10.0.10.105/24 | pve-opt-02.esweiss.com |
+| pve-opt-03 | 10.0.10.106/24 | pve-opt-03.esweiss.com |
+| pve-prec-01 | 10.0.10.107/24 | pve-prec-01.esweiss.com |
 
-Gateway: 192.168.0.1, DNS: 192.168.0.150 (use 192.168.0.1 if DNS stack is not yet deployed).
+Gateway: 10.0.10.1, DNS: 10.0.10.150 (use 10.0.10.1 if DNS stack is not yet deployed).
 
 #### Step 2: Create local-ssd ZFS Pool
 
@@ -344,13 +344,13 @@ sudo pvesm status
 ```bash
 # On the NEW node, join the existing cluster
 # Get the join command from an existing cluster member first:
-ssh eric@192.168.0.102 "sudo pvecm create weisssrv"  # only if cluster does not exist yet (docs/26 Phase 2 owns cluster formation)
+ssh eric@10.0.10.102 "sudo pvecm create weisssrv"  # only if cluster does not exist yet (docs/26 Phase 2 owns cluster formation)
 
 # On an existing member, get the join info:
-ssh eric@192.168.0.102 "sudo pvecm status"
+ssh eric@10.0.10.102 "sudo pvecm status"
 
 # On the NEW node:
-sudo pvecm add 192.168.0.102
+sudo pvecm add 10.0.10.102
 # This will prompt for the root password of the existing node
 # The node will reboot into the cluster
 ```
@@ -411,14 +411,14 @@ kubectl get pods -A -o wide | grep <new-node>
 kubectl get pods -n kube-system -l component=etcd
 
 # Test API VIP is still working
-curl -sk https://192.168.0.161:6443/healthz
+curl -sk https://10.0.10.161:6443/healthz
 ```
 
 ### Host-Specific Notes
 
 #### pve-laptop-01 (MSI GS60 2QD)
 
-- **IP**: 192.168.0.103
+- **IP**: 10.0.10.103
 - **K3s nodes**: k3s-srv-laptop-01 (.223/223) + k3s-agt-laptop-01 (.203/203)
 - **Storage**: 1TB SSD as `local-ssd`
 - **Agent role**: Ingress + general with `PreferNoSchedule` taint
@@ -441,7 +441,7 @@ curl -sk https://192.168.0.161:6443/healthz
 
 #### pve-prec-01 (Dell Precision 3630 MT)
 
-- **IP**: 192.168.0.107
+- **IP**: 10.0.10.107
 - **K3s nodes**: k3s-srv-prec-01 (.227/227) + k3s-agt-prec-01 (.207/207)
 - **Storage**: 1TB Samsung 870 EVO as `local-ssd`
 - **Agent role**: General + compute with `PreferNoSchedule` taint
@@ -756,7 +756,7 @@ sudo ha-manager migrate ct:150 pve-opt-02
 watch 'sudo ha-manager status'
 
 # Test DNS is still working from your workstation
-dig google.com @192.168.0.150
+dig google.com @10.0.10.150
 # Should still resolve (same IP, different host)
 
 # Migrate back to the home node (priority 2 in affinity-dns-01)
@@ -767,10 +767,10 @@ sudo ha-manager migrate ct:150 pve-prec-01
 
 ```bash
 # From your workstation, start a continuous ping to each service
-ping -i 1 192.168.0.150 &  # dns-01
-ping -i 1 192.168.0.160 &  # dns-02
-ping -i 1 192.168.0.151 &  # smtp-relay
-ping -i 1 192.168.0.154 &  # home-assistant
+ping -i 1 10.0.10.150 &  # dns-01
+ping -i 1 10.0.10.160 &  # dns-02
+ping -i 1 10.0.10.151 &  # smtp-relay
+ping -i 1 10.0.10.154 &  # home-assistant
 
 # Trigger a migration (e.g., dns-01)
 # On a cluster member:
@@ -848,9 +848,9 @@ sudo pct unmount <VMID>
 ```
 Internet
     |
-[Router 192.168.0.1]
+[Router 10.0.10.1]
     |
-[192.168.0.0/24] ---- Core LAN
+[10.0.10.0/24] ---- Core LAN
     |
     +-- Proxmox Cluster (6-node HA cluster "weisssrv")
     |   +-- pve-nas-01    (.102) -- NAS + Storage

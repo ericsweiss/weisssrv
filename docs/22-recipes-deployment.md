@@ -155,9 +155,9 @@ the next deploy (docs/08 § DNS rewrites):
 ```yaml
 # Internal (esweiss.com) -> internal Traefik VIP
 - domain: food.esweiss.com
-  answer: 192.168.0.101
+  answer: 10.0.10.101
 - domain: bar.esweiss.com
-  answer: 192.168.0.101
+  answer: 10.0.10.101
 ```
 
 External DNS (ericsweiss.com) is managed automatically by external-dns via Cloudflare.

@@ -46,8 +46,8 @@ ops — Flux owns `kubernetes/`. Full day-2 procedures: `docs/29-flux-operations
 ## DNS
 
 - Split-horizon: internal `*.esweiss.com` from AdGuard (`.150`/`.160`), external
-  `*.ericsweiss.com` from Cloudflare. Test with `dig @192.168.0.150 <name>` /
-  `dig @192.168.0.160 <name>`. Details: `docs/08-dns.md`.
+  `*.ericsweiss.com` from Cloudflare. Test with `dig @10.0.10.150 <name>` /
+  `dig @10.0.10.160 <name>`. Details: `docs/08-dns.md`.
 
 ## Certs
 

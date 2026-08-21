@@ -43,7 +43,7 @@ This homelab currently consists of:
 ### NAS Node: pve-nas-01
 
 - **Hostname**: pve-nas-01
-- **IP Address**: 192.168.0.102
+- **IP Address**: 10.0.10.102
 - **CPU**: Intel i7-12700K (12 cores, 20 threads)
 - **RAM**: 128GB DDR5 (usable figure and the memory budget arithmetic are in
   [docs/06-zfs.md](06-zfs.md))
@@ -61,9 +61,9 @@ This homelab currently consists of:
 
 - **Models**: Dell OptiPlex 780 (opt-01, opt-02, opt-03)
 - **IP Addresses**:
-  - pve-opt-01: 192.168.0.104
-  - pve-opt-02: 192.168.0.105
-  - pve-opt-03: 192.168.0.106
+  - pve-opt-01: 10.0.10.104
+  - pve-opt-02: 10.0.10.105
+  - pve-opt-03: 10.0.10.106
 - **CPU**: Intel Core2Quad
 - **RAM**: 16GB DDR3
 - **Storage**:
@@ -77,7 +77,7 @@ This homelab currently consists of:
 ### Laptop Node: MSI GS60 2QD
 
 - **Hostname**: pve-laptop-01
-- **IP Address**: 192.168.0.103
+- **IP Address**: 10.0.10.103
 - **CPU**: Intel Core i7-5700HQ @ 2.70GHz (4 cores / 8 threads, Broadwell)
 - **RAM**: 16GB
 - **Storage**:
@@ -89,7 +89,7 @@ This homelab currently consists of:
 ### Compute Node: Dell Precision 3630
 
 - **Hostname**: pve-prec-01
-- **IP Address**: 192.168.0.107
+- **IP Address**: 10.0.10.107
 - **CPU**: Intel Core i7-8700K @ 3.70GHz (6 cores / 12 threads, Coffee Lake)
 - **RAM**: 64GB (~62 GiB usable)
 - **GPU**: NVIDIA GTX 1660 Ti — VFIO-passed through to the k3s GPU agent
@@ -189,9 +189,9 @@ Replace `/dev/sdX` with your USB device (use `lsblk` to identify).
 **Network Configuration**:
 - Management interface: Select primary NIC (usually first Ethernet port)
 - Hostname (FQDN): `pve-nas-01.esweiss.com`
-- IP address: `192.168.0.102/24`
-- Gateway: `192.168.0.1`
-- DNS server: `192.168.0.1` (will change to internal DNS later)
+- IP address: `10.0.10.102/24`
+- Gateway: `10.0.10.1`
+- DNS server: `10.0.10.1` (will change to internal DNS later)
 
 **Confirm and Install**:
 - Review settings
@@ -207,13 +207,13 @@ After reboot, you should see:
 ```
 Welcome to the Proxmox Virtual Environment. Please use your web browser to configure this server.
 
-  https://192.168.0.102:8006/
+  https://10.0.10.102:8006/
 
 Login with user 'root' and the password you configured during installation.
 ```
 
 Access the web UI from your workstation:
-- URL: https://192.168.0.102:8006/
+- URL: https://10.0.10.102:8006/
 - Username: `root`
 - Password: (password from installation)
 
@@ -291,8 +291,8 @@ iface lo inet loopback
 
 auto eno1
 iface eno1 inet static
-    address 192.168.0.102/24
-    gateway 192.168.0.1
+    address 10.0.10.102/24
+    gateway 10.0.10.1
 
 iface eno1 inet6 static
     address fe80::1/64
@@ -309,8 +309,8 @@ iface eno1 inet manual
 
 auto vmbr0
 iface vmbr0 inet static
-    address 192.168.0.102/24
-    gateway 192.168.0.1
+    address 10.0.10.102/24
+    gateway 10.0.10.1
     bridge-ports eno1
     bridge-stp off
     bridge-fd 0
@@ -343,10 +343,10 @@ systemctl restart sshd
 
 ```bash
 # From your laptop
-ssh-copy-id root@192.168.0.102
+ssh-copy-id root@10.0.10.102
 
 # Test passwordless access
-ssh root@192.168.0.102
+ssh root@10.0.10.102
 ```
 
 ### Create Admin User
@@ -379,7 +379,7 @@ chmod 600 /home/eric/.ssh/authorized_keys
 
 ```bash
 # From laptop
-ssh eric@192.168.0.102
+ssh eric@10.0.10.102
 sudo -v  # Should not prompt for password
 ```
 
@@ -408,8 +408,8 @@ Point to internal DNS servers (once dns-01/dns-02 are operational):
 nano /etc/resolv.conf
 
 # Set to internal DNS
-nameserver 192.168.0.150
-nameserver 192.168.0.160
+nameserver 10.0.10.150
+nameserver 10.0.10.160
 search esweiss.com
 
 # Make it persistent (prevents DHCP overwrite)
@@ -457,7 +457,7 @@ Use the bootstrap script to automate user creation, SSH key deployment, and sudo
 ./scripts/bootstrap-proxmox-host.sh <host-ip> <your-ssh-public-key>
 
 # Example:
-./scripts/bootstrap-proxmox-host.sh 192.168.0.107 "ssh-ed25519 AAAA... eric@laptop"
+./scripts/bootstrap-proxmox-host.sh 10.0.10.107 "ssh-ed25519 AAAA... eric@laptop"
 ```
 
 The script handles:
@@ -473,7 +473,7 @@ After bootstrap, verify SSH access: `ssh eric@<host-ip>`
 #### Network and Connectivity
 
 - [ ] Static IP configured and persistent
-- [ ] Default gateway reachable (`ping 192.168.0.1`)
+- [ ] Default gateway reachable (`ping 10.0.10.1`)
 - [ ] Internet connectivity (`ping 8.8.8.8`)
 - [ ] DNS resolution working (`nslookup google.com`)
 - [ ] Hostname set correctly (`hostnamectl`)
@@ -513,7 +513,7 @@ Run these commands to verify readiness:
 
 ```bash
 # On each node
-ssh eric@192.168.0.102 << 'EOF'
+ssh eric@10.0.10.102 << 'EOF'
 echo "=== Node: $(hostname -f) ==="
 echo "IP: $(hostname -I)"
 echo "Timezone: $(timedatectl | grep 'Time zone')"

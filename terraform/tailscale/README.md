@@ -60,7 +60,7 @@ one-line note per rule, and `docs/05-tailscale.md` points here.
   host services are SSH (22) and the Proxmox UI (8006); 80/443/6443 are defensive
   (the host firewall gates them) and inert unless a host later serves them.
 - **ACL rule 2 — admin devices → LAN via subnet routing.**
-  `src group:admins → dst 192.168.0.0/24:<ports>`. This is the day-to-day
+  `src group:admins → dst 10.0.10.0/24:<ports>`. This is the day-to-day
   browsing/admin surface. Ports are **proto-agnostic** (no `proto` field) so each
   matches TCP **and** UDP — which is what DNS (53/853) needs — and **ICMP is
   auto-allowed** for any matched src/dst pair, so ping/traceroute work with no
@@ -94,7 +94,7 @@ one-line note per rule, and `docs/05-tailscale.md` points here.
   Split-DNS forwards `esweiss.com` to (tcp+udp, no `proto` field). Access is
   governed by the proxy device tag, so no `autoApprovers.services` block is
   needed (that is HA-ProxyGroup only).
-- **`autoApprovers.routes`** — `192.168.0.0/24` auto-approves for BOTH
+- **`autoApprovers.routes`** — `10.0.10.0/24` auto-approves for BOTH
   `tag:subnet-router` **and** `ericsweiss1@gmail.com`. The tag approves routes
   once a host is tagged; the owner keeps still-untagged hosts approved — no
   approval gap while the six hosts are tagged one by one. **Post-migration
@@ -231,7 +231,7 @@ task terraform:tailscale-apply    # review the plan, type `yes`
 ```
 
 Because `autoApprovers` still lists the owner, the six (still-untagged) hosts keep
-their `192.168.0.0/24` route approved through this step, so subnet routing stays
+their `10.0.10.0/24` route approved through this step, so subnet routing stays
 up and Rule 2 preserves LAN reach. **SSH access to the hosts is continuous across
 this window** — there is no lockout:
 
@@ -241,7 +241,7 @@ this window** — there is no lockout:
   `tag:subnet-router` rule do not match yet (nothing is tagged); the moment a host
   adopts the tag in step 3 the coverage hands off from `autogroup:self` to
   `tag:subnet-router` with no gap.
-- **By LAN IP over subnet routing (plain SSH):** `ssh eric@192.168.0.10x` is
+- **By LAN IP over subnet routing (plain SSH):** `ssh eric@10.0.10.10x` is
   permitted by Rule 2 (`:22`) regardless of tag state. This is the path the step-3
   Ansible run uses — the inventory `ansible_host` values are the LAN IPs — so
   tagging never depends on Tailscale SSH being up.
@@ -287,7 +287,7 @@ below, then re-run. For any host needing reauth, either:
   ```bash
   ssh eric@<host> 'sudo tailscale up --reset \
     --accept-routes=false --accept-dns=false \
-    --advertise-routes=192.168.0.0/24 --advertise-tags=tag:subnet-router \
+    --advertise-routes=10.0.10.0/24 --advertise-tags=tag:subnet-router \
     --operator=eric --ssh'
   ```
   (`--reset` + the full flag set because `up` resets unspecified prefs), **or**
@@ -303,7 +303,7 @@ for h in pve-nas-01 pve-opt-01 pve-opt-02 pve-opt-03 pve-prec-01 pve-laptop-01; 
   ssh "eric@${h}" 'tailscale status --json | jq -r ".Self.Tags, .Self.PrimaryRoutes"'
 done
 # Admin console → Machines: each Proxmox host shows tag:subnet-router and an
-# approved 192.168.0.0/24 route (subnet-router failover intact).
+# approved 10.0.10.0/24 route (subnet-router failover intact).
 
 # SSH over the tailnet still works as nonroot:
 ssh eric@pve-nas-01   # then: sudo -v
@@ -330,7 +330,7 @@ kubectl --kubeconfig ~/.kube/config-k3s get nodes   # hits .161/.222/.223/.227:6
   `tailscale_acl.this`) mean an accidental `destroy` cannot silently revert the
   tailnet to allow-all or tear the ACL down.
 - **Non-tailnet path:** the Proxmox host firewall still trusts `admin_lan`
-  (`192.168.0.0/24`), so a device physically on the LAN reaches SSH/8006 directly
+  (`10.0.10.0/24`), so a device physically on the LAN reaches SSH/8006 directly
   regardless of the tailnet ACL.
 
 ## Post-migration tightening (follow-ups)

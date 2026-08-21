@@ -144,7 +144,7 @@ HAOS runbook below.
 The dns-01 push key is pinned in each sudo target's `authorized_keys` as:
 
 ```
-from="192.168.0.150",command="sudo /usr/local/sbin/cert-receive",restrict ssh-ed25519 AAAA...
+from="10.0.10.150",command="sudo /usr/local/sbin/cert-receive",restrict ssh-ed25519 AAAA...
 ```
 
 - `restrict` disables pty/agent/port/X11 forwarding and user rc files;
@@ -174,7 +174,7 @@ from="192.168.0.150",command="sudo /usr/local/sbin/cert-receive",restrict ssh-ed
 HAOS (`home`, `ssh_no_sudo: true`, SSH add-on on :22222 as root) keeps the
 legacy scp+install push because its `authorized_keys` lives inside the
 appliance and is operator-managed — the acme_certs role does not touch it.
-Current posture is mitigated by the `from="192.168.0.150"` source pin and by
+Current posture is mitigated by the `from="10.0.10.150"` source pin and by
 HAOS being a single non-sudo appliance.
 
 To harden it to the receiver model later (operator steps, via the SSH
@@ -184,7 +184,7 @@ add-on):
    validate-then-install-then-`ha core restart` shape as `cert-receive`,
    without sudo).
 2. Replace the cert key's line in the add-on's authorized_keys with:
-   `from="192.168.0.150",command="/config/cert-receive.sh",restrict <key>`
+   `from="10.0.10.150",command="/config/cert-receive.sh",restrict <key>`
 3. Flip the `home` target off `ssh_no_sudo` handling only if the push flow
    is also updated — until then the legacy path expects plain scp+ssh.
 
@@ -222,10 +222,10 @@ tls:
 **Verify**:
 ```bash
 # Check DoT
-kdig @192.168.0.150 -p 853 +tls esweiss.com
+kdig @10.0.10.150 -p 853 +tls esweiss.com
 
 # Check HTTPS
-curl -I https://192.168.0.150
+curl -I https://10.0.10.150
 ```
 
 ### Postfix SMTP Relay (smtp-relay)
@@ -247,7 +247,7 @@ opportunistic `may` above). See docs/10-mail.md.
 **Verify**:
 ```bash
 # Check SMTP TLS
-openssl s_client -connect 192.168.0.151:587 -starttls smtp
+openssl s_client -connect 10.0.10.151:587 -starttls smtp
 ```
 
 ## Automatic Renewal
@@ -279,7 +279,7 @@ sudo /root/.acme.sh/acme.sh --list
 openssl x509 -in /opt/AdGuardHome/certs/fullchain.pem -noout -dates
 
 # Check remote service
-echo | openssl s_client -connect 192.168.0.150:853 2>/dev/null | \
+echo | openssl s_client -connect 10.0.10.150:853 2>/dev/null | \
   openssl x509 -noout -dates
 ```
 
@@ -324,7 +324,7 @@ sudo journalctl -u postfix -f
    proves SSH + forced command + sudoers are all wired:
    ```bash
    # From dns-01 (as root — the reload script runs as root)
-   ssh -i /home/eric/.ssh/id_ed25519_certs eric@192.168.0.160 < /dev/null  # dns-02
+   ssh -i /home/eric/.ssh/id_ed25519_certs eric@10.0.10.160 < /dev/null  # dns-02
    # Expected output: "FAIL: empty bundle" (exit non-zero) — that is success
    # for a connectivity probe. A permission/hostkey error means SSH is broken;
    # a shell prompt would mean the forced-command pin is missing.

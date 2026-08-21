@@ -140,10 +140,10 @@ per-host `/32` or per-namespace egress rule).
 | Prowlarr | Prowlarr | `http://prowlarr.downloads.svc.cluster.local:9696` | API key |
 | qBittorrent | qBittorrent | `http://qbittorrent.downloads.svc.cluster.local:8080` | Web UI user/pass |
 | NZBGet | NZBGet | `http://nzbget.downloads.svc.cluster.local:6789` | user/pass |
-| AdGuard Home ×2 | AdGuard Home | `http://192.168.0.150:3000`, `http://192.168.0.160:3000` | user/pass |
-| Proxmox | Proxmox | `https://192.168.0.102:8006` (any node) | read-only API token |
-| Plex | Plex | `http://192.168.0.152:32400` | token |
-| Home Assistant | Home Assistant | `http://192.168.0.154:8123` | long-lived token |
+| AdGuard Home ×2 | AdGuard Home | `http://10.0.10.150:3000`, `http://10.0.10.160:3000` | user/pass |
+| Proxmox | Proxmox | `https://10.0.10.102:8006` (any node) | read-only API token |
+| Plex | Plex | `http://10.0.10.152:32400` | token |
+| Home Assistant | Home Assistant | `http://10.0.10.154:8123` | long-lived token |
 | Nextcloud | Nextcloud | `https://cloud.esweiss.com` | user + app password |
 | Immich | Immich | `https://photos.esweiss.com` | API key |
 
@@ -213,7 +213,7 @@ pveum user token add homarr@pve homarr --privsep 0
 
 This is a control-plane auth change, kept **out** of Ansible deliberately (a
 documented manual step; it could later be codified in a `proxmox_*` role). In
-the Homarr Proxmox widget, use `https://192.168.0.102:8006` (any node), the
+the Homarr Proxmox widget, use `https://10.0.10.102:8006` (any node), the
 token-id (e.g. `homarr@pve!homarr`) and the token secret. Leave "ignore
 TLS"/self-signed **off**: the PVE cluster CA is trusted process-wide via
 `NODE_EXTRA_CA_CERTS`, so `https://<node>:8006` verifies. Toggling
@@ -302,14 +302,14 @@ above), and the NAS `/appdata/homarr` dir + DNS rewrite are deployed.
      UI user/pass.
    - NZBGet → `http://nzbget.downloads.svc.cluster.local:6789` + 1P `NZBGet`
      user/pass.
-   - AdGuard Home ×2 → `http://192.168.0.150:3000` / `http://192.168.0.160:3000` + 1P
+   - AdGuard Home ×2 → `http://10.0.10.150:3000` / `http://10.0.10.160:3000` + 1P
      `AdGuard Home` user/pass.
-   - Proxmox → `https://192.168.0.102:8006` + 1P `Homarr Proxmox Token`
+   - Proxmox → `https://10.0.10.102:8006` + 1P `Homarr Proxmox Token`
      token-id/secret. Leave "ignore TLS" **off** — the PVE cluster CA is trusted
      process-wide via `NODE_EXTRA_CA_CERTS`, so the cert verifies;
      toggling it is an un-codified verification downgrade to avoid.
-   - Plex → `http://192.168.0.152:32400` + 1P `Plex Token`.
-   - Home Assistant → `http://192.168.0.154:8123` + 1P `Home Assistant API
+   - Plex → `http://10.0.10.152:32400` + 1P `Plex Token`.
+   - Home Assistant → `http://10.0.10.154:8123` + 1P `Home Assistant API
      Token`.
    - Nextcloud → `https://cloud.esweiss.com` + your Nextcloud username + a new
      app password (Nextcloud → Settings → Security → Create new app password) →

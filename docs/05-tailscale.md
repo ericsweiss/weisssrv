@@ -7,7 +7,7 @@ Tailscale provides secure remote access to the homelab via a WireGuard-based mes
 Tailscale is installed on all Proxmox hosts to enable secure remote administration from anywhere.
 
 - **Network**: `100.64.0.0/10` (CGNAT range used by Tailscale)
-- **Subnet routing**: all six Proxmox hosts advertise `192.168.0.0/24`, so any
+- **Subnet routing**: all six Proxmox hosts advertise `10.0.10.0/24`, so any
   one of them can carry LAN access for remote clients (real failover, not a
   single-host SPOF)
 - **ACL policy as code**: the tailnet ACL (access rules, Tailscale SSH rules,
@@ -53,7 +53,7 @@ sudo tailscale up \
   --operator=eric \
   --accept-dns=false \
   --accept-routes=false \
-  --advertise-routes=192.168.0.0/24
+  --advertise-routes=10.0.10.0/24
 ```
 
 **Flags explained:**
@@ -63,7 +63,7 @@ sudo tailscale up \
 - `--accept-routes=false`: Subnet routers must NOT accept routes from other
   peers — prevents routing loops where a host routes its own LAN traffic
   through Tailscale
-- `--advertise-routes=192.168.0.0/24`: Advertise the internal LAN so remote
+- `--advertise-routes=10.0.10.0/24`: Advertise the internal LAN so remote
   clients can reach it via any Proxmox host
 
 The role only runs `tailscale up` for the initial authentication; on
@@ -89,7 +89,7 @@ tailscale_advertise_routes: []  # Only subnet routers (Proxmox hosts) advertise 
 
 # group_vars/proxmox.yml
 tailscale_advertise_routes:
-  - "192.168.0.0/24"
+  - "10.0.10.0/24"
 tailscale_advertise_tags:      # least-privilege tailnet ACL (terraform/tailscale)
   - "tag:subnet-router"
 tailscale_additional_flags:
@@ -99,7 +99,7 @@ tailscale_additional_flags:
 
 ## Subnet Routing
 
-All six Proxmox hosts advertise `192.168.0.0/24`. The role enables the
+All six Proxmox hosts advertise `10.0.10.0/24`. The role enables the
 required IP forwarding via a role-owned sysctl drop-in
 (`/etc/sysctl.d/99-tailscale-ip-forward.conf`) plus a tailscaled systemd
 drop-in (`ExecStartPost` re-applies `net.ipv4.ip_forward=1`, since Proxmox
@@ -108,7 +108,7 @@ bridge/network init can reset it after systemd-sysctl at boot). When
 
 An advertised route is only usable once **approved** in the tailnet. The
 `autoApprovers` block in `terraform/tailscale/policy.hujson` auto-approves any
-owner-advertised `192.168.0.0/24` route, which is what makes subnet-router
+owner-advertised `10.0.10.0/24` route, which is what makes subnet-router
 failover across the six hosts real instead of a per-host manual approval.
 
 ## Tailnet ACL Policy as Code (terraform/tailscale)
@@ -159,7 +159,7 @@ source of truth for the policy itself.
 ## Internal web apps over Tailscale (Kubernetes operator)
 
 Subnet routing reaches plain LAN hosts (SSH, Proxmox UI, AdGuard, the VMs by IP)
-but **cannot** reach the k3s Traefik ingress VIP (`192.168.0.101`): that VIP is a
+but **cannot** reach the k3s Traefik ingress VIP (`10.0.10.101`): that VIP is a
 MetalLB L2 address whose backing k3s node has no route back to the tailnet CGNAT
 range, so the return path of a subnet-routed connection is dropped and every
 `*.esweiss.com` web app times out from a remote client. The fix puts the ingress
@@ -275,7 +275,7 @@ sudo systemctl restart tailscaled
 If DNS resolution doesn't work over Tailscale:
 
 1. Ensure `--accept-dns=false` was used during `tailscale up`
-2. Verify `/etc/resolv.conf` points to internal DNS (192.168.0.150/160)
+2. Verify `/etc/resolv.conf` points to internal DNS (10.0.10.150/160)
 3. Check that DNS ports (53, 853) are allowed in firewall for Tailscale network
 
 ## Security Considerations

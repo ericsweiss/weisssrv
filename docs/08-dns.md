@@ -8,7 +8,7 @@ The homelab uses a two-tier DNS architecture with AdGuard Home for ad blocking a
 LAN Clients
               |
               v
-        AdGuard Home (listens on 192.168.0.150 / 192.168.0.160)
+        AdGuard Home (listens on 10.0.10.150 / 10.0.10.160)
         - Port 53 (DNS)
         - Port 853 (DoT)
         - Port 443 (HTTPS/DoH)
@@ -30,8 +30,8 @@ LAN Clients
 
 | Host | IP | Role |
 |------|-----|------|
-| dns-01 | 192.168.0.150 | Primary, runs acme.sh and sync |
-| dns-02 | 192.168.0.160 | Replica, synced from dns-01 |
+| dns-01 | 10.0.10.150 | Primary, runs acme.sh and sync |
+| dns-02 | 10.0.10.160 | Replica, synced from dns-01 |
 
 ### Who gets handed these resolvers
 
@@ -145,9 +145,9 @@ The codified list covers (see dns.yml for the authoritative entries):
   reached only by the Immich VM, by IP.
 - All nine k3s nodes plus `k3s.esweiss.com` → .161 (API VIP)
 - `dns.esweiss.com` → .150/.160 (direct DoT access);
-  `dns-01`/`dns-02.esweiss.com` → **192.168.0.101** (Traefik internal VIP,
+  `dns-01`/`dns-02.esweiss.com` → **10.0.10.101** (Traefik internal VIP,
   for the HTTPS-fronted admin UIs — not the hosts' own IPs);
-  `adguard`/`adguard-02.esweiss.com` → **192.168.0.101** (the SSO-fronted
+  `adguard`/`adguard-02.esweiss.com` → **10.0.10.101** (the SSO-fronted
   dashboard hostnames — see "Admin dashboards" below)
 - `vip-public.ericsweiss.com` → .100; `vip-internal.esweiss.com` → .101
 - ~25 app/service hostnames (`auth`, `git`, `grafana`, `loki`, `connect`,
@@ -260,7 +260,7 @@ PTR records are implemented as `$dnsrewrite` filter rules in
 `adguard_home_user_rules` (same file, deployed the same way), e.g.:
 
 ```
-'||150.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;dns-01.{{ internal_domain }}.'
+'||150.10.0.10.in-addr.arpa^$dnsrewrite=NOERROR;PTR;dns-01.{{ internal_domain }}.'
 ```
 
 dns.yml carries PTR rules for the infrastructure hosts (.102–.107,
@@ -381,7 +381,7 @@ systemctl status AdGuardHome
 journalctl -u AdGuardHome -f
 
 # Test resolution
-dig @192.168.0.150 dns-01.esweiss.com
+dig @10.0.10.150 dns-01.esweiss.com
 ```
 
 ### Force Sync

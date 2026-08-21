@@ -10,7 +10,7 @@ Proxmox Hosts / LXC Containers
     | Postfix null client
     | localhost only
     v
-smtp-relay.esweiss.com (192.168.0.151)
+smtp-relay.esweiss.com (10.0.10.151)
     |
     | SASL auth over TLS
     v

@@ -158,12 +158,12 @@ the export set, its per-client options and `xprtsec`.
 | Export | Clients | Access | Transport |
 |--------|---------|--------|-----------|
 | /export | Proxmox hosts, k3s VMs, .154 | RO, no crossmnt | plaintext (fsid=0 pseudo-root, traversal only; no `xprtsec`) |
-| /export/appdata | k3s VMs (192.168.0.200/29, 192.168.0.220/29, .227/32) | RW | require TLS (`xprtsec=tls`); plaintext rejected |
-| /export/share | k3s VMs (192.168.0.200/29, 192.168.0.220/29, .227/32) | RW | require TLS (`xprtsec=tls`); plaintext rejected |
-| /export/media | k3s VMs (192.168.0.200/29, 192.168.0.220/29, .227/32), .154 (Home Assistant) | RW (k3s), RO (.154) | require TLS (`xprtsec=tls` on k3s lines); **.154 plaintext** via its own line (HAOS can't do `xprtsec`) |
+| /export/appdata | k3s VMs (10.0.10.200/29, 10.0.10.220/29, .227/32) | RW | require TLS (`xprtsec=tls`); plaintext rejected |
+| /export/share | k3s VMs (10.0.10.200/29, 10.0.10.220/29, .227/32) | RW | require TLS (`xprtsec=tls`); plaintext rejected |
+| /export/media | k3s VMs (10.0.10.200/29, 10.0.10.220/29, .227/32), .154 (Home Assistant) | RW (k3s), RO (.154) | require TLS (`xprtsec=tls` on k3s lines); **.154 plaintext** via its own line (HAOS can't do `xprtsec`) |
 | /export/tank-proxmox | Proxmox hosts only | RW, no_root_squash | `xprtsec: tls` on the export — plaintext clients are rejected; the Proxmox storage entry mounts with `xprtsec=tls` by hostname (proxmox_backup role) |
 | /export/k3s-etcd | k3s servers only (.222/.223/.227, as explicit /32s) | RW, no_root_squash (mode 0700) | require TLS (`xprtsec=tls`); plaintext rejected. Off-node k3s etcd snapshot copies — see docs/17 |
-| /export/backups-apps/authentik, /export/backups-apps/mealie | k3s agents (192.168.0.200/29) + servers (192.168.0.220/29, .227/32) | RW, all_squash to eric:media | require TLS (`xprtsec=tls`) |
+| /export/backups-apps/authentik, /export/backups-apps/mealie | k3s agents (10.0.10.200/29) + servers (10.0.10.220/29, .227/32) | RW, all_squash to eric:media | require TLS (`xprtsec=tls`) |
 | /export/backups-apps/gitlab | .153 | RW, all_squash | require TLS (`xprtsec=tls`) |
 | /export/backups-apps/immich | .157 | RW, all_squash | require TLS (`xprtsec=tls`) |
 | /export/backups-apps/nextcloud | .156 | RW, all_squash | require TLS (`xprtsec=tls`) |
@@ -201,7 +201,7 @@ pve-nas-01.esweiss.com:/media  /mnt/media  nfs4  defaults,_netdev,xprtsec=tls  0
 
 **TLS clients MUST mount by hostname, never by IP.** A `xprtsec=tls` mount
 verifies the server certificate, whose only SAN is the wildcard
-`*.esweiss.com`. Mounting `192.168.0.102:/media` with `xprtsec=tls` fails the
+`*.esweiss.com`. Mounting `10.0.10.102:/media` with `xprtsec=tls` fails the
 handshake (`tlshd`: "Certificate owner unexpected"); AdGuard resolves
 `pve-nas-01.esweiss.com` to .102 and the name matches the wildcard. The k3s NFS
 PVs use `server: pve-nas-01.esweiss.com` for this reason.
@@ -210,7 +210,7 @@ PVs use `server: pve-nas-01.esweiss.com` for this reason.
 IP form below works from exactly one place — the `.154` line on `/export/media`:
 
 ```bash
-mount -t nfs4 192.168.0.102:/media /mnt/media
+mount -t nfs4 10.0.10.102:/media /mnt/media
 ```
 
 ## Transport Security
@@ -277,8 +277,8 @@ smbpasswd -d nas
 ### Connecting
 
 ```
-smb://192.168.0.102/share
-\\192.168.0.102\share
+smb://10.0.10.102/share
+\\10.0.10.102\share
 ```
 
 ## Ansible Role

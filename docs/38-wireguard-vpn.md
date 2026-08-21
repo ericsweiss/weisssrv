@@ -3,7 +3,7 @@
 `wg-easy` (v15) is a WireGuard VPN + web admin UI that gives the user and
 trusted friends/family an **internet-only exit** through the home connection.
 Connected clients get a full tunnel to the internet but are **fenced out of the
-home network entirely** — they cannot reach `192.168.0.0/24`, any RFC1918/CGNAT/
+home network entirely** — they cannot reach `10.0.10.0/24`, any RFC1918/CGNAT/
 link-local range, the k3s pod/service networks, the tailnet, or internal DNS.
 
 It runs as a single pod in the `wg-easy` namespace, reconciled by Flux from
@@ -27,7 +27,7 @@ It runs as a single pod in the `wg-easy` namespace, reconciled by Flux from
                                      home public IP / router
                                      forwards :51820/udp
                                                │
-                                     MetalLB VIP 192.168.0.99  (vpn-pool, L2)
+                                     MetalLB VIP 10.0.10.99  (vpn-pool, L2)
                                                │  ETP Local → announced from
                                                │  the node running the pod
                                      ┌─────────▼──────────┐
@@ -98,7 +98,7 @@ egress to `0.0.0.0/0` **except**:
 
 Because this is enforced at the CNI layer (k3s's built-in NetworkPolicy
 controller), it holds **regardless of what a client sets its AllowedIPs to** — a
-malicious client that rewrites its config to route `192.168.0.0/24` still cannot
+malicious client that rewrites its config to route `10.0.10.0/24` still cannot
 reach the LAN, because the packet is dropped as it tries to leave the pod. This
 is the same policy-layer killswitch pattern the downloads/Gluetun stack uses.
 
@@ -115,7 +115,7 @@ and covered by the internet rule.
 
 ### Inbound endpoint scoping — Proxmox host firewall (not a no-LAN egress layer)
 The only inbound path is the WAN `:51820/udp` forward to the `.99` VIP. The
-`sg-k3s-ingress-pub` rule that admits it is **`-dest`-scoped to `192.168.0.99`**,
+`sg-k3s-ingress-pub` rule that admits it is **`-dest`-scoped to `10.0.10.99`**,
 so it opens the wg-easy endpoint without exposing the node's own `:51820/udp`
 (that port is flannel's `wireguard-native` inter-node encryption, restricted to
 `k3s_nodes`). This rule controls *who can reach the endpoint from the WAN* — it
@@ -156,7 +156,7 @@ NetworkPolicy egress, including the internal-DNS check) — there is no separate
   ForwardAuth (`vpn-admins` group), on top of wg-easy's own admin login. Never
   reachable from the internet.
 - **Why public DNS for clients**: pushing `1.1.1.1` (not AdGuard) keeps
-  untrusted devices from resolving internal names or reaching `192.168.0.150/160`
+  untrusted devices from resolving internal names or reaching `10.0.10.150/160`
   — part of the no-LAN posture, and it means friends' traffic isn't filtered/
   logged by the home resolver.
 - **IPv6**: disabled (`DISABLE_IPV6=true`). The LAN has no working IPv6 egress,
@@ -219,7 +219,7 @@ Commit + push the branch, merge the MR. Flux reconciles:
 
 Force it if impatient: `task flux:reconcile`. Verify:
 ```bash
-task wg-easy:status                          # pod Ready, svc EXTERNAL-IP 192.168.0.99
+task wg-easy:status                          # pod Ready, svc EXTERNAL-IP 10.0.10.99
 kubectl get svc -n wg-easy wg-easy       # confirms the VIP was assigned
 ```
 
@@ -227,7 +227,7 @@ kubectl get svc -n wg-easy wg-easy       # confirms the VIP was assigned
 Both halves live in `terraform/unifi/` on the UCG-Fiber
 ([docs/46](46-unifi-network.md)) and are applied with the rest of the network
 state:
-- `local.port_forwards.wg` forwards **WAN UDP 51820 → 192.168.0.99:51820**
+- `local.port_forwards.wg` forwards **WAN UDP 51820 → 10.0.10.99:51820**
   (UDP, not TCP — the one forward in that map that overrides the default).
 - The Homelab VLAN's DHCP pool stops at `.98`, so `.99` can never be leased.
 
@@ -300,12 +300,12 @@ curl -s https://checkip.amazonaws.com          # should print your home WAN IP
 curl -s https://1.1.1.1                          # reachable
 
 # LAN is unreachable (all of these MUST fail / time out):
-curl -m 5 http://192.168.0.1/            ; echo "exit=$?"   # router  -> fail
-curl -m 5 https://192.168.0.101/         ; echo "exit=$?"   # Traefik -> fail
-ping -c1 -W2 192.168.0.150               ; echo "exit=$?"   # AdGuard -> fail
+curl -m 5 http://10.0.10.1/            ; echo "exit=$?"   # router  -> fail
+curl -m 5 https://10.0.10.101/         ; echo "exit=$?"   # Traefik -> fail
+ping -c1 -W2 10.0.10.150               ; echo "exit=$?"   # AdGuard -> fail
 
 # Internal DNS must NOT be used (name resolution goes to 1.1.1.1):
-nslookup git.esweiss.com                  # should NOT resolve to 192.168.0.101
+nslookup git.esweiss.com                  # should NOT resolve to 10.0.10.101
 
 # Cluster DNS must be unreachable even if a client deliberately targets the
 # CoreDNS ClusterIP directly (this is why the pod uses public DNS and the egress

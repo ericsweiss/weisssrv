@@ -22,24 +22,24 @@ IPSets define groups of IPs for use in rules. IPSets are **dynamically generated
 ```ini
 [IPSET core-cluster]
 # Proxmox hosts
-192.168.0.102  # pve-nas-01
-192.168.0.103  # pve-laptop-01
-192.168.0.104  # pve-opt-01
-192.168.0.105  # pve-opt-02
-192.168.0.106  # pve-opt-03
-192.168.0.107  # pve-prec-01
+10.0.10.102  # pve-nas-01
+10.0.10.103  # pve-laptop-01
+10.0.10.104  # pve-opt-01
+10.0.10.105  # pve-opt-02
+10.0.10.106  # pve-opt-03
+10.0.10.107  # pve-prec-01
 
 [IPSET k3s_nodes]
 # K3s cluster VMs
-192.168.0.222  # k3s-srv-nas-01
-192.168.0.223  # k3s-srv-laptop-01
-192.168.0.227  # k3s-srv-prec-01
-192.168.0.202  # k3s-agt-nas-01
-192.168.0.203  # k3s-agt-laptop-01
-192.168.0.204  # k3s-agt-opt-01
-192.168.0.205  # k3s-agt-opt-02
-192.168.0.206  # k3s-agt-opt-03
-192.168.0.207  # k3s-agt-prec-01
+10.0.10.222  # k3s-srv-nas-01
+10.0.10.223  # k3s-srv-laptop-01
+10.0.10.227  # k3s-srv-prec-01
+10.0.10.202  # k3s-agt-nas-01
+10.0.10.203  # k3s-agt-laptop-01
+10.0.10.204  # k3s-agt-opt-01
+10.0.10.205  # k3s-agt-opt-02
+10.0.10.206  # k3s-agt-opt-03
+10.0.10.207  # k3s-agt-prec-01
 
 [IPSET nfs_clients]
 # Hosts allowed NFS access — every inventory host carrying nfs_clients in its
@@ -50,7 +50,7 @@ IPSets define groups of IPs for use in rules. IPSets are **dynamically generated
 
 [IPSET smb_clients]
 # Client subnets allowed SMB access (proxmox_firewall_smb_client_cidrs)
-192.168.0.0/24
+10.0.10.0/24
 10.0.20.0/24
 ```
 
@@ -70,9 +70,9 @@ inventory host references creates the set outright).
 
 | Set | Members | Used by |
 |---|---|---|
-| `admin_lan` | `192.168.0.0/24`, `10.0.20.8/29` | The management plane: `:22`, `:8006`, `:6443`, `:3389`, `:22222`, the AdGuard `:3000`/`:443`/`:853` admin surfaces, GitLab `:22` |
-| `lan_clients` | `192.168.0.0/24`, `10.0.20.0/24` | User-facing service ports: HAOS `:8123`, GitLab web `:80`/`:443`, Nextcloud/Immich `:443`, Plex + HAOS discovery, and (as `smb_clients`) SMB `:445` |
-| `dns_clients` | `192.168.0.0/24`, `10.0.20.0/24`, `10.0.30.0/24`, `10.0.40.0/24`, `10.0.50.0/24` | Resolver `:53` only — every *client* VLAN uses the weisssrv resolvers. The Default/mgmt VLAN (`10.0.1.0/24`) is deliberately **not** a member: its DHCP hands out public resolvers and no zone policy admits Internal → homelab, so nothing from it can arrive here anyway |
+| `admin_lan` | `10.0.10.0/24`, `10.0.20.8/29` | The management plane: `:22`, `:8006`, `:6443`, `:3389`, `:22222`, the AdGuard `:3000`/`:443`/`:853` admin surfaces, GitLab `:22` |
+| `lan_clients` | `10.0.10.0/24`, `10.0.20.0/24` | User-facing service ports: HAOS `:8123`, GitLab web `:80`/`:443`, Nextcloud/Immich `:443`, Plex + HAOS discovery, and (as `smb_clients`) SMB `:445` |
+| `dns_clients` | `10.0.10.0/24`, `10.0.20.0/24`, `10.0.30.0/24`, `10.0.40.0/24`, `10.0.50.0/24` | Resolver `:53` only — every *client* VLAN uses the weisssrv resolvers. The Default/mgmt VLAN (`10.0.1.0/24`) is deliberately **not** a member: its DHCP hands out public resolvers and no zone policy admits Internal → homelab, so nothing from it can arrive here anyway |
 
 Read them as three concentric scopes: `admin_lan` ⊂ `lan_clients` ⊂
 `dns_clients`. A port that moves outward needs no second admin rule; a port
@@ -417,7 +417,7 @@ NetworkPolicy** (selected by `app.kubernetes.io/name`).
 ### Design decision: per-pod egress is deliberately granular (not deduplicated)
 
 The same egress *entries* recur across policies — "allow DNS to kube-dns" appears
-in ~9 policies and "allow apiserver (`192.168.0.222/223/227:6443`)" in ~5. This
+in ~9 policies and "allow apiserver (`10.0.10.222/223/227:6443`)" in ~5. This
 duplication is **intentional and is kept as-is**:
 
 - Egress is scoped per workload, so each pod gets the minimum it needs. For
@@ -455,7 +455,7 @@ IPSets are dynamically generated from inventory metadata. To add a host to an IP
 k3s_servers:
   hosts:
     k3s-new-node:
-      ansible_host: 192.168.0.208
+      ansible_host: 10.0.10.208
       ansible_connection: local  # If not yet managed by Ansible
       firewall_ipsets:
         - k3s_nodes
@@ -488,7 +488,7 @@ For IPs that aren't inventory hosts (VIPs, floating IPs), add them to `group_var
 ```yaml
 firewall_ipset_special_entries:
   k3s_nodes:
-    - ip: 192.168.0.161
+    - ip: 10.0.10.161
       comment: k3s API VIP (kube-vip)
 ```
 
@@ -508,7 +508,7 @@ Guest firewalls (VMs and LXC containers) are configured via inventory metadata. 
 dns:
   hosts:
     dns-01:
-      ansible_host: 192.168.0.150
+      ansible_host: 10.0.10.150
       vmid: 150
       guest_security_groups:
         - sg-vm-admin     # SSH + ICMP for admin access
@@ -521,7 +521,7 @@ dns:
 k3s_agents:
   hosts:
     k3s-agt-opt-03:
-      ansible_host: 192.168.0.206
+      ansible_host: 10.0.10.206
       vmid: 206
       guest_security_groups:
         - sg-vm-admin         # SSH + ICMP for admin access
