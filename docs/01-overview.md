@@ -68,8 +68,8 @@ policy matrix, the physical port map, and the cutover/validation runbook.
 |---|---|---|---|---|---|
 | 1 | Default (mgmt) | 10.0.1.0/24 | 10.0.1.1 | .100-.199 | Gateway, switch (.2), AP (.3) — public DHCP DNS, not the weisssrv resolvers |
 | 10 | Homelab | 192.168.0.0/24 | 192.168.0.1 | .2-.98 | Everything in the tree above (Phase 2 renumbers this to 10.0.10.0/24) |
-| 20 | Home | 10.0.20.0/24 | 10.0.20.1 | .50-.249 | Personal client devices; `10.0.20.8/29` is the admin-device block |
-| 30 | IoT | 10.0.30.0/24 | 10.0.30.1 | .50-.249 | TVs, WLED, Kasa, Hue, Hyperion |
+| 20 | Home | 10.0.20.0/24 | 10.0.20.1 | .50-.199 | Personal client devices; `10.0.20.8/29` is the admin-device block; reservations sit above the pool ([docs/46 § DHCP reservations](46-unifi-network.md)) |
+| 30 | IoT | 10.0.30.0/24 | 10.0.30.1 | .50-.99 | TVs, WLED, Kasa, Hue, Hyperion — reservations sit above the pool |
 | 40 | Guest | 10.0.40.0/24 | 10.0.40.1 | .50-.249 | Guest WLAN — DNS out, nothing else |
 | 50 | Work | 10.0.50.0/24 | 10.0.50.1 | .50-.249 | Work devices — DNS out, nothing else |
 

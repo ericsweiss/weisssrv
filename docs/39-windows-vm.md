@@ -235,7 +235,9 @@ NAS boot, which auto-starts it as described above.
 > **Hardening note.** `admin_lan` is the homelab `192.168.0.0/24` plus the
 > `10.0.20.8/29` admin block, so RDP still accepts from every device on the
 > homelab segment (defense-in-depth gap, not direct compromise — NLA still
-> authenticates). The client VLANs no longer reach it at all — that is what the
+> authenticates). No client-VLAN device outside that /29 reaches it at all:
+> IoT, Guest and Work are stopped by the gateway's inter-zone deny, and a Home
+> device outside the admin block is refused by `admin_lan` — that is what the
 > VLAN split bought. Getting the VM itself off the homelab segment is tracked in
 > [docs/16-next-steps.md](16-next-steps.md) § UniFi network follow-ups ("Move
 > the Windows VM (.155) to the Home VLAN").
