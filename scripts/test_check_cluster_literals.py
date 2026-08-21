@@ -32,6 +32,7 @@ CLUSTER_CONFIG = textwrap.dedent(
       cluster_node_label_domain: "example.lan"
       cluster_lan_cidr: "192.168.0.0/24"
       cluster_home_cidr: "10.0.20.0/24"
+      cluster_home_admin_cidr: "10.0.20.8/29"
       cluster_pod_cidr: "10.42.0.0/16"
       cluster_service_cidr: "10.43.0.0/16"
       cluster_tailnet_cidr: "100.64.0.0/10"

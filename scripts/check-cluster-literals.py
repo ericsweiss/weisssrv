@@ -79,6 +79,7 @@ DOMAIN_KEYS = ("cluster_internal_domain", "cluster_external_domain")
 ADDRESS_KEYS = (
     "cluster_lan_cidr",
     "cluster_home_cidr",
+    "cluster_home_admin_cidr",
     "cluster_pod_cidr",
     "cluster_service_cidr",
     "cluster_tailnet_cidr",
