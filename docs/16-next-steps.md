@@ -307,6 +307,17 @@ Design, runbook and the codified-vs-manual contract:
   ([docs/11](11-firewall.md) § Client scopes).
 - [ ] **Move the Windows VM (.155) to the Home VLAN** — it is a client
   machine sitting on the homelab segment ([docs/39](39-windows-vm.md)).
+- [ ] **Narrow the drift jobs' `allow_failure` to `exit_codes: [2]`** — a
+  library-wide change, not a unifi one. All three drift-plan jobs
+  (`tailscale`, `authentik`, `unifi`) run `terraform plan -detailed-exitcode`
+  under a blanket `allow_failure: true`, so exit 2 (drift, the case the
+  allowance exists for) and exit 1 (auth failure, unreachable endpoint, state
+  lock, missing vault item) render as the same yellow badge on a job nothing
+  gates on — a permanently broken detector is indistinguishable from real
+  drift. The fix belongs in the shared CI template so all three move together;
+  doing it for `unifi` alone would diverge the house pattern for no gain.
+  Until then, docs/46 § Expected breakage carries the "must go green after the
+  first apply" assertion that makes a lingering yellow noticeable.
 
 ### Nextcloud follow-ups (not blockers)
 
@@ -391,8 +402,9 @@ scenarios and the `docs/` role-README links were all reconciled. Open:
   ships with this branch changes role behaviour this repo already assumes, so
   the adoption is its own MR and its own deploy window, after the cluster has
   settled. Per consumer (weisssrv, then both templates): bump
-  `ansible/requirements.yml` + `WEISSSRV_LIB_REF` + the three Terraform `?ref=`
-  pins, run `scripts/check-lib-pins.py --fix` and
+  `ansible/requirements.yml` + `WEISSSRV_LIB_REF` + the Terraform `?ref=`
+  module pins (one per root under `terraform/`), run
+  `scripts/check-lib-pins.py --fix` and
   `scripts/check-molecule-image-pin.py --fix`, **re-vendor** (this is the pass
   that flips `check-default-deny-coverage.py` from a local file to a vendored
   one and picks up the extended `check-hpa-vpa-invariant.py`), then

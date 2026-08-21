@@ -35,22 +35,35 @@ LAN Clients
 
 ### Who gets handed these resolvers
 
-Both addresses are handed out as the DHCP DNS servers on **every** UniFi VLAN —
-Default/mgmt, Homelab, Home, IoT, Guest and Work — together with the
-`esweiss.com` search domain, so split-horizon resolution behaves identically on
-all of them ([docs/46-unifi-network.md](46-unifi-network.md) § Networks). Two
-consequences worth holding on to:
+Both addresses are handed out as the DHCP DNS servers on every **client** UniFi
+VLAN — Homelab, Home, IoT, Guest and Work — together with the `esweiss.com`
+search domain, so split-horizon resolution behaves identically on all of them
+([docs/46-unifi-network.md](46-unifi-network.md) § Networks). Three consequences
+worth holding on to:
 
 - The resolvers are the one weisssrv service every client VLAN may reach. The
-  zone firewall allows `:53` from IoT/Guest/Work/Internal to the homelab zone
-  and nothing else, and the Proxmox firewall mirrors that with the
-  `dns_clients` ipset ([docs/11-firewall.md](11-firewall.md)). The admin
-  surfaces (`:853` DoT, `:3000` API, `:443` UI) stay on the admin sets — a
-  guest device resolves names and can do nothing else here.
-- The **gateway itself** does not use them. Its WAN DNS is set to plain
-  `1.1.1.1` / `9.9.9.9` in the UniFi UI, deliberately, because pointing the
-  gateway at LXCs living behind it is a bootstrap loop. Clients are unaffected;
-  only the gateway's own lookups bypass AdGuard.
+  zone firewall allows `:53` from IoT/Guest/Work to the homelab zone and
+  nothing else, and the Proxmox firewall mirrors that with the `dns_clients`
+  ipset ([docs/11-firewall.md](11-firewall.md)). The admin surfaces (`:853`
+  DoT, `:3000` API, `:443` UI) stay on the admin sets — a guest device resolves
+  names and can do nothing else here. Those VLANs are also **blocked from
+  reaching any external resolver** on `:53`/`:853`, so a device with a
+  hardcoded `8.8.8.8` gets the weisssrv resolvers or nothing (docs/46
+  § Zones and policies).
+- The **management VLAN does not use them either**, and neither does the
+  gateway. VLAN 1's DHCP hands out plain `1.1.1.1` / `9.9.9.9`, as does the
+  gateway's WAN DNS, deliberately: the switch, the AP and the gateway all sit
+  *above* the resolvers, which are LXCs behind them, so pointing them at
+  `.150`/`.160` is a bootstrap loop. Nothing on VLAN 1 needs split-horizon
+  answers — and because of that there is no `Internal → homelab :53` zone
+  policy at all. The `10.0.1.0/24` entry in the `dns_clients` ipset is
+  deliberately inert: it keeps the set a complete statement of "which subnets
+  may resolve", so re-pointing a management device at AdGuard is a one-line
+  zone-policy change rather than two edits.
+- Guests resolving through AdGuard means visitors inherit the household
+  ad-blocking — the reason the guest `:53` allowance exists — and can
+  *enumerate* internal names from the rewrites. They cannot reach any of them;
+  the disclosure is accepted (docs/46).
 
 ## Unbound Configuration
 

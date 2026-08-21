@@ -66,15 +66,17 @@ policy matrix, the physical port map, and the cutover/validation runbook.
 
 | VLAN | Network | Subnet | Gateway | DHCP pool | Carries |
 |---|---|---|---|---|---|
-| 1 | Default (mgmt) | 10.0.1.0/24 | 10.0.1.1 | .100-.199 | Gateway, switch (.2), AP (.3) |
+| 1 | Default (mgmt) | 10.0.1.0/24 | 10.0.1.1 | .100-.199 | Gateway, switch (.2), AP (.3) — public DHCP DNS, not the weisssrv resolvers |
 | 10 | Homelab | 192.168.0.0/24 | 192.168.0.1 | .2-.98 | Everything in the tree above (Phase 2 renumbers this to 10.0.10.0/24) |
 | 20 | Home | 10.0.20.0/24 | 10.0.20.1 | .50-.249 | Personal client devices; `10.0.20.8/29` is the admin-device block |
 | 30 | IoT | 10.0.30.0/24 | 10.0.30.1 | .50-.249 | TVs, WLED, Kasa, Hue, Hyperion |
 | 40 | Guest | 10.0.40.0/24 | 10.0.40.1 | .50-.249 | Guest WLAN — DNS out, nothing else |
 | 50 | Work | 10.0.50.0/24 | 10.0.50.1 | .50-.249 | Work devices — DNS out, nothing else |
 
-Every VLAN resolves through the weisssrv resolvers (`.150`/`.160`, handed out
-by UniFi DHCP), so split-horizon DNS behaves identically on all of them.
+Every **client** VLAN resolves through the weisssrv resolvers (`.150`/`.160`,
+handed out by UniFi DHCP), so split-horizon DNS behaves identically on all of
+them; the management VLAN gets public resolvers instead, because the gear on it
+sits above the LXCs that serve DNS ([docs/08](08-dns.md)).
 pve-nas-01 reaches VLAN 10 over a tagged sub-interface (`vmbr0` bridges
 `nic1.10`) because its run shares a port with Home; every other host is on an
 untagged VLAN 10 access port.

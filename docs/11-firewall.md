@@ -72,21 +72,34 @@ inventory host references creates the set outright).
 |---|---|---|
 | `admin_lan` | `192.168.0.0/24`, `10.0.20.8/29` | The management plane: `:22`, `:8006`, `:6443`, `:3389`, `:22222`, the AdGuard `:3000`/`:443`/`:853` admin surfaces, GitLab `:22` |
 | `lan_clients` | `192.168.0.0/24`, `10.0.20.0/24` | User-facing service ports: HAOS `:8123`, GitLab web `:80`/`:443`, Nextcloud/Immich `:443`, Plex + HAOS discovery, and (as `smb_clients`) SMB `:445` |
-| `dns_clients` | `192.168.0.0/24`, `10.0.1.0/24`, `10.0.20.0/24`, `10.0.30.0/24`, `10.0.40.0/24`, `10.0.50.0/24` | Resolver `:53` only — every VLAN uses the weisssrv resolvers |
+| `dns_clients` | `192.168.0.0/24`, `10.0.1.0/24`, `10.0.20.0/24`, `10.0.30.0/24`, `10.0.40.0/24`, `10.0.50.0/24` | Resolver `:53` only — every *client* VLAN uses the weisssrv resolvers. `10.0.1.0/24` (mgmt) is deliberately inert: that VLAN's DHCP hands out public resolvers and no zone policy admits Internal → homelab, so nothing from it can arrive here |
 
 Read them as three concentric scopes: `admin_lan` ⊂ `lan_clients` ⊂
 `dns_clients`. A port that moves outward needs no second admin rule; a port
 that stays admin-scoped is a deliberate statement that client VLANs have no
 business there. The `10.0.20.8/29` block is the admin-device reservation range
-on the Home VLAN — the workstation the estate is administered from — and the
-sshd layer mirrors it exactly (`ssh_authorized_keys` `from=`,
-`base_fail2ban_ignoreip`, `gitlab_ssh_allowed_users`), so a Home-VLAN device
-outside the /29 is refused twice.
+on the Home VLAN — the workstation the estate is administered from — and three
+other layers mirror it exactly: the sshd layer (`ssh_authorized_keys` `from=`,
+`base_fail2ban_ignoreip`, `gitlab_ssh_allowed_users`), and in Kubernetes the
+`lan-tailscale-strict` Traefik middleware, which admits
+`${cluster_home_admin_cidr}` rather than the whole Home VLAN because it fronts
+the routes with no forward-auth (1Password Connect, the router and AdGuard
+appliance UIs) and Traefik proxies from a node that is itself inside
+`admin_lan`. A Home-VLAN device outside the /29 is therefore refused at every
+layer that matters.
 
-The IoT VLAN (`10.0.30.0/24`) appears **inline** in the `sg-haos` and `sg-plex`
-discovery rules rather than in any set: multicast discovery is the only thing
-IoT devices may reach on those guests, and folding the VLAN into `lan_clients`
-would silently grant them the web UIs too.
+The IoT VLAN (`10.0.30.0/24`) appears **inline** in two `sg-haos` rules rather
+than in any set — udp `5353` and tcp `8123`. Everything else IoT might seem to
+need is absent on purpose, and the reason is layering: the UniFi zone firewall
+is the *first* gate for anything arriving from another VLAN, so a rule here for
+a flow the gateway drops is dead code that reads like a granted permission. The
+only iot → homelab allowances are `:53`, Plex `:32400` and HA `:8123`
+([docs/46](46-unifi-network.md) § Zones and policies), and mDNS survives only
+because UniFi's repeater re-transmits the query with the original source
+address. `sg-plex` accordingly carries **no** IoT source at all: GDM and SSDP
+are multicast and never leave the VLAN, and TVs on IoT still stream because
+`:32400` is world-open and the Plex client finds the server through plex.tv.
+Folding IoT into `lan_clients` would also silently grant the web UIs.
 
 Two of those rule groups are written by the collection's `cluster.fw.j2`, not by
 site data, so they are re-scoped through role variables rather than
@@ -190,11 +203,12 @@ IN ACCEPT -source +dc/admin_lan -p tcp -dport 3000 -log nolog
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 443 -log nolog
 IN ACCEPT -source +dc/admin_ts -p tcp -dport 443 -log nolog
 IN ACCEPT -source +dc/admin_lan -p tcp -dport 443 -log nolog
-# Standard DNS
+# Standard DNS — sources from proxmox_firewall_dns_client_sources, one
+# tcp+udp pair per name, in list order
 IN ACCEPT -source +dc/admin_ts -p tcp -dport 53 -log nolog
 IN ACCEPT -source +dc/admin_ts -p udp -dport 53 -log nolog
-IN ACCEPT -source +dc/admin_lan -p tcp -dport 53 -log nolog
-IN ACCEPT -source +dc/admin_lan -p udp -dport 53 -log nolog
+IN ACCEPT -source +dc/dns_clients -p tcp -dport 53 -log nolog
+IN ACCEPT -source +dc/dns_clients -p udp -dport 53 -log nolog
 ```
 
 **sg-smtp-relay** - SMTP relay (no SSH):
@@ -260,11 +274,8 @@ in `group_vars/all.yml`):
 [group sg-plex]
 
 IN ACCEPT -source +dc/lan_clients -p tcp -dport 32469 -log nolog      # DLNA
-IN ACCEPT -source 10.0.30.0/24 -p tcp -dport 32469 -log nolog         # DLNA from IoT TVs
 IN ACCEPT -source +dc/lan_clients -p udp -dport 32410:32414 -log nolog # GDM
-IN ACCEPT -source 10.0.30.0/24 -p udp -dport 32410:32414 -log nolog
 IN ACCEPT -source +dc/lan_clients -p udp -dport 1900 -log nolog       # SSDP
-IN ACCEPT -source 10.0.30.0/24 -p udp -dport 1900 -log nolog
 IN ACCEPT -p tcp -dport 32400 -log nolog                              # Plex Web (public)
 ```
 
@@ -515,7 +526,7 @@ k3s_agents:
       guest_security_groups:
         - sg-vm-admin         # SSH + ICMP for admin access
         - sg-k3s-core         # K3s cluster communication
-        - sg-k3s-ingress-int  # Internal ingress (admin networks)
+        - sg-k3s-ingress-int  # Internal ingress (tailnet + lan_clients)
         - sg-k3s-ingress-pub  # Public ingress (all sources)
         - sg-metrics          # Prometheus exporter scraping
 ```
@@ -531,13 +542,13 @@ k3s_agents:
 | `sg-smtp-relay` | lib | SMTP submission/relay + outbound | smtp-relay container |
 | `sg-plex` | site | Plex Media Server ports | Plex container |
 | `sg-k3s-core` | lib | K3s cluster communication | All K3s nodes |
-| `sg-k3s-ingress-int` | lib | HTTP/HTTPS from admin networks | K3s ingress nodes (internal apps) |
+| `sg-k3s-ingress-int` | lib | HTTP/HTTPS from `proxmox_firewall_k3s_ingress_int_sources` — here the tailnet + `lan_clients` (Home VLAN), not the admin sets | K3s ingress nodes (internal apps) |
 | `sg-k3s-ingress-pub` | lib | HTTP/HTTPS from all sources | K3s ingress nodes (public apps) |
 | `sg-gitlab` | site | GitLab HTTP/HTTPS + Git SSH | GitLab VM |
 | `sg-nextcloud` | site | HTTPS 443 (Traefik + admin) + nextcloud-exporter 9205 | Nextcloud VM (.156) |
 | `sg-immich` | site | HTTPS 443 (Traefik + admin) + Immich telemetry 8081/8082 | Immich VM (.157) |
 | `sg-immich-ml` | site | ML inference 3003 from the Immich VM **only** (the API is authless — this rule is the security boundary) | immich-ml LXC (.158) |
-| `sg-haos` | site | Home Assistant Web UI + mDNS | Home Assistant VM |
+| `sg-haos` | site | Home Assistant Web UI (+ `:8123` from IoT) + mDNS | Home Assistant VM |
 | `sg-windows` | site | Windows RDP | Windows VMs |
 | `sg-metrics` | lib | Prometheus exporter scrape ports from k3s_nodes: the collection's built-ins (9100/9101/9134/9167) plus whatever `proxmox_firewall_metrics_scrape_ports` in `group_vars/all.yml` declares (today 8123/32400/7472/7473, and the Loki push NodePort 31100 from core-cluster) | **All hosts and guests** |
 

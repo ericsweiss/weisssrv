@@ -219,9 +219,14 @@ item (docs/46).
 
 Rotate: mint a replacement key in Control Plane → Integrations, update the
 field, revoke the old key, then verify with `task terraform:unifi-plan` (an
-empty plan proves the new key reads every object). The key is read by the
-supervised apply and by `unifi-drift-plan`, so a stale field surfaces as that
-job failing its `unifi_api_key` length validation rather than as silent drift.
+empty plan proves the new key reads every object). **The local plan is the
+check that matters.** The key is also read by `unifi-drift-plan`, but that job
+carries a blanket `allow_failure: true` over `plan -detailed-exitcode`, so a
+renamed field (empty string → `unifi_api_key` length validation), a revoked key
+(401, no validation message at all) and genuine drift all render as the same
+yellow badge — see docs/46 § Expected breakage for the "must be green after the
+first apply" rule, and docs/16 for the follow-up that would make a broken plan
+red.
 
 #### WiFi SSID pre-shared keys
 
