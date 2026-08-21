@@ -56,11 +56,12 @@
   ],
 
   // Auto-approve the LAN route so subnet-router failover across the six hosts is
-  // real. The owner entry keeps still-untagged hosts approved; remove it once all
-  // six carry tag:subnet-router (README § Post-migration tightening).
+  // real. Tag-only since 2026-08-20: all six Proxmox hosts carry
+  // tag:subnet-router (migration complete), so an untagged device can no
+  // longer self-approve the LAN route.
   "autoApprovers": {
     "routes": {
-      "192.168.0.0/24": ["tag:subnet-router", "ericsweiss1@gmail.com"],
+      "192.168.0.0/24": ["tag:subnet-router"],
     },
   },
 

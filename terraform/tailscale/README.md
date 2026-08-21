@@ -30,10 +30,11 @@ an unmerged branch's code — so the pre-merge control is a local
 > colour is the only signal; a yellow one means review the diff with a supervised
 > `task terraform:tailscale-plan` before applying anything, never wave it through.
 >
-> What is *not* finished is step 3 of the staged runbook below: the six Proxmox
-> hosts still carry no `tag:subnet-router`, so route auto-approval still rides on
-> the owner entry in `autoApprovers.routes`, and the post-migration tightening is
-> still open. `docs/16-next-steps.md` tracks the remaining steps.
+> **Migration complete (2026-08-20):** all six Proxmox hosts carry
+> `tag:subnet-router`, route auto-approval is tag-only (the owner entry is
+> removed), and the post-migration tightening has been applied. The runbook
+> below remains the procedure for any later supervised policy change or a
+> rebuild-from-scratch.
 
 ## What the policy grants (rule by rule)
 

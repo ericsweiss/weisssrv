@@ -90,35 +90,17 @@ Live steps that need a human at the console — a botched one severs access, so
 none of them rides a pipeline. Some are codified but unapplied; others (like the
 Tailscale host tagging below) are the remaining half of something already applied.
 
-### Tailscale ACL least-privilege lockdown (applied; host tagging pending)
+### ~~Tailscale ACL least-privilege lockdown~~ — COMPLETE
 
-- **Codified**: `terraform/tailscale/policy.hujson` defines `group:admins`
-  (`= [ericsweiss1@gmail.com]`, the `src` of every rule instead of
-  `autogroup:member`) and `tag:subnet-router` (tagOwners), scopes access to two
-  port-restricted `src group:admins -> dst` rules (rule 1 → the hosts' own
-  services on their tailnet IP; rule 2 → the LAN via subnet routing, on the honest
-  union of user-facing service ports) plus an SSH network gate (rule 3 →
-  `autogroup:self:22`), auto-approves `192.168.0.0/24` for both the tag and
-  (during migration) the owner, and **drops the `root` Tailscale SSH user**
-  (nonroot + break-glass rule kept commented). The tailscale role advertises the
-  tag via `tailscale_advertise_tags` (`group_vars/proxmox.yml`), adopted through
-  its best-effort `tailscale set --advertise-tags` reconcile (strict under
-  `tailscale_tags_require_adoption=true` for the supervised step). No host
-  carries the tag yet — see [docs/05](05-tailscale.md).
-- **Applied**: the supervised `terraform apply` has landed — the live tailnet ACL
-  matches `policy.hujson` and `tailscale-drift-plan` is clean (empty plan). From
-  here the job is a **drift signal**: any non-empty plan means someone hot-fixed
-  the policy in the Admin console, and it should be reviewed with a supervised
-  `task terraform:tailscale-plan` before applying.
-- **Remaining step (supervised)**: tagging the six hosts. No host carries
-  `tag:subnet-router` yet, so routes are still auto-approved via the owner entry.
-  Follow the staged runbook in
-  [terraform/tailscale/README.md](../terraform/tailscale/README.md): pre-apply
-  nonroot-SSH checklist on all six hosts, run the tailscale role to adopt the
-  tag, verify route approval + SSH + kube-API, break-glass ready.
-- **Follow-up tightening (post-migration)**: remove the owner entry from
-  `autoApprovers.routes` once all six hosts are tagged; revisit the host firewall
-  `admin_ts` set now that tag-scoped tailnet ACLs exist.
+Finished 2026-08-20: all six Proxmox hosts adopted `tag:subnet-router`
+(admin-console tag assignment + the strict `tailscale_tags_require_adoption`
+play, green on all six), route approval verified riding the tag
+(single-primary failover intact), Tailscale SSH + kube-API verified, and the
+owner entry removed from `autoApprovers.routes` — an untagged device can no
+longer self-approve the LAN route. Drift watch: `tailscale-drift-plan` stays
+the signal; the `admin_ts` firewall-set revisit remains folded into the
+Ubiquiti network session.
+
 
 ### AQC113 firmware update (pve-nas-01)
 
