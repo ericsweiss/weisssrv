@@ -491,9 +491,17 @@ firewall_ipset_special_entries:
       comment: homelab LAN
     - ip: 10.0.20.0/24
       comment: Home VLAN 20 (trusted personal devices)
-  # Resolver scope: every VLAN uses the weisssrv resolvers, handed out by UniFi
-  # DHCP, so :53 has to admit subnets that must never reach an admin surface.
-  # Wider than lan_clients on purpose, and only ever referenced from :53.
+  # Resolver scope: every CLIENT VLAN uses the weisssrv resolvers, handed out by
+  # UniFi DHCP, so :53 has to admit subnets that must never reach an admin
+  # surface. Wider than lan_clients on purpose, and only ever referenced
+  # from :53.
+  #
+  # 10.0.1.0/24 (mgmt) is the exception and is currently INERT: that VLAN's DHCP
+  # hands out public resolvers to avoid a bootstrap loop, and no UniFi zone
+  # policy admits Internal -> homelab (terraform/unifi/networks.tf), so nothing
+  # from it can reach :53 here. Kept so the set stays the complete statement of
+  # "which subnets may resolve", and so re-pointing a mgmt device at AdGuard is
+  # a one-line zone-policy change rather than two.
   dns_clients:
     - ip: 192.168.0.0/24
       comment: homelab LAN
@@ -522,12 +530,14 @@ proxmox_firewall_admin_lan_cidrs:
   - 192.168.0.0/24
   - 10.0.20.8/29
 
-# SMB clients, set explicitly rather than inheriting admin_lan: file shares are
-# a service surface, so they follow the lan_clients membership, not the admin
-# one. Kept as its own list because the role renders smb_clients from this var.
-proxmox_firewall_smb_client_cidrs:
-  - 192.168.0.0/24
-  - 10.0.20.0/24
+# SMB clients, NOT inheriting admin_lan: file shares are a service surface, so
+# they follow the lan_clients membership, not the admin one. The role renders
+# the `smb_clients` IPSet from this variable rather than from
+# firewall_ipset_special_entries, so the list has to exist separately — but it
+# is DERIVED, not restated: two literal copies of one scope is how a Phase 2
+# renumber (or a new client VLAN) moves one and silently leaves the other,
+# breaking every SMB mount with nothing pointing at the cause.
+proxmox_firewall_smb_client_cidrs: "{{ firewall_ipset_special_entries.lan_clients | map(attribute='ip') | list }}"
 
 # The router forwards :51820/udp to the wg-easy MetalLB VIP. `-dest` scopes the
 # WAN rule to the VIP so it never opens a node's own :51820/udp (flannel
@@ -671,18 +681,29 @@ proxmox_firewall_security_groups:
 
   - name: sg-haos
     rules:
-      # SSDP (1900) and mDNS (5353) discovery. The IoT VLAN is added inline
-      # rather than folded into lan_clients: discovery is the ONLY thing IoT
-      # devices may reach here, and the UniFi gateway reflects mDNS across the
-      # zone boundary (docs/46).
+      # SSDP (1900) and mDNS (5353) discovery from the client VLANs in
+      # lan_clients. NOTE the layering: the UniFi zone firewall is the FIRST
+      # gate for anything arriving from another VLAN (terraform/unifi
+      # local.policies), so a rule here only ever sees traffic a zone policy
+      # already admitted.
       - "IN ACCEPT -source +dc/lan_clients -p udp -dport 1900 -log nolog"
-      - "IN ACCEPT -source 10.0.30.0/24 -p udp -dport 1900 -log nolog"
       - "IN ACCEPT -source +dc/lan_clients -p udp -dport 5353 -log nolog"
+      # mDNS from the IoT VLAN. Kept inline (and NOT folded into lan_clients)
+      # because it is the one IoT->here flow that can arrive with a 10.0.30.x
+      # source: UniFi's mDNS repeater re-transmits the query on this interface
+      # with the ORIGINAL source address, not the gateway's. There is
+      # deliberately no 1900 counterpart — SSDP is link-local multicast that no
+      # UniFi feature reflects, so such a rule could never match (docs/46).
       - "IN ACCEPT -source 10.0.30.0/24 -p udp -dport 5353 -log nolog"
       # The web UI is a user-facing surface — phones and tablets live on the
       # Home VLAN, so it follows lan_clients.
       - "IN ACCEPT -source +dc/admin_ts -p tcp -dport 8123 -log nolog"
       - "IN ACCEPT -source +dc/lan_clients -p tcp -dport 8123 -log nolog"
+      # HA's device-INITIATED paths from IoT: a Cast speaker fetching the TTS
+      # proxy URL HA handed it, and integration webhooks posting back to HA's
+      # internal_url. Gated first by the `iot-to-homelab-ha` zone policy, which
+      # scopes it to this guest's address.
+      - "IN ACCEPT -source 10.0.30.0/24 -p tcp -dport 8123 -log nolog"
       # SSH add-on (22222) — ADMIN scope.
       - "IN ACCEPT -source +dc/admin_ts -p tcp -dport 22222 -log nolog"
       - "IN ACCEPT -source +dc/admin_lan -p tcp -dport 22222 -log nolog"
@@ -693,16 +714,19 @@ proxmox_firewall_security_groups:
 
   - name: sg-plex
     rules:
-      # DLNA/GDM discovery + companion ports stay LAN-only (no remote use case),
-      # sourced from the client VLANs. The IoT VLAN is added inline because the
-      # TVs and streamers that use DLNA live there, and discovery is the only
-      # thing they may reach on this guest (:32400 is separate, below).
+      # DLNA (32469), GDM (32410-32414) and SSDP (1900) discovery stay LAN-only
+      # (no remote use case), sourced from the client VLANs in lan_clients.
+      #
+      # The IoT VLAN is deliberately ABSENT from all three. GDM and SSDP are
+      # multicast, which does not route between VLANs at all, and unicast DLNA
+      # would be dropped by the UniFi zone firewall first — the only iot->homelab
+      # allowances are :53, Plex :32400 and HA :8123 (terraform/unifi
+      # local.policies). TVs on IoT still stream: :32400 is world-open below and
+      # the Plex client finds the server through plex.tv rather than by
+      # discovery.
       - "IN ACCEPT -source +dc/lan_clients -p tcp -dport 32469 -log nolog"
-      - "IN ACCEPT -source 10.0.30.0/24 -p tcp -dport 32469 -log nolog"
       - "IN ACCEPT -source +dc/lan_clients -p udp -dport 32410:32414 -log nolog"
-      - "IN ACCEPT -source 10.0.30.0/24 -p udp -dport 32410:32414 -log nolog"
       - "IN ACCEPT -source +dc/lan_clients -p udp -dport 1900 -log nolog"
-      - "IN ACCEPT -source 10.0.30.0/24 -p udp -dport 1900 -log nolog"
       # Media port 32400 — INTENTIONALLY open to the WAN for direct remote
       # streaming (the router forwards it here, docs/20 §4). Plex authenticates
       # every remote session against plex.tv before serving media, so this is an

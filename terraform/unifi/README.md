@@ -76,7 +76,7 @@ all — destroy drops the state entry and changes nothing on the controller.
 |---|---|---|---|
 | Networks (VLANs + DHCP scopes) | 6 | `module.network.unifi_network.this[<key>]` | `local.networks` |
 | Custom firewall zones | 5 | `module.network.unifi_firewall_zone.this[<name>]` | `local.zones` |
-| Zone policies | 9 | `module.network.unifi_firewall_policy.this[<name>]` | `local.policies` |
+| Zone policies | 17 | `module.network.unifi_firewall_policy.this[<name>]` | `local.policies` |
 | WLANs | 4 | `module.network.unifi_wlan.this[<key>]` | `wlans` in `main.tf` |
 | Client reservations | 15 | `module.network.unifi_client.this[<key>]` | `local.clients` |
 | WAN port forwards | 5 | `module.network.unifi_port_forward.this[<key>]` | `local.port_forwards` |
@@ -93,14 +93,23 @@ UI.
 
 ### The segmentation in one paragraph
 
-Every VLAN is its own zone, so inter-zone traffic is denied by default and the
-nine entries in `local.policies` are the complete list of what crosses a VLAN
-boundary: Home reaches Homelab and IoT in full, Homelab reaches Home and IoT in
-full, and IoT/Work/Guest/management get the two DNS resolvers (plus Plex from
-IoT) and nothing else. That model is what makes the provider's inability to
-order rules irrelevant — these are allowances against a deny, not a first-match
-list. Anything not listed there is blocked, including iot→home, work→anything,
-guest→anything, and home→work.
+The baseline is UniFi's own: **every zone reaches External and Gateway; no zone
+reaches another internal zone.** Every VLAN is its own zone, so the eleven
+`ALLOW` entries in `local.policies` are the complete list of what crosses a VLAN
+boundary — Home reaches Homelab and IoT in full, Homelab reaches Home and IoT in
+full, IoT gets the two DNS resolvers plus Plex `:32400` and Home Assistant
+`:8123`, Work and Guest get the resolvers only, and the homelab↔management ICMP
+pair exists so the blackbox probes for the switch and the AP can reach them.
+Anything else between internal zones is blocked, including iot→home,
+work→anything else, guest→anything else, and home→work.
+
+The six `BLOCK` entries narrow the two default-allow paths an `ALLOW` list
+cannot touch: `{guest,iot,work}-to-gateway-mgmt` keeps the console login off
+those VLANs' own gateway addresses, and `{guest,iot,work}-to-external-dns` stops
+a device with a hardcoded resolver from bypassing AdGuard on `:53`/`:853`.
+Zone-per-VLAN is what makes the provider's inability to order rules irrelevant:
+the allowances are against a deny rather than a first-match list, and each
+`BLOCK` targets a zone-pair that no `ALLOW` here touches.
 
 ## What is deliberately UNMANAGED (and why)
 
@@ -203,9 +212,13 @@ task terraform:unifi-apply    # SUPERVISED — refuses -auto-approve
 The gateway is configured before Terraform ever runs: the built-in Default
 network exists, the clients exist the moment the controller sees their MACs,
 and after the cutover the VLANs exist too. A bare `terraform plan` over empty
-state therefore plans **creates against objects that already exist**, and the
-apply fails part-way on the unique-name constraints rather than duplicating
-them. Import first:
+state therefore plans **creates against objects that already exist**. For
+networks, WLANs, zones and the settings singleton that apply fails part-way on
+the unique-name constraints rather than duplicating them, so importing them is
+mandatory. Clients are the exception — the module sets `allow_existing`, so a
+create ADOPTS the client the controller already knows; import one only to have
+it tracked from the first plan rather than adopted on the first apply. Import
+first:
 
 ```bash
 task terraform:unifi-init
@@ -296,9 +309,10 @@ not renumbered) so cutover night changes routing without touching a single
 address in `ansible/`, `kubernetes/` or any guest. Phase 2 moves it to
 `10.0.10.0/24` in its own MR, after Phase 1 has been live long enough to trust.
 
-In this root that is a small, contained edit: `local.networks.homelab.subnet`
-and its DHCP scope, `local.dns_ips` and `local.plex_ip` (which every policy and
-port forward references rather than repeating), and the five
-`local.port_forwards` targets. Nothing else here names a homelab address.
+In this root that is a small, contained edit, and this list is the complete one:
+`local.networks.homelab.subnet` and its DHCP scope, the three homelab locals
+`dns_ips` / `plex_ip` / `ha_ip` (which every policy references rather than
+repeating), and the five `local.port_forwards` targets. Nothing else here names
+a homelab address.
 Everything outside this root — the inventory, the k8s manifests, the DNS
 rewrites — is the bulk of that MR; docs/46 § Phase 2 owns the sequence.

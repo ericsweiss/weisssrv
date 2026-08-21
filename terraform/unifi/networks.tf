@@ -7,12 +7,25 @@
 # rename is a `moved {}` block — `unifi_network` and `unifi_firewall_zone` carry
 # `prevent_destroy` module-side and refuse the destroy half of a rename.
 locals {
-  # The two AdGuard/Unbound resolvers (docs/04-dns.md). Handed to every VLAN by
-  # DHCP and allowed through the zone policies below from the VLANs that get
-  # nothing else. Phase 2 (homelab renumber) edits these two addresses and
-  # `plex_ip` — nothing else in this file names a homelab host.
+  # The two AdGuard/Unbound resolvers (docs/08-dns.md). Handed to every client
+  # VLAN by DHCP and allowed through the zone policies below from the VLANs that
+  # get nothing else.
+  #
+  # Phase 2 (homelab renumber) edits these three addresses AND the `homelab`
+  # subnet/DHCP scope below AND all five `port_forwards` targets — README
+  # § Phase 2 is the complete edit list, not this comment.
   dns_ips = ["192.168.0.150", "192.168.0.160"]
   plex_ip = "192.168.0.152"
+  # Home Assistant (docs/24). Named here because the IoT VLAN gets a policy to
+  # it: cast/TTS and webhook callbacks are device-initiated, so the outbound
+  # `homelab-to-iot` allow does not cover them.
+  ha_ip = "192.168.0.154"
+
+  # The two adopted UniFi devices on the management VLAN, single-sourced because
+  # three things name them: the ICMP policy pair below, the commented client
+  # reservations further down, and the blackbox probes in
+  # kubernetes/infrastructure/observability/exporters/blackbox-exporter.yaml.
+  mgmt_device_ips = ["10.0.1.2", "10.0.1.3"]
 
   # `subnet` is GATEWAY form: the host part is the gateway address, so
   # "10.0.30.1/24" is the network 10.0.30.0/24 with the gateway on .1. The
@@ -23,11 +36,18 @@ locals {
     # only — the gateway, the switch and the AP. It carries no `vlan`, which is
     # what marks it as the built-in, and it is IMPORTED rather than created
     # (`terraform import ... name=Default`, README § Adopting the live site).
+    #
+    # DHCP hands out PUBLIC resolvers, not `local.dns_ips`: the switch and the
+    # AP reach the network through themselves, and the resolvers are LXC guests
+    # two layers below them, so pointing this VLAN at .150/.160 is the same
+    # bootstrap loop docs/46 rejects for the gateway's own WAN DNS. Nothing on
+    # this VLAN needs split-horizon answers — it resolves ui.com for adoption,
+    # firmware and telemetry and nothing else.
     default = {
       name        = "Default"
       subnet      = "10.0.1.1/24"
       domain_name = "esweiss.com"
-      dhcp        = { start = "10.0.1.100", stop = "10.0.1.199", dns_servers = local.dns_ips }
+      dhcp        = { start = "10.0.1.100", stop = "10.0.1.199", dns_servers = ["1.1.1.1", "9.9.9.9"] }
     }
 
     # Phase 1 keeps the homelab on its existing 192.168.0.0/24 so nothing in
@@ -42,17 +62,23 @@ locals {
       dhcp        = { start = "192.168.0.2", stop = "192.168.0.98", dns_servers = local.dns_ips }
     }
 
+    # `igmp_snooping` — see the note on `iot` below; Home and IoT are the two
+    # ends of the casting path, so they carry it and nothing else does.
     home = {
-      name        = "Home"
-      vlan        = 20
-      subnet      = "10.0.20.1/24"
-      domain_name = "esweiss.com"
-      dhcp        = { start = "10.0.20.50", stop = "10.0.20.249", dns_servers = local.dns_ips }
+      name          = "Home"
+      vlan          = 20
+      subnet        = "10.0.20.1/24"
+      domain_name   = "esweiss.com"
+      igmp_snooping = true
+      dhcp          = { start = "10.0.20.50", stop = "10.0.20.249", dns_servers = local.dns_ips }
     }
 
     # Per-network IGMP snooping is set here for older controllers; the effective
     # toggle on Network 10.3+ is `site_settings.igmp_snooping_networks` in
-    # main.tf, which lists this network too.
+    # main.tf, which lists exactly the same two networks. Homelab is
+    # deliberately NOT snooped: nothing multicast-critical runs on VLAN 10 that
+    # a missing querier could prune (Proxmox corosync is unicast knet), and
+    # snooping a cluster VLAN is risk without a benefit.
     iot = {
       name          = "IoT"
       vlan          = 30
@@ -101,15 +127,27 @@ locals {
     work    = { networks = ["work"] }
   }
 
-  # Allowances against the default deny. `name` is the state address AND the
-  # rule name in the UI, so it must be unique and a rename replaces the policy.
-  # `create_allow_respond` (default true) writes the matching established/
-  # related return rule; the controller REJECTS it for icmp/icmpv6, and nothing
-  # here is ICMP.
+  # The policy set. Two kinds of entry live here:
   #
-  # Everything NOT listed is denied: iot->home, iot->work, work->anything but
-  # DNS, guest->anything but DNS, home->work, and every reverse direction that
-  # is not a stateful response.
+  #   ALLOW — an allowance against the inter-zone default deny. Everything NOT
+  #   listed is denied: iot->home, iot->work, work->anything but DNS,
+  #   guest->anything but DNS + HTTP(S) out, home->work, and every reverse
+  #   direction that is not a stateful response.
+  #
+  #   BLOCK — a narrowing of the two paths UniFi allows by DEFAULT and no ALLOW
+  #   entry can take away: every zone reaches External, and every zone reaches
+  #   Gateway. Those defaults are what expose the console login on each VLAN's
+  #   own gateway address and let a device ignore DHCP option 6, so the last two
+  #   groups below fence them off explicitly.
+  #
+  # `name` is the state address AND the rule name in the UI, so it must be
+  # unique and a rename replaces the policy.
+  #
+  # `create_allow_respond` writes the matching established/related return rule.
+  # The module forces it off for anything that is not an ALLOW, so the BLOCK
+  # entries below say nothing about it; it is spelled out only on the ICMP pair,
+  # where the controller REJECTS it and the reverse direction therefore has to
+  # be a policy of its own.
   policies = [
     # Trusted household network reaches the homelab as it does today; per-port
     # enforcement stays with the Proxmox firewall and the k8s NetworkPolicies,
@@ -122,7 +160,7 @@ locals {
     # Casting and control: the AirPlay/Chromecast data path from phones and
     # laptops to the TVs and speakers on IoT. Discovery itself is multicast and
     # does NOT cross the VLAN boundary — mDNS reflection is a UI step and SSDP
-    # has no reflector at all (docs/46 § Discovery).
+    # has no reflector at all (docs/46 § Codified vs manual).
     {
       name        = "home-to-iot"
       source      = { zone = "home" }
@@ -158,6 +196,17 @@ locals {
       source      = { zone = "iot" }
       destination = { zone = "homelab", ips = [local.plex_ip], port = "32400" }
     },
+    # Home Assistant's DEVICE-INITIATED paths. `homelab-to-iot` covers the polls
+    # and pushes HA makes; it does not cover the flows where the IoT device is
+    # the client — a Cast speaker fetching the TTS proxy URL HA handed it, and
+    # any integration webhook posting back to HA's internal_url. Both are :8123
+    # to .154, so the allowance is that one address and that one port.
+    {
+      name        = "iot-to-homelab-ha"
+      protocol    = "tcp"
+      source      = { zone = "iot" }
+      destination = { zone = "homelab", ips = [local.ha_ip], port = "8123" }
+    },
     {
       name        = "work-to-homelab-dns"
       protocol    = "tcp_udp"
@@ -172,12 +221,101 @@ locals {
     },
     # The management VLAN is in the built-in Internal zone, so `internal` is a
     # `builtin_zone_names` key rather than a `zones` one — both resolve from the
-    # same namespace. Without this the switch and the AP cannot resolve names.
+    # same namespace.
+    #
+    # This pair is what makes the blackbox ICMP probes for the switch and the AP
+    # work at all: blackbox runs as a pod on a k3s node, so its echo requests
+    # SNAT to a homelab (VLAN 10) address and cross homelab -> Internal, which
+    # the default deny drops. Two policies because the controller REJECTS
+    # `create_allow_respond` on icmp — the reply direction has to be written
+    # explicitly. Scoped to the two device addresses, not the whole VLAN.
+    #
+    # There is deliberately NO Internal -> homelab DNS policy: the mgmt VLAN's
+    # DHCP hands out public resolvers (see the `default` network above), so the
+    # switch and the AP never ask .150/.160 for anything.
     {
-      name        = "internal-to-homelab-dns"
+      name                 = "homelab-to-internal-icmp"
+      protocol             = "icmp"
+      create_allow_respond = false
+      source               = { zone = "homelab" }
+      destination          = { zone = "internal", ips = local.mgmt_device_ips }
+    },
+    {
+      name                 = "internal-to-homelab-icmp"
+      protocol             = "icmp"
+      create_allow_respond = false
+      source               = { zone = "internal", ips = local.mgmt_device_ips }
+      destination          = { zone = "homelab" }
+    },
+
+    # ---- Gateway hardening ----
+    #
+    # UniFi allows every zone -> Gateway by default, and on a Cloud Gateway the
+    # console (and therefore the Network application, and therefore the local
+    # admin whose API key rewrites this whole file) is a gateway service on
+    # EVERY VLAN's own gateway address. A guest with the WLAN PSK otherwise gets
+    # an unthrottled login form at https://10.0.40.1.
+    #
+    # tcp only, and only the console ports: DHCP is broadcast before the client
+    # has an address and is unaffected, ICMP to the gateway stays up for
+    # troubleshooting, and none of these three zones uses the gateway as a
+    # resolver (DHCP hands them .150/.160).
+    {
+      name        = "guest-to-gateway-mgmt"
+      action      = "BLOCK"
+      protocol    = "tcp"
+      logging     = true
+      source      = { zone = "guest" }
+      destination = { zone = "gateway", port = "22,80,443" }
+    },
+    {
+      name        = "iot-to-gateway-mgmt"
+      action      = "BLOCK"
+      protocol    = "tcp"
+      logging     = true
+      source      = { zone = "iot" }
+      destination = { zone = "gateway", port = "22,80,443" }
+    },
+    {
+      name        = "work-to-gateway-mgmt"
+      action      = "BLOCK"
+      protocol    = "tcp"
+      logging     = true
+      source      = { zone = "work" }
+      destination = { zone = "gateway", port = "22,80,443" }
+    },
+
+    # ---- DNS containment ----
+    #
+    # DHCP option 6 is a suggestion. Chromecast/Google Home hardware queries
+    # 8.8.8.8 regardless, and most smart TVs ship a vendor resolver — so without
+    # these the VLANs that are supposed to be filtered and logged by AdGuard are
+    # the ones most likely to bypass it. Blocking :53 and :853 to External
+    # forces the weisssrv resolvers or nothing.
+    #
+    # DoH on :443 is NOT covered — it is indistinguishable from ordinary HTTPS
+    # at this layer and closing it needs the IDS/IPS or a blocklist (docs/46).
+    # Homelab is exempt: Unbound itself has to reach the internet.
+    {
+      name        = "guest-to-external-dns"
+      action      = "BLOCK"
       protocol    = "tcp_udp"
-      source      = { zone = "internal" }
-      destination = { zone = "homelab", ips = local.dns_ips, port = "53" }
+      source      = { zone = "guest" }
+      destination = { zone = "external", port = "53,853" }
+    },
+    {
+      name        = "iot-to-external-dns"
+      action      = "BLOCK"
+      protocol    = "tcp_udp"
+      source      = { zone = "iot" }
+      destination = { zone = "external", port = "53,853" }
+    },
+    {
+      name        = "work-to-external-dns"
+      action      = "BLOCK"
+      protocol    = "tcp_udp"
+      source      = { zone = "work" }
+      destination = { zone = "external", port = "53,853" }
     },
   ]
 
@@ -192,6 +330,12 @@ locals {
   # Homelab hosts and guests are statically addressed by Ansible and are
   # deliberately absent — a reservation for an address the host also configures
   # itself is two sources of truth for one address.
+  #
+  # Every reservation here sits OUTSIDE its network's DHCP pool, which is
+  # deliberate: a reservation inside the pool can collide with a lease the
+  # server has already handed out. The pools start at .50 (.100 on mgmt) and the
+  # reserved addresses live below that, in the same subnet — which is what the
+  # server requires, and the only thing it requires.
   clients = {
     # Home (VLAN 20)
     hdhr = {
@@ -291,9 +435,12 @@ locals {
     # Management (VLAN 1) — the switch and the AP, so the blackbox ICMP probes
     # in kubernetes/infrastructure/observability have stable targets. Their MACs
     # are unknown until the devices are adopted: read each one from the
-    # controller (Devices -> the device -> MAC) and uncomment, then apply. Until
-    # then the two addresses are held by the DHCP pool's first leases, which is
-    # why the probe targets are documented in docs/46 as pending.
+    # controller (Devices -> the device -> MAC) and uncomment, then apply.
+    #
+    # Until that apply the devices hold ORDINARY POOL LEASES (10.0.1.100+) and
+    # nothing answers at .2/.3 — so NetworkGearProbeFailed stays red for both
+    # after cutover, and filling in these two MACs is the fix, not a cabling or
+    # routing hunt. docs/46 § Bench pre-provisioning is where they get pinned.
     #
     # usw-pro-xg-8 = {
     #   mac      = "00:00:00:00:00:00"

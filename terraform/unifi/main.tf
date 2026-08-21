@@ -89,8 +89,11 @@ module "network" {
     upnp                 = false
     ips_mode             = "ids"
 
-    # The effective IGMP-snooping toggle on Network 10.3+ — the multicast
-    # groups that matter are the casting ones on these three VLANs.
-    igmp_snooping_networks = ["homelab", "home", "iot"]
+    # The effective IGMP-snooping toggle on Network 10.3+. Exactly the two ends
+    # of the casting path, matching the per-network `igmp_snooping` fallbacks in
+    # networks.tf. Homelab is deliberately out: snooping without a reliably
+    # elected querier prunes groups after the membership timeout, and VLAN 10
+    # has nothing multicast-critical to gain (corosync is unicast knet).
+    igmp_snooping_networks = ["home", "iot"]
   }
 }
