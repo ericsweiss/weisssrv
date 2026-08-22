@@ -1503,24 +1503,76 @@ The apply itself takes seconds. Steps 2.4 to 2.9 are what turn the estate back
 on afterwards, and none of them are optional — **do not stop at 2.3**. Read
 § Why this cannot be a rolling change for what is down between here and 2.8.
 
-**2.1 — move the controller's own address.** Update the `UniFi Controller`
-1Password item's `url` field **first**; every plan after the flip connects
-there.
+**2.1 — leave the controller's `url` where it is.** The `UniFi Controller`
+1Password item still names `https://192.168.0.1`, and it has to stay there until
+2.3b. That field *is* `TF_VAR_unifi_api_url` — the Taskfile's `&tf_unifi_env`
+anchor resolves it through `op run` — so it is the address Terraform connects
+to, and the address the gateway answers on for this plan and this apply is still
+the old one. Moving it early aims the flip itself at `10.0.10.1`, which nothing
+answers on until the flip has already happened.
 
 ```bash
-op item edit "UniFi Controller" --vault Homelab url=https://10.0.10.1
+op item get "UniFi Controller" --vault Homelab --fields url   # https://192.168.0.1 — confirm, do not edit
 ```
 
-**2.2 — plan.** From the Home-VLAN admin station: `task terraform:unifi-plan`.
+**2.2 — plan, against the live controller address.** From the Home-VLAN admin
+station:
+
+```bash
+TF_VAR_unifi_api_url=https://192.168.0.1 task terraform:unifi-plan
+```
+
+The override reaches Terraform even though the task's `env:` anchor names a
+1Password reference: go-task gives the parent process environment precedence
+over a task-level `env:` entry (verified on task v3.53.1), and `op run` passes a
+value straight through when it is not an `op://` reference. Everything else in
+the anchor — the API key, the four passphrases, the state-backend credentials —
+still resolves from 1Password as usual.
+
 The homelab network must show an **in-place update** of `subnet` and the DHCP
 scope, plus the port-forward target updates. A `-/+ replace` on
 `unifi_network.this["homelab"]` means `prevent_destroy` is about to abort the
 apply — stop and re-read; a replace loses the network's ID and every reference
 to it.
 
-**2.3 — apply.** Supervised `task terraform:unifi-apply`. From this second, the
-gateway answers on `10.0.10.1` and nothing else in the estate has a default
-route.
+**2.3 — apply.** Supervised, with the same override:
+
+```bash
+TF_VAR_unifi_api_url=https://192.168.0.1 task terraform:unifi-apply
+```
+
+From the moment it lands, the gateway answers on `10.0.10.1` and nothing else in
+the estate has a default route.
+
+**Expect this apply to look unhappy, and do not re-run it.** It moves the
+address of the controller Terraform is talking to, mid-run: the API session dies
+with the old address, so the post-apply refresh can fail, time out, or report a
+partial result even though the gateway has already flipped. Terraform's own
+exit here is not the arbiter — 2.3b is. Re-running `apply` against the old
+address at this point reaches nothing at all.
+
+**2.3b — move the controller's `url`, then converge.** Now that the gateway
+answers on the new address, point 1Password at it and let the first plan against
+it be the proof that 2.3 landed:
+
+```bash
+op item edit "UniFi Controller" --vault Homelab url=https://10.0.10.1
+
+task terraform:unifi-plan          # no override now — expect "No changes."
+```
+
+An empty diff is the convergence gate for the whole of step 2: it proves both
+that the apply took and that the stored `url` reaches a controller that answers.
+A non-empty diff is the real signal — read it before doing anything else. A plan
+that cannot connect at all means the gateway did not flip, and 2.4 onwards would
+be repairing routes towards an address that is not there.
+
+**Rollback for step 2.** Apply `terraform/unifi` from a `main` checkout — it
+still carries the pre-renumber `homelab` subnet, DHCP scope and forward targets
+— with `TF_VAR_unifi_api_url` set to whichever address the gateway currently
+answers on, then put the 1Password `url` back to match. Step 1 is untouched
+either way: the hosts keep both addresses, so nothing below the gateway has to
+be undone.
 
 **2.4 — host default routes.** On each Proxmox host (the permanent edit is step
 3):
@@ -1845,13 +1897,36 @@ per-node override to bridge with (see step 6).
 
 All three servers are still up and, since step 1, dual-addressed — `10.0.10.161`
 is announceable on the same L2 they already sit on. So move it now, while
-nothing is drained:
+nothing is drained.
+
+**Use the dedicated transition play, not `k3s.yml`.**
+`ansible-playbook playbooks/k3s.yml --limit k3s_servers` is not a VIP move:
+`--limit` selects *hosts*, not plays, so it also runs `base`, `qol`,
+`postfix_null_client`, `alloy_host`, `nfs_tls`, `node_exporter_host` and
+`proxmox_firewall` against those servers, plus the whole k3s role. The firewall
+play is the one that hurts — `proxmox_firewall` deploys the cluster-wide
+`cluster.fw` from any play, guest-hosted ones included (that task is `run_once` +
+delegated precisely so it can), so it would re-render it from the branch
+inventory and delete step 2.9's transitional `192.168.0.0/24` ipset entries
+while every host still sources from that subnet. `base` would move
+`/etc/resolv.conf` and the ssh `from=` / fail2ban allowlists that step 5 owns,
+and the k3s role would rewrite `config.yaml` wholesale, dropping the old VIP and
+the node's old `ansible_host` from `tls-san` while both are still in use.
+
+`ansible/playbooks/k3s-api-vip-transition.yml` exists for this window only. It
+changes the three places the VIP is spelled — the apiserver SAN list, the server
+join URL, and the kube-vip DaemonSet's `address` — restarts the servers one at a
+time behind a `/readyz` gate, and asserts after each restart that the node's
+`InternalIP` has not moved. Its header comment carries the full list of what it
+deliberately does not touch.
 
 ```bash
 # etcd gate first (step 6 has the full command block) — 3 healthy members
 sudo -E etcdctl endpoint health --cluster --write-out=table
 
-ansible-playbook ansible/playbooks/k3s.yml --limit k3s_servers   # from the branch
+# from the branch
+ansible-playbook -i ansible/inventories/prod/hosts.yml \
+  ansible/playbooks/k3s-api-vip-transition.yml
 
 # kube-vip re-elects and ARPs the new VIP; the old one stops being announced
 curl -sk https://10.0.10.161:6443/readyz          # "ok"
@@ -1860,11 +1935,57 @@ kubectl get nodes                                  # all 9 still Ready
 sudo -E etcdctl endpoint health --cluster --write-out=table
 ```
 
-The play already runs `k3s_servers` at `serial: 1`, so expect a few seconds of
-API unavailability per server rather than all at once; do not proceed until
-`kubectl get nodes` is clean. Rollback is the same play from `main`, which puts
-`k3s_api_vip` back to `192.168.0.161` — the server VMs still hold both addresses
-until step 5, so this stays reversible up to that point.
+The play runs `k3s_servers` at `serial: 1`, so expect a few seconds of API
+unavailability per server rather than all at once; do not proceed until
+`kubectl get nodes` is clean.
+
+**Invariant gate — no server may have left the old subnet yet.** The k3s role
+templates neither `node-ip` nor `advertise-address`, so k3s re-detects a node's
+address at every start, and these servers hold *both* subnets from step 1 until
+step 6b. A server that comes back registered on `10.0.10.x` has moved its etcd
+peer identity ahead of step 6's one-at-a-time member replacement. The play
+asserts this per server as it goes and stops the rollout at the first one that
+moves; confirm the whole control plane before continuing:
+
+```bash
+moved=$(kubectl get nodes -l node-role.kubernetes.io/control-plane=true \
+  -o jsonpath='{range .items[*]}{.metadata.name}={.status.addresses[?(@.type=="InternalIP")].address}{"\n"}{end}' \
+  | grep -v '=192\.168\.0\.') || true
+
+if [ -z "$moved" ]; then
+  echo "OK — every server is still on 192.168.0.x"
+else
+  echo "STOP — a server InternalIP moved ahead of step 6:"
+  echo "$moved"
+fi
+```
+
+`grep -v` exits 1 when *every* line matched, which is the healthy case — hence
+the `|| true` on the assignment, and the decision made on `$moved` being empty
+rather than on grep's status.
+
+Then confirm the new VIP is a certificate SAN and not merely a reachable
+address; `task k3s:kubeconfig` above validates against it, so a missing SAN
+surfaces as a `kubectl` TLS error rather than a timeout:
+
+```bash
+openssl s_client -connect 10.0.10.161:6443 </dev/null 2>/dev/null \
+  | openssl x509 -noout -text | grep -A1 'Subject Alternative Name'
+```
+
+`10.0.10.161` must be listed. If it is not, the restart did not pick up the new
+`tls-san` entry: on one server at a time, `rm -f
+/var/lib/rancher/k3s/server/tls/dynamic-cert.json`, `kubectl -n kube-system
+delete secret k3s-serving`, then `systemctl restart k3s`.
+
+**Rollback**: re-run the same play with `-e k3s_api_vip=192.168.0.161`. It *adds*
+the new VIP to `tls-san` rather than replacing the old one, so both addresses
+stay valid certificate names and the move needs no certificate work in either
+direction. The server VMs still hold both addresses until step 5, so this stays
+reversible up to that point. `main` is not a rollback path here — the playbook
+exists only on this branch, and `k3s.yml` from `main` would re-render
+`cluster.fw` from the pre-renumber inventory: the same hazard, in the other
+direction.
 
 ### Step 5 — guests, then k3s agents (one at a time)
 
@@ -2220,8 +2341,9 @@ all four resources `started`.
 The further in, the more this is a roll-*forward* migration — but each step has
 its own reversal, and steps 1-2 are cheap:
 
-- **Before step 3**: revert the gateway (`local.networks.homelab.subnet` back to
-  `192.168.0.1/24`, supervised apply, `url` field back), undo the 2.8 MetalLB
+- **Before step 3**: revert the gateway (step 2's own rollback line: apply
+  `terraform/unifi` from a `main` checkout with `TF_VAR_unifi_api_url` aimed at
+  whichever address answers, then put the `url` field back), undo the 2.8 MetalLB
   patches the same way (`kubectl patch`/`annotate` back to `192.168.0.x`, or
   just resume the five suspends and reconcile from `main`), and put HAOS back
   with the same `ha network update` at 2.7. Hosts and guests still hold both
@@ -2237,9 +2359,12 @@ its own reversal, and steps 1-2 are cheap:
   `pvecm expected 1` if quorum is gone, restart `corosync` and `pve-cluster`.
   Every host still holds both addresses at this point, which is why this
   reversal is cheap.
-- **Step 4** (API VIP): re-run the k3s play for `k3s_servers` from `main` — the
-  VIP goes back to `192.168.0.161`, which is still announceable while the server
-  VMs hold both addresses (i.e. until step 5).
+- **Step 4** (API VIP): re-run `k3s-api-vip-transition.yml` with
+  `-e k3s_api_vip=192.168.0.161`. The VIP goes back, and the old address is still
+  a valid certificate SAN because the play only ever *added* the new one — it is
+  announceable while the server VMs hold both addresses (i.e. until step 5). Do
+  not reach for `k3s.yml` from `main` instead: that re-renders `cluster.fw` from
+  the pre-renumber inventory mid-window (§ step 4).
 - **Steps 5-6**: a drained node that will not rejoin is a rebuild, not a
   rollback — `task k3s:deploy` for that node against the old address, or restore
   the etcd snapshot from `task k3s:backup` (docs/19).

@@ -1,0 +1,207 @@
+---
+# Phase 2 renumber, TRANSITION ONLY: move the k3s API VIP to k3s_api_vip
+# (10.0.10.161 on this branch) without redeploying the nodes.
+# Runbook: docs/46-unifi-network.md § Phase 2 step 4. Delete this playbook once
+# the window has closed and the cluster is wholly on 10.0.10.0/24 — it exists
+# because the estate is dual-addressed, which is true only inside that window.
+#
+# WHY NOT `ansible-playbook playbooks/k3s.yml --limit k3s_servers`:
+# --limit selects HOSTS, not plays, so that invocation still runs every play in
+# k3s.yml whose hosts: pattern covers the servers — base, qol,
+# postfix_null_client, alloy_host, nfs_tls, node_exporter_host and
+# proxmox_firewall — plus the whole k3s role. Three of those are actively
+# harmful mid-window:
+#
+#   * proxmox_firewall re-renders the cluster-wide
+#     /etc/pve/firewall/cluster.fw from the branch inventory. Its "Deploy
+#     cluster firewall configuration" task is run_once + delegated precisely so
+#     it fires from a play whose hosts are guests, and the run-scoped
+#     _proxmox_firewall_cluster_done fact does not carry across invocations. It
+#     would drop step 2.9's transitional ipset superset and leave the
+#     192.168.0.x sources every host still uses unmatched — which is a DROP.
+#   * base rewrites /etc/resolv.conf and the ssh from= / fail2ban allowlists to
+#     branch values. Step 5 moves those deliberately, per guest class.
+#   * the k3s role rewrites /etc/rancher/k3s/config.yaml wholesale, so tls-san
+#     LOSES the old VIP and the node's old ansible_host while both are still in
+#     use, and it re-runs install-script.yml — a moved k3s_version pin would
+#     upgrade the control plane in the middle of the renumber.
+#
+# The role declares no tags beyond [validation, always] and [debug], so there is
+# no surgical --tags invocation of it either. Hence a site playbook.
+#
+# This play therefore changes only the three places the API VIP is spelled, and
+# deliberately does NOT touch: node-ip / advertise-address (the role templates
+# neither — k3s re-detects at every start, which is what the InternalIP assert
+# below pins), flannel-iface, etcd membership or peer URLs, the /etc/hosts
+# registry/storage pins, the metrics-server override, the etcd-snapshot units,
+# node labels/taints, or any package.
+#
+# ROLLBACK: re-run with `-e k3s_api_vip=192.168.0.161`. The old VIP stays in
+# tls-san throughout (this play ADDS the new entry rather than replacing it), so
+# rolling back needs no certificate work. A `main` checkout is NOT a rollback
+# path — this playbook exists only on the renumber branch.
+
+- name: Announce the k3s API VIP at its new address
+  hosts: k3s_servers
+  become: true
+  # No fact is read below, and gathering against nine dual-addressed guests
+  # mid-window buys nothing.
+  gather_facts: false
+  tasks:
+    - name: Validate the API VIP inputs
+      ansible.builtin.assert:
+        that:
+          - k3s_api_vip is defined
+          - k3s_api_vip | length > 0
+          - k3s_api_port is defined
+        fail_msg: >-
+          k3s_api_vip and k3s_api_port must both be set — they come from
+          group_vars/k3s.yml, or from -e k3s_api_vip=<old VIP> when rolling
+          back. This play spells the VIP into live control-plane config; it must
+          never run against an empty value.
+        success_msg: "Moving the k3s API VIP to {{ k3s_api_vip }}:{{ k3s_api_port }}"
+
+    # ADD rather than replace: the old VIP stays a valid SAN, so the move is
+    # reversible without reissuing certificates. Mirrors the tls-san block of
+    # the k3s role's templates/k3s-server-config.yaml.j2, which rewrites this
+    # file wholesale at step 6 and drops the extra entry then.
+    #
+    # no_log: this file also carries agent-token, and ansible's file-module diff
+    # renders the whole before/after under --diff. Same reason the role sets it
+    # on its own template task. A failure here therefore reports only the task
+    # name; read the result back with the § step 4 verification command.
+    - name: Add the new API VIP to the apiserver SAN list
+      ansible.builtin.lineinfile:
+        path: /etc/rancher/k3s/config.yaml
+        insertafter: '^tls-san:$'
+        line: '  - "{{ k3s_api_vip }}"'
+      no_log: true
+      register: k3s_vip_san
+
+    # `replace` never appends, so this is a no-op on the server that renders
+    # `cluster-init: true` and no server: line — without a k3s_is_first_server
+    # gate, which a rebuilt first server (role's k3s_join_existing path) would
+    # falsify.
+    - name: Point the server join URL at the new API VIP
+      ansible.builtin.replace:
+        path: /etc/rancher/k3s/config.yaml
+        regexp: '^server: "https://[^"]*"$'
+        replace: 'server: "https://{{ k3s_api_vip }}:{{ k3s_api_port }}"'
+      no_log: true
+      register: k3s_vip_join_url
+
+    - name: Check for the kube-vip static manifest
+      ansible.builtin.stat:
+        path: /var/lib/rancher/k3s/server/manifests/kube-vip.yaml
+      register: k3s_kube_vip_manifest
+
+    # The `address` env of the role's templates/kube-vip-manifest.yaml.j2 — the
+    # only place k3s_api_vip appears in that file. Patched in place rather than
+    # re-templated from a site copy, so this play cannot drift from the role's
+    # manifest; k3s's manifest watcher re-applies the DaemonSet on write, and
+    # step 6's role run re-renders the same value. The role writes the manifest
+    # on the first server only, so stat is the ground truth, not the flag.
+    - name: Point the kube-vip DaemonSet at the new API VIP
+      ansible.builtin.replace:
+        path: /var/lib/rancher/k3s/server/manifests/kube-vip.yaml
+        regexp: '(^[ \t]*- name: address\n[ \t]*value: ")[^"]*(")'
+        replace: '\g<1>{{ k3s_api_vip }}\g<2>'
+      when: k3s_kube_vip_manifest.stat.exists
+
+    # Without this the play reports green having moved nothing: the DaemonSet is
+    # rendered on one server, and if that server is out of the batch the VIP
+    # never moves while every config below already names it.
+    - name: Assert some server carries the kube-vip manifest
+      vars:
+        _kube_vip_carriers: >-
+          {{ ansible_play_hosts
+             | map('extract', hostvars, ['k3s_kube_vip_manifest', 'stat', 'exists'])
+             | select | list }}
+      ansible.builtin.assert:
+        that:
+          - _kube_vip_carriers | length > 0
+        fail_msg: >-
+          None of {{ ansible_play_hosts | join(', ') }} carries
+          /var/lib/rancher/k3s/server/manifests/kube-vip.yaml, so the API VIP
+          was NOT moved. Find the server that holds it (the role renders it on
+          k3s_is_first_server) and include that host in the run.
+        success_msg: "kube-vip manifest patched on {{ _kube_vip_carriers | length }} server(s)"
+      run_once: true
+
+    # Gate before any restart, deliberately: a server restarted while its join
+    # URL names a VIP that does not answer yet will not come back. If the
+    # DaemonSet rollout fails, this times out with every server still running on
+    # its old configuration, which is the recoverable outcome.
+    # Mirrors the role's own "Wait for kube-vip to assign VIP".
+    - name: Wait for kube-vip to announce the new API VIP
+      ansible.builtin.wait_for:
+        host: "{{ k3s_api_vip }}"
+        port: "{{ k3s_api_port }}"
+        timeout: 180
+      run_once: true
+
+- name: Restart each k3s server onto the new API VIP
+  hosts: k3s_servers
+  become: true
+  gather_facts: false
+  # One control plane at a time: this bounces the apiserver and its etcd member.
+  serial: 1
+  tasks:
+    - name: Record this node's InternalIP before the restart
+      ansible.builtin.command: >-
+        k3s kubectl get node {{ inventory_hostname }}
+        -o 'jsonpath={.status.addresses[?(@.type=="InternalIP")].address}'
+      register: k3s_node_ip_before
+      changed_when: false
+
+    # failed_when: false plus the readyz gate below mirror the role's
+    # "Restart k3s" / "Wait for k3s API healthy" handler pair: k3s can exit once
+    # during an etcd rejoin and be recovered by Restart=always seconds later,
+    # which systemd reports as a failed restart. readyz is the real gate.
+    #
+    # Skipped when neither config edit changed anything, so a re-run of this
+    # play does not bounce a control plane for nothing.
+    - name: Restart k3s to load the new SAN and join URL
+      ansible.builtin.systemd:
+        name: k3s
+        state: restarted
+        daemon_reload: true
+      failed_when: false
+      when: (k3s_vip_san is changed) or (k3s_vip_join_url is changed)
+
+    - name: Wait for the k3s API to report ready
+      ansible.builtin.command: k3s kubectl --request-timeout=5s get --raw=/readyz
+      register: k3s_api_readyz
+      changed_when: false
+      until: k3s_api_readyz.rc == 0
+      retries: 30
+      delay: 10
+
+    - name: Read this node's InternalIP after the restart
+      ansible.builtin.command: >-
+        k3s kubectl get node {{ inventory_hostname }}
+        -o 'jsonpath={.status.addresses[?(@.type=="InternalIP")].address}'
+      register: k3s_node_ip_after
+      changed_when: false
+      until: k3s_node_ip_after.stdout | length > 0
+      retries: 6
+      delay: 10
+
+    # The role templates neither node-ip nor advertise-address, so k3s
+    # re-detects the node address at every start — and these servers hold BOTH
+    # subnets from step 1 until step 6b, so which one it picks is the kernel's
+    # address ordering, not a setting. A server that re-registers on the new
+    # subnet has moved its etcd peer identity outside step 6's one-at-a-time
+    # member replacement; serial: 1 means this stops the rollout at the first
+    # one that does, with the other two untouched.
+    - name: Assert the restart did not move this node's InternalIP
+      ansible.builtin.assert:
+        that:
+          - k3s_node_ip_after.stdout == k3s_node_ip_before.stdout
+        fail_msg: >-
+          STOP — {{ inventory_hostname }} re-registered with InternalIP
+          {{ k3s_node_ip_after.stdout }} (was {{ k3s_node_ip_before.stdout }}).
+          The remaining servers have NOT been restarted. Do not continue to
+          step 5: the etcd peer for this member has moved ahead of step 6's
+          one-at-a-time replacement. See docs/46 § Phase 2 step 4.
+        success_msg: "InternalIP unchanged at {{ k3s_node_ip_before.stdout }}"
