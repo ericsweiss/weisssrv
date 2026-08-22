@@ -43,14 +43,14 @@ data:
   helm_chart_versions_traefik: 41.3.0
   helm_chart_versions_vpa: 5.0.0
   hermes_camofox_version: 1.13.0
-  hermes_claude_version: 2.1.238
+  hermes_claude_version: 2.1.239
   hermes_codex_version: 0.149.0
-  hermes_image_version: v2026.8.19-r1
+  hermes_image_version: v2026.8.19-r2
   hermes_op_version: 2.39.0-1
   hermes_version: v2026.8.19
   hindsight_llamacpp_version: b10068
   hindsight_version: 0.9.1
-  homarr_version: v1.75.0
+  homarr_version: v1.76.0
   immich_postgres_version: 14-vectorchord0.4.3-pgvectors0.2.0
   immich_valkey_version: '9'
   immich_version: v3.1.0
