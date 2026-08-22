@@ -34,7 +34,7 @@ ssh_pubkey_authentication: true
 - Root login disabled via SSH (with exception below)
 - User `eric` has passwordless sudo
 - SSH keys stored in 1Password and deployed via Ansible
-- Restricted by source IP (`from="192.168.0.0/24,100.64.0.0/10,10.42.0.0/16"` — LAN, Tailscale, and the k3s pod CIDR; see `group_vars/all.yml` for the authoritative ranges and why the pod CIDR is required for in-cluster CI deploy jobs)
+- Restricted by source IP (`from="192.168.0.0/24,10.0.20.8/29,100.64.0.0/10,10.42.0.0/16"` — the homelab LAN, the Home-VLAN admin block, Tailscale, and the k3s pod CIDR; see `group_vars/all.yml` for the authoritative ranges and why the pod CIDR is required for in-cluster CI deploy jobs)
 
 **Proxmox Host Exception**: Root SSH with key authentication is enabled on Proxmox cluster hosts (`ssh_permit_root_login: "prohibit-password"` in `group_vars/proxmox.yml`). This is required for:
 - **Live VM/CT migrations** between cluster nodes
@@ -76,7 +76,7 @@ ssh_public_key: "{{ lookup('ansible.builtin.env', 'SSH_PUBLIC_KEY') }}"
 The key is deployed to `~/.ssh/authorized_keys` with IP restrictions:
 
 ```
-from="192.168.0.0/24,100.64.0.0/10,10.42.0.0/16" ssh-ed25519 AAAAC3Nza... eric@MacBookPro.esweiss.com
+from="192.168.0.0/24,10.0.20.8/29,100.64.0.0/10,10.42.0.0/16" ssh-ed25519 AAAAC3Nza... eric@MacBookPro.esweiss.com
 ```
 
 ## Connecting to Hosts
@@ -190,7 +190,8 @@ eric ALL=(ALL) NOPASSWD: ALL
 ### IP Restrictions
 
 SSH keys include `from=` restrictions limiting access to:
-- Local LAN: `192.168.0.0/24`
+- Homelab LAN: `192.168.0.0/24`
+- Home-VLAN admin block: `10.0.20.8/29` — the admin workstation's reservation range on the Home VLAN ([docs/11-firewall.md](11-firewall.md) § Client scopes; `admin_lan`, `base_fail2ban_ignoreip` and the `lan-tailscale-strict` middleware all key off the same /29)
 - Tailscale VPN: `100.64.0.0/10`
 - k3s pod CIDR: `10.42.0.0/16` (required so in-cluster CI runner pods can SSH back to their own node — see `group_vars/all.yml`)
 
@@ -221,7 +222,8 @@ All hosts are protected by fail2ban, which automatically bans IPs after repeated
 The following networks are whitelisted and will never be banned:
 
 - **Loopback**: `127.0.0.0/8` - Localhost connections
-- **LAN**: `192.168.0.0/24` - Local network
+- **LAN**: `192.168.0.0/24` - Homelab network
+- **Admin block**: `10.0.20.8/29` - the admin workstation on the Home VLAN
 - **Tailscale**: `100.64.0.0/10` - VPN network
 
 ### Common Commands
@@ -382,7 +384,7 @@ No manual bootstrap required for new VMs provisioned via Ansible.
    ```
 
 4. **Test from different source IP**:
-   - Ensure you're connecting from `192.168.0.0/24` or Tailscale
+   - Ensure you're connecting from `192.168.0.0/24`, the `10.0.20.8/29` admin block on the Home VLAN, or Tailscale
 
 ### "Permission denied (publickey)"
 

@@ -24,10 +24,13 @@ spec:
         - name: hsts-header
           namespace: traefik
       services:
-        # Plaintext HTTP exception: the router's web UI is HTTP-only, so the
-        # Traefik->backend hop stays cleartext. lan-tailscale-strict limits
-        # exposure to the LAN/Tailscale.
+        # The UniFi UCG-Fiber serves its UI over HTTPS only (:443, redirecting
+        # :80), with a self-signed certificate — hence the dedicated
+        # unifi-self-signed ServersTransport rather than vm-tls-wildcard, which
+        # validates against the acme.sh wildcard the gateway does not carry.
         - name: router-backend
-          port: 80
+          port: 443
+          scheme: https
+          serversTransport: unifi-self-signed
   tls:
     secretName: esweiss-com-tls

@@ -5,11 +5,17 @@
 # fails closed — Traefik disables the router and the route 404s until it
 # reconciles. Middlewares used only by apps stay in apps/vm-ingress/middleware.yaml.
 
-# IP allowlist for internal-only services (LAN + Tailscale + in-cluster pods).
+# IP allowlist for internal-only services (homelab LAN + Home VLAN + Tailscale +
+# in-cluster pods).
 # The pod CIDR is included because traefik-internal runs
 # externalTrafficPolicy: Local, so in-cluster callers (e.g. blackbox-exporter
 # probing https://git.esweiss.com) arrive with a pod source IP. That CIDR is
 # routable only inside the CNI overlay, so it cannot be spoofed from outside.
+# The Home VLAN is a separate UniFi zone (docs/46) whose devices are the ones
+# these routes exist for — phones, laptops, TVs — so it is allowlisted here even
+# though nothing this repo manages lives on it. Every other VLAN (IoT, Guest,
+# Work) is deliberately absent: the gateway's inter-zone deny is the first gate,
+# this list the second.
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:
@@ -19,14 +25,27 @@ spec:
   ipAllowList:
     sourceRange:
       - ${cluster_lan_cidr}     # Local LAN
+      - ${cluster_home_cidr}    # Home VLAN (UniFi VLAN 20 — docs/46)
       - ${cluster_tailnet_cidr}      # Tailscale CGNAT range
       - ${cluster_pod_cidr}       # K3s pod CIDR (see k3s_cluster_cidr in group_vars)
 
 ---
-# Stricter allowlist: lan-tailscale-only without the pod CIDR. For routes whose
-# only gates are the IP allowlist plus the backend's own login, where an
-# in-cluster pod reaching the route would be a real escalation — 1Password
-# Connect, and the router/AdGuard appliance UIs that have no forward-auth.
+# Stricter allowlist. For routes whose only gates are this list plus the
+# backend's own login, where anything else reaching them is a real escalation —
+# 1Password Connect, and the router/AdGuard appliance UIs that have no
+# forward-auth.
+#
+# It is strict in TWO directions, and both matter:
+#   - no pod CIDR, so an in-cluster workload cannot reach these routes; and
+#   - the Home VLAN enters as the 10.0.20.8/29 ADMIN BLOCK, not the whole /24.
+#     Traefik proxies from a k3s node, which is inside `admin_lan` — so this
+#     list is the only thing standing between a Home-VLAN device and the
+#     appliance UIs, and admitting the whole VLAN would hand them to every
+#     phone, TV and guest laptop that knows the house PSK. The /29 is exactly
+#     what the Proxmox firewall's `admin_lan` set, the sshd `from=` restrictions
+#     and fail2ban's ignoreip carry, so the two layers say the same thing.
+# The admin workstation lives in that block by UniFi DHCP reservation (docs/46);
+# any other admin device reaches these routes over Tailscale.
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:
@@ -36,6 +55,7 @@ spec:
   ipAllowList:
     sourceRange:
       - ${cluster_lan_cidr}     # Local LAN
+      - ${cluster_home_admin_cidr}   # Home VLAN admin block (10.0.20.8/29 — docs/46)
       - ${cluster_tailnet_cidr}      # Tailscale CGNAT range
 
 ---

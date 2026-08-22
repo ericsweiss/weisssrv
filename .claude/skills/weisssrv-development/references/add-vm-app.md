@@ -51,9 +51,14 @@ there, get a tag cut, then land the pin bump plus everything else in one MR here
    pin bump is what brings it here.
 10. **Firewall** — a new `[group sg-<app>]` in `proxmox_firewall_security_groups`
     (`group_vars/all.yml`) plus `guest_security_groups` on the guest in
-    `hosts.yml` (add `sg-vm-admin` + `sg-metrics`; open Traefik-fronted ports
-    from `+dc/k3s_nodes`, admin ports from `+dc/admin_lan|admin_ts` only —
-    least privilege). A scrape port that must open on EVERY node instead goes in
+    `hosts.yml` (add `sg-vm-admin` + `sg-metrics`). Three client scopes, least
+    privilege — see `docs/11-firewall.md` § Client scopes: Traefik-fronted
+    ports from `+dc/k3s_nodes`, ports users reach DIRECTLY (a web UI, an API
+    the household calls) from `+dc/lan_clients`, and admin ports (`:22`,
+    `:8006`, `:3389`, appliance admin UIs) from `+dc/admin_lan|admin_ts` only.
+    Scoping a user-facing port to `admin_lan` makes it unreachable from every
+    device on the Home VLAN, and no gate catches that. A scrape port that must
+    open on EVERY node instead goes in
     `proxmox_firewall_metrics_scrape_ports` (`{port, sources[], comment}`, next
     to `proxmox_firewall_dns_admin_ports` in the same file) — the role builds in
     only its own exporters' ports.

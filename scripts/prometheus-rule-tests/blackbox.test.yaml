@@ -1,7 +1,10 @@
 ---
 # promtool unit tests for the blackbox/endpoint alerts. Pins the load-bearing
 # firing boundaries: the WindowsRdpDown power-state gate, the EndpointDown
-# 10m warning hold, the edge-cert expiry scope, and the DNS-probe absent() guard.
+# 10m warning hold, the edge-cert expiry scope, the DNS-probe absent() guard,
+# the NetworkGearProbeFailed hold plus the EndpointDown exclusion that keeps
+# a failed UniFi device from firing both, and the NetworkGearProbeMissing
+# absent() guard behind that pattern-matched aggregate.
 rule_files:
   - rules.yaml
 evaluation_interval: 1m
@@ -146,3 +149,173 @@ tests:
       - eval_time: 20m
         alertname: DNSResolverProbeMissing
         exp_alerts: []
+
+  # NetworkGearProbeFailed: a down UniFi device is still pending at 3m and
+  # fires at 7m, labelled with the device that failed. The gateway probe
+  # (192.168.0.1) is the anchoring case for the fully-anchored regex — it must
+  # not also match 192.168.0.150:53 or 192.168.0.155:3389.
+  - interval: 1m
+    input_series:
+      - series: 'probe_success{instance="192.168.0.1"}'
+        values: '0+0x20'
+      - series: 'probe_success{instance="10.0.1.2"}'
+        values: '1+0x20'
+      - series: 'probe_success{instance="10.0.1.3"}'
+        values: '1+0x20'
+      - series: 'probe_success{instance="192.168.0.150:53"}'
+        values: '0+0x20'
+      - series: 'probe_success{instance="192.168.0.155:3389"}'
+        values: '0+0x20'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: NetworkGearProbeFailed
+        exp_alerts: []
+      - eval_time: 7m
+        alertname: NetworkGearProbeFailed
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: '192.168.0.1'
+
+  # Switch and AP both down -> one alert per device, so the summary names the
+  # one that failed rather than a collapsed aggregate.
+  - interval: 1m
+    input_series:
+      - series: 'probe_success{instance="192.168.0.1"}'
+        values: '1+0x20'
+      - series: 'probe_success{instance="10.0.1.2"}'
+        values: '0+0x20'
+      - series: 'probe_success{instance="10.0.1.3"}'
+        values: '0+0x20'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: NetworkGearProbeFailed
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: '10.0.1.2'
+          - exp_labels:
+              severity: warning
+              instance: '10.0.1.3'
+
+  # NetworkGearProbeMissing fires when any one of the three device probes has no
+  # series at all. Gateway + switch present, AP target dropped -> fire, labelled
+  # with the missing instance. A FAILING probe (switch at 0) is deliberately not
+  # a missing one — that is NetworkGearProbeFailed's job.
+  #
+  # The 15m hold is pinned by the 10m eval: shortening `for` would fire there.
+  - interval: 1m
+    input_series:
+      - series: 'probe_success{instance="192.168.0.1"}'
+        values: '1+0x30'
+      - series: 'probe_success{instance="10.0.1.2"}'
+        values: '0+0x30'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: NetworkGearProbeMissing
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: NetworkGearProbeMissing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: '10.0.1.3'
+
+  # Each absent() term needs a case that drops ITS instance, or the term can be
+  # deleted outright and the suite still passes — the all-present case only
+  # catches a MIS-SPELLED matcher, never a missing one. The gateway leg matters
+  # most: 192.168.0.1 is the address Phase 2 renumbers.
+  - interval: 1m
+    input_series:
+      - series: 'probe_success{instance="10.0.1.2"}'
+        values: '1+0x30'
+      - series: 'probe_success{instance="10.0.1.3"}'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: NetworkGearProbeMissing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: '192.168.0.1'
+
+  # ... and the switch leg.
+  - interval: 1m
+    input_series:
+      - series: 'probe_success{instance="192.168.0.1"}'
+        values: '1+0x30'
+      - series: 'probe_success{instance="10.0.1.3"}'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: NetworkGearProbeMissing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: '10.0.1.2'
+
+  # All three present -> no drift, no alert.
+  - interval: 1m
+    input_series:
+      - series: 'probe_success{instance="192.168.0.1"}'
+        values: '1+0x30'
+      - series: 'probe_success{instance="10.0.1.2"}'
+        values: '1+0x30'
+      - series: 'probe_success{instance="10.0.1.3"}'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: NetworkGearProbeMissing
+        exp_alerts: []
+
+  # All three answering -> silent.
+  - interval: 1m
+    input_series:
+      - series: 'probe_success{instance="192.168.0.1"}'
+        values: '1+0x20'
+      - series: 'probe_success{instance="10.0.1.2"}'
+        values: '1+0x20'
+      - series: 'probe_success{instance="10.0.1.3"}'
+        values: '1+0x20'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: NetworkGearProbeFailed
+        exp_alerts: []
+
+  # The three network-gear instances are excluded from the EndpointDown
+  # catch-all (routed to NetworkGearProbeFailed), so a down gear probe must not
+  # fire it — while an ordinary endpoint alongside them still does.
+  #
+  # The included half is pinned with IP-ADDRESSED targets, not just the https
+  # one: the exclusion is a regex over dotted quads, so widening it (say to
+  # 192\.168\.0\..*) would swallow real targets while every https assertion
+  # still passed. 192.168.0.161:6443 is the k3s API VIP, whose ONLY alert is
+  # this one; 192.168.0.150:53 also has DNSResolutionDown but pins the second
+  # 192.168.0.1-adjacent spelling the anchored regex must not eat.
+  - interval: 1m
+    input_series:
+      - series: 'probe_success{instance="192.168.0.1"}'
+        values: '0+0x20'
+      - series: 'probe_success{instance="10.0.1.2"}'
+        values: '0+0x20'
+      - series: 'probe_success{instance="10.0.1.3"}'
+        values: '0+0x20'
+      - series: 'probe_success{instance="https://plex.esweiss.com"}'
+        values: '0+0x20'
+      - series: 'probe_success{instance="192.168.0.161:6443"}'
+        values: '0+0x20'
+      - series: 'probe_success{instance="192.168.0.150:53"}'
+        values: '0+0x20'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: EndpointDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: '192.168.0.150:53'
+          - exp_labels:
+              severity: warning
+              instance: '192.168.0.161:6443'
+          - exp_labels:
+              severity: warning
+              instance: 'https://plex.esweiss.com'

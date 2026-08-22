@@ -36,3 +36,26 @@ spec:
     dialTimeout: 10s
     responseHeaderTimeout: 30s
     idleConnTimeout: 90s
+---
+# Traefik -> UniFi gateway (192.168.0.1:443). The UCG serves a SELF-SIGNED
+# certificate it generates itself: it is not in this repo's acme.sh
+# distribution list and has no hostname the wildcard covers, so validation can
+# only be skipped, not satisfied. Kept as its own ServersTransport rather than
+# loosening vm-tls-wildcard, so exactly one backend is unvalidated.
+#
+# What that costs: an on-path attacker between Traefik and the gateway could
+# impersonate the UI. The hop is a single LAN segment to the default gateway
+# itself — an attacker positioned there already owns the path — and the route
+# in front of it is lan-tailscale-strict plus the gateway's own login.
+apiVersion: traefik.io/v1alpha1
+kind: ServersTransport
+metadata:
+  name: unifi-self-signed
+  namespace: default
+spec:
+  insecureSkipVerify: true
+  maxIdleConnsPerHost: 32
+  forwardingTimeouts:
+    dialTimeout: 10s
+    responseHeaderTimeout: 30s
+    idleConnTimeout: 90s

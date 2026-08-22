@@ -82,22 +82,26 @@ haos_ssh_host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKcIncJ961hzakmaNlj9Nw6z
 # SSH authorized keys
 # IMPORTANT: SSH_PUBLIC_KEY must be set via 'op run' - empty key will fail validation
 #
-# from= ranges: LAN, Tailscale, and the k3s pod CIDR. The pod CIDR is required
-# because a CI deploy pod SSHing to its OWN node hairpins without SNAT and
-# arrives with a 10.42.x source; cross-host pod connections already masquerade
-# to a permitted LAN IP, so it adds no exposure.
+# from= ranges: the homelab LAN, the admin-device block on the Home VLAN,
+# Tailscale, and the k3s pod CIDR. The pod CIDR is required because a CI deploy
+# pod SSHing to its OWN node hairpins without SNAT and arrives with a 10.42.x
+# source; cross-host pod connections already masquerade to a permitted LAN IP,
+# so it adds no exposure. The sshd layer mirrors the firewall's admin split
+# (proxmox_firewall_admin_lan_cidrs): only the /29, never the whole Home VLAN.
 ssh_authorized_keys:
   - >-
-    from="192.168.0.0/24,100.64.0.0/10,10.42.0.0/16"
+    from="192.168.0.0/24,10.0.20.8/29,100.64.0.0/10,10.42.0.0/16"
     {{ lookup('ansible.builtin.env', 'SSH_PUBLIC_KEY') or undef(hint='SSH_PUBLIC_KEY env var must be set') }}
 
-# fail2ban never-ban list. The role default is loopback only; the LAN and the
-# tailnet are added back so an admin source cannot be banned out of its own
-# hosts (both are already the only sources the firewall admits to :22).
+# fail2ban never-ban list. The role default is loopback only; the LAN, the admin
+# block on the Home VLAN and the tailnet are added back so an admin source
+# cannot be banned out of its own hosts (all three are already the only sources
+# the firewall admits to :22).
 base_fail2ban_ignoreip:
   - 127.0.0.1/8
   - ::1
   - 192.168.0.0/24
+  - 10.0.20.8/29
   - 100.64.0.0/10
 
 # 1Password references are NOT duplicated here. `op run --` resolves them from
@@ -287,17 +291,17 @@ proxmox_vm_virtio_win_checksum: "sha256:e14cf2b94492c3e925f0070ba7fdfedeb2048c91
 # and builds THEIR Dockerfile. The value is the upstream RELEASE TAG (used
 # verbatim as `git clone --branch` and as the built image tag), NOT the semver
 # whl version.
-hermes_version: "v2026.8.18"
+hermes_version: "v2026.8.19"
 # Immutable commit the pinned tag must resolve to — build-hermes-agent refuses
 # to build on a mismatch (moved/compromised tag defence). Lockstep with
 # hermes_version.
-hermes_git_sha: "e624e9fde561e1add9388384012b295fde669ade"
+hermes_git_sha: "fcbd1076a93841fa88855acce810e342a5b78101"
 # PUBLISHED image tag = <hermes_version>-r<N>. The image is upstream + our
 # patches (docker/hermes-agent/patches/), so a patch change without an upstream
 # bump MUST produce a new tag or the nodes' IfNotPresent cache keeps serving the
 # unpatched image. Bump -rN when patches change; reset to -r1 on a
 # hermes_version bump. CI asserts the prefix matches hermes_version.
-hermes_image_version: "v2026.8.18-r1"
+hermes_image_version: "v2026.8.19-r2"
 # OpenAI Codex CLI, baked into the hermes image by Dockerfile.codex. Requires
 # >=0.130.0 for the Hermes runtime. Build-time only — not substituted into any
 # manifest. https://github.com/openai/codex/releases (npm @openai/codex)
@@ -307,7 +311,7 @@ hermes_codex_version: "0.149.0"
 # long-lived OAuth token (CLAUDE_CODE_OAUTH_TOKEN via ESO — no API key; the CLI
 # holds the credential, Hermes only reads stdout). Build-time only — docs/37.
 # https://github.com/anthropics/claude-code (npm @anthropic-ai/claude-code)
-hermes_claude_version: "2.1.238"
+hermes_claude_version: "2.1.239"
 # 1Password CLI (op), baked into the hermes image so Hermes' 1Password skill can
 # drive `op` against the isolated Agent vault (docs/37 §1Password). Value is the
 # full DEB version string, not the bare semver `op --version` reports.
@@ -365,7 +369,7 @@ dcgm_exporter_version: "4.6.0-4.8.3-distroless"
 
 # Homarr (docs/41). The Docker tag is v-PREFIXED — a bare semver 404s.
 # https://github.com/homarr-labs/homarr/releases
-homarr_version: "v1.75.0"
+homarr_version: "v1.76.0"
 
 # Uptime Kuma (docs/45). BARE semver tag on Docker Hub (no "v"); the manifest
 # appends "-rootless", which is the same release built with USER node and is
@@ -470,22 +474,67 @@ proxmox_resource_pools:
   - platform        # k3s nodes, GitOps platform
   - apps-private    # Internal applications
 
-# Firewall IPSet special entries
+# Firewall IPSet special entries. Sets whose members are inventory hosts are
+# derived from each host's `firewall_ipsets`; the sets below carry addresses and
+# CIDRs that are not inventory hosts, and a key that no host references creates
+# the set outright (docs/11-firewall.md).
 firewall_ipset_special_entries:
   k3s_nodes:
     - ip: 192.168.0.161
       comment: k3s API VIP
+  # SERVICE scope, the counterpart to admin_lan: the client subnets allowed at
+  # user-facing app ports (Traefik 80/443, Home Assistant 8123, GitLab web,
+  # Nextcloud/Immich 443, Plex + HAOS discovery, SMB). Deliberately excludes
+  # IoT/Guest/Work — those reach only the ports named for them explicitly.
+  lan_clients:
+    - ip: 192.168.0.0/24
+      comment: homelab LAN
+    - ip: 10.0.20.0/24
+      comment: Home VLAN 20 (trusted personal devices)
+  # Resolver scope: every CLIENT VLAN uses the weisssrv resolvers, handed out by
+  # UniFi DHCP, so :53 has to admit subnets that must never reach an admin
+  # surface. Wider than lan_clients on purpose, and only ever referenced
+  # from :53.
+  #
+  # The Default/mgmt VLAN (10.0.1.0/24) is deliberately NOT a member: its DHCP
+  # hands out public resolvers to avoid a bootstrap loop (the resolvers are LXCs
+  # behind the gear on that VLAN), and no UniFi zone policy admits
+  # Internal -> homelab (terraform/unifi/networks.tf). Re-pointing a management
+  # device at AdGuard means adding the zone policy AND the entry here.
+  dns_clients:
+    - ip: 192.168.0.0/24
+      comment: homelab LAN
+    - ip: 10.0.20.0/24
+      comment: Home VLAN 20
+    - ip: 10.0.30.0/24
+      comment: IoT VLAN 30
+    - ip: 10.0.40.0/24
+      comment: Guest VLAN 40
+    - ip: 10.0.50.0/24
+      comment: Work VLAN 50
 
-# Admin sources for the management plane (:22, :8006, :6443) — the whole /24.
-# Accepted risk: the LAN is one flat, unsegmented L2 (VLANs for IoT/guest/
-# management are planned — docs/01), so this also covers IoT/guest devices.
-# Compensated by key-only SSH + fail2ban + Proxmox/k3s auth; narrow it to a
-# dedicated management subnet once vmbr0 VLAN-tagging lands (docs/16).
+# ADMIN scope: the management plane only (:22, :8006, :6443, :3389, :3000,
+# :22222). With VLAN segmentation the flat-LAN accepted risk is gone — client
+# devices live on the Home/IoT/Guest/Work VLANs and reach service ports through
+# the lan_clients set above, never this one. Members are the homelab LAN (cert
+# distribution, CI deploy sources, tailnet SNAT all originate there) plus the
+# 10.0.20.8/29 admin-device block on the Home VLAN, which UniFi DHCP reserves
+# for admin workstations (docs/46).
 # proxmox_firewall_admin_ts_cidrs keeps the role default (the full Tailscale
-# CGNAT range) — single-owner tailnet, and per-device pins risk DR lockout
-# (docs/05); proxmox_firewall_smb_client_cidrs defaults to this list.
+# CGNAT range) — single-owner tailnet, per-device pins risk DR lockout, and the
+# Tailscale ACL policy already enforces device/user granularity (docs/05).
 proxmox_firewall_admin_lan_cidrs:
   - 192.168.0.0/24
+  - 10.0.20.8/29
+
+# SMB clients, NOT inheriting admin_lan: file shares are a service surface, so
+# they follow the lan_clients membership, not the admin one. The role renders
+# the `smb_clients` IPSet from this variable rather than from
+# firewall_ipset_special_entries, so the list has to exist separately — but it
+# is DERIVED, not restated: two literal copies of one scope is how a Phase 2
+# renumber (or a new client VLAN) moves one and silently leaves the other,
+# breaking every SMB mount with nothing pointing at the cause.
+proxmox_firewall_smb_client_cidrs: "{{ firewall_ipset_special_entries.lan_clients | map(attribute='ip') | list }}"
 
 # The router forwards :51820/udp to the wg-easy MetalLB VIP. `-dest` scopes the
 # WAN rule to the VIP so it never opens a node's own :51820/udp (flannel
@@ -493,15 +542,34 @@ proxmox_firewall_admin_lan_cidrs:
 proxmox_firewall_wan_wireguard_vips:
   - 192.168.0.99
 
+# Source sets for the two rule groups the collection renders itself but the
+# site re-scopes: sg-dns's `:53` (tcp+udp) and the whole of
+# sg-k3s-ingress-int (`:80`/`:443`). Both default to [admin_ts, admin_lan] in
+# the role, so naming the client sets here is what lets a VLAN outside
+# admin_lan resolve or reach the internal Traefik VIP at all
+# (weisssrv.infra v0.13.0; docs/11-firewall.md § Client scopes).
+#
+# :53 takes dns_clients — UniFi DHCP hands the weisssrv resolvers to every
+# VLAN, including the ones with no other homelab access. The internal ingress
+# takes lan_clients — Home-VLAN devices only; IoT/Guest/Work reach nothing but
+# the ports named for them. admin_ts stays on both so the tailnet is unchanged.
+proxmox_firewall_dns_client_sources:
+  - admin_ts
+  - dns_clients
+
+proxmox_firewall_k3s_ingress_int_sources:
+  - admin_ts
+  - lan_clients
+
 # Resolver admin surfaces rendered into sg-dns ({port, sources[], comment?}).
 # The role default is the two admin sets only.
 #
-# Read the source lists as BOOKKEEPING, not a reachability boundary: admin_lan
-# is the whole flat /24 and every k3s node sits inside it (pod egress SNATs to
-# the node IP), so naming k3s_nodes admits nothing extra. They are spelled out
-# so that :443 documents its in-cluster callers, and :3000 — the plaintext admin
-# API carrying a reusable credential — closes to the cluster in one edit once
-# admin_lan is narrowed (VLAN segmentation, docs/16).
+# Both surfaces stay on the ADMIN sets after the VLAN split: :443 is the AdGuard
+# UI and :3000 its plaintext API carrying a reusable admin credential, so no
+# client VLAN reaches either — the client VLANs get :53 and nothing else, via
+# the dns_clients set above. Naming k3s_nodes on :443 admits nothing extra
+# (every node sits inside the homelab LAN and pod egress SNATs to the node IP);
+# it is spelled out so the in-cluster callers are documented.
 proxmox_firewall_dns_admin_ports:
   - port: 443
     sources: [k3s_nodes, admin_ts, admin_lan]
@@ -539,18 +607,24 @@ proxmox_firewall_metrics_scrape_ports:
 # application-shaped is site data and lives here. `rules` are raw cluster.fw
 # lines emitted verbatim, in order — pve-firewall is first-match-wins within a
 # group. Guests reference these by name via guest_security_groups (hosts.yml).
+#
+# Source-set convention after the VLAN split: a USER-facing port takes
+# +dc/lan_clients (homelab LAN + Home VLAN), an ADMIN port keeps +dc/admin_lan
+# (homelab LAN + the /29 admin block). lan_clients is a superset of admin_lan,
+# so a port that moved needs no second admin rule.
 proxmox_firewall_security_groups:
   - name: sg-gitlab
     rules:
       # GitLab web — Traefik connects to nginx on 443 with the distributed
-      # wildcard cert (gitlab_nginx_listen_https).
+      # wildcard cert (gitlab_nginx_listen_https); browsers reach it from any
+      # client VLAN in lan_clients.
       - "IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 443 -log nolog"
       - "IN ACCEPT -source +dc/admin_ts -p tcp -dport 443 -log nolog"
-      - "IN ACCEPT -source +dc/admin_lan -p tcp -dport 443 -log nolog"
-      # Port 80 — Omnibus nginx keeps it for the HTTP->HTTPS redirect. Admin
-      # sources only; Traefik goes straight to 443.
+      - "IN ACCEPT -source +dc/lan_clients -p tcp -dport 443 -log nolog"
+      # Port 80 — Omnibus nginx keeps it for the HTTP->HTTPS redirect, so it
+      # follows 443's sources; Traefik goes straight to 443.
       - "IN ACCEPT -source +dc/admin_ts -p tcp -dport 80 -log nolog"
-      - "IN ACCEPT -source +dc/admin_lan -p tcp -dport 80 -log nolog"
+      - "IN ACCEPT -source +dc/lan_clients -p tcp -dport 80 -log nolog"
       # Container Registry (5050) and Pages (pages_nginx TLS 8443), both routed
       # via Traefik.
       - "IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 5050 -log nolog"
@@ -559,7 +633,9 @@ proxmox_firewall_security_groups:
       # access. Protected by the gitlab-ssh fail2ban jail (5 failures = 1h ban);
       # auth failures land in the journal.
       - "IN ACCEPT -p tcp -dport 2222 -log nolog"
-      # Git-over-SSH on 22 for internal access.
+      # Git-over-SSH on 22 for internal access — ADMIN scope: pushes come from
+      # an admin device or the tailnet, and the CI/cert paths live in the
+      # homelab LAN. Mirrored at the sshd layer by gitlab_ssh_allowed_users.
       - "IN ACCEPT -source +dc/admin_ts -p tcp -dport 22 -log nolog"
       - "IN ACCEPT -source +dc/admin_lan -p tcp -dport 22 -log nolog"
       # postgres_exporter on the bundled Omnibus Postgres.
@@ -568,10 +644,11 @@ proxmox_firewall_security_groups:
   - name: sg-nextcloud
     rules:
       # Host nginx terminates 443 with the distributed wildcard cert; Traefik
-      # (k3s_nodes) proxies to it, admin sources allowed for direct debug.
+      # (k3s_nodes) proxies to it. Client VLANs (lan_clients) and the tailnet
+      # are allowed for direct access/debug.
       - "IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 443 -log nolog"
       - "IN ACCEPT -source +dc/admin_ts -p tcp -dport 443 -log nolog"
-      - "IN ACCEPT -source +dc/admin_lan -p tcp -dport 443 -log nolog"
+      - "IN ACCEPT -source +dc/lan_clients -p tcp -dport 443 -log nolog"
       # nextcloud-exporter (9205) + postgres_exporter (9187).
       - "IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 9205 -log nolog"
       - "IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 9187 -log nolog"
@@ -579,10 +656,11 @@ proxmox_firewall_security_groups:
   - name: sg-immich
     rules:
       # Host nginx terminates 443 with the distributed wildcard cert; Traefik
-      # connects with serversTransport vm-tls-wildcard.
+      # connects with serversTransport vm-tls-wildcard. Client VLANs
+      # (lan_clients) reach it directly for the mobile app on the LAN.
       - "IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 443 -log nolog"
       - "IN ACCEPT -source +dc/admin_ts -p tcp -dport 443 -log nolog"
-      - "IN ACCEPT -source +dc/admin_lan -p tcp -dport 443 -log nolog"
+      - "IN ACCEPT -source +dc/lan_clients -p tcp -dport 443 -log nolog"
       # Native immich-server telemetry: API 8081 + microservices 8082, plus
       # postgres_exporter 9187. k3s SNATs pod traffic to node IPs, so k3s_nodes
       # is the scrape source. (sg-metrics covers node_exporter :9101.)
@@ -600,11 +678,30 @@ proxmox_firewall_security_groups:
 
   - name: sg-haos
     rules:
-      - "IN ACCEPT -source +dc/admin_lan -p udp -dport 1900 -log nolog"
-      - "IN ACCEPT -source +dc/admin_lan -p udp -dport 5353 -log nolog"
+      # SSDP (1900) and mDNS (5353) discovery from the client VLANs in
+      # lan_clients. NOTE the layering: the UniFi zone firewall is the FIRST
+      # gate for anything arriving from another VLAN (terraform/unifi
+      # local.policies), so a rule here only ever sees traffic a zone policy
+      # already admitted.
+      - "IN ACCEPT -source +dc/lan_clients -p udp -dport 1900 -log nolog"
+      - "IN ACCEPT -source +dc/lan_clients -p udp -dport 5353 -log nolog"
+      # mDNS from the IoT VLAN. Kept inline (and NOT folded into lan_clients)
+      # because it is the one IoT->here flow that can arrive with a 10.0.30.x
+      # source: UniFi's mDNS repeater re-transmits the query on this interface
+      # with the ORIGINAL source address, not the gateway's. There is
+      # deliberately no 1900 counterpart — SSDP is link-local multicast that no
+      # UniFi feature reflects, so such a rule could never match (docs/46).
+      - "IN ACCEPT -source 10.0.30.0/24 -p udp -dport 5353 -log nolog"
+      # The web UI is a user-facing surface — phones and tablets live on the
+      # Home VLAN, so it follows lan_clients.
       - "IN ACCEPT -source +dc/admin_ts -p tcp -dport 8123 -log nolog"
-      - "IN ACCEPT -source +dc/admin_lan -p tcp -dport 8123 -log nolog"
-      # SSH add-on (22222)
+      - "IN ACCEPT -source +dc/lan_clients -p tcp -dport 8123 -log nolog"
+      # HA's device-INITIATED paths from IoT: a Cast speaker fetching the TTS
+      # proxy URL HA handed it, and integration webhooks posting back to HA's
+      # internal_url. Gated first by the `iot-to-homelab-ha` zone policy, which
+      # scopes it to this guest's address.
+      - "IN ACCEPT -source 10.0.30.0/24 -p tcp -dport 8123 -log nolog"
+      # SSH add-on (22222) — ADMIN scope.
       - "IN ACCEPT -source +dc/admin_ts -p tcp -dport 22222 -log nolog"
       - "IN ACCEPT -source +dc/admin_lan -p tcp -dport 22222 -log nolog"
       # ICMP from admin sources for ping/traceroute during triage; see
@@ -614,10 +711,19 @@ proxmox_firewall_security_groups:
 
   - name: sg-plex
     rules:
-      # DLNA/GDM discovery + companion ports stay LAN-only (no remote use case).
-      - "IN ACCEPT -source +dc/admin_lan -p tcp -dport 32469 -log nolog"
-      - "IN ACCEPT -source +dc/admin_lan -p udp -dport 32410:32414 -log nolog"
-      - "IN ACCEPT -source +dc/admin_lan -p udp -dport 1900 -log nolog"
+      # DLNA (32469), GDM (32410-32414) and SSDP (1900) discovery stay LAN-only
+      # (no remote use case), sourced from the client VLANs in lan_clients.
+      #
+      # The IoT VLAN is deliberately ABSENT from all three. GDM and SSDP are
+      # multicast, which does not route between VLANs at all, and unicast DLNA
+      # would be dropped by the UniFi zone firewall first — the only iot->homelab
+      # allowances are :53, Plex :32400 and HA :8123 (terraform/unifi
+      # local.policies). TVs on IoT still stream: :32400 is world-open below and
+      # the Plex client finds the server through plex.tv rather than by
+      # discovery.
+      - "IN ACCEPT -source +dc/lan_clients -p tcp -dport 32469 -log nolog"
+      - "IN ACCEPT -source +dc/lan_clients -p udp -dport 32410:32414 -log nolog"
+      - "IN ACCEPT -source +dc/lan_clients -p udp -dport 1900 -log nolog"
       # Media port 32400 — INTENTIONALLY open to the WAN for direct remote
       # streaming (the router forwards it here, docs/20 §4). Plex authenticates
       # every remote session against plex.tv before serving media, so this is an

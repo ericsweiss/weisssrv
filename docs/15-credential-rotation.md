@@ -83,6 +83,8 @@ re-run the consuming deploy (`task <area>:deploy`) for `op run` consumers, or
 | Tailscale Auth Key | auth key | `tailscale` role |
 | Tailscale OAuth | `client id`, `credential` (scopes `acl` + `dns`, write) | `terraform/tailscale` — tailnet ACL policy and the `esweiss.com` split-DNS nameservers |
 | Tailscale Operator OAuth | `client-id`, `client-secret` | ESO → `operator-oauth` for the Tailscale Kubernetes operator — see [detail](#tailscale-operator-oauth) |
+| UniFi Controller | `url` (gateway base URL), `api-key` (Control Plane integration key), `username` + `password` (local-only admin) | `terraform/unifi` via Taskfile and the `unifi-drift-plan` CI job — see [detail](#unifi-controller) |
+| WiFi TheRevengers, WiFi 3601-IoT, WiFi kugel-tikka-masala, WiFi 3601-Work | `password` (WPA-PSK, 8-63 chars) | `terraform/unifi` — one item per SSID, read as `TF_VAR_wlan_passphrase_*` — see [detail](#wifi-ssid-pre-shared-keys) |
 | DNS-01 SSH Key | private + public key | cert distribution to the DNS LXCs |
 | Plex Custom Certificate | password | `plex-cert-reload.sh` PKCS#12 passphrase — see [detail](#plex-custom-certificate) |
 
@@ -203,6 +205,43 @@ The PFX bundle passphrase `/usr/local/sbin/plex-cert-reload.sh` uses when
 converting the renewed PEM cert into the PKCS#12 form Plex requires. The same
 value must be configured under Plex Settings → Network → "Custom certificate
 encryption key".
+
+#### UniFi Controller
+
+The UCG-Fiber's own credentials. `api-key` is what Terraform authenticates with
+— a Control Plane → Integrations key belonging to a **local-access-only** admin
+with no 2FA, because the provider cannot satisfy an MFA prompt. `username` /
+`password` are that admin's console login: the break-glass path when the API
+key is revoked or the API is unreachable, never read by Terraform. `url` is the
+**production** gateway address (`https://192.168.0.1`); while the gateway is on
+a bench, override `TF_VAR_unifi_api_url` per invocation instead of editing the
+item (docs/46).
+
+Rotate: mint a replacement key in Control Plane → Integrations, update the
+field, revoke the old key, then verify with `task terraform:unifi-plan` (an
+empty plan proves the new key reads every object). **The local plan is the
+check that matters.** The key is also read by `unifi-drift-plan`, but that job
+carries a blanket `allow_failure: true` over `plan -detailed-exitcode`, so a
+renamed field (empty string → `unifi_api_key` length validation), a revoked key
+(401, no validation message at all) and genuine drift all render as the same
+yellow badge — see docs/46 § Expected breakage for the "must be green after the
+first apply" rule, and docs/16 for the follow-up that would make a broken plan
+red.
+
+#### WiFi SSID pre-shared keys
+
+One item per SSID (`WiFi TheRevengers`, `WiFi 3601-IoT`,
+`WiFi kugel-tikka-masala`, `WiFi 3601-Work`), each holding just `password` —
+the WPA-PSK `terraform/unifi` pushes to that WLAN. Separate items rather than
+one multi-field item because each is a separate `TF_VAR_wlan_passphrase_*`
+reference in the Taskfile anchor and the `unifi-drift-plan` job, and because
+the guest key is shared with visitors while the others are not.
+
+Rotate: update the field, then a supervised `task terraform:unifi-apply`. This
+is **disruptive by design** — every device on that VLAN drops off the moment the
+apply lands and has to be re-joined with the new key, which for the IoT SSID
+means re-onboarding each device. Rotate one SSID at a time, and never rotate
+`WiFi TheRevengers` remotely: the admin workstation is on it.
 
 #### Authentik Terraform Token
 

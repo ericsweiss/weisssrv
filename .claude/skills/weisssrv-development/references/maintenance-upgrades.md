@@ -56,8 +56,10 @@ Two more literals ride the same tag and are NOT in those two files: the
 `molecule-test:<tag>` fallbacks in the integration scenarios and
 `ansible/TESTING.md` (`scripts/check-molecule-image-pin.py --fix` rewrites them;
 CI overrides the image, so a stale one only breaks a local `molecule test`), and
-the three Terraform `?ref=` module pins, which are still bumped by hand. Both are
-gated by `scripts/test_site_configs.py`.
+the Terraform `?ref=` module pins — **one per root under `terraform/`** — which
+are still bumped by hand. Both are gated by `scripts/test_site_configs.py`,
+which discovers the roots rather than counting them, so a new root is covered
+the moment it lands.
 
 While the new tag does not exist yet, both the pinned galaxy install and
 `task ansible:lint` fail on it. Lint against the library checkout instead:

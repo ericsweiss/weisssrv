@@ -1783,8 +1783,10 @@ tasks:
           echo "ERROR: terraform:authentik-apply is a supervised operator step; run it from a terminal." >&2
           exit 2
         fi
+        # Unanchored — see terraform:unifi-apply for why the space-delimited
+        # form lets `-auto-approve=true` through.
         case " {{.CLI_ARGS}} " in
-          *" -auto-approve "*|*" --auto-approve "*)
+          *auto-approve*)
             echo "ERROR: -auto-approve is refused here; approve the plan interactively." >&2
             exit 2 ;;
         esac
@@ -1801,6 +1803,126 @@ tasks:
     preconditions: *tf_preconditions
     cmds:
       - op run -- ./import.sh
+
+  # --- UniFi network module (separate state name; SUPERVISED apply) ---
+  # Mirrors the tailscale/authentik terraform:* tasks but points at
+  # terraform/unifi, its own GitLab state name, and the UniFi controller API key
+  # plus the four SSID pre-shared keys (the 1Password items docs/46 has the
+  # operator create on the bench). This module owns the VLANs, the zone firewall
+  # and the WLANs: an unreviewed apply can take the whole house off the network
+  # and leave no path back to the controller, so read the plan before
+  # confirming. See terraform/unifi/README.md.
+  terraform:unifi-init:
+    desc: Initialize Terraform for the UniFi network module (GitLab state backend)
+    dir: "{{.TERRAFORM_DIR}}/unifi"
+    # Anchor shared by terraform:unifi-init/plan/apply — the controller
+    # credentials, the per-SSID passphrases and the unifi-specific HTTP state
+    # name in one place. Each SSID is its own variable because one TF_VAR cannot
+    # carry four separate op:// references; adding a WLAN adds a line here AND
+    # in the unifi-drift-plan job (terraform/unifi/README.md § Adding a VLAN).
+    # TF_VAR_unifi_api_url is the PRODUCTION gateway address — while the gateway
+    # is still on the bench, override it per invocation rather than editing the
+    # 1Password item (docs/46 § Bench pre-provisioning).
+    env: &tf_unifi_env
+      TF_VAR_unifi_api_url: op://Homelab/UniFi Controller/url
+      TF_VAR_unifi_api_key: op://Homelab/UniFi Controller/api-key
+      TF_VAR_wlan_passphrase_home: op://Homelab/WiFi TheRevengers/password
+      TF_VAR_wlan_passphrase_iot: op://Homelab/WiFi 3601-IoT/password
+      TF_VAR_wlan_passphrase_guest: op://Homelab/WiFi kugel-tikka-masala/password
+      TF_VAR_wlan_passphrase_work: op://Homelab/WiFi 3601-Work/password
+      TF_HTTP_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/unifi"
+      TF_HTTP_LOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/unifi/lock"
+      TF_HTTP_UNLOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/unifi/lock"
+      TF_HTTP_USERNAME: "terraform"
+      TF_HTTP_PASSWORD: "op://Homelab/GitLab Terraform State Token/credential"
+      TF_HTTP_LOCK_METHOD: "POST"
+      TF_HTTP_UNLOCK_METHOD: "DELETE"
+    preconditions: *tf_preconditions
+    cmds:
+      - op run -- terraform init {{.CLI_ARGS}}
+
+  terraform:unifi-plan:
+    desc: "Plan UniFi network changes (read-only diff vs the live controller: networks, zones, policies, WLANs)"
+    dir: "{{.TERRAFORM_DIR}}/unifi"
+    env: *tf_unifi_env
+    preconditions: *tf_preconditions
+    cmds:
+      - op run -- terraform plan {{.CLI_ARGS}}
+
+  terraform:unifi-apply:
+    desc: "SUPERVISED: apply UniFi network changes (VLANs/zones/firewall policies/WLANs) — review terraform:unifi-plan first"
+    dir: "{{.TERRAFORM_DIR}}/unifi"
+    env: *tf_unifi_env
+    preconditions: *tf_preconditions
+    cmds:
+      # Hard guard: this module owns every VLAN, the zone-based firewall and the
+      # SSIDs, so an unreviewed apply can sever routing to the controller itself
+      # (recovery is then physical). Interactive confirmation, and never
+      # -auto-approve (terraform's own prompt is the second gate). CI never runs
+      # this task — unifi-drift-plan plans and stops.
+      - |
+        set -eu
+        if [ ! -t 0 ]; then
+          echo "ERROR: terraform:unifi-apply is a supervised operator step; run it from a terminal." >&2
+          exit 2
+        fi
+        # Unanchored on purpose: Task shell-quotes each CLI arg before
+        # interpolation, so a space-delimited pattern misses the equally valid
+        # `-auto-approve=true` (it renders as '-auto-approve=true', quotes and
+        # all). Matches terraform:tailscale-apply.
+        case " {{.CLI_ARGS}} " in
+          *auto-approve*)
+            echo "ERROR: -auto-approve is refused here; approve the plan interactively." >&2
+            exit 2 ;;
+        esac
+        echo "About to apply terraform/unifi — this rewrites live VLANs, firewall zones/policies and WLANs."
+        printf 'Type "apply" to continue: '
+        read -r confirm
+        [ "$confirm" = "apply" ] || { echo "Aborted."; exit 1; }
+      - op run -- terraform apply {{.CLI_ARGS}}
+
+  terraform:unifi-import:
+    desc: "One-time/DR state bootstrap: terraform-import one pre-existing controller object (read-only against the API; writes only Terraform state) — usage: task terraform:unifi-import -- <address> <id>"
+    dir: "{{.TERRAFORM_DIR}}/unifi"
+    env: *tf_unifi_env
+    preconditions: *tf_preconditions
+    cmds:
+      # No import.sh counterpart to authentik's: that root imports a fixed
+      # inventory from imports.tf, while the UniFi ids are read off the live
+      # controller one object at a time, so the address and id arrive as
+      # CLI_ARGS. The ordered sequence — Default network first, then the rest —
+      # is terraform/unifi/README.md § Adopting the live site.
+      - |
+        if [ -z "{{.CLI_ARGS}}" ]; then
+          echo "Usage: task terraform:unifi-import -- <address> <id>"
+          echo "Example: task terraform:unifi-import -- 'module.network.unifi_network.this[\"default\"]' name=Default"
+          exit 1
+        fi
+      - op run -- terraform import {{.CLI_ARGS}}
+
+  terraform:unifi-state:
+    desc: "Run a `terraform state` subcommand against the UniFi state (state surgery / read-only state inspection) — usage: task terraform:unifi-state -- show <address>"
+    dir: "{{.TERRAFORM_DIR}}/unifi"
+    env: *tf_unifi_env
+    preconditions: *tf_preconditions
+    cmds:
+      # `state list/show/rm` never touch the controller, but they DO read the
+      # GitLab HTTP state backend, whose credentials live only in this env
+      # anchor — `terraform init` does not persist TF_HTTP_USERNAME/PASSWORD, so
+      # a bare `op run -- terraform state ...` answers 401. The `state`
+      # subcommand is HARDCODED below: a generic terraform passthrough would
+      # let `apply`/`destroy` run with these credentials and WITHOUT
+      # terraform:unifi-apply's supervised guard. `state rm` stops
+      # managing an object and leaves it live (terraform/unifi/README.md
+      # § Guardrails); `state show` is the only way to read a module-internal
+      # address (docs/46 zone probe).
+      - |
+        if [ -z "{{.CLI_ARGS}}" ]; then
+          echo "Usage: task terraform:unifi-state -- <state subcommand> [args]"
+          echo "Example: task terraform:unifi-state -- show 'module.network.data.unifi_firewall_zone.builtin[\"internal\"]'"
+          exit 1
+        fi
+      - op run -- terraform state {{.CLI_ARGS}}
 
   # --- Backblaze B2 offsite-backup bucket settings (raw API; SUPERVISED apply) ---
   # scripts/b2-bucket-drift.py is the codified bucket config (it replaced the
@@ -1841,7 +1963,7 @@ tasks:
     dir: "{{.TERRAFORM_DIR}}"
     cmds:
       # Run from terraform/ so -recursive covers every module (cloudflare +
-      # tailscale + authentik), matching the CI terraform-fmt job.
+      # tailscale + authentik + unifi), matching the CI terraform-fmt job.
       - terraform fmt -recursive
 
   terraform:fmt-check:

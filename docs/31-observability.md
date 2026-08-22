@@ -788,7 +788,7 @@ rule families; the `prometheus-config-lint` CI job runs them (docs/13).
 | CorosyncWedged / PmxcfsStale / CorosyncHealthCollectorStale | Proxmox cluster-stack health (textfile collector) | critical / warning |
 | ZFSPoolDeviceErrors / ZFSPoolDataErrors / ZFSPoolNotOnline / ZFSPoolScrubStale / ZFSPoolCollectorStale | zpool-health textfile collector (per-device read/write/cksum errors, data errors, pool state, scrub age, collector freshness) | warning-critical |
 | ZFSPoolSpaceWarning / ZFSPoolSpaceCritical | Pool allocated/size > 80% / > 90% (`zfs_pool_status_*` from the zpool-status **textfile collector**, so the five compute `local-ssd` pools are covered too — not the NAS-only `zfs_exporter`) | warning / critical |
-| EndpointDown | blackbox probe_success == 0 | warning |
+| EndpointDown | blackbox probe_success == 0 — the Windows RDP target and the three UniFi ICMP instances (`192.168.0.1`, `10.0.1.2`, `10.0.1.3`) are excluded; each has its own dedicated alert below | warning |
 | EndpointDownCritical | probe_success == 0 for the critical endpoints (auth/git/home .esweiss.com) | critical |
 | DNSResolutionDown | blackbox DNS probe failing against a resolver | critical |
 | DNSResolverProbeMissing | the .150/.160 DNS probe series is absent (probe config lost) | warning |
@@ -803,6 +803,8 @@ rule families; the `prometheus-config-lint` CI job runs them (docs/13).
 | ImmichDown | Immich scrape target down or absent | warning |
 | NextcloudDown | `nextcloud_up` == 0 or absent | warning |
 | WindowsRdpDown | Windows VM RDP (192.168.0.155:3389) unreachable while powered on | warning |
+| NetworkGearProbeFailed | ICMP blackbox probe for a UniFi device (gateway `192.168.0.1`, switch `10.0.1.2`, AP `10.0.1.3`) failing for 5m — docs/46 | warning |
+| NetworkGearProbeMissing | one of those three probe series is absent for 15m (target dropped from blackbox-exporter.yaml, or an address changed) | warning |
 
 #### Bare-metal / VM node_exporter (`homelab.host-exporter`)
 

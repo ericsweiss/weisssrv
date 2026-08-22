@@ -10,7 +10,7 @@ Complete GitOps repository for a Proxmox-based homelab using Ansible, Terraform,
 
 **Tech stack**: Proxmox VE + Debian 13 (trixie), Ansible (roles come from the
 `weisssrv.infra` collection in `eric/weisssrv-lib`), Terraform (Cloudflare,
-Tailscale, Authentik), k3s + Flux CD GitOps, External Secrets Operator with
+Tailscale, Authentik, UniFi), k3s + Flux CD GitOps, External Secrets Operator with
 1Password Connect, ZFS.
 
 ## Agents: start here
@@ -42,7 +42,8 @@ weisssrv/
 ├── terraform/
 │   ├── cloudflare/             # External DNS management
 │   ├── tailscale/              # Tailnet ACL policy-as-code
-│   └── authentik/              # Authentik SSO state as code (apps/providers/groups — docs/40)
+│   ├── authentik/              # Authentik SSO state as code (apps/providers/groups — docs/40)
+│   └── unifi/                  # UniFi VLANs, zone firewall, WLANs (supervised apply — docs/46)
 ├── kubernetes/                 # Flux-managed k8s state (GitOps source of truth)
 │   ├── clusters/weisssrv/      # Flux entrypoint (flux-system, infrastructure-{sources,crds,controllers,configs,observability}.yaml, infrastructure-metrics-server.yaml, apps.yaml, tenants/)
 │   ├── infrastructure/         # Platform — five sibling stages reconciled in dependsOn order (sources -> crds -> controllers -> configs, which fans out to observability and apps in parallel)
@@ -91,10 +92,11 @@ This repo consumes four things from the library, all pinned:
    allowed to differ. Fix a vendored file upstream
    and re-vendor; a local edit is reverted by the next re-vendor and reds the
    gate meanwhile.
-4. **Terraform modules** — all three roots (`terraform/cloudflare`,
-   `terraform/tailscale`, `terraform/authentik`) are thin callers of
-   `weisssrv-lib//terraform/modules/{cloudflare-zone,tailscale-acl,authentik-sso}`
-   at a `?ref=` pin, holding only site data. All three pin the same release
+4. **Terraform modules** — all four roots (`terraform/cloudflare`,
+   `terraform/tailscale`, `terraform/authentik`, `terraform/unifi`) are thin
+   callers of
+   `weisssrv-lib//terraform/modules/{cloudflare-zone,tailscale-acl,authentik-sso,unifi-network}`
+   at a `?ref=` pin, holding only site data. All four pin the same release
    as `WEISSSRV_LIB_REF`. Those `?ref=`
    pins are bumped **by hand** — `scripts/check-lib-pins.py` reads only the
    `include:` block and `ansible/requirements.yml` — but a missed one fails
@@ -372,10 +374,13 @@ Quick reference (full host-by-host topology in `docs/01-overview.md`):
 - K3s: API VIP `.161`; servers `.222`/`.223`/`.227`; agents `.202-.207`;
   MetalLB VIPs `.100` (public) / `.101` (internal) / `.99` (wg-easy endpoint).
 
-Firewall IP sets and security groups (`admin_lan`, `admin_ts`, `core-cluster`,
-`k3s_nodes`, `pve_hosts`, `nfs_clients`, `smb_clients`) are documented in
-`docs/11-firewall.md`; the rules are rendered by the collection's
-`proxmox_firewall` role from `hosts.yml` / `group_vars`.
+Firewall IP sets are three concentric client scopes (`admin_lan` ⊂
+`lan_clients` ⊂ `dns_clients` — admin ports, user-facing service ports,
+resolver `:53`) plus the membership sets derived from inventory (`admin_ts`,
+`core-cluster`, `k3s_nodes`, `pve_hosts`, `nfs_clients`, `smb_clients`).
+`docs/11-firewall.md` is the inventory of record for both those and the
+security groups; the rules are rendered by the collection's `proxmox_firewall`
+role from `hosts.yml` / `group_vars`.
 
 ## Ansible roles
 
@@ -398,7 +403,7 @@ old→new variable map.
    in the integration scenarios and `ansible/TESTING.md` — CI overrides the
    image, so only local runs read them), re-vendor the byte-identical scripts,
    then `ansible-galaxy install -r ansible/requirements.yml --force` and re-run
-   the gates. The three Terraform `?ref=` pins are still bumped by hand.
+   the gates. The four Terraform `?ref=` pins are still bumped by hand.
 3. Land the inventory changes a renamed/emptied variable requires **in the same
    MR** — the collection's variables are `| default(...)`-guarded, so a missed
    rename does not fail, it silently takes the role default.

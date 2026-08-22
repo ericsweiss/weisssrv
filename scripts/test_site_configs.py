@@ -591,7 +591,7 @@ def test_the_ansible_pin_matches_the_ci_variable():
 
 
 def test_terraform_module_refs_match_the_ci_variable():
-    """The three terraform roots pin `weisssrv-lib//terraform/modules/...` at a
+    """Every terraform root pins `weisssrv-lib//terraform/modules/...` at a
     `?ref=` that is coupled to the library release but written by hand —
     check-lib-pins.py reads only the include block and requirements.yml, so
     this is the gate for the one pin class it cannot see. A stale ref means a
@@ -602,7 +602,16 @@ def test_terraform_module_refs_match_the_ci_variable():
     lib_ref = (ci.get("variables") or {}).get("WEISSSRV_LIB_REF")
     assert lib_ref, "variables.WEISSSRV_LIB_REF is the library pin"
 
-    for root in ("authentik", "cloudflare", "tailscale"):
+    # Discovered, not enumerated: a fifth root added without touching this file
+    # would otherwise escape the only gate its `?ref=` pin has. The floor keeps
+    # the discovery from silently degrading to a no-op loop.
+    roots = sorted(p.parent.name for p in (REPO / "terraform").glob("*/main.tf"))
+    assert len(roots) >= 4, (
+        f"terraform root discovery found {roots} — expected at least the four "
+        "roots under terraform/; this gate must never run on an empty list."
+    )
+
+    for root in roots:
         body = (REPO / "terraform" / root / "main.tf").read_text()
         refs = re.findall(r"weisssrv-lib\.git//terraform/modules/[^?\"]+\?ref=([^\"\s]+)", body)
         assert refs, f"terraform/{root}/main.tf no longer pins a lib module ref"

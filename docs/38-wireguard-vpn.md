@@ -223,12 +223,18 @@ task wg-easy:status                          # pod Ready, svc EXTERNAL-IP 192.16
 kubectl get svc -n wg-easy wg-easy       # confirms the VIP was assigned
 ```
 
-### 5. Router — WAN port-forward (operator)
-On the Asus GT-AX11000 Pro (`192.168.0.1`):
-- Forward **WAN UDP 51820 → 192.168.0.99:51820**.
-- Ensure **192.168.0.99 is excluded from the DHCP pool** (it sits in the
-  `.1–99` workstation range). Set a DHCP reservation-exclusion or shrink the
-  pool so DHCP never hands out `.99`.
+### 5. Gateway — WAN port-forward (codified, nothing to do by hand)
+Both halves live in `terraform/unifi/` on the UCG-Fiber
+([docs/46](46-unifi-network.md)) and are applied with the rest of the network
+state:
+- `local.port_forwards.wg` forwards **WAN UDP 51820 → 192.168.0.99:51820**
+  (UDP, not TCP — the one forward in that map that overrides the default).
+- The Homelab VLAN's DHCP pool stops at `.98`, so `.99` can never be leased.
+
+Change either one in the controller UI and the next `unifi-drift-plan` flags it;
+change it in `terraform/unifi/networks.tf` and apply. Historically this was a
+hand-made rule on the Asus GT-AX11000 Pro at `192.168.0.1` — that router is
+retired by the UniFi cutover, and its UI is not where this lives any more.
 
 ### 6. Enable metrics (operator, one-time)
 Log into `https://vpn.esweiss.com` (Authentik → wg-easy admin login) →

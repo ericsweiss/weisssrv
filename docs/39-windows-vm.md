@@ -25,7 +25,7 @@ are manual, one-time, human steps documented below.
 | Resource pool | `apps-private` |
 | Autostart | **Auto-starts at boot**, last in the cohort (startup order 60). `onboot=0` is correct and required — its disks are on the encrypted `ssd` pool, so it is started by `pve-start-encrypted-guests` *after* the unlock, via `zfs_encryption_guest_vmids` (docs/32) |
 | Backups | vzdump (cluster-wide `all: true` job) → encrypted `tank/proxmox` |
-| Firewall | `sg-windows`: RDP 3389 from `admin_lan` (LAN /24) + `admin_ts` (tailnet) |
+| Firewall | `sg-windows`: RDP 3389 from `admin_lan` (the homelab `/24` + the `10.0.20.8/29` Home-VLAN admin block) + `admin_ts` (tailnet) |
 
 ## Where everything lives
 
@@ -225,15 +225,22 @@ NAS boot, which auto-starts it as described above.
 ## Access paths
 
 - **LAN**: RDP client → `windows.esweiss.com` (AdGuard rewrite → `192.168.0.155`)
-  → `:3389`. Allowed from the whole LAN /24 (`admin_lan`).
+  → `:3389`. Allowed from `admin_lan` — the whole homelab `/24` plus the
+  `10.0.20.8/29` admin block on the Home VLAN ([docs/11](11-firewall.md)
+  § Client scopes).
 - **Remote**: over Tailscale via a Proxmox subnet router — the tailnet CGNAT
   range (`admin_ts`, `100.64.0.0/10`) is allowed to 3389. No public/WAN
   exposure.
 
-> **Hardening note.** `admin_lan` is the entire `192.168.0.0/24`, so RDP accepts
-> from every LAN device (defense-in-depth gap, not direct compromise — NLA still
-> authenticates). Tightening 3389 to a dedicated admin IPSet is tracked in
-> [docs/16-next-steps.md](16-next-steps.md) (Network segmentation).
+> **Hardening note.** `admin_lan` is the homelab `192.168.0.0/24` plus the
+> `10.0.20.8/29` admin block, so RDP still accepts from every device on the
+> homelab segment (defense-in-depth gap, not direct compromise — NLA still
+> authenticates). No client-VLAN device outside that /29 reaches it at all:
+> IoT, Guest and Work are stopped by the gateway's inter-zone deny, and a Home
+> device outside the admin block is refused by `admin_lan` — that is what the
+> VLAN split bought. Getting the VM itself off the homelab segment is tracked in
+> [docs/16-next-steps.md](16-next-steps.md) § UniFi network follow-ups ("Move
+> the Windows VM (.155) to the Home VLAN").
 
 ## Observability
 

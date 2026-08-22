@@ -33,6 +33,39 @@ LAN Clients
 | dns-01 | 192.168.0.150 | Primary, runs acme.sh and sync |
 | dns-02 | 192.168.0.160 | Replica, synced from dns-01 |
 
+### Who gets handed these resolvers
+
+Both addresses are handed out as the DHCP DNS servers on every **client** UniFi
+VLAN — Homelab, Home, IoT, Guest and Work — together with the `esweiss.com`
+search domain, so split-horizon resolution behaves identically on all of them
+([docs/46-unifi-network.md](46-unifi-network.md) § Networks). Three consequences
+worth holding on to:
+
+- The resolvers are the one weisssrv service every client VLAN may reach. The
+  zone firewall allows `:53` from IoT/Guest/Work to the homelab zone and
+  nothing else, and the Proxmox firewall mirrors that with the `dns_clients`
+  ipset ([docs/11-firewall.md](11-firewall.md)). The admin surfaces (`:853`
+  DoT, `:3000` API, `:443` UI) stay on the admin sets — a guest device resolves
+  names and can do nothing else here. Those VLANs are also **blocked from
+  reaching any other resolver** on `:53`/`:853` — both an external one and the
+  gateway's own forwarder answering on each VLAN's `.1`, which would otherwise
+  reach the WAN DNS servers straight past AdGuard — so a device with a
+  hardcoded `8.8.8.8` gets the weisssrv resolvers or nothing (docs/46
+  § Zones and policies).
+- The **management VLAN does not use them either**, and neither does the
+  gateway. VLAN 1's DHCP hands out plain `1.1.1.1` / `9.9.9.9`, as does the
+  gateway's WAN DNS, deliberately: the switch, the AP and the gateway all sit
+  *above* the resolvers, which are LXCs behind them, so pointing them at
+  `.150`/`.160` is a bootstrap loop. Nothing on VLAN 1 needs split-horizon
+  answers — and because of that there is no `Internal → homelab :53` zone
+  policy at all, and `10.0.1.0/24` is deliberately **not** a member of the
+  `dns_clients` ipset. Re-pointing a management device at AdGuard would take
+  both edits: the zone policy and the ipset entry.
+- Guests resolving through AdGuard means visitors inherit the household
+  ad-blocking — the reason the guest `:53` allowance exists — and can
+  *enumerate* internal names from the rewrites. They cannot reach any of them;
+  the disclosure is accepted (docs/46).
+
 ## Unbound Configuration
 
 Unbound runs on localhost:5335 and is only accessible to AdGuard Home.
@@ -316,5 +349,6 @@ journalctl -u adguardhome-sync -f
 
 - [docs/01-overview.md](01-overview.md) — split-horizon DNS and topology
 - [docs/09-certs.md](09-certs.md) — DNS-01 certificate issuance
-- [docs/11-firewall.md](11-firewall.md) — `sg-dns` and the admin sources
+- [docs/11-firewall.md](11-firewall.md) — `sg-dns`, the admin sources and the `dns_clients` scope
+- [docs/46-unifi-network.md](46-unifi-network.md) — the per-VLAN DHCP settings that hand out these resolvers
 - [docs/12-runbooks.md](12-runbooks.md) — updating DNS records
