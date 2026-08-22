@@ -554,24 +554,24 @@ serving the house throughout.
    The other two PSKs are **chosen**, not generated (TheRevengers keeps the
    existing house PSK so devices roam over untouched; the guest PSK has to be
    readable aloud). A chosen secret must never be an argv element — it lands in
-   `~/.zsh_history` and is visible in `ps` for the duration of the call — so
-   create the item with a generated placeholder and replace the field from a
-   prompt:
+   `~/.zsh_history` and is visible in `ps` for the duration of the call, and a
+   `read -rs`-into-`op item edit "password=$psk"` pipeline only fixes the
+   history half: the expanded value is still an argument for the duration of
+   the edit. So create the item with a generated placeholder and **type the
+   real PSK into the 1Password app** (open the item → edit → `password`),
+   which never passes the value through a process argument at all:
 
    ```bash
    for item in "WiFi TheRevengers" "WiFi kugel-tikka-masala"; do
      op item create --category login --vault Homelab --title "$item" \
        --generate-password='letters,digits,32'
-     printf 'PSK for %s: ' "$item"; read -rs psk; echo
-     op item edit "$item" --vault Homelab "password=$psk"
    done
-   unset psk
+   # then replace each password field in the 1Password app
    ```
 
    The same rule applies to the `password=` and `api-key=` values in the
-   `UniFi Controller` item above: paste them at a `read -rs` prompt, or run the
-   command with a leading space if the shell is configured with
-   `HISTCONTROL=ignorespace` / `setopt histignorespace`.
+   `UniFi Controller` item above: fill both fields in the app after creating
+   the item skeleton.
 
    `url` is the **production** address (`https://192.168.0.1`). While the
    gateway is still on the bench, override it per invocation with
