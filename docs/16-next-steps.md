@@ -295,6 +295,18 @@ Design, runbook and the codified-vs-manual contract:
   switch port/native-VLAN management (#438/#430/#431 make
   `unifi_device.port_override` unsafe), and firewall-policy ordering (#407).
   `unifi_client` in-place updates (#428) are the day-to-day annoyance.
+- [ ] **A real identity boundary for admin devices.** The `10.0.20.8/29`
+  admin block is a DHCP-reservation convention on a shared VLAN — a Home
+  device that statically claims an address in it inherits the block's L3
+  trust (docs/46 § Accepted trust decisions). A dedicated admin SSID/VLAN
+  (own PSK at minimum, 802.1X if ever worth the ceremony) would turn it into
+  an authenticated boundary; cheap to add once the UniFi terraform root is
+  routine.
+- [ ] **Passphrase validation in the lib module** — `unifi-network` bounds
+  WLAN passphrases by character count; the WPA rule is 8–63 *printable ASCII
+  octets*. The weisssrv and cluster-template roots enforce the ASCII form on
+  their own variables; fold the same regex into the module's `wlans`
+  validation in the next lib release so every consumer gets it.
 - [ ] **UniFi metrics into Prometheus** (unpoller or equivalent). Today the
   gear is observed only by ICMP blackbox probes feeding
   `NetworkGearProbeFailed`; per-port throughput, PoE draw, AP client counts

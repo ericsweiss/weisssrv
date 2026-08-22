@@ -97,6 +97,22 @@ consequences worth naming so nobody re-derives them at 2 a.m.:
   path deliberately.
 - **The laptop dock, the HDHomeRun and the bedroom Hyperion Pi are Home
   devices** and are reserved as such (§ DHCP reservations).
+- **Any Home device can reach the gateway console's login page** at
+  `https://10.0.20.1` — the `*-to-gateway-mgmt` BLOCKs deliberately cover only
+  guest/IoT/work. Fencing Home *except* the `/29` admin block would need an
+  ALLOW-before-BLOCK pair on one zone-pair, i.e. rule ordering, which this
+  design refuses to depend on (the provider cannot manage it) — and blocking
+  all of Home would cut the admin station's break-glass path to the console
+  when Traefik (the `/29`-restricted `router.esweiss.com` route) is down. The
+  console's own authentication is the gate; the residual is a login page, not
+  access.
+- **The `/29` admin block is a DHCP-reservation boundary, not an
+  authenticated one.** A Home device that statically claims `10.0.20.10`
+  inherits the block's L3 trust (`admin_lan`, `lan-tailscale-strict`). Every
+  admin surface behind it still authenticates (SSH keys, Proxmox/AdGuard/
+  Connect logins), so this narrows exposure rather than granting access — but
+  a real identity boundary needs a dedicated admin SSID/VLAN, tracked in
+  [docs/16](16-next-steps.md) § UniFi network follow-ups.
 
 Bonding note: ports 1-6 stay **plain access ports**. The opt nodes run
 `active-backup`, not LACP, and `bond-all_slaves_active 0` is codified in

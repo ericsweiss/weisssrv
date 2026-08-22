@@ -60,8 +60,8 @@ variable "wlan_passphrase_home" {
   sensitive   = true
 
   validation {
-    condition     = length(var.wlan_passphrase_home) >= 8 && length(var.wlan_passphrase_home) <= 63
-    error_message = "wlan_passphrase_home must be 8-63 characters (WPA-PSK); check the op:// reference in the Taskfile and the unifi-drift-plan job."
+    condition     = can(regex("^[\\x20-\\x7e]{8,63}$", var.wlan_passphrase_home))
+    error_message = "wlan_passphrase_home must be 8-63 printable ASCII characters (WPA-PSK counts octets, and the passphrase charset is printable ASCII — a multibyte character would pass a character count while failing the 802.11 rule); check the op:// reference in the Taskfile and the unifi-drift-plan job."
   }
 }
 
@@ -71,8 +71,8 @@ variable "wlan_passphrase_iot" {
   sensitive   = true
 
   validation {
-    condition     = length(var.wlan_passphrase_iot) >= 8 && length(var.wlan_passphrase_iot) <= 63
-    error_message = "wlan_passphrase_iot must be 8-63 characters (WPA-PSK); check the op:// reference in the Taskfile and the unifi-drift-plan job."
+    condition     = can(regex("^[\\x20-\\x7e]{8,63}$", var.wlan_passphrase_iot))
+    error_message = "wlan_passphrase_iot must be 8-63 printable ASCII characters (WPA-PSK counts octets, and the passphrase charset is printable ASCII — a multibyte character would pass a character count while failing the 802.11 rule); check the op:// reference in the Taskfile and the unifi-drift-plan job."
   }
 }
 
@@ -82,8 +82,8 @@ variable "wlan_passphrase_guest" {
   sensitive   = true
 
   validation {
-    condition     = length(var.wlan_passphrase_guest) >= 8 && length(var.wlan_passphrase_guest) <= 63
-    error_message = "wlan_passphrase_guest must be 8-63 characters (WPA-PSK); check the op:// reference in the Taskfile and the unifi-drift-plan job."
+    condition     = can(regex("^[\\x20-\\x7e]{8,63}$", var.wlan_passphrase_guest))
+    error_message = "wlan_passphrase_guest must be 8-63 printable ASCII characters (WPA-PSK counts octets, and the passphrase charset is printable ASCII — a multibyte character would pass a character count while failing the 802.11 rule); check the op:// reference in the Taskfile and the unifi-drift-plan job."
   }
 }
 
@@ -93,7 +93,7 @@ variable "wlan_passphrase_work" {
   sensitive   = true
 
   validation {
-    condition     = length(var.wlan_passphrase_work) >= 8 && length(var.wlan_passphrase_work) <= 63
-    error_message = "wlan_passphrase_work must be 8-63 characters (WPA-PSK); check the op:// reference in the Taskfile and the unifi-drift-plan job."
+    condition     = can(regex("^[\\x20-\\x7e]{8,63}$", var.wlan_passphrase_work))
+    error_message = "wlan_passphrase_work must be 8-63 printable ASCII characters (WPA-PSK counts octets, and the passphrase charset is printable ASCII — a multibyte character would pass a character count while failing the 802.11 rule); check the op:// reference in the Taskfile and the unifi-drift-plan job."
   }
 }
