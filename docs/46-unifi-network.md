@@ -1627,7 +1627,10 @@ be undone.
 
 ```bash
 ip route replace default via 10.0.10.1
-ping -c1 1.1.1.1 && getent hosts deb.debian.org    # egress + resolution
+ping -c1 1.1.1.1        # IP egress only — DNS is NOT testable yet: both
+                        # resolvers still route upstream through the retired
+                        # gateway until 2.5, so a name lookup fails here even
+                        # when this route is correct. 2.5's gate covers names.
 ```
 
 This route is **volatile until step 6b**, which is where
@@ -1736,7 +1739,13 @@ re-associating the whole house is impractical, the alternative is to shorten
 supervised apply a day *before* the window and put it back afterwards — two
 extra applies, but no walking.
 
-**2.7 — Home Assistant (coordinated flip).** HAOS cannot hold two addresses, so
+**2.7 — Home Assistant (coordinated flip).** Precondition: **both** 2.9
+transition pushes (firewall AND NFS exports) are already deployed — 2.8
+required the firewall half, and this step needs the NFS half too, because the
+flipped HAOS sources its media mount from `10.0.10.154`, an address the
+pre-transition export ACL and host firewall deny (docs/24: HAOS is the one
+documented plaintext-NFS client, so the export ACL names it specifically).
+HAOS cannot hold two addresses, so
 it moves now, in one step, from its console (Proxmox → VM 154 → Console):
 
 ```
@@ -2089,10 +2098,18 @@ without bouncing a single agent, because it is inert until the agent's own next
 restart, by which point the new VIP is live.
 
 ```bash
-# etcd gate first (step 6 has the full command block) — 3 healthy members
-sudo -E etcdctl endpoint health --cluster --write-out=table
+# etcd gate first — ON A K3S SERVER over SSH, with step 6's full env (the
+# admin station has neither etcdctl nor the certs, and cannot reach the
+# embedded endpoint):
+#   ssh eric@10.0.10.222 && sudo -i
+#   export ETCDCTL_API=3 ETCDCTL_ENDPOINTS=https://127.0.0.1:2379
+#   export ETCDCTL_CACERT=/var/lib/rancher/k3s/server/tls/etcd/server-ca.crt
+#   export ETCDCTL_CERT=/var/lib/rancher/k3s/server/tls/etcd/server-client.crt
+#   export ETCDCTL_KEY=/var/lib/rancher/k3s/server/tls/etcd/server-client.key
+# then — 3 healthy members:
+etcdctl endpoint health --cluster --write-out=table
 
-# from the branch
+# from the branch, back on the admin station
 ansible-playbook -i ansible/inventories/prod/hosts.yml \
   ansible/playbooks/k3s-api-vip-transition.yml
 

@@ -60,17 +60,20 @@
       ansible.builtin.assert:
         that:
           - k3s_api_vip is defined
-          - >-
-            (k3s_api_vip | string)
-            is match('^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$')
+          # Exactly the two documented addresses, nothing else: this play
+          # exists for one window, and any other syntactically valid value
+          # (a typo like 10.0.10.16) would patch kube-vip, withdraw the
+          # working VIP, and time out waiting for an address nothing owns.
+          - k3s_api_vip | string in ['10.0.10.161', '192.168.0.161']
           - k3s_api_port is defined
           - (k3s_api_port | int) > 0
           - (k3s_api_port | int) <= 65535
         fail_msg: >-
-          k3s_api_vip and k3s_api_port must both be set — they come from
-          group_vars/k3s.yml, or from -e k3s_api_vip=<old VIP> when rolling
-          back. This play spells the VIP into live control-plane config; it must
-          never run against an empty value.
+          k3s_api_vip must be exactly 10.0.10.161 (the move, from
+          group_vars/k3s.yml) or 192.168.0.161 (-e rollback), and k3s_api_port
+          a valid port. This play spells the VIP into live control-plane
+          config; any other value withdraws the working VIP for an address
+          nothing owns.
         success_msg: "Moving the k3s API VIP to {{ k3s_api_vip }}:{{ k3s_api_port }}"
 
     # Fleet-wide invariant, before ANY edit: this play is a step-4 artifact and
