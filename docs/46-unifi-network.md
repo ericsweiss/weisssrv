@@ -1476,9 +1476,14 @@ the guest's *old* address:
 adding to it, and HAOS exposes no add-a-secondary form, so Home Assistant is the
 one guest that takes a coordinated flip instead of an overlap (docs/24).
 
-Verify before going further: from any host, ping every other host **and every
-guest** on **both** addresses. A machine that answers on only one is a machine
-you are about to lose.
+Verify before going further: from a **Proxmox host**, ping every other host
+**and every guest** on **both** addresses. A machine that answers on only one
+is a machine you are about to lose. The probe must force the **old** source
+address: the deployed firewall still admits only `192.168.0.0/24` sources until
+step 2.9, and a dual-addressed sender would otherwise pick its `10.0.10.x`
+source for new-subnet destinations — making every correctly configured guest
+read as `MISSING`. (Both subnets share the VLAN-10 wire during the overlap, so
+an old-source ping to a new-subnet destination is answered directly.)
 
 The list below is every statically addressed machine in VLAN 10 except `.154`
 (HAOS, which step 2.7 flips instead). Cross-check it against
@@ -1487,10 +1492,17 @@ inventory) rather than trusting this copy — an omission here is invisible unti
 the gateway has already moved.
 
 ```bash
+old_source=$(
+  ip -4 -o addr show vmbr0 |
+    awk '$4 ~ /^192[.]168[.]0[.]/ { split($4, a, "/"); print a[1]; exit }'
+)
+test -n "$old_source" || { echo "no old vmbr0 source address — run from a Proxmox host"; exit 1; }
+
 for n in 102 103 104 105 106 107 150 151 152 153 155 156 157 158 160 \
          202 203 204 205 206 207 222 223 227; do
   for net in 192.168.0 10.0.10; do
-    ping -c1 -W1 "$net.$n" >/dev/null 2>&1 || echo "MISSING $net.$n"
+    ping -I "$old_source" -c1 -W1 "$net.$n" >/dev/null 2>&1 ||
+      echo "MISSING $net.$n"
   done
 done
 ```

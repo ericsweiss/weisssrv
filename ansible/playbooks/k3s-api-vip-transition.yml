@@ -70,6 +70,20 @@
     # renders the whole before/after under --diff. Same reason the role sets it
     # on its own template task. A failure here therefore reports only the task
     # name; read the result back with the § step 4 verification command.
+    # Fail loud before the edit: `insertafter` on a missing anchor makes
+    # lineinfile APPEND at EOF, and a stray top-level list item breaks the YAML
+    # k3s reads at the very restart this play performs. The role's template
+    # always renders the anchor, but this play must not assume it.
+    - name: Verify the tls-san anchor exists
+      ansible.builtin.command:
+        argv:
+          - grep
+          - -qx
+          - "tls-san:"
+          - /etc/rancher/k3s/config.yaml
+      changed_when: false
+      no_log: true
+
     - name: Add the new API VIP to the apiserver SAN list
       ansible.builtin.lineinfile:
         path: /etc/rancher/k3s/config.yaml
@@ -89,6 +103,20 @@
         replace: 'server: "https://{{ k3s_api_vip }}:{{ k3s_api_port }}"'
       no_log: true
       register: k3s_vip_join_url
+
+    # Postcondition for the silent-no-op case: `replace` reports ok when its
+    # regex matches nothing, which on a server whose `server:` line is spelled
+    # differently would leave it joining the retired VIP after restart. Every
+    # server must now either be the initializer or name the new URL.
+    - name: Verify this server can start against the new API VIP
+      ansible.builtin.command:
+        argv:
+          - grep
+          - -Eq
+          - '^(cluster-init: true|server: "https://{{ k3s_api_vip }}:{{ k3s_api_port }}")$'
+          - /etc/rancher/k3s/config.yaml
+      changed_when: false
+      no_log: true
 
     - name: Check for the kube-vip static manifest
       ansible.builtin.stat:
