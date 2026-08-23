@@ -1597,7 +1597,19 @@ task terraform:unifi-plan          # no override now — expect "No changes."
 
 An empty diff is the convergence gate for the whole of step 2: it proves both
 that the apply took and that the stored `url` reaches a controller that answers.
-A non-empty diff is the real signal — read it before doing anything else. A plan
+A non-empty diff is the real signal — read it before doing anything else. If it
+is exactly a **remainder of 2.3's own change set** (the apply died mid-run, so
+some of its resources — typically the port forwards — never landed), finish the
+job against the new address and re-gate:
+
+```bash
+task terraform:unifi-apply          # supervised; plan section must be the 2.3 remainder only
+task terraform:unifi-plan           # re-gate — repeat until "No changes."
+```
+
+Leaving that remainder unapplied is not an option: it is the WAN forwards still
+pointing at the old subnet. Anything in the diff **outside** 2.3's expected
+change set is a stop-and-investigate, not an apply. A plan
 that cannot connect at all means the gateway did not flip, and 2.4 onwards would
 be repairing routes towards an address that is not there.
 
@@ -1608,13 +1620,18 @@ answers on, then put the 1Password `url` back to match. Step 1 is untouched
 either way: the hosts keep both addresses, so nothing below the gateway has to
 be undone.
 
-**2.4 — host default routes.** On each Proxmox host (the permanent edit is step
-3):
+**2.4 — host default routes.** On each Proxmox host:
 
 ```bash
 ip route replace default via 10.0.10.1
 ping -c1 1.1.1.1 && getent hosts deb.debian.org    # egress + resolution
 ```
+
+This route is **volatile until step 6b**, which is where
+`/etc/network/interfaces` finally drops the old addresses and gains the new
+`gateway` line — a host that reboots before then comes back with the retired
+`192.168.0.1` gateway and no off-subnet reach, and this command is the repair
+(from the console, or from a neighbour over the still-shared L2).
 
 **2.5 — guest default routes, resolvers first.** Every guest still carries
 `gateway 192.168.0.1`, which no longer exists. Repair them here, not in step 5:

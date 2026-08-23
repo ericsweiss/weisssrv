@@ -195,6 +195,22 @@
         -o 'jsonpath={.status.addresses[?(@.type=="InternalIP")].address}'
       register: k3s_node_ip_before
       changed_when: false
+      until: k3s_node_ip_before.stdout | length > 0
+      retries: 6
+      delay: 10
+
+    # jsonpath exits 0 with empty output when the address is missing, and the
+    # pins below would then write node-ip: "" — a server that cannot start.
+    # One valid IPv4, exactly, before anything is written.
+    - name: Assert the recorded InternalIP is a single valid address
+      ansible.builtin.assert:
+        that:
+          - k3s_node_ip_before.stdout is match('^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$')
+        fail_msg: >-
+          {{ inventory_hostname }} reported InternalIP
+          '{{ k3s_node_ip_before.stdout }}' — not one valid IPv4 address.
+          Nothing was written; investigate the node object before re-running.
+        success_msg: "InternalIP recorded: {{ k3s_node_ip_before.stdout }}"
 
     # Pin the address identity BEFORE the restart rather than only asserting it
     # after: on a dual-addressed host, which address k3s re-detects at start is
