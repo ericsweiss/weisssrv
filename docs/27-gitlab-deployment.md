@@ -742,13 +742,13 @@ AdGuard rewrite points that name at the Traefik VIP, where nothing listens on 22
 the LAN, use the split config above (`gitlab.esweiss.com`, port 22, straight to the VM).
 External access on 2222 is unaffected.
 
-**Why port 2222 for internal too?** `git.esweiss.com` resolves to the internal
-Traefik VIP (192.168.0.101), not to the VM — the VM's own name is
-`gitlab.esweiss.com` (192.168.0.153). Using `git.ericsweiss.com:2222` everywhere
-keeps the config consistent across networks.
-The iptables PREROUTING rule on the GitLab VM redirects port 2222 to port 22 regardless of
-source. If you prefer lower latency on LAN, use the split config shown above (port 22 for
-`git.esweiss.com`, port 2222 for `git.ericsweiss.com`).
+**Why did the universal config use port 2222 internally?** `git.esweiss.com`
+resolves to the internal Traefik VIP (192.168.0.101), which serves HTTPS only —
+no SSH listener on any port — so SSH always had to reach the VM another way: the
+VM's own name is `gitlab.esweiss.com` (192.168.0.153), and the external path
+rode hairpin NAT. With hairpin gone, the split config is the only working LAN
+path. The iptables PREROUTING rule on the GitLab VM still redirects port 2222 to
+port 22 regardless of source, so external clients on 2222 are unaffected.
 
 ### Recommended: HTTPS for Consistency
 

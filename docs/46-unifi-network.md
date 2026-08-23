@@ -506,7 +506,7 @@ Phase 1 touches the repo in four places; each is documented where it lives.
   `admin_lan` shrinks to true admin surfaces and gains the `10.0.20.8/29`
   admin-device block; new `lan_clients` and `dns_clients` ipsets carry the
   service and resolver scopes. The two rule groups the collection renders
-  itself follow via role variables (`weisssrv.infra` v0.13.0):
+  itself follow via role variables (`weisssrv.infra` v0.13.0+):
   `proxmox_firewall_dns_client_sources` puts `sg-dns`'s `:53` on
   `dns_clients`, and `proxmox_firewall_k3s_ingress_int_sources` puts
   `sg-k3s-ingress-int` on `lan_clients`, so every VLAN can resolve and Home
@@ -568,14 +568,15 @@ different expected-yellow with a different end date.
   `terraform plan -detailed-exitcode` and carries `allow_failure: true`, so
   anything non-zero renders as one yellow badge. Its *original* causes are gone
   — the `UniFi Controller` vault item exists, and the gateway is reachable at
-  `https://192.168.0.1`. It is yellow now because the root is pinned to module
-  v0.13.0, whose `setting_preference` default makes the plan show a standing
-  diff on the six networks' DHCP fields (§ Cutover as executed). That diff is
-  cosmetic **and enumerable**: if the plan proposes anything beyond those
-  fields, it is real drift.
+  `https://192.168.0.1`. While the root was pinned to module v0.13.0, the
+  `setting_preference` provider default made the plan show a standing diff on
+  the six networks' DHCP fields (§ Cutover as executed) — cosmetic **and
+  enumerable**. The pin is now v0.13.1, so what remains of that diff is the
+  one-time in-place `setting_preference` update per network plus the pending
+  reservations, all consumed by the first supervised apply.
 
-  **The bump to v0.13.1 retires this entry.** After it lands and the first
-  supervised apply runs, the next scheduled `unifi-drift-plan` must go green,
+  **That apply retires this entry.** After it runs,
+  the next scheduled `unifi-drift-plan` must go green,
   and a yellow after that is real drift or a broken credential — investigated,
   not ignored. (Narrowing the allowance to `exit_codes: 2`, so a broken plan is
   red and only drift is yellow, is a lib-wide follow-up for all three drift
@@ -1020,11 +1021,14 @@ It looks like the apply silently ignored half its own configuration. Repaired by
 alongside the DNS, domain and IGMP values, which held. The module sets it
 explicitly from v0.13.1:
 
-> **Terraform applies on this root are FROZEN until the `?ref=` pin in `main.tf`
-> reaches v0.13.1.** Until then any apply re-strips those fields. The scheduled
-> `unifi-drift-plan` shows a known cosmetic diff meanwhile — that specific diff
-> is the exception to the "a yellow after the first apply is real drift" rule in
-> § Expected breakage, and the exception dies with the pin bump.
+> **The freeze this caused is over: the `?ref=` pin in `main.tf` is v0.13.1.**
+> An apply at the old pin re-stripped those fields on every write, so applies
+> were frozen between the cutover and the pin bump, with `unifi-drift-plan`
+> showing the known cosmetic diff as the one allowed exception to the "a
+> yellow after the first apply is real drift" rule in § Expected breakage.
+> The exception dies with the first supervised apply at this pin
+> (`terraform/unifi/README.md` has the exact expected plan and the
+> `-replace` it needs).
 
 **`allow_existing` does not cover a client the controller has never seen.**
 Three `unifi_client` entries failed with `not found: type=`, because
@@ -1094,10 +1098,14 @@ sanctioned state. Status as of 2026-08-22:
 - [x] **The two mgmt reservations are filled in** (`10.0.1.2`, `10.0.1.3`, MACs
   read at adoption). Also pending the apply — both devices hold ordinary pool
   leases today, which is why `NetworkGearProbeFailed` is still red for them.
-- [ ] **Bump the module pin to v0.13.1 and run the first clean supervised
-  apply.** This is the gate every remaining item sits behind: applies are frozen
-  at v0.13.0 because a network write re-strips the manual DHCP fields
-  (§ Cutover as executed). The apply lands the three reservations above and
+- [x] **The module pin is bumped to v0.13.1** (rode the post-cutover MR with
+  the full atomic pin set), closing the `setting_preference` re-strip that froze
+  applies at v0.13.0 (§ Cutover as executed).
+- [ ] **Run the first clean supervised apply.** This is the gate every
+  remaining item sits behind. The expected plan is exactly: one in-place
+  `setting_preference` update per network plus the twelve new reservations
+  (§ DHCP reservations), with the `eric-bedroom-hyperion` network move needing
+  `-replace` (upstream #428; command in `terraform/unifi/README.md`). The apply
   converges the plan to no-changes.
 - [ ] **Expire the `NetworkGearProbeFailed` silence** (set to 2026-08-29) rather
   than renewing it, and confirm all three probes are green (validation row 18).

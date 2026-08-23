@@ -17,19 +17,25 @@ networks, zones, policies, client reservations and port forwards), the `wlans`
 map in `main.tf` (which has to name the passphrase variables), and the
 credential variables.
 
-## ⚠️ Apply is FROZEN at module v0.13.0
+## ⚠️ The first v0.13.1 apply is the unfreeze step
 
-While `main.tf` pins `?ref=v0.13.0`, **do not apply this root**. That module
-version leaves `setting_preference` at the provider default `auto`, and the
-controller then resets the manual DHCP fields (`dns_enabled`, `domain_name`) on
-every network it writes — including the ones the same request is setting. The
-live values were repaired by hand through the API after the cutover, and an
-apply would strip them again (docs/46 § Cutover as executed).
+`main.tf` pins v0.13.1, which sets `setting_preference = "manual"` explicitly —
+network writes no longer reset the manual DHCP fields (`dns_enabled`,
+`domain_name`), which is what froze applies at v0.13.0 after the cutover
+(docs/46 § Cutover as executed; the live values were repaired by hand through
+the API and an apply at the old pin would have stripped them again).
 
-The freeze lifts when the pin reaches v0.13.1, which sets `setting_preference`
-explicitly. Until then `task terraform:unifi-plan` shows a standing diff on the
-six networks' DHCP fields; that diff is expected and **enumerable**, so a plan
-proposing anything beyond those fields is real drift.
+The first plan at this pin must show exactly: one in-place
+`setting_preference` update per network, plus the new client reservations.
+Because `eric-bedroom-hyperion` moves networks and upstream #428 breaks
+in-place `unifi_client` updates, that apply runs with:
+
+```bash
+task terraform:unifi-apply -- -replace='module.network.unifi_client.this["eric-bedroom-hyperion"]'
+```
+
+Anything in the plan beyond those changes is real drift. After this apply the
+next plan must be "No changes" — that convergence closes the cutover.
 
 ## ⚠️ Apply is a supervised step
 
