@@ -735,10 +735,12 @@ Host git.esweiss.com
     User git
 ```
 
-**Note:** This universal config requires hairpin NAT (NAT reflection) on your router. If
-your router doesn't support hairpin NAT, LAN clients won't be able to reach
-`git.ericsweiss.com` via the external IP. In that case, use the split internal/external
-configs shown above instead.
+**Note:** This universal config requires hairpin NAT (NAT reflection) on your router —
+**which the UniFi gateway does not provide** ([docs/46](46-unifi-network.md)): since the
+2026-08 cutover, LAN clients cannot reach `git.ericsweiss.com`'s external IP, and the
+AdGuard rewrite points that name at the Traefik VIP, where nothing listens on 2222. From
+the LAN, use the split config above (`gitlab.esweiss.com`, port 22, straight to the VM).
+External access on 2222 is unaffected.
 
 **Why port 2222 for internal too?** `git.esweiss.com` resolves to the internal
 Traefik VIP (192.168.0.101), not to the VM — the VM's own name is
