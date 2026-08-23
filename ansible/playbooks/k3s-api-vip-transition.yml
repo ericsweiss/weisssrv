@@ -147,77 +147,117 @@
         path: /var/lib/rancher/k3s/server/manifests/kube-vip.yaml
       register: k3s_kube_vip_manifest
 
-    # The `address` env of the role's templates/kube-vip-manifest.yaml.j2 — the
-    # only place k3s_api_vip appears in that file. Patched in place rather than
-    # re-templated from a site copy, so this play cannot drift from the role's
-    # manifest; k3s's manifest watcher re-applies the DaemonSet on write, and
-    # step 6's role run re-renders the same value. The role writes the manifest
-    # on the first server only, so stat is the ground truth, not the flag.
-    - name: Point the kube-vip DaemonSet at the new API VIP
-      ansible.builtin.replace:
-        path: /var/lib/rancher/k3s/server/manifests/kube-vip.yaml
-        regexp: '(^[ \t]*- name: address\n[ \t]*value: ")[^"]*(")'
-        replace: '\g<1>{{ k3s_api_vip }}\g<2>'
-      when: k3s_kube_vip_manifest.stat.exists
-
-    # `replace` succeeds silently on a regex miss, and the endpoint gate below
-    # can pass on a VIP made live by a partial or manual patch while the
-    # PERSISTED manifest still names the old address — which a later manifest
-    # reconcile would then restore. The file itself is the proof.
-    - name: Verify the persisted manifest names the new VIP
-      ansible.builtin.command:
-        argv:
-          - grep
-          - -Fq
-          - 'value: "{{ k3s_api_vip }}"'
-          - /var/lib/rancher/k3s/server/manifests/kube-vip.yaml
+    # Record the manifest's current address, then patch inside a rescue-guarded
+    # block: if the new VIP never answers, the failure mode without a restore is
+    # kube-vip persistently announcing an unready address with the old VIP
+    # already withdrawn — a guarded failure turned into a control-plane outage.
+    # The rescue writes the recorded address back (the manifest watcher
+    # re-applies it, re-announcing the old VIP) and then fails loud.
+    - name: Record the manifest's current VIP address
+      ansible.builtin.shell: |
+        set -o pipefail
+        grep -A1 -E '^[ \t]*- name: address' /var/lib/rancher/k3s/server/manifests/kube-vip.yaml \
+          | grep -Po '(?<=value: ")[^"]*'
+      args:
+        executable: /bin/bash
+      register: k3s_kube_vip_prev
       changed_when: false
       when: k3s_kube_vip_manifest.stat.exists
 
-    # Without this the play reports green having moved nothing: the DaemonSet is
-    # rendered on one server, and if that server is out of the batch the VIP
-    # never moves while every config below already names it.
-    - name: Assert some server carries the kube-vip manifest
-      vars:
-        _kube_vip_carriers: >-
-          {{ ansible_play_hosts
-             | map('extract', hostvars, ['k3s_kube_vip_manifest', 'stat', 'exists'])
-             | select | list }}
-      ansible.builtin.assert:
-        that:
-          - _kube_vip_carriers | length > 0
-        fail_msg: >-
-          None of {{ ansible_play_hosts | join(', ') }} carries
-          /var/lib/rancher/k3s/server/manifests/kube-vip.yaml, so the API VIP
-          was NOT moved. Find the server that holds it (the role renders it on
-          k3s_is_first_server) and include that host in the run.
-        success_msg: "kube-vip manifest patched on {{ _kube_vip_carriers | length }} server(s)"
-      run_once: true
+    - name: Patch kube-vip and prove the new VIP answers, restoring on failure
+      block:
+        # The `address` env of the role's templates/kube-vip-manifest.yaml.j2 — the
+        # only place k3s_api_vip appears in that file. Patched in place rather than
+        # re-templated from a site copy, so this play cannot drift from the role's
+        # manifest; k3s's manifest watcher re-applies the DaemonSet on write, and
+        # step 6's role run re-renders the same value. The role writes the manifest
+        # on the first server only, so stat is the ground truth, not the flag.
+        - name: Point the kube-vip DaemonSet at the new API VIP
+          ansible.builtin.replace:
+            path: /var/lib/rancher/k3s/server/manifests/kube-vip.yaml
+            regexp: '(^[ \t]*- name: address\n[ \t]*value: ")[^"]*(")'
+            replace: '\g<1>{{ k3s_api_vip }}\g<2>'
+          when: k3s_kube_vip_manifest.stat.exists
 
-    # Gate before any join-URL edit or restart, deliberately: a server whose
-    # config already names a VIP that does not answer yet will not come back if
-    # restarted, so the endpoint is proven healthy BEFORE any config points at
-    # it. If the DaemonSet rollout fails, this times out with every server still
-    # running on its old configuration AND still joining through the old VIP —
-    # the fully recoverable outcome. The probe is /readyz over the VIP, not a
-    # bare TCP check, so a half-started or unrelated listener cannot pass it;
-    # curl -k because the serving cert does not carry the new VIP SAN until the
-    # restarts below (default RBAC grants /readyz to unauthenticated, so no
-    # credential rides the unverified channel).
-    - name: Wait for the Kubernetes API to answer ready on the new VIP
-      ansible.builtin.command:
-        argv:
-          - curl
-          - -ks
-          - --max-time
-          - "5"
-          - "https://{{ k3s_api_vip }}:{{ k3s_api_port }}/readyz"
-      register: k3s_new_vip_ready
-      changed_when: false
-      until: k3s_new_vip_ready.stdout == 'ok'
-      retries: 36
-      delay: 5
-      run_once: true
+        # `replace` succeeds silently on a regex miss, and the endpoint gate below
+        # can pass on a VIP made live by a partial or manual patch while the
+        # PERSISTED manifest still names the old address — which a later manifest
+        # reconcile would then restore. The file itself is the proof.
+        - name: Verify the persisted manifest names the new VIP
+          ansible.builtin.command:
+            argv:
+              - grep
+              - -Fq
+              - 'value: "{{ k3s_api_vip }}"'
+              - /var/lib/rancher/k3s/server/manifests/kube-vip.yaml
+          changed_when: false
+          when: k3s_kube_vip_manifest.stat.exists
+
+        # Without this the play reports green having moved nothing: the DaemonSet is
+        # rendered on one server, and if that server is out of the batch the VIP
+        # never moves while every config below already names it.
+        - name: Assert some server carries the kube-vip manifest
+          vars:
+            _kube_vip_carriers: >-
+              {{ ansible_play_hosts
+                 | map('extract', hostvars, ['k3s_kube_vip_manifest', 'stat', 'exists'])
+                 | select | list }}
+          ansible.builtin.assert:
+            that:
+              - _kube_vip_carriers | length > 0
+            fail_msg: >-
+              None of {{ ansible_play_hosts | join(', ') }} carries
+              /var/lib/rancher/k3s/server/manifests/kube-vip.yaml, so the API VIP
+              was NOT moved. Find the server that holds it (the role renders it on
+              k3s_is_first_server) and include that host in the run.
+            success_msg: "kube-vip manifest patched on {{ _kube_vip_carriers | length }} server(s)"
+          run_once: true
+
+        # Gate before any join-URL edit or restart, deliberately: a server whose
+        # config already names a VIP that does not answer yet will not come back if
+        # restarted, so the endpoint is proven healthy BEFORE any config points at
+        # it. If the DaemonSet rollout fails, this times out with every server still
+        # running on its old configuration AND still joining through the old VIP —
+        # the fully recoverable outcome. The probe is /readyz over the VIP, not a
+        # bare TCP check, so a half-started or unrelated listener cannot pass it;
+        # curl -k because the serving cert does not carry the new VIP SAN until the
+        # restarts below (default RBAC grants /readyz to unauthenticated, so no
+        # credential rides the unverified channel).
+        - name: Wait for the Kubernetes API to answer ready on the new VIP
+          ansible.builtin.command:
+            argv:
+              - curl
+              - -ks
+              - --max-time
+              - "5"
+              - "https://{{ k3s_api_vip }}:{{ k3s_api_port }}/readyz"
+          register: k3s_new_vip_ready
+          changed_when: false
+          until: k3s_new_vip_ready.stdout == 'ok'
+          retries: 36
+          delay: 5
+          run_once: true
+      rescue:
+        - name: Restore the manifest's previous VIP address
+          ansible.builtin.replace:
+            path: /var/lib/rancher/k3s/server/manifests/kube-vip.yaml
+            regexp: '(^[ \t]*- name: address\n[ \t]*value: ")[^"]*(")'
+            replace: '\g<1>{{ k3s_kube_vip_prev.stdout | trim }}\g<2>'
+          when:
+            - k3s_kube_vip_manifest.stat.exists
+            - k3s_kube_vip_prev.stdout is defined
+            - (k3s_kube_vip_prev.stdout | trim) | length > 0
+
+        - name: Abort — the new VIP never became ready
+          ansible.builtin.fail:
+            msg: >-
+              The kube-vip rollout did not answer /readyz on
+              {{ k3s_api_vip }}:{{ k3s_api_port }}. The manifest has been
+              restored to its previous address, so the old VIP re-announces
+              and every server still runs and joins through its old
+              configuration — the recoverable outcome. No join URL or restart
+              was touched. Investigate the DaemonSet before re-running.
+          run_once: true
 
     # `replace` never appends, so this is a no-op on the server that renders
     # `cluster-init: true` and no server: line — without a k3s_is_first_server
