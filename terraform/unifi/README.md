@@ -25,11 +25,18 @@ network writes no longer reset the manual DHCP fields (`dns_enabled`,
 (docs/46 § Cutover as executed; the live values were repaired by hand through
 the API and an apply at the old pin would have stripped them again).
 
-The first plan at this pin must show exactly: one in-place
-`setting_preference` update per network, thirteen new reservation creates, and
-one replacement.
-Because `eric-bedroom-hyperion` moves networks and upstream #428 breaks
-in-place `unifi_client` updates, that apply runs with:
+Run the first plan at this pin with the replacement flag already on it, so the
+plan being reviewed is the plan the apply will execute:
+
+```bash
+task terraform:unifi-plan -- -replace='module.network.unifi_client.this["eric-bedroom-hyperion"]'
+```
+
+It must show exactly: one in-place `setting_preference` update per network,
+thirteen new reservation creates, and the replacement of
+`eric-bedroom-hyperion` (it moves networks, and upstream #428 breaks in-place
+`unifi_client` updates — a plan without the flag would show the in-place
+update that fails). Then apply with the same flag:
 
 ```bash
 task terraform:unifi-apply -- -replace='module.network.unifi_client.this["eric-bedroom-hyperion"]'
