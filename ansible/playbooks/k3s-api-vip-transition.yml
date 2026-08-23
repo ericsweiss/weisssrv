@@ -384,6 +384,31 @@
         node/{{ inventory_hostname }} --timeout=300s
       changed_when: false
 
+    # Node Ready still does not prove the LOCAL embedded-etcd member rejoined:
+    # the apiserver answers through the other members while this one is absent,
+    # and restarting the next server on that evidence is how a rolling restart
+    # loses quorum. Ask this member's own health endpoint, with k3s's certs —
+    # no etcdctl needed.
+    - name: Wait for this server's local etcd member to report healthy
+      ansible.builtin.command:
+        argv:
+          - curl
+          - -sk
+          - --max-time
+          - "5"
+          - --cacert
+          - /var/lib/rancher/k3s/server/tls/etcd/server-ca.crt
+          - --cert
+          - /var/lib/rancher/k3s/server/tls/etcd/server-client.crt
+          - --key
+          - /var/lib/rancher/k3s/server/tls/etcd/server-client.key
+          - https://127.0.0.1:2379/health
+      register: k3s_local_etcd_health
+      changed_when: false
+      until: k3s_local_etcd_health.stdout is search('"health"\\s*:\\s*"true"')
+      retries: 30
+      delay: 10
+
     - name: Read this node's InternalIP after the restart
       ansible.builtin.command: >-
         k3s kubectl get node {{ inventory_hostname }}
