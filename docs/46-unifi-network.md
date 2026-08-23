@@ -2208,13 +2208,23 @@ than waiting for the hosts' own step: `task infra:deploy -- --tags base` writes
 host.
 
 **dns-01 and dns-02 come first** — everything downstream resolves through them.
-`task dns:deploy` re-runs here, but **hold the cert distribution until the END
-of this step**: the push now originates from `10.0.10.150`, and every
-receiver's `authorized_keys` still carries a `from=` pin naming the old
-`.150` until that receiver's own play re-renders it below. A push before then
-is rejected at every receiver. So the order is: move the resolvers, run each
-receiver's owning play (which updates its pin from the branch inventory), and
-only then re-run the cert distribution — with one manual exception first:
+The mid-window deploy must NOT push certificates: the push now originates from
+`10.0.10.150`, and every receiver's `authorized_keys` still carries a `from=`
+pin naming the old `.150` until that receiver's own play re-renders it below —
+a push before then is rejected at every receiver. And "hold the distribution"
+cannot mean just skipping a later command, because `task dns:deploy` itself
+runs the `acme_certs` role, whose configured
+`acme_certs_distribution_targets` trigger the push inside the deploy. So the
+mid-window invocation empties the targets explicitly:
+
+```bash
+task dns:deploy -- -e '{"acme_certs_distribution_targets": []}'
+```
+
+Then the order is: move the resolvers (the command above), run each receiver's
+owning play (which updates its pin from the branch inventory), and close the
+step with a plain `task dns:deploy` — targets restored from `host_vars`, and
+that run IS the distribution — with one manual exception first:
 
 **HAOS's key is operator-managed** (docs/24 — the role does not touch its
 `authorized_keys`), so before the distribution edit it by hand to a
