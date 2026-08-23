@@ -583,10 +583,12 @@ different expected-yellow with a different end date.
   task observability:silence ALERT=NetworkGearProbeFailed DURATION=7d
   ```
 
-  The gateway probe was green from cutover on `192.168.0.1` — but this branch
-  renumbers the target to `10.0.10.1`, so between this MR's merge and § Phase 2
-  step 2 the gateway probe is red as well, for the same nothing-answers-yet
-  reason.
+  The gateway probe was green from cutover on `192.168.0.1` — and the renumber
+  window turns it red **from § Phase 2 step 2 until step 7**: with the branch
+  unmerged and Flux suspended, the live probe keeps targeting `192.168.0.1`,
+  which the step-2 flip retires; step 7's reconcile moves the target to
+  `10.0.10.1`, which by then answers. Same interval and mechanism as the
+  `router.esweiss.com` bullet above.
 
 - **`unifi-drift-plan` is yellow on every pipeline.** The job runs
   `terraform plan -detailed-exitcode` and carries `allow_failure: true`, so
@@ -1739,12 +1741,14 @@ re-associating the whole house is impractical, the alternative is to shorten
 supervised apply a day *before* the window and put it back afterwards — two
 extra applies, but no walking.
 
-**2.7 — Home Assistant (coordinated flip).** Precondition: **both** 2.9
-transition pushes (firewall AND NFS exports) are already deployed — 2.8
-required the firewall half, and this step needs the NFS half too, because the
-flipped HAOS sources its media mount from `10.0.10.154`, an address the
-pre-transition export ACL and host firewall deny (docs/24: HAOS is the one
-documented plaintext-NFS client, so the export ACL names it specifically).
+**2.7 — Home Assistant (coordinated flip).** First, **run the whole of 2.9
+now** — both transition pushes, firewall AND NFS exports (the numbering is
+narrative, the dependency order is 2.9 → 2.7 → 2.8; 2.9's own position below
+then reads as an idempotent checkpoint). This step needs both halves live,
+because the flipped HAOS sources its media mount from `10.0.10.154`, an
+address the pre-transition export ACL and host firewall deny (docs/24: HAOS is
+the one documented plaintext-NFS client, so the export ACL names it
+specifically), and 2.8 needs the firewall half for the wg VIP.
 HAOS cannot hold two addresses, so
 it moves now, in one step, from its console (Proxmox → VM 154 → Console):
 
@@ -1765,9 +1769,8 @@ issuing `host reboot`.
 **2.8 — restore inbound early (strongly recommended).** All five WAN forwards
 are dead from 2.3 until MetalLB announces the VIPs on the new subnet. Left to
 step 7 that is hours. The nodes are already dual-addressed, so the VIPs can move
-now — but **run 2.9's firewall half first**: create
-`/tmp/renumber-fw-transition.yml` and push the firewall exactly as 2.9
-documents, then come back here. The deployed rules still destination-scope
+now — and 2.9's pushes must already be live (2.7 ran them; if you skipped the
+HAOS flip, run 2.9's firewall half now). The deployed rules still destination-scope
 WireGuard to `192.168.0.99` (and source-scope everything to the old subnet), so
 without the transitional push the new wg-easy VIP stays blocked even after
 MetalLB announces it — the patch would look done and restore nothing. The
@@ -1834,7 +1837,9 @@ rest of the window and the VPN fallback with it.
 Everything inside VLAN 10 kept working across the apply itself — what moved was
 every route *out* of it, which is why 2.4 through 2.9 exist.
 
-**2.9 — widen the host-side allowlists to BOTH subnets.** This is the step that
+**2.9 — widen the host-side allowlists to BOTH subnets.** If you followed 2.7,
+both pushes already ran and this is an idempotent checkpoint — re-running is a
+no-op. This is the step that
 makes everything after it possible, and it has no equivalent in Phase 1.
 
 Two access-control layers on the hosts are keyed to source address, and both are
@@ -2117,7 +2122,9 @@ ansible-playbook -i ansible/inventories/prod/hosts.yml \
 curl -sk https://10.0.10.161:6443/readyz          # "ok"
 task k3s:kubeconfig                                # kubeconfig follows the VIP
 kubectl get nodes                                  # all 9 still Ready
-sudo -E etcdctl endpoint health --cluster --write-out=table
+# back in the k3s-server shell from the gate above (etcdctl + certs + env
+# live only there):
+etcdctl endpoint health --cluster --write-out=table
 ```
 
 The play runs `k3s_servers` at `serial: 1`, so expect a few seconds of API
