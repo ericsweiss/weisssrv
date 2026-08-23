@@ -92,6 +92,11 @@
     - name: Assert every server still registers on the old subnet
       ansible.builtin.assert:
         that:
+          # Count first, then content: an empty or partial return (the
+          # control-plane label missing from a node would silently shrink the
+          # selector) must fail exactly like a wrong address — a vacuous pass
+          # here is the same unsafe outcome as no gate at all.
+          - k3s_server_ips.stdout_lines | length == (ansible_play_hosts | length)
           - k3s_server_ips.stdout_lines
             | reject('match', '^[^=]+=192\.168\.0\.[0-9]+$')
             | list | length == 0

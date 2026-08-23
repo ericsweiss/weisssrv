@@ -564,10 +564,12 @@ different expected-yellow with a different end date.
 - **`router.esweiss.com` returned 502** while the ASUS served its UI on
   plaintext `:80` and the `vm-ingress` backend expected the UCG's HTTPS UI on
   `:443` (via the `unifi-self-signed` ServersTransport). **Resolved** at cutover
-  when the UCG took over the gateway address — and **this branch brings it
-  back**: the backend is renumbered to `10.0.10.1`, which nothing serves until
-  § Phase 2 step 2 moves the gateway onto the new subnet. It clears itself at
-  that flip; no other route touches this backend.
+  when the UCG took over the gateway address — and **the renumber window brings
+  it back, from step 2 until step 7**: the LIVE EndpointSlice keeps naming
+  `192.168.0.1` (this branch is not merged, and Flux is suspended, until
+  step 7), so the 502 starts the moment the step-2 flip retires that address
+  and heals when step 7's reconcile moves the EndpointSlice to `10.0.10.1`,
+  which by then answers. No other route touches this backend.
 
 - **`NetworkGearProbeFailed` fires for `10.0.1.2` and `10.0.1.3`.** Still true,
   for a narrowed reason: the switch and the AP are adopted and their
@@ -1695,26 +1697,35 @@ guest whose old address goes here rather than in step 5. Everything it needs to
 reach is either on-link at `10.0.10.x` or off-subnet through the new gateway, so
 there is nothing left for the old address to serve.
 
-**2.6 — make the client VLANs re-DHCP.** IoT, Guest and Work clients hold leases
-naming `192.168.0.150`/`.160`. Their own VLAN did not change, so they will not
-re-DHCP on their own — and the gateway now has no route to that subnet at all,
-so those three VLANs have *no* DNS until each lease renews (24 h by default).
-The DNS allow policies moving to the new resolver addresses in the same apply is
-a detail; the missing route is the outage.
+**2.6 — make the client VLANs re-DHCP, Home included.** Every client VLAN's
+clients hold leases naming `192.168.0.150`/`.160` — **Home too**, which is easy
+to forget because Home feels adjacent to the migration rather than subject to
+it. Their own VLANs did not change, so nothing re-DHCPs on its own — and the
+gateway now has no route to that subnet at all, so all four VLANs have *no*
+DNS until each lease renews (24 h by default). The DNS allow policies moving to
+the new resolver addresses in the same apply is a detail; the missing route is
+the outage.
+
+**The admin station first**: it sits on TheRevengers, so it carries the same
+dead resolvers as any Home client. Give it static DNS `10.0.10.150`/`.160` for
+the window (or renew its lease immediately after the toggle below) before
+relying on name resolution for any later step.
 
 Force the renewal instead of waiting:
 
 ```
-Controller → Settings → WiFi → 3601-IoT / kugel-tikka-masala / 3601-Work:
+Controller → Settings → WiFi → TheRevengers / 3601-IoT / kugel-tikka-masala / 3601-Work:
   toggle "Enable" off, save, on, save.        # every client re-associates and re-DHCPs
+  # TheRevengers drops the admin station for a few seconds — expected; it
+  # re-associates and returns inside 10.0.20.8/29 via its reservation.
 Controller → the wired IoT access ports (2.5G-3, and any other IoT/Work port):
   toggle the port off/on, or power-cycle PoE. # wired IoT gear, e.g. the Hue bridge
 ```
 
-Then **walk one client per VLAN** and confirm both halves:
+Then **walk one client per VLAN — all four** — and confirm both halves:
 
 ```bash
-# on a client joined to each of iot / guest / work
+# on a client joined to each of home / iot / guest / work
 ipconfig /all | findstr "DNS"    # or: resolvectl status / cat /etc/resolv.conf
 dig @10.0.10.150 git.esweiss.com +short
 ```
