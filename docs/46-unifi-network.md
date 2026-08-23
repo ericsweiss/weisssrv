@@ -1392,18 +1392,24 @@ locally — the CI deploy jobs run on merge to `main` and would fan out to
 whichever addresses the inventory names, on their own schedule. The merge is
 step 7's first action, because Flux reconciles `main` and cannot see the branch.
 
-**4. Apply the transition Tailscale policy BEFORE the window opens.**
-`policy.hujson` on this branch is a deliberate superset — ACL rule 2's `dst`
-and `autoApprovers.routes` name **both** `192.168.0.0/24` and `10.0.10.0/24` —
-precisely so it can be applied ahead of everything else:
-`task terraform:tailscale-plan` → review (the plan is exactly the two
-added entries) → supervised apply. With it live, the old-CIDR fallback keeps
-working for the whole window, and any advertisement of the new route —
+**4. Apply the transition Tailscale policy BEFORE the window opens.** The
+committed `policy.hujson` names only `10.0.10.0/24` (the
+`check-tailscale-policy` gate holds `autoApprovers.routes` equal to the
+inventory's `tailscale_advertise_routes`, so a committed superset would be a
+standing stale-route). The transition form is therefore a **working-tree edit,
+never committed** — the same live-only pattern as the `/tmp/renumber-*`
+extra-vars files. In `terraform/tailscale/policy.hujson`, duplicate ACL rule
+2's `dst` entry and the `autoApprovers.routes` entry with `192.168.0.0/24`
+spelled in place of `10.0.10.0/24`, then `task terraform:tailscale-plan` →
+review (the plan is exactly those two additions) → supervised apply, and
+**leave the edit uncommitted**. With the superset live, the old-CIDR fallback
+keeps working for the whole window, and any advertisement of the new route —
 step 9's deliberate one **or the post-merge deploy pipeline's** (step 7 runs
 the Proxmox play against the merged inventory, which re-advertises
 `tailscale_advertise_routes` on its own schedule) — is auto-approved instead
-of severing remote admin while it sits pending. The old-CIDR entries come out
-at step 10's cleanup apply.
+of severing remote admin while it sits pending. `tailscale-drift-plan` shows
+this as an expected two-entry diff until step 10 restores the committed file
+and re-applies.
 
 **5. Confirm the out-of-band admin path before the first command.** wg-easy is
 down for the inbound gap (§ Why this cannot be a rolling change) and the
@@ -2342,13 +2348,14 @@ sudo ha-manager status          # all four "started", homes as configured (docs/
 
 ### Step 10 — retire the transition policy, then final validation
 
-First close out posture item 4's superset: once step 9's checks pass, delete
-the two `192.168.0.0/24` transition entries (and their comments) from
-`terraform/tailscale/policy.hujson` — ACL rule 2's `dst` and
-`autoApprovers.routes` — then `task terraform:tailscale-plan` → review (the
-plan is exactly those removals) → supervised apply. Ship the edit as the
-closing follow-up MR; it is the only repo change the window leaves behind, and
-P2-1 below expects it gone.
+First close out posture item 4's superset: once step 9's checks pass, restore
+the committed policy —
+`git checkout -- terraform/tailscale/policy.hujson` discards the uncommitted
+transition edit — then `task terraform:tailscale-plan` → review (the plan is
+exactly the two `192.168.0.0/24` removals) → supervised apply. Nothing to
+merge afterwards: the transition entries never entered git, and this apply puts
+the tailnet back on the committed file, which also returns
+`tailscale-drift-plan` to green.
 
 The MR merged at step 7; the rest of this step is validation only. Re-run the § Validation
 matrix above in full — every row still applies. The ones this phase can break

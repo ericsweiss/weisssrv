@@ -34,16 +34,7 @@
     {
       "action": "accept",
       "src": ["group:admins"],
-      // TRANSITION SUPERSET: both the old and new homelab CIDRs, so this policy
-      // can be applied BEFORE the renumber window opens — the old-CIDR fallback
-      // stays reachable for the whole window, and the post-merge deploy's
-      // re-advertisement of 10.0.10.0/24 is already covered below. The
-      // 192.168.0.0/24 entries are removed by the § Phase 2 cleanup apply
-      // (docs/46 step 10) once the fleet is verified on the new subnet.
-      "dst": [
-        "10.0.10.0/24:22,53,80,111,443,445,853,2049,2222,3000,3389,6443,8006,8123,22222,32400,32469",
-        "192.168.0.0/24:22,53,80,111,443,445,853,2049,2222,3000,3389,6443,8006,8123,22222,32400,32469",
-      ],
+      "dst": ["10.0.10.0/24:22,53,80,111,443,445,853,2049,2222,3000,3389,6443,8006,8123,22222,32400,32469"],
     },
 
     // Rule 3 — owner devices -> the owner's own UNTAGGED devices on SSH. This is
@@ -71,10 +62,6 @@
   "autoApprovers": {
     "routes": {
       "10.0.10.0/24": ["tag:subnet-router"],
-      // Transition superset (see rule 2): keeps a re-advertisement of the old
-      // route auto-approved while any host still carries it. Removed with the
-      // old-CIDR dst entry at cleanup.
-      "192.168.0.0/24": ["tag:subnet-router"],
     },
   },
 
