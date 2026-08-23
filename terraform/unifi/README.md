@@ -17,6 +17,34 @@ networks, zones, policies, client reservations and port forwards), the `wlans`
 map in `main.tf` (which has to name the passphrase variables), and the
 credential variables.
 
+## ⚠️ The first v0.13.1 apply is the unfreeze step
+
+`main.tf` pins v0.13.1, which sets `setting_preference = "manual"` explicitly —
+network writes no longer reset the manual DHCP fields (`dns_enabled`,
+`domain_name`), which is what froze applies at v0.13.0 after the cutover
+(docs/46 § Cutover as executed; the live values were repaired by hand through
+the API and an apply at the old pin would have stripped them again).
+
+Run the first plan at this pin with the replacement flag already on it, so the
+plan being reviewed is the plan the apply will execute:
+
+```bash
+task terraform:unifi-plan -- -replace='module.network.unifi_client.this["eric-bedroom-hyperion"]'
+```
+
+It must show exactly: one in-place `setting_preference` update per network,
+thirteen new reservation creates, and the replacement of
+`eric-bedroom-hyperion` (it moves networks, and upstream #428 breaks in-place
+`unifi_client` updates — a plan without the flag would show the in-place
+update that fails). Then apply with the same flag:
+
+```bash
+task terraform:unifi-apply -- -replace='module.network.unifi_client.this["eric-bedroom-hyperion"]'
+```
+
+Anything in the plan beyond those changes is real drift. After this apply the
+next plan must be "No changes" — that convergence closes the cutover.
+
 ## ⚠️ Apply is a supervised step
 
 `terraform apply` here rewrites the gateway's own segmentation. A wrong zone
@@ -82,7 +110,7 @@ all — destroy drops the state entry and changes nothing on the controller.
 | Custom firewall zones | 5 | `module.network.unifi_firewall_zone.this[<name>]` | `local.zones` |
 | Zone policies | 20 | `module.network.unifi_firewall_policy.this[<name>]` | `local.policies` |
 | WLANs | 4 | `module.network.unifi_wlan.this[<key>]` | `wlans` in `main.tf` |
-| Client reservations | 15 | `module.network.unifi_client.this[<key>]` | `local.clients` |
+| Client reservations | 28 | `module.network.unifi_client.this[<key>]` | `local.clients` |
 | WAN port forwards | 5 | `module.network.unifi_port_forward.this[<key>]` | `local.port_forwards` |
 | Site settings | 1 | `module.network.unifi_setting.site` | `site_settings` in `main.tf` |
 

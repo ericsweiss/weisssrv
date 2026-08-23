@@ -27,10 +27,16 @@ service ports through the new `lan_clients` set and the resolvers through
 validation: [docs/46-unifi-network.md](46-unifi-network.md); the sets
 themselves: [docs/11-firewall.md](11-firewall.md) § Client scopes.
 
+**The cutover ran on 2026-08-22** — the estate is on the UniFi gear, the VLANs,
+zones and policies are live, and the deltas from the planned runbook are
+recorded in [docs/46](46-unifi-network.md) § Cutover as executed.
+
 Still open behind it:
 
-- The **cutover itself** is a supervised window (see docs/46), and the
-  switch/AP blackbox probes are expected red until it runs.
+- The switch/AP blackbox probes stay red until the module pin reaches v0.13.1
+  and their reservations are applied (docs/46 § Post-cutover checklist).
+- **Connection A is not finished** — its port is native Homelab rather than
+  native Home with VLAN 10 tagged; see § UniFi network follow-ups below.
 - The Windows VM (.155, [docs/39](39-windows-vm.md)) still sits on the homelab
   VLAN; moving it to Home is a follow-up, not a blocker.
 - Phase 2 — renumbering the homelab from `192.168.0.0/24` to `10.0.10.0/24` —
@@ -283,9 +289,66 @@ weekly and each page means a NAS reboot window. To close it:
 Design, runbook and the codified-vs-manual contract:
 [docs/46-unifi-network.md](46-unifi-network.md).
 
+- [ ] **Finish Connection A.** Cutover night left switch port 7 native Homelab
+  rather than native Home with VLAN 10 tagged, because flipping it before
+  pve-nas-01 has its tagged sub-interface strands the NAS. Both halves are one
+  supervised step ([docs/46](46-unifi-network.md) § Physical port map, and
+  § Cutover step 7 for the interfaces stanza). Until it is done, every device on
+  that run — wired TVs, the laptop dock, Vasim's desktop — sits on VLAN 10 with
+  full homelab reach.
+- [ ] **Identify and reserve the two `ESP_*` devices.** `ESP_70688C`
+  (`48:3F:DA:70:68:8C`) and `ESP_719BF2` (`48:3F:DA:71:9B:F2`) are on Home with
+  pool leases. The OUI is Espressif, so both are almost certainly IoT-class
+  (the WLED and Hyperion families are the obvious candidates), but neither is
+  identified. Work out what they are, then add `unifi_client` entries pointing
+  them at IoT — a reservation is what moves a wireless device's VLAN
+  ([docs/46](46-unifi-network.md) § DHCP reservations), so this is the whole
+  fix. They are deliberately **not** in `terraform/unifi/networks.tf` yet:
+  reserving an unidentified device onto a VLAN that denies it everything is a
+  good way to break something nobody can name.
+- [ ] **Re-onboard the steered IoT devices onto `3601-IoT`**, at whatever pace
+  suits — one device at a time is fine. Per-MAC steering places them on IoT
+  today, but placement is not authorization: each of these devices still holds
+  the `TheRevengers` PSK and falls back to Home if its MAC ever stops matching
+  the reservation (randomization, spoofing after a compromise, replaced
+  hardware). Re-joining `3601-IoT` removes the Home credential; the reservation
+  keeps steering identically afterward, so nothing else changes
+  ([docs/46](46-unifi-network.md) § DHCP reservations).
+- [ ] **Give the TVs and Echoes friendly names.** Seven IoT reservations carry
+  the controller's reported hostname because nobody has mapped them to rooms
+  yet: `amazon-01f20c070`, `amazon-5b51cd6d9`, `amazon-a70f51c2d`,
+  `amazon-a9c5657f8`, plus `amazon-f57e91` and `amazon-c7d8bc` (Amazon OUI, no
+  hostname reported — presumed Echoes), and `vizio-wifi`. Rename them as they
+  are identified. Two specifics worth resolving at the same time:
+  `vizio-wifi` (`A0:6A:44:50:EE:95`) and `vizio-cast-display`
+  (`3C:9B:D6:7A:36:A3`) may be **one TV with two interfaces** — the wired MoCA
+  link and its Wi-Fi radio. If so, **keep both reservations** (steering is
+  per-MAC, so dropping either would leave that interface falling back to Home
+  whenever the TV uses it) and just rename the pair to say they are one device,
+  e.g. `vizio-tv-wired`/`vizio-tv-wifi`; only a physically disabled interface
+  justifies removing its entry. A rename is an in-place `unifi_client` change, so each
+  one needs `-replace` (upstream #428,
+  [docs/46](46-unifi-network.md) § DHCP reservations).
+- [ ] **Report the three provider bugs upstream** (`ubiquiti-community/unifi`
+  0.55.0). All three cost real time during the cutover and none is filed:
+  - `unifi_network` writes with the default `setting_preference = "auto"` make
+    the controller reset the manual DHCP fields (`dns_enabled`, `domain_name`)
+    that the same request sets. Repro: apply a network with those fields, read
+    it back, observe them cleared; setting `setting_preference = "manual"`
+    fixes it, which is what module v0.13.1 does.
+  - `unifi_client` with `allow_existing = true` fails `not found: type=` for a
+    MAC the controller has never seen, *and* leaves the object created
+    server-side, so the retry succeeds. Repro: apply a reservation for an
+    unseen MAC twice.
+  - Several resources report read-back inconsistencies right after create
+    (`inconsistent result after apply`), tainting them; the object is correct
+    on the controller. Repro is timing-dependent — capture `TF_LOG=DEBUG` for
+    the create and the immediately following read.
 - [ ] **Phase 2 — renumber the homelab** `192.168.0.0/24` → `10.0.10.0/24`
-  (last octet preserved everywhere). Drafted on `feat/homelab-renumber`;
-  raised as its own MR once Phase 1 is validated in production.
+  (last octet preserved everywhere). Raised as its own MR from
+  `feat/homelab-renumber` and held open deliberately: it merges only after
+  Phase 1 is validated in production, which now also means after the v0.13.1
+  pin bump and the Connection A finale above.
 - [ ] **Enable IPS after burn-in.** Ships as `ips_mode = "ids"`; flip to
   `"ips"` in `terraform/unifi/` after a week of reading detections. Upstream
   #381 means alert suppressions stay a UI concern.
@@ -330,6 +393,17 @@ Design, runbook and the codified-vs-manual contract:
   doing it for `unifi` alone would diverge the house pattern for no gain.
   Until then, docs/46 § Expected breakage carries the "must go green after the
   first apply" assertion that makes a lingering yellow noticeable.
+- [ ] **Restore external observation of the `git` A record.** The cross-domain
+  rewrites that stopped the hairpin outages ([docs/08](08-dns.md)
+  § Cross-domain rewrites) also stopped four blackbox probes from leaving the
+  LAN. Most of that coverage survives elsewhere — `registry.git`, `pages.git`
+  and `ide.git` are CNAMEs to `direct`, which `gitlab-webide-external` still
+  exercises — but `git` is its own DDNS-managed A record and now has no
+  external probe at all, so DDNS drift on it would surface only when someone
+  outside the house tried to clone. The fix is a probe that genuinely resolves
+  publicly: a blackbox module pinned to a public resolver, or a check that
+  compares the record's Cloudflare content against the current WAN IP. The
+  wrong fix is dropping a rewrite.
 
 ### Nextcloud follow-ups (not blockers)
 

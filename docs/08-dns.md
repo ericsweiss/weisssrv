@@ -152,6 +152,55 @@ The codified list covers (see dns.yml for the authoritative entries):
 - `vip-public.ericsweiss.com` → .100; `vip-internal.esweiss.com` → .101
 - ~25 app/service hostnames (`auth`, `git`, `grafana`, `loki`, `connect`,
   `traefik`, `plex`, `home`, `food`, `bar`, the *arr stack, etc.) → .101
+- **Five cross-domain exceptions** — `auth.ericsweiss.com` and the GitLab
+  family (`git`, `registry.git`, `pages.git`, `*.pages.git`) → .101 (below)
+
+#### Cross-domain rewrites (`*.ericsweiss.com` answered internally)
+
+Rewrites are otherwise `*.esweiss.com` only; the external zone is Cloudflare's.
+Five external names are deliberate exceptions. All of them would otherwise
+**hairpin**: a LAN client resolves the public IP and sends the packet back out
+to the WAN address of the gateway it sits behind. The ASUS looped that back; the
+UniFi gateway does not do so reliably for the node announcing the address, which
+turned a latent slow path into two outages in two days.
+
+| Name | → | Why the external name is unavoidable |
+|---|---|---|
+| `auth.ericsweiss.com` | `.101` | The OIDC **issuer** must be the public name, so every server-side discovery/JWKS fetch uses it. Over the WAN, Cloudflare bot protection 403s non-browser user agents |
+| `git.ericsweiss.com` | `.101` | GitLab advertises its token realm on `external_url`, so a registry pull is redirected to `https://git.ericsweiss.com/jwt/auth` no matter which registry hostname containerd started from. Hermes `ImagePullBackOff`, 2026-08-22 |
+| `registry.git.ericsweiss.com` | `.101` | CI pulls the molecule image by its external name; the runner hairpinned and timed out, failing 43/43 molecule jobs in weisssrv-lib !35 |
+| `pages.git.ericsweiss.com` | `.101` | Parity — same class of name, same path, nothing has broken yet |
+| `*.pages.git.ericsweiss.com` | `.101` | Parity, as above |
+
+`ide.git` and `*.ide.git` are deliberately **not** rewritten: the Web IDE
+extension host must hairpin via Cloudflare so GitLab sees the WAN address
+(docs/27 § Web IDE extension host), and that probe now carries a second job —
+see the residual below.
+
+Three consequences to keep in mind before adding a sixth:
+
+- **The matching blackbox probe stops testing the public path.** `gitlab-external`,
+  `gitlab-registry-external`, `gitlab-pages-external` and `authentik-oidc-issuer`
+  in `kubernetes/infrastructure/observability/exporters/blackbox-exporter.yaml`
+  now resolve internally like every other client, so none of them witnesses DDNS
+  drift or public-ingress breakage on its name. Every such target says so; a new
+  exception must do the same, and must check what is left covering the WAN.
+- **A residual, and it is not zero.** `registry.git`, `pages.git` and `ide.git`
+  are all CNAMEs to `direct.ericsweiss.com`, so `gitlab-webide-external` still
+  exercises the `direct` A record and the direct-TLS ingress path from
+  in-cluster. `git` is its **own** DDNS-managed A record, and rewriting it left
+  that record with no external probe at all — tracked in
+  [docs/16](16-next-steps.md) § UniFi network follow-ups. The nine
+  proxied `*.ericsweiss.com` app probes still cover the apex path.
+- **The k3s nodes pin the pull path in `/etc/hosts` as well** —
+  `registry.git.ericsweiss.com` *and* `git.ericsweiss.com`
+  (`k3s_registry_host_pins` in `group_vars/k3s.yml`) — so an image pull survives
+  an AdGuard outage, which the rewrite alone would not. The rewrite serves
+  everything else: pods resolve through CoreDNS and never read the node's hosts
+  file.
+
+No rewrite changes the name a client *uses*: the issuer stays external and image
+references stay as written. Only the answer is local.
 
 ### Admin dashboards — SSO hostnames + break-glass routes
 

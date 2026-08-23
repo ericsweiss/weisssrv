@@ -22,8 +22,8 @@ locals {
   ha_ip = "192.168.0.154"
 
   # The two adopted UniFi devices on the management VLAN, single-sourced because
-  # three things name them: the ICMP policy pair below, the commented client
-  # reservations further down, and the blackbox probes in
+  # three things name them: the ICMP policy pair below, the `usw-pro-xg-8` and
+  # `u7-pro-xgs` client reservations further down, and the blackbox probes in
   # kubernetes/infrastructure/observability/exporters/blackbox-exporter.yaml.
   mgmt_device_ips = ["10.0.1.2", "10.0.1.3"]
 
@@ -370,10 +370,41 @@ locals {
   # Fixed-IP reservations. Every entry ADOPTS the client the controller already
   # knows (`allow_existing` is module-side), so these do not create anything.
   #
+  # A reservation also STEERS a client's VLAN, which makes this map the standing
+  # mechanism for putting a device on the right network: add an entry naming the
+  # target network and a WIRELESS device moves on its next association — no SSID
+  # re-join, no touching the device. That is how the WLED controllers and the
+  # Kasa plugs reached IoT at cutover without ever joining `3601-IoT`. Steering
+  # is placement, not authorization: a device that keeps the Home PSK falls back
+  # to Home if its MAC ever stops matching, so IoT-class devices still get
+  # re-onboarded onto `3601-IoT` over time (docs/46 § DHCP reservations).
+  #
+  # WIRED devices behind the unmanaged switches on Connection A are the caveat:
+  # steering them needs the USW to assign a VLAN by MAC to a device it does not
+  # see on its own port. Where that does not take, the entry is inert and the
+  # device stays on the port's native VLAN. Entries in that position are marked
+  # individually below.
+  #
   # CHANGING ONE IS A REPLACE, not an update: upstream #428 fails every in-place
   # `unifi_client` update with "inconsistent result after apply: .last_ip". Use
   # `terraform apply -replace='module.network.unifi_client.this["<key>"]'`; the
   # device is untouched, only the controller-side object is recreated.
+  #
+  # APPLIES ON THIS ROOT WERE FROZEN while the module sat at v0.13.0: that
+  # version left `setting_preference` at the provider default `auto`, and every
+  # write to a network then made the controller reset the manual DHCP fields
+  # (dns_enabled, domain_name) it was being told to keep. The v0.13.1 pin in
+  # main.tf fixes that; the first supervised unfreeze apply is in README.md.
+  #
+  # The 2026-08-22/23 additions touch fourteen resources at that first apply:
+  # thirteen creates, plus one replacement. Carrying the creates meanwhile costs
+  # nothing, because a reservation the controller has not been told about is
+  # simply a pool lease. **`eric-bedroom-hyperion` is the replacement and needs
+  # a flag**: it is an existing client MOVED from
+  # home/.20.211 to iot/.30.211, so #428 applies and the unfreeze apply must
+  # carry
+  # `-replace='module.network.unifi_client.this["eric-bedroom-hyperion"]'`.
+  # Everything else added is a create. docs/46 § Cutover as executed.
   #
   # Homelab hosts and guests are statically addressed by Ansible and are
   # deliberately absent — a reservation for an address the host also configures
@@ -387,10 +418,11 @@ locals {
   # The reservations are the last octets these devices already had on the flat
   # LAN, so the pools are bounded around them rather than the other way round:
   #
-  #   home  .50-.199 — macbook .10 below; hdhr .200 and the bedroom Hyperion
-  #                    .211 above
-  #   iot   .50-.99  — hue .3 below; the Kasa plugs .120-.127, the living-room
-  #                    Hyperion .210 and the WLED controllers .213-.215 above
+  #   home  .50-.199 — macbook .10 below; hdhr .200 above
+  #   iot   .50-.99  — hue .3 below; the Kasa plugs .120-.127 above, then one
+  #                    device block .210-.225 (.212 unused): both Hyperion Pis
+  #                    .210-.211, the WLED controllers .213-.215, the Levoit
+  #                    appliances .216-.217, and the TVs and Echoes .218-.225
   #   mgmt  .100-.199 — the switch .2 and the AP .3 below
   #
   # ADDING ONE: pick an address outside the pool for its network, or move the
@@ -403,10 +435,18 @@ locals {
       fixed_ip = "10.0.20.200"
       network  = "home"
     }
-    eric-bedroom-hyperion = {
-      mac      = "B8:27:EB:17:7D:DC"
-      name     = "eric-bedroom-hyperion"
-      fixed_ip = "10.0.20.211"
+    # The admin workstation, which the Proxmox firewall's `admin_lan`
+    # 10.0.20.8/29 block is sized for. The MAC is the macOS PER-NETWORK "Fixed"
+    # private Wi-Fi address, not the hardware one: it is stable for as long as
+    # TheRevengers is remembered, and is regenerated if the network is forgotten
+    # and rejoined or the setting is toggled. If that happens the MacBook drops
+    # out of the /29 and loses SSH, :8006, :6443, the appliance UIs and RDP at
+    # once — re-read the address from the controller's client list and
+    # `-replace` this entry (Tailscale is the way back in meanwhile).
+    macbook = {
+      mac      = "A2:30:58:E7:62:F2"
+      name     = "macbook"
+      fixed_ip = "10.0.20.10"
       network  = "home"
     }
 
@@ -472,6 +512,19 @@ locals {
       fixed_ip = "10.0.30.210"
       network  = "iot"
     }
+    # WIRED, behind the unmanaged switches on Connection A — unlike its
+    # living-room sibling, which is wireless. Per-MAC steering for a wired
+    # client depends on the USW assigning a VLAN by MAC to a device it does not
+    # see on its own port; if that takes, this moves to IoT like the wireless
+    # devices. If it does not, the entry is inert and the Pi stays on the port's
+    # native VLAN — Homelab today, Home after the Connection A finale — and
+    # placing it on IoT then needs a managed switch at the far end (docs/16).
+    eric-bedroom-hyperion = {
+      mac      = "B8:27:EB:17:7D:DC"
+      name     = "eric-bedroom-hyperion"
+      fixed_ip = "10.0.30.211"
+      network  = "iot"
+    }
     wled-kitchen-island = {
       mac      = "9C:9C:1F:45:76:FE"
       name     = "wled-kitchen-island"
@@ -490,41 +543,98 @@ locals {
       fixed_ip = "10.0.30.215"
       network  = "iot"
     }
+    # Levoit appliances. Both were on the flat LAN without reservations and
+    # landed on Home at cutover; these entries are what moves them, since a
+    # reservation names the VLAN a wireless client joins regardless of the SSID
+    # it associates with (docs/46 § Cutover as executed).
+    levoit-purifier = {
+      mac      = "A8:48:FA:34:3E:88"
+      name     = "levoit-purifier"
+      fixed_ip = "10.0.30.216"
+      network  = "iot"
+    }
+    levoit-humidifier = {
+      mac      = "1C:9D:C2:73:00:B8"
+      name     = "levoit-humidifier"
+      fixed_ip = "10.0.30.217"
+      network  = "iot"
+    }
+
+    # TVs and streaming devices. Policy-wise IoT is the right home for them:
+    # `home-to-iot` and `homelab-to-iot` are full allows, so phones still cast
+    # and Home Assistant still drives them, while the reverse direction is only
+    # DNS, Plex :32400 and HA :8123.
+    #
+    # The amazon-* keys are the controller's reported hostnames, kept as-is
+    # until the units are mapped to rooms (docs/16). vizio-cast-display is
+    # WIRED on the MoCA leg and carries the same caveat as
+    # eric-bedroom-hyperion above; the rest are wireless and move on their next
+    # association.
+    vizio-cast-display = {
+      mac      = "3C:9B:D6:7A:36:A3"
+      name     = "vizio-cast-display"
+      fixed_ip = "10.0.30.218"
+      network  = "iot"
+    }
+    vizio-wifi = {
+      mac      = "A0:6A:44:50:EE:95"
+      name     = "vizio-wifi"
+      fixed_ip = "10.0.30.225"
+      network  = "iot"
+    }
+    amazon-01f20c070 = {
+      mac      = "FC:49:2D:C3:D5:24"
+      name     = "amazon-01f20c070"
+      fixed_ip = "10.0.30.219"
+      network  = "iot"
+    }
+    amazon-5b51cd6d9 = {
+      mac      = "38:F7:3D:11:A1:11"
+      name     = "amazon-5b51cd6d9"
+      fixed_ip = "10.0.30.220"
+      network  = "iot"
+    }
+    amazon-a70f51c2d = {
+      mac      = "DC:91:BF:D5:7E:E4"
+      name     = "amazon-a70f51c2d"
+      fixed_ip = "10.0.30.221"
+      network  = "iot"
+    }
+    amazon-a9c5657f8 = {
+      mac      = "FC:49:2D:EA:F0:AA"
+      name     = "amazon-a9c5657f8"
+      fixed_ip = "10.0.30.222"
+      network  = "iot"
+    }
+    # Amazon OUI, no hostname reported by the controller — presumed Echoes.
+    amazon-f57e91 = {
+      mac      = "40:A2:DB:F5:7E:91"
+      name     = "amazon-f57e91"
+      fixed_ip = "10.0.30.223"
+      network  = "iot"
+    }
+    amazon-c7d8bc = {
+      mac      = "34:D2:70:C7:D8:BC"
+      name     = "amazon-c7d8bc"
+      fixed_ip = "10.0.30.224"
+      network  = "iot"
+    }
 
     # Management (VLAN 1) — the switch and the AP, so the blackbox ICMP probes
-    # in kubernetes/infrastructure/observability have stable targets. Their MACs
-    # are unknown until the devices are adopted: read each one from the
-    # controller (Devices -> the device -> MAC) and uncomment, then apply.
-    #
-    # Until that apply the devices hold ORDINARY POOL LEASES (10.0.1.100+) and
-    # nothing answers at .2/.3 — so NetworkGearProbeFailed stays red for both
-    # after cutover, and filling in these two MACs is the fix, not a cabling or
-    # routing hunt. docs/46 § Bench pre-provisioning is where they get pinned.
-    #
-    # usw-pro-xg-8 = {
-    #   mac      = "00:00:00:00:00:00"
-    #   name     = "usw-pro-xg-8"
-    #   fixed_ip = "10.0.1.2"
-    #   network  = "default"
-    # }
-    # u7-pro-xgs = {
-    #   mac      = "00:00:00:00:00:00"
-    #   name     = "u7-pro-xgs"
-    #   fixed_ip = "10.0.1.3"
-    #   network  = "default"
-    # }
-
-    # The admin workstation's reservation, which the Proxmox firewall's
-    # `admin_lan` 10.0.20.8/29 block is sized for. MAC unknown until the machine
-    # associates with the new Home SSID — read it from the controller's client
-    # list and uncomment (docs/46 § Post-cutover checklist).
-    #
-    # macbook = {
-    #   mac      = "00:00:00:00:00:00"
-    #   name     = "macbook"
-    #   fixed_ip = "10.0.20.10"
-    #   network  = "home"
-    # }
+    # in kubernetes/infrastructure/observability have stable targets. MACs read
+    # from the controller after adoption (Devices -> the device -> MAC).
+    usw-pro-xg-8 = {
+      mac      = "74:F9:2C:A6:A2:57"
+      name     = "usw-pro-xg-8"
+      fixed_ip = "10.0.1.2"
+      network  = "default"
+    }
+    u7-pro-xgs = {
+      mac      = "90:41:B2:C8:86:65"
+      name     = "u7-pro-xgs"
+      fixed_ip = "10.0.1.3"
+      network  = "default"
+    }
   }
 
   # WAN port forwards. Every one is on the primary WAN and accepts any source:
