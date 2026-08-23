@@ -17,6 +17,20 @@ networks, zones, policies, client reservations and port forwards), the `wlans`
 map in `main.tf` (which has to name the passphrase variables), and the
 credential variables.
 
+## ⚠️ Apply is FROZEN at module v0.13.0
+
+While `main.tf` pins `?ref=v0.13.0`, **do not apply this root**. That module
+version leaves `setting_preference` at the provider default `auto`, and the
+controller then resets the manual DHCP fields (`dns_enabled`, `domain_name`) on
+every network it writes — including the ones the same request is setting. The
+live values were repaired by hand through the API after the cutover, and an
+apply would strip them again (docs/46 § Cutover as executed).
+
+The freeze lifts when the pin reaches v0.13.1, which sets `setting_preference`
+explicitly. Until then `task terraform:unifi-plan` shows a standing diff on the
+six networks' DHCP fields; that diff is expected and **enumerable**, so a plan
+proposing anything beyond those fields is real drift.
+
 ## ⚠️ Apply is a supervised step
 
 `terraform apply` here rewrites the gateway's own segmentation. A wrong zone
@@ -82,7 +96,7 @@ all — destroy drops the state entry and changes nothing on the controller.
 | Custom firewall zones | 5 | `module.network.unifi_firewall_zone.this[<name>]` | `local.zones` |
 | Zone policies | 20 | `module.network.unifi_firewall_policy.this[<name>]` | `local.policies` |
 | WLANs | 4 | `module.network.unifi_wlan.this[<key>]` | `wlans` in `main.tf` |
-| Client reservations | 15 | `module.network.unifi_client.this[<key>]` | `local.clients` |
+| Client reservations | 28 | `module.network.unifi_client.this[<key>]` | `local.clients` |
 | WAN port forwards | 5 | `module.network.unifi_port_forward.this[<key>]` | `local.port_forwards` |
 | Site settings | 1 | `module.network.unifi_setting.site` | `site_settings` in `main.tf` |
 

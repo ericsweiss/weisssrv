@@ -293,43 +293,75 @@ are preserved from the flat LAN where one existed.
 
 | Network | Client | Address | MAC |
 |---|---|---|---|
+| home | macbook | `10.0.20.10` | `A2:30:58:E7:62:F2` — a macOS private address, see the note below |
 | home | hdhr | `10.0.20.200` | `00:18:DD:0A:37:45` |
-| home | eric-bedroom-hyperion | `10.0.20.211` | `B8:27:EB:17:7D:DC` |
 | iot | hue | `10.0.30.3` | `00:17:88:7E:C7:A2` |
 | iot | K125M-0 … K125M-7 | `10.0.30.120`-`.127` | `6C:4C:BC:B0:0D:FE`, `:B0:0D:DD`, `:AF:F9:03`, `:AF:F0:AD`, `:AF:ED:23`, `:AF:E9:08`, `:AF:F0:DB`, `:B0:01:C8` |
-| iot | living-room-hyperion | `10.0.30.210` | `B8:27:EB:A8:93:27` — see the note below |
+| iot | living-room-hyperion | `10.0.30.210` | `B8:27:EB:A8:93:27` |
+| iot | eric-bedroom-hyperion | `10.0.30.211` | `B8:27:EB:17:7D:DC` — **wired**, see the note below |
 | iot | wled-kitchen-island | `10.0.30.213` | `9C:9C:1F:45:76:FE` |
 | iot | wled-kitchen-cabinets | `10.0.30.214` | `9C:9C:1F:45:6B:5E` |
 | iot | wled-bar | `10.0.30.215` | `9C:9C:1F:45:CF:F9` |
+| iot | levoit-purifier | `10.0.30.216` | `A8:48:FA:34:3E:88` |
+| iot | levoit-humidifier | `10.0.30.217` | `1C:9D:C2:73:00:B8` |
+| iot | vizio-cast-display | `10.0.30.218` | `3C:9B:D6:7A:36:A3` — **wired** (MoCA leg), see the note below |
+| iot | amazon-01f20c070 | `10.0.30.219` | `FC:49:2D:C3:D5:24` |
+| iot | amazon-5b51cd6d9 | `10.0.30.220` | `38:F7:3D:11:A1:11` |
+| iot | amazon-a70f51c2d | `10.0.30.221` | `DC:91:BF:D5:7E:E4` |
+| iot | amazon-a9c5657f8 | `10.0.30.222` | `FC:49:2D:EA:F0:AA` |
+| iot | amazon-f57e91 | `10.0.30.223` | `40:A2:DB:F5:7E:91` — presumed Echo |
+| iot | amazon-c7d8bc | `10.0.30.224` | `34:D2:70:C7:D8:BC` — presumed Echo |
+| iot | vizio-wifi | `10.0.30.225` | `A0:6A:44:50:EE:95` |
+| default (mgmt) | usw-pro-xg-8 | `10.0.1.2` | `74:F9:2C:A6:A2:57` |
+| default (mgmt) | u7-pro-xgs | `10.0.1.3` | `90:41:B2:C8:86:65` |
 
-**`living-room-hyperion` is reserved on IoT, which only takes effect if it is
-wireless.** Its bedroom sibling is on Home because that one is wired to the
-Connection A run, and a wired device there is untagged Home no matter what a
-reservation says. If the living-room Pi turns out to be wired too, the
-reservation is inert (it will take a Home pool address): move the entry to
-`network = "home"` with a `10.0.20.x` address and re-plan. If it is wireless,
-it joins the WLED controllers and the Kasa plugs in the step-10 re-onboarding
-list.
+**A reservation is also VLAN steering, and that makes this table the standing
+mechanism for putting a device on the right network.** A wireless client lands
+on its reservation's network whichever SSID it associates with, so moving one is
+"add an entry naming the target network" — it takes effect on the device's next
+association, with no SSID re-join and nothing to configure on the device itself.
+That is how the WLED controllers and the Kasa plugs arrived on IoT at cutover
+without ever joining `3601-IoT`, and it is the whole fix for every IoT-class
+device that came up on Home: the Levoit pair, the TVs and the Echoes.
+Re-onboarding onto `3601-IoT` (cutover step 10) is therefore hygiene, not a
+requirement, for anything reserved here.
+
+**Wired devices behind the unmanaged switches are the exception**, and two
+entries above are marked for it: `eric-bedroom-hyperion` on the Connection A run
+and `vizio-cast-display` on the MoCA leg. Steering them needs the USW to assign
+a VLAN by MAC to a device it does not see on its own port. Where that works they
+move like the wireless ones; where it does not, the entry is inert and the
+device stays on whatever the port's native VLAN is — Homelab today, Home after
+the Connection A finale. Placing a wired device on IoT in that case needs a
+managed switch at the far end, which is already tracked in
+[docs/16](16-next-steps.md). Check the controller's client list after the
+unfreeze apply rather than assuming either outcome.
+
+**Both Hyperion Pis are reserved on IoT, but only one of them is wireless.**
+`living-room-hyperion` is wireless and steers cleanly. `eric-bedroom-hyperion`
+is wired to the Connection A run and moved to IoT on 2026-08-23; whether the
+reservation actually places it there depends on the MAC-based assignment
+described above. Both landing on the same VLAN is the better outcome either way
+— they address each other by their reserved IPs (§ SSDP does not cross VLANs),
+and Home Assistant reaches both through `homelab-to-iot`.
 
 **The admin MacBook's reservation depends on a MAC macOS randomises.** "Private
-Wi-Fi Address" is on by default and per-SSID: the randomised address is stable
-for a given SSID, so the reservation holds — until the network is forgotten and
-rejoined, or the private address is rotated, at which point the MacBook falls
-out of `10.0.20.8/29` and loses SSH, `:8006`, `:6443`, the appliance UIs and
-RDP **at once**, because `admin_lan`, the sshd `from=`, fail2ban's `ignoreip`
-and the `lan-tailscale-strict` middleware all key off that /29. Either turn
-Private Wi-Fi Address off for TheRevengers on that machine, or reserve the
-per-network random MAC exactly as the controller reports it. Way back in if it
-happens anyway: **Tailscale** (`admin_ts` is unaffected by any of this).
+Wi-Fi Address" is on by default and per-SSID; the address reserved above is the
+**per-network "Fixed" private address** the controller reports for TheRevengers,
+not the hardware MAC. That is stable for as long as the network is remembered —
+but forgetting and rejoining it, or toggling the setting, regenerates the
+address, at which point the MacBook falls out of `10.0.20.8/29` and loses SSH,
+`:8006`, `:6443`, the appliance UIs and RDP **at once**, because `admin_lan`,
+the sshd `from=`, fail2ban's `ignoreip` and the `lan-tailscale-strict`
+middleware all key off that /29. If it happens: read the new address from the
+controller's client list, `-replace` the entry (§ Changing a client reservation
+in the root README), and use **Tailscale** to get in meanwhile — `admin_ts` is
+unaffected by any of this.
 
-Three reservations exist as **commented exemplars** in the root because their
-MACs are unknown until the hardware is in hand: the switch at `10.0.1.2`, the
-AP at `10.0.1.3` (both learned at adoption) and the admin MacBook at
-`10.0.20.10`. The first two — the blackbox probe targets — are filled in during
-bench pre-provisioning (§ Bench pre-provisioning, step 6). The third has to
-wait for cutover: the MacBook's MAC is only known once it associates with the
-new Home SSID, and it is what makes the `10.0.20.8/29` admin block in the
-Proxmox firewall mean anything (§ Post-cutover checklist).
+All three reservations that shipped as commented exemplars — the switch, the AP
+and the MacBook — are filled in as of 2026-08-22. The device MACs were read at
+adoption; the MacBook's once it associated with the new Home SSID, which is what
+makes the `10.0.20.8/29` admin block in the Proxmox firewall mean anything.
 
 Every reservation sits **outside** its network's DHCP pool, and the pool bounds
 in `local.networks` are what enforce it — a reservation inside the pool can
@@ -340,8 +372,8 @@ them rather than the other way round:
 
 | Network | Pool | Below it | Above it |
 |---|---|---|---|
-| home | `.50`-`.199` | macbook `.10` | hdhr `.200`, eric-bedroom-hyperion `.211` |
-| iot | `.50`-`.99` | hue `.3` | K125M-0…7 `.120`-`.127`, living-room-hyperion `.210`, WLED `.213`-`.215` |
+| home | `.50`-`.199` | macbook `.10` | hdhr `.200` |
+| iot | `.50`-`.99` | hue `.3` | K125M-0…7 `.120`-`.127`, then one device block `.210`-`.225` (`.212` unused): both Hyperion Pis, WLED `.213`-`.215`, Levoit `.216`-`.217`, TVs and Echoes `.218`-`.225` |
 | default (mgmt) | `.100`-`.199` | switch `.2`, AP `.3` | — |
 
 Adding a reservation means picking an address outside the pool for its network,
