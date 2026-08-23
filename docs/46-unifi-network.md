@@ -1643,7 +1643,9 @@ acme.sh, GitLab, Nextcloud, Immich and every k3s node's egress go with it.
 Order is not negotiable — **the two resolvers first**, then gate on them:
 
 ```bash
-# dns-01 (.150) and dns-02 (.160) — from their Proxmox hosts
+# dns-01 (.150) and dns-02 (.160) — both HA-managed, so locate them first
+# (`sudo ha-manager status | grep -E 'ct:1[56]0'`) and run each pct exec on the
+# node that CURRENTLY hosts the container
 pct exec 150 -- ip route replace default via 10.0.10.1
 pct exec 160 -- ip route replace default via 10.0.10.1
 
@@ -1658,8 +1660,18 @@ everything below assumes working resolution.
 Then the rest, same command per class as step 1:
 
 ```bash
-# remaining LXC guests: smtp-relay 151, plex 152, immich-ml 158
-for v in 151 152 158; do pct exec "$v" -- ip route replace default via 10.0.10.1; done
+# remaining LXC guests: smtp-relay 151, plex 152, immich-ml 158.
+# `pct exec` only works on the node CURRENTLY hosting the container, and
+# smtp-relay is HA-managed — it may not be where you expect (the cutover-night
+# dns-01 relocation is the standing proof). Locate each one first and run the
+# exec THERE; the || makes a wrong-node attempt fail loud instead of scrolling
+# past with smtp still on the retired gateway.
+sudo ha-manager status | grep -E 'ct:15[128]'      # which node owns each HA container
+sudo pvesh get /cluster/resources --type vm --output-format json \
+  | python3 -c 'import json,sys; [print(r["vmid"], r["node"]) for r in json.load(sys.stdin) if r["vmid"] in (151,152,158)]'
+for v in 151 152 158; do
+  pct exec "$v" -- ip route replace default via 10.0.10.1 || echo "FAILED ct:$v — run on its own node"
+done
 
 # cloud-init VMs and k3s nodes, over SSH to their new addresses
 for n in 153 156 157 202 203 204 205 206 207 222 223 227; do
@@ -1976,9 +1988,9 @@ ssh eric@10.0.10.104 'grep -c 192.168.0. /etc/pve/firewall/cluster.fw'   # non-z
 ```
 
 Then confirm the firewall did not lock you out of anything already working:
-`pvecm status` still 6/6, `kubectl get nodes` still 9/9 Ready (from a Proxmox
-host — the 2.8 kubectl-locality note applies until step 4), and an existing
-NFS-backed pod still reads its volume.
+`pvecm status` still 6/6, `k3s kubectl get nodes` still 9/9 Ready (from a k3s
+server over SSH — the 2.8 where-to-run note applies until step 4), and an
+existing NFS-backed pod still reads its volume.
 
 ### Step 3 — corosync ring migration (add a link, then drop the old one)
 
