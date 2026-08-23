@@ -160,6 +160,20 @@
         replace: '\g<1>{{ k3s_api_vip }}\g<2>'
       when: k3s_kube_vip_manifest.stat.exists
 
+    # `replace` succeeds silently on a regex miss, and the endpoint gate below
+    # can pass on a VIP made live by a partial or manual patch while the
+    # PERSISTED manifest still names the old address — which a later manifest
+    # reconcile would then restore. The file itself is the proof.
+    - name: Verify the persisted manifest names the new VIP
+      ansible.builtin.command:
+        argv:
+          - grep
+          - -Fq
+          - 'value: "{{ k3s_api_vip }}"'
+          - /var/lib/rancher/k3s/server/manifests/kube-vip.yaml
+      changed_when: false
+      when: k3s_kube_vip_manifest.stat.exists
+
     # Without this the play reports green having moved nothing: the DaemonSet is
     # rendered on one server, and if that server is out of the batch the VIP
     # never moves while every config below already names it.

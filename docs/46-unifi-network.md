@@ -2301,8 +2301,18 @@ so move **one server at a time**, running the gate above before and after each:
 
 1. `kubectl drain <server> --ignore-daemonsets --delete-emptydir-data`
 2. Stop k3s on it, remove it from the cluster (`kubectl delete node <server>`),
-   and wipe `/var/lib/rancher/k3s/server/db/etcd` so it rejoins as a fresh
-   member rather than an unreachable one.
+   then — before wiping anything — **prove the etcd membership is gone**: node
+   deletion triggers k3s's etcd member removal asynchronously, and rejoining
+   while the old peer entry lingers leaves a stale fourth member or blocks the
+   replacement. In the step-6 etcd shell:
+
+   ```bash
+   etcdctl member list --write-out=table   # must show 2 members, the stopped server absent
+   # if its entry lingers: etcdctl member remove <ID>, then re-check
+   ```
+
+   Only then wipe `/var/lib/rancher/k3s/server/db/etcd` so it rejoins as a
+   fresh member rather than an unreachable one.
 3. Re-IP the VM (step 5's cloud-init form), then re-run the k3s play for that
    host from the branch:
 
