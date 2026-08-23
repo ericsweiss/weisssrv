@@ -433,7 +433,10 @@
       ansible.builtin.command:
         argv:
           - curl
-          - -sk
+          # -s only, no -k: the whole point of --cacert below is verifying the
+          # server certificate (k3s's etcd cert carries a 127.0.0.1 SAN), so an
+          # impostor on :2379 cannot answer this gate.
+          - -s
           - --max-time
           - "5"
           - --cacert
