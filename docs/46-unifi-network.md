@@ -2059,8 +2059,14 @@ corosync-cfgtool -s              # on EVERY node: one link, id 0, all peers conn
 grep -E 'ring[0-9]_addr' /etc/pve/corosync.conf   # only 10.0.10.x remains
 ```
 
-If quorum is lost mid-edit the recovery is `pvecm expected 1` on one node,
-restore `/root/corosync.conf.pre-renumber`, restart `corosync` + `pve-cluster`.
+If quorum is lost mid-edit: first pick ONE authoritative partition and make
+sure every node outside it is genuinely inert — stop `corosync` there (or power
+the node off) and verify nothing else still holds a writable `/etc/pve` —
+because `pvecm expected 1` while a second partition is active creates two
+writable cluster states and corrupts the config store. Only then, on one node
+of the surviving partition: `pvecm expected 1`, restore
+`/root/corosync.conf.pre-renumber`, restart `corosync` + `pve-cluster`, and
+re-join the isolated nodes one at a time.
 
 ### Step 4 — move the k3s API VIP (once, before any node is redeployed)
 
