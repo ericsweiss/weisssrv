@@ -435,9 +435,12 @@ there as a UI setting, per the note under § Networks.
 | gitlab-ssh | tcp `2222` | `10.0.10.153:2222` | Forwarded 2222→2222; the guest's own iptables PREROUTING rule redirects 2222→22, where sshd actually listens (docs/27 § Git SSH) |
 | wg | **udp** `51820` | `10.0.10.99:51820` | wg-easy VIP — UDP, not TCP (docs/38) |
 
-Every target is a `local` reference (`dns_ips`, `plex_ip`) or a VIP, so Phase 2
-moved all five by editing the two locals and the subnet — the last octets are
-unchanged from the `192.168.0.0/24` era.
+Only Plex rides a `local` (`plex_ip`); the other four targets are literals in
+`networks.tf` — the two MetalLB VIP forwards (`http`/`https`), the GitLab
+guest (`gitlab-ssh`), and the wg-easy VIP (`wg`). Phase 2 edited **all five
+entries individually** (last octets unchanged from the `192.168.0.0/24` era),
+and a future renumber has to visit the same five edit points — there is no
+single subnet variable that moves them.
 
 ### Site settings
 
@@ -2028,10 +2031,18 @@ k3s agents, **one node at a time**:
 ```bash
 kubectl drain <node> --ignore-daemonsets --delete-emptydir-data
 # re-IP the VM (console or recreate per docs/19), then from the branch:
-ansible-playbook ansible/playbooks/k3s.yml --limit <node>       # or task k3s:deploy
+ansible-playbook ansible/playbooks/k3s.yml --limit <node> -e @/tmp/renumber-fw-transition.yml
 kubectl get node <node> -o wide     # INTERNAL-IP is the new address
 kubectl uncordon <node>
 ```
+
+The `-e @/tmp/renumber-fw-transition.yml` is not optional, and **plain
+`task k3s:deploy` is off-limits for the whole window**: `--limit` limits hosts,
+not plays, so every `k3s.yml` invocation also runs the cluster-wide
+`proxmox_firewall` play (the § 2.9 trap), and without the transition file that
+play would replace the dual-subnet ipsets with the committed new-subnet-only
+membership while later nodes still hold old addresses — cutting NFS and
+API reach out from under the un-migrated half of the cluster.
 
 Wait for the node to go `Ready` and for its pods to settle before the next one.
 The flannel wireguard-native peers re-key from the node's `InternalIP`, so a

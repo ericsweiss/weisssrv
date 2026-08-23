@@ -154,20 +154,42 @@
       register: k3s_node_ip_before
       changed_when: false
 
+    # The restart cannot gate on the config edits alone: a run interrupted
+    # after the edit play but before this one leaves the files already
+    # containing the new values, so a resume sees both edits unchanged and a
+    # changed-only gate would skip every restart with the new SAN never loaded.
+    # The ground truth is what the running apiserver actually serves — read its
+    # live certificate's SANs and restart whenever the new VIP is missing.
+    - name: Read the SANs the running apiserver serves
+      ansible.builtin.shell: |
+        set -o pipefail
+        echo | openssl s_client -connect 127.0.0.1:{{ k3s_api_port }} 2>/dev/null \
+          | openssl x509 -noout -ext subjectAltName
+      args:
+        executable: /bin/bash
+      register: k3s_live_sans
+      changed_when: false
+      failed_when: false
+
     # failed_when: false plus the readyz gate below mirror the role's
     # "Restart k3s" / "Wait for k3s API healthy" handler pair: k3s can exit once
     # during an etcd rejoin and be recovered by Restart=always seconds later,
     # which systemd reports as a failed restart. readyz is the real gate.
     #
-    # Skipped when neither config edit changed anything, so a re-run of this
-    # play does not bounce a control plane for nothing.
+    # Skipped only when the live cert already carries the VIP SAN and neither
+    # config edit changed anything — a clean re-run does not bounce a control
+    # plane for nothing, and an interrupted run still restarts on resume. A
+    # failed SAN read (empty stdout) restarts too: better one redundant serial
+    # restart than a server left on the old configuration.
     - name: Restart k3s to load the new SAN and join URL
       ansible.builtin.systemd:
         name: k3s
         state: restarted
         daemon_reload: true
       failed_when: false
-      when: (k3s_vip_san is changed) or (k3s_vip_join_url is changed)
+      when: >-
+        (k3s_vip_san is changed) or (k3s_vip_join_url is changed)
+        or (k3s_api_vip not in (k3s_live_sans.stdout | default('')))
 
     - name: Wait for the k3s API to report ready
       ansible.builtin.command: k3s kubectl --request-timeout=5s get --raw=/readyz
