@@ -193,18 +193,20 @@ task infra:deploy -- --limit pve-laptop-01,pve-opt-01,pve-opt-02,pve-prec-01
 After deployment, manually authenticate each host with Tailscale:
 
 ```bash
-# SSH to each host and run tailscale up, with the FULL canonical flag set —
-# `tailscale up` rejects a flag set that omits already-configured non-default
-# prefs, and on a fresh host an incomplete set would authenticate it without
-# making it a tagged subnet router. --accept-routes MUST be false: every
+# SSH to each host and run tailscale up with the FULL canonical flag set,
+# verbatim from terraform/tailscale/README.md § Recovery — `tailscale up`
+# rejects a flag set omitting already-configured non-default prefs (hence
+# --reset + everything), and on a fresh host an incomplete set would
+# authenticate it untagged, or without the Tailscale SSH fallback (--ssh) and
+# operator pref the estate expects. --accept-routes MUST be false: every
 # Proxmox host is a subnet router (tag:subnet-router, tag-only auto-approval),
 # and a host that accepts routes while sitting ON the LAN consumes its peers'
 # advertisement of its own subnet — a routing loop. Canonical source for this
 # command: terraform/tailscale/README.md § Recovery.
-ssh eric@10.0.10.103 "sudo tailscale up --advertise-routes=10.0.10.0/24 --advertise-tags=tag:subnet-router --accept-routes=false --accept-dns=false"
-ssh eric@10.0.10.104 "sudo tailscale up --advertise-routes=10.0.10.0/24 --advertise-tags=tag:subnet-router --accept-routes=false --accept-dns=false"
-ssh eric@10.0.10.105 "sudo tailscale up --advertise-routes=10.0.10.0/24 --advertise-tags=tag:subnet-router --accept-routes=false --accept-dns=false"
-ssh eric@10.0.10.107 "sudo tailscale up --advertise-routes=10.0.10.0/24 --advertise-tags=tag:subnet-router --accept-routes=false --accept-dns=false"
+ssh eric@10.0.10.103 "sudo tailscale up --reset --accept-routes=false --accept-dns=false --advertise-routes=10.0.10.0/24 --advertise-tags=tag:subnet-router --operator=eric --ssh"
+ssh eric@10.0.10.104 "sudo tailscale up --reset --accept-routes=false --accept-dns=false --advertise-routes=10.0.10.0/24 --advertise-tags=tag:subnet-router --operator=eric --ssh"
+ssh eric@10.0.10.105 "sudo tailscale up --reset --accept-routes=false --accept-dns=false --advertise-routes=10.0.10.0/24 --advertise-tags=tag:subnet-router --operator=eric --ssh"
+ssh eric@10.0.10.107 "sudo tailscale up --reset --accept-routes=false --accept-dns=false --advertise-routes=10.0.10.0/24 --advertise-tags=tag:subnet-router --operator=eric --ssh"
 ```
 
 This will display a URL for each host - open in browser to authenticate.
