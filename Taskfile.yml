@@ -1937,13 +1937,19 @@ tasks:
       # reach a generic terraform passthrough. Prefer this over state
       # pull/edit/push surgery, which holds no lock while the file is edited
       # (docs/46 § Cutover as executed).
+      #
+      # The address is spliced through shellQuote, not bare: resource addresses
+      # carry quotes and brackets, and an unquoted splice would hand any shell
+      # metacharacter in the argument to the shell. unifi-state cannot take this
+      # shape (arbitrary subcommand + args); this task takes exactly one
+      # argument, quoted as one word.
       - |
-        if [ -z "{{.CLI_ARGS}}" ]; then
+        if [ -z {{.CLI_ARGS | shellQuote}} ]; then
           echo "Usage: task terraform:unifi-untaint -- '<resource address>'"
           echo "Example: task terraform:unifi-untaint -- 'module.network.unifi_wlan.this[\"home\"]'"
           exit 1
         fi
-      - op run -- terraform untaint {{.CLI_ARGS}}
+      - op run -- terraform untaint {{.CLI_ARGS | shellQuote}}
 
   # --- Backblaze B2 offsite-backup bucket settings (raw API; SUPERVISED apply) ---
   # scripts/b2-bucket-drift.py is the codified bucket config (it replaced the
