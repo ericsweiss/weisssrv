@@ -46,57 +46,83 @@ Same posture as `terraform/tailscale` and `terraform/authentik`:
 
 ### Physical port map
 
+**As cabled on 2026-08-22** — port numbers are the controller's, and this table
+is the live truth rather than the pre-cutover plan (the AP and Connection A
+ended up swapped relative to the draft, and the UCG's SFP+ 1 is port 6).
+
 UCG-Fiber (every port role is software-assigned):
 
 | Port | Role |
 |---|---|
-| 10G RJ45 | **WAN** — symmetric gigabit ethernet handoff |
-| SFP+ 1 | **Trunk to the switch** (DAC): native VLAN 1, tagged 10/20/30/40/50 |
-| 2.5G-1 | pve-laptop-01 — access, native VLAN 10 |
-| 2.5G-2 | pve-prec-01 — access, native VLAN 10 |
-| 2.5G-3 | Hue bridge — access, native VLAN 30 |
-| 2.5G-4 (PoE+) | spare |
+| 1 (2.5G) | Hue bridge — access, native VLAN 30 |
+| 2 (2.5G) | pve-laptop-01 — access, native VLAN 10 |
+| 3 (2.5G) | pve-prec-01 — access, native VLAN 10 |
+| 4 (2.5G, PoE+) | spare |
+| 5 (10G RJ45) | **WAN** — symmetric gigabit ethernet handoff |
+| 6 (SFP+ 1) | **Trunk to the switch** (DAC): native VLAN 1, tagged 10/20/30/40/50 |
+| 7 (SFP+ 2) | spare |
 
-USW-Pro-XG-8-PoE (155 W PoE budget; the AP draws ≤29 W):
+USW-Pro-XG-8-PoE (155 W PoE budget; the AP draws ≤29 W). **PoE is disabled on
+every port except 8** — nothing else on this switch is powered over ethernet,
+and an enabled port that feeds a non-PoE device is a fault waiting for a
+mis-patch:
 
 | Port | Role |
 |---|---|
-| SFP+ 1 | Uplink from the UCG — trunk all, native VLAN 1 |
 | 1-2 | pve-opt-01 `nic0`/`nic1` — active-backup bond, **no LACP**, both access native VLAN 10 |
 | 3-4 | pve-opt-02 — same |
 | 5-6 | pve-opt-03 — same |
-| 7 | U7 Pro XGS (PoE++) — trunk: native VLAN 1, tagged 20/30/40/50 |
-| 8 | **Connection A** — native VLAN 20 (Home), tagged VLAN 10 |
-| SFP+ 2 | spare |
+| 7 | **Connection A** — native VLAN 10 (Homelab) **today**; the finale is native VLAN 20 (Home), tagged VLAN 10 (below) |
+| 8 | U7 Pro XGS (PoE++) — trunk: native VLAN 1, tagged 20/30/40/50 |
+| 9 (SFP+ 1) | spare |
+| 10 (SFP+ 2) | Uplink from the UCG — trunk all, native VLAN 1 |
 
 "Connection A" is the run to the dumb 10G TP-Link switch, which fans out to
-pve-nas-01 (VLAN 10 tagged), a 1G dumb switch (laptop dock, HDHomeRun), the
-bedroom Hyperion Pi, and the MoCA leg feeding the living-room devices. It is
-the one port carrying two VLANs to unmanaged gear, which is why pve-nas-01
-needs a tagged sub-interface (§ Cutover, step 7) while everything else on that
-run stays untagged on Home.
+pve-nas-01, a 1G dumb switch (laptop dock, HDHomeRun), the bedroom Hyperion Pi,
+and the MoCA leg feeding the living-room devices.
+
+**Its port is native Homelab today, which is a temporary state.** The design
+has it native Home (20) with VLAN 10 tagged, so that pve-nas-01 rides a tagged
+sub-interface while everything else on the run stays untagged on Home. Cutover
+night left it native Homelab instead, because flipping it before pve-nas-01 has
+its sub-interface strands the NAS — the recovery from the subnet-overlap race
+(§ Cutover as executed) made that ordering unavoidable. The consequence while it
+stands: **every device on that run is on VLAN 10 with full homelab reach**,
+including the wired TVs, the dock and Vasim's desktop. Closing it is a single
+pending step — configure the NAS sub-interface (§ Cutover, step 7), then flip
+the port — and until then the Connection A trust decisions below describe the
+finale, not the present.
 
 #### Accepted trust decisions on the Connection A run
 
-The far end of port 8 is unmanaged, so **anything plugged in there that does
+These describe the design once port 7 is native Home; while it is still native
+Homelab the exposure is strictly wider, as noted above.
+
+The far end of port 7 is unmanaged, so **anything plugged in there that does
 not tag its own frames lands on Home (VLAN 20)** — and Home reaches the homelab
 in full (policy 1). That is the settled design, not an oversight, but it has
 consequences worth naming so nobody re-derives them at 2 a.m.:
 
-- **Wired TVs, streamers and game consoles are on Home, not IoT.** Only
-  *wireless* devices can practically be placed on IoT, because that is the only
-  place an SSID decides the VLAN. The wired ones keep full homelab reach — an
-  accepted residual. Tagging those ports would need a managed switch at the far
-  end of Connection A (tracked in [docs/16](16-next-steps.md), not a Phase 1
-  blocker).
+- **Wired TVs, streamers and game consoles land on Home by default**, and keep
+  full homelab reach there — an accepted residual. This was written as
+  unavoidable, on the reasoning that an SSID is the only thing that decides a
+  VLAN; the cutover disproved the general form (a reservation steers by MAC,
+  § DHCP reservations), so two wired devices are now reserved onto IoT to test
+  the specific form. What is genuinely unavoidable is only the fallback: where
+  MAC-based assignment does not reach a device behind an unmanaged switch, the
+  fix is still a managed switch at the far end of Connection A (tracked in
+  [docs/16](16-next-steps.md), not a Phase 1 blocker).
 - **The work laptop's containment depends on how it is attached.** On the
   `3601-Work` SSID it is on VLAN 50 and gets DNS and nothing else; in the dock
   (1G dumb switch off Connection A) it is untagged Home and inherits
   `home → homelab any`. Work is therefore "the work laptop when mobile", which
   is the case the VLAN was created for. Validation row 6 tests the wireless
   path deliberately.
-- **The laptop dock, the HDHomeRun and the bedroom Hyperion Pi are Home
-  devices** and are reserved as such (§ DHCP reservations).
+- **The laptop dock and the HDHomeRun are Home devices** and are reserved as
+  such (§ DHCP reservations). The bedroom Hyperion Pi and the wired Vizio are
+  reserved onto **IoT** despite being on this run — whether that takes depends
+  on MAC-based VLAN assignment reaching a device behind an unmanaged switch
+  (§ DHCP reservations).
 - **Any Home device can reach the gateway console's login page** at
   `https://10.0.20.1` — the `*-to-gateway-mgmt` BLOCKs deliberately cover only
   guest/IoT/work. Fencing Home *except* the `/29` admin block would need an
@@ -436,7 +462,7 @@ the weisssrv resolvers by DHCP.
 | Site settings (auto-upgrade, optimization, UPnP, IGMP, IPS mode) | **Terraform** | |
 | Device adoption (switch, AP) | UI | The provider cannot create devices — adoption only |
 | Per-port native/tagged VLAN assignment (the port map above) | UI | `unifi_device.port_override` is unsafe at 0.55.0: #438 wipes live overrides when the set is empty, #430 strips fields, #431 fails on unset Optional+Computed attributes. **Do not manage the switch with Terraform** |
-| mDNS reflector (homelab + home + iot) | UI | Provider is read-only for this on UniFi OS gateways — Settings → Networks → Multicast DNS |
+| mDNS reflection | UI | Provider is read-only for this on UniFi OS gateways. **Network 10.x moved it from a per-network toggle to a SITE-level setting**: Settings → Networks → Multicast DNS, with three modes — Auto (reflect across all networks), Off, and Custom (pick the services and the networks each is reflected between). It is set to reflect between homelab, home and iot |
 | Firewall-policy ordering | UI | |
 | 6 GHz radio / band enablement | UI | Until the provider fixes #406 |
 | WAN DNS servers | UI | See § Site settings |
@@ -511,42 +537,49 @@ Phase 1 touches the repo in four places; each is documented where it lives.
   pattern-matched target set. Those instances are excluded from the
   `EndpointDown` catch-all so one cause fires once.
 
-### Expected breakage between merge and cutover
+### Expected breakage
 
-The repo lands before the hardware does. Three things are wrong in that window
-on purpose; none is an incident, and none needs a revert.
+The repo landed before the hardware did, and three things were wrong in that
+window on purpose. **The window closed on 2026-08-22**; what follows records how
+each one resolved, because two are gone and the third has been replaced by a
+different expected-yellow with a different end date.
 
-- **`NetworkGearProbeFailed` fires for `10.0.1.2` and `10.0.1.3`.** Nothing
-  answers at the switch and AP addresses until the gear is cabled in
-  (`192.168.0.1` keeps answering — the ASUS holds that address until step 5 of
-  the cutover). It is a warning, so it does not page and letting it sit is a
-  valid choice; silence it if the noise is in the way, renewing until the
-  window:
+- **`router.esweiss.com` returned 502** while the ASUS served its UI on
+  plaintext `:80` and the `vm-ingress` backend expected the UCG's HTTPS UI on
+  `:443` (via the `unifi-self-signed` ServersTransport). **Resolved** — it
+  cleared itself when the UCG took over the gateway address, as predicted. No
+  repo change was involved.
+
+- **`NetworkGearProbeFailed` fires for `10.0.1.2` and `10.0.1.3`.** Still true,
+  for a narrowed reason: the switch and the AP are adopted and their
+  reservations are codified (§ DHCP reservations), but the entries have not been
+  *applied*, so both devices still hold ordinary `10.0.1.100+` pool leases and
+  nothing answers at `.2`/`.3`. It clears at the first apply after the pin bump
+  below — not at a cabling change. A silence is active to 2026-08-29; renew it
+  only if the pin bump slips, and let it expire rather than renewing by habit:
 
   ```bash
   task observability:silence ALERT=NetworkGearProbeFailed DURATION=7d
   ```
 
-- **`router.esweiss.com` returns 502.** The `vm-ingress` backend for that one
-  hostname now expects the UCG's HTTPS UI on `:443` (via the
-  `unifi-self-signed` ServersTransport), and the ASUS serves its UI on
-  plaintext `:80`. The old UI stays reachable at `http://192.168.0.1`
-  meanwhile; no other route touches this backend. It clears itself the moment
-  the UCG takes over the gateway address.
+  `192.168.0.1` (the gateway) is green and has been since cutover.
 
 - **`unifi-drift-plan` is yellow on every pipeline.** The job runs
   `terraform plan -detailed-exitcode` and carries `allow_failure: true`, so
-  anything non-zero renders as one yellow badge. Before the `UniFi Controller`
-  vault item exists the `op read`s yield empty strings and the plan dies on
-  `unifi_api_key`'s length validation; once the item exists but the gateway is
-  on a bench, the provider cannot reach `https://192.168.0.1`. Both look
-  identical to real drift, which is exactly why the expected-yellow is written
-  down here: **after the first supervised apply, the next scheduled
-  `unifi-drift-plan` must go green. A yellow after that is real drift or a
-  broken credential, and is investigated, not ignored.** (Narrowing the
-  allowance to `exit_codes: 2` — so a broken plan is red and only drift is
-  yellow — is a lib-wide follow-up for all three drift jobs, tracked in
-  [docs/16](16-next-steps.md).)
+  anything non-zero renders as one yellow badge. Its *original* causes are gone
+  — the `UniFi Controller` vault item exists, and the gateway is reachable at
+  `https://192.168.0.1`. It is yellow now because the root is pinned to module
+  v0.13.0, whose `setting_preference` default makes the plan show a standing
+  diff on the six networks' DHCP fields (§ Cutover as executed). That diff is
+  cosmetic **and enumerable**: if the plan proposes anything beyond those
+  fields, it is real drift.
+
+  **The bump to v0.13.1 retires this entry.** After it lands and the first
+  supervised apply runs, the next scheduled `unifi-drift-plan` must go green,
+  and a yellow after that is real drift or a broken credential — investigated,
+  not ignored. (Narrowing the allowance to `exit_codes: 2`, so a broken plan is
+  red and only drift is yellow, is a lib-wide follow-up for all three drift
+  jobs, tracked in [docs/16](16-next-steps.md).)
 
 ---
 
@@ -615,11 +648,16 @@ serving the house throughout.
    client entries in `terraform/unifi/` so the addresses are codified rather
    than UI state.
 7. **Assign the port map** (§ Physical port map) in the UI — native VLAN per
-   access port, trunk profiles for SFP+ 1, port 7 and port 8. This is the step
-   the provider cannot do safely; take a screenshot of the finished port list
-   and keep it with the .unf backup.
-8. **Turn on the mDNS reflector** for homelab, home and iot (Settings →
-   Networks → Multicast DNS). Casting from Home to IoT depends on it.
+   access port, trunk profiles for the DAC uplink, the AP port and Connection A.
+   This is the step the provider cannot do safely; take a screenshot of the
+   finished port list and keep it with the .unf backup.
+8. **Turn on mDNS reflection** (Settings → Networks → Multicast DNS). Casting
+   from Home to IoT depends on it. On Network 10.x this is one **site-level**
+   control, not the per-network checkbox older guides describe: choose `Auto` to
+   reflect across every network, or `Custom` to scope it by service and by the
+   networks each service is reflected between. Scope it to homelab, home and iot
+   — guest and work have no discovery to do, and reflecting into guest would
+   advertise the house's devices to visitors.
 9. **Prove the dumb switches pass 802.1Q tags — days before the window, while
    the fallback is free.** The whole Connection A design (native VLAN 20,
    tagged VLAN 10 for pve-nas-01) assumes the unmanaged 10G TP-Link — and the
@@ -741,6 +779,11 @@ guaranteed schema.
 Disruptive; needs console access to pve-nas-01 and a window where the house can
 lose the network. Everything before this point was bench work.
 
+The runbook below is kept as written, because it is the procedure a rebuild
+would follow. **It is not what happened on 2026-08-22** — the window was run
+without the bench phase, and the deltas and their lessons are in § Cutover as
+executed, after step 11. Read that section first if you are about to run this.
+
 **A day before:** drop the ASUS's DHCP lease time to ~5 minutes. Wired devices
 behind the dumb switches never see link-down when Connection A moves, so they
 do not restart DHCP on their own — a short lease is what makes them re-ask
@@ -794,7 +837,7 @@ shove).
 5. **Disconnect the ASUS.** Unplug every one of its LAN ports and power it
    down *before* the UCG brings up a LAN. Both claim `192.168.0.1` and both run
    a DHCP server for the same range; left cabled into the segment Connection A
-   now delivers to switch port 8, they fight an ARP war over the default
+   now delivers to switch port 7, they fight an ARP war over the default
    gateway of every Proxmox host and guest, and race each other to answer DHCP.
    That failure mode looks like nothing at all from the console and like
    intermittent connectivity everywhere else. Confirm only one answers:
@@ -805,10 +848,12 @@ shove).
 
    The ASUS keeps its *configuration* — nothing on it is changed, and rollback
    is re-cabling and re-powering it (§ Rollback).
-6. **Re-cable the LAN.** UCG SFP+ 1 → switch SFP+ 1 (DAC); the three opt nodes
-   onto ports 1-6; laptop and prec nodes onto 2.5G-1/2.5G-2; Hue onto 2.5G-3;
-   AP onto port 7; **Connection A onto port 8** (native Home 20, tagged
-   Homelab 10).
+6. **Re-cable the LAN** to § Physical port map: UCG port 6 (SFP+ 1) → switch
+   port 10 (SFP+ 2) on the DAC; the three opt nodes onto switch ports 1-6; Hue,
+   laptop and prec onto UCG ports 1/2/3; AP onto switch port 8; **Connection A
+   onto switch port 7**. Connection A stays native Homelab until pve-nas-01 has
+   its tagged sub-interface (step 7) — flipping it to native Home first strands
+   the NAS.
 
    Then **force the stranded wired devices to re-DHCP.** Nothing behind the
    dumb switches saw link-down, so each still holds an ASUS-issued
@@ -862,7 +907,7 @@ shove).
 
    The host IP and every guest stay unchanged — only the bridge's uplink moves.
    **Rollback**: `cp /root/interfaces.pre-vlan /etc/network/interfaces &&
-   ifreload -a`, and set port 8 back to untagged Homelab.
+   ifreload -a`, and set switch port 7 back to native Homelab.
 
    Afterwards re-check the AQC113 offload state, which `nic_tuning` pins on the
    *physical* device: `ethtool -k nic1 | grep generic-receive-offload` must
@@ -887,11 +932,13 @@ shove).
    ```
 
 10. **Move the wireless clients.** TheRevengers keeps its PSK, so home devices
-    roam over untouched. Everything that belongs on IoT/Work must be re-onboarded
-    onto the new SSID — the WLED controllers, the Kasa plugs (`K125M-*`), any
-    phone/laptop that should sit on Work, and `living-room-hyperion` if it turns
-    out to be wireless (§ DHCP reservations). The Hue bridge moves to the wired
-    IoT port (2.5G-3) rather than an SSID.
+    roam over untouched. A phone or laptop that should sit on Work has to join
+    `3601-Work` — an SSID is the only thing that places an *unreserved* device.
+    Everything reserved in § DHCP reservations moves on its own: the WLED
+    controllers, the Kasa plugs (`K125M-*`), the Levoit appliances, the TVs and
+    the Echoes all land on IoT from any SSID, which is what the cutover proved.
+    Re-onboarding them onto `3601-IoT` is optional hygiene. The Hue bridge moves
+    to the wired IoT port (UCG port 1) rather than an SSID.
 11. **Re-point discovery-based integrations** per the SSDP table above, and fix
     the application-layer settings that assume one flat subnet — the network is
     correct at this point and these are the things that still look broken:
@@ -910,31 +957,160 @@ shove).
     - **Home Assistant**: any integration whose discovery fails gets a manual
       host entry; its `internal_url` stays the same.
 
+### Cutover as executed (2026-08-22)
+
+What actually happened, and what each delta teaches. The estate ended the night
+correct — 11 zones, 20 policies, four SSIDs, 15 reservations, five forwards, and
+zero unhealthy pods — but almost none of it arrived the way the runbook above
+describes.
+
+**The bench phase was skipped; everything was re-cabled first.** The gear was
+plugged into its final ports and the gateway brought up flat on
+`192.168.0.1/24`, with Terraform run against the live controller afterwards. It
+worked, and it is still the wrong order: every provider bug below was discovered
+with the house's network already depending on the answer, and § Bench
+pre-provisioning exists precisely so that discovery happens on a bench. Two
+pre-flight faults surfaced immediately — pve-laptop-01 came up with its link
+down (a hard restart fixed it) and the admin Mac took `192.168.0.203` out of the
+UCG's default `.6-.254` pool, squatting a k3s agent's address. **A fresh
+controller's DHCP pool covers nearly the whole subnet; narrow it before anything
+else joins.**
+
+**Zone-based firewalling needed a one-time UI enablement.** A fresh console
+ships with ZBF off, and the provider cannot turn it on: `unifi_firewall_zone`
+and `unifi_firewall_policy` simply have nothing to attach to until it is enabled
+in the UI. Once on, the built-in zone display names were confirmed to be
+`Internal`, `External`, `Gateway`, `Vpn`, `Hotspot`, `Dmz` — the assumption
+§ First Terraform apply asks you to verify, now verified.
+
+**The Default-flip and Homelab-create raced, and the LAN went away.** In one
+apply Terraform re-addressed the built-in `Default` network *and* created
+`Homelab` on `192.168.0.0/24`. The create ran first, hit `SubnetOverlapped`
+against the not-yet-flipped `Default`, and failed — leaving no network holding
+`192.168.0.0/24` at all. This is the hazard § First Terraform apply predicts,
+and the mitigation it prescribes (apply the `Default` import and flip on their
+own, before any other network exists) is the one thing that would have avoided
+it. Recovery was to hand-create the Homelab VLAN in the UI and `terraform
+import` it, then let the rest of the plan converge.
+
+**Failed creates leave tainted resources, and there is no `task` for untaint.**
+Several resources landed half-created with read-back errors and were marked
+tainted, which makes the next apply destroy and recreate them — unacceptable for
+a live VLAN. `terraform untaint` is a top-level command, and the Taskfile
+deliberately exposes only `state` subcommands, so the procedure is state
+surgery:
+
+```bash
+task terraform:unifi-state -- pull > /tmp/unifi.tfstate
+# edit: delete the "status": "tainted" line from each affected resource instance,
+# and bump "serial" by 1
+task terraform:unifi-state -- push /tmp/unifi.tfstate
+```
+
+Keep the pulled file until the next apply is clean — it is the only copy of the
+pre-surgery state that is not a retained remote version.
+
+**`setting_preference` defaulted to `auto`, and every network write reset the
+DHCP fields.** The final apply left five networks with `dns_enabled` and
+`domain_name` stripped: at module v0.13.0 `unifi_network` does not set
+`setting_preference`, the provider defaults it to `auto`, and the controller
+then treats the manual DHCP fields as derived and resets them on **every** write.
+It looks like the apply silently ignored half its own configuration. Repaired by
+`PUT`ing all six networks through the API with `setting_preference=manual`
+alongside the DNS, domain and IGMP values, which held. The module sets it
+explicitly from v0.13.1:
+
+> **Terraform applies on this root are FROZEN until the `?ref=` pin in `main.tf`
+> reaches v0.13.1.** Until then any apply re-strips those fields. The scheduled
+> `unifi-drift-plan` shows a known cosmetic diff meanwhile — that specific diff
+> is the exception to the "a yellow after the first apply is real drift" rule in
+> § Expected breakage, and the exception dies with the pin bump.
+
+**`allow_existing` does not cover a client the controller has never seen.**
+Three `unifi_client` entries failed with `not found: type=`, because
+`allow_existing` adopts a *known* client and these MACs had never associated.
+The failure is also not clean: the objects existed server-side afterwards, so
+the retry adopted them. Pre-seed a reservation by letting the device join once,
+or expect one failed apply followed by a successful one.
+
+**Proxmox HA was left armed, and it split a container from its disk.** The
+runbook's step 2 disarm was skipped in the improvised window. Later that day HA
+relocated `ct:150` (dns-01) to pve-opt-02 — moving only its *config*, since the
+`subvol-150-disk-1` volume exists solely on pve-prec-01 — which took dns-01 down
+and failed all four of its replication jobs with "dataset does not exist".
+Recovery: `ha-manager set ct:150 --state disabled`, move `150.conf` back to
+pve-prec-01, then `--state started` (a plain `pct start` is refused while HA
+holds the resource, even disabled). **Step 2 is not optional**, and its failure
+mode is not the fencing the step warns about — it is a quiet relocation hours
+later, to a node that cannot start the guest.
+
+**The WAN outage was not ours.** Port 5 showed no carrier for hours and was
+chased as a 10GBase-T-versus-gigabit-handoff problem. It was Astound: they reset
+their own out-of-apartment equipment and the carrier returned, with the public
+IP unchanged (so no DDNS wait). **Check with the ISP before re-seating anything
+on a fresh install** — a new gateway makes every ISP-side fault look like a
+compatibility problem.
+
+**The external GitLab names hairpinned, and it cost two outages.** First
+Hermes went `ImagePullBackOff`: containerd is redirected to
+`https://git.ericsweiss.com/jwt/auth` for its bearer token, that name resolved
+publicly, and the UCG does not reliably loop a node back to its own WAN address
+the way the ASUS did. The next day the same class hit CI — a runner pulling the
+molecule image by `registry.git.ericsweiss.com` timed out, failing 43/43
+molecule jobs in weisssrv-lib !35. Both were fixed with AdGuard rewrites, now
+codified in `group_vars/dns.yml` along with the `pages.git` pair for parity;
+[docs/08](08-dns.md) § Cross-domain rewrites carries the reasoning, the names
+deliberately left public, and the monitoring coverage the rewrites cost.
+
+**Anything that dials a public name from inside is a cutover risk**, not just
+the obvious ingress paths — and the second instance is the real lesson: once
+the class is identified, sweep for its siblings instead of waiting for each one
+to fail on its own.
+
+**Reservations turned out to be per-MAC VLAN steering.** The best surprise of
+the night: wireless clients re-associated to TheRevengers and landed on Home
+`10.0.20.x`, *and* the WLED controllers and Kasa plugs came up on IoT
+`10.0.30.x` at their reserved addresses without ever joining `3601-IoT`. A
+`unifi_client` reservation names the network a device joins from any SSID. Step
+10's re-onboarding is therefore hygiene for anything already reserved, and the
+fix for an IoT-class device sitting on Home is to reserve it — which is what the
+Levoit pair, the TVs and the Echoes now do (§ DHCP reservations). Whether it
+also works for a WIRED device behind an unmanaged switch is the open question
+those entries test.
+
 ### Post-cutover checklist
 
-The three items in § Expected breakage were true *on purpose* before the
-window. Each one has to be actively retired, or the next person reads a stale
-allowance as a sanctioned state:
+Every item in § Expected breakage was true *on purpose* before the window. Each
+has to be actively retired, or the next person reads a stale allowance as a
+sanctioned state. Status as of 2026-08-22:
 
-- [ ] **Confirm the two mgmt reservations are live** — the switch and AP entries
-  were filled in and applied during § Bench pre-provisioning (step 6), so this
-  is a verification, not work: `10.0.1.2` and `10.0.1.3` answer, and the
-  controller's client list shows both as fixed rather than pool leases. If they
-  are still commented out in `terraform/unifi/networks.tf`, that is bench work
-  that was skipped — `NetworkGearProbeFailed` staying red for the two device
-  targets is then a fill-in, not a cabling hunt.
-- [ ] **Fill in the admin MacBook reservation** (`10.0.20.10`) in
-  `terraform/unifi/networks.tf` and supervised-apply. This one genuinely cannot
-  be done before cutover: the MAC is whatever the machine presents once it
-  associates with the new Home SSID (§ DHCP reservations — check Private Wi-Fi
-  Address first). Until it lands the MacBook holds a pool address outside
+- [x] **`router.esweiss.com` serves the UCG UI** over the `unifi-self-signed`
+  transport — the 502 cleared when the UCG took the gateway address, with no
+  repo change, as § Expected breakage predicted.
+- [x] **The admin MacBook reservation is filled in** (`10.0.20.10`, the
+  per-network private Wi-Fi address) — § DHCP reservations. It takes effect at
+  the apply below; until then the MacBook holds a pool address outside
   `10.0.20.8/29` and has no admin reach except over Tailscale.
-- [ ] **Expire the `NetworkGearProbeFailed` silence** rather than renewing it,
-  and confirm all three probes are green (validation row 18).
-- [ ] **`router.esweiss.com` serves the UCG UI** over the `unifi-self-signed`
-  transport — the 502 is gone (no repo change needed).
+- [x] **The two mgmt reservations are filled in** (`10.0.1.2`, `10.0.1.3`, MACs
+  read at adoption). Also pending the apply — both devices hold ordinary pool
+  leases today, which is why `NetworkGearProbeFailed` is still red for them.
+- [ ] **Bump the module pin to v0.13.1 and run the first clean supervised
+  apply.** This is the gate every remaining item sits behind: applies are frozen
+  at v0.13.0 because a network write re-strips the manual DHCP fields
+  (§ Cutover as executed). The apply lands the three reservations above and
+  converges the plan to no-changes.
+- [ ] **Expire the `NetworkGearProbeFailed` silence** (set to 2026-08-29) rather
+  than renewing it, and confirm all three probes are green (validation row 18).
 - [ ] **`unifi-drift-plan` is green on the next schedule** (validation row 23).
   From here on a yellow is drift or a broken credential.
+- [ ] **Finish Connection A** — configure pve-nas-01's tagged sub-interface
+  (§ Cutover, step 7), then flip switch port 7 from native Homelab to native
+  Home with VLAN 10 tagged. Until both halves are done, everything on that run
+  is on VLAN 10 with full homelab reach (§ Physical port map).
+- [ ] **Clear the stale `ct:150` replicas.** The HA relocation left older-
+  generation `subvol-150-disk-0` volumes on pve-opt-01, pve-opt-03 and
+  pve-laptop-01. Replication is healthy again (4/4, FailCount 0) and these are
+  inert, but they are misleading during a future recovery.
 - [ ] **Re-verify the bond procedure in [docs/34](34-bond-mac-flapping.md)** —
   the managed switch is a new link partner for all three bonded hosts.
 - [ ] **Start the IPS burn-in clock** — a week of `ids` detections before
@@ -947,10 +1123,14 @@ allowance as a sanctioned state:
 Run the whole matrix before declaring the cutover done. "Expected" is what a
 correct segmentation produces — several rows are *failures by design*.
 
+Two rows are **gated on the pending work in § Post-cutover checklist** and
+cannot pass yet: row 2 needs the Connection A finale, row 18 needs the v0.13.1
+pin bump and the apply that lands the mgmt reservations.
+
 | # | Check | How | Expected |
 |---|---|---|---|
 | 1 | Per-VLAN DHCP | Join each SSID / plug into each access port | Address from the right pool, DNS `.150`/`.160`, domain `esweiss.com` (the **mgmt** VLAN is the exception: `1.1.1.1`/`9.9.9.9`) |
-| 2 | Stranded wired leases | Controller client list after step 6 | Every wired device on the Connection A run has a `10.0.20.x` address — no `192.168.0.x` client outside VLAN 10 |
+| 2 | Stranded wired leases | Controller client list after step 6 | Every wired device on the Connection A run has a `10.0.20.x` address — no `192.168.0.x` client outside VLAN 10. **Gated:** while port 7 is native Homelab this run is legitimately on VLAN 10, so the row only becomes meaningful after the Connection A finale |
 | 3 | Resolver reach from every VLAN | `dig @192.168.0.150 git.esweiss.com` from home/iot/guest/work | Answer on all four |
 | 4 | Guest containment | From guest: `curl -m5 https://git.esweiss.com`, ping another guest client | Both **fail** (DNS resolves, everything else denied; L2 isolation blocks the peer) |
 | 5 | IoT containment | From an IoT device: reach anything on Home or `:443` on homelab | **Fails**; only `:53`, Plex `:32400` and HA `:8123` succeed |
@@ -958,9 +1138,9 @@ correct segmentation produces — several rows are *failures by design*.
 | 7 | Gateway console fenced | From guest/iot/work: `curl -m5 -k https://<that VLAN's .1>` and `ssh <that VLAN's .1>` | Both **fail** (BLOCK rows 12-14). `ping <that VLAN's .1>` still works — icmp is deliberately left up |
 | 8 | External DNS fenced | From guest/iot/work: `dig @8.8.8.8 example.com`, `dig +tls @8.8.8.8 example.com` | Both **fail/time out** (BLOCK rows 15-17); `dig @192.168.0.150` still answers |
 | 8b | Gateway resolver fenced | From guest/iot/work: `dig @<that VLAN's .1> example.com` | **Fails/times out** (BLOCK rows 18-20). Confirm on the bench *before* cutover that the gateway answers this at all with the BLOCKs removed — the rows exist because a UniFi OS gateway normally does, and a bench `dig` is how that is established rather than assumed |
-| 9a | Casting — the half that works | Cast a YouTube or Plex stream from a Home phone to an IoT TV/speaker | Device is discovered (mDNS reflector) and plays |
+| 9a | Casting — the half that works | Cast a YouTube or Plex stream from a Home phone to an IoT TV/speaker | Device is discovered (site-level mDNS reflection) and plays |
 | 9b | Casting — the half that does not | Screen-mirror / cast a local photo from the same phone; AirPlay to two speakers at once | **Fails, by design** — the receiver would have to open a connection back to Home, and AirPlay 2 needs PTP multicast that does not route |
-| 10 | Plex local stream | Play from a TV — **wireless TVs are on IoT, wired ones are on Home** (§ Accepted trust decisions); test whichever the household actually has | Direct play from `192.168.0.152:32400`, no transcode-over-WAN. If it transcodes, check Plex's LAN Networks setting (cutover step 11) before suspecting the network |
+| 10 | Plex local stream | Play from a TV — the Vizio pair and the Amazon units are reserved onto IoT, though the wired one only lands there if MAC-based assignment takes (§ DHCP reservations); check the client list for which VLAN it is actually on, then test | Direct play from `192.168.0.152:32400`, no transcode-over-WAN, from **either** VLAN — `iot-to-homelab-plex` and `home → homelab` both allow it. If it transcodes, check Plex's LAN Networks setting (cutover step 11) before suspecting the network |
 | 11 | HDHomeRun | Live TV in Plex | Tuner reachable at `10.0.20.200` (configured by IP) |
 | 12 | Internal ingress from Home | Browse `https://grafana.esweiss.com` from a Home laptop | 200 — the `cluster_home_cidr` allowlist entry |
 | 13 | Appliance UIs from Home | Browse `https://router.esweiss.com` from a **non**-admin Home device, then from the admin MacBook | Non-admin **fails** (`lan-tailscale-strict` is the `10.0.20.8/29` block); admin succeeds |
@@ -968,7 +1148,7 @@ correct segmentation produces — several rows are *failures by design*.
 | 15 | Port forwards | From off-net: `curl -I https://<public>`, Plex remote, `ssh -p 2222 git@git.ericsweiss.com` | All succeed |
 | 16 | wg-easy | Connect a WireGuard client from cellular | Handshake completes, internet egress works (docs/38) |
 | 17 | Tailscale | `tailscale status` on a host; reach a guest over the tailnet | Subnet route still advertised and approved (docs/05) |
-| 18 | Network gear probes | Grafana / Prometheus | `NetworkGearProbeFailed` clear for all three targets (needs ALLOW rows 10/11 *and* the two mgmt reservations filled in) |
+| 18 | Network gear probes | Grafana / Prometheus | `NetworkGearProbeFailed` clear for all three targets (needs ALLOW rows 10/11 *and* the two mgmt reservations **applied**, not merely codified). `192.168.0.1` is green today; `.2`/`.3` clear at the first apply after the pin bump |
 | 19 | Bond health | `cat /proc/net/bonding/bond0` on each opt node | `all_slaves_active 0`, one active leg (docs/34) |
 | 20 | e1000e / AQC113 watch | Loki, over the next 48 h: `{job="journal"} \|= "Hardware Unit Hang"` | No hits (docs/34) |
 | 21 | HA re-armed | `ha-manager status` | All four resources `started`, none `ignored` (cutover step 9) |

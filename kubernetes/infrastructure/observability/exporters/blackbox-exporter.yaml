@@ -248,9 +248,8 @@ spec:
         # the cluster reaches through the gateway — the `homelab-to-internal-icmp`
         # policy pair in terraform/unifi/networks.tf is what lets it.
         #
-        # Pre-cutover and pre-adoption expectations (which of these are EXPECTED
-        # RED, for how long, and what clears each one) are owned by docs/46
-        # § Expected breakage between merge and cutover — not restated here,
+        # Which of these are EXPECTED RED, for how long, and what clears each
+        # one are owned by docs/46 § Expected breakage — not restated here,
         # because a transitional note next to a live alert target is read as
         # sanction long after it stops being true.
         - name: unifi-gateway
