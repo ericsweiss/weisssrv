@@ -193,11 +193,16 @@ task infra:deploy -- --limit pve-laptop-01,pve-opt-01,pve-opt-02,pve-prec-01
 After deployment, manually authenticate each host with Tailscale:
 
 ```bash
-# SSH to each host and run tailscale up
-ssh eric@10.0.10.103 "sudo tailscale up --accept-routes --accept-dns=false"
-ssh eric@10.0.10.104 "sudo tailscale up --accept-routes --accept-dns=false"
-ssh eric@10.0.10.105 "sudo tailscale up --accept-routes --accept-dns=false"
-ssh eric@10.0.10.107 "sudo tailscale up --accept-routes --accept-dns=false"
+# SSH to each host and run tailscale up. --accept-routes MUST be false: every
+# Proxmox host is a subnet router now (tag:subnet-router, tag-only
+# auto-approval), and a host that accepts routes while sitting ON the LAN
+# consumes its peers' advertisement of its own subnet — a routing loop. The
+# current canonical re-join command (with the advertise flags) is in
+# terraform/tailscale/README.md § Recovery.
+ssh eric@10.0.10.103 "sudo tailscale up --accept-routes=false --accept-dns=false"
+ssh eric@10.0.10.104 "sudo tailscale up --accept-routes=false --accept-dns=false"
+ssh eric@10.0.10.105 "sudo tailscale up --accept-routes=false --accept-dns=false"
+ssh eric@10.0.10.107 "sudo tailscale up --accept-routes=false --accept-dns=false"
 ```
 
 This will display a URL for each host - open in browser to authenticate.
