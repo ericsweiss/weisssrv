@@ -1759,29 +1759,33 @@ without which helm-controller drift-corrects the public VIP annotation back
 within 30 minutes. Re-check before patching:
 
 ```bash
-flux get kustomizations -A | grep -E 'flux-system|infrastructure-configs|infrastructure-controllers|^apps'
-flux get helmreleases -n traefik
+# same k3s-server path as everything in 2.8 — the flux CLI lives on the admin
+# station, whose kubeconfig cannot reach the API mid-window. All five rows must
+# print suspended=true (kubectl's default columns do not show it).
+k3s kubectl get kustomization -n flux-system flux-system infrastructure-configs infrastructure-controllers apps \
+  -o custom-columns=NAME:.metadata.name,SUSPENDED:.spec.suspend
+k3s kubectl get helmrelease -n traefik traefik \
+  -o custom-columns=NAME:.metadata.name,SUSPENDED:.spec.suspend
 ```
 
 With those suspended the patches stand until step 7 reconciles the same values
 from `cluster-config` and makes them a no-op.
 
-**Where to run this:** not the admin station — the kubeconfig still names the
-API VIP `192.168.0.161`, unroutable from VLAN 20 until step 4 (§ posture
-item 5). Run these from a Proxmox host, where the VIP is still on-link:
+The where-to-run block above applies to everything below — a k3s server over
+SSH, every command prefixed `k3s`:
 
 ```bash
 # pools first, then the Services that claim them; wg-easy first so the VPN
 # fallback comes back before anything else.
-kubectl -n metallb-system patch ipaddresspool vpn-pool      --type merge -p '{"spec":{"addresses":["10.0.10.99/32"]}}'
-kubectl -n metallb-system patch ipaddresspool public-pool   --type merge -p '{"spec":{"addresses":["10.0.10.100/32"]}}'
-kubectl -n metallb-system patch ipaddresspool internal-pool --type merge -p '{"spec":{"addresses":["10.0.10.101/32"]}}'
+k3s kubectl -n metallb-system patch ipaddresspool vpn-pool      --type merge -p '{"spec":{"addresses":["10.0.10.99/32"]}}'
+k3s kubectl -n metallb-system patch ipaddresspool public-pool   --type merge -p '{"spec":{"addresses":["10.0.10.100/32"]}}'
+k3s kubectl -n metallb-system patch ipaddresspool internal-pool --type merge -p '{"spec":{"addresses":["10.0.10.101/32"]}}'
 
-kubectl -n wg-easy annotate svc wg-easy          metallb.io/loadBalancerIPs=10.0.10.99  --overwrite
-kubectl -n traefik annotate svc traefik          metallb.io/loadBalancerIPs=10.0.10.100 --overwrite
-kubectl -n traefik annotate svc traefik-internal metallb.io/loadBalancerIPs=10.0.10.101 --overwrite
+k3s kubectl -n wg-easy annotate svc wg-easy          metallb.io/loadBalancerIPs=10.0.10.99  --overwrite
+k3s kubectl -n traefik annotate svc traefik          metallb.io/loadBalancerIPs=10.0.10.100 --overwrite
+k3s kubectl -n traefik annotate svc traefik-internal metallb.io/loadBalancerIPs=10.0.10.101 --overwrite
 
-kubectl get svc -A -o wide | grep LoadBalancer   # EXTERNAL-IP on all three is 10.0.10.x
+k3s kubectl get svc -A -o wide | grep LoadBalancer   # EXTERNAL-IP on all three is 10.0.10.x
 curl -I -m5 https://<public-address>             # from off-net: the forwards work again
 ```
 

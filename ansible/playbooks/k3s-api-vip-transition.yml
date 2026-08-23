@@ -73,6 +73,36 @@
           never run against an empty value.
         success_msg: "Moving the k3s API VIP to {{ k3s_api_vip }}:{{ k3s_api_port }}"
 
+    # Fleet-wide invariant, before ANY edit: this play is a step-4 artifact and
+    # is only valid while every server still registers on the OLD subnet — a
+    # server already on 10.0.10.x means its etcd peer identity has moved ahead
+    # of step 6's one-at-a-time replacement, and the per-host pin below would
+    # otherwise happily pin that new address and sail through. The literal
+    # 192.168.0. prefix is deliberate: the play exists only on this branch, for
+    # this one window, and the rollback re-run (old VIP) holds the same
+    # invariant.
+    - name: Read every server node's InternalIP
+      ansible.builtin.command: >-
+        k3s kubectl get nodes -l node-role.kubernetes.io/control-plane
+        -o 'jsonpath={range .items[*]}{.metadata.name}={.status.addresses[?(@.type=="InternalIP")].address}{"\n"}{end}'
+      register: k3s_server_ips
+      changed_when: false
+      run_once: true
+
+    - name: Assert every server still registers on the old subnet
+      ansible.builtin.assert:
+        that:
+          - k3s_server_ips.stdout_lines
+            | reject('match', '^[^=]+=192\.168\.0\.[0-9]+$')
+            | list | length == 0
+        fail_msg: >-
+          STOP — server InternalIPs are {{ k3s_server_ips.stdout_lines }}.
+          At least one server has already re-registered outside 192.168.0.0/24,
+          so its etcd peer identity has moved ahead of step 6's one-at-a-time
+          replacement. This play must not run; see docs/46 § Phase 2 step 4.
+        success_msg: "All servers register on the old subnet: {{ k3s_server_ips.stdout_lines }}"
+      run_once: true
+
     # ADD rather than replace: the old VIP stays a valid SAN, so the move is
     # reversible without reissuing certificates. Mirrors the tls-san block of
     # the k3s role's templates/k3s-server-config.yaml.j2, which rewrites this
