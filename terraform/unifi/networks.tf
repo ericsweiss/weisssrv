@@ -396,10 +396,11 @@ locals {
   # (dns_enabled, domain_name) it was being told to keep. The v0.13.1 pin in
   # main.tf fixes that; the first supervised unfreeze apply is in README.md.
   #
-  # The thirteen entries added on 2026-08-22/23 land at that first apply;
-  # carrying them meanwhile costs nothing, because a reservation the controller
-  # has not been told about is simply a pool lease. **`eric-bedroom-hyperion` is
-  # the exception and needs a flag**: it is an existing client MOVED from
+  # The 2026-08-22/23 additions touch fourteen resources at that first apply:
+  # thirteen creates, plus one replacement. Carrying the creates meanwhile costs
+  # nothing, because a reservation the controller has not been told about is
+  # simply a pool lease. **`eric-bedroom-hyperion` is the replacement and needs
+  # a flag**: it is an existing client MOVED from
   # home/.20.211 to iot/.30.211, so #428 applies and the unfreeze apply must
   # carry
   # `-replace='module.network.unifi_client.this["eric-bedroom-hyperion"]'`.
