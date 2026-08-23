@@ -322,8 +322,11 @@ Design, runbook and the codified-vs-manual contract:
   are identified. Two specifics worth resolving at the same time:
   `vizio-wifi` (`A0:6A:44:50:EE:95`) and `vizio-cast-display`
   (`3C:9B:D6:7A:36:A3`) may be **one TV with two interfaces** — the wired MoCA
-  link and its Wi-Fi radio — in which case collapse them to one entry rather
-  than reserving both. A rename is an in-place `unifi_client` change, so each
+  link and its Wi-Fi radio. If so, **keep both reservations** (steering is
+  per-MAC, so dropping either would leave that interface falling back to Home
+  whenever the TV uses it) and just rename the pair to say they are one device,
+  e.g. `vizio-tv-wired`/`vizio-tv-wifi`; only a physically disabled interface
+  justifies removing its entry. A rename is an in-place `unifi_client` change, so each
   one needs `-replace` (upstream #428,
   [docs/46](46-unifi-network.md) § DHCP reservations).
 - [ ] **Report the three provider bugs upstream** (`ubiquiti-community/unifi`

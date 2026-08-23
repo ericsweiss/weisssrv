@@ -1924,6 +1924,27 @@ tasks:
         fi
       - op run -- terraform state {{.CLI_ARGS}}
 
+  terraform:unifi-untaint:
+    desc: "Untaint one UniFi resource (clears the destroy-and-recreate mark a failed create leaves) — usage: task terraform:unifi-untaint -- '<address>'"
+    dir: "{{.TERRAFORM_DIR}}/unifi"
+    env: *tf_unifi_env
+    preconditions: *tf_preconditions
+    cmds:
+      # `untaint` only clears the taint mark on one resource instance — it never
+      # touches the controller and cannot destroy anything, so it is safe to
+      # expose without the supervised-apply guard. The verb is HARDCODED for the
+      # same reason as terraform:unifi-state's: these env credentials must never
+      # reach a generic terraform passthrough. Prefer this over state
+      # pull/edit/push surgery, which holds no lock while the file is edited
+      # (docs/46 § Cutover as executed).
+      - |
+        if [ -z "{{.CLI_ARGS}}" ]; then
+          echo "Usage: task terraform:unifi-untaint -- '<resource address>'"
+          echo "Example: task terraform:unifi-untaint -- 'module.network.unifi_wlan.this[\"home\"]'"
+          exit 1
+        fi
+      - op run -- terraform untaint {{.CLI_ARGS}}
+
   # --- Backblaze B2 offsite-backup bucket settings (raw API; SUPERVISED apply) ---
   # scripts/b2-bucket-drift.py is the codified bucket config (it replaced the
   # terraform/b2 module after the Backblaze provider's READ path went blind

@@ -1004,22 +1004,21 @@ own, before any other network exists) is the one thing that would have avoided
 it. Recovery was to hand-create the Homelab VLAN in the UI and `terraform
 import` it, then let the rest of the plan converge.
 
-**Failed creates leave tainted resources, and there is no `task` for untaint.**
-Several resources landed half-created with read-back errors and were marked
-tainted, which makes the next apply destroy and recreate them — unacceptable for
-a live VLAN. `terraform untaint` is a top-level command, and the Taskfile
-deliberately exposes only `state` subcommands, so the procedure is state
-surgery:
+**Failed creates leave tainted resources.** Several resources landed
+half-created with read-back errors and were marked tainted, which makes the
+next apply destroy and recreate them — unacceptable for a live VLAN. The
+standing fix is now one task per resource:
 
 ```bash
-task terraform:unifi-state -- pull > /tmp/unifi.tfstate
-# edit: delete the "status": "tainted" line from each affected resource instance,
-# and bump "serial" by 1
-task terraform:unifi-state -- push /tmp/unifi.tfstate
+task terraform:unifi-untaint -- 'module.network.unifi_wlan.this["home"]'
 ```
 
-Keep the pulled file until the next apply is clean — it is the only copy of the
-pre-surgery state that is not a retained remote version.
+(`untaint` clears the mark and touches nothing else; the verb is hardcoded in
+the Taskfile the same way `terraform:unifi-state`'s is.) On cutover night that
+task did not exist yet, so the repair was state surgery — pull, delete each
+instance's `"status": "tainted"` line, bump `serial`, push — which works but
+holds no lock while the file is being edited. Use the task; keep state surgery
+for the shapes `untaint` cannot express.
 
 **`setting_preference` defaulted to `auto`, and every network write reset the
 DHCP fields.** The final apply left five networks with `dns_enabled` and
