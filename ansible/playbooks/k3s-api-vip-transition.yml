@@ -238,15 +238,26 @@
           delay: 5
           run_once: true
       rescue:
-        - name: Restore the manifest's previous VIP address
+        # The restore loops over every play host with delegation, run_once:
+        # a failed run_once gate enters the rescue of whichever host executed
+        # it, and if that host is not the manifest carrier a purely per-host
+        # restore would skip the carrier — leaving kube-vip announcing the
+        # failed address with the old VIP withdrawn. The loop restores every
+        # actual carrier no matter whose rescue is running, idempotently.
+        - name: Restore every carrier's previous VIP address
           ansible.builtin.replace:
             path: /var/lib/rancher/k3s/server/manifests/kube-vip.yaml
             regexp: '(^[ \t]*- name: address\n[ \t]*value: ")[^"]*(")'
-            replace: '\g<1>{{ k3s_kube_vip_prev.stdout | trim }}\g<2>'
+            replace: '\g<1>{{ hostvars[item].k3s_kube_vip_prev.stdout | trim }}\g<2>'
+          delegate_to: "{{ item }}"
+          loop: "{{ ansible_play_hosts }}"
+          loop_control:
+            label: "{{ item }}"
+          run_once: true
           when:
-            - k3s_kube_vip_manifest.stat.exists
-            - k3s_kube_vip_prev.stdout is defined
-            - (k3s_kube_vip_prev.stdout | trim) | length > 0
+            - hostvars[item].k3s_kube_vip_manifest.stat.exists | default(false)
+            - hostvars[item].k3s_kube_vip_prev.stdout is defined
+            - (hostvars[item].k3s_kube_vip_prev.stdout | trim) | length > 0
 
         - name: Abort — the new VIP never became ready
           ansible.builtin.fail:
