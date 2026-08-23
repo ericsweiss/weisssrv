@@ -1422,8 +1422,9 @@ the hosts carry their new addresses — which is exactly why step 1 comes first.
 Every Ansible step below runs from here. **`kubectl` is the exception between
 2.3 and step 4**: the kubeconfig names the API VIP `192.168.0.161`, which the
 gateway no longer routes once VLAN 10 is `10.0.10.0/24` — run the kubectl
-commands in 2.8/2.9 from a Proxmox host (the VIP stays on-link there while the
-hosts hold both addresses), or over the Tailscale subnet route if item 5's
+commands in 2.8/2.9 from a **k3s server** over SSH (`sudo k3s kubectl ...`, the
+bundled locally-authenticated client; a Proxmox host has neither `kubectl` nor
+a kubeconfig), or over the Tailscale subnet route if item 5's
 out-of-band path is up. Step 4 moves the VIP and `task k3s:kubeconfig` restores
 the admin station's access.
 
@@ -1732,7 +1733,27 @@ issuing `host reboot`.
 **2.8 — restore inbound early (strongly recommended).** All five WAN forwards
 are dead from 2.3 until MetalLB announces the VIPs on the new subnet. Left to
 step 7 that is hours. The nodes are already dual-addressed, so the VIPs can move
-now. These patches hold only because **all five** suspends from § Repo/CI
+now — but **run 2.9's firewall half first**: create
+`/tmp/renumber-fw-transition.yml` and push the firewall exactly as 2.9
+documents, then come back here. The deployed rules still destination-scope
+WireGuard to `192.168.0.99` (and source-scope everything to the old subnet), so
+without the transitional push the new wg-easy VIP stays blocked even after
+MetalLB announces it — the patch would look done and restore nothing. The
+NFS-export half of 2.9 can stay where it is.
+
+**Where to run the kubectl commands below:** not the admin station (its
+kubeconfig names the API VIP `192.168.0.161`, unroutable from VLAN 20 until
+step 4) and not a Proxmox host (no `kubectl`, no kubeconfig). SSH to a healthy
+k3s server over its new secondary address and use the bundled, locally
+authenticated client:
+
+```bash
+ssh eric@10.0.10.222
+sudo -i
+# prefix every kubectl command below with `k3s`, e.g. `k3s kubectl -n metallb-system ...`
+```
+
+These patches hold only because **all five** suspends from § Repo/CI
 posture item 2 are in place — in particular `traefik/helmrelease/traefik`,
 without which helm-controller drift-corrects the public VIP annotation back
 within 30 minutes. Re-check before patching:

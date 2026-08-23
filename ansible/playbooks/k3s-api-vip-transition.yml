@@ -60,8 +60,12 @@
       ansible.builtin.assert:
         that:
           - k3s_api_vip is defined
-          - k3s_api_vip | length > 0
+          - >-
+            (k3s_api_vip | string)
+            is match('^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$')
           - k3s_api_port is defined
+          - (k3s_api_port | int) > 0
+          - (k3s_api_port | int) <= 65535
         fail_msg: >-
           k3s_api_vip and k3s_api_port must both be set — they come from
           group_vars/k3s.yml, or from -e k3s_api_vip=<old VIP> when rolling
@@ -99,32 +103,6 @@
         line: '  - "{{ k3s_api_vip }}"'
       no_log: true
       register: k3s_vip_san
-
-    # `replace` never appends, so this is a no-op on the server that renders
-    # `cluster-init: true` and no server: line — without a k3s_is_first_server
-    # gate, which a rebuilt first server (role's k3s_join_existing path) would
-    # falsify.
-    - name: Point the server join URL at the new API VIP
-      ansible.builtin.replace:
-        path: /etc/rancher/k3s/config.yaml
-        regexp: '^server: "https://[^"]*"$'
-        replace: 'server: "https://{{ k3s_api_vip }}:{{ k3s_api_port }}"'
-      no_log: true
-      register: k3s_vip_join_url
-
-    # Postcondition for the silent-no-op case: `replace` reports ok when its
-    # regex matches nothing, which on a server whose `server:` line is spelled
-    # differently would leave it joining the retired VIP after restart. Every
-    # server must now either be the initializer or name the new URL.
-    - name: Verify this server can start against the new API VIP
-      ansible.builtin.command:
-        argv:
-          - grep
-          - -Eq
-          - '^(cluster-init: true|server: "https://{{ k3s_api_vip }}:{{ k3s_api_port }}")$'
-          - /etc/rancher/k3s/config.yaml
-      changed_when: false
-      no_log: true
 
     - name: Check for the kube-vip static manifest
       ansible.builtin.stat:
@@ -164,17 +142,57 @@
         success_msg: "kube-vip manifest patched on {{ _kube_vip_carriers | length }} server(s)"
       run_once: true
 
-    # Gate before any restart, deliberately: a server restarted while its join
-    # URL names a VIP that does not answer yet will not come back. If the
-    # DaemonSet rollout fails, this times out with every server still running on
-    # its old configuration, which is the recoverable outcome.
-    # Mirrors the role's own "Wait for kube-vip to assign VIP".
-    - name: Wait for kube-vip to announce the new API VIP
-      ansible.builtin.wait_for:
-        host: "{{ k3s_api_vip }}"
-        port: "{{ k3s_api_port }}"
-        timeout: 180
+    # Gate before any join-URL edit or restart, deliberately: a server whose
+    # config already names a VIP that does not answer yet will not come back if
+    # restarted, so the endpoint is proven healthy BEFORE any config points at
+    # it. If the DaemonSet rollout fails, this times out with every server still
+    # running on its old configuration AND still joining through the old VIP —
+    # the fully recoverable outcome. The probe is /readyz over the VIP, not a
+    # bare TCP check, so a half-started or unrelated listener cannot pass it;
+    # curl -k because the serving cert does not carry the new VIP SAN until the
+    # restarts below (default RBAC grants /readyz to unauthenticated, so no
+    # credential rides the unverified channel).
+    - name: Wait for the Kubernetes API to answer ready on the new VIP
+      ansible.builtin.command:
+        argv:
+          - curl
+          - -ks
+          - --max-time
+          - "5"
+          - "https://{{ k3s_api_vip }}:{{ k3s_api_port }}/readyz"
+      register: k3s_new_vip_ready
+      changed_when: false
+      until: k3s_new_vip_ready.stdout == 'ok'
+      retries: 36
+      delay: 5
       run_once: true
+
+    # `replace` never appends, so this is a no-op on the server that renders
+    # `cluster-init: true` and no server: line — without a k3s_is_first_server
+    # gate, which a rebuilt first server (role's k3s_join_existing path) would
+    # falsify.
+    - name: Point the server join URL at the new API VIP
+      ansible.builtin.replace:
+        path: /etc/rancher/k3s/config.yaml
+        regexp: '^server: "https://[^"]*"$'
+        replace: 'server: "https://{{ k3s_api_vip }}:{{ k3s_api_port }}"'
+      no_log: true
+      register: k3s_vip_join_url
+
+    # Postcondition for the silent-no-op case: `replace` reports ok when its
+    # regex matches nothing, which on a server whose `server:` line is spelled
+    # differently would leave it joining the retired VIP after restart. Every
+    # server must now either be the initializer or name the new URL.
+    - name: Verify this server can start against the new API VIP
+      ansible.builtin.command:
+        argv:
+          - grep
+          - -Eq
+          - '^(cluster-init: true|server: "https://{{ k3s_api_vip }}:{{ k3s_api_port }}")$'
+          - /etc/rancher/k3s/config.yaml
+      changed_when: false
+      no_log: true
+
 
 - name: Restart each k3s server onto the new API VIP
   hosts: k3s_servers
