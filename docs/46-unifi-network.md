@@ -2129,10 +2129,20 @@ than waiting for the hosts' own step: `task infra:deploy -- --tags base` writes
 `/etc/resolv.conf` from `dns_servers` (`10.0.10.150`/`.160`) on every managed
 host.
 
-**dns-01 and dns-02 come first** — everything downstream resolves through them,
-and their own `acme_certs_distribution_targets` list (in `host_vars/dns-01.yml`)
-now names the new addresses, so the cert push has to be re-run after they move:
-`task dns:deploy`, then the cert distribution.
+**dns-01 and dns-02 come first** — everything downstream resolves through them.
+`task dns:deploy` re-runs here, but **hold the cert distribution until the END
+of this step**: the push now originates from `10.0.10.150`, and every
+receiver's `authorized_keys` still carries a `from=` pin naming the old
+`.150` until that receiver's own play re-renders it below. A push before then
+is rejected at every receiver. So the order is: move the resolvers, run each
+receiver's owning play (which updates its pin from the branch inventory), and
+only then re-run the cert distribution — with one manual exception first:
+
+**HAOS's key is operator-managed** (docs/24 — the role does not touch its
+`authorized_keys`), so before the distribution edit it by hand to a
+transitional pin permitting **both** source addresses,
+`from="192.168.0.150,10.0.10.150"`, and narrow it back to the new address
+alone once the post-window distribution has succeeded.
 
 Then run the playbook that owns each guest, from the branch.
 
@@ -2321,18 +2331,27 @@ item runs before the window, not at step 9).
    flux get sources git flux-system      # revision is the merge commit
    ```
 
-2. Resume the four Kustomizations, reconcile, and only **then** resume the
-   traefik HelmRelease — waking it any earlier lets helm-controller's drift
-   detection re-assert the old chart-rendered VIP annotation
-   (`192.168.0.100`) and undo 2.8. It must come back only after
-   `infrastructure-controllers` has applied the `10.0.10.x`-substituted
-   HelmRelease:
+2. Resume the **children first, parent last** — the order below is
+   load-bearing twice over. The parent `flux-system` Kustomization owns the
+   children's CR definitions, and resuming it first re-applies them from git
+   with `suspend` unset — clearing the CLI-applied suspension on all three
+   children at once and letting them race ahead of this sequence. So the
+   children come back one at a time (each waited to Ready, `dependsOn` gating
+   the rest), the parent only after them, and the traefik HelmRelease last of
+   all — waking it any earlier lets helm-controller's drift detection
+   re-assert the old chart-rendered VIP annotation (`192.168.0.100`) and undo
+   2.8; it must come back only after `infrastructure-controllers` has applied
+   the `10.0.10.x`-substituted HelmRelease:
 
    ```bash
-   task flux:resume -- flux-system/kustomization/flux-system
    task flux:resume -- flux-system/kustomization/infrastructure-configs
+   flux reconcile kustomization infrastructure-configs --with-source
    task flux:resume -- flux-system/kustomization/infrastructure-controllers
+   flux reconcile kustomization infrastructure-controllers
    task flux:resume -- flux-system/kustomization/apps
+   flux reconcile kustomization apps
+   # children Ready, sequence held — only now hand their definitions back:
+   task flux:resume -- flux-system/kustomization/flux-system
    task flux:reconcile
    # verify the rendered HelmRelease now carries the new VIP before waking it:
    kubectl -n traefik get helmrelease traefik -o yaml | grep 10.0.10.100
