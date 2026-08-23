@@ -1392,27 +1392,40 @@ locally — the CI deploy jobs run on merge to `main` and would fan out to
 whichever addresses the inventory names, on their own schedule. The merge is
 step 7's first action, because Flux reconciles `main` and cannot see the branch.
 
-**4. Confirm the out-of-band admin path before the first command.** wg-easy is
-down for the inbound gap (§ Why this cannot be a rolling change) and step 9
-puts Tailscale in flux, so the fallback has to be something this plan is not
-touching that hour — plus a physical console.
+**4. Apply the transition Tailscale policy BEFORE the window opens.**
+`policy.hujson` on this branch is a deliberate superset — ACL rule 2's `dst`
+and `autoApprovers.routes` name **both** `192.168.0.0/24` and `10.0.10.0/24` —
+precisely so it can be applied ahead of everything else:
+`task terraform:tailscale-plan` → review (the plan is exactly the two
+added entries) → supervised apply. With it live, the old-CIDR fallback keeps
+working for the whole window, and any advertisement of the new route —
+step 9's deliberate one **or the post-merge deploy pipeline's** (step 7 runs
+the Proxmox play against the merged inventory, which re-advertises
+`tailscale_advertise_routes` on its own schedule) — is auto-approved instead
+of severing remote admin while it sits pending. The old-CIDR entries come out
+at step 10's cleanup apply.
 
-**5. Keep a Home-VLAN admin station** (`10.0.20.8/29`, already in `admin_lan`).
+**5. Confirm the out-of-band admin path before the first command.** wg-easy is
+down for the inbound gap (§ Why this cannot be a rolling change) and the
+subnet-route handover spans steps 7-9, so the fallback has to be something this
+plan is not touching that hour — plus a physical console.
+
+**6. Keep a Home-VLAN admin station** (`10.0.20.8/29`, already in `admin_lan`).
 It reaches the homelab through the gateway, so it survives the flip as soon as
 the hosts carry their new addresses — which is exactly why step 1 comes first.
 Every Ansible step below runs from here. **`kubectl` is the exception between
 2.3 and step 4**: the kubeconfig names the API VIP `192.168.0.161`, which the
 gateway no longer routes once VLAN 10 is `10.0.10.0/24` — run the kubectl
 commands in 2.8/2.9 from a Proxmox host (the VIP stays on-link there while the
-hosts hold both addresses), or over the Tailscale subnet route if item 4's
+hosts hold both addresses), or over the Tailscale subnet route if item 5's
 out-of-band path is up. Step 4 moves the VIP and `task k3s:kubeconfig` restores
 the admin station's access.
 
-**6. Keep a console path** to pve-nas-01 and at least one other host.
+**7. Keep a console path** to pve-nas-01 and at least one other host.
 IPMI/monitor + keyboard; the whole plan assumes you can recover a host whose
 `interfaces` file you have just broken.
 
-**7. Take the backups**: UniFi `.unf`, `task k3s:backup` (etcd snapshot), and a
+**8. Take the backups**: UniFi `.unf`, `task k3s:backup` (etcd snapshot), and a
 `/etc/network/interfaces` + `/etc/pve/corosync.conf` copy per host (the
 rollbacks below restore `/root/interfaces.pre-renumber` and
 `/root/corosync.conf.pre-renumber`).
@@ -1933,7 +1946,13 @@ changes the three places the VIP is spelled — the apiserver SAN list, the serv
 join URL, and the kube-vip DaemonSet's `address` — restarts the servers one at a
 time behind a `/readyz` gate, and asserts after each restart that the node's
 `InternalIP` has not moved. Its header comment carries the full list of what it
-deliberately does not touch.
+deliberately does not touch. A final play then rewrites each **agent's** join
+URL, edit-only: running agents ride the VIP move on their supervisor tunnels
+(the agent load-balancer holds real server addresses, not the VIP), but a
+*restarted* agent dials its `server:` URL first, and until step 6 re-templates
+it that URL would name the retired VIP — the edit closes that crash window
+without bouncing a single agent, because it is inert until the agent's own next
+restart, by which point the new VIP is live.
 
 ```bash
 # etcd gate first (step 6 has the full command block) — 3 healthy members
@@ -2205,7 +2224,10 @@ would re-apply *main's* manifests, which still carry `192.168.0.x`, undoing the
 step-2.8 VIP patches and taking inbound down again. The precondition for merging
 was "the fleet is on the new addresses", and step 6b is where that becomes true.
 The post-merge deploy pipeline is a no-op re-run against a fleet you have already
-converged by hand.
+converged by hand — with one deliberate exception: its Proxmox play re-advertises
+`tailscale_advertise_routes` as `10.0.10.0/24`, which is exactly the
+advertisement posture item 4's pre-applied policy auto-approves (and why that
+item runs before the window, not at step 9).
 
 1. Merge, then confirm Flux can see it:
 
@@ -2289,18 +2311,22 @@ kubectl get pods -A | grep -vE 'Running|Completed'
 pvesm status          # on each host: tank-proxmox active
 ```
 
-### Step 9 — Tailscale (supervised, can sever remote admin)
+### Step 9 — Tailscale route convergence
 
-Order matters: apply the **policy first**, then change what the subnet routers
-advertise, so the new route is auto-approved rather than sitting pending.
+The policy half already happened: posture item 4 applied the transition
+superset before the window opened, so both CIDRs are in ACL rule 2 and
+`autoApprovers.routes`, and nothing in this step can leave a route pending or
+sever the fallback. What remains is converging the advertisement and proving
+it:
 
-1. `task terraform:tailscale-plan` → review → supervised apply. The policy now
-   names `10.0.10.0/24` in ACL rule 2's `dst` and in `autoApprovers.routes`.
-2. Re-run the Proxmox play so `tailscale_advertise_routes` advertises
-   `10.0.10.0/24`.
-3. `tailscale status` on a host and, from a tailnet client, reach a homelab
-   service by its internal name. Only then remove the old route from the
-   admin console if it lingers.
+1. Re-run the Proxmox play so `tailscale_advertise_routes` advertises
+   `10.0.10.0/24` — unless the post-merge deploy pipeline (step 7) already did,
+   which is fine and safe for exactly the reason item 4 exists; check
+   `tailscale status` on a host first.
+2. From a tailnet client, reach a homelab service by its internal name over the
+   new route. Only then remove the old `192.168.0.0/24` route from the admin
+   console if it lingers. The old-CIDR **policy** entries stay until step 10's
+   cleanup apply.
 
 ### Step 9b — re-arm Proxmox HA
 
@@ -2314,9 +2340,17 @@ for sid in ct:150 ct:151 ct:160 vm:154; do sudo ha-manager set $sid --state star
 sudo ha-manager status          # all four "started", homes as configured (docs/25)
 ```
 
-### Step 10 — final validation
+### Step 10 — retire the transition policy, then final validation
 
-The MR merged at step 7; this step is validation only. Re-run the § Validation
+First close out posture item 4's superset: once step 9's checks pass, delete
+the two `192.168.0.0/24` transition entries (and their comments) from
+`terraform/tailscale/policy.hujson` — ACL rule 2's `dst` and
+`autoApprovers.routes` — then `task terraform:tailscale-plan` → review (the
+plan is exactly those removals) → supervised apply. Ship the edit as the
+closing follow-up MR; it is the only repo change the window leaves behind, and
+P2-1 below expects it gone.
+
+The MR merged at step 7; the rest of this step is validation only. Re-run the § Validation
 matrix above in full — every row still applies. The ones this phase can break
 are the rows that name a homelab address or a VIP: 3 (resolver reach), 8
 (external DNS fenced — its `dig` control), 10 (Plex direct play, via LAN

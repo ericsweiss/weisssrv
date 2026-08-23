@@ -255,3 +255,43 @@
           step 5: the etcd peer for this member has moved ahead of step 6's
           one-at-a-time replacement. See docs/46 § Phase 2 step 4.
         success_msg: "InternalIP unchanged at {{ k3s_node_ip_before.stdout }}"
+
+# Agents are deliberately LAST and edit-only. Running agents ride out the VIP
+# move on their supervisor tunnels — the agent load-balancer holds the real
+# server addresses, not the VIP — but the `server:` join URL in their config is
+# what a RESTARTED agent dials first, and after the move it names a VIP nothing
+# answers. Editing the file now (with the new VIP already live and verified
+# above) closes that crash window without bouncing a single agent: the edit is
+# inert until the agent's own next restart, and step 6's per-node role run
+# re-templates the file wholesale anyway.
+- name: Point each agent's join URL at the new API VIP (no restart)
+  hosts: k3s_agents
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Verify the agent has a server join URL to edit
+      ansible.builtin.command:
+        argv:
+          - grep
+          - -Eq
+          - '^server: "https://'
+          - /etc/rancher/k3s/config.yaml
+      changed_when: false
+      no_log: true
+
+    - name: Point the agent join URL at the new API VIP
+      ansible.builtin.replace:
+        path: /etc/rancher/k3s/config.yaml
+        regexp: '^server: "https://[^"]*"$'
+        replace: 'server: "https://{{ k3s_api_vip }}:{{ k3s_api_port }}"'
+      no_log: true
+
+    - name: Verify the agent now names the new API VIP
+      ansible.builtin.command:
+        argv:
+          - grep
+          - -Eq
+          - '^server: "https://{{ k3s_api_vip }}:{{ k3s_api_port }}"$'
+          - /etc/rancher/k3s/config.yaml
+      changed_when: false
+      no_log: true
