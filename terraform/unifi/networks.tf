@@ -374,7 +374,10 @@ locals {
   # mechanism for putting a device on the right network: add an entry naming the
   # target network and a WIRELESS device moves on its next association — no SSID
   # re-join, no touching the device. That is how the WLED controllers and the
-  # Kasa plugs reached IoT at cutover without ever joining `3601-IoT`.
+  # Kasa plugs reached IoT at cutover without ever joining `3601-IoT`. Steering
+  # is placement, not authorization: a device that keeps the Home PSK falls back
+  # to Home if its MAC ever stops matching, so IoT-class devices still get
+  # re-onboarded onto `3601-IoT` over time (docs/46 § DHCP reservations).
   #
   # WIRED devices behind the unmanaged switches on Connection A are the caveat:
   # steering them needs the USW to assign a VLAN by MAC to a device it does not
@@ -387,12 +390,13 @@ locals {
   # `terraform apply -replace='module.network.unifi_client.this["<key>"]'`; the
   # device is untouched, only the controller-side object is recreated.
   #
-  # APPLIES ON THIS ROOT ARE FROZEN until the module pin moves to v0.13.1: at
-  # v0.13.0 the module leaves `setting_preference` at the provider default
-  # `auto`, and every write to a network then makes the controller reset the
-  # manual DHCP fields (dns_enabled, domain_name) it is being told to keep.
+  # APPLIES ON THIS ROOT WERE FROZEN while the module sat at v0.13.0: that
+  # version left `setting_preference` at the provider default `auto`, and every
+  # write to a network then made the controller reset the manual DHCP fields
+  # (dns_enabled, domain_name) it was being told to keep. The v0.13.1 pin in
+  # main.tf fixes that; the first supervised unfreeze apply is in README.md.
   #
-  # The thirteen entries added on 2026-08-22/23 land at that bump's first apply;
+  # The thirteen entries added on 2026-08-22/23 land at that first apply;
   # carrying them meanwhile costs nothing, because a reservation the controller
   # has not been told about is simply a pool lease. **`eric-bedroom-hyperion` is
   # the exception and needs a flag**: it is an existing client MOVED from

@@ -220,10 +220,13 @@ item (docs/46).
 Rotate: mint a replacement key in Control Plane → Integrations, update the
 field, revoke the old key, then verify with `task terraform:unifi-plan` (an
 empty plan proves the new key reads every object). **The local plan is the
-check that matters.** While the module pin is at v0.13.0 the plan is not empty
-— it carries a standing, enumerable diff on the six networks' DHCP fields
-(docs/46 § Expected breakage); what proves the key is that the plan *renders* at
-all rather than failing to read. The key is also read by `unifi-drift-plan`, but that job
+check that matters.** One transitional window aside: between the v0.13.1 pin
+bump and the first supervised apply the plan is legitimately non-empty — the
+enumerable set in `terraform/unifi/README.md` — and what proves the key there
+is that the plan *renders* rather than failing to read. Once that apply has
+converged the root, the empty plan is again the pass condition and any diff
+during a rotation is real drift, not an accepted exception. The key is also
+read by `unifi-drift-plan`, but that job
 carries a blanket `allow_failure: true` over `plan -detailed-exitcode`, so a
 renamed field (empty string → `unifi_api_key` length validation), a revoked key
 (401, no validation message at all) and genuine drift all render as the same

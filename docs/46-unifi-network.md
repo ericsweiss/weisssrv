@@ -347,10 +347,18 @@ on its reservation's network whichever SSID it associates with, so moving one is
 "add an entry naming the target network" — it takes effect on the device's next
 association, with no SSID re-join and nothing to configure on the device itself.
 That is how the WLED controllers and the Kasa plugs arrived on IoT at cutover
-without ever joining `3601-IoT`, and it is the whole fix for every IoT-class
+without ever joining `3601-IoT`, and it is the immediate fix for every IoT-class
 device that came up on Home: the Levoit pair, the TVs and the Echoes.
-Re-onboarding onto `3601-IoT` (cutover step 10) is therefore hygiene, not a
-requirement, for anything reserved here.
+
+**Steering is placement, not authorization** — the reservation matches a
+client-reported MAC, and a device still holding the `TheRevengers` PSK falls
+back to Home the moment its MAC stops matching (randomized, spoofed after a
+compromise, or replaced hardware). Re-onboarding onto `3601-IoT` (cutover
+step 10) is therefore the step that actually removes the Home credential from
+IoT-class devices, and it stays a required follow-up
+([docs/16](16-next-steps.md)) even though nothing breaks while it waits. The
+reservation keeps steering the device identically after the re-join, so the
+migration is invisible at the network layer.
 
 **Wired devices behind the unmanaged switches are the exception**, and two
 entries above are marked for it: `eric-bedroom-hyperion` on the Connection A run
@@ -938,7 +946,9 @@ shove).
     Everything reserved in § DHCP reservations moves on its own: the WLED
     controllers, the Kasa plugs (`K125M-*`), the Levoit appliances, the TVs and
     the Echoes all land on IoT from any SSID, which is what the cutover proved.
-    Re-onboarding them onto `3601-IoT` is optional hygiene. The Hue bridge moves
+    Re-onboarding them onto `3601-IoT` still happens, on no deadline — it is
+    what removes the Home PSK from those devices, and steering alone does not
+    (§ DHCP reservations, "placement, not authorization"). The Hue bridge moves
     to the wired IoT port (UCG port 1) rather than an SSID.
 11. **Re-point discovery-based integrations** per the SSDP table above, and fix
     the application-layer settings that assume one flat subnet — the network is
@@ -1103,10 +1113,10 @@ sanctioned state. Status as of 2026-08-22:
   applies at v0.13.0 (§ Cutover as executed).
 - [ ] **Run the first clean supervised apply.** This is the gate every
   remaining item sits behind. The expected plan is exactly: one in-place
-  `setting_preference` update per network plus the twelve new reservations
-  (§ DHCP reservations), with the `eric-bedroom-hyperion` network move needing
-  `-replace` (upstream #428; command in `terraform/unifi/README.md`). The apply
-  converges the plan to no-changes.
+  `setting_preference` update per network, thirteen new reservation creates,
+  and the replacement of `eric-bedroom-hyperion` for its network move
+  (§ DHCP reservations; upstream #428; command in
+  `terraform/unifi/README.md`). The apply converges the plan to no-changes.
 - [ ] **Expire the `NetworkGearProbeFailed` silence** (set to 2026-08-29) rather
   than renewing it, and confirm all three probes are green (validation row 18).
 - [ ] **`unifi-drift-plan` is green on the next schedule** (validation row 23).

@@ -306,6 +306,14 @@ Design, runbook and the codified-vs-manual contract:
   fix. They are deliberately **not** in `terraform/unifi/networks.tf` yet:
   reserving an unidentified device onto a VLAN that denies it everything is a
   good way to break something nobody can name.
+- [ ] **Re-onboard the steered IoT devices onto `3601-IoT`**, at whatever pace
+  suits — one device at a time is fine. Per-MAC steering places them on IoT
+  today, but placement is not authorization: each of these devices still holds
+  the `TheRevengers` PSK and falls back to Home if its MAC ever stops matching
+  the reservation (randomization, spoofing after a compromise, replaced
+  hardware). Re-joining `3601-IoT` removes the Home credential; the reservation
+  keeps steering identically afterward, so nothing else changes
+  ([docs/46](46-unifi-network.md) § DHCP reservations).
 - [ ] **Give the TVs and Echoes friendly names.** Seven IoT reservations carry
   the controller's reported hostname because nobody has mapped them to rooms
   yet: `amazon-01f20c070`, `amazon-5b51cd6d9`, `amazon-a70f51c2d`,

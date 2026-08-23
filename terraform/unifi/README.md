@@ -26,7 +26,8 @@ network writes no longer reset the manual DHCP fields (`dns_enabled`,
 the API and an apply at the old pin would have stripped them again).
 
 The first plan at this pin must show exactly: one in-place
-`setting_preference` update per network, plus the new client reservations.
+`setting_preference` update per network, thirteen new reservation creates, and
+one replacement.
 Because `eric-bedroom-hyperion` moves networks and upstream #428 breaks
 in-place `unifi_client` updates, that apply runs with:
 
