@@ -193,6 +193,40 @@ adguard_home_rewrites:
   # must stay the external name — docs/08.
   - domain: "auth.ericsweiss.com"
     answer: "192.168.0.101"
+  # SECOND DOCUMENTED EXCEPTION — the whole GitLab family, for the same reason:
+  # resolving these names publicly makes an internal client hairpin to our own
+  # WAN address, which the UniFi gateway does not reliably loop back for the
+  # node announcing it (the ASUS happened to). Two of the four broke production
+  # within a day of the cutover:
+  #
+  #   git      — a containerd pull from registry.git.esweiss.com is redirected
+  #              to https://git.ericsweiss.com/jwt/auth for its bearer token
+  #              (GitLab advertises the realm on external_url; not configurable
+  #              per-client), so the pull dies at the 401 no matter which
+  #              registry hostname it started from. Hermes ImagePullBackOff,
+  #              2026-08-22.
+  #   registry — the same class one layer up: a runner resolving the external
+  #              registry name timed out pulling molecule-ci, failing 43/43
+  #              molecule jobs in weisssrv-lib !35.
+  #
+  # git and registry were added live through the AdGuard API as the interim fix
+  # and are codified here so the role's prune does not delete them. The pages
+  # pair has not broken anything; it is added for PARITY, because it is the same
+  # class of name reachable the same way and the cost of waiting for it to fail
+  # is another outage. All four have Traefik routes on .101 (vm-ingress).
+  #
+  # Deliberately NOT rewritten: ide.git and *.ide.git. The Web IDE extension
+  # host is required to hairpin via Cloudflare so GitLab sees the WAN address
+  # (Taskfile, docs/27), and it is also the only external probe left witnessing
+  # the `direct` A record — see docs/08 § Cross-domain rewrites.
+  - domain: "git.ericsweiss.com"
+    answer: "192.168.0.101"
+  - domain: "registry.git.ericsweiss.com"
+    answer: "192.168.0.101"
+  - domain: "pages.git.ericsweiss.com"
+    answer: "192.168.0.101"
+  - domain: "*.pages.git.ericsweiss.com"
+    answer: "192.168.0.101"
   # Hermes gateway OpenAI-compatible API (bearer-keyed; Home Assistant Voice
   # pipeline — docs/37 §Voice assistant). Internal-only, no external record.
   - domain: "agent-api.{{ internal_domain }}"

@@ -12,6 +12,13 @@ k3s_tls_sans:
 k3s_registry_host_pins:
   - name: "registry.git.{{ external_domain }}"
     ip: 192.168.0.101
+  # The registry hands containerd a 401 pointing at
+  # https://git.ericsweiss.com/jwt/auth for the bearer token, so pinning the
+  # registry name alone still leaves the pull resolving the auth realm publicly
+  # — and a public answer means hairpinning to our own WAN address, which the
+  # UniFi gateway does not loop back for the announcing node (docs/08).
+  - name: "git.{{ external_domain }}"
+    ip: 192.168.0.101
 k3s_storage_host_pins:
   - name: "pve-nas-01.{{ internal_domain }}"
     ip: 192.168.0.102

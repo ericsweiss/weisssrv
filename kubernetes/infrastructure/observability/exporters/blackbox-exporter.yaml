@@ -277,13 +277,28 @@ spec:
           module: http_pages
         # External path (Cloudflare -> WAN -> MetalLB .100): catches DDNS drift
         # and public-ingress breakage the internal probes cannot see. AdGuard
-        # rewrites only *.esweiss.com, so every *.ericsweiss.com probe below
-        # genuinely leaves the LAN — except auth.ericsweiss.com, see its target.
-        # Each externally-published app is probed on BOTH names, with modules
-        # mirroring its internal probe.
+        # rewrites only *.esweiss.com, so most *.ericsweiss.com probes below
+        # genuinely leave the LAN — the exceptions are the five cross-domain
+        # rewrites (auth, and the git/registry.git/pages.git family), whose
+        # targets each say so. Each externally-published app is probed on BOTH
+        # names, with modules mirroring its internal probe.
         - name: home-assistant-external
           url: https://home.${cluster_external_domain}
           module: http_2xx
+        # NOT external despite the hostname, since 2026-08-22: the whole
+        # git/registry.git/pages.git family are AdGuard split-horizon exceptions
+        # (group_vars/dns.yml), so that containerd's token fetch at /jwt/auth
+        # and CI's registry pulls do not hairpin. These three therefore probe
+        # the internal VIP over the EXTERNAL hostnames' routers and certs —
+        # coverage the *.esweiss.com probes do not give — but none of them
+        # witnesses DDNS drift or public-ingress breakage any more.
+        #
+        # What still does: gitlab-webide-external at the bottom of this list.
+        # registry.git, pages.git and ide.git are all CNAMEs to direct, so that
+        # one probe covers the direct A record and the direct-TLS path for all
+        # of them. The `git` A record is separately DDNS-managed and now has NO
+        # external probe — the residual is docs/08 § Cross-domain rewrites, with
+        # the follow-up in docs/16. Do not "fix" this by dropping a rewrite.
         - name: gitlab-external
           url: https://git.${cluster_external_domain}
           module: http_2xx

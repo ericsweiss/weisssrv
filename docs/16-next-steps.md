@@ -330,6 +330,17 @@ Design, runbook and the codified-vs-manual contract:
   doing it for `unifi` alone would diverge the house pattern for no gain.
   Until then, docs/46 § Expected breakage carries the "must go green after the
   first apply" assertion that makes a lingering yellow noticeable.
+- [ ] **Restore external observation of the `git` A record.** The cross-domain
+  rewrites that stopped the hairpin outages ([docs/08](08-dns.md)
+  § Cross-domain rewrites) also stopped four blackbox probes from leaving the
+  LAN. Most of that coverage survives elsewhere — `registry.git`, `pages.git`
+  and `ide.git` are CNAMEs to `direct`, which `gitlab-webide-external` still
+  exercises — but `git` is its own DDNS-managed A record and now has no
+  external probe at all, so DDNS drift on it would surface only when someone
+  outside the house tried to clone. The fix is a probe that genuinely resolves
+  publicly: a blackbox module pinned to a public resolver, or a check that
+  compares the record's Cloudflare content against the current WAN IP. The
+  wrong fix is dropping a rewrite.
 
 ### Nextcloud follow-ups (not blockers)
 
