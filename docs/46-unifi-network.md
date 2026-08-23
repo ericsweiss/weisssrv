@@ -2032,7 +2032,7 @@ now names the new addresses, so the cert push has to be re-run after they move:
 Then run the playbook that owns each guest, from the branch.
 
 Then the AdGuard rewrites: `group_vars/dns.yml` carries ~50 A rewrites plus the
-PTR rules in `adguard_home_filters`, which have moved from
+PTR rules in `adguard_home_user_rules`, which have moved from
 `<n>.0.168.192.in-addr.arpa` to `<n>.10.0.10.in-addr.arpa`. Push them with
 `task dns:deploy` once both resolvers
 are on their new addresses — before this point clients resolve to addresses that
@@ -2104,8 +2104,14 @@ so move **one server at a time**, running the gate above before and after each:
    host from the branch:
 
    ```bash
-   ansible-playbook ansible/playbooks/k3s.yml --limit <server>
+   ansible-playbook ansible/playbooks/k3s.yml --limit <server> -e @/tmp/renumber-fw-transition.yml
    ```
+
+   The transition extra-vars file is as mandatory here as on the agent loop
+   below — this invocation also re-renders the cluster-wide firewall, and
+   without the dual-subnet override it would strip the old-subnet entries while
+   the other two etcd servers still hold old addresses, severing inter-server
+   and NFS traffic mid-quorum-move.
 
    It rejoins through `10.0.10.161`, which step 4 made live. The role has **no
    per-node join-URL input** — `server:` is templated from `k3s_api_vip` in both
