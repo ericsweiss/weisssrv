@@ -279,6 +279,24 @@
       retries: 30
       delay: 10
 
+    # The restart above runs failed_when: false (the etcd-rejoin flap), so
+    # nothing yet proves the new configuration LOADED — a restart that failed
+    # before replacing the process leaves the old apiserver serving, and readyz
+    # would pass against it. The live cert is the proof: it must now carry the
+    # new VIP SAN.
+    - name: Verify the live certificate now carries the new VIP SAN
+      ansible.builtin.shell: |
+        set -o pipefail
+        echo | openssl s_client -connect 127.0.0.1:{{ k3s_api_port }} 2>/dev/null \
+          | openssl x509 -noout -ext subjectAltName
+      args:
+        executable: /bin/bash
+      register: k3s_live_sans_after
+      changed_when: false
+      until: k3s_api_vip in (k3s_live_sans_after.stdout | default(''))
+      retries: 12
+      delay: 10
+
     # readyz proves the local apiserver answers; it does not prove the NODE
     # recovered — the kubelet's Ready condition (and with it the etcd member's
     # full rejoin) can lag, and the cached InternalIP below stays populated

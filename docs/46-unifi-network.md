@@ -1815,17 +1815,80 @@ restates the branch's entries and adds `192.168.0.0/24` alongside each:
 ```bash
 cat > /tmp/renumber-fw-transition.yml <<'YAML'
 # Phase 2 transition ONLY. Deleted at step 8.
+#
+# The four MEMBER sets get exact old-address counterparts, never the old /24:
+# these sets gate member-class access (pve cluster ports, NFS, k3s), and a /24
+# would hand every old-addressed guest that membership for the whole window.
+# The counterparts are derivable by eye — the renumber preserves last octets,
+# so each list below is the committed inventory's membership with the
+# 192.168.0. prefix. The client SCOPES further down keep /24 entries on
+# purpose: that is what those sets contained before the renumber too.
 firewall_ipset_special_entries:
   pve_hosts:
-    - {ip: 192.168.0.0/24, comment: TRANSITION old homelab subnet}
+    - {ip: 192.168.0.102, comment: TRANSITION old host address}
+    - {ip: 192.168.0.103, comment: TRANSITION old host address}
+    - {ip: 192.168.0.104, comment: TRANSITION old host address}
+    - {ip: 192.168.0.105, comment: TRANSITION old host address}
+    - {ip: 192.168.0.106, comment: TRANSITION old host address}
+    - {ip: 192.168.0.107, comment: TRANSITION old host address}
   core-cluster:
-    - {ip: 192.168.0.0/24, comment: TRANSITION old homelab subnet}
+    - {ip: 192.168.0.102, comment: TRANSITION old member address}
+    - {ip: 192.168.0.103, comment: TRANSITION old member address}
+    - {ip: 192.168.0.104, comment: TRANSITION old member address}
+    - {ip: 192.168.0.105, comment: TRANSITION old member address}
+    - {ip: 192.168.0.106, comment: TRANSITION old member address}
+    - {ip: 192.168.0.107, comment: TRANSITION old member address}
+    - {ip: 192.168.0.150, comment: TRANSITION old member address}
+    - {ip: 192.168.0.151, comment: TRANSITION old member address}
+    - {ip: 192.168.0.152, comment: TRANSITION old member address}
+    - {ip: 192.168.0.153, comment: TRANSITION old member address}
+    - {ip: 192.168.0.154, comment: TRANSITION old member address}
+    - {ip: 192.168.0.155, comment: TRANSITION old member address}
+    - {ip: 192.168.0.156, comment: TRANSITION old member address}
+    - {ip: 192.168.0.157, comment: TRANSITION old member address}
+    - {ip: 192.168.0.158, comment: TRANSITION old member address}
+    - {ip: 192.168.0.160, comment: TRANSITION old member address}
+    - {ip: 192.168.0.202, comment: TRANSITION old member address}
+    - {ip: 192.168.0.203, comment: TRANSITION old member address}
+    - {ip: 192.168.0.204, comment: TRANSITION old member address}
+    - {ip: 192.168.0.205, comment: TRANSITION old member address}
+    - {ip: 192.168.0.206, comment: TRANSITION old member address}
+    - {ip: 192.168.0.207, comment: TRANSITION old member address}
+    - {ip: 192.168.0.222, comment: TRANSITION old member address}
+    - {ip: 192.168.0.223, comment: TRANSITION old member address}
+    - {ip: 192.168.0.227, comment: TRANSITION old member address}
   nfs_clients:
-    - {ip: 192.168.0.0/24, comment: TRANSITION old homelab subnet}
+    - {ip: 192.168.0.102, comment: TRANSITION old member address}
+    - {ip: 192.168.0.103, comment: TRANSITION old member address}
+    - {ip: 192.168.0.104, comment: TRANSITION old member address}
+    - {ip: 192.168.0.105, comment: TRANSITION old member address}
+    - {ip: 192.168.0.106, comment: TRANSITION old member address}
+    - {ip: 192.168.0.107, comment: TRANSITION old member address}
+    - {ip: 192.168.0.153, comment: TRANSITION old member address}
+    - {ip: 192.168.0.154, comment: TRANSITION old member address}
+    - {ip: 192.168.0.156, comment: TRANSITION old member address}
+    - {ip: 192.168.0.157, comment: TRANSITION old member address}
+    - {ip: 192.168.0.202, comment: TRANSITION old member address}
+    - {ip: 192.168.0.203, comment: TRANSITION old member address}
+    - {ip: 192.168.0.204, comment: TRANSITION old member address}
+    - {ip: 192.168.0.205, comment: TRANSITION old member address}
+    - {ip: 192.168.0.206, comment: TRANSITION old member address}
+    - {ip: 192.168.0.207, comment: TRANSITION old member address}
+    - {ip: 192.168.0.222, comment: TRANSITION old member address}
+    - {ip: 192.168.0.223, comment: TRANSITION old member address}
+    - {ip: 192.168.0.227, comment: TRANSITION old member address}
   k3s_nodes:
     - {ip: 10.0.10.161, comment: k3s API VIP}
     - {ip: 192.168.0.161, comment: TRANSITION old k3s API VIP}
-    - {ip: 192.168.0.0/24, comment: TRANSITION old homelab subnet}
+    - {ip: 192.168.0.202, comment: TRANSITION old node address}
+    - {ip: 192.168.0.203, comment: TRANSITION old node address}
+    - {ip: 192.168.0.204, comment: TRANSITION old node address}
+    - {ip: 192.168.0.205, comment: TRANSITION old node address}
+    - {ip: 192.168.0.206, comment: TRANSITION old node address}
+    - {ip: 192.168.0.207, comment: TRANSITION old node address}
+    - {ip: 192.168.0.222, comment: TRANSITION old node address}
+    - {ip: 192.168.0.223, comment: TRANSITION old node address}
+    - {ip: 192.168.0.227, comment: TRANSITION old node address}
   lan_clients:
     - {ip: 10.0.10.0/24, comment: homelab LAN}
     - {ip: 10.0.20.0/24, comment: Home VLAN 20}
