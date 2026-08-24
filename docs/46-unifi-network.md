@@ -1622,9 +1622,14 @@ be repairing routes towards an address that is not there.
 **Rollback for step 2.** Apply `terraform/unifi` from a `main` checkout — it
 still carries the pre-renumber `homelab` subnet, DHCP scope and forward targets
 — with `TF_VAR_unifi_api_url` set to whichever address the gateway currently
-answers on, then put the 1Password `url` back to match. Step 1 is untouched
-either way: the hosts keep both addresses, so nothing below the gateway has to
-be undone.
+answers on, then put the 1Password `url` back to match — and then **reverse
+every route repair already made**: any host or guest that 2.4/2.5 pointed at
+`10.0.10.1` still routes there after the gateway returns to `192.168.0.1`,
+with no off-subnet access and no replies to the admin station until each one
+is put back (`ip route replace default via 192.168.0.1`, same loops, old
+gateway). Step 1 is untouched
+either way: the hosts keep both addresses, and the addresses themselves need
+no undoing — only the routes.
 
 **2.4 — host default routes.** On each Proxmox host:
 
@@ -1692,9 +1697,19 @@ for v in 151 152 158; do
 done
 
 # cloud-init VMs and k3s nodes, over SSH to their new addresses
+failed=""
 for n in 153 156 157 202 203 204 205 206 207 222 223 227; do
-  ssh "eric@10.0.10.$n" 'sudo ip route replace default via 10.0.10.1' || echo "FAILED .$n"
+  ssh "eric@10.0.10.$n" 'sudo ip route replace default via 10.0.10.1' || failed="$failed .$n"
 done
+[ -z "$failed" ] || echo "STOP — no route on:$failed. Fix each before ANY further step."
+```
+
+A `STOP` line here — or from the LXC loop above — halts the whole procedure,
+not just its loop: every later step assumes each guest routes through
+`10.0.10.1`, and a guest left on the retired gateway silently loses every
+off-subnet reply while the migration keeps mutating around it.
+
+```bash
 
 # windows .155, at an elevated prompt — one command sets address, mask and the
 # adapter's CONFIGURED default gateway together, which is what survives a
@@ -1777,9 +1792,11 @@ HA is a Proxmox HA resource — confirm it is still `ignored`/paused per the
 cutover HA-pause procedure, or that a reboot will not trigger a recovery, before
 issuing `host reboot`.
 
-**2.8 — restore inbound early (strongly recommended).** All five WAN forwards
-are dead from 2.3 until MetalLB announces the VIPs on the new subnet. Left to
-step 7 that is hours. The nodes are already dual-addressed, so the VIPs can move
+**2.8 — restore inbound early (strongly recommended).** The three VIP-backed
+forwards (http, https, wg-easy) are dead from 2.3 until MetalLB announces the
+VIPs on the new subnet — left to step 7 that is hours. (Plex and gitlab-ssh
+target dual-addressed guests directly and came back at 2.5 with those guests'
+default routes, as the outage table states.) The nodes are already dual-addressed, so the VIPs can move
 now — and 2.9's pushes must already be live (2.7 ran them; if you skipped the
 HAOS flip, run 2.9's firewall half now). The deployed rules still destination-scope
 WireGuard to `192.168.0.99` (and source-scope everything to the old subnet), so
