@@ -29,7 +29,7 @@ data:
   helm_chart_versions_cert_manager: v1.21.1
   helm_chart_versions_external_dns: 1.21.1
   helm_chart_versions_external_secrets: 2.9.0
-  helm_chart_versions_kube_prometheus_stack: 88.5.3
+  helm_chart_versions_kube_prometheus_stack: 88.5.4
   helm_chart_versions_kured: 6.1.0
   helm_chart_versions_loki: 18.11.2
   helm_chart_versions_metallb: 0.15.3
@@ -44,8 +44,8 @@ data:
   helm_chart_versions_vpa: 5.0.0
   hermes_camofox_version: 1.13.0
   hermes_claude_version: 2.1.241
-  hermes_codex_version: 0.149.0
-  hermes_image_version: v2026.8.19-r3
+  hermes_codex_version: 0.149.1
+  hermes_image_version: v2026.8.19-r4
   hermes_op_version: 2.39.0-1
   hermes_version: v2026.8.19
   hindsight_llamacpp_version: b10068
