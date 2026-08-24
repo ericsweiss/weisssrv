@@ -1683,13 +1683,17 @@ Then the rest, same command per class as step 1:
 # past with smtp still on the retired gateway.
 # Resolve each container's CURRENT node and run the exec THERE, failing hard:
 # pct only operates on local guests, and an `|| echo` would let an HA-migrated
-# container scroll past still holding the retired gateway. The name->address
-# map is inline because resolver state is in flux during this step.
-declare -A NIP=( [pve-nas-01]=10.0.10.102 [pve-laptop-01]=10.0.10.103 \
-  [pve-opt-01]=10.0.10.104 [pve-opt-02]=10.0.10.105 \
-  [pve-opt-03]=10.0.10.106 [pve-prec-01]=10.0.10.107 )
+# container scroll past still holding the retired gateway. Run this from the
+# ADMIN STATION, and note the map uses the OLD host addresses on purpose: at
+# this point 2.9's transition sets are not deployed yet, so the hosts' sshd
+# from= allowlists admit the admin station against their 192.168.0.x
+# identities only — the old addresses stay valid until step 6b. The pvesh
+# query rides the same path.
+declare -A NIP=( [pve-nas-01]=192.168.0.102 [pve-laptop-01]=192.168.0.103 \
+  [pve-opt-01]=192.168.0.104 [pve-opt-02]=192.168.0.105 \
+  [pve-opt-03]=192.168.0.106 [pve-prec-01]=192.168.0.107 )
 for v in 151 152 158; do
-  node=$(sudo pvesh get /cluster/resources --type vm --output-format json \
+  node=$(ssh eric@192.168.0.102 "sudo pvesh get /cluster/resources --type vm --output-format json" \
     | python3 -c "import json,sys; print([r['node'] for r in json.load(sys.stdin) if r.get('vmid')==$v][0])")
   ssh -o StrictHostKeyChecking=accept-new "eric@${NIP[$node]}" \
     "sudo pct exec $v -- ip route replace default via 10.0.10.1" \
@@ -2224,7 +2228,7 @@ one. Per class:
 
 | Class | Permanent form |
 |---|---|
-| LXC | on the host: `pct config <vmid> \| grep ^net0` → re-set that *whole* line with only `ip=`/`gw=` changed (`pct set <vmid> --net0 name=eth0,bridge=vmbr0,hwaddr=<unchanged>,ip=10.0.10.<n>/24,gw=10.0.10.1`), then `pct reboot <vmid>`. Keeping `hwaddr` matters — a new MAC invalidates the UniFi reservation and the DHCP-independent identity the firewall aliases assume |
+| LXC | on the host: `pct config <vmid> \| grep ^net0` → re-set that *whole* line — every existing option verbatim, only `ip=`/`gw=` changed. `--net0` REPLACES the complete property, so an option you omit is an option you turned off: dropping `firewall=1` silently detaches the container from its Proxmox security groups, and dropping `hwaddr` invalidates the UniFi reservation and the DHCP-independent identity the firewall aliases assume. Build the new value by editing the printed line, not by retyping it. Then `pct reboot <vmid>` |
 | cloud-init VM | on the host: `qm set <vmid> --ipconfig0 ip=10.0.10.<n>/24,gw=10.0.10.1`, **and** fix the guest's own on-disk config in the same visit (`/etc/network/interfaces.d/50-cloud-init.cfg` or the netplan file) so it survives whether or not cloud-init re-runs the network module at boot; reboot and confirm with `ip -br addr` |
 | Windows | nothing — done at 2.5, where one `netsh interface ipv4 set address … static` replaced the whole configuration (address, mask **and** the adapter's default gateway) |
 | HAOS | nothing — done at 2.7 |
