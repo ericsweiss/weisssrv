@@ -264,20 +264,34 @@
         # without this, the fail below could claim recovery while the rollout
         # left no VIP at all.
         - name: Verify the restored VIP answers ready
+          vars:
+            # The carrier's recorded value, not this host's: the rescue can run
+            # on a non-carrier (run_once failure attribution), whose own
+            # k3s_kube_vip_prev was skipped — the same reason the restore task
+            # above loops with hostvars.
+            k3s_restored_vip: >-
+              {{ ansible_play_hosts
+                 | map('extract', hostvars)
+                 | selectattr('k3s_kube_vip_manifest.stat.exists', 'defined')
+                 | selectattr('k3s_kube_vip_manifest.stat.exists')
+                 | map(attribute='k3s_kube_vip_prev')
+                 | selectattr('stdout', 'defined')
+                 | map(attribute='stdout') | map('trim') | select
+                 | list | first | default('') }}
           ansible.builtin.command:
             argv:
               - curl
               - -ks
               - --max-time
               - "5"
-              - "https://{{ (k3s_kube_vip_prev.stdout | default('')) | trim }}:{{ k3s_api_port }}/readyz"
+              - "https://{{ k3s_restored_vip }}:{{ k3s_api_port }}/readyz"
           register: k3s_restored_vip_ready
           changed_when: false
           until: k3s_restored_vip_ready.stdout == 'ok'
           retries: 24
           delay: 5
           run_once: true
-          when: (k3s_kube_vip_prev.stdout | default('') | trim) | length > 0
+          when: k3s_restored_vip | length > 0
 
         - name: Abort — the new VIP never became ready
           ansible.builtin.fail:
