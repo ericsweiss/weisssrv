@@ -17,9 +17,11 @@ drift that the next plan will try to revert.
 **Migration state.** Phase 1 introduced the VLANs while the homelab stayed on
 `192.168.0.0/24`. Phase 2 renumbers it to `10.0.10.0/24`, preserving every last
 octet; it ships as its own MR after Phase 1 has been validated in production.
-**This document is the Phase 2 branch's copy** — every address below is already
-the post-renumber one, and § Phase 2 owns the sequence that gets the fleet
-there. On `main` (Phase 1) the same tables read `192.168.0.x`.
+**Every address below is already the post-renumber one**, and § Phase 2 owns
+the sequence that gets the fleet there. Until this MR merges (a mid-window
+step — § Phase 2 step 7), `main` still carries the Phase 1 revision whose
+tables read `192.168.0.x`; after the merge, that revision remains reachable as
+the last pre-merge commit of `main`.
 
 ---
 
@@ -1684,16 +1686,18 @@ Then the rest, same command per class as step 1:
 # Resolve each container's CURRENT node and run the exec THERE, failing hard:
 # pct only operates on local guests, and an `|| echo` would let an HA-migrated
 # container scroll past still holding the retired gateway. Run this from the
-# ADMIN STATION, and note the map uses the OLD host addresses on purpose: at
-# this point 2.9's transition sets are not deployed yet, so the hosts' sshd
-# from= allowlists admit the admin station against their 192.168.0.x
-# identities only — the old addresses stay valid until step 6b. The pvesh
-# query rides the same path.
-declare -A NIP=( [pve-nas-01]=192.168.0.102 [pve-laptop-01]=192.168.0.103 \
-  [pve-opt-01]=192.168.0.104 [pve-opt-02]=192.168.0.105 \
-  [pve-opt-03]=192.168.0.106 [pve-prec-01]=192.168.0.107 )
+# ADMIN STATION against the hosts' NEW addresses: after the 2.3 flip the
+# gateway routes Home only to `10.0.10.0/24` (the old subnet is unroutable
+# from any client VLAN — the same fact posture item 6 records for kubectl),
+# and the hosts' sshd from= allowlists already admit the station's
+# `10.0.20.8/29` source — that entry shipped with Phase 1, not with 2.9's
+# transition sets, which widen HOST-to-host membership only. The pvesh query
+# rides the same path.
+declare -A NIP=( [pve-nas-01]=10.0.10.102 [pve-laptop-01]=10.0.10.103 \
+  [pve-opt-01]=10.0.10.104 [pve-opt-02]=10.0.10.105 \
+  [pve-opt-03]=10.0.10.106 [pve-prec-01]=10.0.10.107 )
 for v in 151 152 158; do
-  node=$(ssh eric@192.168.0.102 "sudo pvesh get /cluster/resources --type vm --output-format json" \
+  node=$(ssh eric@10.0.10.102 "sudo pvesh get /cluster/resources --type vm --output-format json" \
     | python3 -c "import json,sys; print([r['node'] for r in json.load(sys.stdin) if r.get('vmid')==$v][0])")
   ssh -o StrictHostKeyChecking=accept-new "eric@${NIP[$node]}" \
     "sudo pct exec $v -- ip route replace default via 10.0.10.1" \
