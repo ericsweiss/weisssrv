@@ -270,6 +270,32 @@
           retries: 36
           delay: 5
           run_once: true
+
+        # `replace` never appends, so this is a no-op on the server that renders
+        # `cluster-init: true` and no server: line — without a k3s_is_first_server
+        # gate, which a rebuilt first server (role's k3s_join_existing path) would
+        # falsify.
+        - name: Point the server join URL at the new API VIP
+          ansible.builtin.replace:
+            path: /etc/rancher/k3s/config.yaml
+            regexp: '^server: "https://[^"]*"$'
+            replace: 'server: "https://{{ k3s_api_vip }}:{{ k3s_api_port }}"'
+          no_log: true
+          register: k3s_vip_join_url
+
+        # Postcondition for the silent-no-op case: `replace` reports ok when its
+        # regex matches nothing, which on a server whose `server:` line is spelled
+        # differently would leave it joining the retired VIP after restart. Every
+        # server must now either be the initializer or name the new URL.
+        - name: Verify this server can start against the new API VIP
+          ansible.builtin.command:
+            argv:
+              - grep
+              - -Eq
+              - '^(cluster-init: true|server: "https://{{ k3s_api_vip }}:{{ k3s_api_port }}")$'
+              - /etc/rancher/k3s/config.yaml
+          changed_when: false
+          no_log: true
       rescue:
         # The restore loops over every play host with delegation, run_once:
         # a failed run_once gate enters the rescue of whichever host executed
@@ -296,6 +322,23 @@
         # it), so the restore is not proven until the OLD VIP answers again —
         # without this, the fail below could claim recovery while the rollout
         # left no VIP at all.
+        # Any join URL already edited inside this block names the VIP the
+        # restore just withdrew — a server restarted in that state dials a dead
+        # endpoint. Revert every host's server: line to the rollback address
+        # (a silent no-op on the initializer and on hosts not yet edited).
+        - name: Revert every server join URL to the rollback address
+          ansible.builtin.replace:
+            path: /etc/rancher/k3s/config.yaml
+            regexp: '^server: "https://[^"]*"$'
+            replace: 'server: "https://{{ hostvars[item].k3s_kube_vip_rollback | default(k3s_api_vip) }}:{{ k3s_api_port }}"'
+          no_log: true
+          delegate_to: "{{ item }}"
+          loop: "{{ ansible_play_hosts }}"
+          loop_control:
+            label: "{{ item }}"
+          run_once: true
+          when: (hostvars[item].k3s_kube_vip_rollback | default('')) | length > 0
+
         - name: Verify the restored VIP answers ready
           vars:
             # The carrier's recorded value, not this host's: the rescue can run
@@ -339,32 +382,6 @@
               configuration — the recoverable outcome. No join URL or restart
               was touched. Investigate the DaemonSet before re-running.
           run_once: true
-
-    # `replace` never appends, so this is a no-op on the server that renders
-    # `cluster-init: true` and no server: line — without a k3s_is_first_server
-    # gate, which a rebuilt first server (role's k3s_join_existing path) would
-    # falsify.
-    - name: Point the server join URL at the new API VIP
-      ansible.builtin.replace:
-        path: /etc/rancher/k3s/config.yaml
-        regexp: '^server: "https://[^"]*"$'
-        replace: 'server: "https://{{ k3s_api_vip }}:{{ k3s_api_port }}"'
-      no_log: true
-      register: k3s_vip_join_url
-
-    # Postcondition for the silent-no-op case: `replace` reports ok when its
-    # regex matches nothing, which on a server whose `server:` line is spelled
-    # differently would leave it joining the retired VIP after restart. Every
-    # server must now either be the initializer or name the new URL.
-    - name: Verify this server can start against the new API VIP
-      ansible.builtin.command:
-        argv:
-          - grep
-          - -Eq
-          - '^(cluster-init: true|server: "https://{{ k3s_api_vip }}:{{ k3s_api_port }}")$'
-          - /etc/rancher/k3s/config.yaml
-      changed_when: false
-      no_log: true
 
 
 - name: Restart each k3s server onto the new API VIP

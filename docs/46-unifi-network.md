@@ -1701,10 +1701,12 @@ for v in 151 152 158; do
     | python3 -c "import json,sys; print([r['node'] for r in json.load(sys.stdin) if r.get('vmid')==$v][0])")
   ssh -o StrictHostKeyChecking=accept-new "eric@${NIP[$node]}" \
     "sudo pct exec $v -- ip route replace default via 10.0.10.1" \
-    || { echo "STOP: ct $v failed on $node — fix before continuing"; false; break; }
+    || { echo "STOP: ct $v failed on $node — fix before continuing"; lxc_ok=0; break; }
 done
-# $? is nonzero after a STOP (false, not exit — safe to paste interactively,
-# and propagates under `set -e` if this block is ever wrapped in a script)
+[ "${lxc_ok:-1}" = 1 ]
+# the test above leaves $? nonzero after a STOP (`break` itself returns 0, so
+# the flag is what carries the failure out of the loop) — safe to paste
+# interactively, and propagates under `set -e` in a wrapped script
 
 # cloud-init VMs and k3s nodes, over SSH to their new addresses
 failed=""
