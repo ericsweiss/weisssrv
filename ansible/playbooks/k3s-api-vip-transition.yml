@@ -92,7 +92,12 @@
       changed_when: false
       run_once: true
 
+    # FORWARD-ONLY: this invariant belongs to the move. The documented
+    # rollback (-e k3s_api_vip=192.168.0.161) exists precisely for the state
+    # this assert detects — a server already re-registered on the new subnet —
+    # and must not be blocked by it.
     - name: Assert every server still registers on the old subnet
+      when: k3s_api_vip | string == '10.0.10.161'
       ansible.builtin.assert:
         that:
           # Count first, then content: an empty or partial return (the
@@ -423,16 +428,25 @@
     # this host ANOTHER server's address, and pinning that would be a duplicate
     # etcd identity. The renumber preserves last octets, so the expected old
     # address derives exactly from this host's branch ansible_host.
-    - name: Assert the recorded InternalIP is this server's own old address
+    - name: Assert the recorded InternalIP is one of this server's own addresses
       vars:
-        k3s_expected_old_node_ip: "192.168.0.{{ ansible_host.split('.')[-1] }}"
+        # Forward run: the node must still sit on its old address (the fleet
+        # gate above enforces the same cluster-wide). Rollback run: a server
+        # may legitimately have re-registered on its NEW address already —
+        # that is the very state being rolled back — so either of the node's
+        # own two addresses is acceptable; any OTHER address is still a
+        # corrupted record.
+        k3s_expected_node_ips: >-
+          {{ ['192.168.0.' + ansible_host.split('.')[-1]]
+             + ([] if (k3s_api_vip | string == '10.0.10.161')
+                else ['10.0.10.' + ansible_host.split('.')[-1]]) }}
       ansible.builtin.assert:
         that:
-          - k3s_node_ip_before.stdout == k3s_expected_old_node_ip
+          - k3s_node_ip_before.stdout in k3s_expected_node_ips
         fail_msg: >-
           {{ inventory_hostname }} reported InternalIP
-          '{{ k3s_node_ip_before.stdout }}', expected
-          {{ k3s_expected_old_node_ip }} (its own pre-renumber address).
+          '{{ k3s_node_ip_before.stdout }}', expected one of
+          {{ k3s_expected_node_ips }} (its own addresses).
           Nothing was written; investigate the node object before re-running.
         success_msg: "InternalIP recorded: {{ k3s_node_ip_before.stdout }}"
 

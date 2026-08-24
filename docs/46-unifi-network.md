@@ -1695,13 +1695,21 @@ Then the rest, same command per class as step 1:
 # `10.0.20.8/29` source — that entry shipped with Phase 1, not with 2.9's
 # transition sets, which widen HOST-to-host membership only. The pvesh query
 # rides the same path.
+# Pin the hosts' EXISTING SSH identities to their new addresses first —
+# accept-new would TOFU whatever answers, and this is exactly the moment a
+# mistaken or duplicate address must not be trusted. The keys are already in
+# known_hosts under the old addresses; copy the pins:
+for o in 102 103 104 105 106 107; do
+  ssh-keygen -F "192.168.0.$o" | grep -v '^#' | sed "s/^192\.168\.0\.$o/10.0.10.$o/" >> ~/.ssh/known_hosts
+done
+
 declare -A NIP=( [pve-nas-01]=10.0.10.102 [pve-laptop-01]=10.0.10.103 \
   [pve-opt-01]=10.0.10.104 [pve-opt-02]=10.0.10.105 \
   [pve-opt-03]=10.0.10.106 [pve-prec-01]=10.0.10.107 )
 for v in 151 152 158; do
   node=$(ssh eric@10.0.10.102 "sudo pvesh get /cluster/resources --type vm --output-format json" \
     | python3 -c "import json,sys; print([r['node'] for r in json.load(sys.stdin) if r.get('vmid')==$v][0])")
-  ssh -o StrictHostKeyChecking=accept-new "eric@${NIP[$node]}" \
+  ssh "eric@${NIP[$node]}" \
     "sudo pct exec $v -- ip route replace default via 10.0.10.1" \
     || { echo "STOP: ct $v failed on $node — fix before continuing"; lxc_ok=0; break; }
 done
