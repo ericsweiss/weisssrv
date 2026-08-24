@@ -603,6 +603,42 @@
   any_errors_fatal: true
   gather_facts: false
   tasks:
+    # This play must survive being invoked alone (--limit k3s_agents skips
+    # every server-play gate), so it repeats the two checks that make an edit
+    # safe: the VIP value is one of the two legal addresses, and the endpoint
+    # it points at is proven serving before any config names it.
+    - name: Validate the API VIP inputs
+      ansible.builtin.assert:
+        that:
+          - k3s_api_vip is defined
+          - k3s_api_vip | string in ['10.0.10.161', '192.168.0.161']
+          - k3s_api_port is defined
+          - (k3s_api_port | int) > 0
+          - (k3s_api_port | int) <= 65535
+        fail_msg: >-
+          k3s_api_vip must be exactly 10.0.10.161 or 192.168.0.161 and
+          k3s_api_port a valid port — this play writes the value into every
+          agent's join URL.
+
+    - name: Wait for the Kubernetes API to answer ready on the target VIP
+      ansible.builtin.command:
+        argv:
+          - curl
+          - -sS
+          - --cacert
+          - /var/lib/rancher/k3s/agent/server-ca.crt
+          - --resolve
+          - "localhost:{{ k3s_api_port }}:{{ k3s_api_vip }}"
+          - --max-time
+          - "5"
+          - "https://localhost:{{ k3s_api_port }}/readyz"
+      register: k3s_agent_vip_ready
+      changed_when: false
+      until: k3s_agent_vip_ready.stdout == 'ok'
+      retries: 12
+      delay: 5
+      run_once: true
+
     - name: Verify the agent has a server join URL to edit
       ansible.builtin.command:
         argv:

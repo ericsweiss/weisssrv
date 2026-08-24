@@ -2292,7 +2292,8 @@ k3s agents, **one node at a time**:
 ```bash
 kubectl drain <node> --ignore-daemonsets --delete-emptydir-data
 # re-IP the VM (console or recreate per docs/19), then from the branch:
-ansible-playbook ansible/playbooks/k3s.yml --limit <node> -e @/tmp/renumber-fw-transition.yml
+ansible-playbook -i ansible/inventories/prod/hosts.yml \
+  ansible/playbooks/k3s.yml --limit <node> -e @/tmp/renumber-fw-transition.yml
 kubectl get node <node> -o wide     # INTERNAL-IP is the new address
 kubectl uncordon <node>
 ```
@@ -2363,7 +2364,8 @@ so move **one server at a time**, running the gate above before and after each:
    host from the branch:
 
    ```bash
-   ansible-playbook ansible/playbooks/k3s.yml --limit <server> -e @/tmp/renumber-fw-transition.yml
+   ansible-playbook -i ansible/inventories/prod/hosts.yml \
+     ansible/playbooks/k3s.yml --limit <server> -e @/tmp/renumber-fw-transition.yml
    ```
 
    The transition extra-vars file is as mandatory here as on the agent loop
