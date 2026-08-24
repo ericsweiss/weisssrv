@@ -327,17 +327,27 @@
         # endpoint. Revert every host's server: line to the rollback address
         # (a silent no-op on the initializer and on hosts not yet edited).
         - name: Revert every server join URL to the rollback address
+          vars:
+            # One address for every host: the fact is set only on the manifest
+            # carrier, so a per-host read would skip the non-carriers — whose
+            # join URLs are exactly the ones a failed run leaves pointing at
+            # the withdrawn VIP.
+            k3s_join_rollback: >-
+              {{ ansible_play_hosts
+                 | map('extract', hostvars)
+                 | map(attribute='k3s_kube_vip_rollback', default='')
+                 | map('trim') | select | list | first | default('') }}
           ansible.builtin.replace:
             path: /etc/rancher/k3s/config.yaml
             regexp: '^server: "https://[^"]*"$'
-            replace: 'server: "https://{{ hostvars[item].k3s_kube_vip_rollback | default(k3s_api_vip) }}:{{ k3s_api_port }}"'
+            replace: 'server: "https://{{ k3s_join_rollback }}:{{ k3s_api_port }}"'
           no_log: true
           delegate_to: "{{ item }}"
           loop: "{{ ansible_play_hosts }}"
           loop_control:
             label: "{{ item }}"
           run_once: true
-          when: (hostvars[item].k3s_kube_vip_rollback | default('')) | length > 0
+          when: k3s_join_rollback | length > 0
 
         - name: Verify the restored VIP answers ready
           vars:
