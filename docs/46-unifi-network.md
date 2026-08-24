@@ -1313,7 +1313,7 @@ own traffic, not the estate. Be honest about the rest before the window opens:
 | **VIP-backed inbound** — `*.ericsweiss.com` (http/https) and the wg-easy endpoint | step 2 apply | step 2.8 if the early VIP restore is done (minutes), otherwise step 7 (hours) | The gateway cannot forward to `192.168.0.100` once VLAN 10 *is* `10.0.10.0/24`, and re-pointing the forwards is not the cure — nothing answers on the new VIPs until MetalLB re-announces them |
 | **Guest-backed inbound** — Plex remote and `ssh -p 2222 git@git.ericsweiss.com` | step 2 apply | step 2.5 (once plex `.152` and gitlab `.153` have their new default routes) | These two forward to dual-addressed guests, not VIPs: the same apply re-points their targets to `10.0.10.x`, the guests already hold those addresses, and only the guests' default routes (for the return path) are missing until 2.5 |
 | DNS on **every client VLAN — Home included** | step 2 apply | step 2.6 (minutes, once clients re-DHCP; the admin station gets static DNS first — see 2.6) | All four VLANs' clients hold leases naming `192.168.0.150`/`.160`; after the flip the gateway has no route to that subnet at all |
-| Home Assistant **on its own address** (`http://10.0.10.154:8123`, the app on the LAN) | step 2.7 | step 2.7 (one reboot) | HAOS is the one guest that cannot be dual-addressed — see that step |
+| Home Assistant **on its own address** (`https://10.0.10.154:8123`, the app on the LAN) | step 2.7 | step 2.7 (one reboot) | HAOS is the one guest that cannot be dual-addressed — see that step |
 | Home Assistant **through Traefik** — `home.esweiss.com` / `home.ericsweiss.com`, and the five HA-bypass IngressRoutes (tv/movies/nzbget/qbittorrent/music) | step 2.7 | step 7 (the Flux reconcile) | Flux is suspended, so the live cluster still publishes the EndpointSlice address `192.168.0.154` (`apps/vm-ingress/services-default.yaml`) and still matches `ClientIP(192.168.0.154/32)` (`apps/download-clients/ingress-routes-ha-bypass.yaml`). Those are per-guest literals, not `${cluster_*}` placeholders, so they move only when the branch itself reconciles. Expect 502 on the two hostnames and HA's *arr integrations falling through to the SSO route |
 | The other vm-ingress guests through Traefik — plex, gitlab, nextcloud, immich, and the two AdGuard dashboards (`dns-01`/`dns-02.esweiss.com`) | step 5 (when each drops its old address) | step 7 | Same EndpointSlice mechanism. Reaching them by address inside VLAN 10 keeps working throughout |
 | `router.esweiss.com` (the UCG console through Traefik) | step 2 apply | step 7 | Its EndpointSlice still names `192.168.0.1` while Flux is suspended. The console itself stays reachable directly at `https://10.0.10.1` from the admin station |
@@ -1797,7 +1797,11 @@ ha > network update <interface> --ipv4-method static \
 ha > host reboot
 ```
 
-Then from a host: `ping -c1 10.0.10.154` and `curl -sk -o /dev/null -w '%{http_code}\n' http://10.0.10.154:8123`.
+Then from a host: `ping -c1 10.0.10.154` and
+`curl -s -o /dev/null -w '%{http_code}\n' --resolve home.esweiss.com:8123:10.0.10.154 https://home.esweiss.com:8123`
+— HTTPS, because `home_assistant_ssl_enabled: true` has HA serving TLS on 8123
+(a healthy instance FAILS a plaintext probe), and `--resolve` lets the
+wildcard cert validate while steering the connection at the new address.
 HA is a Proxmox HA resource — confirm it is still `ignored`/paused per the
 cutover HA-pause procedure, or that a reboot will not trigger a recovery, before
 issuing `host reboot`.
