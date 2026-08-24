@@ -1693,15 +1693,17 @@ for v in 151 152 158; do
     | python3 -c "import json,sys; print([r['node'] for r in json.load(sys.stdin) if r.get('vmid')==$v][0])")
   ssh -o StrictHostKeyChecking=accept-new "eric@${NIP[$node]}" \
     "sudo pct exec $v -- ip route replace default via 10.0.10.1" \
-    || { echo "STOP: ct $v failed on $node — fix before continuing"; break; }
+    || { echo "STOP: ct $v failed on $node — fix before continuing"; false; break; }
 done
+# $? is nonzero after a STOP (false, not exit — safe to paste interactively,
+# and propagates under `set -e` if this block is ever wrapped in a script)
 
 # cloud-init VMs and k3s nodes, over SSH to their new addresses
 failed=""
 for n in 153 156 157 202 203 204 205 206 207 222 223 227; do
   ssh "eric@10.0.10.$n" 'sudo ip route replace default via 10.0.10.1' || failed="$failed .$n"
 done
-[ -z "$failed" ] || echo "STOP — no route on:$failed. Fix each before ANY further step."
+[ -z "$failed" ] || { echo "STOP — no route on:$failed. Fix each before ANY further step."; false; }
 ```
 
 A `STOP` line here — or from the LXC loop above — halts the whole procedure,
