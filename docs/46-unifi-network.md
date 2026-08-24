@@ -1651,11 +1651,13 @@ acme.sh, GitLab, Nextcloud, Immich and every k3s node's egress go with it.
 Order is not negotiable — **the two resolvers first**, then gate on them:
 
 ```bash
-# dns-01 (.150) and dns-02 (.160) — both HA-managed, so locate them first
-# (`sudo ha-manager status | grep -E 'ct:1[56]0'`) and run each pct exec on the
-# node that CURRENTLY hosts the container
-pct exec 150 -- ip route replace default via 10.0.10.1
-pct exec 160 -- ip route replace default via 10.0.10.1
+# dns-01 (.150) and dns-02 (.160) — both HA-managed: use the same
+# resolve-the-node-then-ssh pattern as the 151/152/158 loop below (or run each
+# pct exec by hand on the node `sudo ha-manager status | grep -E 'ct:1[56]0'`
+# reports), and treat any failure as a hard stop — nothing below works without
+# the resolvers.
+pct exec 150 -- ip route replace default via 10.0.10.1   # on dns-01's CURRENT node
+pct exec 160 -- ip route replace default via 10.0.10.1   # on dns-02's CURRENT node
 
 # GATE: real recursion through each resolver before anything else moves
 dig @10.0.10.150 example.com +short
@@ -1674,11 +1676,19 @@ Then the rest, same command per class as step 1:
 # dns-01 relocation is the standing proof). Locate each one first and run the
 # exec THERE; the || makes a wrong-node attempt fail loud instead of scrolling
 # past with smtp still on the retired gateway.
-sudo ha-manager status | grep -E 'ct:15[128]'      # which node owns each HA container
-sudo pvesh get /cluster/resources --type vm --output-format json \
-  | python3 -c 'import json,sys; [print(r["vmid"], r["node"]) for r in json.load(sys.stdin) if r["vmid"] in (151,152,158)]'
+# Resolve each container's CURRENT node and run the exec THERE, failing hard:
+# pct only operates on local guests, and an `|| echo` would let an HA-migrated
+# container scroll past still holding the retired gateway. The name->address
+# map is inline because resolver state is in flux during this step.
+declare -A NIP=( [pve-nas-01]=10.0.10.102 [pve-laptop-01]=10.0.10.103 \
+  [pve-opt-01]=10.0.10.104 [pve-opt-02]=10.0.10.105 \
+  [pve-opt-03]=10.0.10.106 [pve-prec-01]=10.0.10.107 )
 for v in 151 152 158; do
-  pct exec "$v" -- ip route replace default via 10.0.10.1 || echo "FAILED ct:$v — run on its own node"
+  node=$(sudo pvesh get /cluster/resources --type vm --output-format json \
+    | python3 -c "import json,sys; print([r['node'] for r in json.load(sys.stdin) if r.get('vmid')==$v][0])")
+  ssh -o StrictHostKeyChecking=accept-new "eric@${NIP[$node]}" \
+    "sudo pct exec $v -- ip route replace default via 10.0.10.1" \
+    || { echo "STOP: ct $v failed on $node — fix before continuing"; break; }
 done
 
 # cloud-init VMs and k3s nodes, over SSH to their new addresses
@@ -2595,9 +2605,13 @@ grep -rIn -E '192(\\)*\.168(\\)*\.0(\\)*\.' \
 grep -rIn '192\\\\\.168\\\\\.0\\\\\.' kubernetes/ scripts/
 ```
 
-Grep 1 legitimately keeps hits in `docs/` and `terraform/unifi/README.md`: the
-cutover runbook and the Phase 2 narrative describe the pre-renumber world on
-purpose. Every one of those must read as a labelled historical or cutover-night
+Grep 1 legitimately keeps hits in `docs/`, `terraform/unifi/README.md`, and —
+while it still exists — `ansible/playbooks/k3s-api-vip-transition.yml`, whose
+`192.168.0.x` literals are deliberate (the rollback VIP value, the two-value
+input restriction, and the old-subnet fleet gate). Deleting that playbook is
+the small follow-up MR the window already owes once the cluster is wholly on
+`10.0.10.0/24`, and its hits retire with it. The cutover runbook and the
+Phase 2 narrative describe the pre-renumber world on purpose. Every one of those must read as a labelled historical or cutover-night
 statement — if a hit is a live instruction, it is a straggler.
 
 The MR is already merged — step 7 needed it, because Flux reconciles `main`.

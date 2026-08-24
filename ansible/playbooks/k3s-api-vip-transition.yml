@@ -259,6 +259,26 @@
             - hostvars[item].k3s_kube_vip_prev.stdout is defined
             - (hostvars[item].k3s_kube_vip_prev.stdout | trim) | length > 0
 
+        # The manifest write is asynchronous (the k3s manifest watcher applies
+        # it), so the restore is not proven until the OLD VIP answers again —
+        # without this, the fail below could claim recovery while the rollout
+        # left no VIP at all.
+        - name: Verify the restored VIP answers ready
+          ansible.builtin.command:
+            argv:
+              - curl
+              - -ks
+              - --max-time
+              - "5"
+              - "https://{{ (k3s_kube_vip_prev.stdout | default('')) | trim }}:{{ k3s_api_port }}/readyz"
+          register: k3s_restored_vip_ready
+          changed_when: false
+          until: k3s_restored_vip_ready.stdout == 'ok'
+          retries: 24
+          delay: 5
+          run_once: true
+          when: (k3s_kube_vip_prev.stdout | default('') | trim) | length > 0
+
         - name: Abort — the new VIP never became ready
           ansible.builtin.fail:
             msg: >-
