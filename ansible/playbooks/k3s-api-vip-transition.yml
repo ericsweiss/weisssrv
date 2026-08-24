@@ -179,6 +179,19 @@
         success_msg: "Rollback address recorded: {{ k3s_kube_vip_prev.stdout | trim }}"
       when: k3s_kube_vip_manifest.stat.exists
 
+    # A retry after an interrupted run can find the manifest ALREADY patched to
+    # the target — recording that as the rollback would make the rescue write
+    # the same failed value back, a no-op recovery. The rollback is therefore
+    # the recorded address unless it already equals the target, in which case
+    # it is the other of the two legal VIPs.
+    - name: Resolve the rollback address
+      ansible.builtin.set_fact:
+        k3s_kube_vip_rollback: >-
+          {{ (k3s_kube_vip_prev.stdout | trim)
+             if (k3s_kube_vip_prev.stdout | trim) != (k3s_api_vip | string)
+             else (['10.0.10.161', '192.168.0.161'] | difference([k3s_api_vip | string]) | first) }}
+      when: k3s_kube_vip_manifest.stat.exists
+
     - name: Patch kube-vip and prove the new VIP answers, restoring on failure
       block:
         # The `address` env of the role's templates/kube-vip-manifest.yaml.j2 — the
@@ -268,7 +281,7 @@
           ansible.builtin.replace:
             path: /var/lib/rancher/k3s/server/manifests/kube-vip.yaml
             regexp: '(^[ \t]*- name: address\n[ \t]*value: ")[^"]*(")'
-            replace: '\g<1>{{ hostvars[item].k3s_kube_vip_prev.stdout | trim }}\g<2>'
+            replace: '\g<1>{{ hostvars[item].k3s_kube_vip_rollback }}\g<2>'
           delegate_to: "{{ item }}"
           loop: "{{ ansible_play_hosts }}"
           loop_control:
@@ -276,8 +289,8 @@
           run_once: true
           when:
             - hostvars[item].k3s_kube_vip_manifest.stat.exists | default(false)
-            - hostvars[item].k3s_kube_vip_prev.stdout is defined
-            - (hostvars[item].k3s_kube_vip_prev.stdout | trim) | length > 0
+            - hostvars[item].k3s_kube_vip_rollback is defined
+            - (hostvars[item].k3s_kube_vip_rollback | trim) | length > 0
 
         # The manifest write is asynchronous (the k3s manifest watcher applies
         # it), so the restore is not proven until the OLD VIP answers again —
@@ -294,9 +307,8 @@
                  | map('extract', hostvars)
                  | selectattr('k3s_kube_vip_manifest.stat.exists', 'defined')
                  | selectattr('k3s_kube_vip_manifest.stat.exists')
-                 | map(attribute='k3s_kube_vip_prev')
-                 | selectattr('stdout', 'defined')
-                 | map(attribute='stdout') | map('trim') | select
+                 | map(attribute='k3s_kube_vip_rollback', default='')
+                 | map('trim') | select
                  | list | first | default('') }}
           ansible.builtin.command:
             argv:
