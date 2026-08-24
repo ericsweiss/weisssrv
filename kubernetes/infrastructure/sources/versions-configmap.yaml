@@ -9,7 +9,7 @@ data:
   adguard_sync_version: 0.9.2
   alloy_host_version: 1.18.1-1
   authentik_version: 2026.8.0
-  bar_assistant_version: 6.3.0
+  bar_assistant_version: 6.4.0
   busybox_version: '1.38'
   coredns_tailnet_version: 1.14.7
   dcgm_exporter_version: 4.6.0-4.8.3-distroless
@@ -31,7 +31,7 @@ data:
   helm_chart_versions_external_secrets: 2.9.0
   helm_chart_versions_kube_prometheus_stack: 88.5.3
   helm_chart_versions_kured: 6.1.0
-  helm_chart_versions_loki: 18.11.0
+  helm_chart_versions_loki: 18.11.2
   helm_chart_versions_metallb: 0.15.3
   helm_chart_versions_metrics_server: 3.14.0
   helm_chart_versions_nvidia_device_plugin: 0.20.0
@@ -82,7 +82,7 @@ data:
   registry_cache_version: 3.1.1
   restic_offsite_rclone_version: 1.74.4
   restic_offsite_restic_version: ''
-  salt_rim_version: 5.2.0
+  salt_rim_version: 5.3.0
   sonarr_version: 4.0.19.2979
   tailscale_version: 1.102.3
   unbound_exporter_version: 0.6.0

@@ -17,33 +17,30 @@ networks, zones, policies, client reservations and port forwards), the `wlans`
 map in `main.tf` (which has to name the passphrase variables), and the
 credential variables.
 
-## ⚠️ The first v0.13.1 apply is the unfreeze step
+## ⚠️ The first v0.13.2 apply finishes the unfreeze
 
-`main.tf` pins v0.13.1, which sets `setting_preference = "manual"` explicitly —
-network writes no longer reset the manual DHCP fields (`dns_enabled`,
-`domain_name`), which is what froze applies at v0.13.0 after the cutover
-(docs/46 § Cutover as executed; the live values were repaired by hand through
-the API and an apply at the old pin would have stripped them again).
+The 2026-08-23 unfreeze apply at v0.13.1 landed the six networks'
+`setting_preference = "manual"` (the fields that froze applies after the
+cutover are pinned and converged) and then hit three more controller
+behaviours, absorbed by module v0.13.2: the default network rejects
+virtual-network overrides (which failed the two mgmt reservations outright),
+WLAN `ap_group_ids` and the site `ips` block flap on every write (and the
+failed `ips` write DISABLED a console-enabled IPS — restored by hand;
+**day-2 IPS mode is console-owned from v0.13.2**: Settings → CyberSecure →
+Threat Management). The failed client creates left bare server-side stubs the
+next apply adopts, and the interrupted `-replace` of `eric-bedroom-hyperion`
+already removed its old state entry, so no flag is needed any more.
 
-Run the first plan at this pin with the replacement flag already on it, so the
-plan being reviewed is the plan the apply will execute:
-
-```bash
-task terraform:unifi-plan -- -replace='module.network.unifi_client.this["eric-bedroom-hyperion"]'
-```
-
-It must show exactly: one in-place `setting_preference` update per network,
-thirteen new reservation creates, and the replacement of
-`eric-bedroom-hyperion` (it moves networks, and upstream #428 breaks in-place
-`unifi_client` updates — a plan without the flag would show the in-place
-update that fails). Then apply with the same flag:
+The finishing plan and apply are plain:
 
 ```bash
-task terraform:unifi-apply -- -replace='module.network.unifi_client.this["eric-bedroom-hyperion"]'
+task terraform:unifi-plan
 ```
 
-Anything in the plan beyond those changes is real drift. After this apply the
+It must show exactly **sixteen reservation creates and nothing else** — no
+network, WLAN, or site changes. Then `task terraform:unifi-apply`, and the
 next plan must be "No changes" — that convergence closes the cutover.
+Anything in the plan beyond the sixteen creates is real drift.
 
 ## ⚠️ Apply is a supervised step
 

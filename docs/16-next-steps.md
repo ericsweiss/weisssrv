@@ -296,16 +296,28 @@ Design, runbook and the codified-vs-manual contract:
   § Cutover step 7 for the interfaces stanza). Until it is done, every device on
   that run — wired TVs, the laptop dock, Vasim's desktop — sits on VLAN 10 with
   full homelab reach.
-- [ ] **Identify and reserve the two `ESP_*` devices.** `ESP_70688C`
-  (`48:3F:DA:70:68:8C`) and `ESP_719BF2` (`48:3F:DA:71:9B:F2`) are on Home with
-  pool leases. The OUI is Espressif, so both are almost certainly IoT-class
-  (the WLED and Hyperion families are the obvious candidates), but neither is
-  identified. Work out what they are, then add `unifi_client` entries pointing
-  them at IoT — a reservation is what moves a wireless device's VLAN
-  ([docs/46](46-unifi-network.md) § DHCP reservations), so this is the whole
-  fix. They are deliberately **not** in `terraform/unifi/networks.tf` yet:
-  reserving an unidentified device onto a VLAN that denies it everything is a
-  good way to break something nobody can name.
+- [ ] **Confirm and reserve the two `ESP_*` devices — almost certainly the two
+  Tuya blinds drivers.** `ESP_70688C` (`48:3F:DA:70:68:8C`) and `ESP_719BF2`
+  (`48:3F:DA:71:9B:F2`) are on Home with pool leases. The 2026-08-23 household
+  inventory leaves the two Tuya smart-blinds drivers (Eric's bedroom, left and
+  right) as the only unaccounted Espressif devices — every Levoit and WLED unit
+  announces a real hostname, and no other Wi-Fi Espressif device exists in the
+  apartment. Confirm by power-cycling one blind and watching which ESP drops
+  (or reading the MAC from the Smart Life app), then add both as IoT
+  reservations — a reservation is what moves a wireless device's VLAN
+  ([docs/46](46-unifi-network.md) § DHCP reservations). They stay out of
+  `terraform/unifi/networks.tf` until confirmed: reserving a misidentified
+  device onto a VLAN that denies it everything breaks something nobody can
+  name.
+- [ ] **Home Assistant post-migration sweep (deliberately LAST).** HA reports
+  the SMTP, Hyperion, Tuya and VeSync integrations unhappy since the
+  segmentation — expected while devices settle onto their final VLANs, so
+  re-check each only after the finishing apply, the Connection A finale and
+  Phase 2 are all done (the cloud integrations — Tuya, VeSync — are likely
+  DNS/egress hiccups; Hyperion and SMTP are LAN-path). Separately and
+  unrelated to the network: HA wants the deprecated `http:` block removed from
+  `configuration.yaml` (imported to Settings → System → Network; breaks at
+  2027.2.0) — do it in the same sitting.
 - [ ] **Re-onboard the steered IoT devices onto `3601-IoT`**, at whatever pace
   suits — one device at a time is fine. Per-MAC steering places them on IoT
   today, but placement is not authorization: each of these devices still holds
@@ -320,13 +332,14 @@ Design, runbook and the codified-vs-manual contract:
   `amazon-a9c5657f8`, plus `amazon-f57e91` and `amazon-c7d8bc` (Amazon OUI, no
   hostname reported — presumed Echoes), and `vizio-wifi`. Rename them as they
   are identified. Two specifics worth resolving at the same time:
-  `vizio-wifi` (`A0:6A:44:50:EE:95`) and `vizio-cast-display`
-  (`3C:9B:D6:7A:36:A3`) may be **one TV with two interfaces** — the wired MoCA
-  link and its Wi-Fi radio. If so, **keep both reservations** (steering is
-  per-MAC, so dropping either would leave that interface falling back to Home
-  whenever the TV uses it) and just rename the pair to say they are one device,
-  e.g. `vizio-tv-wired`/`vizio-tv-wifi`; only a physically disabled interface
-  justifies removing its entry. A rename is an in-place `unifi_client` change, so each
+  `vizio-wifi` (`A0:6A:44:50:EE:95`) is most likely the **living-room Vizio
+  soundbar** (the 2026-08-23 inventory: three Vizio TVs of which only one is
+  wired-connected, plus one Wi-Fi soundbar), and `vizio-cast-display`
+  (`3C:9B:D6:7A:36:A3`, wired on the Connection A/MoCA run) is believed to be
+  the **living-room TV** — both to confirm before renaming, e.g.
+  `vizio-livingroom-tv` / `vizio-soundbar`. **Keep both reservations**
+  regardless (steering is per-MAC); the bedroom and Vasim's Vizio TVs and the
+  two Fire TV sticks' hosts will need entries as they appear on the network. A rename is an in-place `unifi_client` change, so each
   one needs `-replace` (upstream #428,
   [docs/46](46-unifi-network.md) § DHCP reservations).
 - [ ] **Report the three provider bugs upstream** (`ubiquiti-community/unifi`
