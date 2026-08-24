@@ -2644,10 +2644,26 @@ its own reversal, and steps 1-2 are cheap:
   `terraform/unifi` from a `main` checkout with `TF_VAR_unifi_api_url` aimed at
   whichever address answers, then put the `url` field back), undo the 2.8 MetalLB
   patches the same way (`kubectl patch`/`annotate` back to `192.168.0.x`, or
-  just resume the five suspends and reconcile from `main`), and put HAOS back
-  with the same `ha network update` at 2.7. Hosts and guests still hold both
-  addresses; nothing else changed. HAOS is the only piece that took a one-way
-  flip, and its reversal is one console command plus a reboot. The 2.9
+  just resume the five suspends and reconcile from `main`), reverse every
+  2.4/2.5 route repair (`ip route replace default via 192.168.0.1`, same
+  loops), and put back the TWO guests that took one-way flips: HAOS with the
+  same `ha network update` at 2.7, and **Windows**, whose 2.5 `netsh set
+  address` REPLACED the adapter config and removed `192.168.0.155` — the
+  inverse at an elevated prompt:
+
+  ```
+  netsh interface ipv4 set address name="Ethernet" static 192.168.0.155 255.255.255.0 192.168.0.1
+  netsh interface ipv4 set dns name="Ethernet" static 192.168.0.150 primary
+  netsh interface ipv4 add dns name="Ethernet" 192.168.0.160 index=2
+  ```
+
+  Then **force the client VLANs to re-DHCP again** — the reverted Terraform
+  restores `192.168.0.150`/`.160` as the DHCP DNS servers, but every Home /
+  IoT / Guest / Work lease issued during the window still names
+  `10.0.10.150`/`.160`, which the restored gateway no longer routes; re-run
+  2.6's SSID and port toggles (all four SSIDs) or those VLANs sit without DNS
+  until their leases renew. Every other host and guest still holds both
+  addresses; nothing else changed. The 2.9
   transition pushes are supersets — they need no reversal. If you want the
   pre-window membership back, deploy the same two plays **from a `main`
   checkout**: re-running them from this branch without `-e` installs the
