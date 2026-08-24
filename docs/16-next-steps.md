@@ -342,8 +342,19 @@ Design, runbook and the codified-vs-manual contract:
   two Fire TV sticks' hosts will need entries as they appear on the network. A rename is an in-place `unifi_client` change, so each
   one needs `-replace` (upstream #428,
   [docs/46](46-unifi-network.md) § DHCP reservations).
-- [ ] **Report the three provider bugs upstream** (`ubiquiti-community/unifi`
-  0.55.0). All three cost real time during the cutover and none is filed:
+- [ ] **Report the provider bugs upstream** (`ubiquiti-community/unifi`
+  0.55.0). All of these cost real time during the cutover or the unfreeze and
+  none is filed (drafts first, operator reviews before anything is posted):
+  - `GetClientByMAC` compares MACs case-sensitively against the controller's
+    lowercase spellings (a plain string match over `/rest/user`), so a
+    config-cased MAC makes the `api.err.MacUsed` -> adopt path die with
+    `not found: type=` — and `allow_existing` can therefore never adopt.
+    Same-cause corollary: `mac` is ForceNew, so an imported client whose config
+    spells the MAC in a different case is permanently replace-planned.
+  - The client read-back after create can report `not found: type=` while the
+    object exists, and the site `ips` / WLAN `ap_group_ids` writes round-trip
+    controller-owned values into "inconsistent result after apply" errors
+    (absorbed module-side in v0.13.2).
   - `unifi_network` writes with the default `setting_preference = "auto"` make
     the controller reset the manual DHCP fields (`dns_enabled`, `domain_name`)
     that the same request sets. Repro: apply a network with those fields, read
