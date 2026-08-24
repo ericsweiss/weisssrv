@@ -164,6 +164,21 @@
       changed_when: false
       when: k3s_kube_vip_manifest.stat.exists
 
+    # The recorded value is the ROLLBACK address — a multi-match or an
+    # unexpected string would make the rescue restore kube-vip to garbage.
+    # Exactly one line, and one of the two addresses this play may know about.
+    - name: Assert the recorded manifest address is one known VIP
+      ansible.builtin.assert:
+        that:
+          - k3s_kube_vip_prev.stdout_lines | length == 1
+          - k3s_kube_vip_prev.stdout | trim in ['10.0.10.161', '192.168.0.161']
+        fail_msg: >-
+          The kube-vip manifest's address read back as
+          {{ k3s_kube_vip_prev.stdout_lines }} — not exactly one of the two
+          known VIPs. Nothing was patched; inspect the manifest by hand.
+        success_msg: "Rollback address recorded: {{ k3s_kube_vip_prev.stdout | trim }}"
+      when: k3s_kube_vip_manifest.stat.exists
+
     - name: Patch kube-vip and prove the new VIP answers, restoring on failure
       block:
         # The `address` env of the role's templates/kube-vip-manifest.yaml.j2 — the
@@ -220,17 +235,22 @@
         # running on its old configuration AND still joining through the old VIP —
         # the fully recoverable outcome. The probe is /readyz over the VIP, not a
         # bare TCP check, so a half-started or unrelated listener cannot pass it;
-        # curl -k because the serving cert does not carry the new VIP SAN until the
+        # cluster-CA-verified via the `localhost` SAN (--resolve steers the connection
+    # at the VIP) because the serving cert does not carry the new VIP SAN until the
         # restarts below (default RBAC grants /readyz to unauthenticated, so no
         # credential rides the unverified channel).
         - name: Wait for the Kubernetes API to answer ready on the new VIP
           ansible.builtin.command:
             argv:
               - curl
-              - -ks
+              - -sS
+              - --cacert
+              - /var/lib/rancher/k3s/server/tls/server-ca.crt
+              - --resolve
+              - "localhost:{{ k3s_api_port }}:{{ k3s_api_vip }}"
               - --max-time
               - "5"
-              - "https://{{ k3s_api_vip }}:{{ k3s_api_port }}/readyz"
+              - "https://localhost:{{ k3s_api_port }}/readyz"
           register: k3s_new_vip_ready
           changed_when: false
           until: k3s_new_vip_ready.stdout == 'ok'
@@ -281,10 +301,14 @@
           ansible.builtin.command:
             argv:
               - curl
-              - -ks
+              - -sS
+              - --cacert
+              - /var/lib/rancher/k3s/server/tls/server-ca.crt
+              - --resolve
+              - "localhost:{{ k3s_api_port }}:{{ k3s_restored_vip }}"
               - --max-time
               - "5"
-              - "https://{{ k3s_restored_vip }}:{{ k3s_api_port }}/readyz"
+              - "https://localhost:{{ k3s_api_port }}/readyz"
           register: k3s_restored_vip_ready
           changed_when: false
           until: k3s_restored_vip_ready.stdout == 'ok'
