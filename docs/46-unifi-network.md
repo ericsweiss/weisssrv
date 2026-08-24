@@ -2691,7 +2691,12 @@ its own reversal, and steps 1-2 are cheap:
   ring addresses) and de-authorize every NFS mount still established against
   `192.168.0.102` — the exact breakage 2.9 exists to prevent.
 - **Step 3** (corosync): restore the saved `/root/corosync.conf.pre-renumber`,
-  `pvecm expected 1` if quorum is gone, restart `corosync` and `pve-cluster`.
+  and if quorum is gone follow the step-3 recovery discipline exactly —
+  **isolate every node outside one authoritative partition first** (stop
+  `corosync` there or power off, verify nothing else holds a writable
+  `/etc/pve`), and only then `pvecm expected 1` on one surviving node, restart
+  `corosync` and `pve-cluster`, and re-join the isolated nodes one at a time.
+  Forcing quorum with a second live partition writes two cluster states.
   Every host still holds both addresses at this point, which is why this
   reversal is cheap.
 - **Step 4** (API VIP): re-run `k3s-api-vip-transition.yml` with
@@ -2701,8 +2706,11 @@ its own reversal, and steps 1-2 are cheap:
   not reach for `k3s.yml` from `main` instead: that re-renders `cluster.fw` from
   the pre-renumber inventory mid-window (§ step 4).
 - **Steps 5-6**: a drained node that will not rejoin is a rebuild, not a
-  rollback — `task k3s:deploy` for that node against the old address, or restore
-  the etcd snapshot from `task k3s:backup` (docs/19).
+  rollback — rebuild it with the same guarded invocation the migration itself
+  uses (`ansible-playbook -i ansible/inventories/prod/hosts.yml
+  ansible/playbooks/k3s.yml --limit <node> -e @/tmp/renumber-fw-transition.yml`
+  — plain `task k3s:deploy` stays forbidden for the whole window, § step 5), or
+  restore the etcd snapshot from `task k3s:backup` (docs/19).
 - **Step 6b** (host address drop): `cp /root/interfaces.pre-drop
   /etc/network/interfaces && ifreload -a` on the affected host, from the
   console. This is the last cheap reversal on the wire.
