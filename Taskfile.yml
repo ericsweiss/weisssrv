@@ -1938,18 +1938,21 @@ tasks:
       # pull/edit/push surgery, which holds no lock while the file is edited
       # (docs/46 § Cutover as executed).
       #
-      # The address is spliced through shellQuote, not bare: resource addresses
-      # carry quotes and brackets, and an unquoted splice would hand any shell
-      # metacharacter in the argument to the shell. unifi-state cannot take this
-      # shape (arbitrary subcommand + args); this task takes exactly one
-      # argument, quoted as one word.
+      # CLI_ARGS is spliced BARE on purpose: Task already renders it
+      # shell-quoted (an argument needing quoting arrives as its quoted
+      # spelling), so terraform receives exactly the one address that was
+      # typed — bracketed-and-quoted index keys included — and a metacharacter
+      # probe arrives as a literal string, never as shell. Piping it through
+      # shellQuote DOUBLE-quotes, which hands terraform an address wrapped in
+      # literal quote characters ("Must begin with a variable name") for every
+      # bracketed address. Verified empirically both ways on 2026-08-23.
       - |
-        if [ -z {{.CLI_ARGS | shellQuote}} ]; then
-          echo "Usage: task terraform:unifi-untaint -- '<resource address>'"
-          echo "Example: task terraform:unifi-untaint -- 'module.network.unifi_wlan.this[\"home\"]'"
-          exit 1
-        fi
-      - op run -- terraform untaint {{.CLI_ARGS | shellQuote}}
+        {{if not .CLI_ARGS}}
+        echo "Usage: task terraform:unifi-untaint -- '<resource address>'"
+        echo "Example: task terraform:unifi-untaint -- 'module.network.unifi_wlan.this[\"home\"]'"
+        exit 1
+        {{end}}
+      - op run -- terraform untaint {{.CLI_ARGS}}
 
   # --- Backblaze B2 offsite-backup bucket settings (raw API; SUPERVISED apply) ---
   # scripts/b2-bucket-drift.py is the codified bucket config (it replaced the

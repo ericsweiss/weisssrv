@@ -1110,12 +1110,20 @@ sanctioned state. Status as of 2026-08-22:
 - [x] **The module pin is bumped to v0.13.1** (rode the post-cutover MR with
   the full atomic pin set), closing the `setting_preference` re-strip that froze
   applies at v0.13.0 (§ Cutover as executed).
-- [ ] **Run the first clean supervised apply.** This is the gate every
-  remaining item sits behind. The expected plan is exactly: one in-place
-  `setting_preference` update per network, thirteen new reservation creates,
-  and the replacement of `eric-bedroom-hyperion` for its network move
-  (§ DHCP reservations; upstream #428; command in
-  `terraform/unifi/README.md`). The apply converges the plan to no-changes.
+- [x] **The v0.13.1 unfreeze apply ran on 2026-08-23** and landed its most
+  important half: the six networks' `setting_preference` converged. It also
+  surfaced three more controller behaviours — the default network rejects
+  virtual-network overrides (failing the two mgmt reservations), and WLAN
+  `ap_group_ids` / site `ips` writes flap (the failed `ips` write disabled the
+  console-enabled IPS; restored by hand in Settings → CyberSecure, which owns
+  day-2 IPS mode from v0.13.2 on). Module v0.13.2 absorbs all three; the
+  failed client creates left server-side stubs the next apply adopts.
+- [ ] **Run the finishing supervised apply at v0.13.2.** This is the gate every
+  remaining item sits behind. The expected plan is exactly **sixteen
+  reservation creates and nothing else** — no `-replace` needed any more (the
+  interrupted replace already removed the old `eric-bedroom-hyperion` entry);
+  full reasoning in `terraform/unifi/README.md`. The apply converges the plan
+  to no-changes.
 - [ ] **Expire the `NetworkGearProbeFailed` silence** (set to 2026-08-29) rather
   than renewing it, and confirm all three probes are green (validation row 18).
 - [ ] **`unifi-drift-plan` is green on the next schedule** (validation row 23).
