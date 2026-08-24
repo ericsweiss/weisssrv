@@ -1777,7 +1777,8 @@ dig @10.0.10.150 git.esweiss.com +short
 
 The lease must name `10.0.10.150`/`.160` and the query must answer. If
 re-associating the whole house is impractical, the alternative is to shorten
-`dhcp.leasetime` on those three networks (module input, default `24h0m0s`) in a
+`dhcp.leasetime` on all four client networks — Home included, it holds the
+same retired-resolver leases (module input, default `24h0m0s`) — in a
 supervised apply a day *before* the window and put it back afterwards — two
 extra applies, but no walking.
 
