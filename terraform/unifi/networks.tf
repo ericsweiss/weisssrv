@@ -367,6 +367,14 @@ locals {
     },
   ]
 
+  # MAC CASE MATTERS: the provider compares MACs case-SENSITIVELY against the
+  # controller's lowercase spellings (GetClientByMAC is a plain string match
+  # over /rest/user), and `mac` is ForceNew — so an adopted or imported entry
+  # must spell its MAC in LOWERCASE or every apply plans a replacement and the
+  # MacUsed->adopt path dies with "not found: type=". Entries created fresh by
+  # the provider carry their config spelling in STATE, which is why the
+  # cutover-era entries below are uppercase and must stay that way until they
+  # are ever re-imported. New entries: lowercase, always.
   # Fixed-IP reservations. Every entry ADOPTS the client the controller already
   # knows (`allow_existing` is module-side), so these do not create anything.
   #
@@ -430,7 +438,7 @@ locals {
   clients = {
     # Home (VLAN 20)
     hdhr = {
-      mac      = "00:18:DD:0A:37:45"
+      mac      = "00:18:dd:0a:37:45"
       name     = "hdhr"
       fixed_ip = "10.0.20.200"
       network  = "home"
@@ -444,7 +452,7 @@ locals {
     # once — re-read the address from the controller's client list and
     # `-replace` this entry (Tailscale is the way back in meanwhile).
     macbook = {
-      mac      = "A2:30:58:E7:62:F2"
+      mac      = "a2:30:58:e7:62:f2"
       name     = "macbook"
       fixed_ip = "10.0.20.10"
       network  = "home"
@@ -452,7 +460,7 @@ locals {
 
     # IoT (VLAN 30)
     hue = {
-      mac      = "00:17:88:7E:C7:A2"
+      mac      = "00:17:88:7e:c7:a2"
       name     = "hue"
       fixed_ip = "10.0.30.3"
       network  = "iot"
@@ -520,7 +528,7 @@ locals {
     # native VLAN — Homelab today, Home after the Connection A finale — and
     # placing it on IoT then needs a managed switch at the far end (docs/16).
     eric-bedroom-hyperion = {
-      mac      = "B8:27:EB:17:7D:DC"
+      mac      = "b8:27:eb:17:7d:dc"
       name     = "eric-bedroom-hyperion"
       fixed_ip = "10.0.30.211"
       network  = "iot"
@@ -548,13 +556,13 @@ locals {
     # reservation names the VLAN a wireless client joins regardless of the SSID
     # it associates with (docs/46 § Cutover as executed).
     levoit-purifier = {
-      mac      = "A8:48:FA:34:3E:88"
+      mac      = "a8:48:fa:34:3e:88"
       name     = "levoit-purifier"
       fixed_ip = "10.0.30.216"
       network  = "iot"
     }
     levoit-humidifier = {
-      mac      = "1C:9D:C2:73:00:B8"
+      mac      = "1c:9d:c2:73:00:b8"
       name     = "levoit-humidifier"
       fixed_ip = "10.0.30.217"
       network  = "iot"
@@ -571,50 +579,50 @@ locals {
     # eric-bedroom-hyperion above; the rest are wireless and move on their next
     # association.
     vizio-cast-display = {
-      mac      = "3C:9B:D6:7A:36:A3"
+      mac      = "3c:9b:d6:7a:36:a3"
       name     = "vizio-cast-display"
       fixed_ip = "10.0.30.218"
       network  = "iot"
     }
     vizio-wifi = {
-      mac      = "A0:6A:44:50:EE:95"
+      mac      = "a0:6a:44:50:ee:95"
       name     = "vizio-wifi"
       fixed_ip = "10.0.30.225"
       network  = "iot"
     }
     amazon-01f20c070 = {
-      mac      = "FC:49:2D:C3:D5:24"
+      mac      = "fc:49:2d:c3:d5:24"
       name     = "amazon-01f20c070"
       fixed_ip = "10.0.30.219"
       network  = "iot"
     }
     amazon-5b51cd6d9 = {
-      mac      = "38:F7:3D:11:A1:11"
+      mac      = "38:f7:3d:11:a1:11"
       name     = "amazon-5b51cd6d9"
       fixed_ip = "10.0.30.220"
       network  = "iot"
     }
     amazon-a70f51c2d = {
-      mac      = "DC:91:BF:D5:7E:E4"
+      mac      = "dc:91:bf:d5:7e:e4"
       name     = "amazon-a70f51c2d"
       fixed_ip = "10.0.30.221"
       network  = "iot"
     }
     amazon-a9c5657f8 = {
-      mac      = "FC:49:2D:EA:F0:AA"
+      mac      = "fc:49:2d:ea:f0:aa"
       name     = "amazon-a9c5657f8"
       fixed_ip = "10.0.30.222"
       network  = "iot"
     }
     # Amazon OUI, no hostname reported by the controller — presumed Echoes.
     amazon-f57e91 = {
-      mac      = "40:A2:DB:F5:7E:91"
+      mac      = "40:a2:db:f5:7e:91"
       name     = "amazon-f57e91"
       fixed_ip = "10.0.30.223"
       network  = "iot"
     }
     amazon-c7d8bc = {
-      mac      = "34:D2:70:C7:D8:BC"
+      mac      = "34:d2:70:c7:d8:bc"
       name     = "amazon-c7d8bc"
       fixed_ip = "10.0.30.224"
       network  = "iot"
