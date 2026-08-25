@@ -2277,16 +2277,27 @@ a push before then is rejected at every receiver. And "hold the distribution"
 cannot mean just skipping a later command, because `task dns:deploy` itself
 runs the `acme_certs` role, whose configured
 `acme_certs_distribution_targets` trigger the push inside the deploy. So the
-mid-window invocation empties the targets explicitly:
+mid-window invocation empties the targets explicitly — **and carries the
+transition firewall file**: `dns.yml` ends by running `proxmox_firewall`
+against the dns guests, and that role's cluster.fw render is `run_once` +
+delegated, so a `dns:deploy` without the transition vars re-renders the
+cluster firewall from the branch inventory and silently deletes step 2.9's
+old-subnet ipset entries while every k3s node still sources from them (the
+step-4 hazard note called this out for `k3s.yml`; it is true of EVERY play
+that reaches `proxmox_firewall`, this one included):
 
 ```bash
-task dns:deploy -- -e '{"acme_certs_distribution_targets": []}'
+task dns:deploy -- -e '{"acme_certs_distribution_targets": []}' \
+  -e @/tmp/renumber-fw-transition.yml
 ```
 
 Then the order is: move the resolvers (the command above), run each receiver's
 owning play (which updates its pin from the branch inventory), and close the
-step with a plain `task dns:deploy` — targets restored from `host_vars`, and
-that run IS the distribution — with one manual exception first:
+step with `task dns:deploy -- -e @/tmp/renumber-fw-transition.yml` — targets
+restored from `host_vars`, and that run IS the distribution ("plain" here
+means only that the acme-targets override is gone; the transition firewall
+file stays on every `dns:deploy` until step 8 narrows it) — with one manual
+exception first:
 
 **HAOS's key is operator-managed** (docs/24 — the role does not touch its
 `authorized_keys`), so before the distribution edit it by hand to a
@@ -2294,12 +2305,14 @@ transitional pin permitting **both** source addresses,
 `from="192.168.0.150,10.0.10.150"`, and narrow it back to the new address
 alone once the post-window distribution has succeeded.
 
-Then run the playbook that owns each guest, from the branch.
+Then run the playbook that owns each guest, from the branch — every one of
+them with `-e @/tmp/renumber-fw-transition.yml` appended, for the same reason
+as `dns:deploy` above: the guest plays all end by running `proxmox_firewall`.
 
 Then the AdGuard rewrites: `group_vars/dns.yml` carries ~50 A rewrites plus the
 PTR rules in `adguard_home_user_rules`, which have moved from
 `<n>.0.168.192.in-addr.arpa` to `<n>.10.0.10.in-addr.arpa`. Push them with
-`task dns:deploy` once both resolvers
+`task dns:deploy -- -e @/tmp/renumber-fw-transition.yml` once both resolvers
 are on their new addresses — before this point clients resolve to addresses that
 are still secondary-only, which works but hides mistakes.
 

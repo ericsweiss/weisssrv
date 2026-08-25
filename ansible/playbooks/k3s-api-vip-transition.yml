@@ -254,9 +254,10 @@
         # the fully recoverable outcome. The probe is /readyz over the VIP, not a
         # bare TCP check, so a half-started or unrelated listener cannot pass it;
         # cluster-CA-verified via the `localhost` SAN (--resolve steers the connection
-    # at the VIP) because the serving cert does not carry the new VIP SAN until the
-        # restarts below (default RBAC grants /readyz to unauthenticated, so no
-        # credential rides the unverified channel).
+        # at the VIP) because the serving cert does not carry the new VIP SAN until
+        # the restarts below. The probe authenticates with the server's admin client
+        # cert: this cluster rejects anonymous /readyz with 401, and the channel the
+        # credential rides is CA-verified, so nothing leaks to an unverified peer.
         - name: Wait for the Kubernetes API to answer ready on the new VIP
           ansible.builtin.command:
             argv:
@@ -264,6 +265,10 @@
               - -sS
               - --cacert
               - /var/lib/rancher/k3s/server/tls/server-ca.crt
+              - --cert
+              - /var/lib/rancher/k3s/server/tls/client-admin.crt
+              - --key
+              - /var/lib/rancher/k3s/server/tls/client-admin.key
               - --resolve
               - "localhost:{{ k3s_api_port }}:{{ k3s_api_vip }}"
               - --max-time
@@ -374,6 +379,10 @@
               - -sS
               - --cacert
               - /var/lib/rancher/k3s/server/tls/server-ca.crt
+              - --cert
+              - /var/lib/rancher/k3s/server/tls/client-admin.crt
+              - --key
+              - /var/lib/rancher/k3s/server/tls/client-admin.key
               - --resolve
               - "localhost:{{ k3s_api_port }}:{{ k3s_restored_vip }}"
               - --max-time
