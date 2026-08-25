@@ -646,6 +646,12 @@
           - -sS
           - --cacert
           - /var/lib/rancher/k3s/agent/server-ca.crt
+          # Authenticated with the agent's kubelet client cert for the same
+          # reason as the server-side gates: anonymous /readyz is denied (401).
+          - --cert
+          - /var/lib/rancher/k3s/agent/client-kubelet.crt
+          - --key
+          - /var/lib/rancher/k3s/agent/client-kubelet.key
           - --resolve
           - "localhost:{{ k3s_api_port }}:{{ k3s_api_vip }}"
           - --max-time
