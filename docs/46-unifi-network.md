@@ -2171,28 +2171,32 @@ without bouncing a single agent, because it is inert until the agent's own next
 restart, by which point the new VIP is live.
 
 ```bash
-# etcd gate first — ON A K3S SERVER over SSH, with step 6's full env (the
-# admin station has neither etcdctl nor the certs, and cannot reach the
-# embedded endpoint):
-#   ssh eric@10.0.10.222 && sudo -i
-#   export ETCDCTL_API=3 ETCDCTL_ENDPOINTS=https://127.0.0.1:2379
-#   export ETCDCTL_CACERT=/var/lib/rancher/k3s/server/tls/etcd/server-ca.crt
-#   export ETCDCTL_CERT=/var/lib/rancher/k3s/server/tls/etcd/server-client.crt
-#   export ETCDCTL_KEY=/var/lib/rancher/k3s/server/tls/etcd/server-client.key
-# then — 3 healthy members:
-etcdctl endpoint health --cluster --write-out=table
+# etcd gate first — per server, over SSH. etcdctl is not on the servers
+# either (step 6 installs etcd-client where its member surgery needs it), and
+# the client port (2379) is gRPC-only on this etcd, so plain HTTP there gets
+# 415. The gate is the loopback-only metrics listener k3s always configures
+# (http://127.0.0.1:2381) — one healthy member per server = 3 healthy members:
+for s in 222 223 227; do
+  ssh eric@10.0.10.$s 'echo "$(hostname -s): $(curl -s -m 5 http://127.0.0.1:2381/health)"'
+done   # each: {"health":"true","reason":""}
 
 # from the branch, back on the admin station
 ansible-playbook -i ansible/inventories/prod/hosts.yml \
   ansible/playbooks/k3s-api-vip-transition.yml
 
-# kube-vip re-elects and ARPs the new VIP; the old one stops being announced
-curl -sk https://10.0.10.161:6443/readyz          # "ok"
+# kube-vip re-elects and ARPs the new VIP; the old one stops being announced.
+# Anonymous /readyz is DENIED on this cluster: a 401 JSON body from the bare
+# curl below is the healthy signal (the apiserver answered on the VIP) — a
+# timeout or connection failure is the unhealthy one. The authenticated
+# kubectl probe after it is the real "ok".
+curl -sk https://10.0.10.161:6443/readyz          # 401 body = the VIP answers
 task k3s:kubeconfig                                # kubeconfig follows the VIP
+kubectl get --raw /readyz                          # "ok"
 kubectl get nodes                                  # all 9 still Ready
-# back in the k3s-server shell from the gate above (etcdctl + certs + env
-# live only there):
-etcdctl endpoint health --cluster --write-out=table
+# etcd again, per server as above:
+for s in 222 223 227; do
+  ssh eric@10.0.10.$s 'echo "$(hostname -s): $(curl -s -m 5 http://127.0.0.1:2381/health)"'
+done
 ```
 
 The play runs `k3s_servers` at `serial: 1`, so expect a few seconds of API

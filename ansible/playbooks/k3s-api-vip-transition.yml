@@ -564,19 +564,15 @@
       ansible.builtin.command:
         argv:
           - curl
-          # -s only, no -k: the whole point of --cacert below is verifying the
-          # server certificate (k3s's etcd cert carries a 127.0.0.1 SAN), so an
-          # impostor on :2379 cannot answer this gate.
+          # The client port (2379) is gRPC-only on this etcd (plain HTTP gets
+          # 415), so the health read comes from the loopback-only metrics
+          # listener k3s always configures (--etcd-arg listen-metrics-urls
+          # defaults to http://127.0.0.1:2381). Loopback + a JSON body match
+          # keep this an adequate local-member gate without certificates.
           - -s
           - --max-time
           - "5"
-          - --cacert
-          - /var/lib/rancher/k3s/server/tls/etcd/server-ca.crt
-          - --cert
-          - /var/lib/rancher/k3s/server/tls/etcd/server-client.crt
-          - --key
-          - /var/lib/rancher/k3s/server/tls/etcd/server-client.key
-          - https://127.0.0.1:2379/health
+          - http://127.0.0.1:2381/health
       register: k3s_local_etcd_health
       changed_when: false
       until: k3s_local_etcd_health.stdout is search('"health"\\s*:\\s*"true"')
