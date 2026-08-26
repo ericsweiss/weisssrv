@@ -32,3 +32,9 @@ spec:
       port: 443
       targetPort: websecure
       protocol: TCP
+    # git-ssh passthrough to the GitLab VM (gitssh entrypoint; internal VIP
+    # only — external clients use the WAN forward). See release.yaml.
+    - name: gitssh
+      port: 2222
+      targetPort: gitssh
+      protocol: TCP

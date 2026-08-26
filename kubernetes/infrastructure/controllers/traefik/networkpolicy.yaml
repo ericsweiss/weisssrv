@@ -25,6 +25,10 @@ spec:
           port: 80
         - protocol: TCP
           port: 443
+        # git-ssh passthrough (gitssh entrypoint, internal VIP only — the
+        # public chart service does not expose it; docs/27 § SSH access).
+        - protocol: TCP
+          port: 2222
 
 ---
 # Metrics scrape from observability (metrics entrypoint container port 9100).
