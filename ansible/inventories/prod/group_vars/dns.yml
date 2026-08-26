@@ -227,6 +227,18 @@ adguard_home_rewrites:
     answer: "10.0.10.101"
   - domain: "*.pages.git.ericsweiss.com"
     answer: "10.0.10.101"
+  # THIRD DOCUMENTED EXCEPTION — photos.ericsweiss.com, same hairpin class with
+  # a different trigger: the record is DNS-only at Cloudflare (grey cloud — the
+  # Immich mobile app uploads exceed the 100 MB proxied body cap, docs/36), so
+  # internally it used to resolve to our own WAN address. The renumber moved the
+  # homelab onto its own VLAN, whose sources the gateway does not hairpin, which
+  # took the in-cluster Uptime Kuma probe (and any LAN upload path) down while
+  # every browser on the Home VLAN still worked — the asymmetry that made it
+  # look like an Immich outage. Answer is the PUBLIC VIP: unlike the .101
+  # family above, the external router for photos lives on `websecure`
+  # (kubernetes/apps/vm-ingress/immich.yaml).
+  - domain: "photos.ericsweiss.com"
+    answer: "10.0.10.100"
   # Hermes gateway OpenAI-compatible API (bearer-keyed; Home Assistant Voice
   # pipeline — docs/37 §Voice assistant). Internal-only, no external record.
   - domain: "agent-api.{{ internal_domain }}"

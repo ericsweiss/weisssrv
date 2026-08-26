@@ -261,6 +261,17 @@ http:
 
 4. Restart Home Assistant (Settings > System > Restart)
 
+> **`.storage/http` overrides this YAML.** HA 2026.x migrated the `http:`
+> config into `/config/.storage/http` (one-time, `yaml_migration_done`), and
+> from then on the STORE governs `trusted_proxies` — an edit to
+> `configuration.yaml` alone silently does nothing, while
+> `--script check_config --info http` still shows the store's values with a
+> bare `?` as their source. Discovered during the 2026-08 renumber: the store
+> froze the pre-renumber list and rejected the new node sources through a
+> config edit AND a full VM reboot. To change the effective list, patch the
+> JSON (`data.*.trusted_proxies`) via the host shell or `qm guest exec 154`,
+> then restart the core.
+
 ## Phase 4: Download/Media Access (Optional)
 
 Home Assistant can directly access download clients and media managers using high-priority bypass routes that skip Authentik SSO.

@@ -295,9 +295,12 @@ task gitlab:deploy-check
 
 ### Step 6: Traefik IngressRoutes (Flux-managed)
 
-The Traefik IngressRoutes for `git.ericsweiss.com` (web only — there is no SSH
-entrypoint or IngressRouteTCP; :2222 reaches the VM directly, see § Git SSH
-Access), `registry.git.ericsweiss.com`, and `*.pages.git.ericsweiss.com` live
+The Traefik IngressRoutes for `git.ericsweiss.com` (web, plus the `gitssh`
+TCP entrypoint on the INTERNAL VIP :2222 — post-renumber, LAN clients cannot
+hairpin the WAN forward and the internal rewrite points this name at Traefik,
+so `gitlab-ssh-internal` IngressRouteTCP passes :2222 through to the VM's
+sshd; external clients still use the WAN forward directly),
+`registry.git.ericsweiss.com`, and `*.pages.git.ericsweiss.com` live
 under
 `kubernetes/apps/vm-ingress/gitlab.yaml`, with ExternalName Services in
 `services-gitlab.yaml` and certificates in `gitlab-certificate.yaml`. Flux

@@ -182,6 +182,20 @@ spec:
         # Trusting the CF ranges here only pays off as part of the coordinated
         # real-client-IP change in docs/16-next-steps.md (CF Transform Rule +
         # header pinning + the guest nginx/Authentik trust lists).
+      # git-ssh TCP passthrough for LAN clients. The pre-renumber path was the
+      # gateway's hairpin NAT (LAN -> WAN IP :2222 -> the port forward), which
+      # the homelab VLAN's sources no longer traverse — and the internal
+      # rewrite of git.ericsweiss.com points at the internal VIP anyway, where
+      # nothing listened on 2222 until this entrypoint. Kept OFF the
+      # chart-managed public service: external clients keep using the WAN
+      # forward straight to the VM, and 2222 on the public VIP would only
+      # duplicate it. traefik-internal-service.yaml exposes it on .101;
+      # the IngressRouteTCP lives in kubernetes/apps/vm-ingress/gitlab.yaml.
+      gitssh:
+        port: 2222
+        expose:
+          default: false
+        protocol: TCP
 
     additionalArguments:
       - "--entrypoints.web.http.redirections.entrypoint.to=websecure"

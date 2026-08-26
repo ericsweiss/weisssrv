@@ -12,10 +12,3 @@ spec:
   headers:
     customRequestHeaders:
       X-Forwarded-Proto: "https"
-      # Renumber bridge: HAOS's running core rejects X-Forwarded-For from the
-      # 10.0.10.0/24 node sources even though its configuration.yaml trusts
-      # them (root cause under investigation — the freshly booted core behaves
-      # per the pre-renumber list). An empty value REMOVES the header, and HA
-      # serves normally when no XFF arrives. Revert once the on-VM cause is
-      # found; client IPs in HA logs show the node address meanwhile.
-      X-Forwarded-For: ""
