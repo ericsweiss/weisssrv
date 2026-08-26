@@ -613,6 +613,16 @@ proxmox_firewall_metrics_scrape_ports:
 # (homelab LAN + the /29 admin block). lan_clients is a superset of admin_lan,
 # so a port that moved needs no second admin rule.
 proxmox_firewall_security_groups:
+  # git-ssh passthrough entrypoint on the ingress agents (Traefik `gitssh`,
+  # internal VIP :2222 -> the GitLab VM's sshd). USER scope on purpose: the
+  # pre-renumber path was the WAN forward, which any internal client could
+  # hairpin to, and sshd's own auth (plus the gitlab-ssh fail2ban jail on the
+  # VM) stays the real gate. Tailnet clients arrive SNAT'd from the hosts'
+  # homelab addresses, which lan_clients contains.
+  - name: sg-k3s-gitssh
+    rules:
+      - "IN ACCEPT -source +dc/lan_clients -p tcp -dport 2222 -log nolog"
+
   - name: sg-gitlab
     rules:
       # GitLab web — Traefik connects to nginx on 443 with the distributed
