@@ -4,7 +4,7 @@
 # terraform/tailscale (see that module's README).
 tailscale_accept_routes: false  # CRITICAL: subnet routers must NOT accept routes (routing loop)
 tailscale_advertise_routes:
-  - "192.168.0.0/24"
+  - "10.0.10.0/24"
 
 tailscale_additional_flags:
   - "--operator=eric"

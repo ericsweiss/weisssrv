@@ -37,7 +37,7 @@ ports:
     port: 443
     protocol: TCP
 endpoints:
-  - addresses: ["192.168.0.153"]
+  - addresses: ["10.0.10.153"]
     conditions: {ready: true}
 
 ---

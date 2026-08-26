@@ -25,7 +25,7 @@ Plex Media Server runs in an unprivileged LXC container on pve-nas-01, providing
          +--------------------+--------------------+
          |                                         |
     Traefik Public                         Traefik Internal
-   (192.168.0.100)                        (192.168.0.101)
+   (10.0.10.100)                        (10.0.10.101)
          |                                         |
 plex.ericsweiss.com                      plex.esweiss.com
 (external domain)                        (internal domain)
@@ -49,7 +49,7 @@ plex.ericsweiss.com                      plex.esweiss.com
 | Resource | Value |
 |----------|-------|
 | **Container ID** | 152 |
-| **IP Address** | 192.168.0.152 |
+| **IP Address** | 10.0.10.152 |
 | **Hostname** | plex |
 | **Proxmox Host** | pve-nas-01 |
 | **CPU Cores** | 4 |
@@ -74,13 +74,13 @@ eval $(op signin)
 op read "op://Homelab/SSH Key/public key" > /dev/null && echo "OK: 1Password connected"
 
 # 3. Test SSH connectivity to pve-nas-01
-ssh eric@192.168.0.102 "echo 'OK: SSH to pve-nas-01 works'"
+ssh eric@10.0.10.102 "echo 'OK: SSH to pve-nas-01 works'"
 
 # 4. Verify storage directories exist
-ssh eric@192.168.0.102 "ls -la /mnt/ssd/appdata/plex /mnt/nvme/fast/plex-transcode /mnt/media 2>&1"
+ssh eric@10.0.10.102 "ls -la /mnt/ssd/appdata/plex /mnt/nvme/fast/plex-transcode /mnt/media 2>&1"
 
 # 5. Verify GPU is available
-ssh eric@192.168.0.102 "ls -la /dev/dri/ && getent group render video"
+ssh eric@10.0.10.102 "ls -la /dev/dri/ && getent group render video"
 ```
 
 If any check fails, see the detailed sections below.
@@ -108,7 +108,7 @@ The container bind mounts require these directories to exist **before** deployme
 
 ```bash
 # SSH to pve-nas-01
-ssh eric@192.168.0.102
+ssh eric@10.0.10.102
 
 # Create Plex directories with correct ownership
 sudo mkdir -p /mnt/ssd/appdata/plex
@@ -137,13 +137,13 @@ DNS rewrite should already exist in AdGuard Home (dns-01):
 
 | Domain | Target |
 |--------|--------|
-| plex.esweiss.com | 192.168.0.101 |
+| plex.esweiss.com | 10.0.10.101 |
 
 The external domain (plex.ericsweiss.com) is managed by external-dns via the Traefik IngressRoute.
 
 ### 4. Router Port Forward
 
-Ensure port 32400 TCP is forwarded from the router to 192.168.0.152 (Plex LXC).
+Ensure port 32400 TCP is forwarded from the router to 10.0.10.152 (Plex LXC).
 
 ### 5. Intel Arc GPU Available on pve-nas-01
 
@@ -151,7 +151,7 @@ The GPU passthrough configuration dynamically detects the host's video and rende
 
 ```bash
 # SSH to pve-nas-01
-ssh eric@192.168.0.102
+ssh eric@10.0.10.102
 
 # Verify GPU devices exist
 ls -la /dev/dri/
@@ -242,7 +242,7 @@ After deployment, verify GPU is accessible in the container:
 
 ```bash
 # SSH to Plex container
-ssh eric@192.168.0.152
+ssh eric@10.0.10.152
 
 # Check GPU devices are present
 ls -la /dev/dri/
@@ -273,10 +273,10 @@ After deployment, enable hardware transcoding in Plex:
 
 ```bash
 # Monitor GPU usage in real-time
-ssh eric@192.168.0.152 "sudo intel_gpu_top"
+ssh eric@10.0.10.152 "sudo intel_gpu_top"
 
 # Check which processes are using the GPU
-ssh eric@192.168.0.152 "sudo fuser -v /dev/dri/renderD128"
+ssh eric@10.0.10.152 "sudo fuser -v /dev/dri/renderD128"
 ```
 
 ## UID/GID Mapping
@@ -338,7 +338,7 @@ Inside the container:
 ### Internal Access
 
 - **URL**: https://plex.esweiss.com
-- **Direct**: http://192.168.0.152:32400/web
+- **Direct**: http://10.0.10.152:32400/web
 
 ### External Access
 
@@ -367,7 +367,7 @@ If restoring from a Windows Plex backup:
 ### 1. Stop Plex Service
 
 ```bash
-ssh eric@192.168.0.152
+ssh eric@10.0.10.152
 sudo systemctl stop plexmediaserver
 ```
 
@@ -375,7 +375,7 @@ sudo systemctl stop plexmediaserver
 
 ```bash
 # Copy backup to container (from laptop)
-scp -r "Plex Media Server" eric@192.168.0.152:/tmp/
+scp -r "Plex Media Server" eric@10.0.10.152:/tmp/
 
 # On container, restore to config directory
 sudo rsync -av /tmp/Plex\ Media\ Server/ /config/Library/Application\ Support/Plex\ Media\ Server/
@@ -401,13 +401,13 @@ sudo systemctl start plexmediaserver
 
 ```bash
 # Check status
-ssh eric@192.168.0.152 "sudo systemctl status plexmediaserver"
+ssh eric@10.0.10.152 "sudo systemctl status plexmediaserver"
 
 # Restart Plex
-ssh eric@192.168.0.152 "sudo systemctl restart plexmediaserver"
+ssh eric@10.0.10.152 "sudo systemctl restart plexmediaserver"
 
 # View logs
-ssh eric@192.168.0.152 "sudo journalctl -u plexmediaserver -f"
+ssh eric@10.0.10.152 "sudo journalctl -u plexmediaserver -f"
 ```
 
 ### Updates
@@ -416,7 +416,7 @@ Plex updates are managed via the official APT repository:
 
 ```bash
 # Update Plex to latest
-ssh eric@192.168.0.152 "sudo apt update && sudo apt upgrade plexmediaserver -y"
+ssh eric@10.0.10.152 "sudo apt update && sudo apt upgrade plexmediaserver -y"
 
 # Or via Ansible
 task plex:deploy
@@ -426,7 +426,7 @@ task plex:deploy
 
 ```bash
 # Clear transcoding cache
-ssh eric@192.168.0.152 "sudo rm -rf /transcode/*"
+ssh eric@10.0.10.152 "sudo rm -rf /transcode/*"
 ```
 
 ## Troubleshooting
@@ -438,18 +438,18 @@ ssh eric@192.168.0.152 "sudo rm -rf /transcode/*"
 **Check**:
 ```bash
 # Verify bind mounts are active
-ssh eric@192.168.0.152 "df -h | grep -E '/config|/transcode|/media'"
+ssh eric@10.0.10.152 "df -h | grep -E '/config|/transcode|/media'"
 
 # Check permissions inside container
-ssh eric@192.168.0.152 "ls -la /media"
+ssh eric@10.0.10.152 "ls -la /media"
 
 # Verify plex user is in media group
-ssh eric@192.168.0.152 "id plex"
+ssh eric@10.0.10.152 "id plex"
 ```
 
 **Fix**: If mounts are missing, the container may need restart from Proxmox:
 ```bash
-ssh eric@192.168.0.102 "pct stop 152 && pct start 152"
+ssh eric@10.0.10.102 "pct stop 152 && pct start 152"
 ```
 
 ### Transcoding Errors
@@ -459,13 +459,13 @@ ssh eric@192.168.0.102 "pct stop 152 && pct start 152"
 **Check**:
 ```bash
 # Verify transcode directory is writable
-ssh eric@192.168.0.152 "sudo -u plex touch /transcode/test && rm /transcode/test"
+ssh eric@10.0.10.152 "sudo -u plex touch /transcode/test && rm /transcode/test"
 
 # Check disk space
-ssh eric@192.168.0.152 "df -h /transcode"
+ssh eric@10.0.10.152 "df -h /transcode"
 
 # Check Plex logs
-ssh eric@192.168.0.152 "tail -100 '/config/Library/Application Support/Plex Media Server/Logs/Plex Media Server.log'"
+ssh eric@10.0.10.152 "tail -100 '/config/Library/Application Support/Plex Media Server/Logs/Plex Media Server.log'"
 ```
 
 ### Container Won't Start
@@ -475,13 +475,13 @@ ssh eric@192.168.0.152 "tail -100 '/config/Library/Application Support/Plex Medi
 **Check**:
 ```bash
 # On pve-nas-01, check container config
-ssh eric@192.168.0.102 "cat /etc/pve/lxc/152.conf"
+ssh eric@10.0.10.102 "cat /etc/pve/lxc/152.conf"
 
 # Check if host directories exist
-ssh eric@192.168.0.102 "ls -la /mnt/ssd/appdata/plex /mnt/nvme/fast/plex-transcode /mnt/media"
+ssh eric@10.0.10.102 "ls -la /mnt/ssd/appdata/plex /mnt/nvme/fast/plex-transcode /mnt/media"
 
 # Start with verbose output
-ssh eric@192.168.0.102 "pct start 152 --debug"
+ssh eric@10.0.10.102 "pct start 152 --debug"
 ```
 
 ### UID Mapping Issues
@@ -491,13 +491,13 @@ ssh eric@192.168.0.102 "pct start 152 --debug"
 **Check**:
 ```bash
 # Verify UID mapping in container config
-ssh eric@192.168.0.102 "grep lxc.idmap /etc/pve/lxc/152.conf"
+ssh eric@10.0.10.102 "grep lxc.idmap /etc/pve/lxc/152.conf"
 
 # Check actual UIDs inside container
-ssh eric@192.168.0.152 "stat /media"
+ssh eric@10.0.10.152 "stat /media"
 
 # Compare with host
-ssh eric@192.168.0.102 "stat /mnt/media"
+ssh eric@10.0.10.102 "stat /mnt/media"
 ```
 
 **Fix**: If UID mapping is missing or incorrect:
@@ -513,34 +513,34 @@ ssh eric@192.168.0.102 "stat /mnt/media"
 **Check**:
 ```bash
 # Verify GPU exists on host
-ssh eric@192.168.0.102 "ls -la /dev/dri/"
+ssh eric@10.0.10.102 "ls -la /dev/dri/"
 
 # Check GPU passthrough config
-ssh eric@192.168.0.102 "grep -E 'cgroup2.devices|mount.entry.*dri' /etc/pve/lxc/152.conf"
+ssh eric@10.0.10.102 "grep -E 'cgroup2.devices|mount.entry.*dri' /etc/pve/lxc/152.conf"
 
 # Verify GPU visible in container
-ssh eric@192.168.0.152 "ls -la /dev/dri/"
+ssh eric@10.0.10.152 "ls -la /dev/dri/"
 
 # Check plex user group membership
-ssh eric@192.168.0.152 "groups plex"
+ssh eric@10.0.10.152 "groups plex"
 
 # Test VA-API
-ssh eric@192.168.0.152 "vainfo"
+ssh eric@10.0.10.152 "vainfo"
 ```
 
 **Fix**: If GPU is missing in container:
-1. Stop container: `ssh eric@192.168.0.102 "pct stop 152"`
+1. Stop container: `ssh eric@10.0.10.102 "pct stop 152"`
 2. Add GPU passthrough to config:
    ```bash
-   ssh eric@192.168.0.102
+   ssh eric@10.0.10.102
    cat >> /etc/pve/lxc/152.conf <<EOF
    lxc.cgroup2.devices.allow: c 226:* rwm
    lxc.mount.entry: /dev/dri dev/dri none bind,optional,create=dir
    EOF
    ```
 3. Start container: `pct start 152`
-4. Verify plex user groups: `ssh eric@192.168.0.152 "sudo usermod -aG video,render plex"`
-5. Restart Plex: `ssh eric@192.168.0.152 "sudo systemctl restart plexmediaserver"`
+4. Verify plex user groups: `ssh eric@10.0.10.152 "sudo usermod -aG video,render plex"`
+5. Restart Plex: `ssh eric@10.0.10.152 "sudo systemctl restart plexmediaserver"`
 
 ### Hardware Transcoding Not Working
 
@@ -549,13 +549,13 @@ ssh eric@192.168.0.152 "vainfo"
 **Check**:
 ```bash
 # Verify VA-API driver loads correctly
-ssh eric@192.168.0.152 "vainfo"
+ssh eric@10.0.10.152 "vainfo"
 
 # Check Plex has access to GPU
-ssh eric@192.168.0.152 "sudo -u plex ls -la /dev/dri/"
+ssh eric@10.0.10.152 "sudo -u plex ls -la /dev/dri/"
 
 # Monitor GPU usage during transcoding
-ssh eric@192.168.0.152 "sudo intel_gpu_top"
+ssh eric@10.0.10.152 "sudo intel_gpu_top"
 ```
 
 **Fix**:
@@ -564,7 +564,7 @@ ssh eric@192.168.0.152 "sudo intel_gpu_top"
 3. Restart Plex service
 4. Check Plex logs for GPU-related errors:
    ```bash
-   ssh eric@192.168.0.152 "tail -100 '/config/Library/Application Support/Plex Media Server/Logs/Plex Media Server.log' | grep -i 'hardware\|vaapi\|qsv'"
+   ssh eric@10.0.10.152 "tail -100 '/config/Library/Application Support/Plex Media Server/Logs/Plex Media Server.log' | grep -i 'hardware\|vaapi\|qsv'"
    ```
 
 ## Related documentation

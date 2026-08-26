@@ -37,7 +37,7 @@ spec:
     responseHeaderTimeout: 30s
     idleConnTimeout: 90s
 ---
-# Traefik -> UniFi gateway (192.168.0.1:443). The UCG serves a SELF-SIGNED
+# Traefik -> UniFi gateway (10.0.10.1:443). The UCG serves a SELF-SIGNED
 # certificate it generates itself: it is not in this repo's acme.sh
 # distribution list and has no hostname the wildcard covers, so validation can
 # only be skipped, not satisfied. Kept as its own ServersTransport rather than

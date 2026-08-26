@@ -23,7 +23,7 @@ tests:
   # mtime is a healthy pmxcfs inside the 10m budget = silent.
   - interval: 1m
     input_series:
-      - series: 'proxmox_pmxcfs_manager_status_mtime_seconds{instance="192.168.0.102:9101"}'
+      - series: 'proxmox_pmxcfs_manager_status_mtime_seconds{instance="10.0.10.102:9101"}'
         values: '-300+60x60'
     alert_rule_test:
       - eval_time: 30m
@@ -33,7 +33,7 @@ tests:
   # A frozen gauge crosses the 600s floor and must fire.
   - interval: 1m
     input_series:
-      - series: 'proxmox_pmxcfs_manager_status_mtime_seconds{instance="192.168.0.102:9101"}'
+      - series: 'proxmox_pmxcfs_manager_status_mtime_seconds{instance="10.0.10.102:9101"}'
         values: '0+0x60'
     alert_rule_test:
       - eval_time: 30m
@@ -41,13 +41,13 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: critical
-              instance: 192.168.0.102:9101
+              instance: 10.0.10.102:9101
 
   # corosync health collector: 300s floor, warning severity. A 2-minute-old
   # success is a healthy collector inside that floor.
   - interval: 1m
     input_series:
-      - series: 'proxmox_corosync_health_collector_last_success_seconds{instance="192.168.0.102:9101"}'
+      - series: 'proxmox_corosync_health_collector_last_success_seconds{instance="10.0.10.102:9101"}'
         values: '-120+60x60'
     alert_rule_test:
       - eval_time: 30m
@@ -56,7 +56,7 @@ tests:
 
   - interval: 1m
     input_series:
-      - series: 'proxmox_corosync_health_collector_last_success_seconds{instance="192.168.0.102:9101"}'
+      - series: 'proxmox_corosync_health_collector_last_success_seconds{instance="10.0.10.102:9101"}'
         values: '0+0x60'
     alert_rule_test:
       - eval_time: 30m
@@ -64,14 +64,14 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
-              instance: 192.168.0.102:9101
+              instance: 10.0.10.102:9101
 
   # ZFS pool collector: the second arm is the one worth pinning — a host that
   # reports corosync health but has NO zfs collector series at all is a
   # collector that never ran, which a `time() - gauge` arm alone cannot see.
   - interval: 1m
     input_series:
-      - series: 'proxmox_corosync_health_collector_last_success_seconds{instance="192.168.0.102:9101"}'
+      - series: 'proxmox_corosync_health_collector_last_success_seconds{instance="10.0.10.102:9101"}'
         values: '-120+60x60'
     alert_rule_test:
       - eval_time: 30m
@@ -79,15 +79,15 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
-              instance: 192.168.0.102:9101
+              instance: 10.0.10.102:9101
 
   # Both present and fresh (a 10-minute-old pool scrape is inside the 15m
   # floor) -> silent.
   - interval: 1m
     input_series:
-      - series: 'proxmox_corosync_health_collector_last_success_seconds{instance="192.168.0.102:9101"}'
+      - series: 'proxmox_corosync_health_collector_last_success_seconds{instance="10.0.10.102:9101"}'
         values: '-120+60x60'
-      - series: 'zfs_pool_status_collector_last_success_seconds{instance="192.168.0.102:9101"}'
+      - series: 'zfs_pool_status_collector_last_success_seconds{instance="10.0.10.102:9101"}'
         values: '-600+60x60'
     alert_rule_test:
       - eval_time: 30m

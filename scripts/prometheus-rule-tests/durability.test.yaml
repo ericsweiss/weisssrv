@@ -14,7 +14,7 @@ tests:
   # one metric, so the escalation is purely the `for:` duration.
   - interval: 1m
     input_series:
-      - series: 'cert_renewal_last_run_success{instance="192.168.0.150:9101"}'
+      - series: 'cert_renewal_last_run_success{instance="10.0.10.150:9101"}'
         values: '0+0x70'
     alert_rule_test:
       - eval_time: 65m
@@ -22,14 +22,14 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
-              instance: '192.168.0.150:9101'
+              instance: '10.0.10.150:9101'
       - eval_time: 65m
         alertname: CertRenewalFailedProlonged
         exp_alerts: []
 
   - interval: 1m
     input_series:
-      - series: 'cert_renewal_last_run_success{instance="192.168.0.150:9101"}'
+      - series: 'cert_renewal_last_run_success{instance="10.0.10.150:9101"}'
         values: '1+0x70'
     alert_rule_test:
       - eval_time: 65m

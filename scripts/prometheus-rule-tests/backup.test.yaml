@@ -107,7 +107,7 @@ tests:
   # VzdumpBackupStale fires per-node when the last vzdump is older than 36h.
   - interval: 1m
     input_series:
-      - series: 'vzdump_backup_last_success_timestamp_seconds{instance="192.168.0.102:9101"}'
+      - series: 'vzdump_backup_last_success_timestamp_seconds{instance="10.0.10.102:9101"}'
         values: '-140000+0x70'
     alert_rule_test:
       - eval_time: 65m
@@ -115,18 +115,18 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
-              instance: '192.168.0.102:9101'
+              instance: '10.0.10.102:9101'
 
   # The absence arm is per-host: .102 backs up fine, .103 emits no vzdump metric
   # at all while its node_exporter is up. A vector-wide absent() sees .102 and
   # stays silent — the 12-day gap that shape hid. Only .103 may fire.
   - interval: 1m
     input_series:
-      - series: 'vzdump_backup_last_success_timestamp_seconds{instance="192.168.0.102:9101"}'
+      - series: 'vzdump_backup_last_success_timestamp_seconds{instance="10.0.10.102:9101"}'
         values: '-86400+60x70'
-      - series: 'up{job="node-exporter-host", instance="192.168.0.102:9101"}'
+      - series: 'up{job="node-exporter-host", instance="10.0.10.102:9101"}'
         values: '1+0x70'
-      - series: 'up{job="node-exporter-host", instance="192.168.0.103:9101"}'
+      - series: 'up{job="node-exporter-host", instance="10.0.10.103:9101"}'
         values: '1+0x70'
     alert_rule_test:
       - eval_time: 65m
@@ -135,7 +135,7 @@ tests:
           - exp_labels:
               severity: warning
               job: node-exporter-host
-              instance: '192.168.0.103:9101'
+              instance: '10.0.10.103:9101'
 
   # AuthentikBackupStale: the nightly pg-dump CronJob's last-success timestamp is
   # older than 26h (kube_cronjob_status_last_successful_time). A fresh timestamp
@@ -331,7 +331,7 @@ tests:
   # absent arm fires — one alert per static app, pve-cluster included.
   - interval: 1m
     input_series:
-      - series: 'pve_cluster_backup_last_success_timestamp_seconds{instance="192.168.0.102:9101"}'
+      - series: 'pve_cluster_backup_last_success_timestamp_seconds{instance="10.0.10.102:9101"}'
         values: '1785000000+0x70'
     alert_rule_test:
       - eval_time: 65m
@@ -395,9 +395,9 @@ tests:
   # test pins that a run-success of 1 does NOT suppress it.
   - interval: 1m
     input_series:
-      - series: 'gitlab_backup_last_size_bytes{instance="192.168.0.153:9101"}'
+      - series: 'gitlab_backup_last_size_bytes{instance="10.0.10.153:9101"}'
         values: '0+0x70'
-      - series: 'gitlab_backup_last_run_success{instance="192.168.0.153:9101"}'
+      - series: 'gitlab_backup_last_run_success{instance="10.0.10.153:9101"}'
         values: '1+0x70'
     alert_rule_test:
       - eval_time: 65m
@@ -405,7 +405,7 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: critical
-              instance: 192.168.0.153:9101
+              instance: 10.0.10.153:9101
               metric: gitlab_backup_last_size_bytes
 
   # A non-zero artefact size must not fire, and the name regex must not match
@@ -413,11 +413,11 @@ tests:
   # (which are legitimately 0).
   - interval: 1m
     input_series:
-      - series: 'gitlab_backup_last_size_bytes{instance="192.168.0.153:9101"}'
+      - series: 'gitlab_backup_last_size_bytes{instance="10.0.10.153:9101"}'
         values: '41922560+0x70'
-      - series: 'gitlab_backup_last_run_success{instance="192.168.0.153:9101"}'
+      - series: 'gitlab_backup_last_run_success{instance="10.0.10.153:9101"}'
         values: '0+0x70'
-      - series: 'gitlab_backup_last_run_duration_seconds{instance="192.168.0.153:9101"}'
+      - series: 'gitlab_backup_last_run_duration_seconds{instance="10.0.10.153:9101"}'
         values: '0+0x70'
     alert_rule_test:
       - eval_time: 65m
@@ -428,9 +428,9 @@ tests:
   # <app>_backup_last_size_bytes, so a new producer inherits the gate.
   - interval: 1m
     input_series:
-      - series: 'nextcloud_backup_last_size_bytes{instance="192.168.0.156:9101"}'
+      - series: 'nextcloud_backup_last_size_bytes{instance="10.0.10.156:9101"}'
         values: '0+0x70'
-      - series: 'pve_cluster_backup_last_size_bytes{instance="192.168.0.102:9101"}'
+      - series: 'pve_cluster_backup_last_size_bytes{instance="10.0.10.102:9101"}'
         values: '0+0x70'
     alert_rule_test:
       - eval_time: 65m
@@ -438,11 +438,11 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: critical
-              instance: 192.168.0.156:9101
+              instance: 10.0.10.156:9101
               metric: nextcloud_backup_last_size_bytes
           - exp_labels:
               severity: critical
-              instance: 192.168.0.102:9101
+              instance: 10.0.10.102:9101
               metric: pve_cluster_backup_last_size_bytes
 
   # BackupArtifactZeroBytes — the NAS-side counterpart to BackupArtifactEmpty,
@@ -569,13 +569,13 @@ tests:
   # alert stays green. Absent (present=0, size=0) fires exactly once.
   - interval: 1m
     input_series:
-      - series: 'gitlab_backup_secrets_present{instance="192.168.0.153:9101"}'
+      - series: 'gitlab_backup_secrets_present{instance="10.0.10.153:9101"}'
         values: '0+0x70'
-      - series: 'gitlab_backup_secrets_size_bytes{instance="192.168.0.153:9101"}'
+      - series: 'gitlab_backup_secrets_size_bytes{instance="10.0.10.153:9101"}'
         values: '0+0x70'
-      - series: 'gitlab_backup_last_run_success{instance="192.168.0.153:9101"}'
+      - series: 'gitlab_backup_last_run_success{instance="10.0.10.153:9101"}'
         values: '1+0x70'
-      - series: 'gitlab_backup_last_size_bytes{instance="192.168.0.153:9101"}'
+      - series: 'gitlab_backup_last_size_bytes{instance="10.0.10.153:9101"}'
         values: '41922560+0x70'
     alert_rule_test:
       - eval_time: 65m
@@ -583,7 +583,7 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: critical
-              instance: 192.168.0.153:9101
+              instance: 10.0.10.153:9101
       # The tarball itself is healthy, which is the whole point.
       - eval_time: 65m
         alertname: BackupArtifactEmpty
@@ -596,7 +596,7 @@ tests:
   # asserted NOT to fire, which a permanently-silent expr would also satisfy.
   - interval: 1m
     input_series:
-      - series: 'gitlab_backup_last_run_success{instance="192.168.0.153:9101"}'
+      - series: 'gitlab_backup_last_run_success{instance="10.0.10.153:9101"}'
         values: '0+0x70'
     alert_rule_test:
       - eval_time: 65m
@@ -604,15 +604,15 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
-              instance: 192.168.0.153:9101
+              instance: 10.0.10.153:9101
 
   # present=1 with size 0 is reachable: the wrapper stats whatever it copied, so
   # a truncated copy reports present. The size arm catches it.
   - interval: 1m
     input_series:
-      - series: 'gitlab_backup_secrets_present{instance="192.168.0.153:9101"}'
+      - series: 'gitlab_backup_secrets_present{instance="10.0.10.153:9101"}'
         values: '1+0x70'
-      - series: 'gitlab_backup_secrets_size_bytes{instance="192.168.0.153:9101"}'
+      - series: 'gitlab_backup_secrets_size_bytes{instance="10.0.10.153:9101"}'
         values: '0+0x70'
     alert_rule_test:
       - eval_time: 65m
@@ -620,15 +620,15 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: critical
-              instance: 192.168.0.153:9101
+              instance: 10.0.10.153:9101
 
   # Healthy, and no absent() arm — the metric appears only after the first
   # post-deploy backup run, so absent() would page on merge day.
   - interval: 1m
     input_series:
-      - series: 'gitlab_backup_secrets_present{instance="192.168.0.153:9101"}'
+      - series: 'gitlab_backup_secrets_present{instance="10.0.10.153:9101"}'
         values: '1+0x70'
-      - series: 'gitlab_backup_secrets_size_bytes{instance="192.168.0.153:9101"}'
+      - series: 'gitlab_backup_secrets_size_bytes{instance="10.0.10.153:9101"}'
         values: '5170+0x70'
     alert_rule_test:
       - eval_time: 65m
@@ -648,7 +648,7 @@ tests:
   # There is deliberately NO absent() arm; see BackupRestoreDrillNeverRan below.
   - interval: 5m
     input_series:
-      - series: 'backup_restore_drill_last_success_seconds{instance="192.168.0.102:9101"}'
+      - series: 'backup_restore_drill_last_success_seconds{instance="10.0.10.102:9101"}'
         values: '-8700000+0x40'
     alert_rule_test:
       - eval_time: 2h
@@ -656,12 +656,12 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: critical
-              instance: 192.168.0.102:9101
+              instance: 10.0.10.102:9101
   # Never passed, but the timer stopped attempting 100 days ago: the run arm is
   # the whole coverage here, because the success series does not exist.
   - interval: 5m
     input_series:
-      - series: 'backup_restore_drill_last_run_seconds{instance="192.168.0.102:9101"}'
+      - series: 'backup_restore_drill_last_run_seconds{instance="10.0.10.102:9101"}'
         values: '-8700000+0x40'
     alert_rule_test:
       - eval_time: 2h
@@ -669,14 +669,14 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: critical
-              instance: 192.168.0.102:9101
+              instance: 10.0.10.102:9101
   # Both clocks stale. `or` matches on the label set minus __name__ and both
   # series carry the same instance, so the two arms must collapse to ONE alert.
   - interval: 5m
     input_series:
-      - series: 'backup_restore_drill_last_success_seconds{instance="192.168.0.102:9101"}'
+      - series: 'backup_restore_drill_last_success_seconds{instance="10.0.10.102:9101"}'
         values: '-8700000+0x40'
-      - series: 'backup_restore_drill_last_run_seconds{instance="192.168.0.102:9101"}'
+      - series: 'backup_restore_drill_last_run_seconds{instance="10.0.10.102:9101"}'
         values: '-8700000+0x40'
     alert_rule_test:
       - eval_time: 2h
@@ -684,10 +684,10 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: critical
-              instance: 192.168.0.102:9101
+              instance: 10.0.10.102:9101
   - interval: 5m
     input_series:
-      - series: 'backup_restore_drill_last_success_seconds{instance="192.168.0.102:9101"}'
+      - series: 'backup_restore_drill_last_success_seconds{instance="10.0.10.102:9101"}'
         values: '0+300x40'
     alert_rule_test:
       - eval_time: 2h
@@ -731,7 +731,7 @@ tests:
   # it (the success series is absent), and the 100-day critical stays quiet.
   - interval: 30m
     input_series:
-      - series: 'backup_restore_drill_last_run_seconds{instance="192.168.0.102:9101"}'
+      - series: 'backup_restore_drill_last_run_seconds{instance="10.0.10.102:9101"}'
         values: '0+0x60'
     alert_rule_test:
       - eval_time: 27h
@@ -745,7 +745,7 @@ tests:
   # Once any drill has passed, the absence alert must go quiet for good.
   - interval: 30m
     input_series:
-      - series: 'backup_restore_drill_last_success_seconds{instance="192.168.0.102:9101"}'
+      - series: 'backup_restore_drill_last_success_seconds{instance="10.0.10.102:9101"}'
         values: '0+0x60'
     alert_rule_test:
       - eval_time: 27h
@@ -757,9 +757,9 @@ tests:
   # nothing else notices for the remaining ~99 days of the staleness window.
   - interval: 5m
     input_series:
-      - series: 'backup_restore_drill_last_run_seconds{instance="192.168.0.102:9101"}'
+      - series: 'backup_restore_drill_last_run_seconds{instance="10.0.10.102:9101"}'
         values: '900000+0x60'
-      - series: 'backup_restore_drill_last_success_seconds{instance="192.168.0.102:9101"}'
+      - series: 'backup_restore_drill_last_success_seconds{instance="10.0.10.102:9101"}'
         values: '0+0x60'
     alert_rule_test:
       - eval_time: 2h
@@ -767,14 +767,14 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
-              instance: 192.168.0.102:9101
+              instance: 10.0.10.102:9101
   # A drill that passed writes both clocks in the same textfile flush, so the
   # difference is zero and the alert must stay silent.
   - interval: 5m
     input_series:
-      - series: 'backup_restore_drill_last_run_seconds{instance="192.168.0.102:9101"}'
+      - series: 'backup_restore_drill_last_run_seconds{instance="10.0.10.102:9101"}'
         values: '900000+0x60'
-      - series: 'backup_restore_drill_last_success_seconds{instance="192.168.0.102:9101"}'
+      - series: 'backup_restore_drill_last_success_seconds{instance="10.0.10.102:9101"}'
         values: '900000+0x60'
     alert_rule_test:
       - eval_time: 2h
@@ -784,7 +784,7 @@ tests:
   # nothing, and BackupRestoreDrillNeverRan owns that state instead.
   - interval: 5m
     input_series:
-      - series: 'backup_restore_drill_last_run_seconds{instance="192.168.0.102:9101"}'
+      - series: 'backup_restore_drill_last_run_seconds{instance="10.0.10.102:9101"}'
         values: '900000+0x60'
     alert_rule_test:
       - eval_time: 2h
@@ -796,11 +796,11 @@ tests:
   # clean pass; with a per-source floor a passing drill compares at least 3.
   - interval: 5m
     input_series:
-      - series: 'backup_restore_drill_files_compared{instance="192.168.0.102:9101"}'
+      - series: 'backup_restore_drill_files_compared{instance="10.0.10.102:9101"}'
         values: '1+0x60'
-      - series: 'backup_restore_drill_last_run_seconds{instance="192.168.0.102:9101"}'
+      - series: 'backup_restore_drill_last_run_seconds{instance="10.0.10.102:9101"}'
         values: '900000+0x60'
-      - series: 'backup_restore_drill_last_success_seconds{instance="192.168.0.102:9101"}'
+      - series: 'backup_restore_drill_last_success_seconds{instance="10.0.10.102:9101"}'
         values: '900000+0x60'
     alert_rule_test:
       - eval_time: 2h
@@ -808,17 +808,17 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
-              instance: 192.168.0.102:9101
+              instance: 10.0.10.102:9101
   # A drill that FAILED writes files_compared 0, which would otherwise look like
   # the thinnest possible pass. The run/success guard keeps it out of scope so
   # only BackupRestoreDrillFailing reports it.
   - interval: 5m
     input_series:
-      - series: 'backup_restore_drill_files_compared{instance="192.168.0.102:9101"}'
+      - series: 'backup_restore_drill_files_compared{instance="10.0.10.102:9101"}'
         values: '0+0x60'
-      - series: 'backup_restore_drill_last_run_seconds{instance="192.168.0.102:9101"}'
+      - series: 'backup_restore_drill_last_run_seconds{instance="10.0.10.102:9101"}'
         values: '900000+0x60'
-      - series: 'backup_restore_drill_last_success_seconds{instance="192.168.0.102:9101"}'
+      - series: 'backup_restore_drill_last_success_seconds{instance="10.0.10.102:9101"}'
         values: '0+0x60'
     alert_rule_test:
       - eval_time: 2h
@@ -829,15 +829,15 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
-              instance: 192.168.0.102:9101
+              instance: 10.0.10.102:9101
   # The current live shape — 5 files compared on a passing drill — must be quiet.
   - interval: 5m
     input_series:
-      - series: 'backup_restore_drill_files_compared{instance="192.168.0.102:9101"}'
+      - series: 'backup_restore_drill_files_compared{instance="10.0.10.102:9101"}'
         values: '5+0x60'
-      - series: 'backup_restore_drill_last_run_seconds{instance="192.168.0.102:9101"}'
+      - series: 'backup_restore_drill_last_run_seconds{instance="10.0.10.102:9101"}'
         values: '900000+0x60'
-      - series: 'backup_restore_drill_last_success_seconds{instance="192.168.0.102:9101"}'
+      - series: 'backup_restore_drill_last_success_seconds{instance="10.0.10.102:9101"}'
         values: '900000+0x60'
     alert_rule_test:
       - eval_time: 2h
@@ -901,7 +901,7 @@ tests:
   # fresh sentinel does not; the absent() arm fires if the collector never emitted.
   - interval: 1m
     input_series:
-      - series: 'backup_artifact_collector_last_success_seconds{instance="192.168.0.102:9101"}'
+      - series: 'backup_artifact_collector_last_success_seconds{instance="10.0.10.102:9101"}'
         values: '-10000+0x70'
     alert_rule_test:
       - eval_time: 65m
@@ -909,10 +909,10 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
-              instance: '192.168.0.102:9101'
+              instance: '10.0.10.102:9101'
   - interval: 1m
     input_series:
-      - series: 'backup_artifact_collector_last_success_seconds{instance="192.168.0.102:9101"}'
+      - series: 'backup_artifact_collector_last_success_seconds{instance="10.0.10.102:9101"}'
         values: '-3600+60x70'
     alert_rule_test:
       - eval_time: 65m

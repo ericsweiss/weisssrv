@@ -135,7 +135,7 @@ spec:
       scrapeTimeout: 30s
       path: /pve
       params:
-        target: ["192.168.0.102"]
+        target: ["10.0.10.102"]
         module: ["default"]
       relabelings:
         - sourceLabels: [__param_target]
@@ -143,5 +143,5 @@ spec:
     # pve-prec-01 (second target for resilience if pve-nas-01 is down)
     - <<: *pve-endpoint
       params:
-        target: ["192.168.0.107"]
+        target: ["10.0.10.107"]
         module: ["default"]

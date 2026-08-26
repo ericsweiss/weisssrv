@@ -11,9 +11,9 @@ tests:
   # cannot catch at 1/15 = 6.7% < 10%), and its healthy peers do not.
   - interval: 1m
     input_series:
-      - series: 'up{job="node-exporter-host", instance="192.168.0.104:9101"}'
+      - series: 'up{job="node-exporter-host", instance="10.0.10.104:9101"}'
         values: '0+0x20'
-      - series: 'up{job="node-exporter-host", instance="192.168.0.102:9101"}'
+      - series: 'up{job="node-exporter-host", instance="10.0.10.102:9101"}'
         values: '1+0x20'
     alert_rule_test:
       - eval_time: 16m
@@ -22,13 +22,13 @@ tests:
           - exp_labels:
               severity: warning
               job: node-exporter-host
-              instance: '192.168.0.104:9101'
+              instance: '10.0.10.104:9101'
 
   # A scrape that recovers inside the 15m hold must not page (host reboot /
   # kured cycle).
   - interval: 1m
     input_series:
-      - series: 'up{job="node-exporter-host", instance="192.168.0.104:9101"}'
+      - series: 'up{job="node-exporter-host", instance="10.0.10.104:9101"}'
         values: '0 0 0 0 0 0 1 1 1 1 1 1 1 1 1 1 1'
     alert_rule_test:
       - eval_time: 16m
@@ -52,9 +52,9 @@ tests:
   # SMART / ZFS / backup metrics while the collector timer still reports success.
   - interval: 1m
     input_series:
-      - series: 'node_textfile_scrape_error{job="node-exporter-host", instance="192.168.0.102:9101"}'
+      - series: 'node_textfile_scrape_error{job="node-exporter-host", instance="10.0.10.102:9101"}'
         values: '1+0x20'
-      - series: 'node_textfile_scrape_error{job="node-exporter-host", instance="192.168.0.103:9101"}'
+      - series: 'node_textfile_scrape_error{job="node-exporter-host", instance="10.0.10.103:9101"}'
         values: '0+0x20'
     alert_rule_test:
       - eval_time: 11m
@@ -63,18 +63,18 @@ tests:
           - exp_labels:
               severity: warning
               job: node-exporter-host
-              instance: '192.168.0.102:9101'
+              instance: '10.0.10.102:9101'
 
   # HostBondingDegraded: 2 configured slaves, 1 active.
   - interval: 1m
     input_series:
-      - series: 'node_bonding_slaves{job="node-exporter-host", instance="192.168.0.104:9101", master="bond0"}'
+      - series: 'node_bonding_slaves{job="node-exporter-host", instance="10.0.10.104:9101", master="bond0"}'
         values: '2+0x20'
-      - series: 'node_bonding_active{job="node-exporter-host", instance="192.168.0.104:9101", master="bond0"}'
+      - series: 'node_bonding_active{job="node-exporter-host", instance="10.0.10.104:9101", master="bond0"}'
         values: '1+0x20'
-      - series: 'node_bonding_slaves{job="node-exporter-host", instance="192.168.0.105:9101", master="bond0"}'
+      - series: 'node_bonding_slaves{job="node-exporter-host", instance="10.0.10.105:9101", master="bond0"}'
         values: '2+0x20'
-      - series: 'node_bonding_active{job="node-exporter-host", instance="192.168.0.105:9101", master="bond0"}'
+      - series: 'node_bonding_active{job="node-exporter-host", instance="10.0.10.105:9101", master="bond0"}'
         values: '2+0x20'
     alert_rule_test:
       - eval_time: 6m
@@ -83,18 +83,18 @@ tests:
           - exp_labels:
               severity: warning
               job: node-exporter-host
-              instance: '192.168.0.104:9101'
+              instance: '10.0.10.104:9101'
               master: bond0
 
   # HostFilesystemReadOnly: a real filesystem remounted ro pages; the virtual
   # filesystems carved out of the expression (and a healthy rw mount) do not.
   - interval: 1m
     input_series:
-      - series: 'node_filesystem_readonly{job="node-exporter-host", instance="192.168.0.102:9101", device="/dev/sda1", mountpoint="/", fstype="ext4"}'
+      - series: 'node_filesystem_readonly{job="node-exporter-host", instance="10.0.10.102:9101", device="/dev/sda1", mountpoint="/", fstype="ext4"}'
         values: '1+0x20'
-      - series: 'node_filesystem_readonly{job="node-exporter-host", instance="192.168.0.102:9101", device="/dev/sdb1", mountpoint="/mnt/data", fstype="ext4"}'
+      - series: 'node_filesystem_readonly{job="node-exporter-host", instance="10.0.10.102:9101", device="/dev/sdb1", mountpoint="/mnt/data", fstype="ext4"}'
         values: '0+0x20'
-      - series: 'node_filesystem_readonly{job="node-exporter-host", instance="192.168.0.102:9101", device="squash", mountpoint="/snap/x", fstype="squashfs"}'
+      - series: 'node_filesystem_readonly{job="node-exporter-host", instance="10.0.10.102:9101", device="squash", mountpoint="/snap/x", fstype="squashfs"}'
         values: '1+0x20'
     alert_rule_test:
       - eval_time: 6m
@@ -103,7 +103,7 @@ tests:
           - exp_labels:
               severity: critical
               job: node-exporter-host
-              instance: '192.168.0.102:9101'
+              instance: '10.0.10.102:9101'
               device: /dev/sda1
               mountpoint: /
               fstype: ext4
@@ -115,9 +115,9 @@ tests:
   # is what makes the mixin's [2m]/>2 shape unfireable and this one correct.
   - interval: 1m
     input_series:
-      - series: 'node_network_up{job="node-exporter-host", instance="192.168.0.104:9101", device="nic0"}'
+      - series: 'node_network_up{job="node-exporter-host", instance="10.0.10.104:9101", device="nic0"}'
         values: '1 0 1 0 1 0 1 0 1 0 1 0'
-      - series: 'node_network_up{job="node-exporter-host", instance="192.168.0.105:9101", device="nic0"}'
+      - series: 'node_network_up{job="node-exporter-host", instance="10.0.10.105:9101", device="nic0"}'
         values: '1 1 1 1 0 1 1 1 1 1 1 1'
     alert_rule_test:
       - eval_time: 11m
@@ -126,7 +126,7 @@ tests:
           - exp_labels:
               severity: warning
               job: node-exporter-host
-              instance: '192.168.0.104:9101'
+              instance: '10.0.10.104:9101'
               device: nic0
 
   # Per-guest virtual interfaces (fwbr/fwln/tap/veth) appear and disappear with
@@ -134,9 +134,9 @@ tests:
   # allow-list must keep them out.
   - interval: 1m
     input_series:
-      - series: 'node_network_up{job="node-exporter-host", instance="192.168.0.104:9101", device="fwbr150i0"}'
+      - series: 'node_network_up{job="node-exporter-host", instance="10.0.10.104:9101", device="fwbr150i0"}'
         values: '1 0 1 0 1 0 1 0 1 0 1 0'
-      - series: 'node_network_up{job="node-exporter-host", instance="192.168.0.104:9101", device="veth150i0"}'
+      - series: 'node_network_up{job="node-exporter-host", instance="10.0.10.104:9101", device="veth150i0"}'
         values: '1 0 1 0 1 0 1 0 1 0 1 0'
     alert_rule_test:
       - eval_time: 11m
@@ -147,13 +147,13 @@ tests:
   # A host that lost sync moments ago (maxerror still small) must not page.
   - interval: 1m
     input_series:
-      - series: 'node_timex_sync_status{job="node-exporter-host", instance="192.168.0.222:9101"}'
+      - series: 'node_timex_sync_status{job="node-exporter-host", instance="10.0.10.222:9101"}'
         values: '0+0x20'
-      - series: 'node_timex_maxerror_seconds{job="node-exporter-host", instance="192.168.0.222:9101"}'
+      - series: 'node_timex_maxerror_seconds{job="node-exporter-host", instance="10.0.10.222:9101"}'
         values: '20+0x20'
-      - series: 'node_timex_sync_status{job="node-exporter-host", instance="192.168.0.223:9101"}'
+      - series: 'node_timex_sync_status{job="node-exporter-host", instance="10.0.10.223:9101"}'
         values: '0+0x20'
-      - series: 'node_timex_maxerror_seconds{job="node-exporter-host", instance="192.168.0.223:9101"}'
+      - series: 'node_timex_maxerror_seconds{job="node-exporter-host", instance="10.0.10.223:9101"}'
         values: '1+0x20'
     alert_rule_test:
       - eval_time: 11m
@@ -162,18 +162,18 @@ tests:
           - exp_labels:
               severity: warning
               job: node-exporter-host
-              instance: '192.168.0.222:9101'
+              instance: '10.0.10.222:9101'
 
   # HostNetworkTransmitErrs: the mixin's 1%-of-packets ratio over an hour.
   - interval: 1m
     input_series:
-      - series: 'node_network_transmit_errs_total{job="node-exporter-host", instance="192.168.0.104:9101", device="nic0"}'
+      - series: 'node_network_transmit_errs_total{job="node-exporter-host", instance="10.0.10.104:9101", device="nic0"}'
         values: '0+5x80'
-      - series: 'node_network_transmit_packets_total{job="node-exporter-host", instance="192.168.0.104:9101", device="nic0"}'
+      - series: 'node_network_transmit_packets_total{job="node-exporter-host", instance="10.0.10.104:9101", device="nic0"}'
         values: '0+100x80'
-      - series: 'node_network_transmit_errs_total{job="node-exporter-host", instance="192.168.0.105:9101", device="nic0"}'
+      - series: 'node_network_transmit_errs_total{job="node-exporter-host", instance="10.0.10.105:9101", device="nic0"}'
         values: '0+0x80'
-      - series: 'node_network_transmit_packets_total{job="node-exporter-host", instance="192.168.0.105:9101", device="nic0"}'
+      - series: 'node_network_transmit_packets_total{job="node-exporter-host", instance="10.0.10.105:9101", device="nic0"}'
         values: '0+100x80'
     alert_rule_test:
       - eval_time: 70m
@@ -182,7 +182,7 @@ tests:
           - exp_labels:
               severity: warning
               job: node-exporter-host
-              instance: '192.168.0.104:9101'
+              instance: '10.0.10.104:9101'
               device: nic0
 
   # HostNetworkReceiveErrs: the same 1%-of-packets ratio on the receive side.
@@ -191,13 +191,13 @@ tests:
   # zero errors on the same device name stays silent.
   - interval: 1m
     input_series:
-      - series: 'node_network_receive_errs_total{job="node-exporter-host", instance="192.168.0.104:9101", device="nic0"}'
+      - series: 'node_network_receive_errs_total{job="node-exporter-host", instance="10.0.10.104:9101", device="nic0"}'
         values: '0+5x80'
-      - series: 'node_network_receive_packets_total{job="node-exporter-host", instance="192.168.0.104:9101", device="nic0"}'
+      - series: 'node_network_receive_packets_total{job="node-exporter-host", instance="10.0.10.104:9101", device="nic0"}'
         values: '0+100x80'
-      - series: 'node_network_receive_errs_total{job="node-exporter-host", instance="192.168.0.105:9101", device="nic0"}'
+      - series: 'node_network_receive_errs_total{job="node-exporter-host", instance="10.0.10.105:9101", device="nic0"}'
         values: '0+0x80'
-      - series: 'node_network_receive_packets_total{job="node-exporter-host", instance="192.168.0.105:9101", device="nic0"}'
+      - series: 'node_network_receive_packets_total{job="node-exporter-host", instance="10.0.10.105:9101", device="nic0"}'
         values: '0+100x80'
     alert_rule_test:
       # Inside the 1h hold — a burst of receive errors must not page.
@@ -210,7 +210,7 @@ tests:
           - exp_labels:
               severity: warning
               job: node-exporter-host
-              instance: '192.168.0.104:9101'
+              instance: '10.0.10.104:9101'
               device: nic0
 
   # The rate window is [5m], not the [2m] the mixin uses, because this job is
@@ -223,9 +223,9 @@ tests:
   # absorbed and the alert still fires on schedule.
   - interval: 1m
     input_series:
-      - series: 'node_network_receive_errs_total{job="node-exporter-host", instance="192.168.0.104:9101", device="nic0"}'
+      - series: 'node_network_receive_errs_total{job="node-exporter-host", instance="10.0.10.104:9101", device="nic0"}'
         values: '0+5x30 _ 160+5x50'
-      - series: 'node_network_receive_packets_total{job="node-exporter-host", instance="192.168.0.104:9101", device="nic0"}'
+      - series: 'node_network_receive_packets_total{job="node-exporter-host", instance="10.0.10.104:9101", device="nic0"}'
         values: '0+100x30 _ 3200+100x50'
     alert_rule_test:
       - eval_time: 70m
@@ -234,7 +234,7 @@ tests:
           - exp_labels:
               severity: warning
               job: node-exporter-host
-              instance: '192.168.0.104:9101'
+              instance: '10.0.10.104:9101'
               device: nic0
 
   # HostSlabLeakSuspected: SUnreclaim 27 GiB above ARC on the NAS fires (the
@@ -244,13 +244,13 @@ tests:
   # 5m staleness lookback would break the 24h `for:` chain between points.
   - interval: 1m
     input_series:
-      - series: 'node_memory_SUnreclaim_bytes{job="node-exporter-host", instance="192.168.0.102:9101"}'
+      - series: 'node_memory_SUnreclaim_bytes{job="node-exporter-host", instance="10.0.10.102:9101"}'
         values: '39000000000+0x1500'
-      - series: 'node_zfs_arc_size{job="node-exporter-host", instance="192.168.0.102:9101"}'
+      - series: 'node_zfs_arc_size{job="node-exporter-host", instance="10.0.10.102:9101"}'
         values: '12000000000+0x1500'
-      - series: 'node_memory_SUnreclaim_bytes{job="node-exporter-host", instance="192.168.0.104:9101"}'
+      - series: 'node_memory_SUnreclaim_bytes{job="node-exporter-host", instance="10.0.10.104:9101"}'
         values: '9000000000+0x1500'
-      - series: 'node_zfs_arc_size{job="node-exporter-host", instance="192.168.0.104:9101"}'
+      - series: 'node_zfs_arc_size{job="node-exporter-host", instance="10.0.10.104:9101"}'
         values: '8000000000+0x1500'
     alert_rule_test:
       - eval_time: 24h30m
@@ -259,19 +259,19 @@ tests:
           - exp_labels:
               severity: warning
               job: node-exporter-host
-              instance: '192.168.0.102:9101'
+              instance: '10.0.10.102:9101'
 
   # HostMemAvailableLow: 6% available for the full 30m hold fires; 19% does
   # not; and a dip that recovers inside the hold does not.
   - interval: 1m
     input_series:
-      - series: 'node_memory_MemAvailable_bytes{job="node-exporter-host", instance="192.168.0.102:9101"}'
+      - series: 'node_memory_MemAvailable_bytes{job="node-exporter-host", instance="10.0.10.102:9101"}'
         values: '1000000000+0x35'
-      - series: 'node_memory_MemTotal_bytes{job="node-exporter-host", instance="192.168.0.102:9101"}'
+      - series: 'node_memory_MemTotal_bytes{job="node-exporter-host", instance="10.0.10.102:9101"}'
         values: '16000000000+0x35'
-      - series: 'node_memory_MemAvailable_bytes{job="node-exporter-host", instance="192.168.0.104:9101"}'
+      - series: 'node_memory_MemAvailable_bytes{job="node-exporter-host", instance="10.0.10.104:9101"}'
         values: '3000000000+0x35'
-      - series: 'node_memory_MemTotal_bytes{job="node-exporter-host", instance="192.168.0.104:9101"}'
+      - series: 'node_memory_MemTotal_bytes{job="node-exporter-host", instance="10.0.10.104:9101"}'
         values: '16000000000+0x35'
     alert_rule_test:
       - eval_time: 31m
@@ -280,13 +280,13 @@ tests:
           - exp_labels:
               severity: warning
               job: node-exporter-host
-              instance: '192.168.0.102:9101'
+              instance: '10.0.10.102:9101'
 
   - interval: 1m
     input_series:
-      - series: 'node_memory_MemAvailable_bytes{job="node-exporter-host", instance="192.168.0.102:9101"}'
+      - series: 'node_memory_MemAvailable_bytes{job="node-exporter-host", instance="10.0.10.102:9101"}'
         values: '1000000000 1000000000 1000000000 1000000000 1000000000 3000000000+0x30'
-      - series: 'node_memory_MemTotal_bytes{job="node-exporter-host", instance="192.168.0.102:9101"}'
+      - series: 'node_memory_MemTotal_bytes{job="node-exporter-host", instance="10.0.10.102:9101"}'
         values: '16000000000+0x35'
     alert_rule_test:
       - eval_time: 31m
@@ -296,13 +296,13 @@ tests:
   # HostConntrackEntriesHigh at 75% of the table.
   - interval: 1m
     input_series:
-      - series: 'node_nf_conntrack_entries{job="node-exporter-host", instance="192.168.0.102:9101"}'
+      - series: 'node_nf_conntrack_entries{job="node-exporter-host", instance="10.0.10.102:9101"}'
         values: '90000+0x20'
-      - series: 'node_nf_conntrack_entries_limit{job="node-exporter-host", instance="192.168.0.102:9101"}'
+      - series: 'node_nf_conntrack_entries_limit{job="node-exporter-host", instance="10.0.10.102:9101"}'
         values: '100000+0x20'
-      - series: 'node_nf_conntrack_entries{job="node-exporter-host", instance="192.168.0.104:9101"}'
+      - series: 'node_nf_conntrack_entries{job="node-exporter-host", instance="10.0.10.104:9101"}'
         values: '1000+0x20'
-      - series: 'node_nf_conntrack_entries_limit{job="node-exporter-host", instance="192.168.0.104:9101"}'
+      - series: 'node_nf_conntrack_entries_limit{job="node-exporter-host", instance="10.0.10.104:9101"}'
         values: '100000+0x20'
     alert_rule_test:
       - eval_time: 11m
@@ -311,7 +311,7 @@ tests:
           - exp_labels:
               severity: warning
               job: node-exporter-host
-              instance: '192.168.0.102:9101'
+              instance: '10.0.10.102:9101'
 
   # NodeSystemdServiceFailed replaces the mixin's disabled copy. The metric
   # names and label shapes are node_exporter's systemd collector, enabled on the
@@ -320,11 +320,11 @@ tests:
   # rule must select state="failed" AND == 1, not just the series' presence.
   - interval: 1m
     input_series:
-      - series: 'node_systemd_unit_state{job="node-exporter-host", instance="192.168.0.104:9101", name="zfs-load-key@ssd.service", state="failed", type="oneshot"}'
+      - series: 'node_systemd_unit_state{job="node-exporter-host", instance="10.0.10.104:9101", name="zfs-load-key@ssd.service", state="failed", type="oneshot"}'
         values: '1+0x30'
-      - series: 'node_systemd_unit_state{job="node-exporter-host", instance="192.168.0.104:9101", name="zfs-load-key@ssd.service", state="active", type="oneshot"}'
+      - series: 'node_systemd_unit_state{job="node-exporter-host", instance="10.0.10.104:9101", name="zfs-load-key@ssd.service", state="active", type="oneshot"}'
         values: '0+0x30'
-      - series: 'node_systemd_unit_state{job="node-exporter-host", instance="192.168.0.104:9101", name="sshd.service", state="failed", type="notify"}'
+      - series: 'node_systemd_unit_state{job="node-exporter-host", instance="10.0.10.104:9101", name="sshd.service", state="failed", type="notify"}'
         values: '0+0x30'
     alert_rule_test:
       - eval_time: 20m
@@ -333,7 +333,7 @@ tests:
           - exp_labels:
               severity: warning
               job: node-exporter-host
-              instance: '192.168.0.104:9101'
+              instance: '10.0.10.104:9101'
               name: zfs-load-key@ssd.service
               state: failed
               type: oneshot
@@ -342,9 +342,9 @@ tests:
   # they pin the alert on forever and mask a real unit failure.
   - interval: 1m
     input_series:
-      - series: 'node_systemd_unit_state{job="node-exporter-host", instance="192.168.0.223:9101", name="serial-getty@ttyS0.service", state="failed", type="idle"}'
+      - series: 'node_systemd_unit_state{job="node-exporter-host", instance="10.0.10.223:9101", name="serial-getty@ttyS0.service", state="failed", type="idle"}'
         values: '1+0x30'
-      - series: 'node_systemd_unit_state{job="node-exporter-host", instance="192.168.0.153:9101", name="getty@tty1.service", state="failed", type="idle"}'
+      - series: 'node_systemd_unit_state{job="node-exporter-host", instance="10.0.10.153:9101", name="getty@tty1.service", state="failed", type="idle"}'
         values: '1+0x30'
     alert_rule_test:
       - eval_time: 20m
@@ -368,9 +368,9 @@ tests:
   # sustained 15m: 1 restart/min clears it, 0.2/min does not.
   - interval: 1m
     input_series:
-      - series: 'node_systemd_service_restart_total{job="node-exporter-host", instance="192.168.0.153:9101", name="gitlab-runsvdir.service"}'
+      - series: 'node_systemd_service_restart_total{job="node-exporter-host", instance="10.0.10.153:9101", name="gitlab-runsvdir.service"}'
         values: '0+1x40'
-      - series: 'node_systemd_service_restart_total{job="node-exporter-host", instance="192.168.0.153:9101", name="sshd.service"}'
+      - series: 'node_systemd_service_restart_total{job="node-exporter-host", instance="10.0.10.153:9101", name="sshd.service"}'
         values: '0+0x40'
     alert_rule_test:
       - eval_time: 30m
@@ -379,13 +379,13 @@ tests:
           - exp_labels:
               severity: warning
               job: node-exporter-host
-              instance: '192.168.0.153:9101'
+              instance: '10.0.10.153:9101'
               name: gitlab-runsvdir.service
 
   # A slow restart rate (2 in 5m is the boundary, not >2) must not fire.
   - interval: 1m
     input_series:
-      - series: 'node_systemd_service_restart_total{job="node-exporter-host", instance="192.168.0.153:9101", name="gitlab-runsvdir.service"}'
+      - series: 'node_systemd_service_restart_total{job="node-exporter-host", instance="10.0.10.153:9101", name="gitlab-runsvdir.service"}'
         values: '0+0x5 1+0x5 2+0x30'
     alert_rule_test:
       - eval_time: 30m
@@ -397,7 +397,7 @@ tests:
   # rule too, even at a rate that would otherwise trip it.
   - interval: 1m
     input_series:
-      - series: 'node_systemd_service_restart_total{job="node-exporter-host", instance="192.168.0.223:9101", name="serial-getty@ttyS0.service"}'
+      - series: 'node_systemd_service_restart_total{job="node-exporter-host", instance="10.0.10.223:9101", name="serial-getty@ttyS0.service"}'
         values: '0+1x40'
     alert_rule_test:
       - eval_time: 30m
@@ -411,11 +411,11 @@ tests:
   # (which the rule's collector= selector must not catch) stay silent.
   - interval: 1m
     input_series:
-      - series: 'node_scrape_collector_success{job="node-exporter-host", instance="192.168.0.104:9101", collector="systemd"}'
+      - series: 'node_scrape_collector_success{job="node-exporter-host", instance="10.0.10.104:9101", collector="systemd"}'
         values: '0+0x40'
-      - series: 'node_scrape_collector_success{job="node-exporter-host", instance="192.168.0.104:9101", collector="zfs"}'
+      - series: 'node_scrape_collector_success{job="node-exporter-host", instance="10.0.10.104:9101", collector="zfs"}'
         values: '0+0x40'
-      - series: 'node_scrape_collector_success{job="node-exporter-host", instance="192.168.0.102:9101", collector="systemd"}'
+      - series: 'node_scrape_collector_success{job="node-exporter-host", instance="10.0.10.102:9101", collector="systemd"}'
         values: '1+0x40'
     alert_rule_test:
       - eval_time: 35m
@@ -424,7 +424,7 @@ tests:
           - exp_labels:
               severity: warning
               job: node-exporter-host
-              instance: '192.168.0.104:9101'
+              instance: '10.0.10.104:9101'
               collector: systemd
 
   # A collector that recovers inside the 30m hold is a scrape blip, not a
@@ -432,7 +432,7 @@ tests:
   # runs WITHOUT the systemd collector) must never be selected at all.
   - interval: 1m
     input_series:
-      - series: 'node_scrape_collector_success{job="node-exporter-host", instance="192.168.0.104:9101", collector="systemd"}'
+      - series: 'node_scrape_collector_success{job="node-exporter-host", instance="10.0.10.104:9101", collector="systemd"}'
         values: '0+0x20 1+0x40'
       - series: 'node_scrape_collector_success{job="node-exporter", instance="10.42.1.7:9100", collector="systemd"}'
         values: '0+0x60'

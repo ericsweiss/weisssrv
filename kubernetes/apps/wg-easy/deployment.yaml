@@ -101,7 +101,7 @@ spec:
               value: "51820"
             # Public resolvers pushed to clients — NEVER the internal AdGuard.
             # Friends' devices are untrusted and must not learn internal names
-            # or reach 192.168.0.150/.160. Part of the no-LAN model (docs/38).
+            # or reach 10.0.10.150/.160. Part of the no-LAN model (docs/38).
             - name: INIT_DNS
               value: "1.1.1.1,1.0.0.1"
             - name: INIT_IPV4_CIDR

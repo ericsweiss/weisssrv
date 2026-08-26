@@ -1,5 +1,5 @@
 ---
-k3s_api_vip: 192.168.0.161
+k3s_api_vip: 10.0.10.161
 k3s_api_port: 6443
 # apiserver SAN list. The role adds the VIP, inventory_hostname and
 # ansible_host itself; this is the stable service name clients use.
@@ -11,17 +11,17 @@ k3s_tls_sans:
 # themselves be waiting on the cluster).
 k3s_registry_host_pins:
   - name: "registry.git.{{ external_domain }}"
-    ip: 192.168.0.101
+    ip: 10.0.10.101
   # The registry hands containerd a 401 pointing at
   # https://git.ericsweiss.com/jwt/auth for the bearer token, so pinning the
   # registry name alone still leaves the pull resolving the auth realm publicly
   # — and a public answer means hairpinning to our own WAN address, which the
   # UniFi gateway does not loop back for the announcing node (docs/08).
   - name: "git.{{ external_domain }}"
-    ip: 192.168.0.101
+    ip: 10.0.10.101
 k3s_storage_host_pins:
   - name: "pve-nas-01.{{ internal_domain }}"
-    ip: 192.168.0.102
+    ip: 10.0.10.102
 
 # Server (control-plane) token — grants the ability to join as a SERVER and pull
 # cluster CA material (from 1Password at runtime).

@@ -2,13 +2,13 @@
 
 WireGuard VPN (wg-easy v15) for the user + friends/family. It provides
 **internet-only egress through the home connection**: connected clients can
-reach the internet but **cannot** reach the home LAN (`192.168.0.0/24`), any
+reach the internet but **cannot** reach the home LAN (`10.0.10.0/24`), any
 RFC1918/CGNAT/link-local range, or internal DNS. Full architecture, the security
 model, and the client-onboarding runbook are in
 [`docs/38-wireguard-vpn.md`](../../../docs/38-wireguard-vpn.md).
 
 - **VPN endpoint** (WAN): `vpn.ericsweiss.com:51820/udp` → router forwards to the
-  MetalLB VIP `192.168.0.99` (`vpn-pool`).
+  MetalLB VIP `10.0.10.99` (`vpn-pool`).
 - **Admin UI** (internal only): `https://vpn.esweiss.com`, behind
   `lan-tailscale-only` + Authentik ForwardAuth (`vpn-admins` group). Never
   exposed publicly.

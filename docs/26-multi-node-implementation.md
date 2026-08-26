@@ -59,10 +59,10 @@ SSH_KEY=$(op read "op://Homelab/SSH Key/public key")
 # You will be prompted for:
 #   1. Password for eric user (enter twice for confirmation)
 #   2. Root password for the target host
-./scripts/bootstrap-proxmox-host.sh 192.168.0.103 "$SSH_KEY"  # pve-laptop-01
-./scripts/bootstrap-proxmox-host.sh 192.168.0.104 "$SSH_KEY"  # pve-opt-01
-./scripts/bootstrap-proxmox-host.sh 192.168.0.105 "$SSH_KEY"  # pve-opt-02
-./scripts/bootstrap-proxmox-host.sh 192.168.0.107 "$SSH_KEY"  # pve-prec-01
+./scripts/bootstrap-proxmox-host.sh 10.0.10.103 "$SSH_KEY"  # pve-laptop-01
+./scripts/bootstrap-proxmox-host.sh 10.0.10.104 "$SSH_KEY"  # pve-opt-01
+./scripts/bootstrap-proxmox-host.sh 10.0.10.105 "$SSH_KEY"  # pve-opt-02
+./scripts/bootstrap-proxmox-host.sh 10.0.10.107 "$SSH_KEY"  # pve-prec-01
 ```
 
 **Note**: Using the same password for `eric` on all hosts makes management easier. The password is for local console access only - SSH authentication uses keys.
@@ -114,42 +114,42 @@ Move hosts from `proxmox_unmanaged` to `proxmox` group in `ansible/inventories/p
     proxmox:
       hosts:
         pve-nas-01:
-          ansible_host: 192.168.0.102
+          ansible_host: 10.0.10.102
           proxmox_role: nas
           firewall_ipsets:
             - pve_hosts
             - core-cluster
             - nfs_clients
         pve-laptop-01:
-          ansible_host: 192.168.0.103
+          ansible_host: 10.0.10.103
           proxmox_role: compute
           firewall_ipsets:
             - pve_hosts
             - core-cluster
             - nfs_clients
         pve-opt-01:
-          ansible_host: 192.168.0.104
+          ansible_host: 10.0.10.104
           proxmox_role: compute
           firewall_ipsets:
             - pve_hosts
             - core-cluster
             - nfs_clients
         pve-opt-02:
-          ansible_host: 192.168.0.105
+          ansible_host: 10.0.10.105
           proxmox_role: compute
           firewall_ipsets:
             - pve_hosts
             - core-cluster
             - nfs_clients
         pve-opt-03:
-          ansible_host: 192.168.0.106
+          ansible_host: 10.0.10.106
           proxmox_role: compute
           firewall_ipsets:
             - pve_hosts
             - core-cluster
             - nfs_clients
         pve-prec-01:
-          ansible_host: 192.168.0.107
+          ansible_host: 10.0.10.107
           proxmox_role: compute
           firewall_ipsets:
             - pve_hosts
@@ -193,11 +193,20 @@ task infra:deploy -- --limit pve-laptop-01,pve-opt-01,pve-opt-02,pve-prec-01
 After deployment, manually authenticate each host with Tailscale:
 
 ```bash
-# SSH to each host and run tailscale up
-ssh eric@192.168.0.103 "sudo tailscale up --accept-routes --accept-dns=false"
-ssh eric@192.168.0.104 "sudo tailscale up --accept-routes --accept-dns=false"
-ssh eric@192.168.0.105 "sudo tailscale up --accept-routes --accept-dns=false"
-ssh eric@192.168.0.107 "sudo tailscale up --accept-routes --accept-dns=false"
+# SSH to each host and run tailscale up with the FULL canonical flag set,
+# verbatim from terraform/tailscale/README.md § Recovery — `tailscale up`
+# rejects a flag set omitting already-configured non-default prefs (hence
+# --reset + everything), and on a fresh host an incomplete set would
+# authenticate it untagged, or without the Tailscale SSH fallback (--ssh) and
+# operator pref the estate expects. --accept-routes MUST be false: every
+# Proxmox host is a subnet router (tag:subnet-router, tag-only auto-approval),
+# and a host that accepts routes while sitting ON the LAN consumes its peers'
+# advertisement of its own subnet — a routing loop. Canonical source for this
+# command: terraform/tailscale/README.md § Recovery.
+ssh eric@10.0.10.103 "sudo tailscale up --reset --accept-routes=false --accept-dns=false --advertise-routes=10.0.10.0/24 --advertise-tags=tag:subnet-router --operator=eric --ssh"
+ssh eric@10.0.10.104 "sudo tailscale up --reset --accept-routes=false --accept-dns=false --advertise-routes=10.0.10.0/24 --advertise-tags=tag:subnet-router --operator=eric --ssh"
+ssh eric@10.0.10.105 "sudo tailscale up --reset --accept-routes=false --accept-dns=false --advertise-routes=10.0.10.0/24 --advertise-tags=tag:subnet-router --operator=eric --ssh"
+ssh eric@10.0.10.107 "sudo tailscale up --reset --accept-routes=false --accept-dns=false --advertise-routes=10.0.10.0/24 --advertise-tags=tag:subnet-router --operator=eric --ssh"
 ```
 
 This will display a URL for each host - open in browser to authenticate.
@@ -219,7 +228,7 @@ Proxmox cluster join requires:
 
 ```bash
 # SSH to pve-nas-01 (will be the cluster creator)
-ssh eric@192.168.0.102
+ssh eric@10.0.10.102
 
 # Create the cluster
 sudo pvecm create weisssrv
@@ -235,8 +244,8 @@ sudo pvecm status
 
 ```bash
 # 1. Join pve-opt-03 (existing compute node)
-ssh eric@192.168.0.106
-sudo pvecm add 192.168.0.102
+ssh eric@10.0.10.106
+sudo pvecm add 10.0.10.102
 # Enter root password of pve-nas-01 when prompted
 # Node will restart services and join cluster
 ```
@@ -254,23 +263,23 @@ sudo pvecm nodes
 
 ```bash
 # 2. Join pve-laptop-01
-ssh eric@192.168.0.103
-sudo pvecm add 192.168.0.102
+ssh eric@10.0.10.103
+sudo pvecm add 10.0.10.102
 # Wait for completion...
 
 # 3. Join pve-opt-01
-ssh eric@192.168.0.104
-sudo pvecm add 192.168.0.102
+ssh eric@10.0.10.104
+sudo pvecm add 10.0.10.102
 # Wait for completion...
 
 # 4. Join pve-opt-02
-ssh eric@192.168.0.105
-sudo pvecm add 192.168.0.102
+ssh eric@10.0.10.105
+sudo pvecm add 10.0.10.102
 # Wait for completion...
 
 # 5. Join pve-prec-01
-ssh eric@192.168.0.107
-sudo pvecm add 192.168.0.102
+ssh eric@10.0.10.107
+sudo pvecm add 10.0.10.102
 # Wait for completion...
 ```
 
@@ -278,7 +287,7 @@ sudo pvecm add 192.168.0.102
 
 ```bash
 # From any cluster member
-ssh eric@192.168.0.102
+ssh eric@10.0.10.102
 
 # Check cluster status
 sudo pvecm status
@@ -360,7 +369,7 @@ task k3s:backup
 # Creates snapshot at /var/lib/rancher/k3s/server/db/snapshots/
 
 # Verify snapshot was created
-ssh eric@192.168.0.222 "sudo k3s etcd-snapshot ls"
+ssh eric@10.0.10.222 "sudo k3s etcd-snapshot ls"
 ```
 
 ### Step 3.4: Add Server Nodes (One at a Time)
@@ -397,7 +406,7 @@ kubectl get nodes
 # Should show 5 nodes (3 servers + 2 agents)
 
 # Test kube-vip failover
-curl -sk https://192.168.0.161:6443/healthz
+curl -sk https://10.0.10.161:6443/healthz
 # Should return "ok"
 ```
 
@@ -503,19 +512,19 @@ For manual operations or troubleshooting:
 
 ```bash
 # Check HA status
-ssh eric@192.168.0.102 "sudo ha-manager status"
+ssh eric@10.0.10.102 "sudo ha-manager status"
 
 # View HA rules
-ssh eric@192.168.0.102 "sudo ha-manager rules list"
+ssh eric@10.0.10.102 "sudo ha-manager rules list"
 
 # View HA resources
-ssh eric@192.168.0.102 "sudo ha-manager config"
+ssh eric@10.0.10.102 "sudo ha-manager config"
 
 # Check replication status
-ssh eric@192.168.0.102 "sudo pvesr status"
+ssh eric@10.0.10.102 "sudo pvesr status"
 
 # Manually migrate a service
-ssh eric@192.168.0.102 "sudo ha-manager migrate ct:150 pve-laptop-01"
+ssh eric@10.0.10.102 "sudo ha-manager migrate ct:150 pve-laptop-01"
 ```
 
 ### Step 4.4: Test HA Functionality
@@ -536,7 +545,7 @@ ssh pve-nas-01 "sudo ha-manager migrate ct:150 pve-opt-03"
 sleep 60
 
 # 4. Test DNS still works
-dig google.com @192.168.0.150
+dig google.com @10.0.10.150
 # Should still resolve
 
 # 5. Migrate back to original node (pve-laptop-01)
@@ -554,8 +563,8 @@ task proxmox:ha-status | grep 150
 
 ```bash
 # 1. Verify all Proxmox nodes
-ssh eric@192.168.0.102 "sudo pvecm status"
-ssh eric@192.168.0.102 "sudo pvecm nodes"
+ssh eric@10.0.10.102 "sudo pvecm status"
+ssh eric@10.0.10.102 "sudo pvecm nodes"
 
 # 2. Verify k3s cluster
 task k3s:status
@@ -566,7 +575,7 @@ kubectl get pods -A | grep -v Running | grep -v Completed
 # Should only show Running or Completed pods
 
 # 4. Verify HA
-ssh eric@192.168.0.102 "sudo ha-manager status"
+ssh eric@10.0.10.102 "sudo ha-manager status"
 
 # 5. Test ingress
 curl -k https://auth.esweiss.com/
@@ -586,11 +595,11 @@ task collect-state
 kubectl get pods -n kube-system -l app=kube-vip -o wide
 
 # 2. Simulate server failure (stop one server VM)
-ssh eric@192.168.0.103 "sudo qm stop 223"  # Stop k3s-srv-laptop-01
+ssh eric@10.0.10.103 "sudo qm stop 223"  # Stop k3s-srv-laptop-01
 
 # 3. Verify API VIP fails over
 sleep 30
-curl -sk https://192.168.0.161:6443/healthz
+curl -sk https://10.0.10.161:6443/healthz
 # Should return "ok" (VIP moved to another server)
 
 # 4. Verify cluster still operational
@@ -598,7 +607,7 @@ kubectl get nodes
 # k3s-srv-laptop-01 should show NotReady
 
 # 5. Restore server
-ssh eric@192.168.0.103 "sudo qm start 223"
+ssh eric@10.0.10.103 "sudo qm start 223"
 
 # 6. Wait for rejoin
 sleep 60
@@ -625,7 +634,7 @@ ssh eric@<proxmox-host> "sudo qm stop <vmid> && sudo qm destroy <vmid>"
 # 3. Remove from Ansible inventory (comment out entries)
 
 # 4. If etcd is corrupted, restore from snapshot
-ssh eric@192.168.0.222 << 'EOF'
+ssh eric@10.0.10.222 << 'EOF'
 sudo systemctl stop k3s
 sudo k3s server --cluster-reset --cluster-reset-restore-path=/var/lib/rancher/k3s/server/db/snapshots/<snapshot-name>
 sudo systemctl start k3s
@@ -641,7 +650,7 @@ If a node causes cluster problems:
 ssh eric@<problem-node> "sudo pvecm delnode <node-name>"
 
 # If node is not accessible, remove from existing member
-ssh eric@192.168.0.102 << 'EOF'
+ssh eric@10.0.10.102 << 'EOF'
 sudo pvecm expected 1  # Temporarily lower expected votes
 sudo pvecm delnode <problem-node-name>
 sudo pvecm expected 6  # Restore expected votes (or adjust for remaining nodes)
@@ -654,7 +663,7 @@ If HA causes issues:
 
 ```bash
 # Remove all HA resources
-ssh eric@192.168.0.102 << 'EOF'
+ssh eric@10.0.10.102 << 'EOF'
 sudo ha-manager remove ct:150
 sudo ha-manager remove ct:160
 sudo ha-manager remove ct:151

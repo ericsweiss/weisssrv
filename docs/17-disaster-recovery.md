@@ -106,7 +106,7 @@ otherwise omits, and the UniFi migration ([docs/46](46-unifi-network.md)) did no
 remove it — it segmented the estate without adding redundancy. Both legs of every
 active-backup bond plug into **one switch** (now the USW-Pro-XG-8-PoE; see
 [docs/34-bond-mac-flapping.md](34-bond-mac-flapping.md)), and there is **one
-router/gateway** (the UCG-Fiber, `192.168.0.1` on VLAN 10 and `10.0.1.1` on the
+router/gateway** (the UCG-Fiber, `10.0.10.1` on VLAN 10 and `10.0.1.1` on the
 management VLAN, which is also DHCP and the Cloudflare-origin port-forwarder;
 before the cutover this was an Asus GT-AX11000 in the same role). The homelab
 still rides one `vmbr0` — now VLAN 10 rather than a flat /24 — with **no second

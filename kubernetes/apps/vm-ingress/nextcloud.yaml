@@ -1,5 +1,5 @@
 ---
-# IngressRoutes for Nextcloud (VM 192.168.0.156). Reuses the default-namespace
+# IngressRoutes for Nextcloud (VM 10.0.10.156). Reuses the default-namespace
 # wildcard certs + vm-tls-wildcard ServersTransport (same as Plex/HAOS).
 
 # External - cloud.ericsweiss.com (external-dns creates the proxied CNAME).

@@ -19,8 +19,8 @@ spec:
       dnsPolicy: None
       dnsConfig:
         nameservers:
-          - 192.168.0.150
-          - 192.168.0.160
+          - 10.0.10.150
+          - 10.0.10.160
         options:
           - name: ndots
             value: "1"
@@ -131,7 +131,7 @@ spec:
             # exporter scrapes) + the two DNS resolvers. Everything else
             # non-tunnel is dropped by gluetun's own firewall.
             - name: FIREWALL_OUTBOUND_SUBNETS
-              value: "${cluster_pod_cidr},${cluster_service_cidr},192.168.0.150/32,192.168.0.160/32"
+              value: "${cluster_pod_cidr},${cluster_service_cidr},10.0.10.150/32,10.0.10.160/32"
             # Health + control servers bind loopback only — every consumer (the
             # exec probes, the gluetun-exporter sidecar) shares this pod's
             # network namespace. The control API is role-authenticated via the
@@ -156,7 +156,7 @@ spec:
               # FIREWALL_OUTBOUND_SUBNETS); Unbound's DoT covers upstream
               # privacy. Pod-level dnsConfig.nameservers above covers dns-02
               # as a fallback only when Gluetun is disabled or crashed.
-              value: "192.168.0.150"
+              value: "10.0.10.150"
             - name: TZ
               value: America/Los_Angeles
             - name: LOG_LEVEL

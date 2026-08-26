@@ -213,7 +213,7 @@ The UCG-Fiber's own credentials. `api-key` is what Terraform authenticates with
 with no 2FA, because the provider cannot satisfy an MFA prompt. `username` /
 `password` are that admin's console login: the break-glass path when the API
 key is revoked or the API is unreachable, never read by Terraform. `url` is the
-**production** gateway address (`https://192.168.0.1`); while the gateway is on
+**production** gateway address (`https://10.0.10.1`); while the gateway is on
 a bench, override `TF_VAR_unifi_api_url` per invocation instead of editing the
 item (docs/46).
 
@@ -514,7 +514,7 @@ task mail:rotate-credential
 task gitlab:deploy
 
 # 5. Verify mail still works
-ssh eric@192.168.0.102 "echo 'Test' | mail -s 'Rotation Test' root"
+ssh eric@10.0.10.102 "echo 'Test' | mail -s 'Rotation Test' root"
 
 # Check mail arrives at your root_email_alias
 ```
@@ -611,7 +611,7 @@ op read "op://Homelab/SSH Key/public key"
 ansible-playbook ansible/playbooks/base.yml --tags ssh
 
 # 5. Test SSH with new key (before removing old one!)
-ssh -i ~/.ssh/id_ed25519_new eric@192.168.0.102
+ssh -i ~/.ssh/id_ed25519_new eric@10.0.10.102
 
 # 6. Once verified, replace old key
 mv ~/.ssh/id_ed25519_new ~/.ssh/id_ed25519
@@ -724,7 +724,7 @@ task dns:deploy
 ansible-playbook ansible/playbooks/postflight.yml --limit dns-01,dns-02
 
 # 4. Test login with new password
-open http://192.168.0.150:3000
+open http://10.0.10.150:3000
 # Login with username: eric, new password from step 1
 ```
 
@@ -766,7 +766,7 @@ op read "op://Homelab/Samba NAS User/password"
 task storage:deploy
 
 # 4. Test Samba access
-smbclient //192.168.0.102/share -U nas
+smbclient //10.0.10.102/share -U nas
 # Enter new password when prompted
 ```
 
@@ -843,7 +843,7 @@ ssh-keygen -t ed25519 -C "eric@MacBookPro.esweiss.com" -f ~/.ssh/id_ed25519_emer
 ansible-playbook ansible/playbooks/base.yml --tags ssh
 
 # 4. Verify emergency key works
-ssh -i ~/.ssh/id_ed25519_emergency eric@192.168.0.102
+ssh -i ~/.ssh/id_ed25519_emergency eric@10.0.10.102
 
 # 5. Remove compromised key from laptop and 1Password
 # 6. Check all hosts for unauthorized access:
@@ -858,13 +858,13 @@ ansible all -m shell -a "last -20"
 
 ```bash
 # Test mail relay
-ssh eric@192.168.0.102 "echo 'Test after rotation' | mail -s 'Test' root"
+ssh eric@10.0.10.102 "echo 'Test after rotation' | mail -s 'Test' root"
 
 # Check smtp-relay logs
-ssh eric@192.168.0.151 "sudo tail -f /var/log/mail.log"
+ssh eric@10.0.10.151 "sudo tail -f /var/log/mail.log"
 
 # Verify authentication
-ssh eric@192.168.0.151 "sudo grep sasl /var/log/mail.log | tail -20"
+ssh eric@10.0.10.151 "sudo grep sasl /var/log/mail.log | tail -20"
 ```
 
 ### SSH
@@ -881,10 +881,10 @@ ansible all -m shell -a "wc -l ~/.ssh/authorized_keys"
 
 ```bash
 # Test login
-curl http://192.168.0.150:3000
+curl http://10.0.10.150:3000
 
 # Check sync status (if password changed)
-ssh eric@192.168.0.150 "sudo systemctl status adguardhome-sync"
+ssh eric@10.0.10.150 "sudo systemctl status adguardhome-sync"
 ```
 
 ---
@@ -937,13 +937,13 @@ ansible host -m setup
 **Fix**:
 ```bash
 # Check sasl_passwd on smtp-relay
-ssh eric@192.168.0.151 "sudo cat /etc/postfix/sasl_passwd"
+ssh eric@10.0.10.151 "sudo cat /etc/postfix/sasl_passwd"
 
 # Manually rebuild hash
-ssh eric@192.168.0.151 "sudo postmap /etc/postfix/sasl_passwd && sudo systemctl reload postfix"
+ssh eric@10.0.10.151 "sudo postmap /etc/postfix/sasl_passwd && sudo systemctl reload postfix"
 
 # Check logs
-ssh eric@192.168.0.151 "sudo journalctl -u postfix -n 50"
+ssh eric@10.0.10.151 "sudo journalctl -u postfix -n 50"
 ```
 
 ### Terraform fails after Cloudflare rotation

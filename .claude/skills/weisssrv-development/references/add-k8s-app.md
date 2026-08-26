@@ -56,7 +56,7 @@ gotchas that bite. Copy an existing app rather than inventing a shape.
    reachability. Grafana dashboard only if a good upstream one exists (ConfigMap
    sidecar via `configMapGenerator` in `observability/dashboards/`).
 10. **DNS**: internal = `adguard_home_rewrites` entry in `group_vars/dns.yml` (answer
-    `192.168.0.101` for Traefik-fronted). External = the external-dns annotation
+    `10.0.10.101` for Traefik-fronted). External = the external-dns annotation
     above (no Terraform edit) unless it needs a nested subdomain / DNS-only
     record — then one entry in `local.dns_records` in `terraform/cloudflare/dns.tf`
     (`protected = true`; the resources themselves live in the library module).

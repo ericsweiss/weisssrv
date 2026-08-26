@@ -11,15 +11,15 @@ locals {
   # VLAN by DHCP and allowed through the zone policies below from the VLANs that
   # get nothing else.
   #
-  # Phase 2 (homelab renumber) edits these three addresses AND the `homelab`
-  # subnet/DHCP scope below AND all five `port_forwards` targets — README
-  # § Phase 2 is the complete edit list, not this comment.
-  dns_ips = ["192.168.0.150", "192.168.0.160"]
-  plex_ip = "192.168.0.152"
+  # These three addresses, the `homelab` subnet/DHCP scope below and all five
+  # `port_forwards` targets moved together in the Phase 2 renumber — README
+  # § Phase 2 is the complete list, not this comment.
+  dns_ips = ["10.0.10.150", "10.0.10.160"]
+  plex_ip = "10.0.10.152"
   # Home Assistant (docs/24). Named here because the IoT VLAN gets a policy to
   # it: cast/TTS and webhook callbacks are device-initiated, so the outbound
   # `homelab-to-iot` allow does not cover them.
-  ha_ip = "192.168.0.154"
+  ha_ip = "10.0.10.154"
 
   # The two adopted UniFi devices on the management VLAN, single-sourced because
   # three things name them: the ICMP policy pair below, the `usw-pro-xg-8` and
@@ -50,16 +50,16 @@ locals {
       dhcp        = { start = "10.0.1.100", stop = "10.0.1.199", dns_servers = ["1.1.1.1", "9.9.9.9"] }
     }
 
-    # Phase 1 keeps the homelab on its existing 192.168.0.0/24 so nothing in
-    # ansible/, kubernetes/ or any guest has to be renumbered on cutover night;
-    # the VLAN tag is new. Phase 2 flips this one subnet to 10.0.10.1/24 (pool
-    # .2-.98) in its own MR — docs/46 § Phase 2.
+    # Hosts, guests, k3s nodes and every MetalLB/kube-vip VIP. Renumbered from
+    # 192.168.0.0/24 in Phase 2 (docs/46 § Phase 2) with every last octet
+    # preserved; the pool stays below .99 so the VIPs .99-.101 and .161, and the
+    # statically addressed hosts and guests, are never handed out by DHCP.
     homelab = {
       name        = "Homelab"
       vlan        = 10
-      subnet      = "192.168.0.1/24"
+      subnet      = "10.0.10.1/24"
       domain_name = "esweiss.com"
-      dhcp        = { start = "192.168.0.2", stop = "192.168.0.98", dns_servers = local.dns_ips }
+      dhcp        = { start = "10.0.10.2", stop = "10.0.10.98", dns_servers = local.dns_ips }
     }
 
     # `igmp_snooping` — see the note on `iot` below; Home and IoT are the two
@@ -649,20 +649,20 @@ locals {
   # source restriction lives in the Proxmox firewall and the k8s
   # NetworkPolicies, not in a per-forward allowlist nothing else can see.
   #
-  # The map key is the forward's name in the UI. Targets are homelab addresses,
-  # so Phase 2 renumbers all five.
+  # The map key is the forward's name in the UI. Targets are homelab addresses;
+  # all five moved in the Phase 2 renumber (docs/46 § Phase 2).
   port_forwards = {
-    # Traefik's public MetalLB VIP (192.168.0.100) — every *.ericsweiss.com name.
-    http  = { wan_port = "80", ip = "192.168.0.100", port = "80" }
-    https = { wan_port = "443", ip = "192.168.0.100", port = "443" }
+    # Traefik's public MetalLB VIP (10.0.10.100) — every *.ericsweiss.com name.
+    http  = { wan_port = "80", ip = "10.0.10.100", port = "80" }
+    https = { wan_port = "443", ip = "10.0.10.100", port = "443" }
     # Plex direct-connect (docs/20). The LXC is not behind Traefik.
     plex = { wan_port = "32400", ip = local.plex_ip, port = "32400" }
     # Git-over-SSH, deliberately WAN-open (docs/27 § Git SSH). The GitLab guest
     # redirects 2222 -> 22 with its own iptables rule, so the forward is
     # 2222 -> 2222 and the port translation happens on the guest.
-    "gitlab-ssh" = { wan_port = "2222", ip = "192.168.0.153", port = "2222" }
+    "gitlab-ssh" = { wan_port = "2222", ip = "10.0.10.153", port = "2222" }
     # wg-easy's WireGuard endpoint VIP (.99), UDP (docs/38). The admin UI is
     # NOT forwarded — it is reachable over the tunnel and the internal name.
-    wg = { protocol = "udp", wan_port = "51820", ip = "192.168.0.99", port = "51820" }
+    wg = { protocol = "udp", wan_port = "51820", ip = "10.0.10.99", port = "51820" }
   }
 }

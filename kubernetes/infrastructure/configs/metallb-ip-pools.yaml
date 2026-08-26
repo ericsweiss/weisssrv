@@ -1,7 +1,7 @@
 ---
 # MetalLB IP Address Pools for esweiss.com homelab.
-# Public pool: 192.168.0.100 — publicly accessible services (Traefik ingress).
-# Internal pool: 192.168.0.101 — internal-only services.
+# Public pool: 10.0.10.100 — publicly accessible services (Traefik ingress).
+# Internal pool: 10.0.10.101 — internal-only services.
 # autoAssign:false — each pool is a single /32 claimed explicitly via
 # metallb.io/loadBalancerIPs on the Traefik Services. Keep MetalLB from ever
 # auto-handing these pinned VIPs to another LoadBalancer that omits an address;
@@ -26,11 +26,14 @@ spec:
   addresses:
     - ${cluster_metallb_internal_vip}/32
 ---
-# VPN pool: 192.168.0.99 — the wg-easy WireGuard UDP endpoint, kept in its own
+# VPN pool: 10.0.10.99 — the wg-easy WireGuard UDP endpoint, kept in its own
 # /32 pool so the public/internal ingress semantics stay clean.
-# .99 sits inside the router's DHCP range and must stay excluded from it
-# (uncoded operator step, docs/38): a dropped exclusion lets a workstation lease
-# collide with this internet-facing endpoint, visible only as EndpointDown.
+# .99 must stay outside the gateway's DHCP scope. That is now CODIFIED, not an
+# operator step: the Homelab VLAN's pool is 10.0.10.2-10.0.10.98 in
+# terraform/unifi/networks.tf (local.networks.homelab.dhcp), and the
+# unifi-drift-plan job catches a UI edit that widens it (docs/38, docs/46).
+# The failure mode is why the bound matters: a lease colliding with this
+# internet-facing endpoint is invisible except as EndpointDown.
 apiVersion: metallb.io/v1beta1
 kind: IPAddressPool
 metadata:

@@ -34,7 +34,7 @@ ssh_pubkey_authentication: true
 - Root login disabled via SSH (with exception below)
 - User `eric` has passwordless sudo
 - SSH keys stored in 1Password and deployed via Ansible
-- Restricted by source IP (`from="192.168.0.0/24,10.0.20.8/29,100.64.0.0/10,10.42.0.0/16"` — the homelab LAN, the Home-VLAN admin block, Tailscale, and the k3s pod CIDR; see `group_vars/all.yml` for the authoritative ranges and why the pod CIDR is required for in-cluster CI deploy jobs)
+- Restricted by source IP (`from="10.0.10.0/24,10.0.20.8/29,100.64.0.0/10,10.42.0.0/16"` — the homelab LAN, the Home-VLAN admin block, Tailscale, and the k3s pod CIDR; see `group_vars/all.yml` for the authoritative ranges and why the pod CIDR is required for in-cluster CI deploy jobs)
 
 **Proxmox Host Exception**: Root SSH with key authentication is enabled on Proxmox cluster hosts (`ssh_permit_root_login: "prohibit-password"` in `group_vars/proxmox.yml`). This is required for:
 - **Live VM/CT migrations** between cluster nodes
@@ -48,9 +48,9 @@ This is a standard Proxmox requirement - the cluster cannot function without roo
 **User**: `eric` (all containers)
 
 ```bash
-ssh eric@192.168.0.150  # dns-01
-ssh eric@192.168.0.160  # dns-02
-ssh eric@192.168.0.151  # smtp-relay
+ssh eric@10.0.10.150  # dns-01
+ssh eric@10.0.10.160  # dns-02
+ssh eric@10.0.10.151  # smtp-relay
 ```
 
 Services run as dedicated non-root users with appropriate capabilities:
@@ -76,7 +76,7 @@ ssh_public_key: "{{ lookup('ansible.builtin.env', 'SSH_PUBLIC_KEY') }}"
 The key is deployed to `~/.ssh/authorized_keys` with IP restrictions:
 
 ```
-from="192.168.0.0/24,10.0.20.8/29,100.64.0.0/10,10.42.0.0/16" ssh-ed25519 AAAAC3Nza... eric@MacBookPro.esweiss.com
+from="10.0.10.0/24,10.0.20.8/29,100.64.0.0/10,10.42.0.0/16" ssh-ed25519 AAAAC3Nza... eric@MacBookPro.esweiss.com
 ```
 
 ## Connecting to Hosts
@@ -85,18 +85,18 @@ from="192.168.0.0/24,10.0.20.8/29,100.64.0.0/10,10.42.0.0/16" ssh-ed25519 AAAAC3
 
 ```bash
 # Proxmox hosts (examples - all 6 hosts use same pattern)
-ssh eric@192.168.0.102  # pve-nas-01
-ssh eric@192.168.0.103  # pve-laptop-01
-ssh eric@192.168.0.104  # pve-opt-01
-ssh eric@192.168.0.105  # pve-opt-02
-ssh eric@192.168.0.106  # pve-opt-03
-ssh eric@192.168.0.107  # pve-prec-01
+ssh eric@10.0.10.102  # pve-nas-01
+ssh eric@10.0.10.103  # pve-laptop-01
+ssh eric@10.0.10.104  # pve-opt-01
+ssh eric@10.0.10.105  # pve-opt-02
+ssh eric@10.0.10.106  # pve-opt-03
+ssh eric@10.0.10.107  # pve-prec-01
 
 # LXC containers
-ssh eric@192.168.0.150  # dns-01
-ssh eric@192.168.0.160  # dns-02
-ssh eric@192.168.0.151  # smtp-relay
-ssh eric@192.168.0.152  # plex
+ssh eric@10.0.10.150  # dns-01
+ssh eric@10.0.10.160  # dns-02
+ssh eric@10.0.10.151  # smtp-relay
+ssh eric@10.0.10.152  # plex
 ```
 
 ### Via Tailscale VPN
@@ -121,7 +121,7 @@ Ansible uses different connection methods for different host types:
 proxmox:
   hosts:
     pve-nas-01:
-      ansible_host: 192.168.0.102
+      ansible_host: 10.0.10.102
       ansible_user: eric
       ansible_become: true
 ```
@@ -133,7 +133,7 @@ dns:
     ansible_user: eric
   hosts:
     dns-01:
-      ansible_host: 192.168.0.150
+      ansible_host: 10.0.10.150
 ```
 
 ## Security Hardening
@@ -190,7 +190,7 @@ eric ALL=(ALL) NOPASSWD: ALL
 ### IP Restrictions
 
 SSH keys include `from=` restrictions limiting access to:
-- Homelab LAN: `192.168.0.0/24`
+- Homelab LAN: `10.0.10.0/24`
 - Home-VLAN admin block: `10.0.20.8/29` — the admin workstation's reservation range on the Home VLAN ([docs/11-firewall.md](11-firewall.md) § Client scopes; `admin_lan`, `base_fail2ban_ignoreip` and the `lan-tailscale-strict` middleware all key off the same /29)
 - Tailscale VPN: `100.64.0.0/10`
 - k3s pod CIDR: `10.42.0.0/16` (required so in-cluster CI runner pods can SSH back to their own node — see `group_vars/all.yml`)
@@ -222,7 +222,7 @@ All hosts are protected by fail2ban, which automatically bans IPs after repeated
 The following networks are whitelisted and will never be banned:
 
 - **Loopback**: `127.0.0.0/8` - Localhost connections
-- **LAN**: `192.168.0.0/24` - Homelab network
+- **LAN**: `10.0.10.0/24` - Homelab network
 - **Admin block**: `10.0.20.8/29` - the admin workstation on the Home VLAN
 - **Tailscale**: `100.64.0.0/10` - VPN network
 
@@ -286,7 +286,7 @@ To add or update SSH keys:
 
 3. **Verify access**:
    ```bash
-   ssh eric@192.168.0.102
+   ssh eric@10.0.10.102
    ```
 
 ## LXC User Management
@@ -313,7 +313,7 @@ Use the bootstrap script to prepare new Proxmox hosts for Ansible management:
 ./scripts/bootstrap-proxmox-host.sh <host-ip> <your-ssh-public-key>
 
 # Example:
-./scripts/bootstrap-proxmox-host.sh 192.168.0.107 "ssh-ed25519 AAAA... eric@laptop"
+./scripts/bootstrap-proxmox-host.sh 10.0.10.107 "ssh-ed25519 AAAA... eric@laptop"
 ```
 
 The script handles:
@@ -384,7 +384,7 @@ No manual bootstrap required for new VMs provisioned via Ansible.
    ```
 
 4. **Test from different source IP**:
-   - Ensure you're connecting from `192.168.0.0/24`, the `10.0.20.8/29` admin block on the Home VLAN, or Tailscale
+   - Ensure you're connecting from `10.0.10.0/24`, the `10.0.20.8/29` admin block on the Home VLAN, or Tailscale
 
 ### "Permission denied (publickey)"
 

@@ -1,6 +1,6 @@
 ---
 # Plex Media Server LXC container configuration
-# Running on pve-nas-01 (192.168.0.102)
+# Running on pve-nas-01 (10.0.10.102)
 
 proxmox_host: pve-nas-01
 

@@ -41,8 +41,8 @@ Before bootstrapping any system, ensure you have:
 ### Network Planning
 
 - **IP Address**: Static IP allocated (avoid DHCP conflicts)
-- **Gateway**: 192.168.0.1 (router)
-- **DNS Servers**: 192.168.0.150, 192.168.0.160 (dns-01, dns-02)
+- **Gateway**: 10.0.10.1 (router)
+- **DNS Servers**: 10.0.10.150, 10.0.10.160 (dns-01, dns-02)
 - **Hostname**: Follows naming convention (e.g., `app-01`; k3s nodes use `k3s-srv-*` / `k3s-agt-*`)
 
 ### Access Requirements
@@ -118,9 +118,9 @@ new guest.
 pct create <VMID> \
   local:vztmpl/<proxmox_lxc_template> \
   --hostname <hostname> \
-  --net0 name=eth0,bridge=vmbr0,ip=<IP>/24,gw=192.168.0.1 \
-  --nameserver 192.168.0.150 \
-  --nameserver 192.168.0.160 \
+  --net0 name=eth0,bridge=vmbr0,ip=<IP>/24,gw=10.0.10.1 \
+  --nameserver 10.0.10.150 \
+  --nameserver 10.0.10.160 \
   --storage <storage> \
   --rootfs <storage>:8 \
   --cores 2 \
@@ -135,7 +135,7 @@ pct create <VMID> \
 **Parameter Notes**:
 - `<VMID>`: Container ID (e.g. 240, 241 — outside the allocated ranges above)
 - `<hostname>`: DNS name (e.g. app-01)
-- `<IP>`: Static IP (e.g. 192.168.0.240 — outside the allocated `.99-.161`,
+- `<IP>`: Static IP (e.g. 10.0.10.240 — outside the allocated `.99-.161`,
   `.202-.207` and `.222/.223/.227` bands; see docs/01 for the full map)
 - `--rootfs <storage>:8`: 8GB root filesystem (adjust as needed)
 - `--unprivileged 1`: Run as unprivileged (security best practice)
@@ -148,9 +148,9 @@ pct create <VMID> \
 pct create 240 \
   local:vztmpl/<proxmox_lxc_template> \
   --hostname app-01 \
-  --net0 name=eth0,bridge=vmbr0,ip=192.168.0.240/24,gw=192.168.0.1 \
-  --nameserver 192.168.0.150 \
-  --nameserver 192.168.0.160 \
+  --net0 name=eth0,bridge=vmbr0,ip=10.0.10.240/24,gw=10.0.10.1 \
+  --nameserver 10.0.10.150 \
+  --nameserver 10.0.10.160 \
   --storage <storage> \
   --rootfs <storage>:16 \
   --cores 4 \
@@ -244,7 +244,7 @@ Add to appropriate group:
 k3s_agents:
   hosts:
     k3s-agt-opt-01:
-      ansible_host: 192.168.0.204
+      ansible_host: 10.0.10.204
       ansible_user: eric
 ```
 
@@ -255,7 +255,7 @@ Or for a standalone service:
 monitoring:
   hosts:
     app-01:
-      ansible_host: 192.168.0.240
+      ansible_host: 10.0.10.240
       ansible_user: eric
 ```
 
@@ -291,8 +291,8 @@ GROUP sg-vm-admin
 GROUP sg-metrics
 
 # Allow HTTP/HTTPS from LAN
-IN ACCEPT -source 192.168.0.0/24 -p tcp -dport 80 -log nolog
-IN ACCEPT -source 192.168.0.0/24 -p tcp -dport 443 -log nolog
+IN ACCEPT -source 10.0.10.0/24 -p tcp -dport 80 -log nolog
+IN ACCEPT -source 10.0.10.0/24 -p tcp -dport 443 -log nolog
 ```
 
 Create this file on the Proxmox host:
@@ -355,7 +355,7 @@ Or manually verify:
 
 ```bash
 # SSH should still work
-ssh eric@192.168.0.240
+ssh eric@10.0.10.240
 
 # Check services
 systemctl status ssh
@@ -399,7 +399,7 @@ compute hosts, `ssd` on pve-nas-01 — never `local-lvm`.
    qm set <VMID> --serial0 socket --vga serial0
 
    # Network config
-   qm set <VMID> --ipconfig0 ip=192.168.0.XXX/24,gw=192.168.0.1
+   qm set <VMID> --ipconfig0 ip=10.0.10.XXX/24,gw=10.0.10.1
 
    # SSH key
    qm set <VMID> --sshkey ~/.ssh/id_ed25519.pub
@@ -422,7 +422,7 @@ Cloud-init automatically configures:
 4. **Verify and Deploy**:
    ```bash
    # Test SSH
-   ssh eric@192.168.0.XXX
+   ssh eric@10.0.10.XXX
 
    # Add to inventory (same as LXC, but with ansible_user: eric)
 
@@ -676,16 +676,16 @@ ip route show
 cat /etc/resolv.conf
 
 # Verify gateway
-ping 192.168.0.1
+ping 10.0.10.1
 
 # Verify DNS
-ping 192.168.0.150
+ping 10.0.10.150
 ```
 
 **Fix network**:
 ```bash
 # On Proxmox host, reconfigure container network
-pct set <VMID> --net0 name=eth0,bridge=vmbr0,ip=<IP>/24,gw=192.168.0.1
+pct set <VMID> --net0 name=eth0,bridge=vmbr0,ip=<IP>/24,gw=10.0.10.1
 
 # Restart container
 pct stop <VMID>
@@ -722,8 +722,8 @@ sudo whoami  # Should return 'root'
 ```bash
 # 1. Create container
 pct create <VMID> local:vztmpl/<proxmox_lxc_template> \
-  --hostname <name> --net0 name=eth0,bridge=vmbr0,ip=<IP>/24,gw=192.168.0.1 \
-  --nameserver 192.168.0.150 --unprivileged 1 --start 1
+  --hostname <name> --net0 name=eth0,bridge=vmbr0,ip=<IP>/24,gw=10.0.10.1 \
+  --nameserver 10.0.10.150 --unprivileged 1 --start 1
 
 # 2. Configure SSH and user
 pct enter <VMID>
@@ -758,7 +758,7 @@ qm set <VMID> --scsihw virtio-scsi-pci --scsi0 <storage>:vm-<VMID>-disk-0
 # 2. Configure cloud-init
 qm set <VMID> --ide2 <storage>:cloudinit
 qm set <VMID> --boot c --bootdisk scsi0
-qm set <VMID> --ipconfig0 ip=<IP>/24,gw=192.168.0.1
+qm set <VMID> --ipconfig0 ip=<IP>/24,gw=10.0.10.1
 qm set <VMID> --sshkey ~/.ssh/id_ed25519.pub
 qm set <VMID> --ciuser eric
 

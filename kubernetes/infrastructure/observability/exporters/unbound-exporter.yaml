@@ -2,7 +2,7 @@
 # Unbound Exporter — remote scrape of unbound_exporter running on dns-01 and dns-02.
 # The exporter binaries run on the hosts (not in-cluster).
 
-# dns-01 (192.168.0.150)
+# dns-01 (10.0.10.150)
 apiVersion: v1
 kind: Service
 metadata:
@@ -34,11 +34,11 @@ ports:
     port: 9167
     protocol: TCP
 endpoints:
-  - addresses: ["192.168.0.150"]
+  - addresses: ["10.0.10.150"]
     conditions: {ready: true}
 
 ---
-# dns-02 (192.168.0.160)
+# dns-02 (10.0.10.160)
 apiVersion: v1
 kind: Service
 metadata:
@@ -70,7 +70,7 @@ ports:
     port: 9167
     protocol: TCP
 endpoints:
-  - addresses: ["192.168.0.160"]
+  - addresses: ["10.0.10.160"]
     conditions: {ready: true}
 
 ---

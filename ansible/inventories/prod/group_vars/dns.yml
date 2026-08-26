@@ -77,122 +77,122 @@ adguard_home_ratelimit_whitelist: []
 adguard_home_rewrites:
   # DNS web UIs accessed via Traefik Internal for HTTPS and DoH
   - domain: "dns-01.{{ internal_domain }}"
-    answer: "192.168.0.101"
+    answer: "10.0.10.101"
   - domain: "dns-02.{{ internal_domain }}"
-    answer: "192.168.0.101"
+    answer: "10.0.10.101"
   # SSO-fronted AdGuard dashboards (Authentik forward-auth + credential
   # injection, docs/08). Same Traefik VIP; the raw dns-01/dns-02 names above
   # stay as the no-SSO break-glass path.
   - domain: "adguard.{{ internal_domain }}"
-    answer: "192.168.0.101"
+    answer: "10.0.10.101"
   - domain: "adguard-02.{{ internal_domain }}"
-    answer: "192.168.0.101"
+    answer: "10.0.10.101"
   # Direct DNS access (for DoT/DoQ on port 853)
   - domain: "dns.{{ internal_domain }}"
-    answer: "192.168.0.150"
+    answer: "10.0.10.150"
   - domain: "dns.{{ internal_domain }}"
-    answer: "192.168.0.160"
+    answer: "10.0.10.160"
   - domain: "smtp-relay.{{ internal_domain }}"
-    answer: "192.168.0.151"
+    answer: "10.0.10.151"
   - domain: "plex-direct.{{ internal_domain }}"
-    answer: "192.168.0.152"
+    answer: "10.0.10.152"
   - domain: "gitlab.{{ internal_domain }}"
-    answer: "192.168.0.153"
+    answer: "10.0.10.153"
   # Direct-to-VM (admin/ssh convenience; mirrors gitlab.esweiss.com). The
   # Traefik-fronted web hostname is cloud.esweiss.com -> .101 (below).
   - domain: "nextcloud.{{ internal_domain }}"
-    answer: "192.168.0.156"
+    answer: "10.0.10.156"
   - domain: "home-direct.{{ internal_domain }}"
-    answer: "192.168.0.154"
+    answer: "10.0.10.154"
   - domain: "windows.{{ internal_domain }}"
-    answer: "192.168.0.155"
+    answer: "10.0.10.155"
   # Immich VM direct address (admin/SSH convenience; the web UI is fronted by
   # Traefik at photos.{{ internal_domain }} -> .101 below).
   - domain: "immich.{{ internal_domain }}"
-    answer: "192.168.0.157"
+    answer: "10.0.10.157"
   - domain: "pve-nas-01.{{ internal_domain }}"
-    answer: "192.168.0.102"
+    answer: "10.0.10.102"
   - domain: "pve-laptop-01.{{ internal_domain }}"
-    answer: "192.168.0.103"
+    answer: "10.0.10.103"
   - domain: "pve-opt-01.{{ internal_domain }}"
-    answer: "192.168.0.104"
+    answer: "10.0.10.104"
   - domain: "pve-opt-02.{{ internal_domain }}"
-    answer: "192.168.0.105"
+    answer: "10.0.10.105"
   - domain: "pve-opt-03.{{ internal_domain }}"
-    answer: "192.168.0.106"
+    answer: "10.0.10.106"
   - domain: "pve-prec-01.{{ internal_domain }}"
-    answer: "192.168.0.107"
+    answer: "10.0.10.107"
   - domain: "k3s.{{ internal_domain }}"
-    answer: "192.168.0.161"
+    answer: "10.0.10.161"
   - domain: "k3s-srv-nas-01.{{ internal_domain }}"
-    answer: "192.168.0.222"
+    answer: "10.0.10.222"
   - domain: "k3s-srv-laptop-01.{{ internal_domain }}"
-    answer: "192.168.0.223"
+    answer: "10.0.10.223"
   - domain: "k3s-srv-prec-01.{{ internal_domain }}"
-    answer: "192.168.0.227"
+    answer: "10.0.10.227"
   - domain: "k3s-agt-nas-01.{{ internal_domain }}"
-    answer: "192.168.0.202"
+    answer: "10.0.10.202"
   - domain: "k3s-agt-laptop-01.{{ internal_domain }}"
-    answer: "192.168.0.203"
+    answer: "10.0.10.203"
   - domain: "k3s-agt-opt-01.{{ internal_domain }}"
-    answer: "192.168.0.204"
+    answer: "10.0.10.204"
   - domain: "k3s-agt-opt-02.{{ internal_domain }}"
-    answer: "192.168.0.205"
+    answer: "10.0.10.205"
   - domain: "k3s-agt-opt-03.{{ internal_domain }}"
-    answer: "192.168.0.206"
+    answer: "10.0.10.206"
   - domain: "k3s-agt-prec-01.{{ internal_domain }}"
-    answer: "192.168.0.207"
+    answer: "10.0.10.207"
   - domain: "vip-internal.{{ internal_domain }}"
-    answer: "192.168.0.101"
+    answer: "10.0.10.101"
   # 1Password Connect API exposed via internal Traefik so bare-metal
   # Proxmox hosts can fetch ZFS-encryption passphrases at boot.
   - domain: "connect.{{ internal_domain }}"
-    answer: "192.168.0.101"
+    answer: "10.0.10.101"
   # Loki push API for host-side Alloy (replaces the plaintext NodePort).
   - domain: "loki.{{ internal_domain }}"
-    answer: "192.168.0.101"
+    answer: "10.0.10.101"
   # Internal name for the public MetalLB VIP (.100); matches the PTR below
   # so forward/reverse round-trip. External clients reach .100 via Cloudflare.
   - domain: "vip-public.{{ internal_domain }}"
-    answer: "192.168.0.100"
+    answer: "10.0.10.100"
   - domain: "traefik.{{ internal_domain }}"
-    answer: "192.168.0.101"
+    answer: "10.0.10.101"
   - domain: "grafana.{{ internal_domain }}"
-    answer: "192.168.0.101"
+    answer: "10.0.10.101"
   - domain: "bar.{{ internal_domain }}"
-    answer: "192.168.0.101"
+    answer: "10.0.10.101"
   - domain: "food.{{ internal_domain }}"
-    answer: "192.168.0.101"
+    answer: "10.0.10.101"
   - domain: "home.{{ internal_domain }}"
-    answer: "192.168.0.101"
+    answer: "10.0.10.101"
   - domain: "plex.{{ internal_domain }}"
-    answer: "192.168.0.101"
+    answer: "10.0.10.101"
   - domain: "router.{{ internal_domain }}"
-    answer: "192.168.0.101"
+    answer: "10.0.10.101"
   - domain: "auth.{{ internal_domain }}"
-    answer: "192.168.0.101"
+    answer: "10.0.10.101"
   # wg-easy admin UI (internal-only, Traefik-fronted). The WireGuard endpoint
   # itself is vpn.ericsweiss.com (external, UDP) — no esweiss rewrite for it.
   - domain: "vpn.{{ internal_domain }}"
-    answer: "192.168.0.101"
+    answer: "10.0.10.101"
   # Hermes Agent web dashboard (Authentik forward-auth)
   - domain: "agent.{{ internal_domain }}"
-    answer: "192.168.0.101"
+    answer: "10.0.10.101"
   # Homarr dashboard (Authentik OIDC; Traefik-internal). External name
   # dashboard.ericsweiss.com is Cloudflare-only (created by external-dns).
   - domain: "dashboard.{{ internal_domain }}"
-    answer: "192.168.0.101"
+    answer: "10.0.10.101"
   # Uptime Kuma (docs/45): status page unauthenticated, admin UI behind
   # Authentik forward-auth. The external name status.ericsweiss.com is
   # Cloudflare-only (created by external-dns) and serves the status page only.
   - domain: "status.{{ internal_domain }}"
-    answer: "192.168.0.101"
+    answer: "10.0.10.101"
   # DOCUMENTED EXCEPTION to the internal-only rule below: auth.ericsweiss.com
   # resolves internally so server-side OIDC discovery/JWKS fetches skip the WAN
   # hairpin (Cloudflare bot protection 403s non-browser user agents). The issuer
   # must stay the external name — docs/08.
   - domain: "auth.ericsweiss.com"
-    answer: "192.168.0.101"
+    answer: "10.0.10.101"
   # SECOND DOCUMENTED EXCEPTION — the whole GitLab family, for the same reason:
   # resolving these names publicly makes an internal client hairpin to our own
   # WAN address, which the UniFi gateway does not reliably loop back for the
@@ -220,76 +220,76 @@ adguard_home_rewrites:
   # (Taskfile, docs/27), and it is also the only external probe left witnessing
   # the `direct` A record — see docs/08 § Cross-domain rewrites.
   - domain: "git.ericsweiss.com"
-    answer: "192.168.0.101"
+    answer: "10.0.10.101"
   - domain: "registry.git.ericsweiss.com"
-    answer: "192.168.0.101"
+    answer: "10.0.10.101"
   - domain: "pages.git.ericsweiss.com"
-    answer: "192.168.0.101"
+    answer: "10.0.10.101"
   - domain: "*.pages.git.ericsweiss.com"
-    answer: "192.168.0.101"
+    answer: "10.0.10.101"
   # Hermes gateway OpenAI-compatible API (bearer-keyed; Home Assistant Voice
   # pipeline — docs/37 §Voice assistant). Internal-only, no external record.
   - domain: "agent-api.{{ internal_domain }}"
-    answer: "192.168.0.101"
+    answer: "10.0.10.101"
   # Internal-only services: esweiss.com rewrites only, no ericsweiss.com
   # variant. Sole exception is auth.ericsweiss.com above.
   - domain: "nzbget.{{ internal_domain }}"
-    answer: "192.168.0.101"
+    answer: "10.0.10.101"
   - domain: "qbittorrent.{{ internal_domain }}"
-    answer: "192.168.0.101"
+    answer: "10.0.10.101"
   - domain: "prowlarr.{{ internal_domain }}"
-    answer: "192.168.0.101"
+    answer: "10.0.10.101"
   - domain: "tv.{{ internal_domain }}"
-    answer: "192.168.0.101"
+    answer: "10.0.10.101"
   - domain: "movies.{{ internal_domain }}"
-    answer: "192.168.0.101"
+    answer: "10.0.10.101"
   - domain: "music.{{ internal_domain }}"
-    answer: "192.168.0.101"
+    answer: "10.0.10.101"
   - domain: "pulsarr.{{ internal_domain }}"
-    answer: "192.168.0.101"
+    answer: "10.0.10.101"
   - domain: "git.{{ internal_domain }}"
-    answer: "192.168.0.101"
+    answer: "10.0.10.101"
   - domain: "registry.git.{{ internal_domain }}"
-    answer: "192.168.0.101"
+    answer: "10.0.10.101"
   - domain: "pages.git.{{ internal_domain }}"
-    answer: "192.168.0.101"
+    answer: "10.0.10.101"
   - domain: "*.pages.git.{{ internal_domain }}"
-    answer: "192.168.0.101"
+    answer: "10.0.10.101"
   - domain: "cloud.{{ internal_domain }}"
-    answer: "192.168.0.101"
+    answer: "10.0.10.101"
   - domain: "photos.{{ internal_domain }}"
-    answer: "192.168.0.101"
+    answer: "10.0.10.101"
 
 adguard_home_user_rules:
   - '@@||moneroocean.stream^'
   # PTR records for internal infrastructure
-  - '||150.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;dns-01.{{ internal_domain }}.'
-  - '||160.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;dns-02.{{ internal_domain }}.'
-  - '||151.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;smtp-relay.{{ internal_domain }}.'
-  - '||152.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;plex-direct.{{ internal_domain }}.'
-  - '||153.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;gitlab.{{ internal_domain }}.'
-  - '||154.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;home-direct.{{ internal_domain }}.'
-  - '||155.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;windows.{{ internal_domain }}.'
-  - '||156.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;nextcloud.{{ internal_domain }}.'
-  - '||157.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;immich.{{ internal_domain }}.'
-  - '||102.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;pve-nas-01.{{ internal_domain }}.'
-  - '||103.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;pve-laptop-01.{{ internal_domain }}.'
-  - '||104.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;pve-opt-01.{{ internal_domain }}.'
-  - '||105.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;pve-opt-02.{{ internal_domain }}.'
-  - '||106.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;pve-opt-03.{{ internal_domain }}.'
-  - '||107.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;pve-prec-01.{{ internal_domain }}.'
-  - '||161.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s.{{ internal_domain }}.'
-  - '||222.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-srv-nas-01.{{ internal_domain }}.'
-  - '||223.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-srv-laptop-01.{{ internal_domain }}.'
-  - '||227.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-srv-prec-01.{{ internal_domain }}.'
-  - '||202.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-agt-nas-01.{{ internal_domain }}.'
-  - '||203.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-agt-laptop-01.{{ internal_domain }}.'
-  - '||204.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-agt-opt-01.{{ internal_domain }}.'
-  - '||205.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-agt-opt-02.{{ internal_domain }}.'
-  - '||206.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-agt-opt-03.{{ internal_domain }}.'
-  - '||207.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-agt-prec-01.{{ internal_domain }}.'
-  - '||100.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;vip-public.{{ internal_domain }}.'
-  - '||101.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;vip-internal.{{ internal_domain }}.'
+  - '||150.10.0.10.in-addr.arpa^$dnsrewrite=NOERROR;PTR;dns-01.{{ internal_domain }}.'
+  - '||160.10.0.10.in-addr.arpa^$dnsrewrite=NOERROR;PTR;dns-02.{{ internal_domain }}.'
+  - '||151.10.0.10.in-addr.arpa^$dnsrewrite=NOERROR;PTR;smtp-relay.{{ internal_domain }}.'
+  - '||152.10.0.10.in-addr.arpa^$dnsrewrite=NOERROR;PTR;plex-direct.{{ internal_domain }}.'
+  - '||153.10.0.10.in-addr.arpa^$dnsrewrite=NOERROR;PTR;gitlab.{{ internal_domain }}.'
+  - '||154.10.0.10.in-addr.arpa^$dnsrewrite=NOERROR;PTR;home-direct.{{ internal_domain }}.'
+  - '||155.10.0.10.in-addr.arpa^$dnsrewrite=NOERROR;PTR;windows.{{ internal_domain }}.'
+  - '||156.10.0.10.in-addr.arpa^$dnsrewrite=NOERROR;PTR;nextcloud.{{ internal_domain }}.'
+  - '||157.10.0.10.in-addr.arpa^$dnsrewrite=NOERROR;PTR;immich.{{ internal_domain }}.'
+  - '||102.10.0.10.in-addr.arpa^$dnsrewrite=NOERROR;PTR;pve-nas-01.{{ internal_domain }}.'
+  - '||103.10.0.10.in-addr.arpa^$dnsrewrite=NOERROR;PTR;pve-laptop-01.{{ internal_domain }}.'
+  - '||104.10.0.10.in-addr.arpa^$dnsrewrite=NOERROR;PTR;pve-opt-01.{{ internal_domain }}.'
+  - '||105.10.0.10.in-addr.arpa^$dnsrewrite=NOERROR;PTR;pve-opt-02.{{ internal_domain }}.'
+  - '||106.10.0.10.in-addr.arpa^$dnsrewrite=NOERROR;PTR;pve-opt-03.{{ internal_domain }}.'
+  - '||107.10.0.10.in-addr.arpa^$dnsrewrite=NOERROR;PTR;pve-prec-01.{{ internal_domain }}.'
+  - '||161.10.0.10.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s.{{ internal_domain }}.'
+  - '||222.10.0.10.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-srv-nas-01.{{ internal_domain }}.'
+  - '||223.10.0.10.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-srv-laptop-01.{{ internal_domain }}.'
+  - '||227.10.0.10.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-srv-prec-01.{{ internal_domain }}.'
+  - '||202.10.0.10.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-agt-nas-01.{{ internal_domain }}.'
+  - '||203.10.0.10.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-agt-laptop-01.{{ internal_domain }}.'
+  - '||204.10.0.10.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-agt-opt-01.{{ internal_domain }}.'
+  - '||205.10.0.10.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-agt-opt-02.{{ internal_domain }}.'
+  - '||206.10.0.10.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-agt-opt-03.{{ internal_domain }}.'
+  - '||207.10.0.10.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-agt-prec-01.{{ internal_domain }}.'
+  - '||100.10.0.10.in-addr.arpa^$dnsrewrite=NOERROR;PTR;vip-public.{{ internal_domain }}.'
+  - '||101.10.0.10.in-addr.arpa^$dnsrewrite=NOERROR;PTR;vip-internal.{{ internal_domain }}.'
 
 adguard_home_dhcp_enabled: false
 

@@ -1,5 +1,5 @@
 ---
-# Service + EndpointSlice for the Immich VM (192.168.0.157). Immich runs outside
+# Service + EndpointSlice for the Immich VM (10.0.10.157). Immich runs outside
 # the cluster; Traefik routes to it via this Service. The host nginx on the VM
 # terminates 443 with the distributed *.esweiss.com wildcard cert, so Traefik
 # connects with scheme: https + the vm-tls-wildcard ServersTransport (default ns).
@@ -29,6 +29,6 @@ ports:
     protocol: TCP
 endpoints:
   - addresses:
-      - 192.168.0.157
+      - 10.0.10.157
     conditions:
       ready: true

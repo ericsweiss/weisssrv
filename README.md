@@ -27,9 +27,9 @@ Multi-node Proxmox homelab with:
 ```
 Internet
     |
-[Router 192.168.0.1]
+[Router 10.0.10.1]
     |
-[192.168.0.0/24] -- Core LAN
+[10.0.10.0/24] -- Core LAN
     |
     +-- Proxmox hosts        6-node cluster "weisssrv" (1 NAS + 5 compute)
     |
@@ -250,7 +250,7 @@ Split-horizon DNS:
 ## K3s Platform
 
 9-node HA cluster (3 servers + 6 agents) with:
-- **kube-vip**: API VIP at 192.168.0.161 (the 3-node etcd quorum tolerates 1 server failure)
+- **kube-vip**: API VIP at 10.0.10.161 (the 3-node etcd quorum tolerates 1 server failure)
 - **MetalLB**: LoadBalancer IPs (.100 public, .101 internal, .99 wg-easy endpoint)
 - **Traefik**: Ingress controller (TLS served from cert-manager wildcard certs)
 - **external-dns**: Automatic Cloudflare DNS management

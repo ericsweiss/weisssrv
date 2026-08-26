@@ -223,10 +223,10 @@ spec:
           url: https://router.${cluster_internal_domain}
           module: http_sso
         - name: dns-01
-          url: 192.168.0.150:53
+          url: 10.0.10.150:53
           module: dns_resolution
         - name: dns-02
-          url: 192.168.0.160:53
+          url: 10.0.10.160:53
           module: dns_resolution
         - name: smtp-relay
           url: smtp-relay.${cluster_internal_domain}:587
@@ -238,7 +238,7 @@ spec:
         # pve_up{id="qemu/155"}: the desktop auto-starts after every NAS unlock
         # but an operator may shut it down at any time.
         - name: windows-rdp
-          url: 192.168.0.155:3389
+          url: 10.0.10.155:3389
           module: tcp_connect
         # UniFi network gear (docs/46). ICMP, not tcp_connect: the switch and AP
         # expose no management port worth probing — they are adopted by the
@@ -253,7 +253,7 @@ spec:
         # because a transitional note next to a live alert target is read as
         # sanction long after it stops being true.
         - name: unifi-gateway
-          url: 192.168.0.1
+          url: 10.0.10.1
           module: icmp_ping
         - name: unifi-switch
           url: 10.0.1.2

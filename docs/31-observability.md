@@ -73,9 +73,9 @@ three — they carry no `job` matcher, so the shape is invisible to them.
 |---|---|---|---|
 | Authentik | metrics sidecar rendered by the bundled `postgresql` subchart | chart-rendered ServiceMonitor (`postgresql.metrics.serviceMonitor.enabled`), ns `authentik` | ingress allow from observability on 9187 (`apps/authentik/networkpolicy.yaml`) |
 | Mealie | sidecar in the `mealie-postgres` pod | PodMonitor, ns `recipes` | ingress allow from observability on 9187 (`apps/recipes/networkpolicy.yaml`) |
-| GitLab | omnibus-bundled exporter | static target `192.168.0.153:9187` | 9187 open to `k3s_nodes` in `sg-gitlab` |
-| Nextcloud | compose service on the VM | static target `192.168.0.156:9187` | 9187 open to `k3s_nodes` in `sg-nextcloud` |
-| Immich | compose service on the VM | static target `192.168.0.157:9187` | 9187 open to `k3s_nodes` in `sg-immich` |
+| GitLab | omnibus-bundled exporter | static target `10.0.10.153:9187` | 9187 open to `k3s_nodes` in `sg-gitlab` |
+| Nextcloud | compose service on the VM | static target `10.0.10.156:9187` | 9187 open to `k3s_nodes` in `sg-nextcloud` |
+| Immich | compose service on the VM | static target `10.0.10.157:9187` | 9187 open to `k3s_nodes` in `sg-immich` |
 
 The three VM targets arrive through one selectorless headless Service +
 EndpointSlice each, with `jobLabel: app.kubernetes.io/instance`, so they land as
@@ -149,7 +149,7 @@ Grafana uses an NFS-backed PV for its SQLite database (user preferences, service
 
 | Component | NFS Path | Size | Server |
 |-----------|----------|------|--------|
-| Grafana SQLite DB | `/appdata/grafana` (NFS) | 1Gi | pve-nas-01 (192.168.0.102) |
+| Grafana SQLite DB | `/appdata/grafana` (NFS) | 1Gi | pve-nas-01 (10.0.10.102) |
 
 ### Log Collection
 
@@ -387,12 +387,12 @@ Add an internal DNS entry so `grafana.esweiss.com` resolves to the MetalLB inter
 adguard_home_rewrites:
   # ... existing rewrites ...
   - domain: "grafana.esweiss.com"
-    answer: "192.168.0.101"
+    answer: "10.0.10.101"
 ```
 
 Then deploy: `task dns:deploy`
 
-Or add the rewrite manually via the AdGuard Home UI at `https://192.168.0.150:3000` (Filters > DNS rewrites). It will sync to dns-02 automatically.
+Or add the rewrite manually via the AdGuard Home UI at `https://10.0.10.150:3000` (Filters > DNS rewrites). It will sync to dns-02 automatically.
 
 ## Day-2 Operations
 
@@ -788,7 +788,7 @@ rule families; the `prometheus-config-lint` CI job runs them (docs/13).
 | CorosyncWedged / PmxcfsStale / CorosyncHealthCollectorStale | Proxmox cluster-stack health (textfile collector) | critical / warning |
 | ZFSPoolDeviceErrors / ZFSPoolDataErrors / ZFSPoolNotOnline / ZFSPoolScrubStale / ZFSPoolCollectorStale | zpool-health textfile collector (per-device read/write/cksum errors, data errors, pool state, scrub age, collector freshness) | warning-critical |
 | ZFSPoolSpaceWarning / ZFSPoolSpaceCritical | Pool allocated/size > 80% / > 90% (`zfs_pool_status_*` from the zpool-status **textfile collector**, so the five compute `local-ssd` pools are covered too — not the NAS-only `zfs_exporter`) | warning / critical |
-| EndpointDown | blackbox probe_success == 0 — the Windows RDP target and the three UniFi ICMP instances (`192.168.0.1`, `10.0.1.2`, `10.0.1.3`) are excluded; each has its own dedicated alert below | warning |
+| EndpointDown | blackbox probe_success == 0 — the Windows RDP target and the three UniFi ICMP instances (`10.0.10.1`, `10.0.1.2`, `10.0.1.3`) are excluded; each has its own dedicated alert below | warning |
 | EndpointDownCritical | probe_success == 0 for the critical endpoints (auth/git/home .esweiss.com) | critical |
 | DNSResolutionDown | blackbox DNS probe failing against a resolver | critical |
 | DNSResolverProbeMissing | the .150/.160 DNS probe series is absent (probe config lost) | warning |
@@ -802,8 +802,8 @@ rule families; the `prometheus-config-lint` CI job runs them (docs/13).
 | ProxmoxHostMemoryPressure | Proxmox host PSI memory pressure sustained | warning |
 | ImmichDown | Immich scrape target down or absent | warning |
 | NextcloudDown | `nextcloud_up` == 0 or absent | warning |
-| WindowsRdpDown | Windows VM RDP (192.168.0.155:3389) unreachable while powered on | warning |
-| NetworkGearProbeFailed | ICMP blackbox probe for a UniFi device (gateway `192.168.0.1`, switch `10.0.1.2`, AP `10.0.1.3`) failing for 5m — docs/46 | warning |
+| WindowsRdpDown | Windows VM RDP (10.0.10.155:3389) unreachable while powered on | warning |
+| NetworkGearProbeFailed | ICMP blackbox probe for a UniFi device (gateway `10.0.10.1`, switch `10.0.1.2`, AP `10.0.1.3`) failing for 5m — docs/46 | warning |
 | NetworkGearProbeMissing | one of those three probe series is absent for 15m (target dropped from blackbox-exporter.yaml, or an address changed) | warning |
 
 #### Bare-metal / VM node_exporter (`homelab.host-exporter`)
@@ -1051,7 +1051,7 @@ Flux controller metrics (source-controller, kustomize-controller, helm-controlle
    # `default` namespace enforces restricted PSA and carries a default-deny-all
    # NetworkPolicy, so the probe fails for reasons unrelated to the target (docs/29).
    kubectl -n observability exec deploy/kube-prometheus-stack-grafana -c grafana -- \
-     wget -qO- http://192.168.0.102:9134/metrics
+     wget -qO- http://10.0.10.102:9134/metrics
    ```
 
 ### Alert Routing Debug
@@ -1083,7 +1083,7 @@ Flux controller metrics (source-controller, kustomize-controller, helm-controlle
 4. For SMTP issues, verify the smtp-relay is reachable from the cluster:
    ```bash
    kubectl -n observability exec deploy/kube-prometheus-stack-grafana -c grafana -- \
-     nc -zv 192.168.0.151 587
+     nc -zv 10.0.10.151 587
    ```
 
 5. For Discord issues, test the webhook URL manually. The URL is not readable

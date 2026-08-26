@@ -112,16 +112,16 @@ spec:
         - protocol: TCP
           port: 443
     - to:
-        - ipBlock: { cidr: 192.168.0.101/32 }
-        - ipBlock: { cidr: 192.168.0.100/32 }
+        - ipBlock: { cidr: 10.0.10.101/32 }
+        - ipBlock: { cidr: 10.0.10.100/32 }
       ports:
         - protocol: TCP
           port: 443
     # 4a. DNS resolvers (dns-01/dns-02): DNS-type monitors, which check the
     #     resolver FUNCTION rather than its admin UI.
     - to:
-        - ipBlock: { cidr: 192.168.0.150/32 }
-        - ipBlock: { cidr: 192.168.0.160/32 }
+        - ipBlock: { cidr: 10.0.10.150/32 }
+        - ipBlock: { cidr: 10.0.10.160/32 }
       ports:
         - protocol: UDP
           port: 53
@@ -130,7 +130,7 @@ spec:
     # 4b. SMTP relay: the submission listener (TCP-port monitor) and the same
     #     port Kuma's email notification channel sends through.
     - to:
-        - ipBlock: { cidr: 192.168.0.151/32 }
+        - ipBlock: { cidr: 10.0.10.151/32 }
       ports:
         - protocol: TCP
           port: 587
@@ -139,12 +139,12 @@ spec:
     #     "ignore TLS" toggle), and host health is already covered by the
     #     Proxmox exporter; this is the independent-of-Prometheus liveness view.
     - to:
-        - ipBlock: { cidr: 192.168.0.102/32 }
-        - ipBlock: { cidr: 192.168.0.103/32 }
-        - ipBlock: { cidr: 192.168.0.104/32 }
-        - ipBlock: { cidr: 192.168.0.105/32 }
-        - ipBlock: { cidr: 192.168.0.106/32 }
-        - ipBlock: { cidr: 192.168.0.107/32 }
+        - ipBlock: { cidr: 10.0.10.102/32 }
+        - ipBlock: { cidr: 10.0.10.103/32 }
+        - ipBlock: { cidr: 10.0.10.104/32 }
+        - ipBlock: { cidr: 10.0.10.105/32 }
+        - ipBlock: { cidr: 10.0.10.106/32 }
+        - ipBlock: { cidr: 10.0.10.107/32 }
       ports:
         - protocol: TCP
           port: 8006
@@ -152,7 +152,7 @@ spec:
     #     plane's front door. Not the apiserver as a client — this pod holds no
     #     service-account token.
     - to:
-        - ipBlock: { cidr: 192.168.0.161/32 }
+        - ipBlock: { cidr: 10.0.10.161/32 }
       ports:
         - protocol: TCP
           port: 6443

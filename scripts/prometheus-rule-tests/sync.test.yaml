@@ -7,7 +7,7 @@ tests:
   # AdGuardSyncFailed fires when the sync records failed runs (metric 0) for 15m.
   - interval: 1m
     input_series:
-      - series: 'adguardhome_sync_last_run_success{instance="192.168.0.150:9101"}'
+      - series: 'adguardhome_sync_last_run_success{instance="10.0.10.150:9101"}'
         values: '0+0x30'
     alert_rule_test:
       - eval_time: 20m
@@ -15,12 +15,12 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
-              instance: '192.168.0.150:9101'
+              instance: '10.0.10.150:9101'
 
   # A successful run (metric 1) must not fire.
   - interval: 1m
     input_series:
-      - series: 'adguardhome_sync_last_run_success{instance="192.168.0.150:9101"}'
+      - series: 'adguardhome_sync_last_run_success{instance="10.0.10.150:9101"}'
         values: '1+0x30'
     alert_rule_test:
       - eval_time: 20m
@@ -30,7 +30,7 @@ tests:
   # AdGuardSyncStale fires when the last-success timestamp is older than 30m.
   - interval: 1m
     input_series:
-      - series: 'adguardhome_sync_last_success_timestamp_seconds{instance="192.168.0.150:9101"}'
+      - series: 'adguardhome_sync_last_success_timestamp_seconds{instance="10.0.10.150:9101"}'
         values: '-2000+0x30'
     alert_rule_test:
       - eval_time: 20m
@@ -38,12 +38,12 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
-              instance: '192.168.0.150:9101'
+              instance: '10.0.10.150:9101'
 
   # Fresh (timestamp tracks ~now, diff stays under 1800s) must not fire.
   - interval: 1m
     input_series:
-      - series: 'adguardhome_sync_last_success_timestamp_seconds{instance="192.168.0.150:9101"}'
+      - series: 'adguardhome_sync_last_success_timestamp_seconds{instance="10.0.10.150:9101"}'
         values: '0+60x30'
     alert_rule_test:
       - eval_time: 20m

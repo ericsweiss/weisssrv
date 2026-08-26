@@ -20,7 +20,7 @@ This document provides step-by-step procedures for common operational tasks.
    sudo pvecm status  # Get cluster info
 
    # On new node
-   sudo pvecm add 192.168.0.102  # Join cluster
+   sudo pvecm add 10.0.10.102  # Join cluster
    ```
 
 2. **Add to Ansible Inventory**:
@@ -29,7 +29,7 @@ This document provides step-by-step procedures for common operational tasks.
    proxmox:
      hosts:
        pve-new-01:
-         ansible_host: 192.168.0.XXX
+         ansible_host: 10.0.10.XXX
          ansible_user: eric
          ansible_become: true
    ```
@@ -88,7 +88,7 @@ This document provides step-by-step procedures for common operational tasks.
    sudo pct create 200 \
      local:vztmpl/debian-13-standard_13.6-1_amd64.tar.zst \
      --hostname new-service \
-     --net0 name=eth0,bridge=vmbr0,ip=192.168.0.XXX/24,gw=192.168.0.1 \
+     --net0 name=eth0,bridge=vmbr0,ip=10.0.10.XXX/24,gw=10.0.10.1 \
      --storage local-ssd \
      --cores 2 \
      --memory 2048 \
@@ -120,7 +120,7 @@ This document provides step-by-step procedures for common operational tasks.
    new_service:
      hosts:
        new-service:
-         ansible_host: 192.168.0.XXX
+         ansible_host: 10.0.10.XXX
          ansible_user: eric
    ```
 
@@ -228,7 +228,7 @@ Managed via AdGuard Home rewrites.
    # ansible/inventories/prod/group_vars/dns.yml
    adguard_home_rewrites:
      - domain: "new-service.{{ internal_domain }}"
-       answer: "192.168.0.XXX"
+       answer: "10.0.10.XXX"
    ```
 
 2. **Deploy**:
@@ -263,7 +263,7 @@ library `cloudflare-zone` module, so a record is a map **entry**, not a resource
    new-service = {
      name      = "new-service"
      type      = "A"
-     content   = "192.168.0.XXX" # or the public IP
+     content   = "10.0.10.XXX" # or the public IP
      ttl       = 3600
      proxied   = false
      comment   = "Managed by Terraform"
@@ -370,15 +370,15 @@ label.
 3. **Test from Different Source**:
    ```bash
    # From LAN
-   curl -v http://192.168.0.XXX:port
+   curl -v http://10.0.10.XXX:port
 
    # From Tailscale
-   curl -v http://192.168.0.XXX:port --interface tailscale0
+   curl -v http://10.0.10.XXX:port --interface tailscale0
    ```
 
 4. **Check DNS Resolution**:
    ```bash
-   dig @192.168.0.150 service.esweiss.com
+   dig @10.0.10.150 service.esweiss.com
    ```
 
 5. **Review Cluster Firewall**:
@@ -418,7 +418,7 @@ before chasing the switch:
 ## NFS Server Recovery (pve-nas-01)
 
 **Related alert**: **NFSServerDown** (critical) — `node_nfsd_server_threads`
-on 192.168.0.102 is 0 or absent for 5 minutes. Zero kernel nfsd threads
+on 10.0.10.102 is 0 or absent for 5 minutes. Zero kernel nfsd threads
 means the server is not serving; metric absence means the NAS
 node-exporter-host itself is dark. Either way, every NFS-backed consumer
 (k3s PVs, Grafana storage, the HAOS media mount, the tank-proxmox backup
@@ -456,9 +456,9 @@ target) is stalled.
 ## SMTP Relay (Postfix) Alerts
 
 All alert email egress (Alertmanager email, host cron, backup notifications)
-flows through the single relay on smtp-relay (192.168.0.151). Metrics come
+flows through the single relay on smtp-relay (10.0.10.151). Metrics come
 from the postfix-queue textfile collector (smtp_relay role) scraped from
-`192.168.0.151:9101`. Config reference: [10-mail.md](10-mail.md).
+`10.0.10.151:9101`. Config reference: [10-mail.md](10-mail.md).
 
 - **PostfixDown** (critical) — `postfix_up == 0` for 10m: the relay's
   postfix service is not active. All alert email egress is down until it
@@ -473,7 +473,7 @@ from the postfix-queue textfile collector (smtp_relay role) scraped from
 
 1. **Service and queue state**:
    ```bash
-   ssh eric@192.168.0.151
+   ssh eric@10.0.10.151
    sudo systemctl status postfix
    sudo postqueue -p            # inspect the deferred queue
    sudo tail -50 /var/log/mail.log
@@ -1742,7 +1742,7 @@ Then point the affected hosts at it and redeploy Alloy:
 
 ```bash
 # per host, in ansible/inventories/prod/host_vars/<host>.yml
-alloy_host_loki_url: http://192.168.0.161:31100/loki/api/v1/push
+alloy_host_loki_url: http://10.0.10.161:31100/loki/api/v1/push
 ansible-playbook ansible/playbooks/site.yml --limit <host> --tags alloy_host
 ```
 

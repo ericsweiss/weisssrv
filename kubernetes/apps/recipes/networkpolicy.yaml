@@ -233,7 +233,7 @@ spec:
 # and gets its own DNS-only egress rule below.
 # - kube-dns
 # - intra-ns Postgres / Redis / Meilisearch
-# - smtp-relay (192.168.0.151:587) for password reset / notification emails
+# - smtp-relay (10.0.10.151:587) for password reset / notification emails
 # - Public HTTPS for OpenAI API (mealie) and server-side OIDC discovery.
 #
 # OIDC discovery note: both apps point their OIDC issuer/base URL at the
@@ -291,7 +291,7 @@ spec:
           port: 7700
     - to:
         - ipBlock:
-            cidr: 192.168.0.151/32
+            cidr: 10.0.10.151/32
       ports:
         # Submission (587/STARTTLS) only — mealie/bar-assistant are 587-configured
         # and no app dials cleartext 25.
@@ -307,7 +307,7 @@ spec:
         # Belt-and-braces pre-DNAT form of the same destination (MetalLB
         # internal Traefik VIP), matching homarr/registry-cache.
         - ipBlock:
-            cidr: 192.168.0.101/32
+            cidr: 10.0.10.101/32
       ports:
         - protocol: TCP
           port: 443

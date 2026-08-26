@@ -15,10 +15,10 @@ Internet
 Cloudflare (home.ericsweiss.com)
     |
     v
-Router Port Forward (443 -> 192.168.0.100)
+Router Port Forward (443 -> 10.0.10.100)
     |
     v
-Traefik Public VIP (192.168.0.100)
+Traefik Public VIP (10.0.10.100)
     |
     +-- IngressRoute (home.ericsweiss.com) --+
                                               |
@@ -26,9 +26,9 @@ Internal LAN                                  |
     |                                         |
     v                                         v
 AdGuard Home (home.esweiss.com -> .101)   Home Assistant VM
-    |                                     192.168.0.154:8123
+    |                                     10.0.10.154:8123
     v                                         ^
-Traefik Internal VIP (192.168.0.101)          |
+Traefik Internal VIP (10.0.10.101)          |
     |                                         |
     +-- IngressRoute (home.esweiss.com) ------+
 ```
@@ -39,7 +39,7 @@ Traefik Internal VIP (192.168.0.101)          |
 |----------|-------|
 | **VM ID** | 154 |
 | **Hostname** | home |
-| **IP Address** | 192.168.0.154 |
+| **IP Address** | 10.0.10.154 |
 | **Proxmox Host** | pve-prec-01 |
 | **Storage** | local-ssd (ZFS) |
 | **CPU Cores** | 4 |
@@ -57,12 +57,12 @@ export KUBECONFIG=~/.kube/config-k3s
 kubectl get nodes
 
 # Verify Traefik is serving
-curl -k https://192.168.0.100  # Should get Traefik 404
-curl -k https://192.168.0.101  # Should get Traefik 404
+curl -k https://10.0.10.100  # Should get Traefik 404
+curl -k https://10.0.10.101  # Should get Traefik 404
 
 # Verify DNS is configured
-dig home.esweiss.com @192.168.0.150
-# Should return 192.168.0.101 (Traefik internal VIP)
+dig home.esweiss.com @10.0.10.150
+# Should return 10.0.10.101 (Traefik internal VIP)
 ```
 
 ### 2. Download HAOS Image
@@ -158,7 +158,7 @@ HAOS will initially get a DHCP address. Configure static IP via the console:
 network info
 # NOTE: The interface name varies by VM hardware configuration.
 # Use the interface name shown by 'network info' above (e.g., enp0s18, enp6s18).
-network update <interface> --ipv4-method static --ipv4-address 192.168.0.154/24 --ipv4-gateway 192.168.0.1 --ipv4-nameserver 192.168.0.150
+network update <interface> --ipv4-method static --ipv4-address 10.0.10.154/24 --ipv4-gateway 10.0.10.1 --ipv4-nameserver 10.0.10.150
 ```
 
 5. Reboot to apply:
@@ -171,10 +171,10 @@ host reboot
 
 ```bash
 # From your laptop
-ping 192.168.0.154
+ping 10.0.10.154
 
 # Verify HTTP port
-curl -s http://192.168.0.154:8123 | head -5
+curl -s http://10.0.10.154:8123 | head -5
 # Should show HTML content
 ```
 
@@ -254,7 +254,7 @@ After initial setup, configure Home Assistant to work properly behind Traefik:
 http:
   use_x_forwarded_for: true
   trusted_proxies:
-    - 192.168.0.0/24      # Local LAN (includes Traefik)
+    - 10.0.10.0/24      # Local LAN (includes Traefik)
     - 10.42.0.0/16        # k3s pod network
     - 10.43.0.0/16        # k3s service network
 ```
@@ -279,7 +279,7 @@ Apps that do **not** need HA bypass routes (no Home Assistant integration):
 - `pulsarr.esweiss.com` - Pulsarr
 
 **How it works:**
-- High-priority IngressRoutes match both hostname AND Home Assistant's IP (192.168.0.154)
+- High-priority IngressRoutes match both hostname AND Home Assistant's IP (10.0.10.154)
 - These routes bypass Authentik SSO but keep other security middlewares (HSTS, IP whitelist)
 - Regular routes with SSO remain active for browser access
 - Uses Traefik's routing priority to prefer HA bypass over SSO routes
@@ -299,7 +299,7 @@ kubectl get ingressroute -n downloads | grep ha-bypass
 
 **From Home Assistant (should work without authentication):**
 ```bash
-ssh root@192.168.0.154 -p 22222
+ssh root@10.0.10.154 -p 22222
 curl -sk https://tv.esweiss.com/api/v3/system/status
 # Should return JSON with Sonarr system info
 ```
@@ -354,7 +354,7 @@ Edit `kubernetes/apps/vm-ingress/home-assistant.yaml`, commit, push. Flux reconc
 This will:
 1. Read secrets from 1Password via environment variables (resolved by `op run`)
 2. Generate `configuration.yaml` and `secrets.yaml` from Jinja2 templates
-3. Deploy via SCP to Home Assistant VM (192.168.0.154:22222)
+3. Deploy via SCP to Home Assistant VM (10.0.10.154:22222)
 4. Validate configuration using `ha core check`
 5. Clean up temporary files
 
@@ -423,10 +423,10 @@ op read "op://Homelab/Home Assistant SSO/authentik-client-secret"
 
 Home Assistant can access the unified media library (mergerfs) via NFS for browsing media files, album art, etc.
 
-The NFS export is already configured on pve-nas-01 for 192.168.0.154 as read-only:
+The NFS export is already configured on pve-nas-01 for 10.0.10.154 as read-only:
 ```yaml
 # In ansible/inventories/prod/host_vars/pve-nas-01.yml (nas_storage_exports -> /export/media)
-- spec: "192.168.0.154/32"
+- spec: "10.0.10.154/32"
   options: "ro,sync,no_subtree_check,root_squash,fsid=20"
 ```
 
@@ -434,7 +434,7 @@ The NFS export is already configured on pve-nas-01 for 192.168.0.154 as read-onl
 
 ```bash
 # SSH to Home Assistant
-ssh root@192.168.0.154 -p 22222
+ssh root@10.0.10.154 -p 22222
 
 # Create mount point
 mkdir -p /mnt/media
@@ -492,11 +492,11 @@ codified target is the per-app export
 `/mnt/tank/backups/apps/home-assistant`, declared in
 `host_vars/pve-nas-01.yml` (`nas_storage_exports`) and registered in
 `nas_storage_backup_artifact_apps`. HAOS mounts it as
-`192.168.0.102:/backups-apps/home-assistant` (the fsid-relative path under the
+`10.0.10.102:/backups-apps/home-assistant` (the fsid-relative path under the
 `fsid=0` root).
 
 That export is the estate's **one plaintext-on-the-wire backup flow**: its
-client line for `192.168.0.154/32` carries no `xprtsec`, because the HAOS
+client line for `10.0.10.154/32` carries no `xprtsec`, because the HAOS
 Supervisor hard-codes its NFS mount and ships no `tlshd`, so it can never
 request TLS. The k3s-facing `/export/appdata` export (TLS-required) is
 therefore not usable by HAOS. `all_squash` maps writes to 1000:2000.
@@ -511,7 +511,7 @@ bare-metal DR path.
 
 1. **Settings → System → Storage → Add network storage**:
    - Name: `nas_backup` (alphanumerics and underscores only), Usage: **Backup**
-   - Server `192.168.0.102`, Protocol **NFS**, version **4**, remote share
+   - Server `10.0.10.102`, Protocol **NFS**, version **4**, remote share
      `/backups-apps/home-assistant` (HAOS mounts this plaintext — the documented
      `.154` exception above)
 2. **Settings → System → Backups → Automatic backups**: enable, keep 7 days, and
@@ -567,7 +567,7 @@ Create your first backup:
 
 ```bash
 # From your laptop
-ssh root@192.168.0.154 -p 22222
+ssh root@10.0.10.154 -p 22222
 
 # Or use the task command
 task home-assistant:console
@@ -969,7 +969,7 @@ ping -c 3 google.com
 
 ```bash
 # Verify Home Assistant is running
-curl -v http://192.168.0.154:8123
+curl -v http://10.0.10.154:8123
 
 # Check EndpointSlice
 kubectl get endpointslice home-assistant-backend -o yaml
@@ -991,7 +991,7 @@ Ensure `configuration.yaml` has:
 http:
   use_x_forwarded_for: true
   trusted_proxies:
-    - 192.168.0.0/24
+    - 10.0.10.0/24
 ```
 
 ## Maintenance
@@ -1039,9 +1039,9 @@ In `ansible/inventories/prod/group_vars/dns.yml`:
 ```yaml
 adguard_home_rewrites:
   - domain: "home.esweiss.com"
-    answer: "192.168.0.101"  # Traefik internal VIP
+    answer: "10.0.10.101"  # Traefik internal VIP
   - domain: "home-direct.esweiss.com"
-    answer: "192.168.0.154"  # Direct access (bypasses Traefik)
+    answer: "10.0.10.154"  # Direct access (bypasses Traefik)
 ```
 
 ### Cloudflare (External)
@@ -1061,7 +1061,7 @@ The `home` host is already in the inventory with proper firewall configuration:
 ```yaml
 # In hosts.yml
 home:
-  ansible_host: 192.168.0.154
+  ansible_host: 10.0.10.154
   firewall_ipsets:
     - core-cluster
     - nfs_clients

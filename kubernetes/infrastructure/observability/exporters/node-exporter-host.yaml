@@ -44,35 +44,35 @@ ports:
     port: 9101
     protocol: TCP
 endpoints:
-  - addresses: ["192.168.0.102"]   # pve-nas-01
+  - addresses: ["10.0.10.102"]   # pve-nas-01
     conditions: {ready: true}
-  - addresses: ["192.168.0.103"]   # pve-laptop-01
+  - addresses: ["10.0.10.103"]   # pve-laptop-01
     conditions: {ready: true}
-  - addresses: ["192.168.0.104"]   # pve-opt-01
+  - addresses: ["10.0.10.104"]   # pve-opt-01
     conditions: {ready: true}
-  - addresses: ["192.168.0.105"]   # pve-opt-02
+  - addresses: ["10.0.10.105"]   # pve-opt-02
     conditions: {ready: true}
-  - addresses: ["192.168.0.106"]   # pve-opt-03
+  - addresses: ["10.0.10.106"]   # pve-opt-03
     conditions: {ready: true}
-  - addresses: ["192.168.0.107"]   # pve-prec-01
+  - addresses: ["10.0.10.107"]   # pve-prec-01
     conditions: {ready: true}
-  - addresses: ["192.168.0.150"]   # dns-01
+  - addresses: ["10.0.10.150"]   # dns-01
     conditions: {ready: true}
-  - addresses: ["192.168.0.160"]   # dns-02
+  - addresses: ["10.0.10.160"]   # dns-02
     conditions: {ready: true}
-  - addresses: ["192.168.0.151"]   # smtp-relay
+  - addresses: ["10.0.10.151"]   # smtp-relay
     conditions: {ready: true}
-  - addresses: ["192.168.0.153"]   # gitlab
+  - addresses: ["10.0.10.153"]   # gitlab
     conditions: {ready: true}
-  - addresses: ["192.168.0.156"]   # nextcloud
+  - addresses: ["10.0.10.156"]   # nextcloud
     conditions: {ready: true}
-  - addresses: ["192.168.0.157"]   # immich
+  - addresses: ["10.0.10.157"]   # immich
     conditions: {ready: true}
-  - addresses: ["192.168.0.222"]   # k3s-srv-nas-01
+  - addresses: ["10.0.10.222"]   # k3s-srv-nas-01
     conditions: {ready: true}
-  - addresses: ["192.168.0.223"]   # k3s-srv-laptop-01
+  - addresses: ["10.0.10.223"]   # k3s-srv-laptop-01
     conditions: {ready: true}
-  - addresses: ["192.168.0.227"]   # k3s-srv-prec-01
+  - addresses: ["10.0.10.227"]   # k3s-srv-prec-01
     conditions: {ready: true}
 
 ---

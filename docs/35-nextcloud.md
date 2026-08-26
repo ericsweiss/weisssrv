@@ -1,6 +1,6 @@
 # Nextcloud Deployment
 
-Nextcloud runs on a dedicated, NAS-pinned Debian VM (`192.168.0.156`, vmid 156)
+Nextcloud runs on a dedicated, NAS-pinned Debian VM (`10.0.10.156`, vmid 156)
 as a Docker Compose stack. It is reachable at **cloud.ericsweiss.com** (external
 + internal) and **cloud.esweiss.com** (internal only), SSO-only via Authentik
 OIDC. All state rides ZFS zvol passthrough disks — there is **no NFS** anywhere.
@@ -38,7 +38,7 @@ Client ──HTTPS──▶ Traefik (MetalLB .100 public / .101 internal)
   `client → Traefik pod → (k3s/flannel SNATs the pod source to the k3s NODE IP,
   since .156 is a VM outside the pod network) → VM nginx → nextcloud container`.
   The VM **nginx** resolves the real client IP with its `real_ip` module,
-  trusting **only the k3s node IPs** (`192.168.0.202-207`, `.222/.223/.227`) as
+  trusting **only the k3s node IPs** (`10.0.10.202-207`, `.222/.223/.227`) as
   `set_real_ip_from` sources and walking Traefik's `X-Forwarded-For` back to the
   client (`real_ip_recursive on`); it then **replaces** `X-Forwarded-For` with
   that single resolved value (not `$proxy_add_x_forwarded_for`). Nextcloud's
@@ -86,8 +86,8 @@ Three ZFS zvol passthrough disks (created by `proxmox_vm`, mounted by
 The bulk data zvol is thin-provisioned at a 2T ceiling. To raise it:
 
 ```bash
-ssh eric@192.168.0.102 "sudo zfs set volsize=4T tank/nextcloud-data/disk"
-ssh eric@192.168.0.156 "sudo resize2fs /dev/disk/by-id/... "   # the ext4 fs on the zvol
+ssh eric@10.0.10.102 "sudo zfs set volsize=4T tank/nextcloud-data/disk"
+ssh eric@10.0.10.156 "sudo resize2fs /dev/disk/by-id/... "   # the ext4 fs on the zvol
 ```
 
 (Increase `size:` in `hosts.yml` to keep inventory truthful; `proxmox_vm` never
@@ -137,7 +137,7 @@ The client id/secret live on the **Nextcloud SSO** 1Password item (`client-id`,
 The `nextcloud` role sets `allow_local_remote_servers=true` (`tasks/main.yml`).
 Nextcloud's SSRF guard (`LocalAddressChecker`) otherwise refuses any server-side
 fetch to an RFC1918 address, and split-horizon DNS resolves `auth.ericsweiss.com`
-to the **internal** Traefik VIP `192.168.0.101` — so the `user_oidc` discovery
+to the **internal** Traefik VIP `10.0.10.101` — so the `user_oidc` discovery
 fetch is itself a "local" request and SSO login fails without it. It is
 **required** for OIDC to work here.
 
@@ -200,7 +200,7 @@ real wildcard cert is distributed. To install the real cert (POST-PROVISION):
 
 3. Capture the new VM's SSH host key and add the cert-distribution target:
    ```bash
-   task certs:show-host-keys        # copy the nextcloud (192.168.0.156) ssh-ed25519 line
+   task certs:show-host-keys        # copy the nextcloud (10.0.10.156) ssh-ed25519 line
    ```
    Uncomment the `nextcloud` block in
    `ansible/inventories/prod/host_vars/dns-01.yml` (`acme_certs_distribution_targets`),
@@ -236,7 +236,7 @@ real wildcard cert is distributed. To install the real cert (POST-PROVISION):
   container logs on the same path.
 - **Metrics**: `nextcloud-exporter` on `:9205` (auth via the serverinfo token),
   scraped by the in-cluster Prometheus through
-  `service-monitors/nextcloud.yaml` (static Endpoints → 192.168.0.156:9205).
+  `service-monitors/nextcloud.yaml` (static Endpoints → 10.0.10.156:9205).
   Host metrics via `node_exporter_host` (`:9101`).
 - **Blackbox**: `cloud.esweiss.com` probed (`http_sso` module — SSO redirect
   counts as up) in `exporters/blackbox-exporter.yaml`.
@@ -253,7 +253,7 @@ real wildcard cert is distributed. To install the real cert (POST-PROVISION):
 **Database (logical dump):**
 
 ```bash
-ssh eric@192.168.0.156
+ssh eric@10.0.10.156
 cd /mnt/nextcloud-app/compose
 sudo docker compose exec -T nextcloud php occ maintenance:mode --on
 gunzip -c /mnt/nextcloud-app/backups/nextcloud-db-<ts>.sql.gz \

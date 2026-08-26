@@ -2698,8 +2698,8 @@ tasks:
         # successful fetch here means the policy is not containing LAN egress.
         echo "Checking NetworkPolicy LAN containment from qbittorrent (expect timeout)..."
         if kubectl exec -n downloads deployment/qbittorrent -c gluetun -- \
-             wget -q -O /dev/null -T 5 --no-check-certificate https://192.168.0.1/ 2>/dev/null; then
-          echo "FAIL: qbittorrent pod reached 192.168.0.1:443 directly — NetworkPolicy not containing LAN egress"
+             wget -q -O /dev/null -T 5 --no-check-certificate https://10.0.10.1/ 2>/dev/null; then
+          echo "FAIL: qbittorrent pod reached 10.0.10.1:443 directly — NetworkPolicy not containing LAN egress"
           FAILED=1
         else
           echo "OK: direct LAN connect from the qbittorrent pod was blocked"

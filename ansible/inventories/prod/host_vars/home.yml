@@ -1,6 +1,6 @@
 ---
 # Home Assistant VM configuration
-# Running Home Assistant OS on pve-prec-01 (192.168.0.154)
+# Running Home Assistant OS on pve-prec-01 (10.0.10.154)
 # Primary on pve-prec-01, HA-managed with multi-node replication
 
 # Proxmox host for this VM (primary node for HA-managed resource)
@@ -24,9 +24,9 @@ haos_version: "17.0"  # Installed version (update manually via UI)
 haos_type: "qcow2"    # Image format
 
 # Network configuration (set via HAOS console)
-# Static IP: 192.168.0.154/24
-# Gateway: 192.168.0.1
-# DNS: 192.168.0.150
+# Static IP: 10.0.10.154/24
+# Gateway: 10.0.10.1
+# DNS: 10.0.10.150
 
 # HAOS is not Ansible-managed beyond the config push below (the proxmox_vm
 # values above document the live VM). Setup, SMTP, SSO, SSH access, updates,
@@ -45,7 +45,7 @@ home_assistant_host: "{{ hostvars['home']['ansible_host'] }}"
 # Sources whose X-Forwarded-For HA trusts: the LAN (which is where every Traefik
 # ingress node sits) and both k3s CIDRs.
 home_assistant_trusted_proxies:
-  - "192.168.0.0/24"
+  - "10.0.10.0/24"
   - "10.42.0.0/16"
   - "10.43.0.0/16"
 
@@ -68,6 +68,6 @@ home_assistant_ssl_enabled: true
 # we pin the key and the role asserts it on every run. The key value
 # itself is the shared haos_ssh_host_key defined in group_vars/all.yml
 # (single source of truth; also consumed by the `home` cert target in
-# host_vars/dns-01.yml). The role prepends "[192.168.0.154]:22222 "
+# host_vars/dns-01.yml). The role prepends "[10.0.10.154]:22222 "
 # before writing into the operator's known_hosts.
 home_assistant_host_key: "{{ haos_ssh_host_key }}"

@@ -174,7 +174,7 @@ for host in $PVE_HOSTS; do
     # Use ping to check reachability first, then fetch config
     # NOTE: Ping may be blocked by firewall on some networks. If all hosts show
     # "Host unreachable" but you know they're up, try running SSH directly:
-    #   ssh eric@192.168.0.102 "cat /etc/network/interfaces | grep -A 10 'auto vmbr'"
+    #   ssh eric@10.0.10.102 "cat /etc/network/interfaces | grep -A 10 'auto vmbr'"
     if ping_check "$host" 2; then
         ssh_cmd eric@"$host" "cat /etc/network/interfaces 2>/dev/null | grep -A 10 'auto vmbr'" || echo "SSH failed (host reachable but SSH error)"
     else

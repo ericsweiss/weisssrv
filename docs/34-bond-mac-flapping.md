@@ -17,7 +17,7 @@ and the permanent fix (codified in the `nic_tuning` role).
 
 - A guest on a **bonded** Proxmox host (`.104` / `.105` / `.106`) loses all
   traffic that crosses the physical uplink — it cannot ping its gateway
-  (`192.168.0.1`) or hosts on other nodes, and external clients cannot reach it.
+  (`10.0.10.1`) or hosts on other nodes, and external clients cannot reach it.
 - Traffic to **co-resident** guests on the same host still works, so it looks
   partial/flaky rather than "down".
 - Recurs after reboots and HA relocations. Rebooting the unmanaged switch
@@ -99,7 +99,7 @@ echo 0 | sudo tee /sys/class/net/bond0/bonding/all_slaves_active
 The FDB flap stops immediately and the guest's return path is restored. Verify:
 
 ```bash
-sudo pct exec <vmid> -- ping -c2 192.168.0.1   # gateway now answers
+sudo pct exec <vmid> -- ping -c2 10.0.10.1   # gateway now answers
 ```
 
 Apply to every bonded host (`.104`, `.105`, `.106`).

@@ -1,7 +1,7 @@
 ---
 # Traefik Internal LoadBalancer Service
 # Separate service for internal-only traffic (*.esweiss.com)
-# Uses vip-internal (192.168.0.101) while external traffic uses vip-public (192.168.0.100)
+# Uses vip-internal (10.0.10.101) while external traffic uses vip-public (10.0.10.100)
 #
 # Both services route to the same Traefik pods - separation is purely at DNS/network layer
 # Security enforced by middlewares (lan-tailscale-only) on IngressRoutes

@@ -45,7 +45,7 @@
       "type": "stat",
       "targets": [
         {
-          "expr": "max(unbound_up{instance=~\"192\\\\.168\\\\.0\\\\.150:.*\"})",
+          "expr": "max(unbound_up{instance=~\"10\\\\.0\\\\.10\\\\.150:.*\"})",
           "legendFormat": "dns-01",
           "refId": "A"
         }
@@ -82,7 +82,7 @@
       "type": "stat",
       "targets": [
         {
-          "expr": "max(unbound_up{instance=~\"192\\\\.168\\\\.0\\\\.160:.*\"})",
+          "expr": "max(unbound_up{instance=~\"10\\\\.0\\\\.10\\\\.160:.*\"})",
           "legendFormat": "dns-02",
           "refId": "A"
         }
@@ -116,7 +116,7 @@
       "type": "stat",
       "targets": [
         {
-          "expr": "max(unbound_time_up_seconds_total{instance=~\"192\\\\.168\\\\.0\\\\.150:.*\"})",
+          "expr": "max(unbound_time_up_seconds_total{instance=~\"10\\\\.0\\\\.10\\\\.150:.*\"})",
           "legendFormat": "dns-01",
           "refId": "A"
         }
@@ -150,7 +150,7 @@
       "type": "stat",
       "targets": [
         {
-          "expr": "max(unbound_time_up_seconds_total{instance=~\"192\\\\.168\\\\.0\\\\.160:.*\"})",
+          "expr": "max(unbound_time_up_seconds_total{instance=~\"10\\\\.0\\\\.10\\\\.160:.*\"})",
           "legendFormat": "dns-02",
           "refId": "A"
         }

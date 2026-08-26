@@ -706,7 +706,7 @@ def test_the_tailscale_gate_catches_an_undeclared_tag_and_a_route_drift(tmp_path
     for rel in gate.INVENTORY_GLOBS:
         (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
     proxmox = tmp_path / "ansible/inventories/prod/group_vars/proxmox.yml"
-    proxmox.write_text('tailscale_advertise_routes:\n  - "192.168.0.0/24"\n')
+    proxmox.write_text('tailscale_advertise_routes:\n  - "10.0.10.0/24"\n')
 
     good = (
         '{\n'
@@ -716,7 +716,7 @@ def test_the_tailscale_gate_catches_an_undeclared_tag_and_a_route_drift(tmp_path
         '  "acls": [{"action": "accept", "src": ["group:admins"],\n'
         '            "dst": ["tag:router:22,443"]}],\n'
         '  "ssh": [],\n'
-        '  "autoApprovers": {"routes": {"192.168.0.0/24": ["tag:router"]}},\n'
+        '  "autoApprovers": {"routes": {"10.0.10.0/24": ["tag:router"]}},\n'
         '}\n'
     )
     policy.write_text(good)
@@ -730,7 +730,7 @@ def test_the_tailscale_gate_catches_an_undeclared_tag_and_a_route_drift(tmp_path
     policy.write_text(good.replace("tag:router:22,443", "tag:typo:22,443"))
     assert any("tag:typo" in v for v in gate.check(tmp_path))
 
-    policy.write_text(good.replace('"192.168.0.0/24": ', '"10.0.0.0/8": '))
+    policy.write_text(good.replace('"10.0.10.0/24": ', '"10.0.0.0/8": '))
     assert any("autoApprovers.routes" in v for v in gate.check(tmp_path))
 
 

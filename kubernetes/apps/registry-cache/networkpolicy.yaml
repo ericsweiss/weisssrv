@@ -103,7 +103,7 @@ spec:
         # this CNI by the deployed hermes/homarr rules); the VIP ipBlock also
         # admits the pre-DNAT form so a CNI change can't silently break this.
         - ipBlock:
-            cidr: 192.168.0.101/32
+            cidr: 10.0.10.101/32
       ports:
         - protocol: TCP
           port: 443

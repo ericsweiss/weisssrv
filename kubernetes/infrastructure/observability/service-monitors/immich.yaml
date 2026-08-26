@@ -1,5 +1,5 @@
 ---
-# Scrape Immich's native Prometheus metrics from the external VM (192.168.0.157).
+# Scrape Immich's native Prometheus metrics from the external VM (10.0.10.157).
 # IMMICH_TELEMETRY_INCLUDE=all exposes plain-HTTP /metrics on the API (8081) and
 # microservices (8082) ports of the immich-server container, both published on
 # the VM and firewall-gated to the k3s nodes (sg-immich). Pod scrapes leave the
@@ -41,7 +41,7 @@ ports:
     port: 8082
     protocol: TCP
 endpoints:
-  - addresses: ["192.168.0.157"]
+  - addresses: ["10.0.10.157"]
     conditions: {ready: true}
 
 ---

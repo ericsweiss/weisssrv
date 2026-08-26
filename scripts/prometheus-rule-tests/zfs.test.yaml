@@ -10,7 +10,7 @@ tests:
   # Sentinel arm: a pool that has never completed a scrub (metric == 0) fires.
   - interval: 6h
     input_series:
-      - series: 'zfs_pool_status_last_scrub_seconds{pool="archive", instance="192.168.0.102:9101"}'
+      - series: 'zfs_pool_status_last_scrub_seconds{pool="archive", instance="10.0.10.102:9101"}'
         values: '0+0x8'
     alert_rule_test:
       - eval_time: 12h
@@ -19,13 +19,13 @@ tests:
           - exp_labels:
               severity: warning
               pool: archive
-              instance: '192.168.0.102:9101'
+              instance: '10.0.10.102:9101'
 
   # Staleness arm: a real past scrub timestamp (>0) older than 35 days fires.
   # value 1 (>0) with time() advancing past 35d*86400 = 3024000s.
   - interval: 6h
     input_series:
-      - series: 'zfs_pool_status_last_scrub_seconds{pool="tank", instance="192.168.0.102:9101"}'
+      - series: 'zfs_pool_status_last_scrub_seconds{pool="tank", instance="10.0.10.102:9101"}'
         values: '1+0x150'
     alert_rule_test:
       - eval_time: 858h
@@ -34,12 +34,12 @@ tests:
           - exp_labels:
               severity: warning
               pool: tank
-              instance: '192.168.0.102:9101'
+              instance: '10.0.10.102:9101'
 
   # A recent scrub (>0, well under 35 days old) fires neither arm.
   - interval: 6h
     input_series:
-      - series: 'zfs_pool_status_last_scrub_seconds{pool="ssd", instance="192.168.0.102:9101"}'
+      - series: 'zfs_pool_status_last_scrub_seconds{pool="ssd", instance="10.0.10.102:9101"}'
         values: '43200+0x8'
     alert_rule_test:
       - eval_time: 12h

@@ -23,11 +23,11 @@ tests:
   # evaluation window has to clear it.
   - interval: 1m
     input_series:
-      - series: 'up{job="kube-etcd", instance="192.168.0.222:2381"}'
+      - series: 'up{job="kube-etcd", instance="10.0.10.222:2381"}'
         values: '1+0x400'
-      - series: 'up{job="kube-etcd", instance="192.168.0.223:2381"}'
+      - series: 'up{job="kube-etcd", instance="10.0.10.223:2381"}'
         values: '1+0x400'
-      - series: 'up{job="kube-etcd", instance="192.168.0.227:2381"}'
+      - series: 'up{job="kube-etcd", instance="10.0.10.227:2381"}'
         values: '0+0x400'
     alert_rule_test:
       - eval_time: 6h5m
@@ -39,11 +39,11 @@ tests:
   # All three up => count 3 > 2 => silent. Pins the boundary.
   - interval: 1m
     input_series:
-      - series: 'up{job="kube-etcd", instance="192.168.0.222:2381"}'
+      - series: 'up{job="kube-etcd", instance="10.0.10.222:2381"}'
         values: '1+0x400'
-      - series: 'up{job="kube-etcd", instance="192.168.0.223:2381"}'
+      - series: 'up{job="kube-etcd", instance="10.0.10.223:2381"}'
         values: '1+0x400'
-      - series: 'up{job="kube-etcd", instance="192.168.0.227:2381"}'
+      - series: 'up{job="kube-etcd", instance="10.0.10.227:2381"}'
         values: '1+0x400'
     alert_rule_test:
       - eval_time: 6h5m
@@ -56,11 +56,11 @@ tests:
   # member down, or the ServiceMonitor deleted — would be SILENT.
   - interval: 1m
     input_series:
-      - series: 'up{job="kube-etcd", instance="192.168.0.222:2381"}'
+      - series: 'up{job="kube-etcd", instance="10.0.10.222:2381"}'
         values: '0+0x400'
-      - series: 'up{job="kube-etcd", instance="192.168.0.223:2381"}'
+      - series: 'up{job="kube-etcd", instance="10.0.10.223:2381"}'
         values: '0+0x400'
-      - series: 'up{job="kube-etcd", instance="192.168.0.227:2381"}'
+      - series: 'up{job="kube-etcd", instance="10.0.10.227:2381"}'
         values: '0+0x400'
     alert_rule_test:
       - eval_time: 6h5m
@@ -216,7 +216,7 @@ tests:
   # every external client fails to connect. A different IP must still fire.
   - interval: 1m
     input_series:
-      - series: 'kube_service_status_load_balancer_ingress{namespace="wg-easy", service="wg-easy", ip="192.168.0.99"}'
+      - series: 'kube_service_status_load_balancer_ingress{namespace="wg-easy", service="wg-easy", ip="10.0.10.99"}'
         values: '1+0x30'
     alert_rule_test:
       - eval_time: 15m
@@ -224,7 +224,7 @@ tests:
         exp_alerts: []
   - interval: 1m
     input_series:
-      - series: 'kube_service_status_load_balancer_ingress{namespace="wg-easy", service="wg-easy", ip="192.168.0.100"}'
+      - series: 'kube_service_status_load_balancer_ingress{namespace="wg-easy", service="wg-easy", ip="10.0.10.100"}'
         values: '1+0x30'
     alert_rule_test:
       - eval_time: 15m
@@ -234,15 +234,15 @@ tests:
               severity: critical
               namespace: wg-easy
               service: wg-easy
-              ip: 192.168.0.99
+              ip: 10.0.10.99
 
   # The two Traefik ingress VIPs get the same value-asserting guard. Both
   # present: silent.
   - interval: 1m
     input_series:
-      - series: 'kube_service_status_load_balancer_ingress{namespace="traefik", service="traefik", ip="192.168.0.100"}'
+      - series: 'kube_service_status_load_balancer_ingress{namespace="traefik", service="traefik", ip="10.0.10.100"}'
         values: '1+0x30'
-      - series: 'kube_service_status_load_balancer_ingress{namespace="traefik", service="traefik-internal", ip="192.168.0.101"}'
+      - series: 'kube_service_status_load_balancer_ingress{namespace="traefik", service="traefik-internal", ip="10.0.10.101"}'
         values: '1+0x30'
     alert_rule_test:
       - eval_time: 15m
@@ -255,7 +255,7 @@ tests:
   # fires, so the alert names which half of the ingress plane is down.
   - interval: 1m
     input_series:
-      - series: 'kube_service_status_load_balancer_ingress{namespace="traefik", service="traefik", ip="192.168.0.100"}'
+      - series: 'kube_service_status_load_balancer_ingress{namespace="traefik", service="traefik", ip="10.0.10.100"}'
         values: '1+0x30'
     alert_rule_test:
       - eval_time: 15m
@@ -268,13 +268,13 @@ tests:
               severity: critical
               namespace: traefik
               service: traefik-internal
-              ip: 192.168.0.101
+              ip: 10.0.10.101
   # And the mirror image. Without this case TraefikPublicVipMissing was only
   # ever asserted NOT to fire, so a wrong matcher on its absent() arm — a typo'd
   # service or ip label — would have satisfied every assertion in the suite.
   - interval: 1m
     input_series:
-      - series: 'kube_service_status_load_balancer_ingress{namespace="traefik", service="traefik-internal", ip="192.168.0.101"}'
+      - series: 'kube_service_status_load_balancer_ingress{namespace="traefik", service="traefik-internal", ip="10.0.10.101"}'
         values: '1+0x30'
     alert_rule_test:
       - eval_time: 15m
@@ -287,7 +287,7 @@ tests:
               severity: critical
               namespace: traefik
               service: traefik
-              ip: 192.168.0.100
+              ip: 10.0.10.100
 
   # TailscaleProxyDown is namespace-scoped (the operator generates the
   # StatefulSet name suffixes), so it must fire per statefulset and only for the
@@ -372,11 +372,11 @@ tests:
     input_series:
       - series: 'pg_up{job="authentik-postgresql-metrics", instance="10.42.3.11:9187"}'
         values: '0+0x20'
-      - series: 'pg_up{job="gitlab", instance="192.168.0.153:9187"}'
+      - series: 'pg_up{job="gitlab", instance="10.0.10.153:9187"}'
         values: '0+0x20'
-      - series: 'pg_up{job="nextcloud", instance="192.168.0.156:9187"}'
+      - series: 'pg_up{job="nextcloud", instance="10.0.10.156:9187"}'
         values: '1+0x20'
-      - series: 'pg_up{job="immich", instance="192.168.0.157:9187"}'
+      - series: 'pg_up{job="immich", instance="10.0.10.157:9187"}'
         values: '1+0x20'
       - series: 'pg_up{job="observability/mealie-postgres", instance="10.42.7.219:9187"}'
         values: '1+0x20'
@@ -391,7 +391,7 @@ tests:
           - exp_labels:
               severity: warning
               job: gitlab
-              instance: 192.168.0.153:9187
+              instance: 10.0.10.153:9187
 
   # An exporter dropping out of its ServiceMonitor or pinned Endpoints stops
   # producing pg_up entirely, which the ==0 arm cannot see. The absent() arm
@@ -401,9 +401,9 @@ tests:
     input_series:
       - series: 'pg_up{job="authentik-postgresql-metrics", instance="10.42.3.11:9187"}'
         values: '1+0x20'
-      - series: 'pg_up{job="gitlab", instance="192.168.0.153:9187"}'
+      - series: 'pg_up{job="gitlab", instance="10.0.10.153:9187"}'
         values: '1+0x20'
-      - series: 'pg_up{job="nextcloud", instance="192.168.0.156:9187"}'
+      - series: 'pg_up{job="nextcloud", instance="10.0.10.156:9187"}'
         values: '1+0x20'
       - series: 'pg_up{job="observability/mealie-postgres", instance="10.42.7.219:9187"}'
         values: '1+0x20'

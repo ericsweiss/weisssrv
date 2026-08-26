@@ -36,7 +36,7 @@ spec:
     # the platform actually applies) so a compromised agentk can't touch the
     # whole cluster.
     config:
-      # Internal hostname (git.esweiss.com → Traefik VIP 192.168.0.101) keeps
+      # Internal hostname (git.esweiss.com → Traefik VIP 10.0.10.101) keeps
       # the agent's KAS long-poll inside the LAN: no WAN roundtrip, no
       # router-hairpin dependency.
       kasAddress: wss://git.${cluster_internal_domain}/-/kubernetes-agent/

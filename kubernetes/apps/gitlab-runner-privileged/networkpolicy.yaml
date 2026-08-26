@@ -22,7 +22,7 @@ spec:
     - Egress
 ---
 # The runner manager long-polls GitLab (git.esweiss.com, which AdGuard rewrites
-# to the internal Traefik VIP 192.168.0.101) and talks to the kube-API to spawn
+# to the internal Traefik VIP 10.0.10.101) and talks to the kube-API to spawn
 # job pods. kube-proxy DNATs the in-cluster VIP (10.43.0.1:443) to the real
 # endpoints BEFORE NetworkPolicy evaluation, so the policy allowlists the server
 # node IPs on 6443 (a 10.43.0.1/32 rule never matches the post-DNAT packet);
@@ -55,18 +55,18 @@ spec:
           port: 53
     - to:
         - ipBlock:
-            cidr: 192.168.0.222/32
+            cidr: 10.0.10.222/32
         - ipBlock:
-            cidr: 192.168.0.223/32
+            cidr: 10.0.10.223/32
         - ipBlock:
-            cidr: 192.168.0.227/32
+            cidr: 10.0.10.227/32
       ports:
         - protocol: TCP
           port: 6443
     # GitLab via the internal Traefik VIP (pre-DNAT) or Traefik pods (post-DNAT).
     - to:
         - ipBlock:
-            cidr: 192.168.0.101/32
+            cidr: 10.0.10.101/32
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: traefik

@@ -281,11 +281,11 @@ Runs after the MR merges, Flux reconciles the app, and the supervised
    - internal HTTPS through Traefik: `https://grafana.esweiss.com`,
      `auth.esweiss.com`, `traefik.esweiss.com` (accept `302` for the
      forward-auth-fronted ones);
-   - DNS: `esweiss.com` A against `192.168.0.150` and `192.168.0.160`;
-   - TCP port: `192.168.0.151:587`, `192.168.0.161:6443`, and
-     `192.168.0.102–107:8006`.
+   - DNS: `esweiss.com` A against `10.0.10.150` and `10.0.10.160`;
+   - TCP port: `10.0.10.151:587`, `10.0.10.161:6443`, and
+     `10.0.10.102–107:8006`.
 6. **Notifications** — Settings → Notifications. Email goes through the relay at
-   `192.168.0.151:587` (rule 4b); a Discord webhook rides the public `:443`
+   `10.0.10.151:587` (rule 4b); a Discord webhook rides the public `:443`
    rule. Record any channel credential in 1P. Attach the channel to the monitors
    (Kuma does not do it retroactively).
 7. **Verify the perimeter**, from off-LAN or with the tailnet down:

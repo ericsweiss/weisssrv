@@ -59,7 +59,7 @@ data:
   # internal domain and moving the label prefix are different changes.
   cluster_node_label_domain: "esweiss.com"
 
-  cluster_lan_cidr: "192.168.0.0/24"
+  cluster_lan_cidr: "10.0.10.0/24"
   # The Home VLAN (UniFi VLAN 20 — docs/46): personal client devices, a zone of
   # its own behind the gateway's zone-based firewall. Trusted enough to reach
   # the internal ingress allowlists (configs/traefik-middlewares.yaml) and
@@ -88,20 +88,20 @@ data:
   # them (infrastructure/configs/metallb-ip-pools.yaml) read them from here, and
   # they have no Ansible-inventory counterpart. AdGuard's rewrites
   # (group_vars/dns.yml) point at the same addresses and must move with them.
-  cluster_metallb_public_vip: "192.168.0.100"
-  cluster_metallb_internal_vip: "192.168.0.101"
+  cluster_metallb_public_vip: "10.0.10.100"
+  cluster_metallb_internal_vip: "10.0.10.101"
   # wg-easy's WAN endpoint gets its own VIP so the UDP port-forward is
   # independent of the two ingress VIPs (docs/38).
-  cluster_wg_easy_vip: "192.168.0.99"
+  cluster_wg_easy_vip: "10.0.10.99"
   # kube-vip's API VIP. Unlike the MetalLB pools this one IS owned by Ansible
   # (`k3s_api_vip` in group_vars/k3s.yml, which configures kube-vip); the key
   # exists so manifests and the operator tooling stop re-spelling the address,
   # and check-cluster-literals.py holds the two equal.
-  cluster_api_vip: "192.168.0.161"
+  cluster_api_vip: "10.0.10.161"
 
   # LAN resolvers, space-separated — the form CoreDNS's `forward` needs, and the
   # same pair as `dns_servers` in group_vars/all.yml.
-  cluster_upstream_dns_servers: "192.168.0.150 192.168.0.160"
+  cluster_upstream_dns_servers: "10.0.10.150 10.0.10.160"
 
   # Prefix every alert's runbook_url gets. Composed from the canonical GitLab
   # remote, so a 3am alert link and the repo Flux reconciles from cannot drift.

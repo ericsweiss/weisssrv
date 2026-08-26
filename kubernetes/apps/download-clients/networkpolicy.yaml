@@ -22,7 +22,7 @@ spec:
 
 ---
 # 2. Allow Traefik to reach every UI/API port. HA bypass routes
-#    (192.168.0.154) terminate at Traefik and proxy to the same backend
+#    (10.0.10.154) terminate at Traefik and proxy to the same backend
 #    Services, so Home Assistant traffic is covered here without a separate
 #    cidr-based rule. Selecting by namespace (kubernetes.io/metadata.name) is
 #    safe because Traefik is the only workload in `traefik`.
@@ -189,8 +189,8 @@ spec:
   policyTypes: [Egress]
   egress:
     - to:
-        - ipBlock: { cidr: 192.168.0.150/32 }
-        - ipBlock: { cidr: 192.168.0.160/32 }
+        - ipBlock: { cidr: 10.0.10.150/32 }
+        - ipBlock: { cidr: 10.0.10.160/32 }
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
@@ -356,6 +356,6 @@ spec:
   policyTypes: [Egress]
   egress:
     - to:
-        - ipBlock: { cidr: 192.168.0.152/32 }
+        - ipBlock: { cidr: 10.0.10.152/32 }
       ports:
         - { protocol: TCP, port: 32400 }

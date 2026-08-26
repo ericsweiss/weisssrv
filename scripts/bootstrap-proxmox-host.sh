@@ -9,7 +9,7 @@
 #   ./scripts/bootstrap-proxmox-host.sh <host-ip> '<ssh-public-key>'
 #
 # Or with 1Password CLI:
-#   ./scripts/bootstrap-proxmox-host.sh 192.168.0.103 "$(op read 'op://Homelab/SSH Key/public key')"
+#   ./scripts/bootstrap-proxmox-host.sh 10.0.10.103 "$(op read 'op://Homelab/SSH Key/public key')"
 #
 # Prerequisites:
 #   - Proxmox VE installed on target host
@@ -25,8 +25,8 @@ if [[ -z "$HOST_IP" ]] || [[ -z "$SSH_PUBLIC_KEY" ]]; then
     echo "Usage: $0 <host-ip> '<ssh-public-key>'"
     echo ""
     echo "Examples:"
-    echo "  $0 192.168.0.103 'ssh-ed25519 AAAAC3NzaC1... eric@MacBookPro.esweiss.com'"
-    echo "  $0 192.168.0.103 \"\$(op read 'op://Homelab/SSH Key/public key')\""
+    echo "  $0 10.0.10.103 'ssh-ed25519 AAAAC3NzaC1... eric@MacBookPro.esweiss.com'"
+    echo "  $0 10.0.10.103 \"\$(op read 'op://Homelab/SSH Key/public key')\""
     echo ""
     echo "This script will:"
     echo "  1. Create user 'eric' with passwordless sudo"

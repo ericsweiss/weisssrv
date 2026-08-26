@@ -16,7 +16,7 @@ tests:
   # so a fixed 0 makes eval time the age.
   - interval: 1h
     input_series:
-      - series: 'etcd_snapshot_last_copy_timestamp_seconds{instance="192.168.0.102:9101"}'
+      - series: 'etcd_snapshot_last_copy_timestamp_seconds{instance="10.0.10.102:9101"}'
         values: '0+0x60'
     alert_rule_test:
       - eval_time: 24h
@@ -27,12 +27,12 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
-              instance: '192.168.0.102:9101'
+              instance: '10.0.10.102:9101'
 
   # A copy timer keeping pace with wall clock must not fire.
   - interval: 1h
     input_series:
-      - series: 'etcd_snapshot_last_copy_timestamp_seconds{instance="192.168.0.102:9101"}'
+      - series: 'etcd_snapshot_last_copy_timestamp_seconds{instance="10.0.10.102:9101"}'
         values: '0+3600x60'
     alert_rule_test:
       - eval_time: 38h
@@ -44,11 +44,11 @@ tests:
   # and stay silent — this must fire, and only for .223.
   - interval: 1h
     input_series:
-      - series: 'etcd_snapshot_last_copy_timestamp_seconds{instance="192.168.0.222:9101"}'
+      - series: 'etcd_snapshot_last_copy_timestamp_seconds{instance="10.0.10.222:9101"}'
         values: '0+3600x60'
-      - series: 'up{job="node-exporter-host", instance="192.168.0.222:9101"}'
+      - series: 'up{job="node-exporter-host", instance="10.0.10.222:9101"}'
         values: '1+0x60'
-      - series: 'up{job="node-exporter-host", instance="192.168.0.223:9101"}'
+      - series: 'up{job="node-exporter-host", instance="10.0.10.223:9101"}'
         values: '1+0x60'
     alert_rule_test:
       - eval_time: 38h
@@ -57,14 +57,14 @@ tests:
           - exp_labels:
               severity: warning
               job: node-exporter-host
-              instance: '192.168.0.223:9101'
+              instance: '10.0.10.223:9101'
 
   # The exporter itself being down is HostExporterDown's job, not this alert's:
   # up == 0 fails the witness, so a scrape outage does not masquerade as a dead
   # copy timer.
   - interval: 1h
     input_series:
-      - series: 'up{job="node-exporter-host", instance="192.168.0.223:9101"}'
+      - series: 'up{job="node-exporter-host", instance="10.0.10.223:9101"}'
         values: '0+0x60'
     alert_rule_test:
       - eval_time: 38h
@@ -74,7 +74,7 @@ tests:
   # ArchiveBackup: 2-day warning, 4-day critical off the same metric.
   - interval: 1h
     input_series:
-      - series: 'archive_backup_last_success_timestamp_seconds{instance="192.168.0.102:9101"}'
+      - series: 'archive_backup_last_success_timestamp_seconds{instance="10.0.10.102:9101"}'
         values: '0+0x130'
     alert_rule_test:
       - eval_time: 72h
@@ -82,7 +82,7 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
-              instance: '192.168.0.102:9101'
+              instance: '10.0.10.102:9101'
       - eval_time: 72h
         alertname: ArchiveBackupStaleCritical
         exp_alerts: []
@@ -91,12 +91,12 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: critical
-              instance: '192.168.0.102:9101'
+              instance: '10.0.10.102:9101'
 
   # restic -> B2 is the only offsite copy, so its 4-day arm is critical.
   - interval: 1h
     input_series:
-      - series: 'restic_offsite_last_success_timestamp_seconds{instance="192.168.0.102:9101"}'
+      - series: 'restic_offsite_last_success_timestamp_seconds{instance="10.0.10.102:9101"}'
         values: '0+0x130'
     alert_rule_test:
       - eval_time: 72h
@@ -107,13 +107,13 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: critical
-              instance: '192.168.0.102:9101'
+              instance: '10.0.10.102:9101'
 
   # Per-app dump landing zone: the label set must survive to the alert, or the
   # page cannot name which app stopped dumping.
   - interval: 1h
     input_series:
-      - series: 'backup_artifact_last_mtime_seconds{app="authentik", instance="192.168.0.102:9101"}'
+      - series: 'backup_artifact_last_mtime_seconds{app="authentik", instance="10.0.10.102:9101"}'
         values: '0+0x130'
     alert_rule_test:
       - eval_time: 121h
@@ -122,12 +122,12 @@ tests:
           - exp_labels:
               severity: critical
               app: authentik
-              instance: '192.168.0.102:9101'
+              instance: '10.0.10.102:9101'
 
   # vzdump escalates a day earlier (3 days) than the other chains.
   - interval: 1h
     input_series:
-      - series: 'vzdump_backup_last_success_timestamp_seconds{instance="192.168.0.102:9101"}'
+      - series: 'vzdump_backup_last_success_timestamp_seconds{instance="10.0.10.102:9101"}'
         values: '0+0x130'
     alert_rule_test:
       - eval_time: 48h
@@ -138,19 +138,19 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: critical
-              instance: '192.168.0.102:9101'
+              instance: '10.0.10.102:9101'
 
   # Every chain succeeding on schedule (timestamp tracking wall clock) must
   # leave all four critical arms silent — the false-positive guard.
   - interval: 1h
     input_series:
-      - series: 'archive_backup_last_success_timestamp_seconds{instance="192.168.0.102:9101"}'
+      - series: 'archive_backup_last_success_timestamp_seconds{instance="10.0.10.102:9101"}'
         values: '0+3600x130'
-      - series: 'restic_offsite_last_success_timestamp_seconds{instance="192.168.0.102:9101"}'
+      - series: 'restic_offsite_last_success_timestamp_seconds{instance="10.0.10.102:9101"}'
         values: '0+3600x130'
-      - series: 'vzdump_backup_last_success_timestamp_seconds{instance="192.168.0.102:9101"}'
+      - series: 'vzdump_backup_last_success_timestamp_seconds{instance="10.0.10.102:9101"}'
         values: '0+3600x130'
-      - series: 'backup_artifact_last_mtime_seconds{app="authentik", instance="192.168.0.102:9101"}'
+      - series: 'backup_artifact_last_mtime_seconds{app="authentik", instance="10.0.10.102:9101"}'
         values: '0+3600x130'
     alert_rule_test:
       - eval_time: 121h

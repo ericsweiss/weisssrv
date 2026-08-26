@@ -343,15 +343,24 @@ controller-side object is recreated.
 
 ## Phase 2 — the homelab renumber
 
-Phase 1 deliberately leaves the homelab on `192.168.0.0/24` (VLAN-tagged, but
-not renumbered) so cutover night changes routing without touching a single
-address in `ansible/`, `kubernetes/` or any guest. Phase 2 moves it to
-`10.0.10.0/24` in its own MR, after Phase 1 has been live long enough to trust.
+Phase 1 left the homelab on `192.168.0.0/24` (VLAN-tagged, but not renumbered)
+so cutover night changed routing without touching a single address in
+`ansible/`, `kubernetes/` or any guest. Phase 2 moved it to `10.0.10.0/24`,
+every last octet preserved.
 
-In this root that is a small, contained edit, and this list is the complete one:
-`local.networks.homelab.subnet` and its DHCP scope, the three homelab locals
-`dns_ips` / `plex_ip` / `ha_ip` (which every policy references rather than
-repeating), and the five `local.port_forwards` targets. Nothing else here names
-a homelab address.
+In this root that was a small, contained edit, and this list is the complete
+one: `local.networks.homelab.subnet` and its DHCP scope, the three homelab
+locals `dns_ips` / `plex_ip` / `ha_ip` (which every policy references rather
+than repeating), and the five `local.port_forwards` targets. Nothing else here
+names a homelab address.
 Everything outside this root — the inventory, the k8s manifests, the DNS
 rewrites — is the bulk of that MR; docs/46 § Phase 2 owns the sequence.
+
+**Applying it is not small.** The gateway rewrites the VLAN 10 subnet in place,
+which drops every session on it the moment it lands — including the plan's own
+API connection if you run it from the homelab. Run the apply from a device on
+the Home VLAN, and only at the point the sequence in docs/46 § Phase 2 reaches
+it: the hosts, guests and k3s nodes are renumbered around it, not by it. The
+`UniFi Controller` 1Password item's `url` field moves with the gateway
+(`https://192.168.0.1` → `https://10.0.10.1`) or every later plan fails to
+connect.

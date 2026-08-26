@@ -342,7 +342,7 @@
         acme_certs_domain: "{{ internal_domain }}"
         acme_certs_ssh_user: "{{ admin_user }}"
         acme_certs_local_cert_dir: /opt/AdGuardHome/certs
-        # The molecule cert source container is not 192.168.0.150, so do NOT pin
+        # The molecule cert source container is not 10.0.10.150, so do NOT pin
         # the distribution key to that source IP — the from="..." restriction
         # would reject the SSH push from the container and fail distribution.
         acme_certs_key_from: ""
