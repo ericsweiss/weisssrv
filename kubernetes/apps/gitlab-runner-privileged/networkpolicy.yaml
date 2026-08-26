@@ -53,6 +53,9 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
+    # The API VIP (10.0.10.161) is a REAL packet destination, unlike 10.43.0.1:
+    # kube-vip answers it on a server node with no DNAT, and the CI verify jobs
+    # dial it by name (k3s.esweiss.com -> the VIP). It joins the server /32s.
     - to:
         - ipBlock:
             cidr: 10.0.10.222/32
@@ -60,6 +63,8 @@ spec:
             cidr: 10.0.10.223/32
         - ipBlock:
             cidr: 10.0.10.227/32
+        - ipBlock:
+            cidr: 10.0.10.161/32
       ports:
         - protocol: TCP
           port: 6443

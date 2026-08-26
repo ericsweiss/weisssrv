@@ -59,6 +59,9 @@ spec:
     # (10.43.0.1:443) to the real endpoints BEFORE NetworkPolicy
     # evaluation, so the policy must allowlist the server node IPs on
     # 6443 — a 10.43.0.1/32 rule never matches the post-DNAT packet.
+    # The API VIP (10.0.10.161) is a REAL packet destination, unlike 10.43.0.1:
+    # kube-vip answers it on a server node with no DNAT, and the CI verify jobs
+    # dial it by name (k3s.esweiss.com -> the VIP). It joins the server /32s.
     - to:
         - ipBlock:
             cidr: 10.0.10.222/32
@@ -66,6 +69,8 @@ spec:
             cidr: 10.0.10.223/32
         - ipBlock:
             cidr: 10.0.10.227/32
+        - ipBlock:
+            cidr: 10.0.10.161/32
       ports:
         - protocol: TCP
           port: 6443
@@ -126,6 +131,9 @@ spec:
     # (10.43.0.1:443) to the real endpoints BEFORE NetworkPolicy
     # evaluation, so the policy must allowlist the server node IPs on
     # 6443 — a 10.43.0.1/32 rule never matches the post-DNAT packet.
+    # The API VIP (10.0.10.161) is a REAL packet destination, unlike 10.43.0.1:
+    # kube-vip answers it on a server node with no DNAT, and the CI verify jobs
+    # dial it by name (k3s.esweiss.com -> the VIP). It joins the server /32s.
     - to:
         - ipBlock:
             cidr: 10.0.10.222/32
@@ -133,6 +141,8 @@ spec:
             cidr: 10.0.10.223/32
         - ipBlock:
             cidr: 10.0.10.227/32
+        - ipBlock:
+            cidr: 10.0.10.161/32
       ports:
         - protocol: TCP
           port: 6443
