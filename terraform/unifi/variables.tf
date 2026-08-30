@@ -66,7 +66,7 @@ variable "wlan_passphrase_home" {
 }
 
 variable "wlan_passphrase_iot" {
-  description = "PSK for the 3601-IoT SSID, VLAN 30 (1Password item 'WiFi 3601-IoT', field 'password')."
+  description = "PSK for the Panopticon SSID, VLAN 30 (1Password item 'WiFi Panopticon', field 'password')."
   type        = string
   sensitive   = true
 
@@ -88,7 +88,7 @@ variable "wlan_passphrase_guest" {
 }
 
 variable "wlan_passphrase_work" {
-  description = "PSK for the 3601-Work SSID, VLAN 50 (1Password item 'WiFi 3601-Work', field 'password')."
+  description = "PSK for the DunderMiffLAN SSID, VLAN 50 (1Password item 'WiFi DunderMiffLAN', field 'password')."
   type        = string
   sensitive   = true
 

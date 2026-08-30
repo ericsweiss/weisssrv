@@ -1827,9 +1827,9 @@ tasks:
       TF_VAR_unifi_api_url: op://Homelab/UniFi Controller/url
       TF_VAR_unifi_api_key: op://Homelab/UniFi Controller/api-key
       TF_VAR_wlan_passphrase_home: op://Homelab/WiFi TheRevengers/password
-      TF_VAR_wlan_passphrase_iot: op://Homelab/WiFi 3601-IoT/password
+      TF_VAR_wlan_passphrase_iot: op://Homelab/WiFi Panopticon/password
       TF_VAR_wlan_passphrase_guest: op://Homelab/WiFi kugel-tikka-masala/password
-      TF_VAR_wlan_passphrase_work: op://Homelab/WiFi 3601-Work/password
+      TF_VAR_wlan_passphrase_work: op://Homelab/WiFi DunderMiffLAN/password
       TF_HTTP_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/unifi"
       TF_HTTP_LOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/unifi/lock"
       TF_HTTP_UNLOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/unifi/lock"

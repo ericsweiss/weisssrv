@@ -197,9 +197,9 @@ in CI), from the Homelab vault (docs/15-credential-rotation.md):
 | `unifi_api_url` | `op://Homelab/UniFi Controller/url` |
 | `unifi_api_key` | `op://Homelab/UniFi Controller/api-key` |
 | `wlan_passphrase_home` | `op://Homelab/WiFi TheRevengers/password` |
-| `wlan_passphrase_iot` | `op://Homelab/WiFi 3601-IoT/password` |
+| `wlan_passphrase_iot` | `op://Homelab/WiFi Panopticon/password` |
 | `wlan_passphrase_guest` | `op://Homelab/WiFi kugel-tikka-masala/password` |
-| `wlan_passphrase_work` | `op://Homelab/WiFi 3601-Work/password` |
+| `wlan_passphrase_work` | `op://Homelab/WiFi DunderMiffLAN/password` |
 | (state backend) | `op://Homelab/GitLab Terraform State Token/credential` |
 
 The `UniFi Controller` item's `username`/`password` fields are the Limited
