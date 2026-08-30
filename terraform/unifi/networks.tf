@@ -382,10 +382,10 @@ locals {
   # mechanism for putting a device on the right network: add an entry naming the
   # target network and a WIRELESS device moves on its next association — no SSID
   # re-join, no touching the device. That is how the WLED controllers and the
-  # Kasa plugs reached IoT at cutover without ever joining `3601-IoT`. Steering
+  # Kasa plugs reached IoT at cutover without ever joining the IoT SSID (now `Panopticon`). Steering
   # is placement, not authorization: a device that keeps the Home PSK falls back
   # to Home if its MAC ever stops matching, so IoT-class devices still get
-  # re-onboarded onto `3601-IoT` over time (docs/46 § DHCP reservations).
+  # re-onboarded onto `Panopticon` over time (docs/46 § DHCP reservations).
   #
   # WIRED devices behind the unmanaged switches on Connection A are the caveat:
   # steering them needs the USW to assign a VLAN by MAC to a device it does not
@@ -456,6 +456,17 @@ locals {
       name     = "macbook"
       fixed_ip = "10.0.20.10"
       network  = "home"
+    }
+
+    # Work (VLAN 50) — wired steering only, no reservation. The corporate
+    # laptop swaps onto Connection A (port 7, native Home) in place of the
+    # macbook; this pins its dock MAC to the Work VLAN so docking gives it the
+    # same isolation DunderMiffLAN gives it wireless. Same per-MAC wired
+    # steering the macbook entry proved on this port.
+    work_laptop_dock = {
+      mac     = "9c:7b:ef:9e:e6:46"
+      name    = "work-laptop-dock"
+      network = "work"
     }
 
     # IoT (VLAN 30)

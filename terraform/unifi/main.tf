@@ -53,7 +53,7 @@ module "network" {
     # it. `allow_2ghz_high_perf` clears UniFi's "connect high-performance
     # clients to 5 GHz only".
     iot = {
-      ssid                 = "3601-IoT"
+      ssid                 = "Panopticon"
       network              = "iot"
       passphrase           = var.wlan_passphrase_iot
       wpa3                 = false
@@ -68,7 +68,7 @@ module "network" {
       l2_isolation = true
     }
     work = {
-      ssid       = "3601-Work"
+      ssid       = "DunderMiffLAN"
       network    = "work"
       passphrase = var.wlan_passphrase_work
     }
