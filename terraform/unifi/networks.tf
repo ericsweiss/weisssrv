@@ -458,16 +458,13 @@ locals {
       network  = "home"
     }
 
-    # Work (VLAN 50) — wired steering only, no reservation. The corporate
-    # laptop swaps onto Connection A (port 7, native Home) in place of the
-    # macbook; this pins its dock MAC to the Work VLAN so docking gives it the
-    # same isolation DunderMiffLAN gives it wireless. Same per-MAC wired
-    # steering the macbook entry proved on this port.
-    work_laptop_dock = {
-      mac     = "9c:7b:ef:9e:e6:46"
-      name    = "work-laptop-dock"
-      network = "work"
-    }
+    # NO dock steering entry: 9c:7b:ef:9e:e6:46 turned out to be the DOCK's
+    # own MAC, shared by whichever laptop is docked — steering it to Work
+    # dropped the personal MacBook's wired leg into Work-VLAN limbo the next
+    # time it docked (2026-08-30). Per-laptop wired steering through this dock
+    # is impossible at L2 unless MAC-passthrough is enabled in each laptop's
+    # firmware so the dock presents the host's MAC (docs/16). Until then the
+    # work laptop's isolation is DunderMiffLAN when wireless.
 
     # IoT (VLAN 30)
     hue = {
