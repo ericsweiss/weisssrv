@@ -1192,9 +1192,9 @@ unifi-drift-plan:
       # Taskfile's &tf_unifi_env anchor; a missing one fails the plan on the
       # variable's own length validation, which names this job.
       export TF_VAR_wlan_passphrase_home=$(op read "op://Homelab/WiFi TheRevengers/password")
-      export TF_VAR_wlan_passphrase_iot=$(op read "op://Homelab/WiFi 3601-IoT/password")
+      export TF_VAR_wlan_passphrase_iot=$(op read "op://Homelab/WiFi Panopticon/password")
       export TF_VAR_wlan_passphrase_guest=$(op read "op://Homelab/WiFi kugel-tikka-masala/password")
-      export TF_VAR_wlan_passphrase_work=$(op read "op://Homelab/WiFi 3601-Work/password")
+      export TF_VAR_wlan_passphrase_work=$(op read "op://Homelab/WiFi DunderMiffLAN/password")
       # Plan only, never apply — surfaces drift instead of silently reverting it.
       # -detailed-exitcode: drift exits 2 (plain plan exits 0 on a non-empty
       # diff), so allow_failure can actually render the yellow drift signal.
