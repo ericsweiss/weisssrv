@@ -531,18 +531,15 @@ locals {
     # WIRED, behind the unmanaged switches on Connection A — unlike its
     # living-room sibling, which is wireless. Per-MAC steering for a wired
     # client depends on the USW assigning a VLAN by MAC to a device it does not
-    # RESOLVED 2026-08-29: the steering half-took — the USW classified the
-    # Pi's untagged frames into VLAN 30, but replies egress port 7 TAGGED,
-    # which the tag-unaware Pi drops (dhcpcd fell back to 169.254.x). Per-MAC
-    # steering to a NON-native VLAN cannot work behind this port; the proven
-    # cases were all native-VLAN. So the WIRED leg steers to Home (native,
-    # works), no reservation, and the Pi's IoT life moves to its WI-FI
-    # interface joining Panopticon — different MAC, plain DHCP.
-    eric-bedroom-hyperion = {
-      mac     = "b8:27:eb:17:7d:dc"
-      name    = "eric-bedroom-hyperion"
-      network = "home"
-    }
+    # NO eric-bedroom-hyperion entry, deliberately (2026-08-30): a per-MAC
+    # network override forces TAGGED delivery on the uplink port even for the
+    # port's own native network — the controller demanded "Home (20) tagged on
+    # port 7" for an override-to-Home client, mirroring how the earlier
+    # override-to-IoT black-holed it. A tag-unaware wired device behind this
+    # port must carry NO override at all: untagged frames then ride the native
+    # network (Home). Its wired-IoT endgame is an eth0.30 VLAN interface on
+    # the Pi itself (port 7 tags 30), at which point an iot entry with
+    # fixed_ip 10.0.30.211 can return for its Home Assistant-facing address.
     wled-kitchen-island = {
       mac      = "9C:9C:1F:45:76:FE"
       name     = "wled-kitchen-island"
