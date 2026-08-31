@@ -523,6 +523,18 @@ drift plan is clean):
   carrier/hang events over the same window — matching counts mean the e1000e
   story is continuing on the standby leg; clean hosts mean it is bonding-driver
   noise and the row can close (docs/46 § Post-cutover checklist).
+- [ ] **Tighten the pure access ports to native-VLAN-only (segmentation
+  hardening).** UCG 2-3 and USW 1-6 carry the controller's default **All** port
+  profile (native VLAN + forward every tagged VLAN), so a compromised host on
+  one could VLAN-hop by emitting tagged frames past the zone policies (audit
+  PORT-01/ZBF-06). Bounded — these are Proxmox hosts and the NAS, already fully
+  trusted on VLAN 10 — but defence-in-depth wants a native-only profile on every
+  genuine access port. Console change, not codified: `unifi_device.port_override`
+  is unsafe at provider 0.55.0 (#438/#430/#431). Leave the real trunks alone
+  (USW 6/7/8/10 — port 7 must keep native Home + tagged 10/30 for pve-nas-01's
+  `nic1.10` and the bedroom Pi's `eth0.30`). Do it after the offsite console
+  backup above exists, since a bad port override is exactly what that backup
+  recovers from (docs/46 § Physical port map).
 - [ ] **Clear the pre-renumber `config_network` on the switch and AP (optional).**
   Both still record their old `192.168.0.x` in the Configure-IP field; inert
   while DHCP, but the value either would take if flipped to static — on a subnet

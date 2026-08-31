@@ -86,7 +86,19 @@ The host access ports (UCG 2-3, USW 1-6) carry the controller's default **All**
 port profile — the listed native VLAN, but forwarding every VLAN — rather than a
 strict access profile. The hosts send only untagged frames so they behave as
 access ports; the "access" label above is the intent, and the live profile is
-trunk-all.
+trunk-all. **This is an open segmentation gap** (audit PORT-01/ZBF-06): the All
+profile means a compromised host on one of these ports could VLAN-hop by
+emitting tagged frames, reaching a VLAN the zone policies would otherwise fence
+it out of. The blast radius is bounded — these ports carry Proxmox hosts and the
+NAS, already fully trusted on VLAN 10, so a compromise there is game-over on the
+homelab plane regardless — but the ConnA run (port 7) fans out to less-trusted
+devices, and defence-in-depth wants native-VLAN-only profiles wherever a port is
+a genuine access port. It stays a **console** change, not codified: the audit
+established `unifi_device.port_override` is unsafe at provider 0.55.0 (#438 wipes
+live overrides on an empty set, #430/#431). The genuine trunks — USW 6→gateway,
+7 (ConnA, native Home + tagged 10/30), 8 (AP), 10 (uplink) — must stay All;
+tightening the pure access ports (UCG 2-3, USW 1-6) to native-only is tracked in
+[docs/16](16-next-steps.md).
 
 "Connection A" is the run to the dumb 10G TP-Link switch, which fans out to
 pve-nas-01, a 1G dumb switch (laptop dock, HDHomeRun), the bedroom Hyperion Pi,
@@ -1313,7 +1325,7 @@ limits are in § Codified vs manual).
 | # | Check | How | Expected |
 |---|---|---|---|
 | 1 | Per-VLAN DHCP | Join each SSID / plug into each access port | Address from the right pool, DNS `.150`/`.160`, domain `esweiss.com` (the **mgmt** VLAN is the exception: `1.1.1.1`/`9.9.9.9`) |
-| 2 | Stranded wired leases | Controller client list | Every wired device on the Connection A run has a `10.0.20.x` (Home) address — no VLAN-10 address outside VLAN 10. Now meaningful: port 7 is native Home as of 2026-08-30, so pve-nas-01 is the only thing on the run that should show VLAN 10 (via its tagged `nic1.10`) |
+| 2 | Stranded wired leases | Controller client list | The two intended tagged clients on the Connection A run — pve-nas-01 (VLAN 10, via `nic1.10`) and the bedroom Hyperion Pi (VLAN 30, via `eth0.30`) — sit on their tagged VLANs by design. Every OTHER wired device on the run must show a `10.0.20.x` (Home) address: an untagged device on VLAN 10/30 would be a mis-assignment, not a self-tag. Meaningful since port 7 went native Home 2026-08-30 |
 | 3 | Resolver reach from every VLAN | `dig @10.0.10.150 git.esweiss.com` from home/iot/guest/work | Answer on all four |
 | 4 | Guest containment | From guest: `curl -m5 https://git.esweiss.com`, ping another guest client | Both **fail** (DNS resolves, everything else denied; L2 isolation blocks the peer) |
 | 5 | IoT containment | From an IoT device: reach anything on Home or `:443` on homelab | **Fails**; only `:53`, Plex `:32400` and HA `:8123` succeed |
