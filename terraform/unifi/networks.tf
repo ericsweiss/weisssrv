@@ -531,17 +531,21 @@ locals {
     # WIRED, behind the unmanaged switches on Connection A — unlike its
     # living-room sibling, which is wireless. Per-MAC steering for a wired
     # client depends on the USW assigning a VLAN by MAC to a device it does not
-    # NO eric-bedroom-hyperion entry — EXPERIMENTALLY CONFIRMED (2026-08-30,
-    # two clean runs): a per-MAC network override delivers TAGGED frames on
-    # the uplink regardless of the port's native network. The tag-unaware
-    # wired Pi behind port 7 completes the DHCP UPLINK half (the controller
-    # even records the .30.211 lease) but never hears the tagged ACK, while a
-    # reachable sibling on the same observer path (.30.210) proved the test
-    # valid. The Pi therefore carries no override and rides native Home via
-    # plain DHCP. Wired-IoT endgame, either: an eth0.30 VLAN interface on the
-    # Pi (needs SSH -> an SD-card `ssh` boot file first), or a managed switch
-    # (USW Flex Mini) at the bedroom drop giving it a native-IoT port —
-    # docs/16.
+    # RESOLVED (2026-08-30): the Pi (2B v1.1, wired-only) now tags ITSELF
+    # into VLAN 30 — an NM-native eth0.30 vlan connection on the fresh
+    # HyperBian, with eth0 left address-less as the carrier. Tagged delivery
+    # on port 7 is therefore exactly what the device consumes, so this entry's
+    # override and reservation are correct again. The earlier findings stand
+    # for TAG-UNAWARE devices behind a shared port: an override always
+    # delivers tagged, natively-untagged clients black-hole (two clean
+    # experimental runs); a managed switch at the drop remains the fix for
+    # such devices (docs/16).
+    eric-bedroom-hyperion = {
+      mac      = "b8:27:eb:17:7d:dc"
+      name     = "eric-bedroom-hyperion"
+      fixed_ip = "10.0.30.211"
+      network  = "iot"
+    }
     wled-kitchen-island = {
       mac      = "9C:9C:1F:45:76:FE"
       name     = "wled-kitchen-island"
