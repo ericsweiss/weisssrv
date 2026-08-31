@@ -394,7 +394,12 @@ Design, runbook and the codified-vs-manual contract:
 - [ ] **Decide IPS: detect vs inline block.** Ships as `ips_mode = "ids"`. The
   flip to inline `"ips"` is a **console** action (Settings → CyberSecure), not a
   Terraform edit — the module ignores the `ips` block, so editing `ips_mode` is a
-  no-op (docs/46 § Site settings). Do not read the burn-in as a passed "clean
+  no-op (docs/46 § Site settings). But when you do flip it in the console,
+  **also change the codified `ips_mode` to `"ips"` in the same MR** — the
+  `ignore_changes` suppresses the plan diff, so it is harmless now, and it keeps
+  the create-time intent aligned with reality: otherwise the day the ignore
+  comes off (below) or the resource is recreated, the plan silently restores
+  `"ids"` and quietly disables inline blocking. Do not read the burn-in as a passed "clean
   week": it produced **zero** detections, on a set of 34 of ~53 categories with
   no current-events category and `memory_optimized` on, and the Suricata engine
   is two majors behind (6, with an upgrade to 8 pending). Gate the flip on the

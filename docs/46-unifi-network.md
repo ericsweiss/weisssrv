@@ -213,7 +213,7 @@ Turning it on later is not a one-line change: every allowlist below the gateway
 `ipBlock`s) is IPv4-only, and a v6-capable client under an IPv4-only allowlist
 is an open door no plan shows. The gateway backs this up — both WANs carry
 `wan_type_v6 = "disabled"`, so no upstream delegation arrives — and that is what
-makes the IPv4-only zone policy set safe: all 20 codified policies are IPv4-only,
+makes the IPv4-only zone policy set safe: all 25 codified policies (12 ALLOW + 13 BLOCK) are IPv4-only,
 so a future `wan_type_v6` change must land the v6 half of every one of them in
 the same MR, or every BLOCK is silently voided over IPv6. Validation row 22
 checks that clients really come up v4-only.
@@ -1324,7 +1324,7 @@ landed the mgmt reservations), so the whole matrix is now runnable.
 
 **Zero drift, verified 2026-08-31.** A programmatic diff of `local.policies`
 against the live custom policy set (action, protocol, logging,
-`create_allow_respond`, both endpoints) matched all 20 codified policies exactly
+`create_allow_respond`, both endpoints) matched all 25 codified policies (12 ALLOW + 13 BLOCK) exactly
 — 0 terraform-only, 0 live-only, 0 attribute mismatches, all `enabled` — and the
 pre-ZBF `firewallrule`/`firewallgroup` sets are empty (fully retired). The five
 port forwards match too. So the policy half of the configuration is converged;
