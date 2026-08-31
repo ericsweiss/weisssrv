@@ -530,11 +530,13 @@ drift plan is clean):
   PORT-01/ZBF-06). Bounded — these are Proxmox hosts and the NAS, already fully
   trusted on VLAN 10 — but defence-in-depth wants a native-only profile on every
   genuine access port. Console change, not codified: `unifi_device.port_override`
-  is unsafe at provider 0.55.0 (#438/#430/#431). Leave the real trunks alone
-  (USW 6/7/8/10 — port 7 must keep native Home + tagged 10/30 for pve-nas-01's
-  `nic1.10` and the bedroom Pi's `eth0.30`). Do it after the offsite console
-  backup above exists, since a bad port override is exactly what that backup
-  recovers from (docs/46 § Physical port map).
+  is unsafe at provider 0.55.0 (#438/#430/#431). Leave the real trunks alone —
+  USW 7 (ConnA, must keep native Home + tagged 10/30 for pve-nas-01's `nic1.10`
+  and the bedroom Pi's `eth0.30`), USW 8 (AP) and USW 10 (SFP+ uplink to the
+  UCG, whose port 6 is the DAC to the switch); USW 5-6 are pve-opt-03 access
+  ports, not trunks. Do it after the offsite console backup above exists, since
+  a bad port override is exactly what that backup recovers from (docs/46
+  § Physical port map).
 - [ ] **Clear the pre-renumber `config_network` on the switch and AP (optional).**
   Both still record their old `192.168.0.x` in the Configure-IP field; inert
   while DHCP, but the value either would take if flipped to static — on a subnet

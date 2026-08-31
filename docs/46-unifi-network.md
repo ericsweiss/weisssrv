@@ -95,10 +95,11 @@ homelab plane regardless — but the ConnA run (port 7) fans out to less-trusted
 devices, and defence-in-depth wants native-VLAN-only profiles wherever a port is
 a genuine access port. It stays a **console** change, not codified: the audit
 established `unifi_device.port_override` is unsafe at provider 0.55.0 (#438 wipes
-live overrides on an empty set, #430/#431). The genuine trunks — USW 6→gateway,
-7 (ConnA, native Home + tagged 10/30), 8 (AP), 10 (uplink) — must stay All;
-tightening the pure access ports (UCG 2-3, USW 1-6) to native-only is tracked in
-[docs/16](16-next-steps.md).
+live overrides on an empty set, #430/#431). The genuine trunks that must stay
+All are USW **7** (ConnA, native Home + tagged 10/30), **8** (AP) and **10** (the
+SFP+ uplink — its other end is UCG **6**, the DAC to the switch); tightening the
+pure access ports (UCG 1-3, USW 1-6, which is where pve-opt-03 lands on USW 5-6)
+to native-only is tracked in [docs/16](16-next-steps.md).
 
 "Connection A" is the run to the dumb 10G TP-Link switch, which fans out to
 pve-nas-01, a 1G dumb switch (laptop dock, HDHomeRun), the bedroom Hyperion Pi,
@@ -547,7 +548,7 @@ the weisssrv resolvers by DHCP.
 | Firewall-policy ordering | UI | |
 | WAN DNS servers | UI | See § Site settings |
 | ui.com Remote Access (cloud) | UI | **On, deliberately** (operator ruling, 2026-08-31): the intended remote-access path is a Teleport VPN via a Ubiquiti travel router, so the console is reachable over `id.ui.direct` — an outbound tunnel the zone firewall cannot see. Gated by the ui.com Owner account's own MFA (open item, docs/16). Tailscale (Proxmox hosts) and wg-easy (.99) remain the other out-of-band paths |
-| Console admin accounts | UI | Three: the **Owner** (`ericsweiss1@gmail.com`, ui.com SSO, cloud access); the local **`terraform`** limited admin (local-only, no 2FA — the API key is minted under it, **not** the Owner); and **`homeassistant`**, a local Super Admin kept **deliberately** for a few HA write actions and **deliberately not vaulted** (avoids a rotation burden). Local accounts carry no 2FA (docs/15) |
+| Console admin accounts | UI | Three: the **Owner** (`ericsweiss1@gmail.com`, ui.com SSO, cloud access); the local **`terraform`** limited admin (local-only, no 2FA — the API key is minted under it, **not** the Owner); and **`homeassistant`**, a local Super Admin consumed by the Home Assistant **UniFi Network integration** for its write actions (client block, PoE, WLAN toggle). It is **deliberately** kept at parity with the `terraform` admin — the operator's call over a scoped role — and **deliberately not vaulted** (the credential lives only in HA's own store; the operator judged the rotation burden not worth it against the bounded blast radius of an internal integration account). Local accounts carry no 2FA (docs/15). The residual is accepted, not overlooked — an audit re-raise was declined on those grounds |
 | Device SSH | UI | **Disabled 2026-08-31** (was on with password auth and no keys) — no automation depends on it |
 | IPS enablement (`ids` → `ips`) | UI (Settings → CyberSecure) | The module ignores the `ips` block, so the flip is console-only, not a Terraform edit. The *decision* is an open item gated on the pending Suricata 6→8 engine upgrade and a re-baselined burn-in (§ Day-2, docs/16) |
 | Default Security Posture | UI | `ALLOW_ALL` (deliberate for the mgmt VLAN, which is the only network in the built-in `Internal` zone). **Operational trap:** a network *created in the UI* lands in `Internal`, which is Allow-All to Gateway/Vpn/Hotspot/Dmz — the deny-by-default this design relies on comes from Terraform putting each VLAN in its own custom zone, not from the controller. Adding a VLAN is therefore not a UI-safe operation here (docs/16) |
