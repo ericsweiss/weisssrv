@@ -176,7 +176,7 @@ debian_version: "13"
 # check-versions.py as category "manual": `pveam update && pveam available
 # --section system | grep debian-13-standard`.
 proxmox_lxc_template: "debian-13-standard_13.6-1_amd64.tar.zst"
-k3s_version: "v1.36.3+k3s1"
+k3s_version: "v1.36.4+k3s1"
 # sha256 of install.sh for the k3s_version tag: get_url verifies the root-run
 # installer before exec (install.sh's own check covers the k3s binary, not the
 # script). Recompute in lockstep with every k3s_version bump:
@@ -439,7 +439,7 @@ helm_chart_versions:
   cert_manager: "v1.21.1"
   external_dns: "1.21.1"  # App version 0.20.0
   external_secrets: "2.10.0"  # ESO with 1Password Connect provider
-  kube_prometheus_stack: "88.6.1"  # prometheus-operator v0.93.1 (additive CRD fields; crds: CreateReplace)
+  kube_prometheus_stack: "88.6.2"  # prometheus-operator v0.93.1 (additive CRD fields; crds: CreateReplace)
   # prometheus-community/prometheus-operator-crds chart. Owns the
   # monitoring.coreos.com CRDs in the dedicated infrastructure-crds stage so
   # controllers (Traefik's ServiceMonitor) reconcile before kube-prometheus-stack
@@ -449,7 +449,7 @@ helm_chart_versions:
   prometheus_operator_crds: "31.0.1"
   loki: "18.11.7"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0); 18.0.0 = dashboard-gen only
   alloy: "1.12.1"
-  prometheus_blackbox_exporter: "11.17.2"
+  prometheus_blackbox_exporter: "11.18.0"
   onepassword_connect: "2.4.1"
   vpa: "5.0.0"  # chart major = app 1.7.1; every values key this repo sets is unchanged in 5.x
   kured: "6.1.0"  # Kubernetes Reboot Daemon (app 1.22.1); owns k3s-node reboots flagged by maintenance
