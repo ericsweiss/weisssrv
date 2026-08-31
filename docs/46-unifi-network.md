@@ -82,18 +82,20 @@ mis-patch:
 | 9 (SFP+ 1) | spare |
 | 10 (SFP+ 2) | Uplink from the UCG — trunk all, native VLAN 1 |
 
-The host access ports (UCG 2-3, USW 1-6) carry the controller's default **All**
+The access ports (UCG 1-3, USW 1-6) carry the controller's default **All**
 port profile — the listed native VLAN, but forwarding every VLAN — rather than a
-strict access profile. The hosts send only untagged frames so they behave as
-access ports; the "access" label above is the intent, and the live profile is
-trunk-all. **This is an open segmentation gap** (audit PORT-01/ZBF-06): the All
-profile means a compromised host on one of these ports could VLAN-hop by
-emitting tagged frames, reaching a VLAN the zone policies would otherwise fence
-it out of. The blast radius is bounded — these ports carry Proxmox hosts and the
-NAS, already fully trusted on VLAN 10, so a compromise there is game-over on the
-homelab plane regardless — but the ConnA run (port 7) fans out to less-trusted
-devices, and defence-in-depth wants native-VLAN-only profiles wherever a port is
-a genuine access port. It stays a **console** change, not codified: the audit
+strict access profile. The attached devices send only untagged frames so they
+behave as access ports; the "access" label above is the intent, and the live
+profile is trunk-all. **This is an open segmentation gap** (audit
+PORT-01/ZBF-06): the All profile means a compromised device on one of these
+ports could VLAN-hop by emitting tagged frames, reaching a VLAN the zone
+policies would otherwise fence it out of. On the host ports (UCG 2-3, USW 1-6)
+the blast radius is bounded — Proxmox hosts and the NAS are already fully
+trusted on VLAN 10, so a compromise there is game-over on the homelab plane
+regardless — but **UCG 1 carries the Hue bridge, an untrusted IoT appliance**,
+which is the case that actually motivates this, and the ConnA run (port 7) fans
+out to more untrusted devices still. Defence-in-depth wants native-VLAN-only
+profiles wherever a port is a genuine access port. It stays a **console** change, not codified: the audit
 established `unifi_device.port_override` is unsafe at provider 0.55.0 (#438 wipes
 live overrides on an empty set, #430/#431). The genuine trunks that must stay
 All are USW **7** (ConnA, native Home + tagged 10/30), **8** (AP) and **10** (the
@@ -1052,18 +1054,24 @@ shove).
    **Rollback**: `cp /root/interfaces.pre-vlan /etc/network/interfaces &&
    ifreload -a`, and set switch port 7 back to native Homelab.
 
-   **Accepted residual (verified 2026-08-31):** this leaves `nic1` itself
-   link-up but address-less on port 7, whose native VLAN is Home (20), so
-   pve-nas-01 keeps an IPv6 link-local L2 adjacency to the Home VLAN that no
-   firewall zone can see (the gateway is not in that path). It reaches nothing
-   Home cannot already route to — § Accepted trust decisions grants
-   `home → homelab any` (policy 1) — but the day that policy is narrowed this
-   becomes a live bypass no zone-policy review would catch, so it is recorded
-   here. Cheap belt-and-braces is `net.ipv6.conf.nic1.disable_ipv6=1` via the
-   existing sysctl mechanism, since the carrier is meant to be address-less.
-   (This is also why the controller's client list shows a nameless Home device
-   with the NAS's MAC and a stale `last_ip: 10.0.10.102` — expected, not a
-   fault.)
+   **Open residual (verified 2026-08-31, hardening tracked in docs/16):** this
+   leaves `nic1` itself link-up but address-less on port 7, whose native VLAN is
+   Home (20), so pve-nas-01 keeps an IPv6 link-local (`fe80::`) L2 adjacency to
+   the Home VLAN that no firewall zone can see (the gateway is not in that path).
+   The adjacency is **bidirectional**, and that is the live edge: the Home→NAS
+   direction is within `home → homelab any` (policy 1), but the **NAS→Home**
+   direction is not bounded by anything — `homelab → home` was source-scoped to
+   Home Assistant and Plex in the 2026-08 audit (ALLOW row 4), yet link-local
+   sidesteps the gateway entirely, so the NAS can still reach Home peers over
+   `fe80::` regardless of that narrowing. It is narrow (link-local reaches only
+   directly-L2-adjacent nodes over IPv6, and nothing on the NAS listens on
+   `fe80::` on this carrier) but it is a real gap in the tightening, not
+   belt-and-braces. The fix is `net.ipv6.conf.nic1.disable_ipv6=1` via the
+   existing sysctl mechanism — consistent with the estate's IPv4-only posture,
+   since the carrier is meant to be address-less — done as its own verified
+   Ansible change (docs/16), not slipped in here. (This adjacency is also why
+   the controller's client list shows a nameless Home device with the NAS's MAC
+   and a stale `last_ip: 10.0.10.102` — expected, not a fault.)
 
    Afterwards re-check the AQC113 offload state, which `nic_tuning` pins on the
    *physical* device: `ethtool -k nic1 | grep generic-receive-offload` must

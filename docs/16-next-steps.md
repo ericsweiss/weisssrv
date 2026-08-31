@@ -524,12 +524,14 @@ drift plan is clean):
   story is continuing on the standby leg; clean hosts mean it is bonding-driver
   noise and the row can close (docs/46 § Post-cutover checklist).
 - [ ] **Tighten the pure access ports to native-VLAN-only (segmentation
-  hardening).** UCG 2-3 and USW 1-6 carry the controller's default **All** port
-  profile (native VLAN + forward every tagged VLAN), so a compromised host on
+  hardening).** UCG 1-3 and USW 1-6 carry the controller's default **All** port
+  profile (native VLAN + forward every tagged VLAN), so a compromised device on
   one could VLAN-hop by emitting tagged frames past the zone policies (audit
-  PORT-01/ZBF-06). Bounded — these are Proxmox hosts and the NAS, already fully
-  trusted on VLAN 10 — but defence-in-depth wants a native-only profile on every
-  genuine access port. Console change, not codified: `unifi_device.port_override`
+  PORT-01/ZBF-06). On the host ports (UCG 2-3, USW 1-6) it is bounded — Proxmox
+  hosts and the NAS, already fully trusted on VLAN 10 — but **UCG 1 is the Hue
+  bridge, an untrusted IoT appliance**, which is the real motivation; include it.
+  Defence-in-depth wants a native-only profile on every genuine access port.
+  Console change, not codified: `unifi_device.port_override`
   is unsafe at provider 0.55.0 (#438/#430/#431). Leave the real trunks alone —
   USW 7 (ConnA, must keep native Home + tagged 10/30 for pve-nas-01's `nic1.10`
   and the bedroom Pi's `eth0.30`), USW 8 (AP) and USW 10 (SFP+ uplink to the
@@ -537,6 +539,19 @@ drift plan is clean):
   ports, not trunks. Do it after the offsite console backup above exists, since
   a bad port override is exactly what that backup recovers from (docs/46
   § Physical port map).
+- [ ] **Disable IPv6 on pve-nas-01's `nic1` carrier (closes a link-local Home
+  bypass).** `nic1` is address-less on port 7 (native Home VLAN 20), but with
+  IPv6 up it holds an `fe80::` link-local adjacency to the Home VLAN that no
+  zone sees. It is bidirectional: the NAS→Home direction is bounded by nothing
+  (the audit source-scoped `homelab → home` to HA/Plex, but link-local skips the
+  gateway), so it is a narrow live bypass of that tightening, not just a future
+  risk (docs/46 § Cutover as executed, step 7 residual). Set
+  `net.ipv6.conf.nic1.disable_ipv6=1` through the `nic_tuning` sysctl mechanism
+  (a host_var on pve-nas-01, or a lib knob if it recurs), deploy, and verify
+  `ip -6 addr show nic1` is empty. Consistent with the IPv4-only posture; touch
+  only the physical `nic1`, not `nic1.10`/`vmbr0`. Low urgency (link-local
+  reaches only L2-adjacent nodes and nothing listens on it), tracked so it is
+  not lost.
 - [ ] **Clear the pre-renumber `config_network` on the switch and AP (optional).**
   Both still record their old `192.168.0.x` in the Configure-IP field; inert
   while DHCP, but the value either would take if flipped to static — on a subnet
