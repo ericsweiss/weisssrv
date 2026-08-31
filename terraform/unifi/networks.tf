@@ -326,22 +326,26 @@ locals {
       destination = { zone = "gateway" }
     },
     # The trusted-VLAN half (2026-08 audit ZBF-07/GW-05/ADM-07): home and
-    # homelab keep :443 — the console UI from admin devices, the terraform/CI
-    # API path, and the `router.esweiss.com` IngressRoute backend
+    # homelab keep exactly :443 — the console UI from admin devices, the
+    # terraform/CI API path, and the `router.esweiss.com` IngressRoute backend
     # (kubernetes/apps/vm-ingress/router.yaml, gateway :443 via the
-    # unifi-self-signed transport) all ride it — but lose the listeners nothing
-    # legitimate uses: 22 (no listener today; guards a future console-SSH
-    # toggle), 80 (the UI is https-only), and the inform/Tomcat/throughput set.
-    # The residual — any homelab pod can still reach the console login on 443 —
-    # is accepted and recorded in docs/46; the scoped API key (audit ADM-01) is
-    # the control that matters there.
+    # unifi-self-signed transport) all ride it — and lose ALL other tcp. The
+    # range is the complement of 443 rather than an enumerated listener list
+    # (22, 80, inform/Tomcat/throughput), so a gateway service opened by a
+    # future firmware is fenced without a rule edit — the same reasoning the
+    # guest/iot/work blocks use, applied to the trusted side. Nothing on home
+    # or homelab has a legitimate non-443 tcp need to the gateway: DHCP/NTP are
+    # udp, homelab resolves via .150/.160 not the gateway, and :22 has no
+    # listener. The residual — any homelab pod can still reach the console
+    # login on 443 — is accepted and recorded in docs/46; the scoped API key
+    # (audit ADM-01) is the control that matters there.
     {
       name        = "home-to-gateway-extras"
       action      = "BLOCK"
       protocol    = "tcp"
       logging     = true
       source      = { zone = "home" }
-      destination = { zone = "gateway", port = "22,80,6789,8080,8443,8843,8880" }
+      destination = { zone = "gateway", port = "1-442,444-65535" }
     },
     {
       name        = "homelab-to-gateway-extras"
@@ -349,7 +353,7 @@ locals {
       protocol    = "tcp"
       logging     = true
       source      = { zone = "homelab" }
-      destination = { zone = "gateway", port = "22,80,6789,8080,8443,8843,8880" }
+      destination = { zone = "gateway", port = "1-442,444-65535" }
     },
 
     # ---- DNS containment ----

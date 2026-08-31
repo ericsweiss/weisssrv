@@ -133,8 +133,8 @@ consequences worth naming so nobody re-derives them at 2 a.m.:
 - **Any Home or homelab device can reach the gateway console's login page** on
   `:443` — the `*-to-gateway-mgmt` BLOCKs deliberately cover only
   guest/IoT/work, and the `{home,homelab}-to-gateway-extras` BLOCKs fence
-  every *other* TCP listener (22, 80, and the inform/Tomcat/throughput set)
-  while leaving `:443` open. Fencing `:443` for Home *except* the `/29` admin
+  every *other* TCP port (the complement of 443, so a future listener is
+  covered too) while leaving `:443` open. Fencing `:443` for Home *except* the `/29` admin
   block would need an ALLOW-before-BLOCK pair on one zone-pair, i.e. rule
   ordering, which this design refuses to depend on (the provider cannot manage
   it) — and blocking all of Home would cut the admin station's break-glass
@@ -266,7 +266,7 @@ except where noted):
 | 13-15 | {guest,iot,work} → Gateway | **all tcp**, logged | On a Cloud Gateway the console is a gateway service on *every* VLAN's own gateway address, so without these a guest with the WLAN PSK gets a login form at `https://10.0.40.1`. All of tcp rather than a port list: the 2026-08 audit found five listeners (`8080,8443,8843,8880,6789`) beyond the original `22,80,443`, and nothing on these VLANs has any legitimate TCP need to its gateway. DHCP is broadcast before the client has an address and is unaffected; ICMP stays up for troubleshooting |
 | 16-19 | {guest,iot,work,home} → External | tcp/udp `53,853`, logged | DHCP option 6 is a suggestion: Chromecast hardware queries `8.8.8.8` regardless and most TVs ship a vendor resolver, so `:53`/`:853` outbound is fenced. Home joined the set in the 2026-08 audit (ZBF-03) — it was silently exempt, losing split-horizon to any device that hard-codes a resolver. Homelab stays exempt — Unbound itself has to reach the internet |
 | 20-23 | {guest,iot,work,home} → Gateway | tcp/udp `53,853`, logged | The other way off the resolvers: a UniFi OS gateway answers DNS on *every* VLAN's own `.1` and forwards to the WAN DNS servers (`1.1.1.1`/`9.9.9.9`, § Site settings), i.e. straight past AdGuard. Rows 16-19 and these together are what make "the weisssrv resolvers or nothing" true on all four client VLANs. DHCP (udp `67`/`68`) is untouched |
-| 24-25 | {home,homelab} → Gateway | tcp `22,80,6789,8080,8443,8843,8880`, logged | The trusted-VLAN half: `:443` stays open (console UI from admin devices, the CI drift plan, the `router.esweiss.com` Traefik backend), everything else the gateway listens on goes. `:22` has no listener today — the rule guards a future console-SSH toggle |
+| 24-25 | {home,homelab} → Gateway | **tcp `1-442,444-65535`** (all tcp except 443), logged | The trusted-VLAN half: exactly `:443` stays open (console UI from admin devices, the CI drift plan, the `router.esweiss.com` Traefik backend); all other tcp is blocked as the complement of 443, so a listener a future firmware opens is fenced without a rule edit. DHCP/NTP are udp, homelab resolves via `.150`/`.160`, and `:22` has no listener |
 
 DoH on `:443` is **not** covered: it is indistinguishable from ordinary HTTPS at
 this layer, and closing it needs the IDS/IPS or a blocklist (§ Day-2).
