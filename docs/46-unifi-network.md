@@ -124,19 +124,26 @@ consequences worth naming so nobody re-derives them at 2 a.m.:
   is the case the VLAN was created for. Validation row 6 tests the wireless
   path deliberately.
 - **The laptop dock and the HDHomeRun are Home devices** and are reserved as
-  such (§ DHCP reservations). The bedroom Hyperion Pi and the wired Vizio are
-  reserved onto **IoT** despite being on this run — whether that takes depends
-  on MAC-based VLAN assignment reaching a device behind an unmanaged switch
-  (§ DHCP reservations).
-- **Any Home device can reach the gateway console's login page** at
-  `https://10.0.20.1` — the `*-to-gateway-mgmt` BLOCKs deliberately cover only
-  guest/IoT/work. Fencing Home *except* the `/29` admin block would need an
-  ALLOW-before-BLOCK pair on one zone-pair, i.e. rule ordering, which this
-  design refuses to depend on (the provider cannot manage it) — and blocking
-  all of Home would cut the admin station's break-glass path to the console
-  when Traefik (the `/29`-restricted `router.esweiss.com` route) is down. The
-  console's own authentication is the gate; the residual is a login page, not
-  access.
+  such (§ DHCP reservations). Of the two IoT candidates on this run, the
+  bedroom Hyperion Pi holds its IoT reservation by self-tagging `eth0.30`
+  (tag-aware, so the override's tagged delivery is exactly right), while the
+  wired Vizio proved the failure mode — steered onto IoT it sat on APIPA,
+  because a TV cannot decode tagged frames — and is reserved back onto
+  **Home** until the Flex Mini plan (docs/16) gives that drop a managed port.
+- **Any Home or homelab device can reach the gateway console's login page** on
+  `:443` — the `*-to-gateway-mgmt` BLOCKs deliberately cover only
+  guest/IoT/work, and the `{home,homelab}-to-gateway-extras` BLOCKs fence
+  every *other* TCP port (the complement of 443, so a future listener is
+  covered too) while leaving `:443` open. Fencing `:443` for Home *except* the `/29` admin
+  block would need an ALLOW-before-BLOCK pair on one zone-pair, i.e. rule
+  ordering, which this design refuses to depend on (the provider cannot manage
+  it) — and blocking all of Home would cut the admin station's break-glass
+  path to the console when Traefik (the `/29`-restricted `router.esweiss.com`
+  route) is down; homelab needs it for the CI drift plan and that same
+  Traefik backend. The console's own authentication plus the `terraform`-scoped
+  API key are the gate; the residual is a login page, not access. One
+  consequence of blocking `:80`: type `https://` explicitly — the plain-HTTP
+  redirect nicety is gone.
 - **The `/29` admin block is a DHCP-reservation boundary, not an
   authenticated one.** A Home device that statically claims `10.0.20.10`
   inherits the block's L3 trust (`admin_lan`, `lan-tailscale-strict`). Every
@@ -233,7 +240,7 @@ so the policy set has two kinds of entry: `ALLOW`s that open an inter-zone path
 against the deny, and `BLOCK`s that fence off part of the two default-allow
 paths.
 
-**Eleven `ALLOW` entries** — the complete list of what crosses a VLAN boundary
+**Twelve `ALLOW` entries** — the complete list of what crosses a VLAN boundary
 (`create_allow_respond = true`, so stateful returns are created automatically,
 except where noted):
 
@@ -241,8 +248,8 @@ except where noted):
 |---|---|---|---|
 | 1 | home → homelab | any | Status-quo trust; per-port enforcement stays at the Proxmox firewall + NetworkPolicies |
 | 2 | home → iot | any | Casting and device control (AirPlay/Chromecast data path) |
-| 3 | homelab → iot | any | Home Assistant (.154) is the IoT controller |
-| 4 | homelab → home | any | Plex → HDHomeRun, HA → TVs, admin reach |
+| 3 | homelab → iot | any, from `.154` only | Home Assistant is the IoT controller — and the *only* VLAN-10 consumer of IoT, so the source is pinned: a zone-wide allow would be inherited by every k3s pod (they SNAT to node addresses), handing internet-facing workloads the unauthenticated device APIs (audit ZBF-04) |
+| 4 | homelab → home | any, from `.154`/`.152` only | Plex → HDHomeRun, HA → TVs. Source-pinned for the same reason as row 3 |
 | 5 | iot → homelab | tcp/udp `:53` → `.150`/`.160` | Resolvers |
 | 6 | iot → homelab | tcp `:32400` → `.152` | Local Plex streaming from TVs |
 | 7 | iot → homelab | tcp `:8123` → `.154` | HA's device-*initiated* paths: a Cast speaker fetching the TTS URL HA handed it, and integration webhooks posting back to `internal_url`. Policy 3 covers only what HA initiates |
@@ -250,14 +257,16 @@ except where noted):
 | 9 | guest → homelab | tcp/udp `:53` → `.150`/`.160` | Resolvers only; everything else is internet-only |
 | 10 | homelab → Internal | icmp → `10.0.1.2`/`.3` | The blackbox switch/AP probes: they run in a pod, so their echo requests arrive from VLAN 10 |
 | 11 | Internal → homelab | icmp from `10.0.1.2`/`.3` | The echo *replies*. `create_allow_respond` is rejected for icmp, so the return direction is its own policy |
+| 12 | homelab → homelab | tcp `80,443` → `.100` | Hairpin NAT: a homelab source dialing the WAN address is DNAT'd back into its own zone and hits the intra-zone Block All — the post-renumber failure mode of in-cluster probes on grey-cloud names. Intra-VLAN traffic never traverses the gateway, so only hairpinned flows can match (audit ZBF-01). The AdGuard cross-domain rewrites (docs/08) remain the primary mechanism |
 
-**Nine `BLOCK` entries** — narrowing the two default-allow paths:
+**Thirteen `BLOCK` entries** — narrowing the two default-allow paths:
 
 | # | From → To | Scope | Why |
 |---|---|---|---|
-| 12-14 | {guest,iot,work} → Gateway | tcp `22,80,443`, logged | On a Cloud Gateway the console is a gateway service on *every* VLAN's own gateway address, so without these a guest with the WLAN PSK gets a login form at `https://10.0.40.1`. DHCP is broadcast before the client has an address and is unaffected; ICMP to the gateway stays up for troubleshooting |
-| 15-17 | {guest,iot,work} → External | tcp/udp `53,853`, logged | DHCP option 6 is a suggestion: Chromecast hardware queries `8.8.8.8` regardless and most TVs ship a vendor resolver, so `:53`/`:853` outbound is fenced. Homelab is exempt — Unbound itself has to reach the internet |
-| 18-20 | {guest,iot,work} → Gateway | tcp/udp `53,853`, logged | The other way off the resolvers: a UniFi OS gateway answers DNS on *every* VLAN's own `.1` and forwards to the WAN DNS servers (`1.1.1.1`/`9.9.9.9`, § Site settings), i.e. straight past AdGuard. Rows 15-17 and these together are what make "the weisssrv resolvers or nothing" true. DHCP (udp `67`/`68`) is untouched |
+| 13-15 | {guest,iot,work} → Gateway | **all tcp**, logged | On a Cloud Gateway the console is a gateway service on *every* VLAN's own gateway address, so without these a guest with the WLAN PSK gets a login form at `https://10.0.40.1`. All of tcp rather than a port list: the 2026-08 audit found five listeners (`8080,8443,8843,8880,6789`) beyond the original `22,80,443`, and nothing on these VLANs has any legitimate TCP need to its gateway. DHCP is broadcast before the client has an address and is unaffected; ICMP stays up for troubleshooting |
+| 16-19 | {guest,iot,work,home} → External | tcp/udp `53,853`, logged | DHCP option 6 is a suggestion: Chromecast hardware queries `8.8.8.8` regardless and most TVs ship a vendor resolver, so `:53`/`:853` outbound is fenced. Home joined the set in the 2026-08 audit (ZBF-03) — it was silently exempt, losing split-horizon to any device that hard-codes a resolver. Homelab stays exempt — Unbound itself has to reach the internet |
+| 20-23 | {guest,iot,work,home} → Gateway | tcp/udp `53,853`, logged | The other way off the resolvers: a UniFi OS gateway answers DNS on *every* VLAN's own `.1` and forwards to the WAN DNS servers (`1.1.1.1`/`9.9.9.9`, § Site settings), i.e. straight past AdGuard. Rows 16-19 and these together are what make "the weisssrv resolvers or nothing" true on all four client VLANs. DHCP (udp `67`/`68`) is untouched |
+| 24-25 | {home,homelab} → Gateway | **tcp `1-442,444-65535`** (all tcp except 443), logged | The trusted-VLAN half: exactly `:443` stays open (console UI from admin devices, the CI drift plan, the `router.esweiss.com` Traefik backend); all other tcp is blocked as the complement of 443, so a listener a future firmware opens is fenced without a rule edit. DHCP/NTP are udp, homelab resolves via `.150`/`.160`, and `:22` has no listener |
 
 DoH on `:443` is **not** covered: it is indistinguishable from ordinary HTTPS at
 this layer, and closing it needs the IDS/IPS or a blocklist (§ Day-2).
@@ -281,21 +290,31 @@ Accepted, with eyes open:
 - **No cross-VLAN SSDP/GDM/DLNA.** UniFi reflects mDNS but has no SSDP
   reflector, and multicast does not route, so anything discovered that way is
   configured by address instead (§ Codified vs manual).
+- **Homelab workloads keep `:443` to the console** (rows 24-25 close everything
+  else). The CI drift plan and the `router.esweiss.com` backend need it, and an
+  allow-except-admin split would reintroduce the ordering dependency above. The
+  control that matters is the API key's scope — it is minted under the local
+  `terraform` admin, not the Owner — plus the console's own login; accepted as
+  such (audit ADM-07).
 
-The resolver, Plex and Home Assistant addresses and the two management-device
-addresses are `locals` in the root (`dns_ips`, `plex_ip`, `ha_ip`,
-`mgmt_device_ips`) — the single edit point Phase 2 used, and the one any
-later homelab re-address uses.
+The resolver, Plex, Home Assistant and Traefik-VIP addresses and the two
+management-device addresses are `locals` in the root (`dns_ips`, `plex_ip`,
+`ha_ip`, `traefik_public_vip`, `mgmt_device_ips`) — the single edit point
+Phase 2 used, and the one any later homelab re-address uses.
 
 **Policy ordering is not codifiable.** `unifi_firewall_policy.index` is
 read-only and new policies append to the end of their zone-pair (upstream
-#407). The set above is order-independent by construction: the `ALLOW`s are
-allowances against a default deny rather than entries in a first-match list,
-and each `BLOCK` targets a zone-pair (→ Gateway, → External) that no `ALLOW`
-here touches (the two Gateway groups are disjoint by port: `22,80,443` tcp
-against `53,853` tcp/udp). If that ever stops being true — an `ALLOW` and a
-`BLOCK` on the same zone-pair — the ordering becomes a UI step and this page
-must record it.
+#407). The set above is order-independent by construction, on three grounds:
+the `ALLOW`s are allowances against a default deny rather than entries in a
+first-match list (custom policies always precede the predefined defaults, so
+row 12's allow beats the intra-zone Block All regardless of its index); where
+`BLOCK`s share a zone-pair they are all blocks, so their relative order is
+irrelevant; and the one zone-pair carrying both an allow and blocks
+(home → Gateway: the reflector's auto-generated mDNS allow, rows 20-23's DNS
+block and row 24's tcp block) is disjoint by port and protocol (udp `5353`
+against `53,853` and a tcp port list). If that ever stops being true — a
+custom `ALLOW` and `BLOCK` overlapping on the same zone-pair — the ordering
+becomes a UI step and this page must record it.
 
 ### Wireless
 
@@ -1191,9 +1210,11 @@ pin bump and the apply that lands the mgmt reservations.
 | 4 | Guest containment | From guest: `curl -m5 https://git.esweiss.com`, ping another guest client | Both **fail** (DNS resolves, everything else denied; L2 isolation blocks the peer) |
 | 5 | IoT containment | From an IoT device: reach anything on Home or `:443` on homelab | **Fails**; only `:53`, Plex `:32400` and HA `:8123` succeed |
 | 6 | Work containment | Same from Work | Only `:53` succeeds |
-| 7 | Gateway console fenced | From guest/iot/work: `curl -m5 -k https://<that VLAN's .1>` and `ssh <that VLAN's .1>` | Both **fail** (BLOCK rows 12-14). `ping <that VLAN's .1>` still works — icmp is deliberately left up |
-| 8 | External DNS fenced | From guest/iot/work: `dig @8.8.8.8 example.com`, `dig +tls @8.8.8.8 example.com` | Both **fail/time out** (BLOCK rows 15-17); `dig @10.0.10.150` still answers |
-| 8b | Gateway resolver fenced | From guest/iot/work: `dig @<that VLAN's .1> example.com` | **Fails/times out** (BLOCK rows 18-20). Confirm on the bench *before* cutover that the gateway answers this at all with the BLOCKs removed — the rows exist because a UniFi OS gateway normally does, and a bench `dig` is how that is established rather than assumed |
+| 7 | Gateway console fenced | From guest/iot/work: `curl -m5 -k https://<that VLAN's .1>` and `ssh <that VLAN's .1>` | Both **fail** (BLOCK rows 13-15). `ping <that VLAN's .1>` still works — icmp is deliberately left up |
+| 7b | Gateway extras fenced on trusted VLANs | From home and a homelab host: `curl -m5 http://10.0.10.1/` and `nc -z -w3 10.0.10.1 8080` | Both **fail** (BLOCK rows 24-25) while `curl -k https://10.0.10.1` still answers — `:443` is the one listener the trusted VLANs keep |
+| 8 | External DNS fenced | From guest/iot/work/home: `dig @8.8.8.8 example.com`, `dig +tls @8.8.8.8 example.com` | Both **fail/time out** (BLOCK rows 16-19); `dig @10.0.10.150` still answers |
+| 8b | Gateway resolver fenced | From guest/iot/work/home: `dig @<that VLAN's .1> example.com` | **Fails/times out** (BLOCK rows 20-23). Confirm on the bench *before* cutover that the gateway answers this at all with the BLOCKs removed — the rows exist because a UniFi OS gateway normally does, and a bench `dig` is how that is established rather than assumed |
+| 8c | Hairpin from homelab | From a homelab host: `curl -sk -m5 --resolve photos.ericsweiss.com:443:<WAN IP> https://photos.ericsweiss.com/` | Records the ALLOW-row-12 experiment: **200/302** proves the intra-zone block was the only obstacle; a timeout proves same-subnet hairpin SNAT is the residual blocker and the AdGuard rewrites remain the complete mechanism. Either result gets written back into § Zone policies |
 | 9a | Casting — the half that works | Cast a YouTube or Plex stream from a Home phone to an IoT TV/speaker | Device is discovered (site-level mDNS reflection) and plays |
 | 9b | Casting — the half that does not | Screen-mirror / cast a local photo from the same phone; AirPlay to two speakers at once | **Fails, by design** — the receiver would have to open a connection back to Home, and AirPlay 2 needs PTP multicast that does not route |
 | 10 | Plex local stream | Play from a TV — the Vizio pair and the Amazon units are reserved onto IoT, though the wired one only lands there if MAC-based assignment takes (§ DHCP reservations); check the client list for which VLAN it is actually on, then test | Direct play from `10.0.10.152:32400`, no transcode-over-WAN, from **either** VLAN — `iot-to-homelab-plex` and `home → homelab` both allow it. If it transcodes, check Plex's LAN Networks setting (cutover step 11) before suspecting the network |

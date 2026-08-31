@@ -20,7 +20,7 @@
 # segmentation: a bad apply is not a failed pipeline, it is a LAN you cannot
 # reach the controller from.
 module "network" {
-  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/unifi-network?ref=v0.13.2"
+  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/unifi-network?ref=v0.14.0"
 
   networks = local.networks
   zones    = local.zones
@@ -40,13 +40,22 @@ module "network" {
 
   # WLANs live here rather than in networks.tf because each one names its
   # passphrase variable, and the module's whole `wlans` input is sensitive.
-  # All four are WPA-PSK on 2.4 + 5 GHz — 6 GHz is not offered by the provider
-  # (upstream #406), so the U7 Pro XGS's 6 GHz radio is a UI step (docs/46).
+  # All four are WPA-PSK. `bands` sets each SSID's radio set explicitly
+  # (lib v0.14.0). The two WPA3 SSIDs carry 6 GHz; Panopticon (WPA2, no 6 GHz
+  # radio) and guest are ["2g","5g"]. All four are pinned rather than left
+  # null: this provider's `wlan_bands` is Optional+Computed, but a null on an
+  # EXISTING resource does not release ownership cleanly — the plan reconciles
+  # to the provider's 2g/5g default and strips a console-set 6g. Pinning the
+  # exact live set is what actually holds it: config equals the console value,
+  # so no write is issued and upstream #406 (which fails "6g" only at CREATE)
+  # never triggers. If a future apply must CREATE one of these WLANs from
+  # scratch while #406 stands, drop 6g from that create, apply, then re-add it.
   wlans = {
     home = {
       ssid       = "TheRevengers"
       network    = "home"
       passphrase = var.wlan_passphrase_home
+      bands      = ["2g", "5g", "6g"]
     }
     # Plain WPA2 with PMF disabled, and no steering off 2.4 GHz: ESP32/Kasa
     # class gear either cannot associate to a WPA3-transition BSS or drops off
@@ -58,6 +67,7 @@ module "network" {
       passphrase           = var.wlan_passphrase_iot
       wpa3                 = false
       allow_2ghz_high_perf = true
+      bands                = ["2g", "5g"]
     }
     # Guests reach the internet and the resolvers, never each other: the zone
     # policies stop the routed paths, `l2_isolation` stops the bridged one.
@@ -66,11 +76,13 @@ module "network" {
       network      = "guest"
       passphrase   = var.wlan_passphrase_guest
       l2_isolation = true
+      bands        = ["2g", "5g"]
     }
     work = {
       ssid       = "DunderMiffLAN"
       network    = "work"
       passphrase = var.wlan_passphrase_work
+      bands      = ["2g", "5g", "6g"]
     }
   }
 
@@ -85,7 +97,13 @@ module "network" {
   # `ips_mode` stays detection-only through the burn-in; moving it to "ips"
   # (inline blocking) is a deliberate post-burn-in step in docs/46.
   site_settings = {
-    auto_upgrade         = false
+    # DELIBERATELY TRUE (operator ruling, 2026-08-30): the switch and AP take
+    # firmware nightly at 1 AM — hands-off patching for the Wi-Fi gear was
+    # chosen over the repo's pin-everything default when the audit surfaced
+    # the drift. This covers DEVICE firmware only; console/application
+    # updates are a separate console-owned surface (docs/46 § Codified vs
+    # manual).
+    auto_upgrade         = true
     network_optimization = false
     upnp                 = false
     ips_mode             = "ids"
