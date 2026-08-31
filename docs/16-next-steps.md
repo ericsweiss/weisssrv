@@ -34,8 +34,9 @@ recorded in [docs/46](46-unifi-network.md) § Cutover as executed.
 Behind it, now largely closed (detail and current status in § UniFi network
 follow-ups below):
 
-- The switch/AP blackbox probes are green — reservations applied at the
-  v0.13.2 unfreeze apply (converged 2026-08-23).
+- The switch/AP blackbox probes are green — the `.2`/`.3` reservations were
+  applied at the v0.13.2 unfreeze apply and both devices answered there once
+  they renewed onto them (resolved 2026-08-30, docs/46 § Post-cutover checklist).
 - Connection A is finished — switch port 7 is native Home with VLAN 10 (and 30)
   tagged, DONE 2026-08-23/30.
 - Phase 2 — renumbering the homelab from `192.168.0.0/24` to `10.0.10.0/24` —
