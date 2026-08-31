@@ -176,7 +176,7 @@ debian_version: "13"
 # check-versions.py as category "manual": `pveam update && pveam available
 # --section system | grep debian-13-standard`.
 proxmox_lxc_template: "debian-13-standard_13.6-1_amd64.tar.zst"
-k3s_version: "v1.36.3+k3s1"
+k3s_version: "v1.36.4+k3s1"
 # sha256 of install.sh for the k3s_version tag: get_url verifies the root-run
 # installer before exec (install.sh's own check covers the k3s binary, not the
 # script). Recompute in lockstep with every k3s_version bump:
