@@ -221,6 +221,23 @@ now serves `admin_ts`/`admin_lan` break-glass only.
 Both remaining hops are acceptable residual LAN-trust hops; the user-facing edge
 is HTTPS throughout. The posture table is docs/06 § In Transit.
 
+### UniFi `homeassistant` admin is a full-privilege, unvaulted credential
+
+The Home Assistant UniFi Network integration authenticates as a local
+**Super Admin** (`homeassistant`) that is deliberately **not** in the Homelab
+vault — the credential lives only in HA's own config store. This is a genuine
+exposure, recorded here rather than minimized: it is full controller admin with
+no 2FA, so a compromise of Home Assistant is a compromise of the whole UniFi
+network — the blast radius is **not** bounded. The operator accepted it
+knowingly (2026-08-30), judging the rotation burden not worth it for this
+account. Standing mitigations: HA sits behind Authentik SSO with no external
+ingress, and the account can be disabled on the console in seconds if HA is ever
+suspected. The obvious hardening if the risk appetite changes — reduce it to a
+scoped role (the integration needs write only for client-block / PoE /
+WLAN-toggle) and vault it for recovery — is left as a revisit, not a task.
+Listed so the recurring audit re-raise resolves to a decision, not a gap
+([docs/46](46-unifi-network.md) § Codified vs manual).
+
 ### Real client IP end-to-end (one coordinated change, not a Traefik edit)
 
 Every downstream consumer — Authentik's event log, the Traefik access log, the
