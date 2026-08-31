@@ -84,7 +84,7 @@ re-run the consuming deploy (`task <area>:deploy`) for `op run` consumers, or
 | Tailscale OAuth | `client id`, `credential` (scopes `acl` + `dns`, write) | `terraform/tailscale` — tailnet ACL policy and the `esweiss.com` split-DNS nameservers |
 | Tailscale Operator OAuth | `client-id`, `client-secret` | ESO → `operator-oauth` for the Tailscale Kubernetes operator — see [detail](#tailscale-operator-oauth) |
 | UniFi Controller | `url` (gateway base URL), `api-key` (Control Plane integration key), `username` + `password` (local-only admin) | `terraform/unifi` via Taskfile and the `unifi-drift-plan` CI job — see [detail](#unifi-controller) |
-| WiFi TheRevengers, WiFi 3601-IoT, WiFi kugel-tikka-masala, WiFi 3601-Work | `password` (WPA-PSK, 8-63 chars) | `terraform/unifi` — one item per SSID, read as `TF_VAR_wlan_passphrase_*` — see [detail](#wifi-ssid-pre-shared-keys) |
+| WiFi TheRevengers, WiFi Panopticon, WiFi kugel-tikka-masala, WiFi DunderMiffLAN | `password` (WPA-PSK, 8-63 chars) | `terraform/unifi` — one item per SSID, read as `TF_VAR_wlan_passphrase_*` — see [detail](#wifi-ssid-pre-shared-keys) |
 | DNS-01 SSH Key | private + public key | cert distribution to the DNS LXCs |
 | Plex Custom Certificate | password | `plex-cert-reload.sh` PKCS#12 passphrase — see [detail](#plex-custom-certificate) |
 
@@ -212,8 +212,13 @@ The UCG-Fiber's own credentials. `api-key` is what Terraform authenticates with
 — a Control Plane → Integrations key belonging to a **local-access-only** admin
 with no 2FA, because the provider cannot satisfy an MFA prompt. `username` /
 `password` are that admin's console login: the break-glass path when the API
-key is revoked or the API is unreachable, never read by Terraform. `url` is the
-**production** gateway address (`https://10.0.10.1`); while the gateway is on
+key is revoked or the API is unreachable, never read by Terraform. Two other
+console admins exist and are **not** in this vault by design: the ui.com
+**Owner** (`ericsweiss1@gmail.com`, an SSO account whose credentials and MFA
+live at account.ui.com, not here), and a local **`homeassistant`** Super Admin
+kept deliberately for a few Home Assistant write actions and left unvaulted to
+avoid a rotation burden it does not earn. Neither is read by any tooling. `url`
+is the **production** gateway address (`https://10.0.10.1`); while the gateway is on
 a bench, override `TF_VAR_unifi_api_url` per invocation instead of editing the
 item (docs/46).
 
@@ -236,8 +241,8 @@ red.
 
 #### WiFi SSID pre-shared keys
 
-One item per SSID (`WiFi TheRevengers`, `WiFi 3601-IoT`,
-`WiFi kugel-tikka-masala`, `WiFi 3601-Work`), each holding just `password` —
+One item per SSID (`WiFi TheRevengers`, `WiFi Panopticon`,
+`WiFi kugel-tikka-masala`, `WiFi DunderMiffLAN`), each holding just `password` —
 the WPA-PSK `terraform/unifi` pushes to that WLAN. Separate items rather than
 one multi-field item because each is a separate `TF_VAR_wlan_passphrase_*`
 reference in the Taskfile anchor and the `unifi-drift-plan` job, and because

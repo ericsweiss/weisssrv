@@ -31,16 +31,18 @@ themselves: [docs/11-firewall.md](11-firewall.md) § Client scopes.
 zones and policies are live, and the deltas from the planned runbook are
 recorded in [docs/46](46-unifi-network.md) § Cutover as executed.
 
-Still open behind it:
+Behind it, now largely closed (detail and current status in § UniFi network
+follow-ups below):
 
-- The switch/AP blackbox probes stay red until the module pin reaches v0.13.1
-  and their reservations are applied (docs/46 § Post-cutover checklist).
-- **Connection A is not finished** — its port is native Homelab rather than
-  native Home with VLAN 10 tagged; see § UniFi network follow-ups below.
-- The Windows VM (.155, [docs/39](39-windows-vm.md)) still sits on the homelab
-  VLAN; moving it to Home is a follow-up, not a blocker.
+- The switch/AP blackbox probes are green — the `.2`/`.3` reservations were
+  applied at the v0.13.2 unfreeze apply and both devices answered there once
+  they renewed onto them (resolved 2026-08-30, docs/46 § Post-cutover checklist).
+- Connection A is finished — switch port 7 is native Home with VLAN 10 (and 30)
+  tagged, DONE 2026-08-23/30.
 - Phase 2 — renumbering the homelab from `192.168.0.0/24` to `10.0.10.0/24` —
-  ships as its own MR after Phase 1 validates (docs/46 § Phase 2).
+  DONE 2026-08-25/26 (!255).
+- Still open: the Windows VM (.155, [docs/39](39-windows-vm.md)) sits on the
+  homelab VLAN; moving it to Home is a follow-up, not a blocker.
 
 ### Network-fabric SPOF: second switch + corosync ring — deferred indefinitely
 
@@ -219,6 +221,23 @@ now serves `admin_ts`/`admin_lan` break-glass only.
 Both remaining hops are acceptable residual LAN-trust hops; the user-facing edge
 is HTTPS throughout. The posture table is docs/06 § In Transit.
 
+### UniFi `homeassistant` admin is a full-privilege, unvaulted credential
+
+The Home Assistant UniFi Network integration authenticates as a local
+**Super Admin** (`homeassistant`) that is deliberately **not** in the Homelab
+vault — the credential lives only in HA's own config store. This is a genuine
+exposure, recorded here rather than minimized: it is full controller admin with
+no 2FA, so a compromise of Home Assistant is a compromise of the whole UniFi
+network — the blast radius is **not** bounded. The operator accepted it
+knowingly (2026-08-30), judging the rotation burden not worth it for this
+account. Standing mitigations: HA sits behind Authentik SSO with no external
+ingress, and the account can be disabled on the console in seconds if HA is ever
+suspected. The obvious hardening if the risk appetite changes — reduce it to a
+scoped role (the integration needs write only for client-block / PoE /
+WLAN-toggle) and vault it for recovery — is left as a revisit, not a task.
+Listed so the recurring audit re-raise resolves to a decision, not a gap
+([docs/46](46-unifi-network.md) § Codified vs manual).
+
 ### Real client IP end-to-end (one coordinated change, not a Traefik edit)
 
 Every downstream consumer — Authentik's event log, the Traefik access log, the
@@ -389,15 +408,35 @@ Design, runbook and the codified-vs-manual contract:
 - [x] ~~**Phase 2 — renumber the homelab**~~ DONE 2026-08-25/26 (!255 merged
   after the supervised window; `10.0.10.0/24` live everywhere, old subnet off
   the wire, first fully-green post-renumber main pipeline 2026-08-26).
-- [ ] **Enable IPS after burn-in.** Ships as `ips_mode = "ids"`; flip to
-  `"ips"` in `terraform/unifi/` after a week of reading detections. Upstream
-  #381 means alert suppressions stay a UI concern.
-- [ ] **Provider bump when the blockers clear.** Three things are UI-only at
-  `ubiquiti-community/unifi` 0.55.0 and worth re-testing on each release:
-  6 GHz on the WLANs (#406 — creation fails with `6g` in the band set),
+- [ ] **Decide IPS: detect vs inline block.** Ships as `ips_mode = "ids"`. The
+  flip to inline `"ips"` is a **console** action (Settings → CyberSecure), not a
+  Terraform edit — the module ignores the `ips` block, so editing `ips_mode` is a
+  no-op (docs/46 § Site settings). But when you do flip it in the console,
+  **also change the codified `ips_mode` to `"ips"` in the same MR** — the
+  `ignore_changes` suppresses the plan diff, so it is harmless now, and it keeps
+  the create-time intent aligned with reality: otherwise the day the ignore
+  comes off (below) or the resource is recreated, the plan silently restores
+  `"ids"` and quietly disables inline blocking. Do not read the burn-in as a passed "clean
+  week": it produced **zero** detections, on a set of 34 of ~53 categories with
+  no current-events category and `memory_optimized` on, and the Suricata engine
+  is two majors behind (6, with an upgrade to 8 pending). Gate the flip on the
+  engine upgrade landing, then re-baseline a week on Suricata 8 with the category
+  set reviewed. Close the notification gap first (below) — an inline false
+  positive with site alerting off drops packets across six VLANs silently.
+  Upstream #381 means alert suppressions stay a UI concern. The console is now on
+  UniFi OS 10.6.101 (upgraded from 10.5.67 on 2026-08-30); the module's
+  `ignore_changes = [ips]` workaround was written against 10.5, so the next
+  supervised apply is the moment to re-check whether the `ips` write still flaps
+  on 10.6 — if it no longer does, the ignore can eventually come off and the
+  console-vs-Terraform split resolves itself. (No scheduled WAN speedtest, by
+  choice — it saturates the WAN and blackbox probes already cover reachability.)
+- [ ] **Provider bump when the blockers clear.** Two things stay UI-only at
+  `ubiquiti-community/unifi` 0.55.0 and are worth re-testing on each release:
   switch port/native-VLAN management (#438/#430/#431 make
-  `unifi_device.port_override` unsafe), and firewall-policy ordering (#407).
-  `unifi_client` in-place updates (#428) are the day-to-day annoyance.
+  `unifi_device.port_override` unsafe) and firewall-policy ordering (#407).
+  `unifi_client` in-place updates (#428) are the day-to-day annoyance. 6 GHz is
+  no longer on this list — it is codified per-SSID via `bands` (lib v0.14.0);
+  #406 now bites only a from-scratch WLAN CREATE (drop `6g`, apply, re-add).
 - [ ] **A real identity boundary for admin devices.** The `10.0.20.8/29`
   admin block is a DHCP-reservation convention on a shared VLAN — a Home
   device that statically claims an address in it inherits the block's L3
@@ -444,6 +483,102 @@ Design, runbook and the codified-vs-manual contract:
   publicly: a blackbox module pinned to a public resolver, or a check that
   compares the record's Cloudflare content against the current WAN IP. The
   wrong fix is dropping a rewrite.
+
+Opened by the 2026-08-30/31 UniFi configuration audit (decisions, not
+implementation tasks — the terraform remediation MR !270 already merged and the
+drift plan is clean):
+
+- [ ] **Offsite console backup + a real cadence.** The `.unf` lives only on the
+  console's own storage and dies with it, and it carries exactly the
+  console-owned set Terraform does not (the switch port map incl. port-7
+  tagging, mDNS scope, IPS state, 6 GHz radios, adoption, the three admin
+  accounts). The two API values even disagree on whether auto-backup is on
+  (`sysinfo.autobackup: false` vs `super_mgmt.autobackup_enabled: true`, a
+  monthly cron) — read Control Plane → Backups to settle it. Decide: set it
+  daily, then pull the newest `.unf` onto pve-nas-01 so the nightly restic →
+  Backblaze B2 job (docs/42) carries it under the same GFS retention and
+  client-side encryption. This matters more than a normal config backup — the
+  UniFi layer is the one whose loss blocks reaching everything else during a
+  recovery (docs/17 assumes the network is up).
+- [ ] **Verify and record the Owner-account MFA.** The console's entire MFA
+  posture reduces to whatever 2FA the single ui.com Owner
+  (`ericsweiss1@gmail.com`) carries at account.ui.com — the `terraform` and
+  `homeassistant` accounts are local-only and cannot have 2FA. With Remote
+  Access on, losing that second factor is a lockout with no second admin to
+  recover through. Confirm 2FA is on with a non-SMS factor (TOTP or hardware
+  key) and that the recovery codes are in the Homelab vault, then record it in
+  docs/46 § Bench pre-provisioning. Console-only — no API read can confirm it.
+- [ ] **Wire console events into the homelab Alertmanager.** Site alerting
+  (`mgmt.alert_enabled`) is off, so device-down / WAN-failover / IDS events reach
+  only ui.com cloud email/push; the repo's blackbox probes only detect a dead
+  box. Ship gateway syslog to Loki (making console events Grafana-queryable and
+  Alertmanager-alertable) and/or enable site alerts, keeping cloud email as the
+  out-of-band fallback. This is a **prerequisite** for flipping IPS inline
+  (above) and for noticing a WAN2 failover onto the pre-bound-but-empty SFP+ 2.
+  Turning on `report_wan_event` for both WANs is the cheap first half.
+- [ ] **Name the ALLOW_ALL default-security-posture decision.** The site knob
+  `global_network.default_security_posture` is `ALLOW_ALL`; the deny-by-default
+  this design relies on comes entirely from Terraform putting each VLAN in a
+  custom zone, so a network *created in the UI* lands in the built-in `Internal`
+  zone wide open. Either flip the posture to Block All and add the three
+  `Internal →` ALLOW policies the mgmt VLAN needs (its internet + adoption path
+  inverts otherwise), or document ALLOW_ALL as deliberate with the "adding a
+  VLAN is not a UI-safe op" trap it implies (docs/46 § Codified vs manual).
+  Check whether `unifi_setting` at 0.55.0 can even express it.
+- [ ] **DHCP guarding — enable per-network or accept snooping-only.** Per-network
+  guarding (`dhcpguard_enabled`) is off on all six networks; switch-side DHCP
+  snooping is the only rogue-DHCP protection in place. Decide whether to enable
+  per-network guarding with the gateway as the sole allowed server (a UI change —
+  the provider drops `dhcp_guarding.servers` on write, #419), or record
+  snooping-only as sufficient (docs/46 § Codified vs manual).
+- [ ] **Gateway Local DNS records for the GitLab family (optional second layer).**
+  `static-dns` is empty. Adding git / registry.git / pages.git .ericsweiss.com →
+  `10.0.10.101` on the gateway makes a fallback to the gateway resolver safe,
+  backing up the AdGuard split-horizon rewrites that fixed the hairpin outages.
+  Console change (no provider resource).
+- [ ] **Re-verify the bond invariant against the new switch, and disambiguate the
+  standby-member flapping.** The docs/34 `all_slaves_active 0` invariant was last
+  verified against the *old* switch; the USW Pro XG 8 is a new link partner and
+  the three standby bond members (ports 1/3/5, the opt nodes' `nic0`) show 9
+  link-down events each over ~8 days while their partners show zero. Run
+  `cat /sys/class/net/<bond>/bonding/all_slaves_active` (expect 0) on the three
+  bonded hosts plus `ethtool -S nic0` / `journalctl -k` for e1000e
+  carrier/hang events over the same window — matching counts mean the e1000e
+  story is continuing on the standby leg; clean hosts mean it is bonding-driver
+  noise and the row can close (docs/46 § Post-cutover checklist).
+- [ ] **Tighten the pure access ports to native-VLAN-only (segmentation
+  hardening).** UCG 1-3 and USW 1-6 carry the controller's default **All** port
+  profile (native VLAN + forward every tagged VLAN), so a compromised device on
+  one could VLAN-hop by emitting tagged frames past the zone policies (audit
+  PORT-01/ZBF-06). On the host ports (UCG 2-3, USW 1-6) it is bounded — Proxmox
+  hosts and the NAS, already fully trusted on VLAN 10 — but **UCG 1 is the Hue
+  bridge, an untrusted IoT appliance**, which is the real motivation; include it.
+  Defence-in-depth wants a native-only profile on every genuine access port.
+  Console change, not codified: `unifi_device.port_override`
+  is unsafe at provider 0.55.0 (#438/#430/#431). Leave the real trunks alone —
+  USW 7 (ConnA, must keep native Home + tagged 10/30 for pve-nas-01's `nic1.10`
+  and the bedroom Pi's `eth0.30`), USW 8 (AP) and USW 10 (SFP+ uplink to the
+  UCG, whose port 6 is the DAC to the switch); USW 5-6 are pve-opt-03 access
+  ports, not trunks. Do it after the offsite console backup above exists, since
+  a bad port override is exactly what that backup recovers from (docs/46
+  § Physical port map).
+- [ ] **Disable IPv6 on pve-nas-01's `nic1` carrier (closes a link-local Home
+  bypass).** `nic1` is address-less on port 7 (native Home VLAN 20), but with
+  IPv6 up it holds an `fe80::` link-local adjacency to the Home VLAN that no
+  zone sees. It is bidirectional: the NAS→Home direction is bounded by nothing
+  (the audit source-scoped `homelab → home` to HA/Plex, but link-local skips the
+  gateway), so it is a narrow live bypass of that tightening, not just a future
+  risk (docs/46 § Cutover as executed, step 7 residual). Set
+  `net.ipv6.conf.nic1.disable_ipv6=1` through the `nic_tuning` sysctl mechanism
+  (a host_var on pve-nas-01, or a lib knob if it recurs), deploy, and verify
+  `ip -6 addr show nic1` is empty. Consistent with the IPv4-only posture; touch
+  only the physical `nic1`, not `nic1.10`/`vmbr0`. Low urgency (link-local
+  reaches only L2-adjacent nodes and nothing listens on it), tracked so it is
+  not lost.
+- [ ] **Clear the pre-renumber `config_network` on the switch and AP (optional).**
+  Both still record their old `192.168.0.x` in the Configure-IP field; inert
+  while DHCP, but the value either would take if flipped to static — on a subnet
+  the gateway no longer routes. Clear it in the console.
 
 ### Nextcloud follow-ups (not blockers)
 

@@ -483,21 +483,12 @@ locals {
   # `terraform apply -replace='module.network.unifi_client.this["<key>"]'`; the
   # device is untouched, only the controller-side object is recreated.
   #
-  # APPLIES ON THIS ROOT WERE FROZEN while the module sat at v0.13.0: that
-  # version left `setting_preference` at the provider default `auto`, and every
-  # write to a network then made the controller reset the manual DHCP fields
-  # (dns_enabled, domain_name) it was being told to keep. The v0.13.1 pin in
-  # main.tf fixes that; the first supervised unfreeze apply is in README.md.
-  #
-  # The 2026-08-22/23 additions touch fourteen resources at that first apply:
-  # thirteen creates, plus one replacement. Carrying the creates meanwhile costs
-  # nothing, because a reservation the controller has not been told about is
-  # simply a pool lease. **`eric-bedroom-hyperion` is the replacement and needs
-  # a flag**: it is an existing client MOVED from
-  # home/.20.211 to iot/.30.211, so #428 applies and the unfreeze apply must
-  # carry
-  # `-replace='module.network.unifi_client.this["eric-bedroom-hyperion"]'`.
-  # Everything else added is a create. docs/46 § Cutover as executed.
+  # (Historical: this root was frozen while the module sat at v0.13.0, whose
+  # `setting_preference = "auto"` default reset the manual DHCP fields
+  # (dns_enabled, domain_name) on every network write. Resolved — the finishing
+  # supervised apply ran 2026-08-30 and the plan is no-changes (docs/46
+  # § Post-cutover checklist). The one move that needed the `-replace` above,
+  # `eric-bedroom-hyperion` from home/.20.211 to iot/.30.211, is done.)
   #
   # Homelab hosts and guests are statically addressed by Ansible and are
   # deliberately absent — a reservation for an address the host also configures
