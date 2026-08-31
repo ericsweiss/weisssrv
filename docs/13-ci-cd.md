@@ -714,7 +714,7 @@ Items" for the complete list of items referenced by ExternalSecrets in the clust
 | Cloudflare Terraform Token | `credential`, `username` | Terraform `terraform-plan` / `deploy-terraform` |
 | Tailscale OAuth | `client id`, `credential` | `tailscale-drift-plan` (read-only ACL drift plan) |
 | UniFi Controller | `url`, `api-key` | `unifi-drift-plan` (read-only network drift plan) |
-| WiFi TheRevengers, WiFi 3601-IoT, WiFi kugel-tikka-masala, WiFi 3601-Work | `password` | `unifi-drift-plan` — the four SSID pre-shared keys the plan needs to compare WLANs |
+| WiFi TheRevengers, WiFi Panopticon, WiFi kugel-tikka-masala, WiFi DunderMiffLAN | `password` | `unifi-drift-plan` — the four SSID pre-shared keys the plan needs to compare WLANs |
 | GitLab API Token | `credential` | `deploy-gitlab` (`GITLAB_ADMIN_API_TOKEN`) and `task gitlab:deploy` — an **instance-admin** PAT |
 | GitHub Token | `credential` | `version-bump-bot` (via `task maintenance:update-all-versions`, which runs its checker under `op run`) |
 | GitLab Version Bump Bot Token | `credential` | `version-bump-bot` — the item of record for the `VERSION_BUMP_BOT_TOKEN` CI variable, which is what the job actually reads |
