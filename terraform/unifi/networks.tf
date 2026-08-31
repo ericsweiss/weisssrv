@@ -20,6 +20,9 @@ locals {
   # it: cast/TTS and webhook callbacks are device-initiated, so the outbound
   # `homelab-to-iot` allow does not cover them.
   ha_ip = "10.0.10.154"
+  # Traefik's public MetalLB VIP — the target of the 80/443 port forwards in
+  # main.tf and of the `homelab-to-homelab-hairpin` allow below.
+  traefik_public_vip = "10.0.10.100"
 
   # The two adopted UniFi devices on the management VLAN, single-sourced because
   # three things name them: the ICMP policy pair below, the `usw-pro-xg-8` and
@@ -173,17 +176,25 @@ locals {
       destination = { zone = "iot" }
     },
     # Home Assistant (.154) is the IoT controller: it polls and pushes to every
-    # device on VLAN 30, over a different protocol per integration.
+    # device on VLAN 30, over a different protocol per integration. SOURCE-
+    # SCOPED to HA alone (2026-08 audit ZBF-04): a zone-wide allow is inherited
+    # by every k3s pod — they SNAT to node addresses in VLAN 10 — handing the
+    # internet-facing workloads full reach into a VLAN whose device APIs are
+    # unauthenticated by construction (Kasa :9999, WLED :80, Hyperion :19444).
+    # A repo grep plus the live Uptime Kuma monitor list confirm HA is the only
+    # IoT consumer on VLAN 10.
     {
       name        = "homelab-to-iot"
-      source      = { zone = "homelab" }
+      source      = { zone = "homelab", ips = [local.ha_ip] }
       destination = { zone = "iot" }
     },
-    # Plex -> HDHomeRun (10.0.20.200), Home Assistant -> the TVs, and admin
-    # reach from a homelab jump host.
+    # Plex -> HDHomeRun (10.0.20.200) and Home Assistant -> the TVs. Source-
+    # scoped to those two for the same reason as `homelab-to-iot` above; ad-hoc
+    # diagnostics from other homelab hosts ride ICMP or get a temporary console
+    # rule, not a standing zone-wide allowance.
     {
       name        = "homelab-to-home"
-      source      = { zone = "homelab" }
+      source      = { zone = "homelab", ips = [local.ha_ip, local.plex_ip] }
       destination = { zone = "home" }
     },
     # IoT gets the homelab resolvers and nothing else; `ips` pins the two
@@ -253,6 +264,24 @@ locals {
       source               = { zone = "internal", ips = local.mgmt_device_ips }
       destination          = { zone = "homelab" }
     },
+    # Hairpin NAT for grey-cloud names (2026-08 audit ZBF-01). A homelab source
+    # dialing the WAN address is DNAT'd to the Traefik VIP, so the flow lands
+    # back in this zone and the `homelab -> homelab` matrix cell — which is the
+    # predefined Block All. From every OTHER VLAN hairpin works (their cells
+    # carry allows); from homelab it timed out, which is what took the
+    # in-cluster probes of photos/ide.git down post-renumber (docs/08
+    # § Cross-domain rewrites is the primary fix; this closes the residual
+    # class). Intra-VLAN traffic never traverses the gateway, so the ONLY flows
+    # this can match are hairpin ones. If homelab-sourced hairpin still fails
+    # with this in place, the blocker is same-subnet SNAT — a UniFi limitation
+    # with no knob — and the rewrite path is the complete answer; record the
+    # observed result in docs/46 either way.
+    {
+      name        = "homelab-to-homelab-hairpin"
+      protocol    = "tcp"
+      source      = { zone = "homelab" }
+      destination = { zone = "homelab", ips = [local.traefik_public_vip], port = "80,443" }
+    },
 
     # ---- Gateway hardening ----
     #
@@ -262,17 +291,23 @@ locals {
     # EVERY VLAN's own gateway address. A guest with the WLAN PSK otherwise gets
     # an unthrottled login form at https://10.0.40.1.
     #
-    # tcp only, and only the console ports: DHCP is broadcast before the client
-    # has an address and is unaffected, and ICMP to the gateway stays up for
-    # troubleshooting. The gateway's own DNS forwarder is a separate default
-    # -allow path and is fenced by the `*-to-gateway-dns` BLOCKs below.
+    # tcp only, but ALL of tcp (2026-08 audit ZBF-02): a port scan found the
+    # controller answering on 8080 (device-inform), 8443/8843/8880 (embedded
+    # Tomcat/portal) and 6789 (throughput test) beyond the 22/80/443 the
+    # original list named — nothing on these three VLANs has a legitimate TCP
+    # need to its gateway address, so the rule stops naming ports and stops
+    # needing re-audit every time Ubiquiti opens another listener. DHCP is
+    # broadcast before the client has an address and is unaffected, NTP is udp,
+    # and ICMP to the gateway stays up for troubleshooting. The gateway's own
+    # DNS forwarder is a separate default-allow path and is fenced by the
+    # `*-to-gateway-dns` BLOCKs below (udp included there).
     {
       name        = "guest-to-gateway-mgmt"
       action      = "BLOCK"
       protocol    = "tcp"
       logging     = true
       source      = { zone = "guest" }
-      destination = { zone = "gateway", port = "22,80,443" }
+      destination = { zone = "gateway" }
     },
     {
       name        = "iot-to-gateway-mgmt"
@@ -280,7 +315,7 @@ locals {
       protocol    = "tcp"
       logging     = true
       source      = { zone = "iot" }
-      destination = { zone = "gateway", port = "22,80,443" }
+      destination = { zone = "gateway" }
     },
     {
       name        = "work-to-gateway-mgmt"
@@ -288,7 +323,33 @@ locals {
       protocol    = "tcp"
       logging     = true
       source      = { zone = "work" }
-      destination = { zone = "gateway", port = "22,80,443" }
+      destination = { zone = "gateway" }
+    },
+    # The trusted-VLAN half (2026-08 audit ZBF-07/GW-05/ADM-07): home and
+    # homelab keep :443 — the console UI from admin devices, the terraform/CI
+    # API path, and the `router.esweiss.com` IngressRoute backend
+    # (kubernetes/apps/vm-ingress/router.yaml, gateway :443 via the
+    # unifi-self-signed transport) all ride it — but lose the listeners nothing
+    # legitimate uses: 22 (no listener today; guards a future console-SSH
+    # toggle), 80 (the UI is https-only), and the inform/Tomcat/throughput set.
+    # The residual — any homelab pod can still reach the console login on 443 —
+    # is accepted and recorded in docs/46; the scoped API key (audit ADM-01) is
+    # the control that matters there.
+    {
+      name        = "home-to-gateway-extras"
+      action      = "BLOCK"
+      protocol    = "tcp"
+      logging     = true
+      source      = { zone = "home" }
+      destination = { zone = "gateway", port = "22,80,6789,8080,8443,8843,8880" }
+    },
+    {
+      name        = "homelab-to-gateway-extras"
+      action      = "BLOCK"
+      protocol    = "tcp"
+      logging     = true
+      source      = { zone = "homelab" }
+      destination = { zone = "gateway", port = "22,80,6789,8080,8443,8843,8880" }
     },
 
     # ---- DNS containment ----
@@ -303,7 +364,11 @@ locals {
     # UniFi OS gateway answers on EVERY VLAN's .1 and which forwards to the WAN
     # DNS servers (1.1.1.1/9.9.9.9 — docs/46 § Site settings), i.e. straight
     # past AdGuard. Both are blocked below; together they are what makes
-    # "the weisssrv resolvers or nothing" true on these three VLANs.
+    # "the weisssrv resolvers or nothing" true on all four client VLANs — home
+    # included since the 2026-08 audit (ZBF-03): it was silently exempt, and a
+    # Home device hard-coding 8.8.8.8 lost split-horizon without a trace. The
+    # diagnostic signature of these blocks is a device that resolves nothing:
+    # point it back at DHCP.
     #
     # Logged, like the gateway-console BLOCKs above: a device that has quietly
     # lost name resolution is diagnosed from the gateway's firewall log, and
@@ -337,6 +402,14 @@ locals {
       source      = { zone = "work" }
       destination = { zone = "external", port = "53,853" }
     },
+    {
+      name        = "home-to-external-dns"
+      action      = "BLOCK"
+      protocol    = "tcp_udp"
+      logging     = true
+      source      = { zone = "home" }
+      destination = { zone = "external", port = "53,853" }
+    },
     # The gateway half. tcp_udp rather than the tcp of the console BLOCKs
     # because DNS is udp first; DHCP (udp 67/68) is untouched, and nothing on
     # these VLANs may use the gateway as a resolver — DHCP hands them
@@ -363,6 +436,14 @@ locals {
       protocol    = "tcp_udp"
       logging     = true
       source      = { zone = "work" }
+      destination = { zone = "gateway", port = "53,853" }
+    },
+    {
+      name        = "home-to-gateway-dns"
+      action      = "BLOCK"
+      protocol    = "tcp_udp"
+      logging     = true
+      source      = { zone = "home" }
       destination = { zone = "gateway", port = "53,853" }
     },
   ]
@@ -588,14 +669,18 @@ locals {
     #
     # The amazon-* keys are the controller's reported hostnames, kept as-is
     # until the units are mapped to rooms (docs/16). vizio-cast-display is
-    # WIRED on the MoCA leg and carries the same caveat as
-    # eric-bedroom-hyperion above; the rest are wireless and move on their next
+    # WIRED on the MoCA leg behind the tag-unaware dumb-switch chain — the
+    # 2026-08 audit (PORT-06) caught the anticipated failure ACTUALLY happening:
+    # steered onto IoT it sat on APIPA for hours, because an override forces
+    # tagged delivery a TV cannot decode. It stays on native Home (address
+    # outside the .50-.199 pool) until the USW Flex Mini plan (docs/16) gives
+    # that drop a managed port; the rest are wireless and move on their next
     # association.
     vizio-cast-display = {
       mac      = "3c:9b:d6:7a:36:a3"
       name     = "vizio-cast-display"
-      fixed_ip = "10.0.30.218"
-      network  = "iot"
+      fixed_ip = "10.0.20.218"
+      network  = "home"
     }
     vizio-wifi = {
       mac      = "a0:6a:44:50:ee:95"

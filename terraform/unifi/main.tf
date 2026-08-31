@@ -85,7 +85,13 @@ module "network" {
   # `ips_mode` stays detection-only through the burn-in; moving it to "ips"
   # (inline blocking) is a deliberate post-burn-in step in docs/46.
   site_settings = {
-    auto_upgrade         = false
+    # DELIBERATELY TRUE (operator ruling, 2026-08-30): the switch and AP take
+    # firmware nightly at 1 AM — hands-off patching for the Wi-Fi gear was
+    # chosen over the repo's pin-everything default when the audit surfaced
+    # the drift. This covers DEVICE firmware only; console/application
+    # updates are a separate console-owned surface (docs/46 § Codified vs
+    # manual).
+    auto_upgrade         = true
     network_optimization = false
     upnp                 = false
     ips_mode             = "ids"
