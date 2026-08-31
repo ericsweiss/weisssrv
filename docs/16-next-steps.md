@@ -289,13 +289,29 @@ weekly and each page means a NAS reboot window. To close it:
 Design, runbook and the codified-vs-manual contract:
 [docs/46-unifi-network.md](46-unifi-network.md).
 
-- [ ] **Finish Connection A.** Cutover night left switch port 7 native Homelab
-  rather than native Home with VLAN 10 tagged, because flipping it before
-  pve-nas-01 has its tagged sub-interface strands the NAS. Both halves are one
-  supervised step ([docs/46](46-unifi-network.md) § Physical port map, and
-  § Cutover step 7 for the interfaces stanza). Until it is done, every device on
-  that run — wired TVs, the laptop dock, Vasim's desktop — sits on VLAN 10 with
-  full homelab reach.
+- [x] ~~**Finish Connection A.**~~ DONE 2026-08-23: switch port 7 is native
+  Home with VLAN 10 tagged (VLAN 30 added later for the bedroom Pi's
+  self-tagged wired-IoT leg), and pve-nas-01 rides its `nic1.10`
+  sub-interface ([docs/46](46-unifi-network.md) § Physical port map).
+- [ ] **USW Flex Mini for the Connection A drops (optional).** Two standing
+  limits of the dumb TP-Link chain behind port 7: (1) tag-unaware wired
+  devices cannot be steered to IoT — a per-MAC override forces *tagged*
+  delivery, which black-holes them (the 2026-08-29/30 bedroom-Hyperion
+  finding; that Pi now self-tags `eth0.30`, but the wired living-room TV
+  stays on Home for the same reason), and (2) the chain is invisible — on
+  2026-08-30 it dropped the NAS uplink for four hours (switch restarts during
+  hands-on work) with nothing observable but the carrier flap on the NAS. A
+  managed USW Flex Mini at the TV/bedroom drops would do the tagging per
+  port and show up in the controller. Optional: everything currently works
+  without it.
+- [ ] **Dock MAC-passthrough experiment (optional).** The HP dock on the
+  Connection A run presents its own MAC (`9c:7b:ef:9e:e6:46`) for whichever
+  laptop is docked, so per-laptop wired steering is impossible — the work
+  laptop docks onto Home today and uses `DunderMiffLAN` over Wi-Fi for its
+  own VLAN. If the work laptop's firmware supports MAC address pass-through
+  (common on business HP/Lenovo/Dell), the dock would present the laptop's
+  built-in MAC and a Work steering reservation becomes possible. Firmware
+  toggle + one dock-in to read the resulting MAC.
 - [ ] **Confirm and reserve the two `ESP_*` devices — almost certainly the two
   Tuya blinds drivers.** `ESP_70688C` (`48:3F:DA:70:68:8C`) and `ESP_719BF2`
   (`48:3F:DA:71:9B:F2`) are on Home with pool leases. The 2026-08-23 household
@@ -309,23 +325,25 @@ Design, runbook and the codified-vs-manual contract:
   `terraform/unifi/networks.tf` until confirmed: reserving a misidentified
   device onto a VLAN that denies it everything breaks something nobody can
   name.
-- [ ] **Home Assistant post-migration sweep (deliberately LAST).** HA reports
-  the SMTP, Hyperion, Tuya and VeSync integrations unhappy since the
-  segmentation — expected while devices settle onto their final VLANs, so
-  re-check each only after the finishing apply, the Connection A finale and
-  Phase 2 are all done (the cloud integrations — Tuya, VeSync — are likely
-  DNS/egress hiccups; Hyperion and SMTP are LAN-path). Separately and
-  unrelated to the network: HA wants the deprecated `http:` block removed from
-  `configuration.yaml` (imported to Settings → System → Network; breaks at
-  2027.2.0) — do it in the same sitting.
-- [ ] **Re-onboard the steered IoT devices onto `3601-IoT`**, at whatever pace
-  suits — one device at a time is fine. Per-MAC steering places them on IoT
-  today, but placement is not authorization: each of these devices still holds
-  the `TheRevengers` PSK and falls back to Home if its MAC ever stops matching
-  the reservation (randomization, spoofing after a compromise, replaced
-  hardware). Re-joining `3601-IoT` removes the Home credential; the reservation
-  keeps steering identically afterward, so nothing else changes
-  ([docs/46](46-unifi-network.md) § DHCP reservations).
+- [x] ~~**Home Assistant post-migration sweep (deliberately LAST).**~~ DONE
+  2026-08-30: Hyperion entries repointed to `10.0.30.210`/`.211`, the WLED
+  and cloud integrations settled with the device migration, the transient
+  Sonarr errors cleared with the network, and the deprecated `http:` block
+  is deleted — HTTP settings are UI-managed now ([docs/24](24-home-assistant-deployment.md)
+  § Configure HTTP Settings, including the resolved `.storage/http` trap).
+  HAOS network-storage/backup target repointed to `10.0.10.102` the same
+  night. The two Tuya `ESP_*` devices remain under their own entry above.
+- [ ] **Re-onboard the steered IoT devices onto `Panopticon`** (the IoT SSID
+  since the 2026-08-29 rename), at whatever pace suits — one device at a time
+  is fine. Largely done 2026-08-30: soundbar, Fire TV, live WLED bars,
+  Levoits, Echoes, scale and the bedroom TV all joined. Per-MAC steering
+  places the rest on IoT today, but placement is not authorization: a device
+  still holding the `TheRevengers` PSK falls back to Home if its MAC ever
+  stops matching the reservation (randomization, spoofing after a compromise,
+  replaced hardware). Re-joining `Panopticon` removes the Home credential; the
+  reservation keeps steering identically afterward, so nothing else changes
+  ([docs/46](46-unifi-network.md) § DHCP reservations). Remaining holders of
+  the Home PSK: the Kasa plugs and anything not yet re-joined by hand.
 - [ ] **Give the TVs and Echoes friendly names.** Seven IoT reservations carry
   the controller's reported hostname because nobody has mapped them to rooms
   yet: `amazon-01f20c070`, `amazon-5b51cd6d9`, `amazon-a70f51c2d`,
@@ -368,11 +386,9 @@ Design, runbook and the codified-vs-manual contract:
     (`inconsistent result after apply`), tainting them; the object is correct
     on the controller. Repro is timing-dependent — capture `TF_LOG=DEBUG` for
     the create and the immediately following read.
-- [ ] **Phase 2 — renumber the homelab** `192.168.0.0/24` → `10.0.10.0/24`
-  (last octet preserved everywhere). Raised as its own MR from
-  `feat/homelab-renumber` and held open deliberately: it merges only after
-  Phase 1 is validated in production, which now also means after the v0.13.1
-  pin bump and the Connection A finale above.
+- [x] ~~**Phase 2 — renumber the homelab**~~ DONE 2026-08-25/26 (!255 merged
+  after the supervised window; `10.0.10.0/24` live everywhere, old subnet off
+  the wire, first fully-green post-renumber main pipeline 2026-08-26).
 - [ ] **Enable IPS after burn-in.** Ships as `ips_mode = "ids"`; flip to
   `"ips"` in `terraform/unifi/` after a week of reading detections. Upstream
   #381 means alert suppressions stay a UI concern.

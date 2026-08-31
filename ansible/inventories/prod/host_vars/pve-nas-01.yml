@@ -236,12 +236,15 @@ nas_storage_backup_artifact_apps:
   - name: nextcloud
     pattern: "nextcloud-db-*.sql.gz"
   - name: home-assistant
-    # Automatic_backup_* only: a bare "*.tar" also matched the add-on tars HAOS
-    # writes here (34 MB, and they outlive a full rotation of the real 300+ MB
-    # backups), so a stopped full backup kept both the staleness and zero-byte
-    # arms green. Trade-off: a hand-triggered MANUAL full backup no longer
-    # counts, so the metric reads stale until the next automatic one lands.
-    pattern: "Automatic_backup_*.tar"
+    # [Aa]utomatic_backup_* only: a bare "*.tar" also matched the add-on tars
+    # HAOS writes here (34 MB, and they outlive a full rotation of the real
+    # 300+ MB backups), so a stopped full backup kept both the staleness and
+    # zero-byte arms green. The character class exists because HA 2026.8
+    # lowercased the default backup name (Automatic_backup_* ->
+    # automatic_backup_*); both spellings must count across the transition.
+    # Trade-off: a custom-named MANUAL backup still does not count — though
+    # "Backup now" on 2026.8+ runs the automatic routine and does.
+    pattern: "[Aa]utomatic_backup_*.tar"
   - name: pve-cluster
     pattern: "etc-pve-*.tar.gz"
 
@@ -848,8 +851,10 @@ restic_offsite_excludes:
   # match for the automatic ones (a leading `!` is a restic exception pattern;
   # the role renders these into one --exclude-file). The automatic backups
   # already carry the add-ons.
+  # The [Aa] class follows HA 2026.8's lowercased default backup name — without
+  # it the new-style automatic backups stayed excluded and never reached B2.
   - /mnt/restic-src/backups-apps/home-assistant/*.tar
-  - "!/mnt/restic-src/backups-apps/home-assistant/Automatic_backup_*.tar"
+  - "!/mnt/restic-src/backups-apps/home-assistant/[Aa]utomatic_backup_*.tar"
 
 # restic_offsite secrets (B2 offsite backup, docs/42), injected via `op run`
 # from the "B2 Archive Backup" item.

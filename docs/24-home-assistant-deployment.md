@@ -240,37 +240,35 @@ If restoring from a backup:
 
 ### Step 3: Configure HTTP Settings
 
-After initial setup, configure Home Assistant to work properly behind Traefik:
+Since HA 2026.8 the `http` integration is configured **entirely from the UI**
+(Settings > System > Network); a `http:` block in `configuration.yaml` is
+ignored, raises a repair, and stops working in 2027.2. Do not add one.
 
 1. Go to Settings > System > Network
 2. Under "Home Assistant URL", set:
    - **Internal URL**: `https://home.esweiss.com`
    - **External URL**: `https://home.ericsweiss.com`
+3. Under "HTTP server", set:
+   - **SSL certificate / key paths**: `/ssl/fullchain.pem` / `/ssl/privkey.pem`
+     (SSL profile Modern; TLS terminates on HAOS itself — the Traefik backend
+     connects with scheme https on port 8123)
+   - **Trust X-Forwarded-For**: on, with **Trusted proxies**:
+     - `10.0.10.0/24` — homelab VLAN (the Traefik/k3s node sources)
+     - `10.42.0.0/16` — k3s pod network
+     - `10.43.0.0/16` — k3s service network
+4. Save (saving restarts Home Assistant)
 
-3. Edit `/config/configuration.yaml` via File Editor add-on or SSH:
-
-```yaml
-# Add to configuration.yaml
-http:
-  use_x_forwarded_for: true
-  trusted_proxies:
-    - 10.0.10.0/24      # Local LAN (includes Traefik)
-    - 10.42.0.0/16        # k3s pod network
-    - 10.43.0.0/16        # k3s service network
-```
-
-4. Restart Home Assistant (Settings > System > Restart)
-
-> **`.storage/http` overrides this YAML.** HA 2026.x migrated the `http:`
-> config into `/config/.storage/http` (one-time, `yaml_migration_done`), and
-> from then on the STORE governs `trusted_proxies` — an edit to
-> `configuration.yaml` alone silently does nothing, while
-> `--script check_config --info http` still shows the store's values with a
-> bare `?` as their source. Discovered during the 2026-08 renumber: the store
-> froze the pre-renumber list and rejected the new node sources through a
-> config edit AND a full VM reboot. To change the effective list, patch the
-> JSON (`data.*.trusted_proxies`) via the host shell or `qm guest exec 154`,
-> then restart the core.
+> **History — the `.storage/http` trap (resolved 2026-08-30).** The 2026.8
+> migration imported the old YAML `http:` block into `/config/.storage/http`
+> once (`yaml_migration_done`), after which the store governed
+> `trusted_proxies` while the YAML silently did nothing — and core updates
+> could re-import, resetting hand-patched store values back to the stale
+> snapshot. During the 2026-08 renumber this froze the pre-renumber proxy list
+> and 400'd every proxied request, twice, surviving a config edit and a full
+> VM reboot. Resolved by managing the settings in the UI (above) and deleting
+> the YAML block outright. Emergency lever if the UI is unreachable behind a
+> 400: patch `data.*.trusted_proxies` in the store JSON via
+> `qm guest exec 154` + `docker restart homeassistant`.
 
 ## Phase 4: Download/Media Access (Optional)
 
