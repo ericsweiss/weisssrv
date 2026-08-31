@@ -29,14 +29,14 @@ data:
   helm_chart_versions_cert_manager: v1.21.1
   helm_chart_versions_external_dns: 1.21.1
   helm_chart_versions_external_secrets: 2.10.0
-  helm_chart_versions_kube_prometheus_stack: 88.6.1
+  helm_chart_versions_kube_prometheus_stack: 88.6.2
   helm_chart_versions_kured: 6.1.0
   helm_chart_versions_loki: 18.11.7
   helm_chart_versions_metallb: 0.15.3
   helm_chart_versions_metrics_server: 3.14.0
   helm_chart_versions_nvidia_device_plugin: 0.20.0
   helm_chart_versions_onepassword_connect: 2.4.1
-  helm_chart_versions_prometheus_blackbox_exporter: 11.17.2
+  helm_chart_versions_prometheus_blackbox_exporter: 11.18.0
   helm_chart_versions_prometheus_operator_crds: 31.0.1
   helm_chart_versions_reloader: 2.2.16
   helm_chart_versions_tailscale_operator: 1.102.3
