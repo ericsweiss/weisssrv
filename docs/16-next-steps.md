@@ -579,6 +579,17 @@ drift plan is clean):
   Both still record their old `192.168.0.x` in the Configure-IP field; inert
   while DHCP, but the value either would take if flipped to static — on a subnet
   the gateway no longer routes. Clear it in the console.
+- [x] ~~**Proxmox guest network config left on the old subnet by the renumber.**~~
+  DONE 2026-09-01: the Phase 2 renumber moved every guest's network in-guest but
+  left the Proxmox-level cloud-init/LXC config (`ipconfig0`, `nameserver`,
+  `searchdomain`) on `192.168.0.x` — inert for running VMs but a rebuild
+  landmine, and for LXCs an active bug (Proxmox rewrites the container's
+  `/etc/resolv.conf` from it on every restart, which broke dns-02's own name
+  resolution after a kured reboot). `proxmox_vm`/`proxmox_lxc` set net config
+  create-path only, so nothing reconciled it. Fixed properly: weisssrv.infra
+  **v0.15.0** reconciles guest net config from inventory on every run (the
+  resolver LXCs override `proxmox_lxc_nameserver: "127.0.0.1"` in
+  `group_vars/dns.yml`); the guest deploys apply it.
 
 ### Nextcloud follow-ups (not blockers)
 

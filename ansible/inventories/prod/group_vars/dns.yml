@@ -16,6 +16,16 @@ proxmox_lxc_ssh_public_keys: >-
 # the resolver answers.
 base_is_resolver_host: true
 
+# A resolver's Proxmox-level nameserver is ITSELF (127.0.0.1), not the client
+# default (dns_servers → 10.0.10.150/.160): Proxmox rewrites the container's
+# /etc/resolv.conf from this on every restart, and adguard_home then reasserts
+# 127.0.0.1 in-guest, so keeping the two in step avoids a restart pointing the
+# resolver at the pair instead of itself. The proxmox_lxc DNS reconcile
+# (weisssrv.infra >= v0.15.0) converges any drift here; without this override it
+# would repoint the resolvers to dns_servers. Client LXCs (smtp/plex/immich-ml)
+# correctly keep the dns_servers default.
+proxmox_lxc_nameserver: "127.0.0.1"
+
 # Boot order (proxmox_lxc_startup_order/delay) is set per host in
 # host_vars/dns-01.yml and host_vars/dns-02.yml (both order 10, delay 10).
 

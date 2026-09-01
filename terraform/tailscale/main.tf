@@ -15,7 +15,7 @@
 # `file()` is called HERE, in the root module: `path.module` inside the module
 # would resolve to the module's own directory.
 module "tailnet" {
-  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/tailscale-acl?ref=v0.14.0"
+  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/tailscale-acl?ref=v0.15.0"
 
   acl_policy = file("${path.module}/policy.hujson")
   split_dns  = local.split_dns
