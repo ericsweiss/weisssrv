@@ -20,7 +20,7 @@
 # segmentation: a bad apply is not a failed pipeline, it is a LAN you cannot
 # reach the controller from.
 module "network" {
-  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/unifi-network?ref=v0.14.0"
+  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/unifi-network?ref=v0.15.0"
 
   networks = local.networks
   zones    = local.zones
