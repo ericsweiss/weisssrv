@@ -43,11 +43,11 @@ data:
   helm_chart_versions_traefik: 41.4.0
   helm_chart_versions_vpa: 5.0.0
   hermes_camofox_version: 1.13.0
-  hermes_claude_version: 2.1.251
-  hermes_codex_version: 0.151.0
-  hermes_image_version: v2026.8.27-r1
+  hermes_claude_version: 2.1.252
+  hermes_codex_version: 0.152.0
+  hermes_image_version: v2026.8.31-r1
   hermes_op_version: 2.39.0-1
-  hermes_version: v2026.8.27
+  hermes_version: v2026.8.31
   hindsight_llamacpp_version: b10068
   hindsight_version: 0.9.2
   homarr_version: v1.76.2
