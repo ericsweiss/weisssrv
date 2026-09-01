@@ -1229,7 +1229,11 @@ b2-drift-plan:
     - |
       export B2_APPLICATION_KEY_ID=$(op read "op://Homelab/B2 Archive Backup/b2_key_id")
       export B2_APPLICATION_KEY=$(op read "op://Homelab/B2 Archive Backup/b2_application_key")
-      python3 scripts/b2-bucket-drift.py
+      # --config is explicit: the script's default is CWD-relative, and this job
+      # runs from the repo root where b2-bucket.json does not exist (it lives in
+      # scripts/), so the bare invocation dies on a missing-file error before it
+      # ever reaches B2.
+      python3 scripts/b2-bucket-drift.py --config scripts/b2-bucket.json
   # Advisory drift signal only — never blocks CI (apply stays supervised).
   allow_failure: true
   rules:
