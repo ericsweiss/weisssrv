@@ -188,7 +188,7 @@ kube_vip_version: "v1.2.3"
 flux_version: "2.9.0"
 
 # Authentik SSO identity provider
-authentik_version: "2026.8.0"
+authentik_version: "2026.8.1"
 
 # Postgres for Authentik (bundled with the Helm chart); trixie base.
 # https://hub.docker.com/_/postgres/tags
@@ -301,17 +301,17 @@ hermes_git_sha: "29112bef099274229cadff79cdff7bf7b99c4b77"
 # bump MUST produce a new tag or the nodes' IfNotPresent cache keeps serving the
 # unpatched image. Bump -rN when patches change; reset to -r1 on a
 # hermes_version bump. CI asserts the prefix matches hermes_version.
-hermes_image_version: "v2026.8.31-r1"
+hermes_image_version: "v2026.8.31-r2"
 # OpenAI Codex CLI, baked into the hermes image by Dockerfile.codex. Requires
 # >=0.130.0 for the Hermes runtime. Build-time only — not substituted into any
 # manifest. https://github.com/openai/codex/releases (npm @openai/codex)
-hermes_codex_version: "0.152.0"
+hermes_codex_version: "0.152.1"
 # Claude Code CLI, baked into the hermes image alongside the Codex CLI so Hermes
 # can delegate coding tasks headlessly (`claude -p`), authenticated with a
 # long-lived OAuth token (CLAUDE_CODE_OAUTH_TOKEN via ESO — no API key; the CLI
 # holds the credential, Hermes only reads stdout). Build-time only — docs/37.
 # https://github.com/anthropics/claude-code (npm @anthropic-ai/claude-code)
-hermes_claude_version: "2.1.252"
+hermes_claude_version: "2.1.258"
 # 1Password CLI (op), baked into the hermes image so Hermes' 1Password skill can
 # drive `op` against the isolated Agent vault (docs/37 §1Password). Value is the
 # full DEB version string, not the bare semver `op --version` reports.
@@ -451,7 +451,7 @@ helm_chart_versions:
   alloy: "1.12.1"
   prometheus_blackbox_exporter: "11.18.0"
   onepassword_connect: "2.4.1"
-  vpa: "5.0.0"  # chart major = app 1.7.1; every values key this repo sets is unchanged in 5.x
+  vpa: "5.0.1"  # chart major = app 1.7.1; every values key this repo sets is unchanged in 5.x
   kured: "6.1.0"  # Kubernetes Reboot Daemon (app 1.22.1); owns k3s-node reboots flagged by maintenance
   reloader: "2.2.16"  # stakater/Reloader (app v1.4.20); auto-restarts annotated workloads on ConfigMap change (Secrets excluded via ignoreSecrets)
   # Tailscale K8s operator (appVersion v1.102.3; tracks the host
