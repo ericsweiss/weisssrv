@@ -234,8 +234,10 @@ account. Standing mitigations: HA sits behind Authentik SSO with no external
 ingress, and the account can be disabled on the console in seconds if HA is ever
 suspected. The obvious hardening if the risk appetite changes — reduce it to a
 scoped role (the integration needs write only for client-block / PoE /
-WLAN-toggle) and vault it for recovery — is left as a revisit, not a task.
-Listed so the recurring audit re-raise resolves to a decision, not a gap
+WLAN-toggle) and vault it for recovery — is available if wanted, but **the
+operator's settled decision (re-confirmed 2026-09-02) is to KEEP it as-is**: a
+full-privilege super admin, accepted risk. This is a closed decision, not an
+open item — the recurring audit re-raise resolves here
 ([docs/46](46-unifi-network.md) § Codified vs manual).
 
 ### Real client IP end-to-end (one coordinated change, not a Traefik edit)
@@ -500,14 +502,15 @@ drift plan is clean):
   client-side encryption. This matters more than a normal config backup — the
   UniFi layer is the one whose loss blocks reaching everything else during a
   recovery (docs/17 assumes the network is up).
-- [ ] **Verify and record the Owner-account MFA.** The console's entire MFA
-  posture reduces to whatever 2FA the single ui.com Owner
-  (`ericsweiss1@gmail.com`) carries at account.ui.com — the `terraform` and
-  `homeassistant` accounts are local-only and cannot have 2FA. With Remote
-  Access on, losing that second factor is a lockout with no second admin to
-  recover through. Confirm 2FA is on with a non-SMS factor (TOTP or hardware
-  key) and that the recovery codes are in the Homelab vault, then record it in
-  docs/46 § Bench pre-provisioning. Console-only — no API read can confirm it.
+- [x] **Owner-account MFA verified.** The console's entire MFA posture reduces
+  to whatever 2FA the single ui.com Owner (`ericsweiss1@gmail.com`) carries at
+  account.ui.com — the `terraform` and `homeassistant` accounts are local-only
+  and cannot have 2FA. With Remote Access on, losing that second factor is a
+  lockout with no second admin to recover through. **Confirmed 2026-09-02
+  (operator): 2FA is on with a non-SMS factor.** Console-only — no API read can
+  confirm it.
+- [ ] **Vault the Owner-account recovery codes** in the Homelab vault (operator
+  sub-step to the above, so a lost factor is recoverable).
 - [ ] **Wire console events into the homelab Alertmanager.** Site alerting
   (`mgmt.alert_enabled`) is off, so device-down / WAN-failover / IDS events reach
   only ui.com cloud email/push; the repo's blackbox probes only detect a dead
