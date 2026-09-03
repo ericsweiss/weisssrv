@@ -1085,10 +1085,15 @@ tailscale-drift-plan:
       export TF_VAR_tailscale_oauth_client_secret=$(op read "op://Homelab/Tailscale OAuth/credential")
       # Plan only, never apply — surfaces drift instead of silently reverting it.
       # -detailed-exitcode: drift exits 2 (plain plan exits 0 on a non-empty
-      # diff), so allow_failure can actually render the yellow drift signal.
+      # diff), so allow_failure can render the yellow drift signal.
       terraform plan -input=false -no-color -lock-timeout=120s -detailed-exitcode
-  # Advisory drift signal only — never blocks CI (apply stays supervised).
-  allow_failure: true
+  # Drift (exit 2) is the advisory yellow; apply stays supervised. But a BROKEN
+  # detector — plan error, expired creds, unreachable endpoint, state lock — exits
+  # 1, and a blanket `allow_failure: true` would paint that the same yellow,
+  # silently masking real drift behind a permanently-broken plan. Scope the pass
+  # to exit 2 only, so exit 1 fails RED and is visible.
+  allow_failure:
+    exit_codes: [2]
   rules:
     # Schedule is the real detector: no changes: filter, so it catches
     # out-of-band Admin-console edits when nothing in-repo changed.
@@ -1143,10 +1148,15 @@ authentik-drift-plan:
       export TF_VAR_basic_auth_adguard_password=$(op read "op://Homelab/AdGuard Home/password")
       # Plan only, never apply — surfaces drift instead of silently reverting it.
       # -detailed-exitcode: drift exits 2 (plain plan exits 0 on a non-empty
-      # diff), so allow_failure can actually render the yellow drift signal.
+      # diff), so allow_failure can render the yellow drift signal.
       terraform plan -input=false -no-color -lock-timeout=120s -detailed-exitcode
-  # Advisory drift signal only — never blocks CI (apply stays supervised).
-  allow_failure: true
+  # Drift (exit 2) is the advisory yellow; apply stays supervised. But a BROKEN
+  # detector — plan error, expired creds, unreachable endpoint, state lock — exits
+  # 1, and a blanket `allow_failure: true` would paint that the same yellow,
+  # silently masking real drift behind a permanently-broken plan. Scope the pass
+  # to exit 2 only, so exit 1 fails RED and is visible.
+  allow_failure:
+    exit_codes: [2]
   rules:
     # Schedule is the real detector: no changes: filter, so it catches
     # out-of-band Admin-UI edits when nothing in-repo changed.
@@ -1197,10 +1207,15 @@ unifi-drift-plan:
       export TF_VAR_wlan_passphrase_work=$(op read "op://Homelab/WiFi DunderMiffLAN/password")
       # Plan only, never apply — surfaces drift instead of silently reverting it.
       # -detailed-exitcode: drift exits 2 (plain plan exits 0 on a non-empty
-      # diff), so allow_failure can actually render the yellow drift signal.
+      # diff), so allow_failure can render the yellow drift signal.
       terraform plan -input=false -no-color -lock-timeout=120s -detailed-exitcode
-  # Advisory drift signal only — never blocks CI (apply stays supervised).
-  allow_failure: true
+  # Drift (exit 2) is the advisory yellow; apply stays supervised. But a BROKEN
+  # detector — plan error, expired creds, unreachable endpoint, state lock — exits
+  # 1, and a blanket `allow_failure: true` would paint that the same yellow,
+  # silently masking real drift behind a permanently-broken plan. Scope the pass
+  # to exit 2 only, so exit 1 fails RED and is visible.
+  allow_failure:
+    exit_codes: [2]
   rules:
     # Schedule is the real detector: no changes: filter, so it catches
     # out-of-band console edits when nothing in-repo changed.
@@ -1234,8 +1249,12 @@ b2-drift-plan:
       # scripts/), so the bare invocation dies on a missing-file error before it
       # ever reaches B2.
       python3 scripts/b2-bucket-drift.py --config scripts/b2-bucket.json
-  # Advisory drift signal only — never blocks CI (apply stays supervised).
-  allow_failure: true
+  # b2-bucket-drift.py INVERTS terraform's codes (0 clean, 1 drift, 2 error — see
+  # its --help), so the advisory pass is exit_codes:[1], not [2]. Drift (1) is the
+  # yellow signal; an API/auth ERROR (2) fails RED instead of masquerading as
+  # allowed drift. Repair stays supervised.
+  allow_failure:
+    exit_codes: [1]
   rules:
     # Schedule is the real detector: no changes: filter, so it catches
     # out-of-band Backblaze-console edits when nothing in-repo changed.
