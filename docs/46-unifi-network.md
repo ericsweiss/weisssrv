@@ -2912,9 +2912,11 @@ its own reversal, and steps 1-2 are cheap:
   Forcing quorum with a second live partition writes two cluster states.
   Every host still holds both addresses at this point, which is why this
   reversal is cheap.
-- **Step 4** (API VIP): re-run `k3s-api-vip-transition.yml` (removed 2026-09-02;
-  restore from git history if a rollback is ever needed) with
-  `-e k3s_api_vip=192.168.0.161`. The VIP goes back, and the old address is still
+- **Step 4** (API VIP): re-run `k3s-api-vip-transition.yml` (**removed
+  2026-09-02**) with `-e k3s_api_vip=192.168.0.161`. NOTE — historical record
+  only: this step was valid ONLY inside the dual-addressed window (now closed).
+  The estate is single-addressed on `10.0.10.0/24`, so restoring and re-running
+  this play today is **not** a rollback — it would withdraw the live API VIP. The VIP goes back, and the old address is still
   a valid certificate SAN because the play only ever *added* the new one — it is
   announceable while the server VMs hold both addresses (i.e. until step 5). Do
   not reach for `k3s.yml` from `main` instead: that re-renders `cluster.fw` from
