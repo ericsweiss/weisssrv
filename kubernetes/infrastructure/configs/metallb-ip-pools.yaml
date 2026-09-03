@@ -44,6 +44,20 @@ spec:
   addresses:
     - ${cluster_wg_easy_vip}/32
 ---
+# Syslog pool — the alloy-syslog receiver's LoadBalancer VIP, its own /32 so the
+# gateway's remote-syslog target is stable and independent of the ingress VIPs.
+# LAN-only (no WAN forward); claimed explicitly via metallb.io/loadBalancerIPs on
+# the alloy-syslog Service (observability/alloy-syslog/service.yaml).
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: syslog-pool
+  namespace: metallb-system
+spec:
+  autoAssign: false
+  addresses:
+    - ${cluster_syslog_vip}/32
+---
 # ARP announcement. No interface restrictions: MetalLB auto-filters CNI/virtual
 # interfaces, and an explicit list would break nodes whose NIC is not ens18.
 apiVersion: metallb.io/v1beta1
@@ -56,3 +70,4 @@ spec:
     - public-pool
     - internal-pool
     - vpn-pool
+    - syslog-pool

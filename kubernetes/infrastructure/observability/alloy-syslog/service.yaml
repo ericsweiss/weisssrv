@@ -1,0 +1,33 @@
+---
+# LoadBalancer for remote syslog from the UniFi gateway. MetalLB L2 announces
+# ${cluster_syslog_vip} (syslog-pool in infrastructure/configs/metallb-ip-pools.yaml).
+# externalTrafficPolicy: Local preserves the gateway's real source IP — so the
+# NetworkPolicy can scope by it and Loki can attribute the origin — and, with
+# MetalLB L2, forces the announcing node to be the one running the pod. The
+# gateway's remote-logging target is <vip>:514/udp; the container listens
+# unprivileged on :1514, so the Service maps :514 -> :1514. Named distinctly from
+# the chart's own ClusterIP Service (release name `alloy-syslog`) to avoid a
+# collision.
+apiVersion: v1
+kind: Service
+metadata:
+  name: alloy-syslog-udp
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: alloy
+    app.kubernetes.io/instance: alloy-syslog
+  annotations:
+    metallb.io/loadBalancerIPs: ${cluster_syslog_vip}
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  # MetalLB L2 does not need per-node NodePorts; don't allocate one.
+  allocateLoadBalancerNodePorts: false
+  selector:
+    app.kubernetes.io/name: alloy
+    app.kubernetes.io/instance: alloy-syslog
+  ports:
+    - name: syslog-udp
+      port: 514
+      targetPort: 1514
+      protocol: UDP

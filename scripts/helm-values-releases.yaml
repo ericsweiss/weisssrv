@@ -72,6 +72,11 @@ releases:
     chart: alloy
     repo_name: grafana
     repo_url: https://grafana.github.io/helm-charts
+  - name: alloy-syslog
+    manifest: kubernetes/infrastructure/observability/alloy-syslog/release.yaml
+    chart: alloy
+    repo_name: grafana
+    repo_url: https://grafana.github.io/helm-charts
   - name: blackbox-exporter
     manifest: kubernetes/infrastructure/observability/exporters/blackbox-exporter.yaml
     chart: prometheus-blackbox-exporter

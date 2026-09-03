@@ -214,6 +214,26 @@ spec:
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
 metadata:
+  name: alloy-syslog
+spec:
+  targetRef: {apiVersion: apps/v1, kind: Deployment, name: alloy-syslog}
+  updatePolicy: {updateMode: Auto}
+  resourcePolicy:
+    containerPolicies:
+      # RequestsOnly for the same reason as the alloy DaemonSet above: the 256Mi
+      # limit is hand-set in alloy-syslog/release.yaml and stays the OOM ceiling;
+      # maxAllowed sits under it at the small receiver's working set. The "*"
+      # catch-all keeps the config-reloader sidecar on its own 32Mi floor rather
+      # than the main container's (docs/33).
+      - containerName: "*"
+        minAllowed: {cpu: 10m, memory: 32Mi}
+        maxAllowed: {cpu: 300m, memory: 224Mi}
+        controlledResources: [cpu, memory]
+        controlledValues: RequestsOnly
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
   name: node-exporter
 spec:
   targetRef: {apiVersion: apps/v1, kind: DaemonSet, name: kube-prometheus-stack-prometheus-node-exporter}

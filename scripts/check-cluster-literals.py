@@ -86,6 +86,7 @@ ADDRESS_KEYS = (
     "cluster_metallb_public_vip",
     "cluster_metallb_internal_vip",
     "cluster_wg_easy_vip",
+    "cluster_syslog_vip",
     "cluster_api_vip",
 )
 
