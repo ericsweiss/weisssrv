@@ -2335,8 +2335,10 @@ while every host still sources from that subnet. `base` would move
 and the k3s role would rewrite `config.yaml` wholesale, dropping the old VIP and
 the node's old `ansible_host` from `tls-san` while both are still in use.
 
-`ansible/playbooks/k3s-api-vip-transition.yml` exists for this window only. It
-changes the three places the VIP is spelled — the apiserver SAN list, the server
+`ansible/playbooks/k3s-api-vip-transition.yml` existed for this window only (it
+was **removed 2026-09-02** once the cluster was wholly on `10.0.10.0/24`; restore
+from git history if the record below ever needs to be re-run). It
+changed the three places the VIP is spelled — the apiserver SAN list, the server
 join URL, and the kube-vip DaemonSet's `address` — restarts the servers one at a
 time behind a `/readyz` gate, and asserts after each restart that the node's
 `InternalIP` has not moved. Its header comment carries the full list of what it
@@ -2853,12 +2855,12 @@ grep -rIn -E '192(\\)*\.168(\\)*\.0(\\)*\.' \
 grep -rIn '192\\\\\.168\\\\\.0\\\\\.' kubernetes/ scripts/
 ```
 
-Grep 1 legitimately keeps hits in `docs/`, `terraform/unifi/README.md`, and —
-while it still exists — `ansible/playbooks/k3s-api-vip-transition.yml`, whose
-`192.168.0.x` literals are deliberate (the rollback VIP value, the two-value
-input restriction, and the old-subnet fleet gate). Deleting that playbook is
-the small follow-up MR the window already owes once the cluster is wholly on
-`10.0.10.0/24`, and its hits retire with it. The cutover runbook and the
+Grep 1 legitimately keeps hits in `docs/` and `terraform/unifi/README.md`. (The
+transition helper `ansible/playbooks/k3s-api-vip-transition.yml`, whose
+`192.168.0.x` literals were deliberate — the rollback VIP value, the two-value
+input restriction, and the old-subnet fleet gate — was **removed 2026-09-02**,
+the follow-up the window owed once the cluster was wholly on `10.0.10.0/24`; its
+hits retired with it.) The cutover runbook and the
 Phase 2 narrative describe the pre-renumber world on purpose. Every one of those must read as a labelled historical or cutover-night
 statement — if a hit is a live instruction, it is a straggler.
 
@@ -2910,7 +2912,8 @@ its own reversal, and steps 1-2 are cheap:
   Forcing quorum with a second live partition writes two cluster states.
   Every host still holds both addresses at this point, which is why this
   reversal is cheap.
-- **Step 4** (API VIP): re-run `k3s-api-vip-transition.yml` with
+- **Step 4** (API VIP): re-run `k3s-api-vip-transition.yml` (removed 2026-09-02;
+  restore from git history if a rollback is ever needed) with
   `-e k3s_api_vip=192.168.0.161`. The VIP goes back, and the old address is still
   a valid certificate SAN because the play only ever *added* the new one — it is
   announceable while the server VMs hold both addresses (i.e. until step 5). Do
