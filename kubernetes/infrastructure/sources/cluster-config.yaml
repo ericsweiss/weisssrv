@@ -93,6 +93,11 @@ data:
   # wg-easy's WAN endpoint gets its own VIP so the UDP port-forward is
   # independent of the two ingress VIPs (docs/38).
   cluster_wg_easy_vip: "10.0.10.99"
+  # Syslog collector VIP — the alloy-syslog receiver's LoadBalancer, in its own
+  # /32 pool so the gateway's remote-syslog target is a stable address
+  # independent of the ingress VIPs. LAN-only (no WAN forward); the UCG sends
+  # UDP :514 here for the Loki pipeline (docs/31). No Ansible counterpart.
+  cluster_syslog_vip: "10.0.10.162"
   # kube-vip's API VIP. Unlike the MetalLB pools this one IS owned by Ansible
   # (`k3s_api_vip` in group_vars/k3s.yml, which configures kube-vip); the key
   # exists so manifests and the operator tooling stop re-spelling the address,

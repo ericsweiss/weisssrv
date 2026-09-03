@@ -11,6 +11,7 @@ resources:
   - kube-prometheus-stack
   - loki
   - alloy
+  - alloy-syslog
   - exporters
   - service-monitors
   - rules
