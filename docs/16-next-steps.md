@@ -502,14 +502,15 @@ drift plan is clean):
   client-side encryption. This matters more than a normal config backup — the
   UniFi layer is the one whose loss blocks reaching everything else during a
   recovery (docs/17 assumes the network is up).
-- [x] **Verify and record the Owner-account MFA.** The console's entire MFA
-  posture reduces to whatever 2FA the single ui.com Owner
-  (`ericsweiss1@gmail.com`) carries at account.ui.com — the `terraform` and
-  `homeassistant` accounts are local-only and cannot have 2FA. With Remote
-  Access on, losing that second factor is a lockout with no second admin to
-  recover through. **Confirmed 2026-09-02 (operator): 2FA is on with a non-SMS
-  factor.** Remaining operator sub-step: confirm the recovery codes are stored
-  in the Homelab vault. Console-only — no API read can confirm it.
+- [x] **Owner-account MFA verified.** The console's entire MFA posture reduces
+  to whatever 2FA the single ui.com Owner (`ericsweiss1@gmail.com`) carries at
+  account.ui.com — the `terraform` and `homeassistant` accounts are local-only
+  and cannot have 2FA. With Remote Access on, losing that second factor is a
+  lockout with no second admin to recover through. **Confirmed 2026-09-02
+  (operator): 2FA is on with a non-SMS factor.** Console-only — no API read can
+  confirm it.
+- [ ] **Vault the Owner-account recovery codes** in the Homelab vault (operator
+  sub-step to the above, so a lost factor is recoverable).
 - [ ] **Wire console events into the homelab Alertmanager.** Site alerting
   (`mgmt.alert_enabled`) is off, so device-down / WAN-failover / IDS events reach
   only ui.com cloud email/push; the repo's blackbox probes only detect a dead
