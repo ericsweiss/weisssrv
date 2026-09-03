@@ -39,6 +39,7 @@ CLUSTER_CONFIG = textwrap.dedent(
       cluster_metallb_public_vip: "10.0.10.100"
       cluster_metallb_internal_vip: "10.0.10.101"
       cluster_wg_easy_vip: "10.0.10.99"
+      cluster_syslog_vip: "10.0.10.162"
       cluster_api_vip: "10.0.10.161"
       cluster_upstream_dns_servers: "10.0.10.150 10.0.10.160"
     """
