@@ -220,14 +220,20 @@ spec:
   updatePolicy: {updateMode: Auto}
   resourcePolicy:
     containerPolicies:
-      # RequestsOnly for the same reason as the alloy DaemonSet above: the 256Mi
-      # limit is hand-set in alloy-syslog/release.yaml and stays the OOM ceiling;
-      # maxAllowed sits under it at the small receiver's working set. The "*"
-      # catch-all keeps the config-reloader sidecar on its own 32Mi floor rather
-      # than the main container's (docs/33).
-      - containerName: "*"
-        minAllowed: {cpu: 10m, memory: 32Mi}
+      # PER-CONTAINER bounds, not a "*" catch-all: RequestsOnly rescales the
+      # REQUEST, and a request above the container's fixed limit is an invalid
+      # pod. The two containers have different hand-set limits (release.yaml) —
+      # alloy 256Mi, config-reloader 64Mi — so each maxAllowed.memory must sit
+      # under ITS OWN limit (docs/33). A shared "*" at 224Mi would let a
+      # config-reloader spike push its request past 64Mi and reject the pod.
+      - containerName: alloy
+        minAllowed: {cpu: 25m, memory: 64Mi}
         maxAllowed: {cpu: 300m, memory: 224Mi}
+        controlledResources: [cpu, memory]
+        controlledValues: RequestsOnly
+      - containerName: config-reloader
+        minAllowed: {cpu: 10m, memory: 32Mi}
+        maxAllowed: {cpu: 50m, memory: 56Mi}
         controlledResources: [cpu, memory]
         controlledValues: RequestsOnly
 ---
