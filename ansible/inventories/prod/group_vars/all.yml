@@ -156,7 +156,7 @@ tailscale_advertise_routes: []  # Only subnet routers (Proxmox hosts) should adv
 # rebuilds, Flux rolls the pods (docs/12). Each pin below carries its upstream
 # feed and only what the tag itself cannot express.
 adguard_home_version: "0.107.79"
-adguard_sync_version: "0.9.2"
+adguard_sync_version: "0.9.3"
 # Host-side Alloy apt package (alloy_host role; distinct from the in-cluster
 # helm_chart_versions.alloy chart pin below).
 alloy_host_version: "1.19.2-1"
@@ -439,16 +439,16 @@ helm_chart_versions:
   cert_manager: "v1.21.2"
   external_dns: "1.22.0"  # App version 0.22.0
   external_secrets: "2.10.0"  # ESO with 1Password Connect provider
-  kube_prometheus_stack: "90.2.0"  # prometheus-operator v0.93.1 (90.x minor = subcharts/dashboards only; additive CRD fields; crds: CreateReplace)
+  kube_prometheus_stack: "91.2.0"  # prometheus-operator v0.94.0 (91.x major = operator bump only, no values-schema change; crds: CreateReplace)
   # prometheus-community/prometheus-operator-crds chart. Owns the
   # monitoring.coreos.com CRDs in the dedicated infrastructure-crds stage so
   # controllers (Traefik's ServiceMonitor) reconcile before kube-prometheus-stack
-  # (docs/29). 32.0.0 = appVersion v0.94.0, leading kube_prometheus_stack
-  # 90.2.0's operator v0.93.1 by one minor (CRDs may lead the operator, never
-  # trail; v0.94.0 CRD deltas are additive-only — retentionPercentage,
-  # clusterPeerName, ScrapeConfig SD enums — no field removals/apiVersion
-  # changes). COUPLING: bump in lockstep with kube_prometheus_stack so the
-  # CRD set stays version-matched to the operator kps deploys (docs/12).
+  # (docs/29). 32.0.0 = appVersion v0.94.0, matching kube_prometheus_stack
+  # 91.2.0's operator v0.94.0 exactly (CRDs may lead the operator, never trail;
+  # v0.94.0 CRD deltas are additive-only — retentionPercentage, clusterPeerName,
+  # ScrapeConfig SD enums — no field removals/apiVersion changes). COUPLING:
+  # bump in lockstep with kube_prometheus_stack so the CRD set stays
+  # version-matched to the operator kps deploys (docs/12).
   prometheus_operator_crds: "32.0.0"
   loki: "18.13.0"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0); 18.0.0 = dashboard-gen only
   alloy: "1.12.1"
