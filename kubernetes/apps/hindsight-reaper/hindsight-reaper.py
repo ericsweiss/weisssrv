@@ -159,6 +159,21 @@ def parse_ts(ts: str) -> datetime:
     return datetime.fromisoformat(ts.replace("Z", "+00:00"))
 
 
+def is_replicaset_owned(pod: dict) -> bool:
+    """True if a ReplicaSet owns the pod — i.e. it is a Deployment replica, the
+    only kind this reaper is scoped to.
+
+    The label + phase selectors already exclude everything but Failed Hindsight
+    pods, but a hand-created/bare pod could carry the app label too; requiring a
+    ReplicaSet owner keeps the sweep to genuine Deployment replicas (which every
+    admission-rejected pod is) and never a standalone pod someone left behind.
+    """
+    for owner in pod.get("metadata", {}).get("ownerReferences") or []:
+        if owner.get("kind") == "ReplicaSet":
+            return True
+    return False
+
+
 def creation_age_minutes(pod: dict, now: datetime) -> int | None:
     """Age from creationTimestamp; unparseable/absent -> None (KEEP).
 
@@ -201,6 +216,9 @@ def reap(api, cfg: Config, now: datetime, over_budget, log=print) -> Outcome:
                     "leaving remaining pods for the next run", flush=True)
                 return Outcome(deleted, had_errors, True)
             name = pod["metadata"]["name"]
+            if not is_replicaset_owned(pod):
+                log(f"KEEP   {ns}/{name} (not ReplicaSet-owned)", flush=True)
+                continue
             reason = pod.get("status", {}).get("reason", "")
             if reason in PRESERVE_REASONS:
                 log(f"KEEP   {ns}/{name} (reason={reason} preserved for investigation)", flush=True)

@@ -195,7 +195,10 @@ than 30 minutes, via a namespaced `pods: list,delete` Role. It never selects a
 (resource-pressure evidence). To clear them by hand instead:
 
 ```bash
-kubectl delete pod -n hindsight --field-selector status.phase=Failed
+# Label-scoped like the reaper. Note this DOES also remove Evicted/OOMKilled
+# corpses, which the CronJob deliberately preserves as resource-pressure evidence.
+kubectl delete pod -n hindsight -l app.kubernetes.io/name=hindsight \
+  --field-selector status.phase=Failed
 ```
 
 **Why not prevent the race?** Withholding GPU pods until the device plugin

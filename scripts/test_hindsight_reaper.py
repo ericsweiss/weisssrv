@@ -44,10 +44,12 @@ def _ts(minutes_ago: int) -> str:
 
 
 def pod(name, uid="pod-uid", *, created_minutes_ago=90, reason="UnexpectedAdmissionError",
-        bad_timestamp=False, no_timestamp=False):
+        bad_timestamp=False, no_timestamp=False, owner="ReplicaSet"):
     meta = {"name": name, "uid": uid}
     if not no_timestamp:
         meta["creationTimestamp"] = "not-a-date" if bad_timestamp else _ts(created_minutes_ago)
+    if owner is not None:
+        meta["ownerReferences"] = [{"kind": owner, "name": name.rsplit("-", 1)[0]}]
     return {"metadata": meta, "status": {"phase": "Failed", "reason": reason}}
 
 
@@ -175,6 +177,21 @@ def test_preserves_resource_pressure_pods(reaper, reason):
 
 def test_preserve_reasons_are_kept_out_of_the_sweep(reaper):
     assert reaper.PRESERVE_REASONS == frozenset({"Evicted", "OOMKilled"})
+
+
+def test_keeps_non_replicaset_owned_pod(reaper):
+    # A bare/hand-created Failed pod that merely carries the app label is not a
+    # Deployment replica, so it is never reaped even when old.
+    api = FakeApi([{"items": [pod("hindsight-bare", owner=None, created_minutes_ago=300)]}])
+    out = reaper.reap(api, _cfg(reaper), NOW, _never_over)
+    assert out.deleted == 0
+    assert api.deleted == []
+
+
+def test_is_replicaset_owned(reaper):
+    assert reaper.is_replicaset_owned(pod("x")) is True
+    assert reaper.is_replicaset_owned(pod("x", owner=None)) is False
+    assert reaper.is_replicaset_owned(pod("x", owner="DaemonSet")) is False
 
 
 def test_budget_stop_leaves_remaining(reaper):
