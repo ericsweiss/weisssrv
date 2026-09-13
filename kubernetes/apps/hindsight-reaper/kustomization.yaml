@@ -1,0 +1,45 @@
+---
+# NOTE: deliberately NO top-level `namespace:` directive. kustomize's namespace
+# transformer OVERRIDES each resource's explicit metadata.namespace, which would
+# force the Role + RoleBinding out of the hindsight namespace into
+# hindsight-reaper and silently break the cross-namespace grant. Each resource
+# here carries its own explicit namespace (ServiceAccount + CronJob ->
+# hindsight-reaper; Role + RoleBinding -> hindsight; the Namespace is
+# cluster-scoped).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - rbac.yaml
+  - cronjob.yaml
+
+# The reaper is a single-purpose CronJob that only talks to the kube-API (it
+# lists/deletes admission-rejected pods in the hindsight namespace), so kube-dns
+# + apiserver is its whole egress and those two components ARE its
+# default-deny-egress. Nothing serves traffic, hence the baseline ingress deny.
+components:
+  - ../../components/netpol-baseline
+  - ../../components/netpol-egress-dns
+  - ../../components/netpol-egress-apiserver
+
+# The CronJob's program. It lives beside this kustomization because kustomize
+# refuses generator sources outside the kustomization root; its unit tests are
+# scripts/test_hindsight_reaper.py.
+configMapGenerator:
+  - name: hindsight-reaper-script
+    namespace: hindsight-reaper
+    files:
+      - hindsight-reaper.py
+
+patches:
+  # This kustomization deliberately sets no top-level namespace (its
+  # Role/RoleBinding target the hindsight namespace), so namespace the
+  # component-shipped policies here instead of via a namespace transformer.
+  # `name` is a regex.
+  - target:
+      kind: NetworkPolicy
+      name: (default-deny-ingress|allow-egress-dns|allow-egress-apiserver)
+    patch: |
+      - op: add
+        path: /metadata/namespace
+        value: hindsight-reaper

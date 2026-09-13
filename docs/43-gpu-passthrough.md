@@ -166,6 +166,49 @@ Caveats:
   `release.yaml` (`config.map.any` → `replicas`) if more slices are needed,
   subject to the VRAM budget.
 
+## Reaping admission-rejected pods
+
+When the GPU node reboots (kured coordinated reboots, driver reloads), the
+kubelet begins admitting pods before the nvidia-device-plugin has re-registered
+healthy GPUs. A GPU pod scheduled in that window is rejected at admission and
+left in `phase=Failed`:
+
+```
+Status:  Failed
+Reason:  UnexpectedAdmissionError
+Message: Pod was rejected: Allocate failed due to no healthy devices present;
+         cannot allocate unhealthy devices nvidia.com/gpu, which is unexpected
+```
+
+The Deployment recovers correctly — a fresh pod is admitted once the GPU is
+healthy — but the rejected pods are **not** garbage-collected: a ReplicaSet never
+deletes pods it owns, and cluster pod-GC fires only past the high default
+`--terminated-pod-gc-threshold` (12500), so they accumulate across reboots. Left
+alone they are harmless clutter (the live replica is unaffected), but they
+misreport cluster health.
+
+The **`hindsight-reaper`** CronJob (`kubernetes/apps/hindsight-reaper/`) sweeps
+them: every 6 hours it deletes `Failed`-phase pods labelled
+`app.kubernetes.io/name=hindsight` in the `hindsight` namespace that are older
+than 30 minutes, via a namespaced `pods: list,delete` Role. It never selects a
+`Running`/`Pending` pod, and it keeps pods whose reason is `Evicted`/`OOMKilled`
+(resource-pressure evidence). To clear them by hand instead:
+
+```bash
+# Label-scoped like the reaper. Note this DOES also remove Evicted/OOMKilled
+# corpses, which the CronJob deliberately preserves as resource-pressure evidence.
+kubectl delete pod -n hindsight -l app.kubernetes.io/name=hindsight \
+  --field-selector status.phase=Failed
+```
+
+**Why not prevent the race?** Withholding GPU pods until the device plugin
+reports healthy needs the node to carry a startup taint the plugin removes — i.e.
+the full NVIDIA **GPU Operator** (or a custom taint controller). That is a large
+dependency for one homelab GPU when the Deployment already self-heals, so the
+reaper (cleanup) is the deliberate, right-sized choice. Lowering
+`--terminated-pod-gc-threshold` cluster-wide was rejected as too blunt — it would
+GC terminated pods faster in every namespace, hurting post-mortem debugging.
+
 ## Rollback
 
 The VM boots and runs fine without the GPU — rollback is non-destructive:
