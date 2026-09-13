@@ -139,7 +139,7 @@ re-run the consuming deploy (`task <area>:deploy`) for `op run` consumers, or
 |---|---|---|
 | Authentik Secrets | `secret-key`, `postgresql-password`, `postgresql-admin-password` | Authentik server/worker |
 | Authentik Terraform Token | `credential` (admin API token) | `terraform/authentik` — see [detail](#authentik-terraform-token) |
-| Authentik User Identities | `identities-json` (a JSON object: `{"<username>": {"name": …, "email": …}, …}` covering every username in `terraform/authentik/users.tf`) | `terraform/authentik` — keeps managed-user names + emails out of the public-mirrored repo (docs/40 § Managed users) |
+| Authentik User Identities | the item's **Notes** (`notesPlain`) holds ONLY a JSON object: `{"<username>": {"name": …, "email": …}, …}` covering every username in `terraform/authentik/users.tf` | `terraform/authentik` — keeps managed-user names + emails out of the public-mirrored repo (docs/40 § Managed users) |
 | Mealie SSO | `oidc-client-id`, `oidc-client-secret` | Mealie (password login disabled) |
 | Bar Assistant SSO | `authentik-client-id`, `authentik-client-secret` | Bar Assistant (password login disabled) |
 | Home Assistant SSO | `authentik-client-id`, `authentik-client-secret` | hass-openid |
