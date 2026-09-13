@@ -12,6 +12,7 @@ resources:
   - hermes
   - homarr
   - hindsight
+  - hindsight-reaper
   - recipes
   - gitlab-runner
   - gitlab-runner-privileged

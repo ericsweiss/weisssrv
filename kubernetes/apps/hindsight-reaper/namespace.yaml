@@ -1,0 +1,18 @@
+---
+# Dedicated namespace for the Hindsight GPU-admission pod reaper CronJob.
+# A dedicated namespace (rather than living inside kubernetes/apps/hindsight)
+# keeps the reaper's kube-API egress out of hindsight's own tight per-pod
+# NetworkPolicy: here the netpol-egress-{dns,apiserver} components select the
+# whole namespace, which is exactly the reaper pod and nothing else. PSA
+# restricted is satisfied — the reaper pod is runAsNonRoot/65534, drops ALL
+# caps, readOnlyRootFilesystem, seccomp RuntimeDefault.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hindsight-reaper
+  labels:
+    app.kubernetes.io/name: hindsight-reaper
+    app.kubernetes.io/managed-by: flux
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
