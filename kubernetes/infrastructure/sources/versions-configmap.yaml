@@ -53,7 +53,7 @@ data:
   homarr_version: v1.77.1
   immich_postgres_version: 14-vectorchord0.4.3-pgvectors0.2.0
   immich_valkey_version: '9'
-  immich_version: v3.1.0
+  immich_version: v3.2.0
   k3s_version: v1.36.4+k3s1
   kube_vip_version: v1.2.3
   lidarr_version: 3.1.0.4875
