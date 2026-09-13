@@ -60,7 +60,7 @@ acme_certs_distribution_targets:
   # `gitlab-ctl hup nginx` reloads nginx without a full reconfigure.
   - host: gitlab
     ip: 10.0.10.153
-    host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEVffoT/Az9ZPPECl054HTf4HxzlKL6sTcs6OVe3bQTi"
+    host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIH61P4VRLs1h6QR4YJDlDKDpjJiustrfFboC/O8CS1hB"
     cert_dir: /etc/gitlab/ssl
     owner: root
     group: root
@@ -75,7 +75,7 @@ acme_certs_distribution_targets:
   # `task certs:show-host-keys`. See docs/35-nextcloud.md.
   - host: nextcloud
     ip: 10.0.10.156
-    host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFSwM0yVCXOQ6t0PO2o54hGwdYvXcy/eZ/+rU4gtG11P"
+    host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOf5zslX71wElT423JUsYIBkp1qIUpAmjLUvy/exDpIk"
     cert_dir: /etc/ssl/nextcloud
     owner: root
     group: root
@@ -89,7 +89,7 @@ acme_certs_distribution_targets:
   # host_key captured post-provision via `task certs:show-host-keys`. See docs/36-immich.md.
   - host: immich
     ip: 10.0.10.157
-    host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKpGixylnIRe8EO9BLIeDB2xg1fF7xKMy3vTjpDmpU2m"
+    host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINvksbwaHJ2UoHAYNmpFeKuC7xPZIfhy4BRVWHFzpbt8"
     cert_dir: /etc/nginx/ssl
     owner: root
     group: root
