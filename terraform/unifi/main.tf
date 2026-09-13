@@ -20,7 +20,7 @@
 # segmentation: a bad apply is not a failed pipeline, it is a LAN you cannot
 # reach the controller from.
 module "network" {
-  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/unifi-network?ref=v0.15.0"
+  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/unifi-network?ref=v0.15.1"
 
   networks = local.networks
   zones    = local.zones
@@ -94,8 +94,13 @@ module "network" {
   # able to re-enable UPnP or unattended firmware upgrades on a ref bump.
   # Same reasoning as terraform/cloudflare's zone_settings.
   #
-  # `ips_mode` stays detection-only through the burn-in; moving it to "ips"
-  # (inline blocking) is a deliberate post-burn-in step in docs/46.
+  # `ips_mode = "ips"` is INLINE BLOCKING (prevention), flipped from detection
+  # 2026-09-12 against a live wave of intrusion attempts. The module
+  # `ignore_changes = [ips]`, so this value is create-time intent only — the live
+  # flip was made in the console/API; codifying it here keeps a future recreate
+  # or ignore-removal from silently reverting to detection. Native site alerts
+  # (`mgmt.alert_enabled`, console-owned) are on as the block-visibility net,
+  # since the syslog→Loki path is blocked upstream (docs/46, docs/16).
   site_settings = {
     # DELIBERATELY TRUE (operator ruling, 2026-08-30): the switch and AP take
     # firmware nightly at 1 AM — hands-off patching for the Wi-Fi gear was
@@ -106,7 +111,7 @@ module "network" {
     auto_upgrade         = true
     network_optimization = false
     upnp                 = false
-    ips_mode             = "ids"
+    ips_mode             = "ips"
 
     # The effective IGMP-snooping toggle on Network 10.3+. Exactly the two ends
     # of the casting path, matching the per-network `igmp_snooping` fallbacks in
