@@ -24,6 +24,22 @@ locals {
   # the superuser group below.
   operator_users = ["eric"]
 
+  # Family members with NON-ADMIN access. They join only the *-users tiers in
+  # family_member_groups below — never an *-admins group — so app access is
+  # granted without any admin role. Usernames are declared in users.tf.
+  family_users = ["amy", "neil", "emma", "joseph"]
+
+  # The five apps the family gets: their user-tier (non-admin) access groups.
+  # Adding a group here widens family access; removing one revokes it on the
+  # next supervised apply (membership is exhaustive — see the header note).
+  family_member_groups = [
+    "mealie-users",
+    "bar-assistant-users",
+    "immich-users",
+    "nextcloud-users",
+    "homarr-users",
+  ]
+
   # App-access groups, all with the single human operator as member. The
   # `*-users` groups also gate their applications via the one-binding-per-app
   # policy bindings in policy_bindings.tf. Map key = group name.
@@ -52,7 +68,9 @@ locals {
   groups = merge(
     {
       for name in local.member_groups :
-      name => { users = local.operator_users }
+      name => {
+        users = contains(local.family_member_groups, name) ? concat(local.operator_users, local.family_users) : local.operator_users
+      }
     },
     {
       # authentik's built-in superuser group. Managed (unlike "authentik
