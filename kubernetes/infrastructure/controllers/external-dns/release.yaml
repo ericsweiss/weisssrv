@@ -48,6 +48,14 @@ spec:
     # Orange-cloud the records: DDoS protection + origin-IP hiding.
     extraArgs:
       - --cloudflare-proxied
+      # external-dns 0.22.0 changed the default annotation prefix from
+      # external-dns.alpha.kubernetes.io/ to external-dns.kubernetes.io/. Every
+      # IngressRoute here (and the app-template) uses the alpha prefix for its
+      # /target annotation, so pin it back: without this, 0.22.0 ignores those
+      # annotations, resolves no target, and policy=sync DELETES every
+      # external-dns-owned record (food/bar/cloud/agent/home/auth/status/
+      # dashboard all vanished after the 0.20.0 -> 0.22.0 bump). docs/08.
+      - --annotation-prefix=external-dns.alpha.kubernetes.io/
 
     env:
       - name: CF_API_TOKEN
