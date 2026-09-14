@@ -1,28 +1,46 @@
-# Managed user accounts — identity as code, credentials NEVER.
+# Managed user accounts — usernames as code; personal data and credentials NEVER.
 #
-# One entry per account this repo owns; `task authentik:add-user` scaffolds an
-# entry here (and reminds you to add the username to the right group in
-# groups.tf — membership lives THERE, on the group, not here). Passwords and
-# MFA are set by the person themselves via an authentik enrollment/recovery
-# link an admin sends after the supervised apply (docs/40 § Managed users).
+# This repo mirrors to a PUBLIC GitHub remote, so no personal data lives here:
+# the map keys below are the usernames (login names) only, and each account's
+# display NAME and EMAIL come from var.user_identities — the 1Password
+# "Authentik User Identities" item (docs/15), op-run-injected as
+# TF_VAR_user_identities at plan/apply time. Passwords and MFA are set by the
+# person themselves via an authentik enrollment/recovery link an admin sends
+# after the supervised apply (docs/40 § Managed users).
 #
-# PRE-EXISTING accounts join via a declarative `import {}` block in
-# imports.tf (id = the user pk) landing in the SAME apply as the entry here —
-# declaring one without the import fails the apply on a username collision.
-# `akadmin` stays deliberately unmanaged: it is the break-glass account and
-# lives outside IaC on purpose. Service accounts (outpost, etc.) are
-# authentik-managed and never belong here.
+# Adding an account: `task authentik:add-user` appends a username here (and
+# prints the 1Password JSON snippet to add + the groups.tf reminder — membership
+# lives on the group in groups.tf, not here). A username with no matching
+# user_identities entry fails the apply, because the module reads its name and
+# email from that map.
 #
-# The module puts `prevent_destroy` on every user: rename a key with a
+# PRE-EXISTING accounts also need a declarative `import {}` block in imports.tf
+# (id = the user pk) landing in the SAME apply — `eric` was adopted that way
+# (pk 7). `akadmin` stays deliberately unmanaged (the break-glass account);
+# service accounts (outpost, etc.) are authentik-managed and never belong here.
+#
+# The module puts `prevent_destroy` on every user: rename a username with a
 # `moved {}` block, never delete+recreate — a destroy takes the account's
 # sessions and consent grants with it.
 locals {
+  # Login names only. `eric` is pre-existing (import pk 7 in imports.tf); the
+  # four family accounts are created fresh. Every name here needs a matching key
+  # in the "Authentik User Identities" 1Password item, or the apply fails.
+  managed_usernames = [
+    "eric",
+    "amy",
+    "neil",
+    "emma",
+    "joseph",
+  ]
+
+  # Name + email resolved from the op-injected identities map; active/path take
+  # the module defaults (true / "users").
   users = {
-    # Adopted 2026-08-19 (import pk 7): values mirror the live object
-    # verbatim, so the import lands with a zero-change plan.
-    "eric" = {
-      name  = "Eric Weiss"
-      email = "ericsweiss1@gmail.com"
+    for username in local.managed_usernames :
+    username => {
+      name  = var.user_identities[username].name
+      email = var.user_identities[username].email
     }
   }
 }

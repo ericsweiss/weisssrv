@@ -55,19 +55,25 @@ Two consequences of the module adoption an operator meets first:
 
 ## Managed users
 
-User accounts can be identity-as-code via the module's `users` map —
-`terraform/authentik/users.tf` holds the site entries (credentials NEVER:
-each person sets their own password + MFA through authentik's
-enrollment/recovery flows). Group membership stays on the group
-(`groups.tf` `users` lists), which resolves managed and pre-existing
+User accounts are identity-as-code via the module's `users` map, but this repo
+mirrors to a **public** remote, so **no personal data lives in git**:
+`terraform/authentik/users.tf` carries only the **usernames**
+(`local.managed_usernames`), and each account's display **name + email** come
+from `var.user_identities` — the 1Password **"Authentik User Identities"** item
+(docs/15), op-run-injected as `TF_VAR_user_identities` at plan/apply time.
+Credentials are NEVER in Terraform either: each person sets their own password +
+MFA through authentik's enrollment/recovery flows. Group membership stays on the
+group (`groups.tf` `users` lists), which resolves managed and pre-existing
 usernames alike.
 
 Adding a user is a scaffold + supervised apply:
 
 ```bash
-task authentik:add-user -- amy --name "Amy" --email amy@example.com --groups app-mealie
-# follow the printed steps: groups.tf membership, plan, supervised apply,
-# then send the enrollment/recovery link from Directory -> Users
+task authentik:add-user -- amy --name "Amy Weiss" --email amy@example.com --groups mealie-users
+# follow the printed steps: (1) add the printed JSON snippet to the 1Password
+# "Authentik User Identities" item, (2) groups.tf membership, (3) plan,
+# (4) supervised apply, (5) send the enrollment/recovery link from
+# Directory -> Users so they set their own password + MFA
 ```
 
 Pre-existing (UI-created) accounts are adopted declaratively: a users.tf

@@ -1146,6 +1146,7 @@ authentik-drift-plan:
       export TF_VAR_basic_auth_nzbget_password=$(op read "op://Homelab/NZBGet/password")
       export TF_VAR_basic_auth_adguard_username=$(op read "op://Homelab/AdGuard Home/username")
       export TF_VAR_basic_auth_adguard_password=$(op read "op://Homelab/AdGuard Home/password")
+      export TF_VAR_user_identities=$(op read "op://Homelab/Authentik User Identities/notesPlain")
       # Plan only, never apply — surfaces drift instead of silently reverting it.
       # -detailed-exitcode: drift exits 2 (plain plan exits 0 on a non-empty
       # diff), so allow_failure can render the yellow drift signal.
@@ -1162,8 +1163,9 @@ authentik-drift-plan:
     # out-of-band Admin-UI edits when nothing in-repo changed.
     - if: '$CI_PIPELINE_SOURCE == "schedule" && $OP_SERVICE_ACCOUNT_TOKEN'
     # Post-merge, before the supervised apply. NO merge_request_event rule: this
-    # job reads thirteen vault items (every OIDC client secret among them) and
-    # must not do that in a job running an unmerged branch's code.
+    # job reads fourteen vault items (every OIDC client secret + the user
+    # identities among them) and must not do that in a job running an unmerged
+    # branch's code.
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes: !reference [.paths-terraform-authentik, changes]
 

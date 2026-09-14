@@ -174,3 +174,23 @@ variable "basic_auth_adguard_password" {
     error_message = "basic_auth_adguard_password must be non-empty; check the op:// reference in the Taskfile and the authentik-drift-plan job."
   }
 }
+
+variable "user_identities" {
+  description = <<-EOT
+    Display name + email for every username in users.tf's managed_usernames,
+    keyed by username. Injected from the 1Password "Authentik User Identities"
+    item at plan/apply time (op run / the CI job's op read) as
+    TF_VAR_user_identities, so no personal data lands in this public-mirrored
+    repo. The JSON in that item must carry an entry for every managed username.
+  EOT
+  type = map(object({
+    name  = string
+    email = string
+  }))
+  sensitive = true
+
+  validation {
+    condition     = alltrue([for u, v in var.user_identities : length(v.name) > 0 && length(v.email) > 0])
+    error_message = "Every user_identities entry needs a non-empty name and email; check the 1Password 'Authentik User Identities' item (op:// in the Taskfile and the authentik-drift-plan job)."
+  }
+}
