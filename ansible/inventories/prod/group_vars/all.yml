@@ -545,19 +545,6 @@ proxmox_firewall_smb_client_cidrs: "{{ firewall_ipset_special_entries.lan_client
 proxmox_firewall_wan_wireguard_vips:
   - 10.0.10.99
 
-# The UniFi gateway (10.0.10.1) forwards its own syslog to the alloy-syslog
-# MetalLB VIP at 10.0.10.162:514/udp (docs/31). Like the WAN WireGuard VIP
-# above, `-dest` scopes the accept to the VIP so it never opens :514 on a node's
-# own address, and the rule lives at cluster level because MetalLB can announce
-# .162 from ANY k3s node. `-source` pins it to the gateway SVI, the only syslog
-# sender. Without this rule the per-VM Proxmox firewall (default-drop) silently
-# drops the VIP frames after they cross the host bridge (fwpr/fwln) but before
-# they reach the announcing node's VM — which is exactly how the in-cluster
-# receiver looked perfectly healthy while nothing ever arrived. The matching
-# k8s ingress allow is kubernetes/.../alloy-syslog/networkpolicy.yaml.
-proxmox_firewall_cluster_rules:
-  - "IN ACCEPT -source 10.0.10.1 -dest 10.0.10.162 -p udp -dport 514 -log nolog"
-
 # Source sets for the two rule groups the collection renders itself but the
 # site re-scopes: sg-dns's `:53` (tcp+udp) and the whole of
 # sg-k3s-ingress-int (`:80`/`:443`). Both default to [admin_ts, admin_lan] in
@@ -629,6 +616,20 @@ proxmox_firewall_metrics_scrape_ports:
 # (homelab LAN + the /29 admin block). lan_clients is a superset of admin_lan,
 # so a port that moved needs no second admin rule.
 proxmox_firewall_security_groups:
+  # Lets the UniFi gateway reach the alloy-syslog receiver at its MetalLB VIP
+  # 10.0.10.162:514/udp (docs/31, docs/46). This is a per-VM (guest) firewall
+  # group, NOT a datacenter cluster.fw rule: a frame destined to a VIP is
+  # FORWARDED to the announcing node's guest VM, so it is filtered by that
+  # guest's firewall (default-drop), never PVEFW-HOST-IN — which is why the
+  # cluster.fw form silently dropped every frame. `-dest` scopes the accept to
+  # the VIP, `-source` to the gateway SVI (the only sender). Assigned to every
+  # ingress agent (the alloy-syslog pod is ingress-labelled but not node-pinned,
+  # so MetalLB can announce .162 from any of them), the same set the wg-easy VIP
+  # is opened across.
+  - name: sg-syslog-vip
+    rules:
+      - "IN ACCEPT -source 10.0.10.1 -dest 10.0.10.162 -p udp -dport 514 -log nolog"
+
   # git-ssh passthrough entrypoint on the ingress agents (Traefik `gitssh`,
   # internal VIP :2222 -> the GitLab VM's sshd). USER scope on purpose: the
   # pre-renumber path was the WAN forward, which any internal client could

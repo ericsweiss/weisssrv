@@ -1430,7 +1430,7 @@ nothing else.
   the network it reports on. Wiring those events into the homelab Alertmanager
   (syslog → Loki) and/or enabling site alerts is an open item, and a prerequisite
   before IPS goes inline (docs/16).
-- **Gateway syslog → Loki needs a Proxmox cluster firewall rule.** The gateway
+- **Gateway syslog → Loki needs a Proxmox GUEST firewall rule.** The gateway
   forwards its syslog to the `alloy-syslog` MetalLB VIP `10.0.10.162:514/udp`
   (CyberSecure "Activity Logging" / Integrations "System Logging / SIEM", both to
   that target). The receiver is sound — alloy's UDP listener → Loki, verified by
@@ -1440,10 +1440,14 @@ nothing else.
   *after* crossing the host bridge (`fwpr`/`fwln`) and *before* the VM's NIC — the
   receiver looked perfectly healthy while nothing arrived. The gateway sends
   correctly (`10.0.10.1 → 10.0.10.162:514` confirmed on the wire), so this was
-  never a UniFi bug. Fix: `proxmox_firewall_cluster_rules` carries
-  `IN ACCEPT -source 10.0.10.1 -dest 10.0.10.162 -p udp -dport 514` (cluster-level
-  because MetalLB can announce the VIP from any node — same pattern as the wg-easy
-  `.99:51820` rule). The matching in-cluster allow is
+  never a UniFi bug. Fix: a per-guest security group `sg-syslog-vip`
+  (`IN ACCEPT -source 10.0.10.1 -dest 10.0.10.162 -p udp -dport 514`) assigned to
+  every ingress agent — NOT a `cluster.fw [RULES]` entry, which compiles into
+  `PVEFW-HOST-IN` (host input) and never sees the guest-forwarded VIP frame. The
+  alloy-syslog pod is ingress-scheduled but not node-pinned, so MetalLB can
+  announce `.162` from any ingress agent and the group is opened on all of them
+  (the same set that carries the wg-easy `.99:51820` VIP rule). The matching
+  in-cluster allow is
   `kubernetes/infrastructure/observability/alloy-syslog/networkpolicy.yaml`.
 - **Adding a device to a VLAN** is DHCP — no repo change. Adding a *reservation*
   is a `unifi_client` entry (remember `-replace` for edits, #428).
