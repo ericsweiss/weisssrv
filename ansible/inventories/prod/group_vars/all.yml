@@ -439,7 +439,7 @@ helm_chart_versions:
   cert_manager: "v1.21.2"
   external_dns: "1.22.0"  # App version 0.22.0
   external_secrets: "2.10.0"  # ESO with 1Password Connect provider
-  kube_prometheus_stack: "91.2.0"  # prometheus-operator v0.94.0 (91.x major = operator bump only, no values-schema change; crds: CreateReplace)
+  kube_prometheus_stack: "91.2.1"  # prometheus-operator v0.94.0 (91.x major = operator bump only, no values-schema change; crds: CreateReplace)
   # prometheus-community/prometheus-operator-crds chart. Owns the
   # monitoring.coreos.com CRDs in the dedicated infrastructure-crds stage so
   # controllers (Traefik's ServiceMonitor) reconcile before kube-prometheus-stack
