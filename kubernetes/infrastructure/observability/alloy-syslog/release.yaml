@@ -88,7 +88,7 @@ spec:
       # single ingress node. The ingress label keeps it on the set where
       # sg-syslog-vip lives (docs/46).
       nodeSelector:
-        esweiss.com/ingress: "true"
+        ${cluster_node_label_domain}/ingress: "true"
     # The chart ships the config-reloader sidecar without a memory limit; memory
     # is incompressible so every container carries one (docs/33).
     configReloader:
