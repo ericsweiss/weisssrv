@@ -766,6 +766,15 @@ nic_tuning_overrides:
       - feature: gro
         value: "off"
 
+# Kill nic1's IPv6 link-local. nic1 is the NAS uplink; its UNTAGGED native-VLAN
+# fe80:: is an unfiltered L2 path from the NAS to the Home segment that the VLAN
+# zone firewall never inspects, so a Home host could reach NAS services over
+# IPv6 around the policy. Strictly per-interface (never net.ipv6.conf.all), so
+# the management bridge, tailscale and the tagged VLAN subinterfaces keep their
+# IPv6. Requires weisssrv.infra >= v0.17.0 (nic_tuning_disable_ipv6); docs/11.
+nic_tuning_disable_ipv6:
+  - nic1
+
 # Swappiness 1 — the only host that sets it (the others run neither ZFS ARC nor
 # memory-pinned guests). Above 1 the kernel parks cold anon pages to swap even
 # with free RAM and never pages them back in, so swap ratchets upward; at 1 it
