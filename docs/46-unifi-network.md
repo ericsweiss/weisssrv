@@ -1430,6 +1430,21 @@ nothing else.
   the network it reports on. Wiring those events into the homelab Alertmanager
   (syslog → Loki) and/or enabling site alerts is an open item, and a prerequisite
   before IPS goes inline (docs/16).
+- **Gateway syslog → Loki needs a Proxmox cluster firewall rule.** The gateway
+  forwards its syslog to the `alloy-syslog` MetalLB VIP `10.0.10.162:514/udp`
+  (CyberSecure "Activity Logging" / Integrations "System Logging / SIEM", both to
+  that target). The receiver is sound — alloy's UDP listener → Loki, verified by
+  in-pod injection — but the k3s nodes run the per-VM Proxmox firewall in
+  default-drop, and a frame **destined to a VIP** (not the node's own address)
+  matches no security group, so every gateway syslog frame was silently dropped
+  *after* crossing the host bridge (`fwpr`/`fwln`) and *before* the VM's NIC — the
+  receiver looked perfectly healthy while nothing arrived. The gateway sends
+  correctly (`10.0.10.1 → 10.0.10.162:514` confirmed on the wire), so this was
+  never a UniFi bug. Fix: `proxmox_firewall_cluster_rules` carries
+  `IN ACCEPT -source 10.0.10.1 -dest 10.0.10.162 -p udp -dport 514` (cluster-level
+  because MetalLB can announce the VIP from any node — same pattern as the wg-easy
+  `.99:51820` rule). The matching in-cluster allow is
+  `kubernetes/infrastructure/observability/alloy-syslog/networkpolicy.yaml`.
 - **Adding a device to a VLAN** is DHCP — no repo change. Adding a *reservation*
   is a `unifi_client` entry (remember `-replace` for edits, #428).
 - **Anything the switch does per-port** stays a UI change, recorded here.
