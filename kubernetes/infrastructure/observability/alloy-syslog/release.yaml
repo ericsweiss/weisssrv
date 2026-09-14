@@ -81,6 +81,14 @@ spec:
       type: deployment
       replicas: 1
       priorityClassName: platform
+      # Run on ANY ingress agent — deliberately NOT pinned to a specific node.
+      # The syslog MetalLB VIP (.162) follows the pod (eTP: Local announces from
+      # the pod's node), sg-syslog-vip is opened on every ingress guest, and the
+      # gateway re-ARPs the VIP on failover — so the receiver survives losing any
+      # single ingress node. The ingress label keeps it on the set where
+      # sg-syslog-vip lives (docs/46).
+      nodeSelector:
+        esweiss.com/ingress: "true"
     # The chart ships the config-reloader sidecar without a memory limit; memory
     # is incompressible so every container carries one (docs/33).
     configReloader:
