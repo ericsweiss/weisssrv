@@ -58,7 +58,7 @@ data:
   kube_vip_version: v1.2.3
   lidarr_version: 3.1.0.4875
   mealie_postgresql_version: 18.6-alpine
-  mealie_version: v3.25.1
+  mealie_version: v3.26.0
   meilisearch_version: v1.15.2
   nextcloud_exporter_version: 0.9.1
   nextcloud_postgres_version: 18.6-trixie
