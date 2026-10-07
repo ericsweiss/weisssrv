@@ -1,23 +1,14 @@
-"""Coverage for check-cluster-literals.py.
-
-The gate's whole value is that it FAILS on a regression, so each exemption and
-each detection arm is exercised against a fixture repo rather than the live tree
-(which is expected to be clean and therefore proves nothing about failure).
-"""
+"""Tests that check-cluster-literals.py fails on each literal it detects and honours each exemption."""
 from __future__ import annotations
 
-import importlib.util
 import textwrap
 from pathlib import Path
 
 import pytest
+from script_loader import load_script
 
 REPO = Path(__file__).resolve().parent.parent
-_SPEC = importlib.util.spec_from_file_location(
-    "check_cluster_literals", REPO / "scripts" / "check-cluster-literals.py"
-)
-gate = importlib.util.module_from_spec(_SPEC)
-_SPEC.loader.exec_module(gate)
+gate = load_script("check-cluster-literals.py")
 
 
 CLUSTER_CONFIG = textwrap.dedent(
@@ -41,6 +32,8 @@ CLUSTER_CONFIG = textwrap.dedent(
       cluster_wg_easy_vip: "10.0.10.99"
       cluster_syslog_vip: "10.0.10.162"
       cluster_api_vip: "10.0.10.161"
+      cluster_lan_gateway: "10.0.10.1"
+      cluster_timezone: "America/Los_Angeles"
       cluster_upstream_dns_servers: "10.0.10.150 10.0.10.160"
     """
 )
@@ -77,6 +70,11 @@ ALL_YML = textwrap.dedent(
     """\
     internal_domain: example.lan
     external_domain: example.com
+    syslog_vip: 10.0.10.162
+    wg_easy_vip: 10.0.10.99
+    proxmox_lxc_gateway: 10.0.10.1
+    proxmox_vm_cloudinit_gateway: 10.0.10.1
+    timezone: America/Los_Angeles
     dns_servers:
       - 10.0.10.150
       - 10.0.10.160
@@ -217,7 +215,7 @@ def test_address_literal_is_exempt_in_the_rules_tree(repo: Path) -> None:
 
 
 def test_unadopted_address_is_not_reported(repo: Path) -> None:
-    """Per-guest addresses are inventory data and deliberately stay literal."""
+    """Per-guest addresses are inventory data and stay literal."""
     write(repo, "kubernetes/apps/demo/endpointslice.yaml", """\
         apiVersion: discovery.k8s.io/v1
         kind: EndpointSlice
@@ -241,6 +239,32 @@ def test_metallb_vip_drift_is_reported(repo: Path) -> None:
     """The VIPs mirror as AdGuard rewrite answers, not as a named inventory key."""
     (repo / gate.ANSIBLE_DNS).write_text(DNS_YML.replace("10.0.10.101", "10.0.10.109"))
     assert any("cluster_metallb_internal_vip" in v for v in run(repo))
+
+
+def test_a_new_vip_key_is_scanned_without_editing_the_gate(repo: Path) -> None:
+    """A seventh cluster_*_vip joins the literal scan by being declared."""
+    (repo / gate.CLUSTER_CONFIG).write_text(
+        CLUSTER_CONFIG + '  cluster_extra_vip: "10.0.10.98"\n'
+    )
+    write(repo, "kubernetes/apps/demo/svc.yaml", """\
+        apiVersion: v1
+        kind: Service
+        metadata:
+          annotations:
+            metallb.io/loadBalancerIPs: 10.0.10.98
+        """)
+    violations = run(repo)
+    assert any("10.0.10.98" in v and "cluster_extra_vip" in v for v in violations)
+
+
+def test_a_new_vip_key_with_no_mirror_arm_is_reported(repo: Path) -> None:
+    (repo / gate.CLUSTER_CONFIG).write_text(
+        CLUSTER_CONFIG + '  cluster_extra_vip: "10.0.10.98"\n'
+    )
+    assert any(
+        "cluster_extra_vip" in v and "mirrored by no arm" in v
+        for v in gate.check_inventory(repo, gate.load_config(repo))
+    )
 
 
 def test_a_substituted_tree_is_derived_not_hand_listed(repo: Path) -> None:
@@ -322,7 +346,12 @@ def test_a_disappeared_key_is_vacuous_not_a_quiet_pass(repo: Path, key: str) -> 
 def test_the_success_count_reflects_the_checks_that_ran(repo: Path) -> None:
     config = gate.load_config(repo)
     full = gate.mirror_check_count(config)
-    assert full == len(gate.INVENTORY_MIRRORS) + len(gate.VIP_MIRROR_KEYS) + 1
+    assert full == (
+        len(gate.INVENTORY_MIRRORS)
+        + len(gate.SECONDARY_MIRRORS)
+        + len(gate.VIP_MIRROR_KEYS)
+        + 1
+    )
     del config["cluster_metallb_public_vip"]
     assert gate.mirror_check_count(config) == full - 1
 
@@ -335,7 +364,7 @@ def test_a_missing_dns_servers_mirror_is_a_violation_not_a_skip(repo: Path) -> N
 
 
 def test_dashboard_json_literal_is_reported(repo: Path) -> None:
-    """A *.yaml-only walk missed the generator sources rendered into ConfigMaps."""
+    """Dashboard JSON is rendered into a substituted manifest, so it is scanned too."""
     write(repo, "kubernetes/infrastructure/observability/dashboards/x.json", """\
         {"panels": [{"expr": "probe_success{instance=\\"https://git.example.lan\\"}"}]}
         """)
@@ -353,3 +382,121 @@ def test_generator_source_comment_is_not_content(repo: Path) -> None:
 def test_markdown_beside_a_manifest_is_not_scanned(repo: Path) -> None:
     write(repo, "kubernetes/apps/demo/README.md", "Reachable at app.example.lan.\n")
     assert run(repo) == []
+
+
+def test_a_mismatched_timezone_mirror_is_reported(repo: Path) -> None:
+    body = (repo / gate.ANSIBLE_ALL).read_text().replace(
+        "timezone: America/Los_Angeles", "timezone: UTC"
+    )
+    (repo / gate.ANSIBLE_ALL).write_text(body)
+    assert any("cluster_timezone" in v for v in run(repo))
+
+
+def test_the_lan_gateway_agrees_with_both_inventory_variables(repo: Path) -> None:
+    assert not run(repo)
+    body = (repo / gate.ANSIBLE_ALL).read_text().replace(
+        "proxmox_vm_cloudinit_gateway: 10.0.10.1", "proxmox_vm_cloudinit_gateway: 10.0.10.254"
+    )
+    (repo / gate.ANSIBLE_ALL).write_text(body)
+    assert any("proxmox_vm_cloudinit_gateway" in v for v in run(repo))
+
+
+def test_a_mismatched_wg_easy_vip_mirror_is_reported(repo: Path) -> None:
+    body = (repo / gate.ANSIBLE_ALL).read_text().replace(
+        "wg_easy_vip: 10.0.10.99", "wg_easy_vip: 10.0.10.98"
+    )
+    (repo / gate.ANSIBLE_ALL).write_text(body)
+    assert any("cluster_wg_easy_vip" in v for v in run(repo))
+
+
+def test_a_hard_coded_timezone_is_a_violation():
+    """cluster_timezone has no netpol/rules exemption: nothing parses a TZ pre-Flux."""
+    hits = gate.scan_text("apps/x/deployment.yaml", 'TZ: "America/Los_Angeles"', [],
+                          {"America/Los_Angeles": "cluster_timezone"})
+    assert hits and "cluster_timezone" in hits[0]
+
+
+def test_the_timezone_placeholder_is_not_a_violation():
+    assert gate.scan_text("apps/x/deployment.yaml", 'TZ: "${cluster_timezone}"', [],
+                          {"America/Los_Angeles": "cluster_timezone"}) == []
+
+
+def test_the_lan_gateway_is_an_address_key():
+    """Registering it is what makes a bare gateway address fail outside netpols."""
+    assert "cluster_lan_gateway" in gate.ADDRESS_KEYS
+
+
+def test_a_trailing_comment_is_not_content(repo: Path) -> None:
+    """kustomize drops a trailing comment before Flux substitutes, so prose
+    naming the real domain after a `#` is not a value."""
+    write(repo, "kubernetes/infrastructure/observability/gen.py", """\
+        ZONE = "${cluster_external_domain}"  # resolves to example.com
+        """)
+    assert run(repo) == []
+
+
+def test_a_hash_inside_dashboard_json_is_still_scanned(repo: Path) -> None:
+    """JSON has no comment syntax: a `#` there is data, not a comment."""
+    write(repo, "kubernetes/infrastructure/observability/dashboards/x.json", """\
+        {"panels": [{"title": "load # host app.example.lan"}]}
+        """)
+    assert any("x.json" in v for v in run(repo))
+
+
+def test_the_longest_matching_domain_is_the_one_reported() -> None:
+    """A domain spelled inside a longer one must not double-report."""
+    hits = gate.scan_text(
+        "apps/x/route.yaml", "host: app.lan.example.com",
+        ["example.com", "lan.example.com"], {},
+    )
+    assert hits == [
+        "apps/x/route.yaml: literal 'lan.example.com' — use the cluster-config placeholder"
+    ]
+
+
+def test_the_longest_matching_address_is_the_one_reported() -> None:
+    """Same for an address spelled inside a CIDR: the CIDR owns the hit."""
+    hits = gate.scan_text(
+        "apps/x/policy.yaml", "cidr: 10.0.10.0/24", [],
+        {"10.0.10.0/24": "cluster_lan_cidr", "10.0.10.0": "cluster_lan_network"},
+    )
+    assert hits == ["apps/x/policy.yaml: literal '10.0.10.0/24' — use ${cluster_lan_cidr}"]
+
+
+# An unparseable input means the gate could not inspect its subject: exit 2
+# through Vacuous, never a traceback and never a finding.
+@pytest.mark.parametrize(
+    "rel",
+    [
+        "cluster_config",
+        "ansible_all",
+        "ansible_dns",
+        "cluster_dir_stage",
+    ],
+)
+def test_an_unparseable_gate_input_is_vacuous_not_a_traceback(repo: Path, rel: str) -> None:
+    broken = "a: [1,\n  b: {\n"
+    target = {
+        "cluster_config": gate.CLUSTER_CONFIG,
+        "ansible_all": gate.ANSIBLE_ALL,
+        "ansible_dns": gate.ANSIBLE_DNS,
+        "cluster_dir_stage": f"{gate.CLUSTER_DIR}/apps.yaml",
+    }[rel]
+    (repo / target).write_text(broken)
+    with pytest.raises(gate.Vacuous):
+        run(repo)
+    assert gate.main(["--repo-root", str(repo)]) == 2
+
+
+def test_an_unparseable_scanned_manifest_is_vacuous_not_a_finding(repo: Path) -> None:
+    write(repo, "kubernetes/apps/demo/route.yaml", "a: [1,\n  b: {\n")
+    with pytest.raises(gate.Vacuous):
+        run(repo)
+    assert gate.main(["--repo-root", str(repo)]) == 2
+
+
+def test_an_undecodable_generator_source_is_vacuous_not_a_traceback(repo: Path) -> None:
+    (repo / "kubernetes/apps/demo/dashboard.json").write_bytes(b"\xff\xfe{")
+    with pytest.raises(gate.Vacuous):
+        run(repo)
+    assert gate.main(["--repo-root", str(repo)]) == 2

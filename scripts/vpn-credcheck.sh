@@ -1,42 +1,38 @@
 #!/usr/bin/env bash
-# Print the vpn-credentials Secret keys REQUIRED by a download client's VPN
-# provider that are currently MISSING (absent or empty) — a space-separated list
-# on stdout, empty output when every required key is present.
-#
-# This is the SINGLE source of truth for the provider -> required-keys mapping
-# and the Secret lookup, shared by two Taskfile commands so the pre-flight can
-# never drift between them:
-#   * `task downloads:vpn -- APP=<app> STATE=on`  (provider read from the CM)
-#   * `task downloads:vpn-provider -- APP=<app> PROVIDER=<p>` (provider passed in)
-# Turning a VPN on — or switching to a provider — whose credentials aren't wired
-# rolls the pod into gluetun settings-validation failure / CrashLoopBackOff, so
-# both callers pre-flight with this check and refuse before patching.
-#
+# Print the vpn-credentials Secret keys required by a download client's VPN
+# provider that are missing, space-separated on stdout. Single source of the
+# provider -> required-keys map for the `task downloads:vpn*` pre-flights.
+
 # Usage: scripts/vpn-credcheck.sh <nzbget|qbittorrent> [gluetun-provider-string]
-#   The provider string, when given, is gluetun's exact VPN_SERVICE_PROVIDER
-#   value (e.g. "privado", "vpn unlimited"). When omitted it is read from the
-#   app's <app>-vpn-config ConfigMap (data.vpn_provider) — i.e. the provider the
-#   pod would actually start with.
-#
-# Exit status:
-#   0  check ran (missing keys, if any, on stdout)
-#   1  usage / bad app argument (message on stderr)
-#   2  the provider is empty or unknown to this script — callers MUST refuse,
-#      never treat it as "nothing missing": a hand-patched or blanked
-#      vpn_provider is exactly the input this pre-flight exists to catch.
+#        scripts/vpn-credcheck.sh --list-apps
+# The provider defaults to the app's <app>-vpn-config ConfigMap (docs/21).
+
+# CRITICAL: exit 1 is a usage or bad-app error, exit 2 an empty or unknown
+# provider. A caller must refuse on 2 rather than read empty output as
+# "nothing missing" — a blanked vpn_provider is what this pre-flight catches.
 set -euo pipefail
 
 UNKNOWN_PROVIDER_RC=2
 
 NS=downloads
 
+# The VPN-capable download clients. Callers read this list with --list-apps
+# rather than restating it.
+APPS="nzbget qbittorrent"
+
+if [ "${1:-}" = "--list-apps" ]; then
+    # shellcheck disable=SC2086  # word splitting is how the list becomes lines
+    printf '%s\n' $APPS
+    exit 0
+fi
+
 app="${1:-}"
 provider="${2-}"
 
-case "$app" in
-    nzbget | qbittorrent) ;;
+case " $APPS " in
+    *" $app "*) ;;
     *)
-        echo "Usage: $0 <nzbget|qbittorrent> [gluetun-provider-string]" >&2
+        echo "Usage: $0 <$(echo "$APPS" | tr ' ' '|')> [gluetun-provider-string]" >&2
         exit 1
         ;;
 esac
@@ -50,30 +46,41 @@ if [ -z "$provider" ]; then
 fi
 
 # Map gluetun's provider string to the vpn-credentials keys its settings
-# validation requires. An unknown/empty provider is a HARD ERROR, not an empty
-# requirement list: `task downloads:vpn` calls this with no provider argument,
-# so the value comes unvalidated from the live ConfigMap and "no required keys"
-# would read as "fully wired".
+# validation requires. An unknown or empty provider is a hard error, never an
+# empty requirement list, which would read as "fully wired".
 case "$provider" in
     privado)
         req_keys="privadovpn-user privadovpn-password"
         ;;
-    "vpn unlimited")
-        req_keys="vpnunlimited-user vpnunlimited-password \
-            vpnunlimited-clientcrt vpnunlimited-clientkey"
-        ;;
     *)
         echo "ERROR: unknown VPN provider '${provider}' for app '${app}'." >&2
-        echo "       Known providers: privado, 'vpn unlimited'. Add its required" >&2
+        echo "       Known providers: privado. Add a new provider's required" >&2
         echo "       vpn-credentials keys here before enabling it (docs/21)." >&2
         exit "$UNKNOWN_PROVIDER_RC"
         ;;
 esac
 
+# Prove the Secret read before treating an empty key as missing: an unreachable
+# cluster would otherwise be reported as "provider not fully wired", sending the
+# operator to 1Password for a credential that is already there.
+secret_exists=1
+if ! read_err="$(kubectl get secret vpn-credentials -n "$NS" -o name 2>&1)"; then
+    if printf '%s' "$read_err" | grep -qi 'not found'; then
+        secret_exists=0
+    else
+        echo "ERROR: could not read the vpn-credentials Secret in $NS:" >&2
+        printf '       %s\n' "$read_err" >&2
+        exit "$UNKNOWN_PROVIDER_RC"
+    fi
+fi
+
 missing=""
 for k in $req_keys; do
-    v="$(kubectl get secret vpn-credentials -n "$NS" \
-        -o "jsonpath={.data['$k']}" 2>/dev/null || true)"
+    v=""
+    if [ "$secret_exists" -eq 1 ]; then
+        v="$(kubectl get secret vpn-credentials -n "$NS" \
+            -o "jsonpath={.data['$k']}" 2>/dev/null || true)"
+    fi
     [ -z "$v" ] && missing="$missing $k"
 done
 

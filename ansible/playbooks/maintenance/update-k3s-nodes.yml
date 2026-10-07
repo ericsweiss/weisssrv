@@ -1,7 +1,6 @@
 ---
-# K3s node update playbook
-# Performs rolling updates of k3s nodes with proper pod evacuation
-# This handles k3s binary upgrades with zero-downtime pod migration
+# Rolling k3s binary upgrade, serial:1 per play (servers, then agents).
+# Cordon only, never drain — see the note above the cordon task.
 
 - name: Pre-flight checks
   hosts: k3s
@@ -11,7 +10,6 @@
       ansible.builtin.systemd:
         name: "{{ 'k3s' if k3s_role == 'server' else 'k3s-agent' }}"
       check_mode: true
-      register: k3s_service
 
     - name: Verify kubectl access (servers only)
       ansible.builtin.command: k3s kubectl get nodes
@@ -36,11 +34,6 @@
   hosts: k3s_servers
   become: true
   serial: 1  # One server at a time for HA
-  vars:
-    # Delegate target for kubectl against the cluster: a server OTHER than the
-    # one being upgraded; falls back to k3s_servers[0] when it is the only one.
-    # Lazily templated per task, so it tracks inventory_hostname per host.
-    k3s_delegate_server: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
   tasks:
     - name: Display current node being updated
       ansible.builtin.debug:
@@ -62,24 +55,19 @@
     # any task fails mid-sequence (e.g., upgrade failure, restart timeout).
     - name: Upgrade k3s server with guaranteed uncordon
       block:
-        # etcd-quorum: restarting this server's k3s briefly drops its etcd member.
-        # Do NOT do that while kured is mid-reboot of ANOTHER server — two of three
-        # down loses quorum. Check before the cordon+upgrade, and RE-ASSERT right
-        # before the restart to shrink the check->act window (residual sub-second
-        # TOCTOU is covered by single-fault etcd tolerance + kured's concurrency:1).
+        # CRITICAL: restarting this server's k3s briefly drops its etcd member,
+        # so it must not run while kured is mid-reboot of another server — two
+        # of three down loses quorum. The check runs before the cordon and is
+        # re-asserted right before the restart to shrink the check-to-act window.
         - name: Serialize against kured before cordoning/upgrading this server (etcd quorum)
           ansible.builtin.include_tasks: _wait-no-kured-server-reboot.yml
           vars:
             kured_clear_reason: "before upgrading {{ inventory_hostname }}"
             kured_clear_delegate: "{{ k3s_delegate_server }}"
 
-        # NO drain: a k3s service restart keeps running pods (containerd persists
-        # the containers across a kubelet restart), and draining the executor's
-        # own node would deadlock the CI job. Cordon just blocks new scheduling
-        # for the ~1-2 min the binary upgrade takes.
-        # When this node runs the CI executor pod, its exec/log stream blips
-        # for the seconds the kubelet restarts; the container and the job
-        # process survive, so the gap is tolerated.
+        # No drain: containerd persists running pods across a kubelet restart,
+        # and draining the executor's own node would deadlock the CI job. The
+        # cordon blocks new scheduling for the minute or two the upgrade takes.
         - name: Cordon node before upgrade
           ansible.builtin.command: k3s kubectl cordon {{ inventory_hostname }}
           changed_when: true
@@ -104,10 +92,9 @@
             state: restarted
             daemon_reload: true
 
-        # /readyz (stricter than /healthz) gates on the apiserver being fully
-        # ready to serve — same gate as the k3s role's "Wait for k3s API healthy"
-        # handler. A plain `kubectl get nodes` can pass while etcd is still
-        # rejoining, letting serial:1 advance to the next server too early.
+        # /readyz gates on the apiserver being fully ready to serve. A plain
+        # `kubectl get nodes` can pass while etcd is still rejoining, letting
+        # serial:1 advance to the next server too early.
         - name: Wait for k3s API healthy (/readyz)
           ansible.builtin.command: k3s kubectl --request-timeout=5s get --raw=/readyz
           register: k3s_ready
@@ -133,10 +120,6 @@
   hosts: k3s_agents
   become: true
   serial: 1  # One agent at a time to minimize disruption
-  vars:
-    # Same lazily-templated delegate target as the server play; for agents the
-    # difference() filter is a no-op, so this resolves to k3s_servers[0].
-    k3s_delegate_server: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
   tasks:
     - name: Display current node being updated
       ansible.builtin.debug:
@@ -187,7 +170,22 @@
             # file with it rather than the cluster token — docs/19 "Agent token".
             K3S_TOKEN: "{{ k3s_agent_token }}"
           changed_when: true
+          # no_log censors the whole result, so the failure is reported by the
+          # assert below instead — it names the host, version and rc.
           no_log: true
+          failed_when: false
+          register: k3s_agent_install
+
+        - name: Verify the staged k3s agent installer succeeded
+          ansible.builtin.assert:
+            that:
+              - (k3s_agent_install.rc | default(1)) == 0
+            fail_msg: >-
+              /root/k3s-install.sh agent failed on {{ inventory_hostname }} for
+              k3s {{ k3s_version }} (rc={{ k3s_agent_install.rc | default('?') }}).
+              Re-run it by hand on the node to see the output; it is censored
+              here because K3S_TOKEN is in the task environment.
+          when: not (k3s_agent_install.skipped | default(false))
 
         # Agents must never run k3s.service (the server unit); it may not exist
         # on a clean agent install, hence the stat.
@@ -224,17 +222,19 @@
 
         - name: Wait for pods to stabilize on upgraded node
           # Mirrors list_unhealthy_pods in scripts/maintenance-lib.sh so this
-          # gate and post-maintenance-verify.sh agree: skip terminal BATCH pods
-          # (never-GC'd CI/Job pods), still flag Pending/CrashLoop/Evicted/
-          # OOMKilled and Running-but-not-ready. Inlined rather than sourced —
-          # this task delegates to a k3s server, which has no copy of the repo.
+          # gate and post-maintenance-verify.sh agree. Inlined because the task
+          # delegates to a k3s server, which has no copy of the repo.
           ansible.builtin.shell: |
             set -o pipefail
             k3s kubectl get pods --all-namespaces \
               --field-selector spec.nodeName={{ inventory_hostname }} \
               --no-headers 2>/dev/null \
-            | awk '
+            | awk -v runner_ns='{{ maintenance_ci_runner_namespaces | default([]) | join(" ") }}' \
+                  -v runner_prefix='{{ maintenance_ci_executor_pod_prefix | default("runner-") }}' '
+                BEGIN { n = split(runner_ns, ns, " "); for (i = 1; i <= n; i++) runner[ns[i]] = 1 }
                 $4 == "Completed" || $4 == "Succeeded" || $4 == "Error" || $4 == "Failed" { next }
+                # Runner JOB pods are pipeline state, not cluster health.
+                ($1 in runner) && index($2, runner_prefix) == 1 { next }
                 { split($3, a, "/"); if ($4 != "Running" || a[1] != a[2]) print }' \
             | wc -l
           args:
@@ -272,19 +272,23 @@
       ansible.builtin.debug:
         msg: "{{ final_nodes.stdout_lines }}"
 
+    # No `|| true`: the awk filter exits 0 on no match anyway, so a kubectl
+    # failure still reds the task instead of reading as "all nodes Ready".
     - name: Check for NotReady nodes
       ansible.builtin.shell: |
         set -o pipefail
-        k3s kubectl get nodes --no-headers | grep -v " Ready" | awk '{print $1}' || true
+        k3s kubectl get nodes --no-headers | awk '$2 !~ /^Ready/ {print $1}'
       args:
         executable: /bin/bash
       changed_when: false
       register: not_ready_nodes
 
-    - name: Warn if nodes are NotReady
-      ansible.builtin.debug:
-        msg: "WARNING: Nodes not ready: {{ not_ready_nodes.stdout }}"
-      when: not_ready_nodes.stdout != ""
+    - name: Assert every node is Ready
+      ansible.builtin.assert:
+        that:
+          - not_ready_nodes.stdout == ""
+        fail_msg: "Nodes not ready after the rolling upgrade: {{ not_ready_nodes.stdout }}"
+        success_msg: "All nodes Ready"
 
     - name: Display pod status summary
       ansible.builtin.command: k3s kubectl get pods --all-namespaces -o wide
@@ -296,20 +300,30 @@
         msg: "{{ pod_status.stdout_lines }}"
 
     - name: Check for unhealthy pods
-      # Same terminal-skip semantics as list_unhealthy_pods (see the
-      # stabilization wait above).
+      # Mirrors list_unhealthy_pods, like the stabilization wait above.
+      # No failed_when: a kubectl failure reds the task instead of reading
+      # as "no unhealthy pods".
       ansible.builtin.shell: |
         set -o pipefail
-        k3s kubectl get pods --all-namespaces --no-headers 2>/dev/null \
-        | awk '
+        k3s kubectl get pods --all-namespaces --no-headers \
+        | awk -v runner_ns='{{ maintenance_ci_runner_namespaces | default([]) | join(" ") }}' \
+              -v runner_prefix='{{ maintenance_ci_executor_pod_prefix | default("runner-") }}' '
+            BEGIN { n = split(runner_ns, ns, " "); for (i = 1; i <= n; i++) runner[ns[i]] = 1 }
             $4 == "Completed" || $4 == "Succeeded" || $4 == "Error" || $4 == "Failed" { next }
+            # Runner JOB pods are pipeline state, not cluster health.
+            ($1 in runner) && index($2, runner_prefix) == 1 { next }
             { split($3, a, "/"); if ($4 != "Running" || a[1] != a[2]) print $1" "$2 }'
       args:
         executable: /bin/bash
-      changed_when: false
       register: unhealthy_pods
+      retries: 6
+      delay: 10
+      until: unhealthy_pods.stdout == ""
+      changed_when: false
 
-    - name: Warn if pods are unhealthy
-      ansible.builtin.debug:
-        msg: "WARNING: Unhealthy pods detected: {{ unhealthy_pods.stdout_lines }}"
-      when: unhealthy_pods.stdout != ""
+    - name: Assert no unhealthy pods remain
+      ansible.builtin.assert:
+        that:
+          - unhealthy_pods.stdout == ""
+        fail_msg: "Unhealthy pods after the rolling upgrade: {{ unhealthy_pods.stdout_lines }}"
+        success_msg: "No unhealthy pods"

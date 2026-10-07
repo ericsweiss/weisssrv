@@ -1,24 +1,7 @@
 ---
-# VPA policies for platform controllers. Default updateMode is Auto (the updater
-# may evict to apply new requests); anything on the synchronous request or
-# admission path uses Initial instead, annotated per entry below.
-#
-# controlledValues: RequestsOnly is TARGETED, added only when a limit is
-# OBSERVED to oscillate — never on principle. On the default RequestsAndLimits
-# the updater rescales the limit with the recommendation, so a quiet period
-# shrinks the ceiling and the next burst runs against it. Flipping an entry
-# lowers its effective ceiling to the manifest limit, so it is only safe once
-# that limit is re-measured and this maxAllowed reconciled with it.
-#
-# Every maxAllowed.memory below is derived from the HelmRelease's memory limit,
-# per the scoped rule in docs/33 § Limit oscillation: a RequestsOnly entry caps
-# AT the limit (the request may reach the admitted ceiling, never pass it); a
-# limit-controlling entry caps at 0.8x it, because a cap at or above the limit
-# lets the updater rescale the declared ceiling out from under it. `Off`
-# entries are recommend-only and exempt. Re-derive a cap in the same commit
-# that moves its limit.
-#
-# Lives in configs/ because controllers/vpa installs the CRD.
+# VPA policies for platform controllers: updateMode Auto by default, Initial on
+# the synchronous request or admission path. controlledValues and maxAllowed
+# follow docs/33 § Limit oscillation. Lives here because controllers/vpa owns the CRD.
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
 metadata:
@@ -48,14 +31,27 @@ spec:
     apiVersion: apps/v1
     kind: DaemonSet
     name: metallb-speaker
-  # Initial (not Auto): the speaker announces every MetalLB VIP, so evicting the
-  # announcing pod forces a leader re-election + gratuitous-ARP failover that
-  # reads as an ingress outage. metallb-controller stays Auto — it announces
-  # nothing.
+  # Initial (not Auto): the speaker announces every MetalLB VIP, so evicting it
+  # forces a re-election + gratuitous-ARP failover that reads as an ingress
+  # outage. metallb-controller stays Auto — it announces nothing.
   updatePolicy:
     updateMode: Initial
   resourcePolicy:
     containerPolicies:
+      # The reloader and frr-metrics sidecars are bounded by the release's
+      # postRenderer; cap == each one's limit under RequestsOnly, so the "*"
+      # 204Mi never raises them past that bound.
+      - containerName: reloader
+        minAllowed: {cpu: 10m, memory: 16Mi}
+        maxAllowed: {cpu: 100m, memory: 64Mi}
+        controlledResources: [cpu, memory]
+        controlledValues: RequestsOnly
+      - containerName: frr-metrics
+        minAllowed: {cpu: 10m, memory: 32Mi}
+        maxAllowed: {cpu: 100m, memory: 128Mi}
+        controlledResources: [cpu, memory]
+        controlledValues: RequestsOnly
+      # speaker and frr, each under a 256Mi limit.
       - containerName: "*"
         minAllowed: {cpu: 10m, memory: 32Mi}
         maxAllowed: {cpu: 300m, memory: 204Mi}
@@ -71,10 +67,9 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: traefik
-  # Initial (not Auto): Traefik is the ingress data path for every service. An
-  # Auto eviction's readiness gap shows up as 502s on the registry and hung
-  # git.esweiss.com under CI-burst load, and a PDB cannot help — each replacement
-  # pod is briefly not-ready regardless.
+  # Initial (not Auto): Traefik is the ingress data path for every service, and
+  # an eviction's readiness gap shows up as 502s under CI-burst load. A PDB
+  # cannot help — each replacement pod is briefly not-ready regardless.
   updatePolicy:
     updateMode: Initial
   resourcePolicy:
@@ -100,10 +95,13 @@ spec:
     updateMode: Auto
   resourcePolicy:
     containerPolicies:
+      # RequestsOnly; cap == the 192Mi limit in controllers/cert-manager/
+      # release.yaml, the ~114Mi 30d peak +60% (docs/33 § Limit oscillation).
       - containerName: "*"
         minAllowed: {cpu: 10m, memory: 32Mi}
-        maxAllowed: {cpu: 200m, memory: 102Mi}
+        maxAllowed: {cpu: 200m, memory: 192Mi}
         controlledResources: [cpu, memory]
+        controlledValues: RequestsOnly
 ---
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
@@ -119,10 +117,13 @@ spec:
     updateMode: Auto
   resourcePolicy:
     containerPolicies:
+      # RequestsOnly; cap == the 160Mi cainjector limit in
+      # controllers/cert-manager/release.yaml (docs/33 § Limit oscillation).
       - containerName: "*"
         minAllowed: {cpu: 10m, memory: 32Mi}
-        maxAllowed: {cpu: 200m, memory: 128Mi}
+        maxAllowed: {cpu: 200m, memory: 160Mi}
         controlledResources: [cpu, memory]
+        controlledValues: RequestsOnly
 ---
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
@@ -134,17 +135,19 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: cert-manager-webhook
-  # Initial (not Auto): single-replica on the synchronous admission path, so an
-  # eviction would briefly fail-closed validating cert-manager CRs. A PDB cannot
-  # help one replica without blocking drains outright.
+  # Auto: 2 replicas behind controllers/cert-manager/pdb.yaml absorb an
+  # eviction without failing a CR write (the external-secrets webhook shape).
   updatePolicy:
-    updateMode: Initial
+    updateMode: Auto
   resourcePolicy:
     containerPolicies:
+      # RequestsOnly; cap == the 128Mi webhook limit in release.yaml, itself
+      # the ~79Mi 30d peak +60% (docs/33 § Limit oscillation).
       - containerName: "*"
         minAllowed: {cpu: 10m, memory: 32Mi}
-        maxAllowed: {cpu: 200m, memory: 102Mi}
+        maxAllowed: {cpu: 200m, memory: 128Mi}
         controlledResources: [cpu, memory]
+        controlledValues: RequestsOnly
 ---
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
@@ -275,10 +278,9 @@ spec:
         maxAllowed: {cpu: 500m, memory: 256Mi}
         controlledResources: [cpu, memory]
 ---
-# kube-vip owns the API VIP on all three control-plane nodes and is rendered by
-# the weisssrv.infra k3s role's kube-vip-manifest.yaml.j2 template (weisssrv-lib),
-# not by Flux. Recommend-only: the updater must never evict the pod serving the
-# API endpoint, and its requests are hand-set in that template.
+# kube-vip owns the API VIP and is rendered by the weisssrv.infra k3s role, not
+# by Flux. Off: the updater must never evict the pod serving the API endpoint,
+# and its requests are hand-set in that template.
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
 metadata:
@@ -298,11 +300,31 @@ spec:
         maxAllowed: {cpu: 200m, memory: 192Mi}
         controlledResources: [cpu, memory]
 ---
-# metrics-server feeds every HPA target and the VPA recommender, so this stays
-# recommend-only: an eviction gap would blind the whole autoscaling stack at
-# once, even with the 2 replicas + PDB the HelmRelease now runs
-# (controllers/metrics-server). The recommendation just makes a future request
-# bump data-driven. maxAllowed tracks the release's memory limit.
+# Off (recommendations only): kured holds the cluster-wide reboot lock, so an
+# updater eviction mid-cycle is never wanted. This records a right-sizing signal
+# for the one platform DaemonSet that would otherwise have none (docs/33).
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: kured
+  namespace: kube-system
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: DaemonSet
+    name: kured
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 10m, memory: 32Mi}
+        maxAllowed: {cpu: 200m, memory: 128Mi}
+        controlledResources: [cpu, memory]
+---
+# metrics-server feeds every HPA target and the VPA recommender, so it stays
+# recommend-only: an eviction gap blinds the whole autoscaling stack at once.
+# maxAllowed tracks the release's memory limit (controllers/metrics-server).
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
 metadata:
@@ -353,9 +375,9 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: operator
-  # Initial (not Auto): a single-replica reconciler for the proxy StatefulSets —
-  # an updater eviction would stall tailnet device reconciliation. Right-size on
-  # the next natural restart instead, never by eviction.
+  # Initial (not Auto): a single-replica reconciler for the proxy StatefulSets,
+  # so an eviction stalls tailnet device reconciliation. Right-sized on the next
+  # natural restart.
   updatePolicy:
     updateMode: Initial
   resourcePolicy:
@@ -376,14 +398,19 @@ spec:
     kind: DaemonSet
     name: nvidia-device-plugin
   # Off (recommendations only): the plugin advertises the GPU to the kubelet, so
-  # an eviction briefly withdraws nvidia.com/gpu from the node. Its footprint is
-  # fixed anyway (~50Mi against a 64Mi request) — this exists so the workload is
-  # covered by a right-sizing signal rather than being invisible (docs/33).
+  # an eviction briefly withdraws nvidia.com/gpu from the node. It exists so the
+  # workload carries a right-sizing signal rather than none (docs/33).
   updatePolicy:
     updateMode: "Off"
   resourcePolicy:
     containerPolicies:
+      # Cap == the config-manager sidecar's own 32Mi limit (release.yaml).
+      - containerName: nvidia-device-plugin-sidecar
+        minAllowed: {cpu: 10m, memory: 16Mi}
+        maxAllowed: {cpu: 50m, memory: 32Mi}
+        controlledResources: [cpu, memory]
+      # nvidia-device-plugin-ctr, cap == its 128Mi limit.
       - containerName: "*"
         minAllowed: {cpu: 10m, memory: 32Mi}
-        maxAllowed: {cpu: 200m, memory: 256Mi}
+        maxAllowed: {cpu: 200m, memory: 128Mi}
         controlledResources: [cpu, memory]

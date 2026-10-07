@@ -1,9 +1,8 @@
 ---
-# hwmon thermals from job="node-exporter-host". EVERY rule here is scoped to the
-# six bare-metal Proxmox hosts (10.0.10.102-107:9101): the unprivileged LXCs
-# (dns-01/dns-02/smtp-relay) run the same exporter and read their HOST's
-# /sys/class/hwmon, so an unscoped rule pages twice for one physical sensor and
-# names a container that has no CPU.
+# CRITICAL: hwmon thermals from job="node-exporter-host", scoped by `instance` to the
+# bare-metal Proxmox hosts (10.0.10.102-107:9101); the SATA pair narrows to .102, see its
+# own note. The unprivileged LXCs run the same exporter against their host's
+# /sys/class/hwmon, so an unscoped rule pages twice for one physical sensor.
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
@@ -13,11 +12,9 @@ spec:
   groups:
     - name: homelab.temperature
       rules:
-        # Sized for the archive-pool ST6000NM0024 HDDs (55C spec ceiling), which
-        # live only on pve-nas-01 — hence the tighter .102 scope. The other hosts'
-        # local-ssd 870 EVOs report under the same drivetemp chip name but spec
-        # 70-85C and routinely run 55-60C, so a fleet-wide rule would page on a
-        # healthy SSD. Extend the filter if HDDs are added elsewhere.
+        # Sized for the archive-pool ST6000NM0024 HDDs (55C ceiling) on pve-nas-01, so
+        # the scope is .102 only: the other hosts' SSDs share the drivetemp chip name
+        # but spec 70-85C. Extend the filter if HDDs are added elsewhere.
         - alert: SATADriveTempWarning
           expr: >-
             max by (instance, chip) (
@@ -72,10 +69,9 @@ spec:
               * on (instance, chip) group_left(chip_name)
               node_hwmon_chip_names{job="node-exporter-host", chip_name="nvme"}
             ) >= 65
-          # 30m, not 10m: the nightly backup window drives one NAS chip over 65C
-          # in ~15-minute bursts with nothing actionable at the time it fires.
-          # The threshold stays at 65C — it is the level that catches a real
-          # airflow regression, and a sustained over-temp still clears 30m.
+          # 30m: the nightly backup window drives one NAS chip over 65C in bursts of
+          # about 15 minutes with nothing actionable. A real airflow regression is
+          # sustained and still clears 30m.
           for: 30m
           labels:
             severity: warning
@@ -114,10 +110,9 @@ spec:
               is at {{ $value | printf "%.0f" }}C — within a few degrees of
               thermal throttle.
 
-        # CPU package + per-core temps via coretemp. These are consumer CPUs
-        # (laptop, OptiPlex, Precision) that briefly spike toward their ~100C
-        # TJunction under load, so the thresholds and the long `for:` target
-        # SUSTAINED heat — only a genuine cooling failure trips the alert.
+        # CPU package and per-core temps via coretemp. These consumer CPUs spike toward
+        # their ~100C TJunction under load, so the thresholds and the long `for:` target
+        # sustained heat only.
         - alert: CPUTempWarning
           expr: >-
             max by (instance) (

@@ -1,18 +1,8 @@
 #!/usr/bin/env python3
 """Point the Cloudflare A records for this site at the current public IPv4.
 
-Mounted into the cloudflare-ddns CronJob from the configMapGenerator in this
-directory (kustomize refuses generator sources outside the kustomization root,
-which is why this is not in scripts/; its tests are
-scripts/test_cloudflare_ddns.py). Stdlib only — the job runs a bare
-python:3-slim image with no pip step.
-
-Division of ownership with Terraform (terraform/cloudflare): Terraform owns
-`proxied`, `ttl` and every record decoration (`comment`, `tags`, `settings`);
-this script owns `content` only. Updates therefore re-send the record's existing
-values for the fields it does not own, because the Cloudflare record API is a
-full-body PUT — anything omitted from the body is ERASED, so a decoration this
-script forgets to carry forward is silently deleted on the next address change.
+Mounted into the cloudflare-ddns CronJob here; README.md describes the environment
+variables and the record-ownership split. Terraform owns every field but `content`.
 """
 from __future__ import annotations
 
@@ -22,15 +12,13 @@ import os
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 API_BASE = "https://api.cloudflare.com/client/v4"
-# Flux substitutes this from the cluster-config ConfigMap when the
-# configMapGenerator output is reconciled — the same placeholder every manifest
-# in a substituted tree uses, and what scripts/check-cluster-literals.py
-# enforces. The raw file (what pytest imports) therefore carries the
-# placeholder, not the zone.
-ZONE = "${cluster_external_domain}"
+# Both come from the CronJob's env, which spells them as cluster-config
+# placeholders Flux substitutes at reconcile time.
+ZONE = os.environ.get("DDNS_ZONE", "").strip()
 
 # IPv4-preferred detection endpoints. Only ipv4.icanhazip.com is strictly v4;
 # the others can answer over IPv6, which the per-reply IPv4 check rejects.
@@ -42,15 +30,39 @@ IP_SERVICES = (
 IP_ATTEMPTS = 3
 IP_RETRY_SLEEP = 5
 
-# (record name, proxied-on-create). `proxied` seeds creation only: a fresh
-# record would otherwise default to false and expose the origin IP for the root
-# domain. On update the record's live value wins.
-RECORDS = (
-    (ZONE, True),
-    (f"direct.{ZONE}", False),
-    (f"git.{ZONE}", False),
-    (f"vpn.{ZONE}", False),
-)
+def parse_records(spec, zone=None):
+    """Parse a DDNS_RECORDS spec into (record name, proxied-on-create) pairs.
+
+    Entries are comma-separated `label[:proxied]`, `@` is the apex, and `proxied`
+    defaults to true, seeding creation only. A bad entry is kept for the validator.
+    """
+    zone = ZONE if zone is None else zone
+    records = []
+    for entry in (e.strip() for e in spec.split(",")):
+        if not entry:
+            continue
+        if entry.count(":") > 1:
+            records.append(entry)
+            continue
+        label, _, flag = entry.partition(":")
+        flag = flag.strip().lower()
+        if ":" in entry and flag not in ("true", "false"):
+            records.append(entry)
+            continue
+        label = label.strip()
+        # An empty or dot-edged label builds a name like `.zone`, which the
+        # validator accepts and the API then creates as a new record.
+        if not label or label.startswith(".") or label.endswith(".") or ".." in label:
+            records.append(entry)
+            continue
+        name = zone if label == "@" else f"{label}.{zone}"
+        records.append((name, flag != "false"))
+    return tuple(records)
+
+
+# The record list lives in cluster-config as cluster_ddns_records, so a WAN
+# hostname is added there rather than in this program.
+RECORDS = parse_records(os.environ.get("DDNS_RECORDS", "").strip())
 
 
 def api_request(token, url, method="GET", data=None, timeout=30):
@@ -84,11 +96,8 @@ def _fetch_ip(url, timeout=10):
 def get_public_ip(services=IP_SERVICES, attempts=IP_ATTEMPTS, sleep=time.sleep):
     """Return the current public IPv4, or None.
 
-    Retries across providers so neither a transient egress blip (a node
-    reconverging mid-maintenance) nor one provider being down fails the run.
-    Every reply must parse as a global IPv4: a dual-stack provider answering
-    AAAA, or a captive portal answering with private space, would otherwise
-    publish an unreachable A record.
+    Retries across providers so one blip does not fail the run. Every reply must
+    parse as a global IPv4 or an unreachable A record gets published.
     """
     last_err = None
     for attempt in range(1, attempts + 1):
@@ -115,22 +124,12 @@ def get_public_ip(services=IP_SERVICES, attempts=IP_ATTEMPTS, sleep=time.sleep):
     return None
 
 
-def zone_is_substituted(zone=ZONE):
-    """True once Flux has replaced the cluster_external_domain placeholder.
+def zone_is_valid(zone):
+    """CRITICAL: false unless DDNS_ZONE holds a real domain.
 
-    The zone stopped being a literal when it became a substituted placeholder,
-    and an unsubstituted one is not a harmless no-op: Flux renders an unknown key
-    as an EMPTY STRING, `GET /zones?name=` is an UNFILTERED list, and the run
-    would then create/update records named ``, `direct.`, `git.` and `vpn.` in
-    whichever zone the API happened to return first. So the value is checked
-    before any DNS call, and the check lives in a function rather than at module
-    scope because the raw file (what pytest imports, and what
-    check-cluster-literals.py requires) legitimately carries the placeholder.
-
-    The marker is assembled at runtime because this file ships inside a
-    ConfigMap that Flux envsubst POST-PROCESSES: a literal dollar-brace in
-    source is a parse error there (its Go envsubst rejects what GNU envsubst
-    ignores), which broke the whole configs stage at reconcile.
+    An empty or unsubstituted zone makes `GET /zones?name=` an unfiltered list,
+    so this is checked before any DNS call. The marker is assembled at runtime
+    because a literal dollar-brace in this file is a Flux envsubst parse error.
     """
     marker = "$" + "{"
     return bool(zone) and marker not in zone and "." in zone
@@ -139,12 +138,8 @@ def zone_is_substituted(zone=ZONE):
 def records_are_valid(records=RECORDS):
     """Fail closed on the record list, before the first API call.
 
-    RECORDS is a literal here rather than an env var, but it is derived from
-    ZONE and edited by hand, so the same two failure modes apply: an empty tuple
-    makes the run exit 0 having managed nothing (a green CronJob that publishes
-    no address at all), and an entry whose name is blank sends
-    `?type=A&name=` — the unfiltered-list shape `get_zone_id` refuses for
-    zones, which here would match an arbitrary record and rewrite it.
+    An empty tuple makes the run exit 0 having managed nothing; a blank name
+    sends `?type=A&name=`, which matches an arbitrary record and rewrites it.
     """
     if not records:
         print(
@@ -179,16 +174,17 @@ def records_are_valid(records=RECORDS):
     return True
 
 
-def get_zone_id(token, zone=ZONE):
+def get_zone_id(token, zone=None):
     """Return the Cloudflare zone id for `zone`, or None."""
-    data = api_request(token, f"{API_BASE}/zones?name={zone}")
+    zone = ZONE if zone is None else zone
+    query = urllib.parse.quote(zone, safe="")
+    data = api_request(token, f"{API_BASE}/zones?name={query}")
     if not data or not data.get("success"):
         print("ERROR: Failed to get zone ID")
         return None
     zones = data.get("result") or []
-    # Match by NAME, never `zones[0]`: with a name filter that returns one or
-    # zero rows the index was safe, but any request that degrades to an
-    # unfiltered list would otherwise hand back an arbitrary zone.
+    # Match by NAME, never `zones[0]`: a request that degrades to an unfiltered
+    # list would otherwise hand back an arbitrary zone.
     match = next((z for z in zones if z.get("name") == zone), None)
     if match is None:
         print(f"ERROR: Cloudflare returned {len(zones)} zone(s), none named {zone!r}")
@@ -224,7 +220,8 @@ def build_record_body(record_name, current_ip, proxied, existing=None):
 def update_record(token, zone_id, record_name, current_ip, proxied):
     """Create or update one A record. Returns True on success/no-op."""
     print(f"\n=== Processing {record_name} (create-default proxied={proxied}) ===")
-    url = f"{API_BASE}/zones/{zone_id}/dns_records?type=A&name={record_name}"
+    query = urllib.parse.quote(record_name, safe="")
+    url = f"{API_BASE}/zones/{zone_id}/dns_records?type=A&name={query}"
     data = api_request(token, url)
     if not data or not data.get("success"):
         print("ERROR: Failed to query existing record")
@@ -232,10 +229,9 @@ def update_record(token, zone_id, record_name, current_ip, proxied):
 
     records = data.get("result") or []
     if len(records) > 1:
-        # Single-record ownership is this job's contract. Updating just the
-        # first would leave the stale sibling answering intermittently — a
-        # round-robin half-outage that looks like a flapping WAN — and picking
-        # one at all is a guess about which record Terraform owns.
+        # Single-record ownership is this job's contract. Updating one of
+        # several leaves the stale sibling answering intermittently, and picking
+        # one guesses which record Terraform owns.
         print(
             f"ERROR: {len(records)} A records for {record_name}; "
             "ambiguous ownership, refusing a partial update",
@@ -267,15 +263,15 @@ def update_record(token, zone_id, record_name, current_ip, proxied):
     return False
 
 
-def main(argv=None):
+def main() -> int:
     token = os.environ.get("CF_API_TOKEN")
     if not token:
         print("ERROR: CF_API_TOKEN not set")
         return 1
 
-    if not zone_is_substituted():
+    if not zone_is_valid(ZONE):
         print(
-            f"ERROR: ZONE is unsubstituted or malformed ({ZONE!r}) — the cluster-config "
+            f"ERROR: DDNS_ZONE is empty or malformed ({ZONE!r}) — the cluster-config "
             "postBuild substitution did not run. Refusing to touch DNS.",
             file=sys.stderr,
         )

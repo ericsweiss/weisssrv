@@ -71,7 +71,7 @@ All shared directories use the **setgid bit (2xxx)** to ensure group inheritance
 drwxrwsr-x  eric  media  /mnt/tank/share
 
 # Files created in this directory automatically get group "media"
--rw-rw-r--  alice  media  /mnt/tank/share/newfile.txt
+-rw-rw-r--  eric  media  /mnt/tank/share/newfile.txt
 ```
 
 This ensures:
@@ -118,18 +118,6 @@ When configuring applications (Kubernetes pods, Docker containers, etc.):
    drwxrwsr-x 1000 2000 dirname
    ```
 
-### Why This Matters
-
-Without proper group setup:
-- Containers running as different UIDs can't access each other's files
-- Manual permission fixes are needed constantly
-- Shared storage becomes fragile and error-prone
-
-With setgid + GID 2000:
-- All applications can read/write shared data
-- Permission inheritance happens automatically
-- Consistent access model across NFS and Samba
-
 ## NFS Exports
 
 ### Export Structure
@@ -147,7 +135,7 @@ With setgid + GID 2000:
         +-- gitlab         (.153)
         +-- immich         (.157)
         +-- nextcloud      (.156)
-        +-- home-assistant (.154 — the one plaintext export)
+        +-- home-assistant (.154 — plaintext; HAOS ships no tlshd)
 ```
 
 `nas_storage_exports` in `host_vars/pve-nas-01.yml` is the source of truth for
@@ -155,19 +143,22 @@ the export set, its per-client options and `xprtsec`.
 
 ### Access Control
 
+Transport values are the short form; § Transport Security below is the single
+statement of the rule.
+
 | Export | Clients | Access | Transport |
 |--------|---------|--------|-----------|
-| /export | Proxmox hosts, k3s VMs, .154 | RO, no crossmnt | plaintext (fsid=0 pseudo-root, traversal only; no `xprtsec`) |
-| /export/appdata | k3s VMs (10.0.10.200/29, 10.0.10.220/29, .227/32) | RW | require TLS (`xprtsec=tls`); plaintext rejected |
-| /export/share | k3s VMs (10.0.10.200/29, 10.0.10.220/29, .227/32) | RW | require TLS (`xprtsec=tls`); plaintext rejected |
-| /export/media | k3s VMs (10.0.10.200/29, 10.0.10.220/29, .227/32), .154 (Home Assistant) | RW (k3s), RO (.154) | require TLS (`xprtsec=tls` on k3s lines); **.154 plaintext** via its own line (HAOS can't do `xprtsec`) |
-| /export/tank-proxmox | Proxmox hosts only | RW, no_root_squash | `xprtsec: tls` on the export — plaintext clients are rejected; the Proxmox storage entry mounts with `xprtsec=tls` by hostname (proxmox_backup role) |
-| /export/k3s-etcd | k3s servers only (.222/.223/.227, as explicit /32s) | RW, no_root_squash (mode 0700) | require TLS (`xprtsec=tls`); plaintext rejected. Off-node k3s etcd snapshot copies — see docs/17 |
-| /export/backups-apps/authentik, /export/backups-apps/mealie | k3s agents (10.0.10.200/29) + servers (10.0.10.220/29, .227/32) | RW, all_squash to eric:media | require TLS (`xprtsec=tls`) |
-| /export/backups-apps/gitlab | .153 | RW, all_squash | require TLS (`xprtsec=tls`) |
-| /export/backups-apps/immich | .157 | RW, all_squash | require TLS (`xprtsec=tls`) |
-| /export/backups-apps/nextcloud | .156 | RW, all_squash | require TLS (`xprtsec=tls`) |
-| /export/backups-apps/home-assistant | .154 | RW, all_squash | **plaintext** — HAOS ships no tlshd and hardcodes its NFS mount; the one documented exception (docs/24) |
+| /export | Proxmox hosts (.102-.107), k3s VMs (10.0.10.200/29 agents, .222/.223/.227 servers), and the app VMs that traverse into their own backups-apps export (.153, .154, .156, .157) | RO, no crossmnt | plaintext (fsid=0 pseudo-root, traversal only; no `xprtsec`) |
+| /export/appdata | k3s VMs (10.0.10.200/29, 10.0.10.220/29, .227/32) | RW | require TLS |
+| /export/share | k3s VMs (10.0.10.200/29, 10.0.10.220/29, .227/32) | RW | require TLS |
+| /export/media | k3s VMs (10.0.10.200/29, 10.0.10.220/29, .227/32), .154 (Home Assistant) | RW (k3s), RO (.154) | require TLS on the k3s lines; plaintext on the .154 line |
+| /export/tank-proxmox | Proxmox hosts only | RW, no_root_squash | require TLS |
+| /export/k3s-etcd | k3s servers only (.222/.223/.227, as explicit /32s) | RW, no_root_squash (mode 0700) | require TLS. Off-node etcd snapshot copies, see docs/17 |
+| /export/backups-apps/authentik, /export/backups-apps/mealie | k3s agents (10.0.10.200/29) + servers (10.0.10.220/29, .227/32) | RW, all_squash to eric:media | require TLS |
+| /export/backups-apps/gitlab | .153 | RW, all_squash | require TLS |
+| /export/backups-apps/immich | .157 | RW, all_squash | require TLS |
+| /export/backups-apps/nextcloud | .156 | RW, all_squash | require TLS |
+| /export/backups-apps/home-assistant | .154 | RW, all_squash | plaintext (HAOS exception, docs/24) |
 
 The six `backups-apps/*` exports are the landing zone for the per-app logical
 dumps (pg_dump / rake backup / HA native backups) that `restic_offsite` then
@@ -179,13 +170,6 @@ deliberately absent — it would implicitly export any child bound under
 `/export` to every root client *with the root line's options* (plaintext, no
 `xprtsec`), bypassing the per-child client lists and TLS requirements. Any new
 dataset bound under `/export` must get its own explicit export entry.
-
-**The k3s client lines require TLS.** They carry `xprtsec=tls`, so a plaintext
-mount from those CIDRs is rejected; the k3s PVs *mount* with `xprtsec=tls`, **by
-hostname** (so the `*.esweiss.com` cert verifies). `xprtsec` is applied per
-client line, so the require-TLS k3s lines coexist with the plaintext `.154`
-(HAOS) line on `/export/media`. `tlshd` is live on `pve-nas-01` and all six k3s
-agents, so the TLS path always completes.
 
 **Note**: Plex LXC (.152) uses a bind mount (`/mnt/media`) directly, not NFS.
 
@@ -233,15 +217,37 @@ mount -t nfs4 10.0.10.102:/media /mnt/media
     plaintext; `xprtsec` is per-client, so it is not locked out by the
     require-TLS k3s lines on the same export. See docs/24.
 
-  The **Proxmox `tank-proxmox` backup target** mounts over TLS: the
-  `proxmox_backup` role codifies its `storage.cfg` entry as hostname +
-  `vers=4.2,xprtsec=tls` (one-time migration of the legacy IP entry pending —
-  see docs/06 and docs/16).
+  The **Proxmox `tank-proxmox` backup target** also requires TLS: `xprtsec: tls`
+  is set at the export level, so all six Proxmox client lines reject plaintext,
+  and the `proxmox_backup` role pins its `storage.cfg` entry to hostname +
+  `vers=4.2,xprtsec=tls`.
 
   The fsid=0 `/export` root carries no `xprtsec` (HAOS and Proxmox traverse
   it). `xprtsec` is applied per client line, so the require-TLS k3s lines and a
   plaintext-only client (.154) share one export. See
-  weisssrv-lib `ansible_collections/weisssrv/infra/roles/nfs_tls/README.md` and docs/06's in-transit matrix.
+    weisssrv-lib `ansible_collections/weisssrv/infra/roles/nfs_tls/README.md` and
+  the in-transit matrix in [docs/47](47-security-posture.md).
+
+### Cutting a node over from plaintext to TLS
+
+A node cannot hold a plaintext mount and an `xprtsec=tls` mount to the same
+server at once. Long-running pods and orphaned kubelet mounts pin a node to
+plaintext, so the cutover is:
+
+1. Scale every Deployment on that node which mounts the server to 0. The
+   `Recreate` strategy keeps a new pod from racing the old one for an RWO mount.
+2. Force-unmount the orphans:
+
+   ```bash
+   mount -t nfs4 | grep -E '<server-host>|<server-ip>' | grep -v xprtsec=tls \
+     | awk '{print $3}' | xargs -rn1 sudo umount -f -l
+   ```
+
+3. Scale back up. The first mount establishes the TLS session and the rest reuse
+   it. Verify with `mount -t nfs4 | grep -c xprtsec=tls`.
+
+Sweep the fleet afterwards. A client that only ever mounts plaintext is fine —
+the rule is per-client internal consistency, not a fleet-wide state.
 
 ## Samba Shares
 
@@ -300,6 +306,16 @@ Manages:
 - Samba shares
 - Media mover script and timer
 
+Disabling a component converges it away. Turning off
+`nas_storage_media_mover_enabled`, `nas_storage_swap_clean_enabled`,
+`nas_storage_archive_backup_enabled`, `nas_storage_pve_cluster_backup_enabled`
+or `nas_storage_backup_artifact_metrics_enabled`, or dropping MergerFS, removes
+that component's units, script and `.prom` file on the next run instead of
+leaving a timer firing a script the role no longer renders. Only a file carrying
+`nas_storage_managed_marker` is removed, so a hand-written unit of the same name
+is reported and kept. On a host that has its own units at those conventional
+names, set `nas_storage_manage_absent: false`.
+
 ## Troubleshooting
 
 ### NFS
@@ -351,5 +367,6 @@ du -sh /mnt/nvme/media /mnt/tank/media
 
 - [docs/06-zfs.md](06-zfs.md) — pool and dataset layout
 - [docs/32-zfs-encryption.md](32-zfs-encryption.md) — encryption roots and boot-time unlock
+- [docs/47-security-posture.md](47-security-posture.md) — the estate-wide at-rest/in-transit matrix
 - [docs/44-storage-bootstrap.md](44-storage-bootstrap.md) — building the export tree from bare pools
 - [docs/17-disaster-recovery.md](17-disaster-recovery.md) — restore procedures

@@ -1,6 +1,6 @@
 {
   "annotations": { "list": [] },
-  "description": "GitLab external availability (blackbox probe), TLS expiry, response-time breakdown, and host journald logs. GitLab application/VM metrics are not scraped; add prometheus_monitoring in gitlab.rb + a ServiceMonitor to expand this with Sidekiq/registry/CI-runner panels.",
+  "description": "GitLab external availability (blackbox probe), TLS expiry, response-time breakdown, and host journald logs.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -135,9 +135,10 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 200 },
-              { "color": "red", "value": 300 }
+              { "color": "red", "value": null },
+              { "color": "green", "value": 200 },
+              { "color": "yellow", "value": 300 },
+              { "color": "red", "value": 400 }
             ]
           }
         },

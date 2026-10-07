@@ -207,13 +207,9 @@ spec:
       ports:
         - protocol: TCP
           port: 6379
-    # redis-exporter in the observability namespace scrapes this Redis on
-    # 6379 for the Redis dashboard + alert rules. Without this rule the
-    # exporter's liveness probe (HTTP GET on its /metrics endpoint, which
-    # redis-exporter only serves after it has connected to Redis) fails
-    # permanently and kubelet keeps killing the pod — which in turn keeps
-    # the parent infrastructure-observability Flux Kustomization stuck in
-    # HealthCheckFailed, blocking the apps cascade.
+    # redis-exporter scrapes :6379 for the Redis panels in the recipes dashboard.
+    # Without this rule its liveness probe never passes, so the observability
+    # Kustomization stays HealthCheckFailed and blocks the apps cascade.
     - from:
         - namespaceSelector:
             matchLabels:
@@ -226,30 +222,9 @@ spec:
           port: 6379
 
 ---
-# Egress for mealie + bar-assistant (backend apps that talk to data plane,
-# SMTP, OIDC, and the public internet). salt-rim is a static frontend served
-# to the browser — OIDC/Authentik/API calls happen client-side from the user's
-# browser, NOT from the salt-rim pod — so it does not belong in this selector
-# and gets its own DNS-only egress rule below.
-# - kube-dns
-# - intra-ns Postgres / Redis / Meilisearch
-# - smtp-relay (10.0.10.151:587) for password reset / notification emails
-# - Public HTTPS for OpenAI API (mealie) and server-side OIDC discovery.
-#
-# OIDC discovery note: both apps point their OIDC issuer/base URL at the
-# EXTERNAL host auth.ericsweiss.com (mealie OIDC_CONFIGURATION_URL,
-# bar-assistant AUTHENTIK_BASE_URL). The external host is intentional:
-# Authentik derives the OIDC `iss` claim from the request host and the browser
-# completes the flow at auth.ericsweiss.com, so the server-side issuer MUST
-# match that host or token validation fails.
-#
-# That host is split-horizoned to the INTERNAL Traefik VIP, so server-side
-# discovery/JWKS and code->token fetches never take the public path: kube-proxy
-# DNATs .101 to a Traefik pod IP BEFORE NetworkPolicy evaluation, which makes
-# the traefik namespaceSelector below the load-bearing peer (a .101 ipBlock can
-# never match post-DNAT). The ipBlock is kept belt-and-braces against a CNI that
-# stops DNATing. Both apps disable password login, so a blocked fetch means no
-# login path at all for food.* and bar.*.
+# Egress for mealie + bar-assistant: kube-dns, intra-ns Postgres/Redis/Meili,
+# smtp-relay :587, public HTTPS (OpenAI + OIDC discovery). The traefik
+# namespaceSelector is load-bearing - a VIP ipBlock cannot match post-DNAT.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -354,10 +329,9 @@ spec:
           port: 53
 
 ---
-# Egress for salt-rim (static frontend): kube-dns only. Salt-rim serves
-# JS/CSS/HTML to the browser; all API/OIDC traffic originates from the
-# user's browser (handled by allow-salt-rim-ingress from Traefik). The pod
-# itself never needs to reach Postgres/Redis/Meili/SMTP/Authentik.
+# Egress for salt-rim (static frontend): kube-dns only. It serves JS/CSS/HTML;
+# every API/OIDC call originates in the user's browser, so the pod itself never
+# reaches Postgres/Redis/Meili/SMTP/Authentik.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

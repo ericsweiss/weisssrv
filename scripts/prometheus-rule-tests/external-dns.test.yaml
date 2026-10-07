@@ -1,0 +1,113 @@
+---
+# promtool unit tests for the external-dns alerts. external-dns runs policy=sync
+# and deletes the records it owns, so every arm watches one way that can happen
+# unasked, each with a silent twin.
+rule_files:
+  - rules.yaml
+evaluation_interval: 1m
+tests:
+  # No endpoints discovered from any source: the state that turns a sync into a
+  # bulk delete. max() strips every scrape label, so the alert carries severity
+  # alone.
+  - interval: 1m
+    input_series:
+      - series: 'external_dns_source_endpoints_total{job="external-dns", namespace="external-dns", instance="10.42.7.231:7979", pod="external-dns-6b9874fb47-tk7l4"}'
+        values: '0+0x40'
+    alert_rule_test:
+      # Inside the 15m hold — a restart between scrapes must not page.
+      - eval_time: 10m
+        alertname: ExternalDNSNoSourceEndpoints
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: ExternalDNSNoSourceEndpoints
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+
+  # Endpoints discovered: silent.
+  - interval: 1m
+    input_series:
+      - series: 'external_dns_source_endpoints_total{job="external-dns", namespace="external-dns", instance="10.42.7.231:7979", pod="external-dns-6b9874fb47-tk7l4"}'
+        values: '9+0x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: ExternalDNSNoSourceEndpoints
+        exp_alerts: []
+
+  # The metric disappearing is the same blindness as a zero, so the absent()
+  # arm carries it.
+  - interval: 1m
+    input_series:
+      - series: 'external_dns_source_endpoints_total{job="external-dns", namespace="external-dns", instance="10.42.7.231:7979", pod="external-dns-6b9874fb47-tk7l4"}'
+        values: '9 stale'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: ExternalDNSNoSourceEndpoints
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+
+  # Owned-record collapse: 23 records across four record_type series, then 14.
+  # The rule's sum() must fold the per-type split before max_over_time, or the
+  # baseline is a per-series max and the drop hides.
+  - interval: 5m
+    input_series:
+      - series: 'external_dns_registry_records{job="external-dns", record_type="a", instance="10.42.7.231:7979"}'
+        values: '4+0x6 2+0x12'
+      - series: 'external_dns_registry_records{job="external-dns", record_type="cname", instance="10.42.7.231:7979"}'
+        values: '16+0x6 9+0x12'
+      - series: 'external_dns_registry_records{job="external-dns", record_type="mx", instance="10.42.7.231:7979"}'
+        values: '1+0x6 1+0x12'
+      - series: 'external_dns_registry_records{job="external-dns", record_type="txt", instance="10.42.7.231:7979"}'
+        values: '2+0x6 2+0x12'
+    alert_rule_test:
+      # Inside the 15m hold after the drop.
+      - eval_time: 40m
+        alertname: ExternalDNSRecordsDropped
+        exp_alerts: []
+      - eval_time: 60m
+        alertname: ExternalDNSRecordsDropped
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+
+  # A steady record count never trips the 20% band.
+  - interval: 5m
+    input_series:
+      - series: 'external_dns_registry_records{job="external-dns", record_type="cname", instance="10.42.7.231:7979"}'
+        values: '16+0x18'
+      - series: 'external_dns_registry_records{job="external-dns", record_type="a", instance="10.42.7.231:7979"}'
+        values: '4+0x18'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: ExternalDNSRecordsDropped
+        exp_alerts: []
+
+  # Sync clock frozen. The harness clock starts at 0, so a timestamp pinned at 0
+  # is "never synced since start" for every eval past the threshold.
+  - interval: 1m
+    input_series:
+      - series: 'external_dns_controller_last_sync_timestamp_seconds{job="external-dns", instance="10.42.7.231:7979"}'
+        values: '0+0x90'
+    alert_rule_test:
+      # Inside the 15m hold, past the 30m threshold.
+      - eval_time: 40m
+        alertname: ExternalDNSSyncStale
+        exp_alerts: []
+      - eval_time: 60m
+        alertname: ExternalDNSSyncStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+
+  # A healthy 5m reconcile loop leaves a lag well inside 30m. The fixture
+  # carries a realistic 10-minute lag rather than tracking time() exactly, so it
+  # pins the threshold from below as well as above.
+  - interval: 1m
+    input_series:
+      - series: 'external_dns_controller_last_sync_timestamp_seconds{job="external-dns", instance="10.42.7.231:7979"}'
+        values: '-600+60x90'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: ExternalDNSSyncStale
+        exp_alerts: []

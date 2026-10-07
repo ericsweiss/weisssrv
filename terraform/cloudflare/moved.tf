@@ -1,15 +1,6 @@
-# State-address migration for the move onto the library `cloudflare-zone` module
-# (main.tf). Every record kept its configuration byte-for-byte; only its address
-# changed, from a root-module resource to a keyed instance of one of the module's
-# four lifecycle-class resources:
-#
-#   protected                  -> module.zone.cloudflare_record.protected
-#   protected + DDNS content   -> module.zone.cloudflare_record.protected_external_content
-#
-# Without these blocks Terraform would plan destroy+create for all 19 records —
-# i.e. drop them from public DNS — so keep them. `moved` is not affected by
-# `prevent_destroy`, and re-applying is a no-op once state carries the new
-# addresses.
+# State addresses that predate the move onto the library `cloudflare-zone`
+# module. Re-applying is a no-op once state carries the new addresses; a block
+# removed BEFORE that apply plans destroy+create, dropping a record from DNS.
 
 moved {
   from = cloudflare_zone_settings_override.external
@@ -38,8 +29,7 @@ moved {
   to   = module.zone.cloudflare_record.protected_external_content["vpn"]
 }
 
-# CAA set. The module flattens the old `caa` for_each into the shared record map,
-# so each key gains the `caa_` prefix it already carried in the resource name.
+# CAA set: each key carries the `caa_` prefix in the shared record map.
 
 moved {
   from = cloudflare_record.caa["issue_letsencrypt"]
@@ -93,7 +83,7 @@ moved {
   to   = module.zone.cloudflare_record.protected["photos"]
 }
 
-# GitLab nested CNAMEs. The keys are unchanged (they are the record names).
+# GitLab nested CNAMEs, keyed by record name.
 
 moved {
   from = cloudflare_record.gitlab_direct["registry.git"]

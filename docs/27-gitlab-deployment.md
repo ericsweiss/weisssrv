@@ -39,7 +39,7 @@ GitLab is deployed as a standalone VM on pve-nas-01 with:
                             |
                    +--------v--------+
                    |   GitLab VM     |
-                   | 10.0.10.153   |
+                   |  10.0.10.153    |
                    |   pve-nas-01    |
                    +-----------------+
 ```
@@ -88,22 +88,10 @@ root disk - they are typically much smaller than repos/registry, and keeping the
 on root disk simplifies configuration while the separate disk isolates the two
 largest, fastest-growing consumers.
 
-The registry blob store was the single largest component and the
-`DiskUsageCritical` culprit on the OS disk — 43G as of 2026-08, which is why it
-no longer shares a disk with the OS. It is relocated via
-`gitlab_registry_data_dir` (role default: the Omnibus path
-`/var/opt/gitlab/gitlab-rails/shared/registry`; prod override:
-`/mnt/gitlab-repos/registry`), which renders `gitlab_rails['registry_path']` in
-`gitlab.rb`.
-
-**One-time migration (brief registry outage):** the first deploy after this
-override lands moves the existing store onto the zvol. The role stops the
-registry (`gitlab-ctl stop registry`), renames the directory across devices
-onto `/mnt/gitlab-repos/registry`, and `gitlab-ctl reconfigure` then repoints
-and restarts it. Expect a **brief registry outage** during that deploy (the web
-UI, Git, Pages, and CI are unaffected). The move is idempotent - after it, the
-source path is gone, so subsequent deploys skip it. A fresh-from-scratch deploy
-never triggers the move (reconfigure creates the store on the zvol directly).
+`gitlab_registry_data_dir` points the registry blob store at
+`/mnt/gitlab-repos/registry` (role default: the Omnibus path
+`/var/opt/gitlab/gitlab-rails/shared/registry`); it renders
+`gitlab_rails['registry_path']` in `gitlab.rb`.
 
 **Benefits:**
 - Independent sizing - repos and registry can grow without filling the root disk
@@ -166,8 +154,8 @@ op item create --vault Homelab --category password \
 The GitLab DNS records are defined in `terraform/cloudflare/dns.tf`. Apply them:
 
 ```bash
-task terraform:plan
-task terraform:apply
+task terraform:cloudflare-plan
+task terraform:cloudflare-apply
 ```
 
 This creates (or updates):
@@ -192,12 +180,12 @@ to `direct.ericsweiss.com`) and is being changed to an A record, verify the tran
 
 ```bash
 # 1. Preview the change
-task terraform:plan
+task terraform:cloudflare-plan
 # Look for: module.zone.cloudflare_record.protected_external_content["git"]
 #           changing type from CNAME to A (edit local.dns_records["git"] in dns.tf)
 
 # 2. Apply the change
-task terraform:apply
+task terraform:cloudflare-apply
 
 # 3. Verify DNS resolution (may take a few minutes for propagation)
 dig +short git.ericsweiss.com
@@ -216,62 +204,45 @@ task dns:deploy
 
 This adds internal DNS rewrites for `git.esweiss.com`, `registry.git.esweiss.com`, etc.
 
-### Step 4: Configure Authentik SSO (SAML)
+### Step 4: Capture the Authentik SAML certificate fingerprint
 
 > **Authentik objects are Terraform-managed.** The GitLab SAML provider, the
 > `git` application, and the `gitlab-admins`/`gitlab-users` groups are codified
 > in `terraform/authentik/` (`providers_saml.tf`, `applications.tf`, `groups.tf`)
 > and changed via a supervised `terraform apply` — **not the Authentik UI**
-> ([docs/40-authentik-terraform.md](40-authentik-terraform.md)). The UI walkthrough
-> below is retained only as a reference for capturing the ACS URL / Issuer /
-> certificate fingerprint; make the actual provider/app/group changes in the
-> `.tf` files.
+> ([docs/40-authentik-terraform.md](40-authentik-terraform.md)). Group membership
+> in `groups.tf` is exhaustive: a group or member created by hand is removed on
+> the next apply.
 
-1. Log into Authentik at https://auth.ericsweiss.com
-2. Navigate to **Applications → Providers**
-3. Click **Create** and select **SAML Provider**
-4. Configure:
+The only manual step is copying the signing certificate's fingerprint into
+1Password, because Ansible reads it from there:
+
+1. In Authentik, go to **System → Certificates**
+2. Expand the GitLab signing certificate and copy the **SHA1 Fingerprint**
+3. Store it in the 1Password `GitLab SSO` item as `saml-cert-fingerprint`
+
+Values Terraform sets on the provider, for reference:
 
 | Field | Value |
 |-------|-------|
 | Name | `GitLab` |
-| Authorization flow | `default-authorization-flow` |
 | ACS URL | `https://git.ericsweiss.com/users/auth/saml/callback` |
 | Issuer | `https://git.ericsweiss.com` |
 | Service Provider Binding | `Redirect` |
-| Signing Certificate | Select available certificate |
 
-5. Click **Finish** to create the provider
-6. Navigate to **System → Certificates**
-7. Expand the signing certificate and copy the **SHA1 Fingerprint**
-8. Update 1Password `GitLab SSO` item with the fingerprint as `saml-cert-fingerprint`
-9. Navigate to **Applications → Applications**
-10. Click **Create** and configure:
+Group-based access is enforced by the GitLab side; the groups themselves are
+declared in `terraform/authentik/groups.tf`:
 
-| Field | Value |
-|-------|-------|
-| Name | `GitLab` |
-| Slug | `git` |
-| Provider | `GitLab` (SAML provider created above) |
-| Launch URL | `https://git.ericsweiss.com` |
+```yaml
+# ansible/inventories/prod/group_vars/gitlab_servers.yml
+gitlab_saml_required_groups:
+  - "gitlab-users"
+  - "gitlab-admins"
+gitlab_saml_admin_groups:
+  - "gitlab-admins"
+```
 
-11. **Configure group-based access** (REQUIRED):
-
-    **IMPORTANT**: The default configuration enforces group-based access. Users must be in
-    one of the required groups to log in via SSO. Complete these steps BEFORE deploying:
-
-    - Create Authentik groups: `gitlab-users`, `gitlab-admins`
-    - Assign users to appropriate groups (at minimum, add yourself to `gitlab-users`)
-    - The groups are configured in `ansible/inventories/prod/group_vars/gitlab_servers.yml`:
-      ```yaml
-      gitlab_saml_required_groups:
-        - "gitlab-users"
-        - "gitlab-admins"
-      gitlab_saml_admin_groups:
-        - "gitlab-admins"
-      ```
-
-    If you skip this step, SSO login will fail with "User is not allowed" errors.
+A user who is in neither group gets "User is not allowed" at SSO login.
 
 ### Step 5: Deploy GitLab VM and Application
 
@@ -382,25 +353,12 @@ and push. Flux reconciles the HelmRelease on push (fallback: ~1-minute poll).
 See `docs/29-flux-operations.md` for the full workflow (rotating runner
 tokens, bumping chart versions, troubleshooting stuck releases).
 
-> **One-time migration note (privileged runner namespace move):** when the
-> change that relocates the privileged runner from the `gitlab-runner` namespace
-> to its own `gitlab-runner-privileged` namespace first reconciles, Flux prunes
-> the old HelmRelease and installs the new one — i.e. helm-controller uninstalls
-> the old manager (Deployment, RBAC, token Secret) and the new one re-registers
-> from its freshly-synced ESO token. There is a brief teardown/recreate window
-> in which an in-flight `infrastructure`-tagged CI job could be interrupted. Do
-> the cutover in a CI-quiet window (or `kubectl -n gitlab-runner-privileged scale
-> deploy --replicas=0` first), then verify: `kubectl -n gitlab-runner-privileged
-> get pods` is Running, the runner shows online in GitLab, and nothing privileged
-> remains in the old namespace (`kubectl get deploy,sa,secret -n gitlab-runner |
-> grep privileged` returns nothing).
-
 ## Registry pull-through cache (CI)
 
 Every molecule CI job starts a **fresh DinD daemon** with an empty image store,
-whose first act is a cold pull of
-`registry.git.ericsweiss.com/eric/weisssrv/molecule-test` (~30s/job; a pipeline
-runs ~30 molecule jobs). `kubernetes/apps/registry-cache/` runs the CNCF
+whose first act is a cold pull of the library's test image,
+`$CI_REGISTRY/eric/weisssrv-lib/molecule-test` at the `WEISSSRV_LIB_REF` release
+tag (~30s/job; a pipeline runs ~30 molecule jobs). `kubernetes/apps/registry-cache/` runs the CNCF
 [distribution](https://distribution.github.io/distribution/) `registry` image in
 **pull-through (proxy) mode** so the first job warms a cluster-local cache and
 the rest are served over the LAN.
@@ -420,7 +378,7 @@ the rest are served over the LAN.
   Egress is default-deny + DNS + `:443` to the `traefik` namespace only.
 - **Consumers**: only the `gitlab-runner-privileged` namespace (the DinD job
   pods) may reach `:5000`; the metrics port is scraped by Prometheus
-  (`observability/service-monitors/registry-cache.yaml`) and paged on by the
+  (`kubernetes/apps/registry-cache/servicemonitor.yaml`) and paged on by the
   `RegistryCacheDown` alert (a `warning`, not `critical`: a cache outage only
   makes CI cold-pull direct — slower, not broken).
 - Version pinned as `registry_cache_version` in `all.yml`
@@ -451,33 +409,10 @@ Rotation: mint a replacement deploy token, update both 1Password fields, then
 
 ### CI wiring (owned by `.gitlab-ci.yml`)
 
-Implemented in `.gitlab/ci/integration-jobs.yml` — the DinD service arg and the
-cache-first pull with direct fallback. The shape, for reference:
-
-- The DinD **service** runs with the cache added as an insecure registry
-  (plaintext, cluster-internal):
-  `--insecure-registry=registry-cache.registry-cache.svc.cluster.local:5000`.
-- The molecule `before_script` pulls **cache-first with a direct-registry
-  fallback**, so a cache outage (or cold cache) never breaks CI — it only makes
-  that job cold-pull direct:
-
-  ```yaml
-  # Pull the molecule-test image via the in-cluster pull-through cache, falling
-  # back to the real registry if the cache is unreachable. MOLECULE_IMAGE keeps
-  # the canonical (direct) ref so the tests are unchanged.
-  variables:
-    REGISTRY_CACHE: "registry-cache.registry-cache.svc.cluster.local:5000"
-    MOLECULE_IMAGE: "registry.git.ericsweiss.com/eric/weisssrv/molecule-test:latest"
-  before_script:
-    - |
-      CACHED="$REGISTRY_CACHE/eric/weisssrv/molecule-test:latest"
-      if docker pull "$CACHED"; then
-        docker tag "$CACHED" "$MOLECULE_IMAGE"   # present tests the canonical ref
-      else
-        echo "registry cache miss/unreachable — pulling direct"
-        docker pull "$MOLECULE_IMAGE"
-      fi
-  ```
+Implemented in `.gitlab/ci/integration-jobs.yml` (`before_script`): the DinD
+service adds the cache as an insecure registry, and the test-image pull is
+cache-first with a 25s-timeout-bounded fallback to the direct registry, so a
+cache outage only costs the warm hit.
 
 ## Task Commands
 
@@ -596,6 +531,19 @@ Both runners share the same Helm chart version and are Flux-managed. Update:
 3. Flux reconciles both `gitlab-runner` and `gitlab-runner-privileged`
    HelmReleases on the next cycle. Verify with `flux get hr -n gitlab-runner`.
 
+**Draining CI for a maintenance window.** The shared runner HelmRelease sets
+`driftDetection.mode: enabled`
+(`kubernetes/components/gitlab-runner-common/kustomization.yaml`), which is what
+makes its `replicas: 1` pin real — and also means
+`kubectl -n gitlab-runner-privileged scale deploy --replicas=0` is reverted by
+helm-controller within the 30m interval. Suspend the release first:
+
+```bash
+task flux:suspend -- gitlab-runner-privileged/helmrelease/gitlab-runner-privileged
+# ... drain, do the work ...
+task flux:resume -- gitlab-runner-privileged/helmrelease/gitlab-runner-privileged
+```
+
 ## Troubleshooting
 
 ### GitLab Reconfigure Fails
@@ -669,11 +617,17 @@ kubectl get secret -n gitlab-runner
 
 ### Summary
 
-- **Unified URL**: `git.ericsweiss.com` works for both HTTPS and SSH (port 2222)
-- **LAN (internal)**: `git.esweiss.com` resolves to the **internal Traefik VIP**
-  (10.0.10.101), so it is an HTTPS name only. For direct port-22 SSH to the VM
-  use `gitlab.esweiss.com` (10.0.10.153), the guest's own rewrite
-- **External (internet)**: Use `git.ericsweiss.com` on port 2222 (DNS-only, same as web URL)
+- **One config for both**: `git.ericsweiss.com` on port 2222 is the single SSH
+  config that works on and off the LAN, and HTTPS uses the same hostname. On the
+  LAN the AdGuard rewrite points it at the internal Traefik VIP (10.0.10.101),
+  where the `gitssh` entrypoint hands the TCP stream to the `gitlab-ssh`
+  IngressRouteTCP. From outside, the WAN forward reaches the same port
+- **LAN alternative**: `gitlab.esweiss.com` (10.0.10.153) on port 22 goes
+  straight to the VM and skips Traefik. `git.esweiss.com` is the internal HTTPS
+  name for the same GitLab
+- **Why the rewrite exists**: the UniFi gateway does not do hairpin NAT
+  ([docs/46](46-unifi-network.md)), so a LAN client cannot reach
+  `git.ericsweiss.com`'s external IP directly
 
 **Architecture:** `git.ericsweiss.com` is DNS-only (not Cloudflare-proxied), allowing both
 HTTPS (via Traefik) and SSH traffic on the same hostname. This provides a unified URL for
@@ -694,6 +648,9 @@ Host gitlab.esweiss.com
     Port 22
     User git
 ```
+
+`ssh://git@git.ericsweiss.com:2222` also works from the LAN, through the
+internal Traefik VIP, so one config covers both networks.
 
 ### External Access (Public Internet)
 
@@ -721,37 +678,6 @@ Then clone using standard syntax:
 ```bash
 git clone git@git.ericsweiss.com:username/repo.git
 ```
-
-### Universal SSH Config (Works Everywhere)
-
-For a single config that works from any location, use `git.ericsweiss.com` with port 2222
-for both hostnames. This works because LAN clients can reach the external IP (hairpin NAT)
-and the iptables redirect on the GitLab VM maps port 2222 to port 22:
-
-```
-Host git.ericsweiss.com
-    Port 2222
-    User git
-
-Host git.esweiss.com
-    Port 2222
-    User git
-```
-
-**Note:** This universal config requires hairpin NAT (NAT reflection) on your router —
-**which the UniFi gateway does not provide** ([docs/46](46-unifi-network.md)): since the
-2026-08 cutover, LAN clients cannot reach `git.ericsweiss.com`'s external IP, and the
-AdGuard rewrite points that name at the Traefik VIP, where nothing listens on 2222. From
-the LAN, use the split config above (`gitlab.esweiss.com`, port 22, straight to the VM).
-External access on 2222 is unaffected.
-
-**Why did the universal config use port 2222 internally?** `git.esweiss.com`
-resolves to the internal Traefik VIP (10.0.10.101), which serves HTTPS only —
-no SSH listener on any port — so SSH always had to reach the VM another way: the
-VM's own name is `gitlab.esweiss.com` (10.0.10.153), and the external path
-rode hairpin NAT. With hairpin gone, the split config is the only working LAN
-path. The iptables PREROUTING rule on the GitLab VM still redirects port 2222 to
-port 22 regardless of source, so external clients on 2222 are unaffected.
 
 ### Recommended: HTTPS for Consistency
 
@@ -886,7 +812,7 @@ The first deploy must order infrastructure → settings so Web IDE doesn't break
 
 1. **DNS first** — creates the Cloudflare records before cert-manager polls:
    ```bash
-   task terraform:apply
+   task terraform:cloudflare-apply
    ```
 2. **Wait for cert** — Flux + cert-manager DNS-01 typically takes 60-120s:
    ```bash
@@ -901,7 +827,9 @@ The first deploy must order infrastructure → settings so Web IDE doesn't break
    ```bash
    task gitlab:deploy
    ```
-5. **Verify** — Test 8 covers the new host; manual editor check confirms the iframe origin:
+5. **Verify** — the `Web IDE extension host route (probe.ide.git.ericsweiss.com)`
+   probe in `task gitlab:verify` covers the new host; a manual editor check
+   confirms the iframe origin:
    ```bash
    task gitlab:verify
    # Then visit https://git.ericsweiss.com/<group>/<project>/-/ide/
@@ -914,12 +842,15 @@ If step 3 fails, do **not** run step 4 — the security flip would break Web IDE
 Two independent things to check — routing and the settings flip. `task gitlab:verify`
 covers only the first.
 
-1. **Route** — Test 8 of `task gitlab:verify` probes
+1. **Route** — the `Web IDE extension host route (probe.ide.git.ericsweiss.com)`
+   probe in `task gitlab:verify` requests
    `https://probe.ide.git.ericsweiss.com/-/health`. `/-/health` rather than
    `/-/readiness`: readiness is `monitoring_whitelist`-gated to the LAN and
    `*.ide.git.ericsweiss.com` hairpins via Cloudflare, so GitLab sees the WAN IP.
    A PASS proves DNS + cert + IngressRoute are wired end to end; it says nothing
-   about the CVE-2026-5816 mitigation.
+   about the CVE-2026-5816 mitigation. The probe is optional: a source outside
+   `gitlab_monitoring_whitelist` — the hairpinned WAN address — prints SKIP, so
+   only a PASS is evidence that the route is wired.
 2. **Settings flip** — the mitigation lives in `application_settings`, which has
    no `gitlab.rb` key, so read it from Rails:
    ```bash

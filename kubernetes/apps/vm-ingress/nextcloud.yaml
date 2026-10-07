@@ -2,10 +2,9 @@
 # IngressRoutes for Nextcloud (VM 10.0.10.156). Reuses the default-namespace
 # wildcard certs + vm-tls-wildcard ServersTransport (same as Plex/HAOS).
 
-# External - cloud.ericsweiss.com (external-dns creates the proxied CNAME).
-# Nextcloud clients chunk uploads (default 10MiB) so the Cloudflare-proxied
-# path's 100MB single-request cap is not hit; raw single-PUT WebDAV over the
-# external host is still capped by Cloudflare (docs/35 "Upload size").
+# External cloud.ericsweiss.com; external-dns creates the proxied CNAME.
+# Chunked client uploads stay under Cloudflare's 100MB single-request cap;
+# raw single-PUT WebDAV here does not (docs/35 "Upload size").
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:

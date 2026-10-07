@@ -1,27 +1,8 @@
 #!/usr/bin/env python3
 """Every deploy job that runs a playbook must also trigger on the collection pin.
 
-All roles ship in the weisssrv.infra collection, so `ansible/requirements.yml`
-is the ONLY in-repo signal that a role's content changed. A deploy job whose
-`rules:changes:` lists playbooks but not the pin keeps deploying the old roles
-after a library bump, silently and indefinitely.
-
-check-deploy-coverage.sh cannot see this: requirements.yml is not a role,
-playbook or inventory path, so it falls outside that gate's whole model.
-
-Three things decide whether this gate SEES a job, and all three are resolved
-rather than assumed, because each failure mode is a silent pass:
-
-  * the `deploy-` name prefix alone selects the job — a job that inherits
-    `stage: deploy` through `extends:` would otherwise be skipped;
-  * `!reference [.paths-x, changes]` is resolved against the same document, so
-    a job adopting the repo's own shared-paths convention keeps contributing
-    its literal paths instead of contributing none;
-  * a run that inspected ZERO deploy jobs exits 2. "No jobs matched" and "every
-    job is compliant" print the same sentence otherwise, so a renamed
-    convention would retire the gate invisibly.
-
-Run from the repo root. Exit 0 clean, 1 on a finding, 2 on an operator error.
+`ansible/requirements.yml` is the only in-repo signal that a role changed, so a
+job missing it keeps deploying old roles. Zero deploy jobs inspected exits 2.
 """
 
 from __future__ import annotations
@@ -29,7 +10,11 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import yaml
+try:
+    import yaml
+except ImportError:  # pragma: no cover - environment guard
+    print("ERROR: PyYAML required: pip install pyyaml", file=sys.stderr)
+    raise SystemExit(2) from None
 
 REPO = Path(__file__).resolve().parent.parent
 CI_FILE = REPO / ".gitlab-ci.yml"
@@ -64,6 +49,19 @@ def _tag(loader, suffix, node):
 
 
 CILoader.add_multi_constructor("!", _tag)
+
+
+def _load_ci(path: Path) -> dict:
+    """The jobs document of a pipeline file.
+
+    GitLab's inputs syntax makes a pipeline file two documents, `spec:` then
+    the jobs, so the last mapping document is the one this gate wants.
+    """
+    docs = [
+        d for d in yaml.load_all(path.read_text(encoding="utf-8"), Loader=CILoader)
+        if isinstance(d, dict)
+    ]
+    return docs[-1] if docs else {}
 
 
 def _changes_of(rule, doc: dict) -> list:
@@ -111,9 +109,7 @@ def _effective_rules(name: str, ci: dict, seen: tuple[str, ...] = ()):
     """A job's `rules:` after `extends:` resolution, last-parent-wins.
 
     A job's own key wins outright; otherwise parents are searched in reverse
-    declaration order, GitLab's precedence. Returns None when no ancestor
-    declares rules — without this, a job inheriting its rules contributes no
-    paths and slips the pin check."""
+    declaration order. None means no ancestor declares rules."""
     if name in seen:
         return None
     job = ci.get(name)
@@ -143,7 +139,11 @@ def jobs_missing_the_pin(ci: dict) -> list[str]:
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     ci_file = Path(argv[0]) if argv else CI_FILE
-    ci = yaml.load(ci_file.read_text(), Loader=CILoader) or {}
+    try:
+        ci = _load_ci(ci_file)
+    except (OSError, yaml.YAMLError) as exc:
+        print(f"ERROR: cannot read {ci_file}: {exc}", file=sys.stderr)
+        return 2
 
     inspected = deploy_jobs(ci)
     if not inspected:

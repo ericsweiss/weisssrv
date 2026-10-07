@@ -17,11 +17,8 @@ resources:
   # a thin per-app overlay (resources + component + a small per-app patch).
   - nzbget
   - qbittorrent
-  # Media management apps (*arr stack)
-  # sonarr/radarr/lidarr are near-identical; their shared Deployment+Service
-  # skeleton lives in the _arr Kustomize component and each app is a thin
-  # per-app overlay (name/labels, image, port, claimName). Prowlarr differs
-  # (probe timings, resources, no /media mount) and stays a standalone manifest.
+  # The *arr stack. sonarr/radarr/lidarr share the _arr component skeleton and
+  # are thin per-app overlays. Prowlarr differs enough to stay standalone.
   - prowlarr.yaml
   - sonarr
   - radarr
@@ -32,17 +29,13 @@ resources:
   # overlay under ingress-routes/ (name/host/service/port only).
   - ingress-routes
   - ingress-routes-ha-bypass.yaml
-  # NetworkPolicies: default-deny + per-app egress allowlist (Gluetun-fronted
-  # qb/nzbget excluded from RFC1918, *arr direct internet for media APIs). The
-  # local default-deny covers Ingress AND Egress, so it deliberately supersedes
-  # the netpol-baseline component every other app pulls in.
+  # Default-deny plus a per-app egress allowlist. The local default-deny covers
+  # Ingress and Egress, so it supersedes the netpol-baseline component.
   - networkpolicy.yaml
   - vpa.yaml
 
-# kube-dns egress for the whole namespace — the one recurring rule here that is
-# namespace-wide rather than per-app, so it comes from the shared component.
-# netpol-baseline is deliberately absent: networkpolicy.yaml's local default-deny
-# covers ingress AND egress (see the note above).
+# kube-dns egress for the whole namespace. netpol-baseline is absent because
+# networkpolicy.yaml's local default-deny already covers ingress and egress.
 components:
   - ../../components/netpol-egress-dns
 # Use 'labels' instead of 'commonLabels' to avoid modifying deployment selectors.

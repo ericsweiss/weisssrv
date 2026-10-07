@@ -1,8 +1,7 @@
 ---
-# Bar Assistant (bar.esweiss.com / bar.ericsweiss.com) — four workloads laid out
-# as in the upstream Docker setup: the Laravel API on SQLite, the Salt Rim Vue
-# frontend, Meilisearch for full-text search, and Redis for cache + sessions.
-# docs/23.
+# Bar Assistant (bar.esweiss.com / bar.ericsweiss.com) - four workloads as in the
+# upstream Docker setup: the Laravel API on SQLite, the Salt Rim frontend,
+# Meilisearch for search, Redis for cache + sessions. docs/23.
 
 
 # Redis (cache and session storage)
@@ -54,11 +53,9 @@ spec:
         - name: redis
           image: redis:${redis_version}
           imagePullPolicy: IfNotPresent
-          # Cap the dataset under the 256Mi container limit (headroom for redis
-          # overhead/fragmentation) and evict LRU keys rather than growing to an
-          # OOMKill. Also gives redis_memory_max_bytes a non-zero value so the
-          # dashboard Memory Usage gauge stops dividing by 0. args (not command)
-          # so the image entrypoint still gosu-drops to the redis user.
+          # Cap the dataset under the 256Mi limit and evict LRU keys instead of
+          # OOMKilling; also gives redis_memory_max_bytes a non-zero value for the
+          # dashboard gauge. args (not command) keeps the entrypoint's gosu drop.
           args:
             - redis-server
             - --maxmemory
@@ -66,13 +63,8 @@ spec:
             - --maxmemory-policy
             - allkeys-lru
           # No drop:[ALL]/aPE:false — the gosu drop needs CAP_SETUID.
-          env:
-            # Accepted tradeoff: this cache holds sessions but is reachable only
-            # from the bar-assistant pod and the redis-exporter
-            # (networkpolicy.yaml). Any further workload in `recipes` means
-            # switching to a REDIS_PASSWORD from recipes-secrets.
-            - name: ALLOW_EMPTY_PASSWORD
-              value: "yes"
+          # No requirepass - reachable only from bar-assistant and redis-exporter
+          # (networkpolicy.yaml).
           ports:
             - name: redis
               containerPort: 6379
@@ -120,7 +112,7 @@ spec:
   type: ClusterIP
 
 ---
-# Meilisearch (search engine - using v1.15 per official docker-compose)
+# Meilisearch: full-text search backing Bar Assistant.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -289,8 +281,18 @@ spec:
             capabilities:
               drop: ["ALL"]
           env:
+            # In-process PHP ceiling under the 1Gi pod limit: a runaway request
+            # 500s instead of OOM-killing the pod and every other request on it.
+            - name: PHP_MEMORY_LIMIT
+              value: 256M
             - name: APP_URL
               value: https://bar.${cluster_external_domain}
+            # Without a trusted proxy Laravel builds absolute URLs from the
+            # scheme it sees (plain HTTP from Traefik) and redirects to http://.
+            - name: TRUSTED_PROXIES
+              value: "*"
+            - name: SESSION_SECURE_COOKIE
+              value: "true"
             - name: MEILISEARCH_HOST
               value: http://bar-assistant-meilisearch:7700
             - name: MEILISEARCH_KEY
@@ -406,21 +408,6 @@ spec:
   type: ClusterIP
 
 ---
-# Salt Rim Configuration (config.js)
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: salt-rim-config
-  namespace: recipes
-data:
-  config.js: |
-    window.srConfig = {
-      API_URL: "https://bar.${cluster_external_domain}",
-      MEILISEARCH_URL: "/search",
-      DEFAULT_LOCALE: "en-US"
-    };
-
----
 # Salt Rim (Bar Assistant Web UI)
 apiVersion: apps/v1
 kind: Deployment
@@ -431,11 +418,6 @@ metadata:
     app.kubernetes.io/name: salt-rim
     app.kubernetes.io/component: frontend
     app.kubernetes.io/part-of: bar-assistant
-  annotations:
-    # config.js is a subPath ConfigMap mount, which the kubelet never updates in
-    # place — without this a git edit reconciles the ConfigMap and never reaches
-    # the pod.
-    reloader.stakater.com/auto: "true"
 spec:
   # No static replicas: the salt-rim HPA (hpa.yaml) owns the count. Setting it
   # here would make Flux server-side apply fight the HPA on every reconcile.
@@ -486,10 +468,14 @@ spec:
             capabilities:
               drop: ["ALL"]
           env:
+            # API_URL empty = same-origin calls; the IngressRoutes serve the API
+            # and Meilisearch under the UI host (ingress-routes.yaml).
             - name: API_URL
               value: ""
             - name: MEILISEARCH_URL
               value: "/search"
+            - name: DEFAULT_LOCALE
+              value: "en-US"
           ports:
             - name: http
               containerPort: 8080
@@ -516,15 +502,6 @@ spec:
               memory: 64Mi
             limits:
               memory: 128Mi
-          volumeMounts:
-            - name: config
-              mountPath: /usr/share/nginx/html/config.js
-              subPath: config.js
-              readOnly: true
-      volumes:
-        - name: config
-          configMap:
-            name: salt-rim-config
 
 ---
 apiVersion: v1

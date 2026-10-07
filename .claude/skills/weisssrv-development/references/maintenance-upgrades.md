@@ -110,6 +110,12 @@ input default silently changes this pipeline.
   regression (upstream `metallb#3063`); unhold only once the fix (`metallb#3079`)
   merges and ships. The exact held pin lives in `all.yml`; check both upstream
   issues before bumping.
+- **external-dns' annotation prefix is pinned.** 0.22.0 changed the default from
+  `external-dns.alpha.kubernetes.io/` to `external-dns.kubernetes.io/`, and every
+  IngressRoute here carries the alpha `/target` annotation, so the bump silently
+  deleted every external-dns-owned Cloudflare record.
+  `--annotation-prefix=external-dns.alpha.kubernetes.io/` is pinned in the
+  HelmRelease `extraArgs`; confirm the flag survives any external-dns bump.
 - **Helm CRD lifecycle** — a chart with `crds.enabled: false` can DELETE existing
   CRDs across an up/downgrade (this took out MetalLB VIPs once). Verify a chart's
   CRD handling before changing its version or that flag.
@@ -128,7 +134,8 @@ input default silently changes this pipeline.
 top-level fact changed, and — whenever the change alters a **workflow, gate,
 invariant, or canonical-doc pointer** — `.claude/skills/weisssrv-development/`
 (`SKILL.md` and the matching `references/` file) in the SAME MR. Two thin gates
-now cover the skill — `docs-link-check` resolves its relative `.md` links and
-`scripts/test_doc_inventories.py` asserts every `` `task <ns>:<name>` `` it names
-still exists — but nothing validates the *prose*, so a stale procedure is doc
-rot CI cannot catch.
+cover the skill: `scripts/test_doc_inventories.py` asserts every
+`` `task <ns>:<name>` `` it names still exists, and `scripts/check-skill-refs.py`
+asserts every backticked repo path it cites still resolves (the skill carries no
+Markdown links, so `docs-link-check` sees nothing in it). Nothing validates the
+*prose*, so a stale procedure is doc rot CI cannot catch.

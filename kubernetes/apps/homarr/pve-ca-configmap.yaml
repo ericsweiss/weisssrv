@@ -1,11 +1,7 @@
 ---
-# The PVE Cluster Manager root CA (PUBLIC certificate, valid to 2035). The
-# Proxmox integration talks to https://<node>:8006, whose cert is signed by
-# this cluster-internal CA — Node.js rejects it (UNABLE_TO_VERIFY_LEAF_
-# SIGNATURE) without the extra trust anchor. Mounted into the pod and wired
-# via NODE_EXTRA_CA_CERTS (EXTENDS the default Mozilla store, so every other
-# integration's public TLS keeps verifying as before). Rotate by re-copying
-# /etc/pve/pve-root-ca.pem if the cluster CA is ever regenerated.
+# The PVE Cluster Manager root CA (public certificate). The Proxmox integration
+# talks to https://<node>:8006, which Node.js rejects without this trust anchor;
+# it is wired via NODE_EXTRA_CA_CERTS, extending the default store.
 apiVersion: v1
 kind: ConfigMap
 metadata:

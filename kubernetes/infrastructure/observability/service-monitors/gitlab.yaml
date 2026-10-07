@@ -1,12 +1,7 @@
 ---
-# Scrape GitLab omnibus metrics from the external VM.
-# gitlab.rb sets prometheus_monitoring['enable'] = true and whitelists the
-# LAN /24 (gitlab_monitoring_whitelist), so /-/metrics serves exposition to
-# in-cluster scrapes (pod traffic leaves the cluster masqueraded to node IPs
-# in the /24) without a token. nginx binds :443 only
-# (gitlab_nginx_listen_https), hence the HTTPS scrape; serverName rewrites
-# SNI/host validation to git.esweiss.com so the wildcard *.esweiss.com cert
-# verifies against the bare-IP Endpoint (same pattern as home-assistant.yaml).
+# GitLab omnibus metrics from the external VM. gitlab.rb enables prometheus and
+# whitelists the LAN /24, so /-/metrics needs no token; nginx binds :443 only,
+# hence HTTPS, and serverName rewrites SNI so the wildcard verifies on a bare IP.
 apiVersion: v1
 kind: Service
 metadata:

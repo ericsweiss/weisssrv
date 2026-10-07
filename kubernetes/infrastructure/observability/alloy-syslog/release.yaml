@@ -1,12 +1,7 @@
 ---
-# alloy-syslog — a dedicated single-replica Alloy Deployment that receives remote
-# syslog from the UniFi gateway (UCG) and forwards it to Loki. Kept SEPARATE from
-# the container-log DaemonSet (../alloy) on purpose: the LoadBalancer VIP then
-# targets exactly one receiver, and the DaemonSet's per-node /var/log tailing is
-# undisturbed. The gateway points its remote-syslog at ${cluster_syslog_vip}
-# (service.yaml, :514/udp); the receiver listens unprivileged on :1514. Alert
-# rules on this stream live in ../rules once the live line format is known
-# (docs/31).
+# alloy-syslog — single-replica Alloy Deployment receiving UniFi gateway syslog on
+# ${cluster_syslog_vip} (service.yaml, :514/udp -> :1514) and shipping it to Loki
+# (docs/46). Separate from ../alloy; UnifiSyslogStale watches the stream.
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -14,6 +9,8 @@ metadata:
   namespace: observability
 spec:
   interval: 30m
+  driftDetection:
+    mode: enabled
   releaseName: alloy-syslog
   timeout: 10m
   chart:
@@ -33,6 +30,13 @@ spec:
       retries: 3
       remediateLastFailure: true
   values:
+    # loki.source.syslog makes no Kubernetes API call, so the chart's default
+    # cluster-wide grant (configmaps and secrets included) and the mounted
+    # ServiceAccount token are pure blast radius.
+    rbac:
+      create: false
+    serviceAccount:
+      automountServiceAccountToken: false
     alloy:
       enableReporting: false
       # Hand-set memory limit (incompressible; docs/33). A syslog receiver's
@@ -46,20 +50,17 @@ spec:
           memory: 256Mi
       configMap:
         content: |
-          // Receive remote syslog from the UniFi gateway (UCG). UniFi/UDM-family
-          // gear emits BSD/RFC3164 over UDP, so pin the format. The Service maps
-          // :514/udp -> this listener on :1514, so the container needs no root and
-          // no NET_BIND_SERVICE to bind a privileged port.
+          // Receive remote syslog from the UniFi gateway (UCG), BSD/RFC3164 over UDP.
+          // The Service maps :514/udp -> this listener on :1514, so the container needs
+          // no root and no NET_BIND_SERVICE.
           loki.source.syslog "unifi" {
             listener {
               address       = "0.0.0.0:1514"
               protocol      = "udp"
               syslog_format = "rfc3164"
-              // Default (receive-time) timestamps, NOT use_incoming_timestamp:
-              // RFC3164 carries no year/timezone, so a drifted UCG clock could
-              // skew lines or trip Loki's out-of-order/too-old rejection. Live
-              // syslog is near-real-time, so receive-time is accurate enough and
-              // safe. Revisit in Phase 2 if the observed lines argue otherwise.
+              // Receive-time timestamps, not use_incoming_timestamp: RFC3164
+              // carries no year or timezone, so a drifted gateway clock would
+              // skew lines or trip Loki's too-old rejection.
               labels = {
                 job    = "unifi-syslog",
                 source = "ucg",
@@ -81,12 +82,8 @@ spec:
       type: deployment
       replicas: 1
       priorityClassName: platform
-      # Run on ANY ingress agent — deliberately NOT pinned to a specific node.
-      # The syslog MetalLB VIP (.162) follows the pod (eTP: Local announces from
-      # the pod's node), sg-syslog-vip is opened on every ingress guest, and the
-      # gateway re-ARPs the VIP on failover — so the receiver survives losing any
-      # single ingress node. The ingress label keeps it on the set where
-      # sg-syslog-vip lives (docs/46).
+      # Any ingress agent: the VIP follows the pod (eTP Local) and sg-syslog-vip is
+      # open on every ingress guest, so the receiver survives losing one node (docs/46).
       nodeSelector:
         ${cluster_node_label_domain}/ingress: "true"
     # The chart ships the config-reloader sidecar without a memory limit; memory

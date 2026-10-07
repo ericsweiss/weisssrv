@@ -1,12 +1,7 @@
 ---
-# Shared RBAC for tenant Flux reconciliation.
-#
-# A tenant's Flux ServiceAccount is bound to the built-in `admin` ClusterRole,
-# which does NOT cover three CRD groups a normal tenant app uses — traefik.io,
-# monitoring.coreos.com and autoscaling.k8s.io (VPA; not the `autoscaling` HPA
-# group admin does have). Without them the tenant's IngressRoute/ServiceMonitor/
-# VPA go Forbidden and its Kustomization NotReady. Each tenant wiring file binds
-# this alongside `admin` (README.md); unbound it does nothing.
+# Shared RBAC for tenant Flux reconciliation: the CRD groups the built-in
+# `admin` ClusterRole does not aggregate. Bound per-tenant alongside `admin`
+# (see README.md); unbound it does nothing.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -14,6 +9,8 @@ metadata:
   labels:
     app.kubernetes.io/managed-by: flux
 rules:
+  # Must equal `kubectl api-resources --api-group=traefik.io --namespaced=true`;
+  # re-check after a Traefik chart bump.
   - apiGroups: ["traefik.io"]
     resources:
       - ingressroutes
@@ -23,7 +20,9 @@ rules:
       - middlewaretcps
       - traefikservices
       - serverstransports
+      - serverstransporttcps
       - tlsoptions
+      - tlsstores
     verbs: [get, list, watch, create, update, patch, delete, deletecollection]
   - apiGroups: ["monitoring.coreos.com"]
     resources:
@@ -35,8 +34,8 @@ rules:
     resources:
       - verticalpodautoscalers
     verbs: [get, list, watch, create, update, patch, delete, deletecollection]
-  # Normally covered by admin's aggregation (see header) — explicit so the
-  # tenant story survives an install without the aggregated edit roles.
+  # Explicit, though admin usually aggregates these, so a partial install still
+  # applies them.
   - apiGroups: ["external-secrets.io"]
     resources:
       - externalsecrets

@@ -1,17 +1,11 @@
-# NetworkPolicies for external-secrets. This namespace holds the 1Password
-# Connect bootstrap credentials and every ESO-synced Secret, so a compromised
-# co-tenant pod must face a pod-network barrier. default-deny-ingress comes from
-# the netpol-baseline component; policies are additive, so it does not override
-# the Connect ingress allow in onepassword-connect/networkpolicy.yaml.
+# NetworkPolicies for external-secrets, the namespace holding the 1Password
+# Connect credentials and every ESO-synced Secret. default-deny-ingress comes
+# from the netpol-baseline component; these policies are additive.
 
 ---
-# Webhook ingress + metrics scrapes from observability. The webhook port is
-# open from anywhere because the apiserver call arrives post-DNAT from whichever
-# server is active; ESO's own TLS/authz is the gate there.
-# Deliberately looser than kube-system-policies/allow-coredns.yaml, which pins
-# the same post-DNAT class to the pod CIDR + LAN: :53 has no per-caller auth
-# so the CIDRs are its only gate, a webhook's own TLS/authz is a real one
-# (docs/29 § Network policy exceptions).
+# Webhook ingress + metrics scrapes from observability. The webhook port is open
+# from anywhere: the apiserver call arrives post-DNAT and ESO's own TLS/authz is
+# the gate (docs/29 § Network policy exceptions).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -36,8 +30,8 @@ spec:
           port: 8080
 
 ---
-# Default-deny egress: the two allows below cover the pod classes that exist
-# here, and anything new starts with no egress until it gets its own.
+# Default-deny egress: the allow below plus the netpol-egress-* components
+# (kustomization.yaml) cover the pod classes here; anything new gets none.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -49,14 +43,13 @@ spec:
     - Egress
 
 ---
-# Scoped egress for the ESO controllers (controller, webhook, cert-controller —
-# all carry the chart's instance label): kube-dns, kube-apiserver, and the
-# same-namespace Connect API. No public egress — ESO only talks to Connect,
-# never to 1Password cloud directly.
+# ESO controllers reach the Connect API in this namespace. Matched by pod, not
+# ClusterIP: kube-proxy DNATs before policy evaluation. 8081 is the sync sidecar.
+# kube-dns and the apiserver come from the shared components (kustomization.yaml).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: allow-egress-external-secrets
+  name: allow-egress-connect-api
   namespace: external-secrets
 spec:
   podSelector:
@@ -66,32 +59,6 @@ spec:
     - Egress
   egress:
     - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
-          podSelector:
-            matchLabels:
-              k8s-app: kube-dns
-      ports:
-        - protocol: UDP
-          port: 53
-        - protocol: TCP
-          port: 53
-    # kube-apiserver: allowlist the real server IPs on 6443 (kube-proxy DNATs
-    # the in-cluster VIP before NetworkPolicy evaluation).
-    - to:
-        - ipBlock:
-            cidr: 10.0.10.222/32
-        - ipBlock:
-            cidr: 10.0.10.223/32
-        - ipBlock:
-            cidr: 10.0.10.227/32
-      ports:
-        - protocol: TCP
-          port: 6443
-    # 1Password Connect API. Matched by pod, not ClusterIP: kube-proxy DNATs
-    # before policy evaluation. 8081 is the sync sidecar.
-    - to:
         - podSelector:
             matchLabels:
               app: onepassword-connect
@@ -100,56 +67,3 @@ spec:
           port: 8080
         - protocol: TCP
           port: 8081
-
----
-# Scoped egress for 1Password Connect: kube-dns plus public HTTPS for the
-# connect-sync container's pull from 1Password cloud. No LAN/apiserver paths.
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: allow-egress-onepassword-connect
-  namespace: external-secrets
-spec:
-  podSelector:
-    matchLabels:
-      app: onepassword-connect
-  policyTypes:
-    - Egress
-  egress:
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
-          podSelector:
-            matchLabels:
-              k8s-app: kube-dns
-      ports:
-        - protocol: UDP
-          port: 53
-        - protocol: TCP
-          port: 53
-    # Public HTTPS: 1Password cloud (sync + events).
-    - to:
-        - ipBlock:
-            cidr: 0.0.0.0/0
-            # "reserved-full" except-list — canonical copy and per-RFC
-            # annotations in components/netpol-egress-public/allow-egress-public.yaml;
-            # parity enforced by scripts/check-netpol-except-parity.py.
-            except:
-              - 10.0.0.0/8
-              - 172.16.0.0/12
-              - 192.168.0.0/16
-              - 0.0.0.0/8
-              - 127.0.0.0/8
-              - 169.254.0.0/16
-              - 100.64.0.0/10
-              - 192.0.0.0/24
-              - 192.0.2.0/24
-              - 198.51.100.0/24
-              - 203.0.113.0/24
-              - 198.18.0.0/15
-              - 224.0.0.0/4
-              - 240.0.0.0/4
-      ports:
-        - protocol: TCP
-          port: 443

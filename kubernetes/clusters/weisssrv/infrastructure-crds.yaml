@@ -1,11 +1,7 @@
 ---
-# Flux Kustomization: CRD bootstrap stage — installs the monitoring.coreos.com
-# CRDs (prometheus-operator-crds HelmRelease) before the controllers stage.
-#
-# Breaks the fresh-bootstrap ordering problem: controllers (Traefik) render
-# ServiceMonitors and hard-fail without the monitoring CRDs, so they are
-# installed here and wait:true holds controllers until they are Established.
-# Depends only on sources (chart repo + the version ConfigMap).
+# CRD bootstrap stage: installs the monitoring.coreos.com CRDs before the
+# controllers stage, which renders ServiceMonitors and hard-fails without them.
+# wait:true holds controllers until they are Established. Depends on sources.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:

@@ -1,15 +1,5 @@
 ---
-# Vars for the `services` group (HAOS — hosts Ansible never connects to; the
-# proxmox_firewall role reaches their guest .fw files by delegating to a
-# Proxmox host).
-#
-# ansible_connection: local means any NON-delegated task would run on the
-# operator's workstation (or the CI runner pod), so this group must never
-# inherit the fleet-wide `ansible_become: true`. Delegated tasks still escalate
-# on the delegate host via its own hostvars.
-#
-# MUST live here, not in hosts.yml's `services: vars:` block: group_vars/<group>
-# (tier 6) outranks group_vars/all.yml; an inventory-FILE group var (tier 3)
-# does not, so that override would silently invert the day the fleet default
-# moves to all.yml and start sudoing on the controller.
+# Guests Ansible never connects to: ansible_connection is local, so a
+# non-delegated task would sudo on the controller itself. Group-level, so a
+# task that skips delegation cannot pick up the fleet-wide ansible_become.
 ansible_become: false

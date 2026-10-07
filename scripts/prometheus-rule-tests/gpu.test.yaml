@@ -1,9 +1,7 @@
 ---
 # promtool unit tests for the GPU alerts that join two independent series.
-# HindsightGpuOffloadIdle is the one that cannot be read off its expression: it
-# is only meaningful as a PAIR (VRAM near-empty AND the deployment available),
-# and either half alone is a normal state — an idle card with Hindsight scaled
-# to zero, or a loading model during the 30m hold.
+# HindsightGpuOffloadIdle fires only on the pair (VRAM near-empty AND the
+# deployment available); either half alone is a normal state.
 rule_files:
   - rules.yaml
 evaluation_interval: 1m

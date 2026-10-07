@@ -23,33 +23,20 @@ Use the storage bootstrap playbook for:
 - Configuration-only changes — use `task storage:deploy`
 
 The playbook never creates or destroys ZFS **pools**. Create those by hand
-first (docs/06); see [docs/17 § Storage safety guarantees](17-disaster-recovery.md#storage-safety-guarantees).
-
-## Bootstrap phases
-
-The storage bootstrap process consists of 8 phases:
-
-1. **Pre-flight Checks** - Verify target host and display warnings
-2. **Infrastructure Detection** - Scan for existing ZFS pools, datasets, directories
-3. **Action Planning** - Determine what needs to be created
-4. **Interactive Confirmation** - User approval required before proceeding
-5. **Dataset Creation** - Create missing ZFS datasets
-6. **Directory Setup** - Create bind mounts, export structure
-7. **Service Configuration** - Configure NFS, Samba, MergerFS
-8. **Verification** - Validate everything is working
+first (docs/06); see [docs/17 § Storage safety](17-disaster-recovery.md#storage-safety).
+It is idempotent, detection-first and confirmation-gated: it detects what
+exists, asks for confirmation, then creates only the missing datasets,
+directories and service config, and verifies them.
 
 ---
 
 ## Prerequisites
 
-Before running the bootstrap playbook:
+Before running the bootstrap playbook the disks must be installed and visible
+to Linux (`ls /dev/disk/by-id/`), and the NAS wants at least 8 GB of RAM for
+ZFS.
 
-### 1. Hardware Requirements
-- Physical disks installed and detected by Linux
-- Sufficient RAM for ZFS (minimum 8GB recommended)
-- Network connectivity
-
-### 2. ZFS Pools Must Be Created First
+### 1. ZFS Pools Must Be Created First
 
 **CRITICAL**: The playbook does NOT create ZFS pools. You must create them manually first.
 
@@ -87,7 +74,7 @@ single source of truth for every pool's exact geometry and by-id device list.
 - `tank` - Main storage pool (HDDs in raidz2)
 - Any other pools defined in `host_vars/pve-nas-01.yml`
 
-### 3. Ansible Environment
+### 2. Ansible Environment
 
 Ensure your Ansible environment is set up:
 
@@ -119,6 +106,10 @@ ssh pve-nas-01 'zfs list'
 
 # Check directory structure
 ssh pve-nas-01 'ls -la /mnt/ /export/'
+
+# Confirm the declared cipher matches every encryption root. host_vars declares
+# aes-256-gcm as a plaintext-recreation guard; a mismatch fails the deploy loudly.
+ssh pve-nas-01 'zfs get -r -t filesystem encryption tank ssd'
 ```
 
 ### Step 2: Run Bootstrap Playbook
@@ -265,64 +256,6 @@ The playbook will:
    - NFS exports active
    - MergerFS unions created
 
-### Creating a dataset by hand
-
-`nas_storage` **never creates datasets** — declaring one it cannot find is a hard
-`DATASET_MISSING` failure on the next NAS deploy. So a new entry in
-`nas_storage_zfs_pools[].datasets` is always paired with this sequence, run as
-root on pve-nas-01 **before** the deploy. `tank/backups/apps` is the worked
-example: it was a plain directory under `tank/backups` holding live per-app
-dumps, and `zfs create` refuses a non-empty mountpoint.
-
-```bash
-# 1. Stop whatever writes there (in-cluster dump CronJobs, archsync/restic
-#    timers, the gitlab-backup timer on .153). A dump landing mid-move is lost.
-
-# 2. Move existing content aside — same pool, so this is a rename, not a copy.
-mv /mnt/tank/backups/apps /mnt/tank/backups/apps.pre-dataset
-
-# 3. Create it. Encryption is INHERITED from the tank/backups encryption root:
-#    do NOT pass -o encryption, and never `zfs set encryption` on an existing
-#    dataset (it errors, by design — that is the plaintext-recreation guard).
-zfs create -o mountpoint=/mnt/tank/backups/apps \
-           -o atime=off -o compression=zstd \
-           -o com.sun:auto-snapshot=false \
-           tank/backups/apps
-
-# 4. Move the content back and restore ownership to the exports' all_squash pair.
-mv /mnt/tank/backups/apps.pre-dataset/* /mnt/tank/backups/apps/
-rmdir /mnt/tank/backups/apps.pre-dataset
-chown -R 1000:2000 /mnt/tank/backups/apps
-
-# 5. Prove it is a mounted dataset — this is exactly what the exports'
-#    bind_source_check tests, and a bare directory passes nothing.
-mountpoint -q /mnt/tank/backups/apps && echo "OK: dataset mounted"
-zfs get -o property,value encryption,keystatus,mountpoint tank/backups/apps
-```
-
-Only then `task infra:deploy -- --limit pve-nas-01 --tags nas_storage`, restart
-the writers, and confirm the next nightly dumps land. The dataset is listed in
-docs/06's `tank` dataset table.
-
-**Every established mount goes stale across the move — server binds first.**
-The `/export/backups-apps/<app>` bind mounts captured the OLD tree when they
-were mounted; a `zfs rename` or a staging-dir migration leaves them serving a
-deleted filesystem (`findmnt` shows the source suffixed `//deleted`) even
-though fstab already names the new path. Until they are re-pointed, every
-client mount RPC against those exports hangs — fixing clients alone fixes
-nothing. On the NAS, for each app:
-`umount -l /export/backups-apps/<app> && mount /export/backups-apps/<app>`
-(fstab is already correct), then `sudo exportfs -ra`. Then the clients: any
-guest that already had the path mounted (gitlab/nextcloud/immich's offsite
-landing mounts) holds pre-move file handles, and its next `stat` HANGS on the
-hard mount — which freezes an Ansible play mid-task rather than failing it —
-so lazy-unmount there too and let the role's next converge remount fresh.
-The storage role cannot detect either case: mount point mounted + fstab entry
-present reads as converged, but a bind's live *source* is not re-checked.
-Symptom to recognize: deploy jobs stuck >10 min on "Check whether the backup
-landing directory is already a mountpoint" / "Mount the offsite backup NFS
-export".
-
 ### Step 7: Review Completion Status
 
 ```
@@ -339,7 +272,8 @@ ZFS Datasets Mounted:
 NFS Exports:
   Export list for pve-nas-01:
   ... (the live export set, its client scoping and its TLS requirement are
-       described in section 4 below — `nas_storage_exports` is the source)
+       described under § Post-Bootstrap Verification — `nas_storage_exports`
+       is the source)
 
 MergerFS Mounts:
   /mnt/media  /mnt/nvme/media:/mnt/tank/media
@@ -437,90 +371,93 @@ smbclient //pve-nas-01/share -U nas
 
 ---
 
-## Common Scenarios
+## Adding a dataset to a live NAS
 
-### Scenario 1: Brand New NAS (Fresh Install)
+`nas_storage` **never creates datasets** — declaring one it cannot find is a hard
+`DATASET_MISSING` failure on the next NAS deploy. So a new entry in
+`nas_storage_zfs_pools[].datasets` is always paired with this sequence, run as
+root on pve-nas-01 **before** the deploy. `tank/backups/apps` is the worked
+example: it was a plain directory under `tank/backups` holding live per-app
+dumps, and `zfs create` refuses a non-empty mountpoint.
 
-**Starting Point**: Proxmox installed, disks connected, no ZFS pools
+```bash
+# 1. Stop whatever writes there (in-cluster dump CronJobs, archsync/restic
+#    timers, the gitlab-backup timer on .153). A dump landing mid-move is lost.
 
-**Procedure**:
-1. Create ZFS pools manually (see above)
-2. Run storage bootstrap playbook
-3. Confirm dataset creation
-4. Verify with `task infra:verify`
+# 2. Move existing content aside — same pool, so this is a rename, not a copy.
+mv /mnt/tank/backups/apps /mnt/tank/backups/apps.pre-dataset
 
-### Scenario 2: Disaster Recovery (Pool Intact, Datasets Lost)
+# 3. Create it. Encryption is INHERITED from the tank/backups encryption root:
+#    do NOT pass -o encryption, and never `zfs set encryption` on an existing
+#    dataset (it errors, by design — that is the plaintext-recreation guard).
+zfs create -o mountpoint=/mnt/tank/backups/apps \
+           -o atime=off -o compression=zstd \
+           -o com.sun:auto-snapshot=false \
+           tank/backups/apps
 
-**Starting Point**: ZFS pool exists but datasets were accidentally destroyed
+# 4. Move the content back and restore ownership to the exports' all_squash pair.
+mv /mnt/tank/backups/apps.pre-dataset/* /mnt/tank/backups/apps/
+rmdir /mnt/tank/backups/apps.pre-dataset
+chown -R 1000:2000 /mnt/tank/backups/apps
 
-**Procedure**:
-1. Run storage bootstrap playbook (will detect existing pool)
-2. Confirm creation of missing datasets
-3. Restore data from backups (if needed)
-4. Verify with `task infra:verify`
+# 5. Prove it is a mounted dataset — this is exactly what the exports'
+#    bind_source_check tests, and a bare directory passes nothing.
+mountpoint -q /mnt/tank/backups/apps && echo "OK: dataset mounted"
+zfs get -o property,value encryption,keystatus,mountpoint tank/backups/apps
+```
 
-### Scenario 3: Hardware Replacement (Complete Rebuild)
+Only then `task infra:deploy -- --limit pve-nas-01 --tags nas_storage`, restart
+the writers, and confirm the next nightly dumps land. The dataset is listed in
+docs/06's `tank` dataset table.
 
-**Starting Point**: New hardware, need to restore from backup
+**Every established mount goes stale across the move — server binds first.**
+Bind mounts capture the source tree at mount time, so a rename or a staging-dir
+move leaves `/export/backups-apps/<app>` serving a deleted filesystem
+(`findmnt` shows the source suffixed `//deleted`) even though fstab already
+names the new path. Client mount RPCs then hang on the hard mount and freeze an
+Ansible play mid-task. Re-point the server first — per app,
+`umount -l /export/backups-apps/<app> && mount /export/backups-apps/<app>`, then
+`sudo exportfs -ra` — then lazy-unmount the same paths on any guest that already
+had them mounted (the gitlab, nextcloud and immich landing mounts) and let the
+role remount them on its next converge. The role cannot detect this: mountpoint
+present plus fstab entry present reads as converged.
 
-**Procedure**:
-1. Install Proxmox on new hardware
-2. Install physical disks
-3. Create ZFS pools (same names as before)
-4. Run storage bootstrap playbook
-5. Restore ZFS datasets from backup:
-   ```bash
-   # Receive ZFS snapshot from backup
-   zfs receive tank/media < /path/to/backup/tank-media-snapshot.zfs
-   ```
-6. Run storage bootstrap to configure services
-7. Verify with `task infra:verify`
+### Encrypted datasets
 
-### Scenario 4: Adding New Storage Pool
+A dataset that is its own encryption root is created with the key material, and
+the passphrase comes from 1Password (`ZFS Pool ssd Passphrase`). `ssd/k3s-etcd`
+is the worked example:
 
-**Starting Point**: Existing NAS operational, adding new pool
+```bash
+zfs create -o encryption=aes-256-gcm -o keyformat=passphrase \
+           -o keylocation=prompt -o mountpoint=/mnt/ssd/k3s-etcd \
+           ssd/k3s-etcd
+```
 
-**Procedure**:
-1. Install new physical disks
-2. Create new ZFS pool manually
-3. Add pool configuration to `host_vars/pve-nas-01.yml`
-4. Run storage bootstrap playbook (will only create new datasets)
-5. Verify with `task infra:verify`
+The dataset name equals its `encryptionroot`, so the `zfs-load-key@ssd` boot
+loop unlocks it with the pool's own passphrase ([docs/32](32-zfs-encryption.md)).
+
+The plaintext-recreation guard (`encryption:` on an entry in
+`nas_storage_zfs_pools`) now covers every declared encryption root:
+`tank/proxmox`, `tank/nextcloud-data`, `tank/immich-data`, `tank/backups/apps`,
+`ssd/appdata` and `ssd/k3s-etcd`. It does not cover `tank/share`, which is not
+an encryption root.
 
 ---
 
-## Safety Features
+## Common Scenarios
 
-The storage bootstrap playbook includes multiple safety features:
+Every variant runs the same bootstrap playbook. What differs is the setup
+before it and the restore after it.
 
-### 1. Detection Before Action
-- Scans for existing pools and datasets
-- Shows exactly what will be created
-- Never modifies existing infrastructure
+| Starting point | What differs from the standard run |
+|---|---|
+| Fresh install — Proxmox up, disks connected, no pools | Create the pools by hand first ([docs/06](06-zfs.md)), then the standard run |
+| Pool intact, datasets lost | The standard run detects the pool and creates only the missing datasets; restore data per [docs/17 § Restore Procedures](17-disaster-recovery.md#restore-procedures) |
+| Hardware replacement | Install Proxmox and the disks, recreate the pools with the SAME names and the exact geometry in [docs/06](06-zfs.md), then the standard run; restore datasets per [docs/17 § Restore Procedures](17-disaster-recovery.md#restore-procedures) — `sudo archive-backupctl restore <target>` from the archive replica if the archive pool survived, otherwise `sudo restic-offsitectl restore <source>` from B2 ([docs/42](42-offsite-backup.md)). Both tools are role-shipped, so on truly fresh hardware they exist only after the base deploy has run |
+| New pool on a live NAS | Create the pool, add it to `host_vars/pve-nas-01.yml`, then the standard run creates only its datasets |
 
-### 2. Interactive Confirmation
-- Requires user to type "yes" to proceed
-- Displays clear warnings about what will happen
-- Aborts if confirmation not given
-
-### 3. Idempotent Operations
-- Safe to run multiple times
-- Skips existing infrastructure
-- Only creates what's missing
-
-### 4. No Destructive Operations
-- Never creates ZFS pools (manual only)
-- Never destroys datasets
-- Never formats disks
-- Never deletes data
-- Only creates missing datasets
-- Only creates directories
-- Only configures services
-
-### 5. Clear Error Messages
-- Fails fast if pools are missing
-- Provides actionable guidance
-- Links to relevant documentation
+Finish every variant with `task infra:verify`.
 
 ---
 
@@ -593,67 +530,12 @@ zfs destroy tank/problematic-dataset
 2. Fix configuration issue
 3. Re-run bootstrap playbook (will skip dataset creation)
 
-### If You Need to Start Over
-
-**Nuclear Option**: Remove all created infrastructure
-
-**WARNING**: This destroys all data!
-
-```bash
-# Export and destroy all NFS/Samba configs
-sudo systemctl stop nfs-kernel-server smbd nmbd
-sudo mv /etc/exports /etc/exports.old
-sudo mv /etc/samba/smb.conf /etc/samba/smb.conf.old
-
-# Unmount MergerFS
-sudo umount /mnt/media
-sudo umount /export/media
-
-# Destroy datasets (DATA LOSS!)
-sudo zfs destroy -r tank/media
-sudo zfs destroy -r tank/share
-# ... repeat for all datasets
-
-# Destroy pools (DATA LOSS!)
-sudo zpool destroy tank
-
-# Now you can start completely fresh
-```
+There is no scripted teardown, and none should be added. Tearing a pool down is
+a deliberate, out-of-band act performed by hand with the pool geometry in
+[docs/06](06-zfs.md) in front of you; the bootstrap playbook neither creates nor
+destroys pools.
 
 ---
-
-## Checklist
-
-Use this checklist when performing disaster recovery:
-
-### Pre-Bootstrap
-- [ ] Physical disks installed and detected (`ls /dev/disk/by-id/`)
-- [ ] Sufficient RAM available (8GB+ for ZFS)
-- [ ] Network connectivity working
-- [ ] SSH access to NAS established
-- [ ] 1Password authenticated (`op account get`)
-- [ ] Required secrets exported
-- [ ] ZFS kernel module loaded (`lsmod | grep zfs`)
-- [ ] ZFS pools created manually (`zpool list`)
-
-### During Bootstrap
-- [ ] Reviewed infrastructure detection results
-- [ ] Confirmed required actions make sense
-- [ ] Provided explicit confirmation ("yes")
-- [ ] Monitored dataset creation
-- [ ] Reviewed service configuration output
-- [ ] Checked for errors in playbook output
-
-### Post-Bootstrap
-- [ ] Ran `task infra:verify` successfully
-- [ ] Verified ZFS pool health (`zpool status`)
-- [ ] Checked dataset properties (`zfs get all`)
-- [ ] Tested NFS exports (`showmount -e`)
-- [ ] Tested Samba shares (`smbclient -L`)
-- [ ] Verified MergerFS mounts (`findmnt -t fuse.mergerfs`)
-- [ ] Checked SMART disk health
-- [ ] Reviewed backup job configuration
-- [ ] Verified media mover timer active
 
 ## Related documentation
 

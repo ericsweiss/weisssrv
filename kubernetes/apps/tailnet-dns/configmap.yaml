@@ -1,22 +1,7 @@
 ---
-# Split-horizon resolver for Tailscale clients. Reachable on the tailnet as the
-# operator device "ts-dns" and wired as the Split-DNS nameserver for esweiss.com
-# (terraform/tailscale/split_dns.tf). It rewrites the *internal* view so that:
-#
-#   Traefik-fronted *.esweiss.com  -> CNAME traefik-tailnet.<tailnet>.ts.net
-#       The client's MagicDNS resolves that to the Traefik tailnet device's
-#       100.x and opens :443 there (mesh path — no subnet-router return path).
-#   Direct/admin + infra names       -> forwarded to AdGuard (.150/.160), which
-#       returns their real LAN IP (reachable via subnet routing, which works for
-#       plain hosts). This override list mirrors the non-.101 entries of
-#       ansible .../group_vars/dns.yml `adguard_home_rewrites` — keep in sync when a
-#       new direct-IP (bypass-Traefik) name is added there. Every OTHER
-#       *.esweiss.com name is assumed Traefik-fronted and needs no change here
-#       when new web apps are added.
-#
-# <tailnet> suffix is taile792d8.ts.net (from `tailscale status`). It is a
-# compile-time constant (the Traefik device's MagicDNS name is deterministic
-# from its tailscale.com/hostname), so there is no bootstrap circularity.
+# Split-horizon resolver for Tailscale clients - the Split-DNS nameserver for the
+# internal domain (terraform/tailscale/split_dns.tf). Traefik-fronted names CNAME
+# the tailnet Traefik device; the direct/admin names below forward to AdGuard (docs/08).
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -24,24 +9,25 @@ metadata:
   namespace: tailnet-dns
 data:
   Corefile: |
-    # Override zone: names that must resolve to their real LAN IP, not Traefik.
-    dns.${cluster_internal_domain} smtp-relay.${cluster_internal_domain} plex-direct.${cluster_internal_domain} gitlab.${cluster_internal_domain} nextcloud.${cluster_internal_domain} home-direct.${cluster_internal_domain} windows.${cluster_internal_domain} immich.${cluster_internal_domain} vip-public.${cluster_internal_domain} k3s.${cluster_internal_domain} pve-nas-01.${cluster_internal_domain} pve-laptop-01.${cluster_internal_domain} pve-opt-01.${cluster_internal_domain} pve-opt-02.${cluster_internal_domain} pve-opt-03.${cluster_internal_domain} pve-prec-01.${cluster_internal_domain} k3s-srv-nas-01.${cluster_internal_domain} k3s-srv-laptop-01.${cluster_internal_domain} k3s-srv-prec-01.${cluster_internal_domain} k3s-agt-nas-01.${cluster_internal_domain} k3s-agt-laptop-01.${cluster_internal_domain} k3s-agt-opt-01.${cluster_internal_domain} k3s-agt-opt-02.${cluster_internal_domain} k3s-agt-opt-03.${cluster_internal_domain} k3s-agt-prec-01.${cluster_internal_domain} {
+    # Override zone: names that must resolve to their real LAN IP rather than
+    # Traefik, plus the Traefik routes chained with lan-tailscale-strict.
+    # Parity is enforced by scripts/check-tailnet-dns-parity.py.
+    dns.${cluster_internal_domain} smtp-relay.${cluster_internal_domain} plex-direct.${cluster_internal_domain} gitlab.${cluster_internal_domain} nextcloud.${cluster_internal_domain} home-direct.${cluster_internal_domain} windows.${cluster_internal_domain} immich.${cluster_internal_domain} vip-public.${cluster_internal_domain} k3s.${cluster_internal_domain} pve-nas-01.${cluster_internal_domain} pve-laptop-01.${cluster_internal_domain} pve-opt-01.${cluster_internal_domain} pve-opt-02.${cluster_internal_domain} pve-opt-03.${cluster_internal_domain} pve-prec-01.${cluster_internal_domain} k3s-srv-nas-01.${cluster_internal_domain} k3s-srv-laptop-01.${cluster_internal_domain} k3s-srv-prec-01.${cluster_internal_domain} k3s-agt-nas-01.${cluster_internal_domain} k3s-agt-laptop-01.${cluster_internal_domain} k3s-agt-opt-01.${cluster_internal_domain} k3s-agt-opt-02.${cluster_internal_domain} k3s-agt-opt-03.${cluster_internal_domain} k3s-agt-prec-01.${cluster_internal_domain} traefik.${cluster_internal_domain} connect.${cluster_internal_domain} router.${cluster_internal_domain} dns-01.${cluster_internal_domain} dns-02.${cluster_internal_domain} {
         errors
         forward . ${cluster_upstream_dns_servers}
         cache 30
     }
 
-    # Default: every other *.esweiss.com is Traefik-fronted -> CNAME the tailnet
-    # Traefik device. A/AAAA are answered with the CNAME (the client's MagicDNS
-    # resolves the ts.net target to the device's 100.x); other qtypes fall
-    # through to AdGuard.
+    # Default: every other internal name is Traefik-fronted -> CNAME the tailnet
+    # Traefik device, which the client's MagicDNS resolves to its 100.x. Other
+    # qtypes fall through to AdGuard.
     ${cluster_internal_domain} {
         errors
         template IN A ${cluster_internal_domain} {
-            answer "{{ .Name }} 60 IN CNAME traefik-tailnet.taile792d8.ts.net."
+            answer "{{ .Name }} 60 IN CNAME traefik-tailnet.${cluster_tailnet_dns_suffix}."
         }
         template IN AAAA ${cluster_internal_domain} {
-            answer "{{ .Name }} 60 IN CNAME traefik-tailnet.taile792d8.ts.net."
+            answer "{{ .Name }} 60 IN CNAME traefik-tailnet.${cluster_tailnet_dns_suffix}."
         }
         forward . ${cluster_upstream_dns_servers}
         cache 30

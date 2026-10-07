@@ -1,16 +1,24 @@
 # Multi-Repo Onboarding Guide
 
-How to attach an external Git repository to the weisssrv k3s cluster so Flux reconciles its workloads into a dedicated namespace. Covers two backends for secret management — 1Password (my own repos) and GitLab CI/CD variables (friends without 1Password) — plus namespace isolation rules, rate-limit considerations, and removal.
+How to attach an external Git repository to the weisssrv k3s cluster so Flux reconciles its
+workloads into a dedicated namespace. Covers two backends for secret management — 1Password (my own
+repos) and GitLab CI/CD variables (friends without 1Password) — plus namespace isolation rules,
+rate-limit considerations, and removal.
 
 ## Overview
 
-Each external repo that deploys to this cluster gets **one wiring file** in `kubernetes/clusters/weisssrv/tenants/<repo-slug>.yaml`. That file defines three things:
+Each external repo that deploys to this cluster gets **one wiring file** in
+`kubernetes/clusters/weisssrv/tenants/<repo-slug>.yaml`. That file defines three things:
 
-1. **Secret backend** — a `ClusterSecretStore` (1Password or GitLab variables) scoped to the tenant's namespace with `spec.conditions`. Omit that block and any namespace in the cluster can read the store.
+1. **Secret backend** — a `ClusterSecretStore` (1Password or GitLab variables) scoped to the
+   tenant's namespace with `spec.conditions`. Omit that block and any namespace in the cluster can
+   read the store.
 2. **Git source** — a Flux `GitRepository` pointing at the tenant's repo and branch.
-3. **Top-level Kustomization** — reconciles the tenant's `kubernetes/flux/` path into a dedicated namespace.
+3. **Top-level Kustomization** — reconciles `<tenant-repo>/kubernetes/flux/` into a dedicated
+   namespace.
 
-The tenant's repo contains its own `kubernetes/flux/` tree with workloads, ExternalSecrets (referencing their own store), etc. The wiring file stays in this repo.
+The tenant's repo contains that tree with workloads, ExternalSecrets
+(referencing their own store), etc. The wiring file stays in this repo.
 
 See `kubernetes/clusters/weisssrv/tenants/README.md` for the canonical templates.
 
@@ -54,6 +62,13 @@ operator-authored):
   deploy through it, replace that with namespaced Roles per tenant (or a
   least-privilege ClusterRole) so a compromised agentk can't touch the whole
   cluster.
+- **The GitLab agent has no egress NetworkPolicy.** Its namespace ships only
+  the ingress baseline. The blocker is kube-router: it installs the per-pod
+  egress chain after the pod is scheduled, and agentk exits fatally on its
+  startup `/api` GET in that gap, so every fresh pod crashloops. Restore a
+  scoped allowlist (kube-dns, the three server `/32`s on 6443, the GitLab VM
+  `:443`) only once agentk tolerates that gap, and validate by deleting one
+  agent pod and watching for the fatal startup GET.
 - **Use the tenant ServiceAccount pattern.** Every tenant Kustomization must
   set `serviceAccountName` (see the wiring templates below) — without it,
   kustomize-controller applies tenant manifests with its own cluster-admin
@@ -74,6 +89,17 @@ operator-authored):
   responsibility at onboarding**, not a gate. A copier-generated repo ships
   `template/kubernetes/flux/networkpolicy.yaml.jinja` already; a hand-authored
   one must add the deny plus a scrape-allow from `observability`.
+- **Cap the tenant namespace with a ResourceQuota and a LimitRange.** The
+  built-in `admin` ClusterRole places no ceiling on what a tenant may request,
+  and the two runner quotas already sum above cluster allocatable
+  ([docs/33](33-autoscaling.md) § Scheduling priority). The wiring example in
+  `kubernetes/clusters/weisssrv/tenants/README.md` ships both; size the numbers
+  per tenant. A `max:` key with no matching `default:` key becomes the default
+  limit, so a CPU entry under `max:` gives every container a CPU limit and the
+  CFS throttling this cluster's no-CPU-limit policy avoids. Leave CPU to the
+  quota's `requests.cpu`.
+- **Admission policy for tenant namespaces** is still open work —
+  [docs/16](16-next-steps.md) § Open work.
 
 ---
 
@@ -81,17 +107,26 @@ operator-authored):
 
 For repos where secrets live in 1Password and ESO reads them via the 1Password Connect provider.
 
-**Important architectural context**: The shared Connect server deployed in `external-secrets` namespace was bootstrapped with access to the `Homelab` vault only. A Connect server can only access vaults it was granted at creation time. This means tenant `ClusterSecretStore` resources that point at the shared `connectHost` can only read from vaults the shared server has access to. This constrains the available isolation models — see below.
+**Important architectural context**: The shared Connect server deployed in `external-secrets`
+namespace was bootstrapped with access to the `Homelab` vault only. A Connect server can only access
+vaults it was granted at creation time. This means tenant `ClusterSecretStore` resources that point
+at the shared `connectHost` can only read from vaults the shared server has access to. This
+constrains the available isolation models — see below.
 
 ### Isolation Options
 
-Three approaches exist for tenant secrets with 1Password Connect. Each trades off isolation against operational complexity.
+Three approaches exist for tenant secrets with 1Password Connect. Each trades off isolation against
+operational complexity.
 
 #### Option A — Recreate Shared Connect with Multi-Vault Access
 
-Recreate the shared Connect server with access to all needed vaults (the main `Homelab` vault plus each tenant's dedicated vault). Tenant `ClusterSecretStore` resources point at the same shared `connectHost` but are scoped to their own vault.
+Recreate the shared Connect server with access to all needed vaults (the main `Homelab` vault plus
+each tenant's dedicated vault). Tenant `ClusterSecretStore` resources point at the same shared
+`connectHost` but are scoped to their own vault.
 
-**Setup**: Each time a new tenant is added, recreate the Connect server credentials with the expanded vault list, then replace the `op-credentials` bootstrap secret in the `external-secrets` namespace and restart the Connect pods.
+**Setup**: Each time a new tenant is added, recreate the Connect server credentials with the
+expanded vault list, then replace the `op-credentials` bootstrap secret in the `external-secrets`
+namespace and restart the Connect pods.
 
 ```bash
 # Recreate with expanded vault list
@@ -106,7 +141,8 @@ kubectl -n external-secrets create secret generic op-credentials \
 kubectl -n external-secrets rollout restart deployment onepassword-connect
 ```
 
-Per-tenant tokens are still scoped to a single vault, so tenant ExternalSecrets cannot read from other vaults.
+Per-tenant tokens are still scoped to a single vault, so tenant ExternalSecrets cannot read from
+other vaults.
 
 | Pros | Cons |
 |---|---|
@@ -116,9 +152,12 @@ Per-tenant tokens are still scoped to a single vault, so tenant ExternalSecrets 
 
 #### Option B — Separate Connect Server Per Tenant
 
-Deploy a dedicated Connect server in each tenant's namespace. Each server has its own `op-credentials` and token, scoped to a single tenant vault. The tenant's `SecretStore` (namespace-scoped, not cluster-scoped) points at its own Connect instance.
+Deploy a dedicated Connect server in each tenant's namespace. Each server has its own
+`op-credentials` and token, scoped to a single tenant vault. The tenant's `SecretStore`
+(namespace-scoped, not cluster-scoped) points at its own Connect instance.
 
-**Setup**: Create a Connect server per tenant, deploy it as a separate pod in the tenant namespace, and create a namespace-scoped `SecretStore`.
+**Setup**: Create a Connect server per tenant, deploy it as a separate pod in the tenant namespace,
+and create a namespace-scoped `SecretStore`.
 
 ```bash
 # Create tenant-specific Connect server
@@ -144,11 +183,19 @@ kubectl -n <repo-slug> create secret generic onepassword-connect-token \
 
 #### Option C — Shared Connect, Shared Vault (Recommended)
 
-Use the existing shared Connect server and the existing `Homelab` vault for tenant secrets. Tenant items are stored in the same vault using a naming convention: prefix item titles with the tenant name (e.g. `example-app: API Secrets`, `example-app: Database`). The tenant's `ClusterSecretStore` points at the shared Connect and the shared vault. No vault isolation between tenants.
+Use the existing shared Connect server and the existing `Homelab` vault for tenant secrets. Tenant
+items are stored in the same vault using a naming convention: prefix item titles with the tenant
+name (e.g. `example-app: API Secrets`, `example-app: Database`). The tenant's `ClusterSecretStore`
+points at the shared Connect and the shared vault. No vault isolation between tenants.
 
-This is the **recommended default** for this homelab. The trust model is single-operator with invited friends — every tenant is either you or someone you trust. The operational simplicity outweighs the lack of vault isolation. No Connect re-bootstrapping, no extra pods, no per-tenant credential management.
+This is the **recommended default** for this homelab. The trust model is single-operator with
+invited friends — every tenant is either you or someone you trust. The operational simplicity
+outweighs the lack of vault isolation. No Connect re-bootstrapping, no extra pods, no per-tenant
+credential management.
 
-**Setup**: Add items to the existing `Homelab` vault with a tenant prefix. Create a Connect token scoped to the `Homelab` vault for the tenant (or reuse the existing token). The tenant's `ClusterSecretStore` points at the shared Connect server.
+**Setup**: Add items to the existing `Homelab` vault with a tenant prefix. Create a Connect token
+scoped to the `Homelab` vault for the tenant (or reuse the existing token). The tenant's
+`ClusterSecretStore` points at the shared Connect server.
 
 ```bash
 # Find the Connect server ID with `op connect server list`, then create a
@@ -169,17 +216,20 @@ kubectl -n <repo-slug> create secret generic onepassword-connect-token \
 | Works with existing Connect deployment as-is | Requires naming discipline to avoid item collisions |
 | Simplest to set up and maintain | Not suitable if tenants are untrusted |
 
-**Item naming convention**: Prefix all tenant items with `<repo-slug>:` to avoid collisions with existing items. Examples:
+**Item naming convention**: Prefix all tenant items with `<repo-slug>:` to avoid collisions with
+existing items. Examples:
 - `example-app: API Secrets` (fields: `api-key`, `db-password`)
 - `example-app: Database` (fields: `host`, `port`, `password`)
 
 ### Steps (Option C — Shared Connect, Shared Vault)
 
-The steps below use Option C. For Options A or B, substitute the vault/Connect setup from the relevant option above and adjust the `ClusterSecretStore` accordingly.
+The steps below use Option C. For Options A or B, substitute the vault/Connect setup from the
+relevant option above and adjust the `ClusterSecretStore` accordingly.
 
 ### 1. Add Tenant Secrets to the Homelab Vault
 
-In 1Password, create items in the `Homelab` vault using the naming convention `<repo-slug>: <Item Name>`. Example: `example-app: API Secrets` with fields `api-key` and `db-password`.
+In 1Password, create items in the `Homelab` vault using the naming convention `<repo-slug>: <Item
+Name>`. Example: `example-app: API Secrets` with fields `api-key` and `db-password`.
 
 ### 2. Create a Connect Token (Optional)
 
@@ -201,7 +251,13 @@ kubectl -n <repo-slug> create secret generic onepassword-connect-token \
   --from-literal=token=<CONNECT_TOKEN>
 ```
 
-Only the token is needed. The Connect server already runs in `external-secrets` and has the `op-credentials` secret.
+Only the token is needed. The Connect server already runs in `external-secrets` and has the
+`op-credentials` secret.
+
+The bootstrap Secret has no controller owner, so
+`scripts/check-unmanaged-secrets.py` flags it. Add
+`<repo-slug>/onepassword-connect-token` to that script's `ALLOWLIST` with the
+reason `tenant ESO bootstrap (docs/30)` in the same MR as the wiring file.
 
 ### 4. Add the Wiring File
 
@@ -236,14 +292,23 @@ reconcile.
 
 A repo generated from the app template already has all of this — the tenant's
 work is replacing the placeholder image and hostnames. For a hand-authored
-tenant, create `kubernetes/flux/` with:
+tenant, create `<tenant-repo>/kubernetes/flux/` with:
 
-- Workload manifests (Deployments, HelmReleases, etc.).
-- A **namespace-wide ingress default-deny NetworkPolicy** plus a scrape-allow
-  from the `observability` namespace. Mandatory on this cluster, and no platform
-  gate can see it from here — see the Pre-Onboarding Checklist.
+- Workload manifests (Deployments, HelmReleases, etc.). Match the template's pod
+  posture: `resources` requests/limits, a readiness probe, and a
+  `securityContext` with `runAsNonRoot`, `allowPrivilegeEscalation: false`,
+  `readOnlyRootFilesystem: true`, `capabilities.drop: [ALL]` and
+  `seccompProfile.type: RuntimeDefault`, so the namespace's `restricted`
+  warn/audit labels stay quiet.
+- A **namespace-wide ingress default-deny NetworkPolicy** plus an allow from the
+  `traefik` namespace to the app port and a scrape-allow from `observability`.
+  Mandatory on this cluster, and no platform gate can see it from here — see the
+  Pre-Onboarding Checklist. Copy
+  `template/kubernetes/flux/networkpolicy.yaml.jinja` from the app template
+  rather than writing one, and keep its egress `except` list of reserved CIDRs
+  whole — the same list this repo's `netpol-egress-*` components carry.
 - `ExternalSecret` CRs that reference `ClusterSecretStore/onepassword-<repo-slug>`.
-- A top-level `kustomization.yaml` aggregating everything under `kubernetes/flux/`.
+- A top-level `kustomization.yaml` aggregating everything under `<tenant-repo>/kubernetes/flux/`.
 
 ExternalSecret example for a tenant workload (note the prefixed item title):
 
@@ -268,7 +333,8 @@ spec:
         property: api-key
 ```
 
-Use the full prefixed item title in `remoteRef.key` and field names in `remoteRef.property` — same format as this repo's ExternalSecrets. See `docs/29-flux-operations.md` for the format rules.
+Use the full prefixed item title in `remoteRef.key` and field names in `remoteRef.property` — same
+format as this repo's ExternalSecrets. See `docs/29-flux-operations.md` for the format rules.
 
 ### 6. Verify
 
@@ -282,19 +348,26 @@ kubectl get all -n <repo-slug>
 kubectl get externalsecret -n <repo-slug>
 ```
 
+A fully concrete rendering of all of the above lives in
+`kubernetes/clusters/weisssrv/tenants/README.md` § *Example: 1Password-backed
+tenant* (and, pre-substituted for a real slug, in the app template's
+`docs/ONBOARDING.md`).
+
 ---
 
 ## Path B — GitLab CI/CD Variables Backend
 
-For friends who have a GitLab project and don't want to deal with 1Password. ESO reads from the project's CI/CD variables via the GitLab provider.
+For friends who have a GitLab project and don't want to deal with 1Password. ESO reads from the
+project's CI/CD variables via the GitLab provider.
 
 ### 1. Create a Project Access Token
 
 In GitLab → the friend's project → Settings → Access Tokens:
 
 - Name: `weisssrv-eso`.
-- Role: Reporter (minimum needed to read variables).
-- Scopes: `read_api`.
+- Role: Maintainer. Reading project CI/CD variables is a Maintainer-level
+  operation; the REST endpoint 403s below it.
+- Scopes: `api`. ESO's GitLab provider needs `api`, not `read_api`.
 - Save the token — it's shown once.
 
 ### 2. Seed the Bootstrap Secret
@@ -305,6 +378,11 @@ kubectl create namespace <repo-slug>
 kubectl -n <repo-slug> create secret generic gitlab-api-token \
   --from-literal=token=glpat-<TOKEN>
 ```
+
+The bootstrap Secret has no controller owner, so
+`scripts/check-unmanaged-secrets.py` flags it. Add
+`<repo-slug>/gitlab-api-token` to that script's `ALLOWLIST` with the reason
+`tenant ESO bootstrap (docs/30)` in the same MR as the wiring file.
 
 ### 3. Add the Wiring File
 
@@ -322,7 +400,8 @@ Everything else — the Namespace and its PSA labels, the GitRepository, the
 namespace-scoped ServiceAccount, the `admin` **and** `tenant-crd-editor`
 RoleBindings, and the Kustomization — is identical to Path A.
 
-The numeric project ID is under GitLab → Project → Settings → General (visible below the project name).
+The numeric project ID is under GitLab → Project → Settings → General (visible below the project
+name).
 
 ### 4. Friend Adds Variables
 
@@ -365,10 +444,12 @@ Every tenant owns **exactly one namespace**. Non-negotiable.
 
 Tenants **must not** create or modify resources in:
 
-- Platform namespaces: `flux-system`, `external-secrets`, `metallb-system`, `cert-manager`, `traefik`, `external-dns`, `authentik`, `observability`.
+- Platform namespaces: `flux-system`, `external-secrets`, `metallb-system`, `cert-manager`,
+  `traefik`, `external-dns`, `authentik`, `observability`.
 - Other tenants' namespaces.
 
-Why: Flux's server-side apply with `prune: true` will fight any resources that appear in a namespace that isn't part of the tenant's Kustomization. The result is reconcile loops and random deletions.
+Why: Flux's server-side apply with `prune: true` will fight any resources that appear in a namespace
+that isn't part of the tenant's Kustomization. The result is reconcile loops and random deletions.
 
 **Enforcement**: the Flux apply path is RBAC-scoped. Each tenant Kustomization
 sets `serviceAccountName`, and the SA's RoleBindings grant `admin` **and**
@@ -379,34 +460,39 @@ ClusterRole covering the CRD groups `admin` misses — `traefik.io`,
 namespace-scoped, so it grants nothing cluster-wide.)
 
 What remains cooperative is everything outside that path: which
-ClusterSecretStore a namespace references, cross-namespace Traefik refs — see the
-Pre-Onboarding Checklist. An admission controller (Kyverno or OPA Gatekeeper)
-would close those; tracked in `docs/16-next-steps.md`.
+ClusterSecretStore a namespace references, and cross-namespace Traefik refs —
+Traefik runs with `--providers.kubernetescrd.allowCrossNamespace=true`, so an
+IngressRoute a tenant legitimately owns can match a platform hostname at a
+higher priority. RBAC cannot constrain the content of a resource the tenant is
+allowed to create; a `ValidatingAdmissionPolicy` per tenant namespace can, and
+needs no new controller. Tracked in `docs/16-next-steps.md` § Open work —
+Admission policy for tenant namespaces.
 
-If a tenant needs to consume a platform service (Traefik ingress, cert-manager certificate, Authentik OIDC), they do so via CRs in *their own* namespace — an IngressRoute in the tenant namespace, a Certificate in the tenant namespace, etc. The platform controllers act on those CRs without the tenant needing to touch platform namespaces.
+**The kubeconfig handed to the tenant is a separate grant** from the Flux apply
+path above. Reading their own deployment state needs read in the tenant
+namespace **and** in `flux-system`, where their `Kustomization` and
+`GitRepository` live. Forcing a reconcile needs `annotate` and `patch` on those
+two objects as well: `flux reconcile` writes a request annotation, so a
+read-only kubeconfig refuses it and the tenant waits on the git poll instead.
+
+If a tenant needs to consume a platform service (Traefik ingress, cert-manager certificate,
+Authentik OIDC), they do so via CRs in *their own* namespace — an IngressRoute in the tenant
+namespace, a Certificate in the tenant namespace, etc. The platform controllers act on those CRs
+without the tenant needing to touch platform namespaces.
 
 ---
 
 ## Rate Limits (1Password Families Plan)
 
-The 1Password Families plan shares **1,000 reads per day across the entire account**, not per service account. Every 1P-backed ExternalSecret refresh consumes reads from this shared pool, regardless of which service account performs the read.
-
-### Current Budget
-
-- This repo's current ExternalSecret footprint and its rate-limit accounting live
-  in [docs/29-flux-operations.md](29-flux-operations.md) § Rate Limits (the
-  authoritative copy) — refer to it rather than duplicating the counts here. In
-  short: the Connect provider syncs the vault to a local cache, so per-field reads
-  hit the cache, not the cloud API, and the effective rate-limit cost is low. Run
-  `kubectl get externalsecrets -A` for current counts.
-
-### Adding a Tenant on 1Password
-
-A tenant with 10 ExternalSecrets at 24h refreshInterval adds ~10 reads/day. Multiple tenants stack additively. Keep refreshIntervals at 24h unless there's a specific reason to shorten.
-
-### Manual Refreshes
-
-Every `task flux:refresh-secret` or `task flux:rotate-secret` call adds one extra read. Ad-hoc rotations are fine; scripted polling is not.
+The 1Password Families plan shares 1,000 reads per day across the whole account,
+not per service account, and tenants on the 1Password backend draw on that same
+pool. The accounting is in
+[docs/29-flux-operations.md](29-flux-operations.md) § Rate Limits — the
+authoritative copy; do not restate its numbers here. In short: the Connect
+provider syncs the vault into a local cache, so ExternalSecret field reads hit
+the cache rather than the cloud API and the steady-state cost is low. Keep
+tenant `refreshInterval`s at 24h, and do not script `task flux:refresh-secret`
+or `task flux:rotate-secret` in a loop.
 
 ### Recommendation
 
@@ -435,17 +521,27 @@ git push
 
 Flux prunes, in order:
 
-1. The tenant's top-level `Kustomization` (which cascades to everything it reconciled — Deployments, Services, Ingresses, ExternalSecrets, Secrets, PVCs unless protected).
+1. The tenant's top-level `Kustomization` (which cascades to everything it reconciled — Deployments,
+   Services, Ingresses, ExternalSecrets, Secrets, PVCs unless protected).
 2. The tenant's `GitRepository` source.
-3. The tenant's `ClusterSecretStore`. Because ExternalSecrets in that store use `creationPolicy: Owner`, their Secrets are deleted when the store goes away.
+3. The tenant's `ClusterSecretStore`. The generated Secrets are already gone —
+   `creationPolicy: Owner` puts an ownerReference from each ExternalSecret onto
+   its Secret, and step 1 pruned the ExternalSecrets. Deleting a store on its
+   own removes nothing; it only puts every ExternalSecret that references it
+   into `SecretSyncError`.
 4. The tenant namespace.
 
 ### Manual Cleanup
 
 Two things Flux doesn't clean up (by design, because it never owned them):
 
-- The `onepassword-connect-token` or `gitlab-api-token` bootstrap secrets in the tenant namespace. But the namespace is gone anyway, so these are gone with it.
-- The 1Password Connect token (Path A) or GitLab project access token (Path B). Revoke these in 1P or GitLab immediately — no reason to leave a dangling credential. For Path A Option C, also delete/archive the tenant's prefixed items in the `Homelab` vault if they are no longer needed.
+- The `onepassword-connect-token` or `gitlab-api-token` bootstrap secrets in the tenant namespace.
+  But the namespace is gone anyway, so these are gone with it.
+- The tenant's `ALLOWLIST` entry in `scripts/check-unmanaged-secrets.py` — remove it with the
+  tenant.
+- The 1Password Connect token (Path A) or GitLab project access token (Path B). Revoke these in 1P
+  or GitLab immediately — no reason to leave a dangling credential. For Path A Option C, also
+  delete/archive the tenant's prefixed items in the `Homelab` vault if they are no longer needed.
 
 ```bash
 # If the namespace somehow survived (shouldn't):
@@ -454,7 +550,13 @@ kubectl delete namespace <repo-slug>
 
 ### PVCs
 
-PVCs have `pvc-protection` finalizers and aren't deleted during tenant removal unless explicitly torn down. If the tenant had persistent data on zvol-backed storage, the PV stays too. Delete manually if the data is truly no longer needed.
+PVCs have `pvc-protection` finalizers and aren't deleted during tenant removal unless explicitly
+torn down. If the tenant had persistent data on zvol-backed storage, the PV stays too. Delete
+manually if the data is truly no longer needed.
+
+A tenant volume sits outside every backup set until the operator adds it. The
+operator owns the snapshot and offsite schedule for it, not the tenant — see
+[docs/42-offsite-backup.md](42-offsite-backup.md).
 
 ---
 
@@ -500,6 +602,10 @@ What matters from the cluster side:
   deploy token plus its generated username) is an operator/tenant step, covered
   in the generated ONBOARDING.
 - There is **no** Renovate anywhere in the family; image tags are bumped by hand.
+- **Every `${...}` in a tenant manifest must resolve.** kustomize-controller
+  runs with `StrictPostBuildSubstitutions=true`, so an undefined variable fails
+  the tenant's whole Kustomization rather than rendering empty. Tenants
+  substitute from `cluster-config` only, and escape a literal as `$${...}`.
 
 Onboarding is therefore:
 
@@ -511,197 +617,10 @@ Onboarding is therefore:
 
 ---
 
-## Worked Example: Onboarding `example-app`
-
-End-to-end walkthrough using concrete values. Replace `example-app` with your real tenant slug.
-
-### Scenario
-
-- Repo: `https://git.ericsweiss.com/eric/example-app`
-- Namespace: `example-app`
-- Backend: 1Password (Option C — shared Connect, shared `Homelab` vault)
-- Two secrets needed: an API key and a database password.
-
-### Step 1 — 1Password Setup
-
-In 1P, add items to the existing `Homelab` vault using the tenant prefix:
-
-1. Create item `example-app: App Secrets` with fields `api-key` and `db-password`.
-2. Create a Connect token (find the server ID with `op connect server list`):
-   `op connect token create weisssrv-example-app-eso --server <EXISTING_SERVER_ID> --vaults Homelab`
-
-### Step 2 — Bootstrap Secret
-
-```bash
-kubectl create namespace example-app
-
-kubectl -n example-app create secret generic onepassword-connect-token \
-  --from-literal=token=<CONNECT_TOKEN>
-
-# Verify
-kubectl get secret onepassword-connect-token -n example-app
-```
-
-### Step 3 — Wiring File
-
-Create `kubernetes/clusters/weisssrv/tenants/example-app.yaml`:
-
-Copy the **1Password template** from
-`kubernetes/clusters/weisssrv/tenants/README.md` and substitute `example-app`
-for `<repo-slug>` throughout (namespace, ClusterSecretStore `conditions`,
-GitRepository URL, ServiceAccount, both RoleBindings, Kustomization
-`targetNamespace`). Nothing else in the template changes.
-
-Register the file in the tenants Kustomization aggregate:
-
-```yaml
-# kubernetes/clusters/weisssrv/tenants/kustomization.yaml
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-resources:
-  - tenant-crd-editor.yaml   # shared ClusterRole (already present)
-  - example-app.yaml
-```
-
-Commit + push both files:
-
-```bash
-git add kubernetes/clusters/weisssrv/tenants/example-app.yaml \
-        kubernetes/clusters/weisssrv/tenants/kustomization.yaml
-git commit -m "Onboard example-app tenant"
-git push
-```
-
-Within ~1 minute Flux reconciles and creates the ClusterSecretStore, GitRepository, and Kustomization.
-
-### Step 4 — Tenant Repo Contents
-
-In `example-app` repo, create `kubernetes/flux/`:
-
-```yaml
-# kubernetes/flux/externalsecret.yaml
----
-apiVersion: external-secrets.io/v1
-kind: ExternalSecret
-metadata:
-  name: example-app-secrets
-  namespace: example-app
-spec:
-  refreshInterval: 24h
-  secretStoreRef:
-    kind: ClusterSecretStore
-    name: onepassword-example-app
-  target:
-    name: example-app-secrets
-    creationPolicy: Owner
-  data:
-    - secretKey: api-key
-      remoteRef:
-        key: "example-app: App Secrets"
-        property: api-key
-    - secretKey: db-password
-      remoteRef:
-        key: "example-app: App Secrets"
-        property: db-password
-```
-
-```yaml
-# kubernetes/flux/deployment.yaml
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: example-app
-  namespace: example-app
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: example-app
-  template:
-    metadata:
-      labels:
-        app: example-app
-    spec:
-      containers:
-        - name: app
-          image: ghcr.io/example/app:v1.0.0
-          env:
-            - name: API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: example-app-secrets
-                  key: api-key
-            - name: DB_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: example-app-secrets
-                  key: db-password
-```
-
-```yaml
-# kubernetes/flux/kustomization.yaml
----
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-namespace: example-app
-resources:
-  - externalsecret.yaml
-  - deployment.yaml
-```
-
-Commit + push to the `example-app` repo. Flux's `example-app` Kustomization (living in the main cluster) picks it up within ~1 minute.
-
-### Step 5 — Verify
-
-```bash
-# Wiring resources in the cluster
-kubectl get kustomization example-app -n flux-system
-kubectl get gitrepository example-app -n flux-system
-kubectl get clustersecretstore onepassword-example-app
-
-# Tenant workload
-kubectl get externalsecret -n example-app
-# NAME                  STORE                      REFRESH   STATUS        READY
-# example-app-secrets   onepassword-example-app    24h       SecretSynced  True
-
-kubectl get secret example-app-secrets -n example-app
-kubectl get deploy -n example-app
-kubectl get pods -n example-app
-```
-
-All Ready. Tenant is live.
-
-### Step 6 — Removal (Later)
-
-When `example-app` is no longer needed:
-
-```bash
-# From weisssrv repo
-git rm kubernetes/clusters/weisssrv/tenants/example-app.yaml
-# Also remove the entry from kustomization.yaml
-vim kubernetes/clusters/weisssrv/tenants/kustomization.yaml
-# Delete the `- example-app.yaml` line from resources:
-git add kubernetes/clusters/weisssrv/tenants/kustomization.yaml
-git commit -m "Remove example-app tenant"
-git push
-
-# Wait for Flux to prune
-kubectl get ns example-app  # eventually NotFound
-```
-
-Then in 1Password:
-
-- Revoke the Connect token for `weisssrv-example-app-eso`.
-- Delete or archive the `example-app: *` prefixed items in the `Homelab` vault.
-
-The tenant is fully gone.
-
----
-
 ## Related documentation
 
 - [docs/29-flux-operations.md](29-flux-operations.md) — Flux day-2 operations
 - [docs/15-credential-rotation.md](15-credential-rotation.md) — the 1Password model
-- [`kubernetes/clusters/weisssrv/tenants/README.md`](../kubernetes/clusters/weisssrv/tenants/README.md) — the canonical wiring templates
+- [`kubernetes/clusters/weisssrv/tenants/README.md`](../kubernetes/clusters/weisssrv/tenants/README.md)
+  — the canonical wiring templates
 - [docs/13-ci-cd.md](13-ci-cd.md) — the shared CI library tenants consume

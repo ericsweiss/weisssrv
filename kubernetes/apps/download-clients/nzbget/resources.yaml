@@ -1,8 +1,7 @@
 ---
-# NZBGet (nzbget.esweiss.com). The shared Gluetun sidecar, its initContainer,
-# volumes and pod dnsConfig come from the ../_vpn-sidecar component; this file
-# carries only the NZBGet-specific pieces. VPN and Direct mode, and how to
-# switch them, are in README.md § Per-App VPN Control.
+# NZBGet. The shared Gluetun sidecar, its initContainer, volumes and pod
+# dnsConfig come from the ../_vpn-sidecar component; this file carries only the
+# NZBGet-specific pieces. See README.md § Per-App VPN Control.
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -13,14 +12,14 @@ metadata:
     app.kubernetes.io/name: nzbget
     app.kubernetes.io/component: config
   annotations:
-    # CREATE-ONLY apply: Flux creates this ConfigMap on a fresh cluster and then
-    # never reverts it, so `task downloads:vpn` patches stick. The values below
-    # are therefore only the bootstrap default — git edits do not propagate
-    # until the object is deleted and reconciled. README § Live VPN Toggles.
+    # CRITICAL: create-only apply. Flux never reverts this ConfigMap, so the
+    # values below are a bootstrap default only and a git edit does not
+    # propagate until the object is deleted and reconciled. `task downloads:vpn`
+    # patches it live. See README § Live VPN Toggles.
     kustomize.toolkit.fluxcd.io/ssa: IfNotPresent
 data:
   vpn_enabled: "false"
-  # VPN provider: "privado", "vpn unlimited"
+  # VPN provider: "privado" is the only one wired.
   vpn_provider: "privado"
   # Server location (optional, provider-dependent)
   server_countries: "Netherlands"
@@ -82,13 +81,12 @@ spec:
             - name: PGID
               value: "2000"
             - name: TZ
-              value: America/Los_Angeles
+              value: ${cluster_timezone}
             - name: UMASK
               value: "002"
           # Ports live on the gluetun sidecar, which owns the network namespace.
-          # NFS-ESTALE self-heal: liveness stats both mounts so a stale or hung
-          # handle restarts the pod and it remounts. Conservative timing so a
-          # brief NFS blip cannot flap-restart.
+          # Liveness stats both NFS mounts so a stale handle restarts the pod
+          # and it remounts; the timing is loose so a blip cannot flap-restart.
           livenessProbe:
             exec:
               command:

@@ -29,41 +29,9 @@ spec:
     secretName: gitlab-services-ericsweiss-tls
 
 ---
-# Internal - git.esweiss.com
-# Two routes on the same host; Traefik picks the more specific
-# Host+PathPrefix rule first by priority. gitlab-agent pods source-IP as
-# the cluster CIDR (10.42.0.0/16) when dialing the traefik-internal VIP
-# under externalTrafficPolicy: Local; lan-tailscale-only allowlists that
-# CIDR (see infrastructure/configs/traefik-middlewares.yaml), so agent
-# long-polls pass. If the pod CIDR is ever dropped from that allowlist,
-# this route must lose lan-tailscale-only or every KAS long-poll 403s.
-# Real authentication on this path is per-agent bearer tokens
-# (gitlab-agent-token ExternalSecret), not IP filtering.
-apiVersion: traefik.io/v1alpha1
-kind: IngressRoute
-metadata:
-  name: gitlab-web-internal-kas
-  namespace: gitlab
-spec:
-  entryPoints:
-    - websecure
-  routes:
-    - match: Host(`git.${cluster_internal_domain}`) && PathPrefix(`/-/kubernetes-agent/`)
-      kind: Rule
-      middlewares:
-        - name: lan-tailscale-only
-          namespace: traefik
-        - name: hsts-header
-          namespace: traefik
-      services:
-        - name: gitlab-web
-          port: 443
-          scheme: https
-          serversTransport: vm-tls-wildcard
-  tls:
-    secretName: gitlab-services-esweiss-tls
-
----
+# CRITICAL: internal git.esweiss.com. gitlab-agent pods reach the VIP with a
+# pod-CIDR source, so 10.42.0.0/16 must stay in lan-tailscale-only
+# (infrastructure/configs/traefik-middlewares.yaml) or KAS long-polls 403.
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:
@@ -141,10 +109,9 @@ spec:
     secretName: gitlab-services-esweiss-tls
 
 ---
-# GitLab Pages. HostRegexp `[^.]+` matches SINGLE-LABEL subdomains only, which
-# is what the wildcard cert covers: a nested name (group.subgroup.pages.…)
-# matches no route and has no TLS. Pages for nested groups must use hyphenated
-# names (group-subgroup).
+# GitLab Pages. HostRegexp `[^.]+` matches SINGLE-LABEL subdomains only, which is
+# what the wildcard cert covers: a nested name matches no route and has no TLS,
+# so nested groups must use hyphenated names (group-subgroup).
 
 # External - *.pages.git.ericsweiss.com and pages.git.ericsweiss.com
 apiVersion: traefik.io/v1alpha1
@@ -224,13 +191,9 @@ spec:
     secretName: gitlab-pages-esweiss-tls
 
 ---
-# GitLab Web IDE Extension Host — same single-label constraint as gitlab-pages
-# above.
-#
-# Backend: same gitlab-web Service that fronts git.ericsweiss.com. GitLab
-# nginx is a catch-all server_name; Workhorse serves the Web IDE static
-# assets on whatever Host header arrives. The Rails app gates content on
-# the configured extension_host_domain Application Setting.
+# GitLab Web IDE Extension Host, same single-label constraint as gitlab-pages.
+# Backed by the gitlab-web Service; the Rails extension_host_domain setting
+# gates the content.
 
 # External - *.ide.git.ericsweiss.com and ide.git.ericsweiss.com
 apiVersion: traefik.io/v1alpha1
@@ -270,10 +233,9 @@ spec:
     secretName: gitlab-web-ide-ericsweiss-tls
 
 ---
-# git-ssh TCP passthrough on the gitssh entrypoint (2222, internal VIP only —
-# release.yaml keeps it off the public service; externals use the WAN forward).
-# HostSNI(`*`) because SSH carries no TLS SNI: every connection reaching this
-# entrypoint is git-ssh by construction (the entrypoint serves nothing else).
+# git-ssh TCP passthrough on the gitssh entrypoint (2222, internal VIP only;
+# externals use the WAN forward). HostSNI(`*`) because SSH carries no TLS SNI and
+# the entrypoint serves nothing else.
 apiVersion: traefik.io/v1alpha1
 kind: IngressRouteTCP
 metadata:

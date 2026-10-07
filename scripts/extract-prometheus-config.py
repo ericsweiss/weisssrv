@@ -14,6 +14,7 @@ during and after the split (a group defined twice is caught by promtool's
 duplicate-name check).
 
   extract-prometheus-config.py rules <out> [--release PATH] [--rules-dir PATH]
+      [--require-release-rules] [--require-rules-dir]
   extract-prometheus-config.py alertmanager <out> [--am-config PATH] [--dummy K=V]
 
 `--dummy` (repeatable) overrides the value substituted for an ESO
@@ -31,7 +32,8 @@ from pathlib import Path
 try:
     import yaml
 except ImportError:
-    sys.exit("PyYAML required: pip install pyyaml")
+    print("ERROR: PyYAML required: pip install pyyaml", file=sys.stderr)
+    raise SystemExit(2) from None
 
 DEFAULT_OBS = Path("kubernetes/infrastructure/observability/kube-prometheus-stack")
 DEFAULT_RELEASE = DEFAULT_OBS / "release.yaml"
@@ -72,7 +74,7 @@ def _prometheusrule_groups(rules_dir: Path) -> list:
     groups: list = []
     if not rules_dir.is_dir():
         return groups
-    for path in sorted(rules_dir.glob("*.yaml")):
+    for path in sorted({*rules_dir.rglob("*.yaml"), *rules_dir.rglob("*.yml")}):
         with path.open() as f:
             for doc in yaml.safe_load_all(f):
                 if isinstance(doc, dict) and doc.get("kind") == "PrometheusRule":
@@ -84,12 +86,22 @@ def extract_rules(
     out: Path,
     release: Path = DEFAULT_RELEASE,
     rules_dir: Path = DEFAULT_RULES_DIR,
+    require_release_rules: bool = False,
 ) -> int:
-    groups = _release_groups(release) + _prometheusrule_groups(rules_dir)
+    release_groups = _release_groups(release)
+    if require_release_rules and not release_groups:
+        print(
+            f"ERROR: no rule groups in {release} (additionalPrometheusRulesMap); "
+            "drop --require-release-rules if every rule here lives under "
+            f"{rules_dir}/",
+            file=sys.stderr,
+        )
+        return 1
+    groups = release_groups + _prometheusrule_groups(rules_dir)
     if not groups:
         print(
             f"ERROR: no rule groups found in {release} "
-            f"(additionalPrometheusRulesMap) or {rules_dir}/*.yaml",
+            f"(additionalPrometheusRulesMap) or {rules_dir}/**/*.y*ml",
             file=sys.stderr,
         )
         return 1
@@ -150,9 +162,32 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--rules-dir", type=Path, default=DEFAULT_RULES_DIR)
     parser.add_argument("--am-config", type=Path, default=DEFAULT_AM_CONFIG)
     parser.add_argument("--dummy", action="append", default=[], metavar="NAME=VALUE")
+    parser.add_argument(
+        "--require-release-rules",
+        action="store_true",
+        help="fail when the HelmRelease declares no inline rule groups",
+    )
+    parser.add_argument(
+        "--require-rules-dir",
+        action="store_true",
+        help="fail when the standalone-PrometheusRule tree is absent",
+    )
     args = parser.parse_args(argv[1:])
     if args.subcommand == "rules":
-        return extract_rules(args.out, args.release, args.rules_dir)
+        # An absent tree the operator named, or declared it has, drops every
+        # standalone PrometheusRule from the lint while promtool still passes.
+        named = args.rules_dir != DEFAULT_RULES_DIR or args.require_rules_dir
+        if named and not args.rules_dir.is_dir():
+            print(
+                f"ERROR: rules directory {args.rules_dir} does not exist; pass "
+                "--rules-dir to point at the PrometheusRule manifests, or drop "
+                f"--require-rules-dir if every rule is inline in {args.release}",
+                file=sys.stderr,
+            )
+            return 2
+        return extract_rules(
+            args.out, args.release, args.rules_dir, args.require_release_rules
+        )
     return extract_alertmanager(args.out, args.am_config, _parse_dummy(args.dummy))
 
 

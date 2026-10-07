@@ -1,19 +1,13 @@
 """Tests for scripts/check-live-cpu-limits.py."""
 from __future__ import annotations
 
-import importlib.util
 import io
 import json
-from pathlib import Path
 
-import pytest
+from script_loader import load_script
 
-SPEC = importlib.util.spec_from_file_location(
-    "check_live_cpu_limits",
-    Path(__file__).resolve().parent / "check-live-cpu-limits.py",
-)
-mod = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(mod)
+
+mod = load_script("check-live-cpu-limits.py")
 
 
 def _pod(ns: str, name: str, limits: dict | None, key: str = "containers",
@@ -24,9 +18,7 @@ def _pod(ns: str, name: str, limits: dict | None, key: str = "containers",
     return {"metadata": {"namespace": ns, "name": name}, "spec": {key: [container]}}
 
 
-# The real drift this check exists for: the removal patch in
-# clusters/weisssrv/flux-system/kustomization.yaml renders no CPU limit, but the
-# live Deployment kept one because a retired field manager still co-owned it.
+# A live pod carrying a cpu limit the rendered manifest does not set.
 FLUX_DRIFT = _pod("flux-system", "helm-controller-6d4f9b7c8-abcde",
                   {"cpu": "1", "memory": "1Gi"})
 FLUX_CLEAN = _pod("flux-system", "helm-controller-6d4f9b7c8-abcde",
@@ -126,7 +118,7 @@ def _deploy(mem: str = "256Mi") -> dict:
 
 
 def test_stale_pod_memory_limit_is_reported():
-    """external-dns: admitted at 99Mi under the old shape, template says 256Mi."""
+    """A pod admitted under an older memory limit than its template now sets."""
     out = mod.memory_limit_drift([_live_pod("external-dns-9f8-764cm", "104295996")],
                                  [_deploy()]).lines
     assert len(out) == 1
@@ -261,17 +253,21 @@ def test_quantity_parses_the_forms_kubectl_emits():
     assert mod._quantity("banana") is None
 
 
-def test_malformed_input_exits_cleanly(monkeypatch):
+def test_malformed_input_is_an_operator_error(monkeypatch, capsys):
     monkeypatch.setattr("sys.stdin", io.StringIO("{not json"))
-    with pytest.raises(SystemExit):
-        mod.main()
+    assert mod.main() == 2
+    assert "Failed to parse" in capsys.readouterr().err
 
 
-def test_non_pod_list_input_exits_cleanly(monkeypatch):
+def test_non_pod_list_input_is_an_operator_error(monkeypatch, capsys):
     monkeypatch.setattr("sys.stdin", io.StringIO('{"kind": "Pod"}'))
-    with pytest.raises(SystemExit):
-        mod.main()
+    assert mod.main() == 2
+    assert "not a pod list" in capsys.readouterr().err
 
 
-if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__, "-v"]))
+def test_an_empty_item_list_is_an_operator_error(monkeypatch, capsys):
+    """A filtered API response or a wrong context must stay red, not read as a
+    clean cluster: the callers treat rc 0 as "no drift"."""
+    monkeypatch.setattr("sys.stdin", io.StringIO('{"items": []}'))
+    assert mod.main() == 2
+    assert "no pods on stdin" in capsys.readouterr().err

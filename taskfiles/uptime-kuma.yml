@@ -1,0 +1,33 @@
+# https://taskfile.dev
+# Uptime Kuma status page and admin UI (docs/45).
+version: '3'
+
+tasks:
+  status:
+    desc: Show Uptime Kuma status (pods, service, PVC, ingress, VPA)
+    cmds:
+      - task: :_app:status
+        vars:
+          NS: uptime-kuma
+          SECTIONS: |
+            Uptime Kuma Namespace|pods
+            Service|svc
+            PVC|pvc
+            IngressRoutes|ingressroute
+            VPA|vpa
+
+  logs:
+    desc: Tail Uptime Kuma logs
+    cmds:
+      - task: :_app:logs
+        vars:
+          NS: uptime-kuma
+          TARGET: deploy/uptime-kuma
+
+  restart:
+    desc: Restart Uptime Kuma (pod delete; Flux-managed, replicas:1 + Recreate)
+    cmds:
+      - task: :_app:restart
+        vars:
+          NS: uptime-kuma
+          SELECTOR: -l app.kubernetes.io/name=uptime-kuma

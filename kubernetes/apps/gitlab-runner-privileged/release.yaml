@@ -1,12 +1,7 @@
 ---
 # Infrastructure (privileged) GitLab Runner. Its own namespace is the isolation
-# boundary from the untrusted shared runner — that runner's namespace-scoped
-# RBAC cannot reach this one's token Secret (ESO-rendered,
-# gitlab-runner-privileged-token). Job pods additionally run as a token-less SA
-# (serviceaccount.yaml) and are routed here only by the `infrastructure` tag.
-#
-# Fields shared with ../gitlab-runner/release.yaml come from the
-# kubernetes/components/gitlab-runner-common component; only deltas live below.
+# boundary from the untrusted shared runner. Fields shared with
+# ../gitlab-runner/release.yaml come from the gitlab-runner-common component.
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -15,13 +10,9 @@ metadata:
 spec:
   releaseName: gitlab-runner-privileged
   values:
-    # Concurrent jobs, governed by CPU. Sized to the schedulable pool and never
-    # above it: overflow above pool capacity parks as Pending pods, and Pending
-    # time burns the JOB timeout, whereas overflow below it waits in GitLab's
-    # queue where the clock does not run. Pool ~25 cores, ~19 free after
-    # co-tenants, 1.5 cpu reserved per job (cpu_request 900m + dind 500m +
-    # helper 100m) => 12. Raising it means adding cores, not lowering the
-    # request. Keep in lockstep with the ResourceQuota's requests.cpu.
+    # CRITICAL: sized to the schedulable pool at 1.5 cpu per job. Raise it by
+    # adding cores, not by lowering the request, and keep it in lockstep with
+    # the ResourceQuota's requests.cpu or jobs 403 into runner_system_failure.
     concurrent: 12
 
     checkInterval: 3
@@ -39,11 +30,8 @@ spec:
       # Other projects' untagged jobs go to the shared non-privileged runner
       runUntagged: false
 
-      # ACCEPTED RISK (homelab): this privileged root+DinD runner accepts
-      # UNPROTECTED branches, because the whole MR pipeline is tagged
-      # [infrastructure] and feature branches are not protected.
-      # The isolation boundary is the REGISTRATION SCOPE, not the tag — tags are
-      # cooperative and any project can claim one. The token behind this runner
+      # This privileged root+DinD runner accepts UNPROTECTED branches. The
+      # isolation boundary is the REGISTRATION SCOPE, not the tag: the token
       # must stay a PROJECT runner locked to weisssrv (docs/27 Step 8).
       protected: false
 
@@ -55,10 +43,7 @@ spec:
         secretName: s3access
 
       config: |
-        # TOML sections are POSITIONAL: every key after a [section] header
-        # belongs to that section until the next header, so all scalar
-        # [runners.kubernetes] keys must precede any sub-table or they are
-        # silently swallowed by it.
+        # TOML sections are positional: scalar keys first, sub-tables last.
         [[runners]]
           # request_concurrency 1 serializes job acquisition behind GitLab's
           # long-poll window and surfaces as runner_system_failure bursts; the
@@ -95,17 +80,14 @@ spec:
             image = "python:3.11@sha256:9800957d2a88867f853ce6072ae1669e37fa269cc6f76009fa1aef4757f62212"
             privileged = true
 
-            # Rank job pods below every unclassed workload and never preempt
-            # (sources/priorityclasses.yaml). The namespace quotas admit more
-            # CPU requests than the cluster has allocatable, so a CI burst used
-            # to compete with platform pods on arrival order alone. A scalar key
-            # — must stay above the first sub-table.
+            # ci-jobs ranks job pods below every unclassed workload and never
+            # preempts (sources/priorityclasses.yaml). A scalar key — must stay
+            # above the first sub-table.
             priority_class_name = "ci-jobs"
 
-            # Build container: ansible control + molecule, not the test workload.
-            # cpu_request is the scheduler's per-node reservation and must match
-            # what a converge actually drives (~0.9 cpu), or small agents get
-            # over-packed. No cpu_limit (docs/33 repo-wide policy).
+            # Build container: ansible control + molecule. cpu_request is the
+            # scheduler's per-node reservation and must match what a converge
+            # drives (~0.9 cpu). No cpu_limit (docs/33).
             cpu_request = "900m"
             memory_limit = "1Gi"
             memory_request = "384Mi"
@@ -150,8 +132,7 @@ spec:
 
             # Soft spread of job pods across agents: simultaneous same-node
             # DinD starts race cgroup-v2 setup and fail at prepare. Preferred,
-            # not required, so a burst still packs rather than going Pending.
-            # A sub-table — after every scalar key, before pod_labels.
+            # not required, so a burst packs rather than going Pending.
             [runners.kubernetes.affinity.pod_anti_affinity]
               [[runners.kubernetes.affinity.pod_anti_affinity.preferred_during_scheduling_ignored_during_execution]]
                 weight = 100

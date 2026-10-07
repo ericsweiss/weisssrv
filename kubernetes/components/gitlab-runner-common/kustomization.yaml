@@ -1,17 +1,16 @@
 ---
 # Shared GitLab Runner HelmRelease config, merged into both runner releases
 # (gitlab-runner, gitlab-runner-privileged) at build time. Anything identical in
-# both belongs here; each release.yaml keeps only its own deltas — name,
-# releaseName, secret, tags, runUntagged/protected, concurrent, the executor
-# TOML, image/privileged, serviceAccount and job resources.
+# both belongs here; each release.yaml keeps only its own deltas.
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 patches:
-  # The `target` selector governs which resource is patched; the patch's own
-  # metadata.name is required for the strategic-merge parse but is ignored for
-  # matching, so it does not rename the selected HelmRelease.
+  # The `target` selector governs which resource is patched (name is a regex);
+  # the patch's own metadata.name is required for the strategic-merge parse but
+  # is ignored for matching, so it does not rename the selected HelmRelease.
   - target:
       kind: HelmRelease
+      name: gitlab-runner.*
     patch: |
       apiVersion: helm.toolkit.fluxcd.io/v2
       kind: HelmRelease
@@ -19,6 +18,11 @@ patches:
         name: gitlab-runner-common
       spec:
         interval: 30m
+        # Revert out-of-band edits to chart-rendered objects. Repo rule in
+        # controllers/traefik/release.yaml; safe here, the runner chart ships no
+        # caBundle-injecting webhook.
+        driftDetection:
+          mode: enabled
         # Runner liveness probe + GitLab connection handshake can take 6-8 minutes
         # on a cold start; default 5m timeout times out prematurely.
         timeout: 15m
@@ -41,27 +45,20 @@ patches:
             retries: 3
             remediateLastFailure: true
         values:
-          # GitLab instance URL. git.esweiss.com resolves in-cluster (CoreDNS
-          # forwards to AdGuard, which rewrites it to the internal Traefik VIP
-          # .101), keeping runner<->GitLab traffic on the LAN instead of
-          # hairpinning through the WAN record for git.ericsweiss.com. clone_url
-          # (in runners.config) must match: GitLab's external_url stays
-          # git.ericsweiss.com, so clone URLs would not follow gitlabUrl alone.
+          # Internal name, so runner<->GitLab traffic stays on the LAN. clone_url
+          # in each runners.config must be set to match: GitLab's external_url is
+          # the WAN name, so clone URLs do not follow gitlabUrl on their own.
           gitlabUrl: https://git.${cluster_internal_domain}
 
-          # Single runner controller pod — concurrent (per-runner) controls actual
-          # job parallelism. Pinning to 1 so an out-of-band `kubectl scale
-          # --replicas=0` (used during maintenance to drain CI for k3s upgrades)
-          # is reconciled back to 1 on the next Flux pass instead of leaving the
-          # deployment silently at 0.
+          # One manager pod; job parallelism is `concurrent` per runner.
+          # driftDetection above reverts an out-of-band scale.
           replicas: 1
 
           checkInterval: 30
 
-          # RBAC — bound only to the manager SA; job pods run as an unprivileged
-          # jobs SA (serviceaccount.yaml). clusterWideAccess: false restricts the
-          # runner to its own namespace. CI jobs that must deploy to other
-          # namespaces use a kubeconfig CI/CD variable / 1Password credential.
+          # Bound only to the manager SA; job pods run as an unprivileged jobs SA
+          # (serviceaccount.yaml) and clusterWideAccess: false keeps the runner in
+          # its own namespace. Cross-namespace deploys use a kubeconfig variable.
           rbac:
             create: true
             clusterWideAccess: false

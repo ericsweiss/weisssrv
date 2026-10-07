@@ -1,0 +1,44 @@
+---
+# promtool unit tests for KubeCPUOvercommit: the gitlab-runner namespace
+# exclusion and a genuine overcommit. Threshold is requests above the cluster
+# minus its largest node, so three 4-core nodes leave 8 cores of headroom.
+rule_files:
+  - rules.yaml
+evaluation_interval: 1m
+tests:
+  # 10 cores requested against 8 of headroom: overcommitted.
+  - interval: 1m
+    input_series:
+      - series: 'kube_node_status_allocatable{resource="cpu", node="k3s-agent-01"}'
+        values: '4+0x30'
+      - series: 'kube_node_status_allocatable{resource="cpu", node="k3s-agent-02"}'
+        values: '4+0x30'
+      - series: 'kube_node_status_allocatable{resource="cpu", node="k3s-agent-03"}'
+        values: '4+0x30'
+      - series: 'namespace_cpu:kube_pod_container_resource_requests:sum{namespace="downloads"}'
+        values: '10+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: KubeCPUOvercommit
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+
+  # The same 10 cores in a runner namespace: CI job pods are short-lived and
+  # excluded by the namespace!~"gitlab-runner.*" matcher, so nothing fires.
+  - interval: 1m
+    input_series:
+      - series: 'kube_node_status_allocatable{resource="cpu", node="k3s-agent-01"}'
+        values: '4+0x30'
+      - series: 'kube_node_status_allocatable{resource="cpu", node="k3s-agent-02"}'
+        values: '4+0x30'
+      - series: 'kube_node_status_allocatable{resource="cpu", node="k3s-agent-03"}'
+        values: '4+0x30'
+      - series: 'namespace_cpu:kube_pod_container_resource_requests:sum{namespace="gitlab-runner-privileged"}'
+        values: '10+0x30'
+      - series: 'namespace_cpu:kube_pod_container_resource_requests:sum{namespace="downloads"}'
+        values: '2+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: KubeCPUOvercommit
+        exp_alerts: []

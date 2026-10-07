@@ -19,35 +19,24 @@ proxmox_vm_disk_size: 64G
 # local-ssd ZFS pool: required for the ZFS-to-ZFS HA replication of vmid 154
 proxmox_storage: local-ssd
 
-# Home Assistant OS details
-haos_version: "17.0"  # Installed version (update manually via UI)
-haos_type: "qcow2"    # Image format
+# The network is set in the HAOS console: 10.0.10.154/24, gw 10.0.10.1.
 
-# Network configuration (set via HAOS console)
-# Static IP: 10.0.10.154/24
-# Gateway: 10.0.10.1
-# DNS: 10.0.10.150
-
-# HAOS is not Ansible-managed beyond the config push below (the proxmox_vm
-# values above document the live VM). Setup, SMTP, SSO, SSH access, updates,
-# monitoring and the HA-bypass ingress routes: docs/24-home-assistant-deployment.md.
-#
-# Backups: HAOS scheduled backups write to the NFS export
-# pve-nas-01:/backups-apps/home-assistant (plaintext — HAOS cannot do
-# xprtsec=tls). One-time HA UI step; the artifact staleness/size arms watch it
-# via nas_storage_backup_artifact_apps in host_vars/pve-nas-01.yml.
+# HAOS is not Ansible-managed beyond the config push below. Setup, SMTP, SSO,
+# SSH, updates, monitoring, the HA-bypass ingress routes and the NFS backup
+# landing zone: docs/24-home-assistant-deployment.md.
 
 # SSH/SCP target for the config push (the HAOS add-on listens on 22222 as root).
 # The play runs on localhost and loads this file via vars_files, so ansible_host
 # would resolve to the controller — pull the address from the home inventory host.
 home_assistant_host: "{{ hostvars['home']['ansible_host'] }}"
 
-# Sources whose X-Forwarded-For HA trusts: the LAN (which is where every Traefik
-# ingress node sits) and both k3s CIDRs.
-home_assistant_trusted_proxies:
-  - "10.0.10.0/24"
-  - "10.42.0.0/16"
-  - "10.43.0.0/16"
+# Sources whose X-Forwarded-For HA trusts: the k3s nodes running Traefik, plus
+# both cluster CIDRs. Derived from the inventory groups rather than pasted, so
+# no other LAN host can forge a client address and a new node tracks itself.
+home_assistant_trusted_proxies: >-
+  {{ (groups['k3s_servers'] + groups['k3s_agents'])
+     | map('extract', hostvars, 'ansible_host') | select('defined') | list
+     + ['10.42.0.0/16', '10.43.0.0/16'] }}
 
 # OIDC discovery URL. The issuer host is ALWAYS the external one — HA's
 # hass-openid integration fetches it server-side, and the split-horizon
@@ -55,19 +44,12 @@ home_assistant_trusted_proxies:
 home_assistant_oidc_configure_url: >-
   https://auth.{{ external_domain }}/application/o/home/.well-known/openid-configuration
 
-# TLS on HAOS backend (Traefik -> HAOS hop encrypted).
-# Override the role default (false) once acme_certs has pushed
-# /ssl/fullchain.pem + /ssl/privkey.pem at least once. The HAOS Files
-# add-on must be configured to allow port-22222 SSH with the cert
-# distribution pubkey in /root/.ssh/authorized_keys.
+# Traefik -> HAOS hop encrypted. Safe to enable only after acme_certs has
+# pushed /ssl/fullchain.pem + /ssl/privkey.pem at least once, which needs the
+# HAOS Files add-on allowing port-22222 SSH with the distribution pubkey.
 home_assistant_ssl_enabled: true
 
-# HAOS host-key pin for SSH/SCP from the home_assistant role.
-# HAOS runs SSH on a non-standard port (22222) as root with no sudo,
-# so the role can't go through the standard ansible.cfg trust path —
-# we pin the key and the role asserts it on every run. The key value
-# itself is the shared haos_ssh_host_key defined in group_vars/all.yml
-# (single source of truth; also consumed by the `home` cert target in
-# host_vars/dns-01.yml). The role prepends "[10.0.10.154]:22222 "
-# before writing into the operator's known_hosts.
+# HAOS runs SSH on 22222 as root with no sudo, outside the ansible.cfg trust
+# path, so the role asserts this pinned key on every run and prepends
+# "[10.0.10.154]:22222 " before writing it into known_hosts.
 home_assistant_host_key: "{{ haos_ssh_host_key }}"

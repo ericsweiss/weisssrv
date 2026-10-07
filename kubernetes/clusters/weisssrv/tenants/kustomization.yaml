@@ -1,12 +1,7 @@
 ---
-# Tenant wiring: one file per tenant gets listed here. Each tenant file
-# defines its own `ClusterSecretStore` (or namespace-scoped `SecretStore`),
-# `GitRepository`, and top-level `Kustomization`. See README.md in this
-# folder for examples.
-#
-# A Kustomize aggregator, not a Flux Kustomization: the root cluster
-# Kustomization pulls this tree in via resources: [tenants].
-# tenant-crd-editor.yaml is the one always-present resource.
+# Tenant wiring: one file per tenant, each defining its own SecretStore,
+# GitRepository and Kustomization (see README.md here). This is a Kustomize
+# aggregator that the root cluster Kustomization pulls in via resources.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:

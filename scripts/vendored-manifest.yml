@@ -1,22 +1,16 @@
 ---
-# This repo's vendored copies of weisssrv-lib files — the consumer-owned half
-# of the vendored-copy contract (the library's half is its offer list,
-# scripts/vendorable-paths.yml, which bounds what may be listed here).
-#
-# Read by the library's scripts/check-vendored-copies.py, driven here by
-# scripts/test_vendored_byte_identity.py under `task lint` at the pinned
-# WEISSSRV_LIB_REF. Two relationships:
-#
-#   vendored — byte-identical to the library at the pin. Drift in either
-#              direction fails; fix upstream and re-vendor, never edit a copy.
-#   forked   — deliberately divergent. Must still differ, and
-#              `reconciled_sha256` (the library blob last absorbed) fails the
-#              fork when the library side moves — re-take it here after
-#              absorbing the change. `reason:` is mandatory.
-#
-# Entry forms: a bare string when both repos use the same path, or a mapping
-# with `lib:` and `consumer:` when they differ. Moving a copy inside this repo
-# is an edit to THIS file in the same commit — no library release involved.
+# This repo's vendored copies of weisssrv-lib files, checked by the library's
+# check-vendored-copies.py via scripts/test_vendored_byte_identity.py under
+# `task lint` at the pinned WEISSSRV_LIB_REF.
+
+# `vendored:` entries are byte-identical to the library: drift in either
+# direction fails, so fix upstream and re-vendor, never edit a copy here.
+
+# `forked:` entries must still differ, carry a mandatory `reason:`, and their
+# `reconciled_sha256` fails when the library blob moves until it is re-taken.
+
+# An entry is a bare string, or a mapping with `lib:` and `consumer:` when the
+# paths differ. Moving a copy inside this repo is an edit to this file alone.
 
 vendored:
   - scripts/b2-bucket-drift.py
@@ -28,6 +22,9 @@ vendored:
   - scripts/check-hpa-vpa-invariant.py
   - scripts/check-kubectl-version-pin.py
   - scripts/check-lib-pins.py
+  # The gate's canonical suite travels with it, as in both templates.
+  - lib: tests/test_check_lib_pins.py
+    consumer: scripts/test_check_lib_pins.py
   - scripts/check-netpol-except-parity.py
   - scripts/check-pvc-storageclass.py
   - scripts/check-scrape-netpol.py
@@ -52,8 +49,23 @@ vendored:
   # Discovered by the tool at its conventional root name.
   - lib: lint/ruff.toml
     consumer: ruff.toml
+  # Kept out of ansible-lint's discovery path: a repo-root `.yamllint` replaces
+  # its yaml rule and disables fix mode. Callers pass `-c` at this path.
+  - lint/yamllint-relaxed.yml
+  # Pending the next pin bump — v0.17.1 offers none of these, so registering one now reds the gate:
+  # lint/gitattributes, check-comment-length.py, ci_yaml.py, gate_common.py, check-kustomization.py, flux-child-kustomizations.py, check-deploy-preflight.py, inventory_tree.py,
+  # molecule-shared/*, supervised-apply-guard.sh, maintenance-run-with-verify.sh, check-nfs-tls.py, check-runbook-anchors.py, check-secret-rotation-coverage.py, unifi-settings-drift.py, smoke-lib.sh, wait-for-reloader-roll.sh, check-flux-version-pin.py, check-live-cpu-limits.py, ci_playbook_invocations.py, cluster-config-value.sh, collect-state-lib.sh, deploy-verify-lib.sh.
+
+  # CRITICAL: gate_common.py is imported from its own directory by the corpus
+  # gates registered above (default-deny, scrape-netpol, secretstore-scope,
+  # pvc-storageclass, hpa-vpa-invariant, netpol-except-parity, nfs-tls). The
+  # bump that re-vendors any of them must vendor it in the same change, or all
+  # of them exit 2 on import at `task lint`. ci_yaml.py pairs the same way with
+  # the CI gates.
 
 forked:
+  # The library gained --rules-dir / --require-rules-dir after v0.17.1, which
+  # makes this fork reason obsolete: un-fork it at the next pin bump.
   - lib: scripts/extract-prometheus-config.py
     reason: >-
       Rules extraction unions the HelmRelease with the standalone
@@ -66,11 +78,13 @@ forked:
     reconciled_sha256: bffbe70c94436f4442aaeecc1f1f5715315fc5908b1486b2198796b9e097ff0d
   - lib: lint/secret-detection-ruleset.toml
     consumer: .gitlab/secret-detection-ruleset.toml
-    reason: Ruleset overrides name this repo's scanned paths.
+    reason: The header and ruleset description name this repo.
     reconciled_sha256: d6413e69a2d8a6f7d0c468d4370a406299894ad9e3fe274eb7f69eb30a7c936d
   - lib: lint/editorconfig
     consumer: .editorconfig
-    reason: Per-repo file-type sections on a shared base.
+    reason: >-
+      The header names this repo's own linters, and `[Dockerfile*]` covers the
+      per-app Dockerfile suffixes under docker/. Nothing else differs.
     reconciled_sha256: 911171d9f26ba0bb47300c97a9e46b078d48eb852dfe9a050fbc3c8e41cc2944
   - lib: lint/pre-commit-config.yaml
     consumer: .pre-commit-config.yaml

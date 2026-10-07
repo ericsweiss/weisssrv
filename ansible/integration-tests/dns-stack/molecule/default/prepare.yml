@@ -29,6 +29,8 @@
         group: root
         mode: "0644"
 
+    # Best-effort: the unit is absent in some base images. Releasing :53 is not
+    # optional, so the wait below is authoritative — AdGuard cannot bind without it.
     - name: Restart systemd-resolved
       ansible.builtin.systemd:
         name: systemd-resolved
@@ -41,10 +43,3 @@
         port: 53
         state: stopped
         timeout: 30
-      failed_when: false
-
-    # Ensure container is fully stable before converge
-    - name: Wait for system stability after systemd-resolved restart
-      ansible.builtin.raw: |
-        sleep 3
-      changed_when: false

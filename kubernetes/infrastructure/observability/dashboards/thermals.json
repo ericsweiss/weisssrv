@@ -220,8 +220,50 @@
       ]
     },
     {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Fan speeds where the driver exposes them. Only pve-nas-01, pve-prec-01 and dns-01 report fan RPM.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineInterpolation": "smooth",
+            "lineWidth": 1,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" }
+          },
+          "unit": "rotrpm",
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 33 },
+      "id": 10,
+      "options": {
+        "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "right" },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "title": "Fan speeds",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "node_hwmon_fan_rpm{job=\"node-exporter-host\", instance=~\"$host\"}",
+          "legendFormat": "{{ instance }} {{ chip }} {{ sensor }}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 33 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 41 },
       "id": 103,
       "panels": [],
       "title": "Per-Host Detail",
@@ -265,7 +307,7 @@
           }
         ]
       },
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 34 },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 42 },
       "id": 5,
       "options": {
         "cellHeight": "sm",
@@ -316,7 +358,7 @@
     },
     {
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 44 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 52 },
       "id": 104,
       "panels": [],
       "title": "Storage Drive Temperatures",
@@ -324,7 +366,7 @@
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "description": "SATA HDD temperatures via the drivetemp kernel module. Scoped to pve-nas-01 (10.0.10.102), the only host with physical SATA HDDs — the archive-pool ST6000NM0024 spec ceiling (55C) only applies to those drives. drivetemp also reports SSDs on compute hosts but their 70-85C spec ceiling makes the 50/55C thresholds here misleading; view those in the 'Non-CPU hwmon Temperatures' panel instead. Requires drivetemp module (loaded by node_exporter_host role).",
+      "description": "SATA HDD temperatures on pve-nas-01 (drivetemp). Thresholds are the 55C archive-pool HDD ceiling; SSD sensors are in the Non-CPU hwmon panel.",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
@@ -351,7 +393,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 45 },
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 53 },
       "id": 6,
       "options": {
         "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "right" },
@@ -396,7 +438,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 45 },
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 53 },
       "id": 7,
       "options": {
         "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "right" },
@@ -414,7 +456,7 @@
     },
     {
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 54 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 62 },
       "id": 105,
       "panels": [],
       "title": "GPU & NIC Temperatures",
@@ -450,7 +492,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 55 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 63 },
       "id": 8,
       "options": {
         "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "right" },
@@ -495,7 +537,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 55 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 63 },
       "id": 9,
       "options": {
         "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "right" },

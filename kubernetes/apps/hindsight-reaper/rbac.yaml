@@ -1,18 +1,7 @@
 ---
-# RBAC for the Hindsight admission-pod reaper. Least-privilege, single-namespace:
-#   - one ServiceAccount in the reaper's own namespace
-#   - one NAMESPACED Role in the hindsight namespace granting ONLY pods
-#     list/delete (NOT get — the script lists the collection and deletes by name;
-#     it never reads a single object; no create/update/patch, no other resources)
-#   - one RoleBinding in the hindsight namespace binding the SA to that Role
-#
-# A namespaced Role (not a ClusterRole) means pod list/delete is confined to the
-# hindsight namespace at the RBAC layer — there is no cluster-wide pod access
-# anywhere. `list pods` returns full pod specs, but the reaper's namespace holds
-# only Hindsight's own workload, and the residual exposure is mitigated by the
-# digest-pinned image + fixed no-input script + this dedicated, single-purpose
-# SA. The SA lives in hindsight-reaper while the Role/RoleBinding live in
-# hindsight; a RoleBinding may reference a ServiceAccount in another namespace.
+# RBAC for the Hindsight admission-pod reaper: a ServiceAccount here, plus a
+# namespaced Role granting only pods list/delete in the hindsight namespace and
+# a RoleBinding to it. A RoleBinding may reference a SA in another namespace.
 apiVersion: v1
 kind: ServiceAccount
 metadata:

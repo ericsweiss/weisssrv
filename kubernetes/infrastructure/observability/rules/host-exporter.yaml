@@ -1,16 +1,7 @@
 ---
-# Coverage for job="node-exporter-host" (:9101 on the Proxmox hosts, the DNS/mail
-# LXCs, the GitLab/Nextcloud/Immich VMs and the k3s servers). Every rule the
-# chart ships from the node-exporter mixin selects job="node-exporter" — the
-# in-cluster DaemonSet — so none of them match this job. Disk/inode, PSI,
-# thermals, SMART and ZFS are backfilled in the other homelab groups; this one
-# covers NIC health, link flaps, bonding, clock, textfile-collector failure,
-# read-only filesystems, conntrack, systemd units and the target-down case.
-#
-# device=~"nic[0-9]+|bond[0-9]+|eth[0-9]+" is the physical-device selector:
-# nic0/nic1 are the codified predictable names (nic_tuning), bond0 the bond, eth0
-# the LXC/VM NIC. Everything else on a Proxmox host is a per-guest artefact
-# (fwbr*/fwln*/fwpr*/tap*/veth*) that appears and disappears with guest starts.
+# Coverage for job="node-exporter-host" (:9101 on the hosts, LXCs, VMs and k3s
+# servers); the chart's mixin selects the in-cluster DaemonSet instead. The
+# device=~ matcher selects the physical NICs and the bond only.
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
@@ -20,11 +11,9 @@ spec:
   groups:
     - name: homelab.host-exporter
       rules:
-        # One host's exporter dying is otherwise invisible: TargetDown needs >10%
-        # of a job's targets down (1/15 = 6.7%), and every *CollectorStale rule
-        # yields NO sample once its series goes stale. SMART, ZFS-pool, thermal,
-        # PSI and backup-artifact alerting for that host then silently stops
-        # evaluating while ProxmoxHostDown stays green.
+        # One host's exporter dying is otherwise invisible: TargetDown needs
+        # >10% of a job's targets down (1/15), and every *CollectorStale rule
+        # yields no sample once its series goes stale, so it stops evaluating.
         - alert: HostExporterDown
           expr: >-
             up{job="node-exporter-host"} == 0
@@ -44,16 +33,9 @@ spec:
               `systemctl status prometheus-node-exporter` on the host, and
               the sg-metrics firewall rule if it was recently rebuilt.
 
-        # NIC error ratio, mirroring the mixin's NodeNetworkTransmit/ReceiveErrs
-        # at the same 1%/1h threshold. These counters sit at zero fleet-wide, so
-        # a sustained ratio is a degrading link or driver.
-        #
-        # [5m], not the mixin's [2m]: this job is scraped every 60s, so a 2m
-        # window holds 3 samples and ONE missed scrape leaves rate() with too
-        # few points — it returns nothing, the ratio drops out of the vector,
-        # and the 1h `for:` restarts. On a flapping NIC, which is exactly what
-        # this watches, missed scrapes are the norm, so the alert would never
-        # reach its hold. Keep both arms on the same window.
+        # NIC error ratio, mirroring the mixin's NodeNetwork*Errs at 1%/1h.
+        # Both arms stay on [5m]: at a 60s scrape a shorter window lets one
+        # missed scrape empty rate() and restart the 1h `for:`.
         - alert: HostNetworkTransmitErrs
           expr: >-
             rate(node_network_transmit_errs_total{job="node-exporter-host", device=~"nic[0-9]+|bond[0-9]+|eth[0-9]+"}[5m])
@@ -90,10 +72,9 @@ spec:
               hour — cabling, switch port, or driver. Check
               `ethtool -S {{ $labels.device }}` and the switch counters.
 
-        # NOT the mixin's `changes(...[2m]) > 2`: this job is scraped every 60s,
-        # so a 2m window holds 3 samples and can express at most 2 changes. >4
-        # transitions in 10m is at least three bounces (one clean link event
-        # contributes 2).
+        # Not the mixin's `changes(...[2m]) > 2`: at a 60s scrape a 2m window
+        # holds three samples and can express at most two changes. >4 in 10m is
+        # at least three bounces (a clean link event contributes two).
         - alert: HostNetworkInterfaceFlapping
           expr: >-
             changes(node_network_up{job="node-exporter-host", device=~"nic[0-9]+|bond[0-9]+|eth[0-9]+"}[10m]) > 4
@@ -183,15 +164,9 @@ spec:
               `dmesg -T | tail`, SMART for the backing device, and the ZFS
               pool state before remounting rw.
 
-        # SUnreclaim minus ARC: on these hosts nearly all legitimate unreclaimable
-        # slab IS the ZFS ARC (SPL allocations land in SUnreclaim), so the
-        # delta is the leak signal. 16 GiB / 24h is tuned as a REBOOT PAGER
-        # for the standing nfsd file_lock leak (~4 GiB/day, docs/06 § Kernel
-        # file_lock slab leak): it fires roughly weekly, early enough to
-        # schedule the NAS window before the night backups feel it, and late
-        # enough not to stand lit for days and train dismissal. Both metrics
-        # come from the same host exporter, so the subtraction only yields
-        # series on ZFS hosts — the k3s guests' 9100 exporters never match.
+        # SUnreclaim minus ARC: nearly all legitimate unreclaimable slab on
+        # these hosts is the ZFS ARC, so the delta is the leak signal. 16 GiB
+        # over 24h is a reboot pager, early enough to schedule the NAS window.
         - alert: HostSlabLeakSuspected
           expr: >-
             (node_memory_SUnreclaim_bytes{job="node-exporter-host"} - node_zfs_arc_size{job="node-exporter-host"}) > 16 * 1024 * 1024 * 1024
@@ -199,22 +174,21 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: '${cluster_runbook_base_url}/06-zfs.md'
+            runbook_url: '${cluster_runbook_base_url}/06-zfs.md#kernel-192-byte-slab-leak'
             summary: 'Unreclaimable slab far above ARC on {{ $labels.instance }} — schedule the reboot window'
             description: >-
               SUnreclaim on {{ $labels.instance }} exceeds the ZFS ARC size by
               {{ $value | humanize1024 }}B and has for 24 hours — kernel
-              memory only a reboot reclaims. On the NAS this is the standing
-              nfsd file_lock leak (~4 GiB/day until a fixed kernel ships):
-              firing means schedule the reboot window now, before the night
-              backup window starts swapping. Fingerprint + procedure: docs/06
-              § Kernel file_lock slab leak; compare `grep file_lock_cache
-              /proc/slabinfo` against `wc -l /proc/locks` on the host.
+              memory only a reboot reclaims. Schedule the reboot window now,
+              before the night backup window starts swapping. The known tenant
+              is skbuff_ext_cache (skb extensions leaked by br_netfilter per
+              bridged frame). On pve-nas-01, which boots with slub_nomerge,
+              `sudo slabtop -o -s c` names it; elsewhere it reports under the
+              merged :0000192 alias. Fingerprint and procedure: the runbook
+              section this alert links.
 
-        # Genuine memory-pressure floor, fleet-wide. The NAS swap alerts catch
-        # the NAS's specific failure modes; nothing watched the other hosts
-        # (or the NAS between swap events) simply running out of available
-        # memory — the mode the 2026-08 slab leak would have ended in.
+        # Fleet-wide memory-pressure floor. The NAS swap alerts cover its own
+        # failure modes; nothing else watches a host simply running out of memory.
         - alert: HostMemAvailableLow
           expr: >-
             (node_memory_MemAvailable_bytes{job="node-exporter-host"} / node_memory_MemTotal_bytes{job="node-exporter-host"}) < 0.08
@@ -222,7 +196,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: '${cluster_runbook_base_url}/06-zfs.md'
+            runbook_url: '${cluster_runbook_base_url}/06-zfs.md#nas-memory-management'
             summary: 'Available memory below 8% on {{ $labels.instance }} for 30m'
             description: >-
               {{ $labels.instance }} has under 8% of RAM available
@@ -248,19 +222,9 @@ spec:
               net.netfilter.nf_conntrack_max or find the connection
               storm (`conntrack -L | awk '{print $4}' | sort | uniq -c`).
 
-        # Replacements for the mixin's NodeSystemd* rules (disabled in
-        # kube-prometheus-stack/release.yaml): those select job="node-exporter",
-        # the in-cluster DaemonSet, which runs without the systemd collector and
-        # so exports zero node_systemd_* series. The host exporter enables it
-        # (node_exporter_host_systemd_collector, unit-include .service/.timer,
-        # plus --collector.systemd.enable-restarts-metrics for the restart
-        # counter below), so job="node-exporter-host" is the only emitter and
-        # the only job selected here.
-        #
-        # The excluded units are cosmetically and permanently restarting: the
-        # console gettys on the headless guests (getty@tty1, serial-getty@ttyS0)
-        # have no attached console, so they loop forever and would otherwise pin
-        # the alert on, masking a real unit failure.
+        # Replacements for the mixin's NodeSystemd* rules (disabled in the
+        # chart): the host exporter is the sole emitter of node_systemd_*. The
+        # excluded gettys restart forever on headless guests.
         - alert: NodeSystemdServiceFailed
           expr: >-
             node_systemd_unit_state{job="node-exporter-host", state="failed",
@@ -291,17 +255,9 @@ spec:
               than twice in 5 minutes for the last 15 minutes. Check
               `journalctl -u {{ $labels.name }}`.
 
-        # Both NodeSystemd* rules above rest on a collector whose failure is
-        # otherwise invisible: a collector that errors on every scrape still
-        # returns HTTP 200, so the role's deploy-time `uri ... status_code: 200`
-        # gate and node-exporter-healthcheck.sh both pass with every
-        # node_systemd_* series absent — and an absent series fires nothing.
-        # node_scrape_collector_success is node_exporter's own per-collector
-        # result bit (1/0 per scrape, one series per enabled collector) and is
-        # the only runtime signal for that state. Warning, not critical: this is
-        # loss of coverage, not loss of service. 30m because a single failed
-        # scrape is not worth waking anyone, and the alerts it protects are
-        # themselves slow (15m holds).
+        # A failing collector still returns HTTP 200 while node_systemd_* is
+        # absent, so the two rules above cannot fire.
+        # node_scrape_collector_success is the only signal for that state.
         - alert: NodeExporterSystemdCollectorFailed
           expr: >-
             node_scrape_collector_success{job="node-exporter-host", collector="systemd"} == 0
@@ -318,3 +274,107 @@ spec:
               NodeSystemdServiceFailed / NodeSystemdServiceCrashlooping cannot
               fire for it. Check `journalctl -u prometheus-node-exporter` and
               that the unit can still read systemd's private socket.
+
+        # node-exporter-healthcheck.sh restarts the exporter when /metrics goes
+        # unanswered twice. /metrics answers again between restarts, so a restart
+        # loop fires no exporter-down alert and this gauge is the only signal.
+        - alert: NodeExporterHealthcheckRestartLoop
+          expr: >-
+            changes(node_exporter_healthcheck_last_restart_timestamp_seconds{job="node-exporter-host"}[1h]) >= 3
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
+            summary: 'node_exporter is being restarted repeatedly on {{ $labels.instance }}'
+            description: >-
+              The liveness gate has restarted node_exporter at least three times
+              in the last hour on {{ $labels.instance }}. Check
+              `journalctl -t node-exporter-healthcheck` and
+              `systemctl status prometheus-node-exporter`.
+
+        # zfs-mount-encrypted.service retries forever by design so its After=
+        # dependents stay queued, which means it is always `activating` and
+        # NodeSystemdServiceFailed can never match it. This pair is its coverage.
+        - alert: ZfsEncryptedMountStuck
+          expr: >-
+            node_systemd_unit_state{job="node-exporter-host",
+            name="zfs-mount-encrypted.service", state="activating"} == 1
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
+            summary: 'Encrypted ZFS datasets have not mounted on {{ $labels.instance }}'
+            description: >-
+              zfs-mount-encrypted has been retrying for 30 minutes on
+              {{ $labels.instance }}, so the encrypted datasets, the NFS exports
+              and every gated guest stay down. Check
+              `systemctl status zfs-mount-encrypted` and
+              `journalctl -u zfs-load-key@<pool>`.
+
+        - alert: ZfsEncryptedMountStuckCritical
+          expr: >-
+            node_systemd_unit_state{job="node-exporter-host",
+            name="zfs-mount-encrypted.service", state="activating"} == 1
+          for: 2h
+          labels:
+            severity: critical
+          annotations:
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
+            summary: 'Encrypted ZFS datasets have not mounted for 2 hours on {{ $labels.instance }}'
+            description: >-
+              zfs-mount-encrypted has not completed in 2 hours on
+              {{ $labels.instance }}. The key source is unreachable or a
+              passphrase rotated: check `journalctl -u zfs-load-key@<pool>` and
+              1Password Connect.
+
+        # The leading arm for the slab leak above. 6 GiB/24h is about 1.5x the
+        # 4 GiB/day high end of the NAS baseline (docs/06), so it fires only
+        # when the leak runs well above baseline. Needs the collector on.
+        - alert: HostSlabCacheGrowing
+          expr: >-
+            delta(node_slab_object_bytes{job="node-exporter-host", cache="skbuff_ext_cache"}[24h])
+            > 6 * 1024 * 1024 * 1024
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: '${cluster_runbook_base_url}/06-zfs.md#kernel-192-byte-slab-leak'
+            summary: 'skbuff_ext_cache grew {{ $value | humanize1024 }}B in 24h on {{ $labels.instance }}'
+            description: >-
+              The skbuff_ext_cache slab on {{ $labels.instance }} has grown by
+              more than 6 GiB in 24 hours, well over its usual rate. This is the
+              leak HostSlabLeakSuspected
+              pages on once it is large, caught while it is still small enough to
+              schedule a reboot window around.
+
+        # The witness for HostSlabCacheGrowing: a dead timer, unreadable
+        # /proc/slabinfo, a renamed cache or a vanished textfile silences it.
+        # The last arm needs the collector seen within 7d (never deployed = quiet).
+        - alert: SlabinfoCollectorDegraded
+          expr: >-
+            node_slabinfo_collector_success{job="node-exporter-host"} == 0
+            or (time() - node_slabinfo_collector_last_success_seconds{job="node-exporter-host"}) > 1800
+            or count by (job, instance) (node_slab_cache_present{job="node-exporter-host"} == 0) > 0
+            or (
+              (
+                up{job="node-exporter-host", instance="10.0.10.102:9101"} == 1
+                unless on (instance) node_slabinfo_collector_success
+              )
+              and on (instance) (max_over_time(node_slabinfo_collector_success[7d]) > 0)
+            )
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: '${cluster_runbook_base_url}/06-zfs.md#kernel-192-byte-slab-leak'
+            summary: 'slabinfo collector is not producing usable series on {{ $labels.instance }}'
+            description: >-
+              /proc/slabinfo is unreadable, the collector has not run for 30
+              minutes, or a named cache is absent on {{ $labels.instance }}, so
+              HostSlabCacheGrowing is blind. Check that pve-nas-01 still boots
+              with `slub_nomerge` (without it skbuff_ext_cache reports under the
+              merged :0000192 alias), then
+              `systemctl status slabinfo-collector.timer` and the cache names in
+              node_exporter_host_slab_caches against /proc/slabinfo.

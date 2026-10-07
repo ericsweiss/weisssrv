@@ -1,12 +1,7 @@
 ---
-# kured (Kubernetes Reboot Daemon) — safely reboots k3s nodes that have been
-# flagged for reboot (sentinel /var/run/reboot-required, set by the maintenance
-# playbooks after a kernel update), one node at a time, with cordon -> drain ->
-# reboot -> uncordon handled by kured itself.
-#
-# The maintenance playbooks only set the sentinel: each node reboots ITSELF
-# under kured's cluster-wide lock, so no orchestrator ever has to drain the node
-# it is running on, and reboots outlive the CI job that flagged them.
+# kured reboots k3s nodes carrying the /var/run/reboot-required sentinel, one
+# at a time, handling cordon, drain, reboot and uncordon itself. The
+# maintenance playbooks only set the sentinel (docs/12).
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -44,24 +39,21 @@ spec:
     configuration:
       # Pick up a maintenance-flagged reboot promptly (chart default is 1h).
       period: "5m"
-      # Deliberately NO Prometheus alert-pause: kured fails CLOSED on a query
-      # error and Prometheus is single-replica behind the observability
-      # default-deny-ingress, so wiring it would block every reboot.
-      # One node at a time, enforced by kured's cluster-wide lock — this is what
-      # keeps the 3-node etcd quorum safe. The maintenance playbooks serialize
-      # their own host reboots against it by construction (docs/12).
+      # No Prometheus alert-pause: kured fails closed on a query error and
+      # Prometheus is single-replica behind the observability default-deny, so
+      # wiring it would block every reboot.
+
+      # CRITICAL: one node at a time under kured's cluster-wide lock is what
+      # keeps the 3-node etcd quorum safe.
       concurrency: 1
-      # NON-EXPIRING lock. kured's TTL is a pure time-based steal with no health
-      # check on the holder, so a finite TTL would let it reboot a second etcd
-      # server while the first is still down. At 0 the lock is released only by
-      # its holder; a kured pod that dies holding it blocks reboots until an
-      # operator clears the annotation (docs/12-runbooks.md).
+
+      # Non-expiring lock: a time-based steal has no health check on the holder,
+      # so it could reboot a second etcd server while the first is still down.
+      # Clearing a stuck lock: docs/12-runbooks.md, coordinated reboots.
       lockTtl: "0"
-      # Bound the pre-reboot drain; never force-reboot on drain failure — leave
-      # the sentinel set and retry next period instead of hard-killing pods. An
-      # undrainable node (slow eviction of the NAS-pinned single-replica pods, or
-      # a PDB blocking the last replica) simply does not reboot; NodeStuckCordoned
-      # surfaces it if the abort leaves the node cordoned.
+      # Bound the pre-reboot drain and never force-reboot on drain failure: an
+      # undrainable node keeps its sentinel and retries next period.
+      # NodeStuckCordoned surfaces an abort that leaves the node cordoned.
       drainTimeout: "5m"
       forceReboot: false
       # Touched by the maintenance playbooks when a kernel update needs a reboot.
@@ -71,11 +63,9 @@ spec:
       rebootCommand: "/bin/systemctl reboot"
       # Record reboot progress as node annotations for visibility.
       annotateNodes: true
-      # Defer a node while it runs any infrastructure-class CI JOB pod, so kured
-      # cannot drain a running pipeline (including maintenance-run-all) out from
-      # under itself; it retries next cycle. Only job pods carry the label
-      # (pod_labels in apps/gitlab-runner-privileged), so the runner manager's
-      # node is never permanently blocked.
+      # Defer a node while it runs an infrastructure-class CI job pod, so kured
+      # cannot drain a running pipeline out from under itself. Only job pods
+      # carry the label, so the runner manager's node is never blocked.
       blockingPodSelector:
         - ${cluster_node_label_domain}/runner-class=infrastructure
     # Metrics Service + ServiceMonitor, so a stuck or aborted reboot cycle is
@@ -93,9 +83,12 @@ spec:
       create: true
     serviceAccount:
       create: true
+    # 64Mi request / 128Mi limit: the 30d working-set peak across the nine nodes
+    # is ~64Mi. The paired Off-mode VPA in configs/vpa/platform.yaml records
+    # drift without ever evicting a reboot coordinator.
     resources:
       requests:
         cpu: 10m
-        memory: 48Mi
+        memory: 64Mi
       limits:
-        memory: 96Mi
+        memory: 128Mi

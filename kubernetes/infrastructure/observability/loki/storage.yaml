@@ -1,8 +1,6 @@
 ---
-# Loki data persistent storage (chunks + WAL)
-# Uses hostPath pointing to /mnt/loki-data on k3s-agt-nas-01.
-# The PV pre-binds to storage-loki-0 (the PVC name created by the
-# Loki StatefulSet's volumeClaimTemplate).
+# Loki chunks + WAL on hostPath /mnt/loki-data on k3s-agt-nas-01.
+# Pre-bound to storage-loki-0, the PVC from Loki's volumeClaimTemplate.
 apiVersion: v1
 kind: PersistentVolume
 metadata:

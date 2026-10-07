@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 # Pure-logic helpers for collect-state.sh: secret redaction, the tri-state
-# health classifiers, and the section emitters. Functions/patterns only (no
-# top-level side effects) so both collect-state.sh and the pytest harness
-# (scripts/test_collect_state_lib.py) can source it. Nothing here calls
-# ssh/kubectl/curl.
+# health classifiers, the section emitters. Functions and patterns only, so
+# collect-state.sh and scripts/test_collect_state_lib.py can both source it.
 
 # secret redaction
 
@@ -78,19 +76,13 @@ redact_file() {
         ' > "$outfile"
 }
 
-# remote section emitters
-# collect-state.sh injects these into every remote body via `declare -f`, so the
-# same unit-tested code renders each section host-side. They cap with an
-# explicit truncation marker and emit a fallback on empty input — neither of
-# which a `producer | head -N || echo` pipeline can do.
-# NOTE: <fallback> must describe the EMPTY case only. A failed producer is
-# detected by the caller (capture-and-test its exit status), never by wording
-# the fallback as a failure.
-#
-# cs_capped <cap> <fallback> — print at most <cap> stdin lines (0 = uncapped),
-# <fallback> when stdin was empty, and a truncation marker when the cap clipped.
-# The whole stream is consumed so the marker reports the real total and the
-# producer never takes SIGPIPE.
+# remote section emitters, injected into every remote body via `declare -f`.
+# They cap with an explicit truncation marker and emit <fallback> for empty
+# input only; producer failure is detected by the caller's exit status.
+
+# cs_capped <cap> <fallback>: print at most <cap> stdin lines (0 = uncapped),
+# <fallback> when stdin was empty, a truncation marker when the cap clipped.
+# The whole stream is consumed so the producer never takes SIGPIPE.
 cs_capped() {
     local cap=$1 fallback=$2 n=0 line
     # `|| [ -n "$line" ]` keeps a final unterminated line (kubectl -o jsonpath
@@ -114,41 +106,68 @@ cs_emit() {
     cs_capped 0 "$1"
 }
 
-# tri-state health classification
-# Both collect-state modes feed these classifiers from the same probes. The
-# regular/--json differences (host-coverage floor, all-collected-hosts
-# strictness, section + alert gates) are documented in collect-state.sh's
-# header; when adding a signal to one classifier, mirror it in the other.
+# warning-event policy
 
-# classify_regular <pve_reachable> <k3s_api_ok true|false> <k3s_ready> <k3s_total> \
-#                  <hosts_ok> <hosts_total> <coverage_pct> <coverage_floor> \
-#                  <flux_not_ready> <zfs_degraded> <gitlab_ok 0|1> \
-#                  <sections_ok> <sections_total> <alerts_firing>
-# Prints the regular-mode verdict:
-#   FAILED  (red)    no Proxmox host reachable, OR K3s API reachable with zero
-#                    nodes Ready, OR host coverage below the floor.
-#   OK      (green)  every predicate in regular_failing_predicates holds.
-#   PARTIAL (yellow) anything else with core infra still up.
-# The K3s FAILED check is gated on k3s_api_ok so a misconfigured local
-# kubeconfig degrades to PARTIAL instead of masking the per-host SSH collection.
+# The jq program behind probe_warning_events, kept here so the exclusion policy
+# is readable and unit-tested rather than a single line inside a remote body.
+# shellcheck disable=SC2016 # $cutoff is a jq --arg, not a shell variable
+WARNING_EVENTS_JQ='
+[ .items[]
+  # Events-API events often carry only eventTime (lastTimestamp null), and jq
+  # compares null >= $cutoff as false, so the timestamp is coalesced.
+  | select(((.lastTimestamp // .eventTime // .metadata.creationTimestamp) // "") >= $cutoff)
+  # One exclusion: FailedScheduling in a gitlab-runner* namespace citing only
+  # Insufficient cpu/memory, which is how the CI pool overflows by design. A
+  # message citing a real blocker, or any non-runner one, still counts.
+  | select(
+      (
+        .reason == "FailedScheduling"
+        and ((.metadata.namespace // "") | test("^gitlab-runner"))
+        and ((.message // "") | test("Insufficient (cpu|memory)"; "i"))
+        and (((.message // "")
+              | test("persistentvolumeclaim|exceeded quota|volume node affinity conflict"; "i")) | not)
+      ) | not
+    )
+] | length'
+
+# warning_events_filter <cutoff> — read `kubectl get events -A
+# --field-selector type=Warning -o json` on stdin and echo the number of Warning
+# events at or after <cutoff> (RFC3339), or "unknown" when jq could not parse it.
+warning_events_filter() {
+    local cutoff="$1" out
+    out=$(jq --arg cutoff "$cutoff" "$WARNING_EVENTS_JQ" 2>/dev/null) || out="unknown"
+    echo "${out:-unknown}"
+}
+
+# coerce_int <value> <fallback> — echo <value> when it is all digits, else the
+# fallback. Turns a probe's "unknown" into a verdict input (a number that
+# degrades) or a JSON value (null), with one idiom instead of a case per site.
+coerce_int() {
+    case "$1" in
+        ''|*[!0-9]*) printf '%s' "$2" ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
+
+# tri-state health classification
+# classify_regular derives its OK arm from regular_failing_predicates; a signal
+# added to either classifier must be mirrored in the other.
+
+# classify_regular <pve_reachable> <k3s_api_ok> <k3s_ready> <k3s_total>
+#   <hosts_ok> <hosts_total> <coverage_pct> <coverage_floor> <flux_not_ready>
+#   <zfs_degraded> <gitlab_ok> <sections_ok> <sections_total> <alerts_firing>
+
+# FAILED: no Proxmox host reachable, K3s API up with zero nodes Ready, or host
+# coverage below the floor. OK: every regular_failing_predicates entry holds.
+# PARTIAL: anything else with core infra up, a bad kubeconfig included.
 classify_regular() {
-    local pve_reachable="$1" k3s_api_ok="$2" k3s_ready="$3" k3s_total="$4"
-    local hosts_ok="$5" hosts_total="$6" coverage_pct="$7" coverage_floor="$8"
-    local flux_not_ready="$9" zfs_degraded="${10}" gitlab_ok="${11}"
-    local sections_ok="${12}" sections_total="${13}" alerts_firing="${14}"
+    local pve_reachable="$1" k3s_api_ok="$2" k3s_ready="$3"
+    local coverage_pct="$7" coverage_floor="$8"
     if [ "$pve_reachable" -eq 0 ] \
        || { [ "$k3s_api_ok" = true ] && [ "$k3s_ready" -eq 0 ]; } \
        || [ "$coverage_pct" -lt "$coverage_floor" ]; then
         echo "FAILED"
-    elif [ "$hosts_ok" -eq "$hosts_total" ] \
-         && [ "$sections_ok" -eq "$sections_total" ] \
-         && [ "$k3s_api_ok" = true ] \
-         && [ "$k3s_total" -gt 0 ] \
-         && [ "$k3s_ready" -eq "$k3s_total" ] \
-         && [ "$flux_not_ready" -eq 0 ] \
-         && [ "$zfs_degraded" -eq 0 ] \
-         && [ "$gitlab_ok" -eq 1 ] \
-         && [ "$alerts_firing" -eq 0 ]; then
+    elif [ -z "$(regular_failing_predicates "$@")" ]; then
         echo "OK"
     else
         echo "PARTIAL"
@@ -157,8 +176,7 @@ classify_regular() {
 
 # regular_failing_predicates — same 14 args as classify_regular. Prints the
 # space-separated names (with values) of the OK predicates that do NOT hold, so
-# a PARTIAL/FAILED verdict names its cause on the console summary line instead
-# of leaving the operator to diff the nine header rows. Empty output == all-OK.
+# the console summary names its cause. Empty output == all-OK.
 regular_failing_predicates() {
     local pve_reachable="$1" k3s_api_ok="$2" k3s_ready="$3" k3s_total="$4"
     local hosts_ok="$5" hosts_total="$6" coverage_pct="$7" coverage_floor="$8"
@@ -181,26 +199,24 @@ regular_failing_predicates() {
     echo "$out"
 }
 
-# classify_json <pve_up> <pve_total> <k3s_api_ok true|false> <k3s_ready> <k3s_total> \
-#               <flux_not_ready> <zfs_degraded> <gitlab_ok 0|1>
-# Prints the --json verdict (mutually exclusive):
-#   healthy      green (strict: full Proxmox coverage, zero Flux/ZFS
-#                imperfections, GitLab healthy; Warning events are advisory
-#                and do not gate green)
-#   degraded     yellow — any imperfection with core infra still up (the gate
-#                keeps a fully-down cluster from reading as merely degraded)
-#   catastrophic red — neither of the above
+# classify_json <pve_up> <pve_total> <k3s_api_ok> <k3s_ready> <k3s_total>
+#   <flux_not_ready> <zfs_degraded> <gitlab_ok> <alerts_firing>
+
+# The --json verdict: healthy means full Proxmox coverage, no Flux or ZFS
+# imperfection, GitLab healthy and nothing firing; degraded means any imperfection
+# with core infra up; catastrophic is neither. Unknown arrives as 1 and so fires.
 classify_json() {
     local pve_up="$1" pve_total="$2" k3s_api_ok="$3" k3s_ready="$4" k3s_total="$5"
-    local flux_not_ready="$6" zfs_degraded="$7" gitlab_ok="$8"
+    local flux_not_ready="$6" zfs_degraded="$7" gitlab_ok="$8" alerts_firing="${9:-0}"
     if [ "$pve_up" -gt 0 ] && [ "$pve_up" -eq "$pve_total" ] \
        && [ "$k3s_total" -gt 0 ] && [ "$k3s_ready" -eq "$k3s_total" ] \
        && [ "$flux_not_ready" -eq 0 ] && [ "$zfs_degraded" -eq 0 ] \
-       && [ "$gitlab_ok" -eq 1 ]; then
+       && [ "$gitlab_ok" -eq 1 ] && [ "$alerts_firing" -eq 0 ]; then
         echo "healthy"
     elif { [ "$pve_up" -lt "$pve_total" ] || [ "$k3s_ready" -lt "$k3s_total" ] \
            || [ "$k3s_api_ok" != true ] || [ "$flux_not_ready" -gt 0 ] \
-           || [ "$zfs_degraded" -gt 0 ] || [ "$gitlab_ok" -eq 0 ]; } \
+           || [ "$zfs_degraded" -gt 0 ] || [ "$gitlab_ok" -eq 0 ] \
+           || [ "$alerts_firing" -gt 0 ]; } \
          && [ "$pve_up" -gt 0 ] \
          && { [ "$k3s_api_ok" != true ] || [ "$k3s_ready" -gt 0 ]; }; then
         echo "degraded"
@@ -209,12 +225,9 @@ classify_json() {
     fi
 }
 
-# collect_compose_app section dispatch
 # compose_active_sections <health_url> <nginx_cert> <backup_timer> <backup_prom>
-# The NAS-pinned compose apps (Nextcloud/Immich/Immich-ML) render optional
-# sections only where they have them; a "-" argument drops that section. Echoes
-# the comma-joined active sections in output order (health,nginx,backup,metrics);
-# `metrics` renders only when `backup` does.
+# A "-" argument drops that section. Echoes the comma-joined active sections in
+# output order (health,nginx,backup,metrics); `metrics` needs `backup`.
 compose_active_sections() {
     local health_url=$1 nginx_cert=$2 backup_timer=$3 backup_prom=$4
     local out=""
@@ -227,9 +240,8 @@ compose_active_sections() {
     echo "$out"
 }
 
-# firewall guest .fw enumeration
-# Read candidate /etc/pve/firewall/*.fw paths on stdin, drop the cluster-wide
-# cluster.fw (dumped separately as IP sets) and emit the per-guest paths sorted.
+# firewall_guest_fw_list: read candidate /etc/pve/firewall/*.fw paths on stdin,
+# drop the cluster-wide cluster.fw and emit the per-guest paths sorted.
 # Injected into the remote Proxmox body via `declare -f`.
 firewall_guest_fw_list() {
     grep -v -E '(^|/)cluster\.fw$' | sort

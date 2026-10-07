@@ -1,16 +1,12 @@
 ---
-# Configure autostart and boot order for existing VMs and LXC containers
-# This is a one-time setup task for existing infrastructure
-# New VMs/containers will have autostart configured during provisioning
-#
-# HAOS (vm 154) is deliberately not covered: it is Proxmox-HA-managed, so HA
-# starts it and onboot is moot.
+# Idempotent reconcile of onboot/startup order against the inventory; re-run
+# after any proxmox_autostart_* or proxmox_lxc_* edit. HAOS (154) is
+# deliberately not covered: Proxmox HA starts it, so onboot is moot.
 
-# The LXC play mirrors proxmox_lxc's own precedence exactly: the neutral
-# proxmox_autostart_* names win when set (the VMs use them), otherwise the
-# per-container proxmox_lxc_* host_vars, otherwise the role defaults
-# (true / 100 / 0). Reading only the neutral names here would reconcile plex to
-# onboot=1 and flatten the DNS -> SMTP -> apps boot order.
+# CRITICAL: the LXC play mirrors proxmox_lxc's precedence exactly. Neutral
+# proxmox_autostart_* names win when set, then per-container proxmox_lxc_* host_vars,
+# then the role defaults (true / 100 / 0). Reading only the neutral names would
+# reconcile plex to onboot=1 and flatten the DNS -> SMTP -> apps boot order.
 - name: Configure autostart and boot order for LXC containers
   hosts: lxc_containers
   gather_facts: false
@@ -25,24 +21,19 @@
       ansible.builtin.set_fact:
         container_id: "{{ vmid }}"
 
-    # A SINGLE delegated cluster query per Proxmox host, never a looped
-    # delegate_to: a looped delegate that is UNREACHABLE ends the host's task
-    # sequence with rc 0 (ignore_unreachable does not cover it), so the
-    # reconcile reports green having changed nothing — and one Proxmox host is
-    # routinely out. pvesh answers cluster-wide, so the first host that answers
-    # returns this guest's REAL node even after an HA migration; walking the
-    # rest of the group covers the inventory home (and its first neighbour)
-    # being down. The API's node names are this site's inventory hostnames.
+    # CRITICAL: one delegated cluster query per host, never a looped delegate_to. A
+    # looped delegate that is unreachable ends the host's task sequence rc 0 and the
+    # reconcile reports green having changed nothing. pvesh answers cluster-wide, so
+    # the first host that answers returns the guest's real node.
     - name: Query the cluster for this container's current node
       ansible.builtin.include_tasks: tasks/_probe-pve-cluster.yml
       loop: "{{ [proxmox_host] + (groups['proxmox'] | difference([proxmox_host])) }}"
       loop_control:
         loop_var: pve_probe_host
 
-    # The two when: conditions are ORDER-DEPENDENT — Ansible evaluates a when:
-    # list in order and stops at the first false, so the length check is what
-    # keeps `from_json` inside pve_container_entry from being handed the empty
-    # string when every probe failed. Do not reorder or collapse into one `and`.
+    # The two when: conditions are order-dependent: the length check is what keeps
+    # `from_json` from being handed the empty string when every probe failed. Do not
+    # reorder them or collapse them into one `and`.
     - name: Set Proxmox host variable
       vars:
         pve_container_entry: >-
@@ -92,10 +83,8 @@
           onboot={{ lxc_onboot | ternary(1, 0) }},
           order={{ lxc_startup_order }}, delay={{ lxc_startup_delay }}s
 
-# All node-pinned app VMs (gitlab/nextcloud/immich/windows) carry
-# proxmox_autostart_enabled + proxmox_startup_order in hosts.yml, so this
-# reconcile path covers them too — the task no-ops when the config already
-# matches. (HAOS .154 stays out: it is Proxmox-HA-managed, so onboot is moot.)
+# Node-pinned app VMs carry proxmox_autostart_* in hosts.yml and are
+# reconciled here too.
 - name: Configure autostart and boot order for VMs (k3s + app VMs)
   hosts: k3s:gitlab_servers:nextcloud_servers:immich_servers:windows_vms
   gather_facts: false
@@ -119,21 +108,18 @@
           {{ inventory_hostname }} ({{ vm_id }}) has no proxmox_host in the
           inventory — autostart NOT reconciled.
 
-    # Same shape as the LXC play above, and for the same reasons: one delegated
-    # cluster query per host (never a looped delegate_to), and the API answers
-    # cluster-wide so this returns the guest's REAL node even after a migration.
-    # It replaces a `qm status` probe on the inventory host, which read every
-    # non-zero rc as "does not exist" and skipped the guest silently.
+    # Same shape as the LXC play above: one delegated cluster query per host
+    # (never a looped delegate_to), and the API answers cluster-wide so this
+    # returns the guest's real node even after a migration.
     - name: Query the cluster for this VM's current node
       ansible.builtin.include_tasks: tasks/_probe-pve-cluster.yml
       loop: "{{ [proxmox_host] + (groups['proxmox'] | difference([proxmox_host])) }}"
       loop_control:
         loop_var: pve_probe_host
 
-    # The two when: conditions are ORDER-DEPENDENT — Ansible evaluates a when:
-    # list in order and stops at the first false, so the length check is what
-    # keeps `from_json` inside pve_vm_entry from being handed the empty string
-    # when every probe failed. Do not reorder or collapse into one `and`.
+    # The two when: conditions are order-dependent: the length check is what keeps
+    # `from_json` from being handed the empty string when every probe failed. Do not
+    # reorder them or collapse them into one `and`.
     - name: Set Proxmox host variable
       vars:
         pve_vm_entry: >-

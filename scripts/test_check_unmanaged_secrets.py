@@ -1,17 +1,12 @@
 """Tests for scripts/check-unmanaged-secrets.py."""
 from __future__ import annotations
 
-import importlib.util
 import io
 import json
-from pathlib import Path
 
-SPEC = importlib.util.spec_from_file_location(
-    "check_unmanaged_secrets",
-    Path(__file__).resolve().parent / "check-unmanaged-secrets.py",
-)
-mod = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(mod)
+from script_loader import load_script
+
+mod = load_script("check-unmanaged-secrets.py")
 
 
 def _secret(name="s", ns="apps", **meta) -> dict:
@@ -24,6 +19,33 @@ def _secret(name="s", ns="apps", **meta) -> dict:
 def _run(secrets: list[dict], monkeypatch) -> int:
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"items": secrets})))
     return mod.main()
+
+
+def test_an_empty_secret_list_is_an_operator_error(monkeypatch, capsys):
+    """A context or RBAC scope that returns nothing must not read as clean."""
+    assert _run([], monkeypatch) == 2
+    out = capsys.readouterr()
+    assert "no Secrets" in out.err
+    assert "OK" not in out.out
+
+
+def test_non_json_stdin_is_an_operator_error(monkeypatch, capsys):
+    """Exit 2 is reserved for an uninspectable subject; 1 means a real finding."""
+    monkeypatch.setattr("sys.stdin", io.StringIO("not json"))
+    assert mod.main() == 2
+    assert "cannot parse stdin as JSON" in capsys.readouterr().err
+
+
+def test_an_empty_items_payload_is_an_operator_error(monkeypatch, capsys):
+    monkeypatch.setattr("sys.stdin", io.StringIO('{"items": []}'))
+    assert mod.main() == 2
+    assert "a gate that checks nothing is not a gate" in capsys.readouterr().err
+
+
+def test_a_payload_that_is_not_a_list_is_an_operator_error(monkeypatch, capsys):
+    monkeypatch.setattr("sys.stdin", io.StringIO('{"items": {"s": {}}}'))
+    assert mod.main() == 2
+    assert "not a Secret list" in capsys.readouterr().err
 
 
 def test_hand_applied_secret_is_flagged(monkeypatch):

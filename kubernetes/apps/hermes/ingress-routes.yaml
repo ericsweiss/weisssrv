@@ -1,15 +1,7 @@
 ---
-# Hermes Agent dashboard — external + internal IngressRoutes.
-#
-# SSO model: the dashboard's own Authentik OIDC login (docs/37 §SSO). The
-# 0.0.0.0 bind engages upstream's fail-closed auth gate, the `self_hosted`
-# OIDC provider (issuer slug `agent`, gated by the Authentik `hermes-users`
-# group) is the sole registered provider, and the default-deny NetworkPolicy
-# admits only the Traefik namespace on :9119. No forward-auth middleware:
-# Traefik passes straight to the dashboard, which 302s unauthenticated
-# browsers into the Authentik flow — one login, both hostnames. The Authentik
-# objects are managed in terraform/authentik (docs/40). The internal route
-# additionally scopes to LAN/Tailscale sources.
+# Hermes Agent dashboard, external and internal IngressRoutes. Auth is the
+# dashboard's own Authentik OIDC login rather than a forward-auth middleware,
+# so Traefik passes straight through (docs/37 §SSO, docs/40).
 
 # External - agent.ericsweiss.com
 apiVersion: traefik.io/v1alpha1
@@ -27,6 +19,8 @@ spec:
       kind: Rule
       middlewares:
         - name: hsts-header
+          namespace: traefik
+        - name: security-headers
           namespace: traefik
       services:
         - name: hermes-dashboard
@@ -59,17 +53,11 @@ spec:
     secretName: hermes-esweiss-tls
 
 ---
-# Internal - agent-api.esweiss.com -> the gateway's OpenAI-compatible API
-# server (:8642). For machine clients on the LAN — first consumer is the Home
-# Assistant Voice pipeline (Extended OpenAI Conversation, docs/37 §Voice
-# assistant).
-#
-# Deliberately NO authentik-auth middleware: forward-auth answers an
-# unauthenticated request with a 302 to a login page, which an OpenAI-protocol
-# client can neither follow nor complete — it would break every caller. Auth
-# is instead the API server's own MANDATORY bearer key (API_SERVER_KEY — the
-# server refuses to start without one; /health is the sole keyless route),
-# with lan-tailscale-only scoping the audience to LAN/Tailscale/pod sources.
+# CRITICAL: agent-api.esweiss.com serves the OpenAI-compatible API (:8642) to
+# machine clients (docs/37 §Voice assistant). It carries no authentik-auth
+# middleware, because forward-auth answers with a 302 an OpenAI-protocol client
+# cannot follow. Auth is the API server's mandatory bearer key (API_SERVER_KEY,
+# /health the sole keyless route), with lan-tailscale-only scoping the audience.
 # Internal-only: no external-dns annotation, no ericsweiss.com host.
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute

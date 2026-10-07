@@ -1,24 +1,8 @@
 #!/usr/bin/env python3
-"""Assert every service/systemd task names a UNIT, not an Ansible role FQCN.
+"""Assert every service/systemd task names a unit, not an Ansible role FQCN.
 
-A bulk role rename to `weisssrv.infra.<role>` over-applied and rewrote two
-systemd task `name:` values in a maintenance playbook. systemd appends
-`.service` only when the name carries no unit suffix, so `weisssrv.infra.k3s`
-resolves to `weisssrv.infra.k3s.service` — a unit that does not exist. Ansible
-reports that as a task failure at best, and where the task carries
-`failed_when: false` it is a silent no-op forever.
-
-Nothing else catches it: ansible-lint validates module ARGUMENTS, not whether a
-unit name is real, and the playbooks only run against live hosts.
-
-The rule: under a service-managing module, a `name:` containing a dot must end
-in a real systemd unit suffix. Jinja expressions and variables are skipped —
-their value is not knowable here, and the role-rename shape this exists to catch
-is always a literal.
-
-Usage: scripts/check-ansible-service-names.py [--root ansible]
-
-Exit codes: 0 clean, 1 violations, 2 the gate could not inspect its subject.
+A literal `name:` with a dot must end in a unit suffix; Jinja is skipped.
+Exit 0 clean, 1 violations, 2 on an operator error or an empty corpus.
 """
 from __future__ import annotations
 
@@ -29,7 +13,8 @@ from pathlib import Path
 try:
     import yaml
 except ImportError:  # pragma: no cover - environment guard
-    sys.exit("PyYAML required: pip install pyyaml")
+    print("ERROR: PyYAML required: pip install pyyaml", file=sys.stderr)
+    raise SystemExit(2) from None
 
 SERVICE_MODULES = {
     "service",
@@ -109,14 +94,22 @@ def main() -> int:
         return 2
 
     found: list[str] = []
+    unparseable: list[str] = []
     for path in files:
         try:
             docs = list(yaml.load_all(path.read_text(), Loader=Loader))
-        except yaml.YAMLError:
-            # Syntax is ansible-lint's / yamllint's job, not this gate's.
+        except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
+            # A file the gate cannot read is not scanned, so it cannot pass.
+            unparseable.append(f"{path}: {exc}")
             continue
         for doc in docs:
             walk(doc, path, found)
+
+    if unparseable:
+        print("ERROR: files the gate could not parse, so they went unscanned:")
+        for line in unparseable:
+            print(f"  - {line}")
+        return 2
 
     if found:
         print("ERROR: service/systemd tasks naming something that is not a systemd unit:")

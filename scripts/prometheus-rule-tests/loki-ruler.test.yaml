@@ -1,8 +1,7 @@
 ---
-# promtool unit tests for the Loki-ruler meta-alerts. The 24 rules across the
-# loki/ rule files (23 HostLogShippingStale + the runner-reaper budget alert)
-# are evaluated inside Loki and pushed straight to Alertmanager, so Prometheus
-# never sees them — these three rules are the only thing watching that path.
+# promtool unit tests for the Loki alerts: the three ruler meta-alerts plus the
+# two ingestion-discard arms. The loki/ rule files themselves are evaluated
+# inside Loki and pushed straight to Alertmanager, so Prometheus never sees them.
 rule_files:
   - rules.yaml
 evaluation_interval: 1m
@@ -15,6 +14,8 @@ tests:
         values: '23+0x30'
       - series: 'loki_prometheus_rule_group_rules{job="observability/loki", user="fake", rule_group="runner-reaper"}'
         values: '1+0x30'
+      - series: 'loki_prometheus_rule_group_rules{job="observability/loki", user="fake", rule_group="unifi-syslog"}'
+        values: '3+0x30'
       - series: 'loki_prometheus_rule_evaluation_failures_total{job="observability/loki", user="fake", rule_group="host-log-staleness"}'
         values: '0+0x30'
       - series: 'loki_prometheus_notifications_errors_total{job="observability/loki", user="fake"}'
@@ -39,6 +40,10 @@ tests:
       - series: 'loki_prometheus_rule_group_rules{job="observability/loki", user="fake", rule_group="host-log-staleness"}'
         values: '0+0x30'
     alert_rule_test:
+      # Inside the 15m hold: a ruler restart reloading rules must not page.
+      - eval_time: 10m
+        alertname: LokiRulerRulesMissing
+        exp_alerts: []
       - eval_time: 20m
         alertname: LokiRulerRulesMissing
         exp_alerts:

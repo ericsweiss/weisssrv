@@ -1,0 +1,159 @@
+# https://taskfile.dev
+# k3s cluster provisioning and node-level operations (docs/19).
+version: '3'
+
+# Anchors aliased by the tasks below. YAML anchors do not cross files, so each
+# namespace file carries the precondition list it uses.
+x-preconditions:
+  op: &op_preconditions
+    - sh: command -v ansible-playbook
+      msg: "ansible-playbook not installed. pip install ansible, then: task ansible:install-collections"
+    - sh: command -v op
+      msg: "1Password CLI not installed: https://developer.1password.com/docs/cli/get-started/"
+    # `op account list`, not `op whoami`: with the desktop-app integration whoami
+    # reports "not signed in" in the non-interactive shell Task uses here.
+    - sh: op account list 2>/dev/null
+      msg: "1Password CLI not authenticated. Run: eval $(op signin)"
+
+tasks:
+  provision-vms:
+    desc: Provision k3s VMs on Proxmox (creates VMs only)
+    dir: "{{.ANSIBLE_DIR}}"
+    env:
+      SSH_PUBLIC_KEY: op://Homelab/SSH Key/public key
+    preconditions: *op_preconditions
+    cmds:
+      - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/k3s-provision-vms.yml {{.CLI_ARGS}}
+
+  deploy:
+    desc: Deploy k3s cluster (full deployment)
+    dir: "{{.ANSIBLE_DIR}}"
+    env:
+      ROOT_EMAIL_ALIAS: op://Homelab/Email Config/root_alias
+      SMTP_RELAY_USER: op://Homelab/SMTP Relay Auth/username
+      SMTP_RELAY_PASSWORD: op://Homelab/SMTP Relay Auth/password
+      SSH_PUBLIC_KEY: op://Homelab/SSH Key/public key
+      K3S_TOKEN: op://Homelab/K3s Cluster Token/credential
+      # Lower-privilege worker-join token (ANS-D-2). Agents join with this
+      # worker-only token instead of the cluster token; servers advertise it via
+      # agent-token in the server config. See docs/19 "Agent token".
+      K3S_AGENT_TOKEN: op://Homelab/K3s Agent Token/credential
+      # k3s.yml runs alloy_host on the k3s nodes, which asserts the Loki push
+      # creds are present (https endpoint). Inject them like infra:deploy does.
+      LOKI_PUSH_USER: op://Homelab/Loki Push Auth/username
+      LOKI_PUSH_PASSWORD: op://Homelab/Loki Push Auth/password
+    preconditions: *op_preconditions
+    cmds:
+      - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/k3s.yml {{.CLI_ARGS}}
+
+  kubeconfig:
+    desc: Fetch kubeconfig from k3s cluster
+    cmds:
+      - |
+        echo "Fetching kubeconfig from k3s server..."
+        # The kube-vip API VIP is read from cluster-config, not spelled here:
+        # it is the same value as k3s_api_vip in group_vars/k3s.yml and
+        # check-cluster-literals.py holds the two equal.
+        API_VIP=$(scripts/cluster-config-value.sh cluster_api_vip) || exit 1
+        # $K3S_SERVERS, not the template var: an empty roster names the stale
+        # scripts/hosts.env instead of reporting every server unreachable.
+        if [ -z "$K3S_SERVERS" ]; then
+          echo "ERROR: K3S_SERVERS is empty - fill in the inventory and run: task hosts:sync"
+          exit 1
+        fi
+        # Targets are eric@<ip>, so $SERVER already carries the login user.
+        TARGETS=""
+        for ip in $K3S_SERVERS; do TARGETS="$TARGETS eric@$ip"; done
+        # shellcheck disable=SC2086
+        SERVER=$(scripts/find-reachable-host.sh $TARGETS) || {
+          echo "ERROR: Cannot reach any k3s server ($K3S_SERVERS)"
+          exit 1
+        }
+        SSH_STDERR=$(mktemp)
+        trap 'rm -f "$SSH_STDERR"' EXIT
+        # `if !` so go-task's errexit cannot pre-empt the handler that prints
+        # the captured ssh diagnostics.
+        if ! KUBECONFIG_DATA=$(ssh "$SERVER" "sudo cat /etc/rancher/k3s/k3s.yaml" 2>"$SSH_STDERR"); then
+          echo "ERROR: Failed to fetch kubeconfig from k3s server $SERVER"
+          cat "$SSH_STDERR"
+          exit 1
+        fi
+        if [ -z "$KUBECONFIG_DATA" ]; then
+          echo "ERROR: Kubeconfig data is empty"
+          exit 1
+        fi
+        # umask before the redirect: it carries the cluster-admin key, and the
+        # chmod below would only narrow it after the file already exists 0644.
+        umask 077
+        mkdir -p ~/.kube
+        echo "$KUBECONFIG_DATA" | \
+          sed "s/127.0.0.1/$API_VIP/g; s/0.0.0.0/$API_VIP/g" > ~/.kube/config-k3s
+        chmod 600 ~/.kube/config-k3s
+        echo "Kubeconfig saved to ~/.kube/config-k3s (permissions: 600)"
+        echo "Run: export KUBECONFIG=~/.kube/config-k3s"
+
+  backup:
+    desc: Create etcd snapshot on k3s server
+    cmds:
+      - |
+        set -eo pipefail
+        SNAPSHOT_NAME="manual-$(date +%Y%m%d-%H%M%S)"
+        # $K3S_SERVERS, not the template var: an empty roster names the stale
+        # scripts/hosts.env instead of reporting every server unreachable.
+        if [ -z "$K3S_SERVERS" ]; then
+          echo "ERROR: K3S_SERVERS is empty - fill in the inventory and run: task hosts:sync"
+          exit 1
+        fi
+        # Targets are eric@<ip>, so $SERVER already carries the login user.
+        TARGETS=""
+        for ip in $K3S_SERVERS; do TARGETS="$TARGETS eric@$ip"; done
+        # shellcheck disable=SC2086
+        SERVER=$(scripts/find-reachable-host.sh $TARGETS) || {
+          echo "ERROR: Cannot reach any k3s server ($K3S_SERVERS)"
+          exit 1
+        }
+        echo "Creating etcd snapshot: $SNAPSHOT_NAME (via $SERVER)"
+        ssh "$SERVER" "sudo k3s etcd-snapshot save --name $SNAPSHOT_NAME"
+        echo "Snapshot created successfully"
+        echo ""
+        echo "To list snapshots:"
+        echo "  ssh $SERVER 'sudo k3s etcd-snapshot ls'"
+        echo ""
+        echo "Snapshots are stored in: /var/lib/rancher/k3s/server/db/snapshots/"
+
+  status:
+    desc: Show k3s cluster and workload status
+    preconditions:
+      - sh: command -v kubectl
+        msg: "kubectl is not installed. Install via: https://kubernetes.io/docs/tasks/tools/"
+      - sh: kubectl cluster-info 2>/dev/null
+        msg: "Cannot connect to k3s cluster. Run: export KUBECONFIG=~/.kube/config-k3s"
+    cmds:
+      - echo "=== K3s Cluster Status ==="
+      - kubectl get nodes -o wide
+      - echo ""
+      - echo "=== Platform Services ==="
+      - echo "MetalLB -"
+      - kubectl get pods -n metallb-system 2>/dev/null || echo "  Not installed"
+      - kubectl get ipaddresspool -n metallb-system 2>/dev/null || true
+      - echo ""
+      - echo "Traefik -"
+      - kubectl get pods -n traefik 2>/dev/null || echo "  Not installed"
+      - kubectl get svc -n traefik 2>/dev/null || true
+      - echo ""
+      - echo "cert-manager -"
+      - kubectl get pods -n cert-manager 2>/dev/null || echo "  Not installed"
+      - kubectl get certificate -A 2>/dev/null || true
+      - echo ""
+      - echo "external-dns -"
+      - kubectl get pods -n external-dns 2>/dev/null || echo "  Not installed"
+      - echo ""
+      - echo "DDNS CronJob -"
+      - kubectl get cronjob cloudflare-ddns -n cloudflare-ddns 2>/dev/null || echo "  Not installed"
+      - echo ""
+      - echo "Authentik SSO -"
+      - kubectl get pods -n authentik 2>/dev/null || echo "  Not installed"
+      - kubectl get svc -n authentik 2>/dev/null || true
+      - echo ""
+      - echo "IngressRoutes -"
+      - kubectl get ingressroute -A 2>/dev/null || echo "  None configured"

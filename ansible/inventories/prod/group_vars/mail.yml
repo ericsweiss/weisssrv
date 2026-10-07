@@ -5,10 +5,9 @@
 # Nesting required for systemd 257+ (Debian 13) to function correctly
 proxmox_lxc_nesting: true
 
-# Write the SAME key base deploys (from=-restricted), not the plain
-# SSH_PUBLIC_KEY the role defaults to: this LXC is base_managed AND
-# proxmox_lxc-managed, so mismatched content makes every deploy report changed.
-# The ternary short-circuits so a job without SSH_PUBLIC_KEY skips (not errors).
+# The SAME from=-restricted key base deploys, not the plain SSH_PUBLIC_KEY the
+# role defaults to, so the two managers agree; the ternary short-circuits when
+# SSH_PUBLIC_KEY is unset (skip, not error). Same block in dns.yml.
 proxmox_lxc_ssh_public_keys: >-
   {{ ssh_authorized_keys | join("\n")
      if lookup('ansible.builtin.env', 'SSH_PUBLIC_KEY', default='') else '' }}
@@ -20,18 +19,10 @@ proxmox_lxc_ssh_public_keys: >-
 # internal_domain in the role.
 smtp_relay_upstream: "[smtp.gmail.com]:587"
 
-# Deltas over smtp_relay_default_config only — everything else (TLS levels and
-# protocol lists, both SASL halves, cert paths, mydestination, inet_*) is the
-# role default and is deliberately NOT restated, so a hardening default added
-# upstream actually reaches this relay.
-#
-# mynetworks and smtpd_relay_restrictions are among those NOT restated: the role
-# default is loopback-only + SASL-only, which is what this relay actually serves.
-# Every sender — the host null clients and every in-cluster one (Alertmanager,
-# Mealie, Bar Assistant, Authentik) — authenticates on 587; three days of logs
-# showed 9,770 connects on 587 and zero on :25, including from localhost. Adding
-# permit_mynetworks back with the LAN in mynetworks would restore unauthenticated
-# relay from the whole flat /24.
+# CRITICAL: deltas over smtp_relay_default_config only, so upstream hardening
+# defaults reach this relay. mynetworks and smtpd_relay_restrictions stay at the
+# role default of loopback-only plus SASL-only. Adding the LAN to mynetworks
+# opens unauthenticated relay from the whole /24.
 smtp_relay_config:
   # /etc/mailname rather than the bare domain: the Debian package keeps the FQDN
   # there and postfix reads it at start, so the two cannot drift.

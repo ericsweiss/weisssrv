@@ -1,21 +1,25 @@
 ---
-# Static NFS PersistentVolume template (placeholder name/label/capacity/path are
-# replaced by each per-app overlay). The shared boilerplate — force annotation,
-# Retain, storageClassName "", server: pve-nas-01.esweiss.com, and the
-# nfsvers=4.2/hard/noatime/xprtsec=tls mountOptions — lives here exactly once.
+# Static NFS PersistentVolume template; each per-app overlay replaces the
+# name/label/capacity/path/claimRef. The shared boilerplate (force annotation,
+# Retain, storageClassName "", server, TLS mountOptions) lives here once.
 apiVersion: v1
 kind: PersistentVolume
 metadata:
   name: nfs-pv
   annotations:
-    # Lets Flux delete+recreate this PV when an immutable field (server,
-    # mountOptions) changes, instead of stalling the Kustomization. Retain
-    # reclaim policy keeps the NFS data — data safe.
+    # Lets Flux delete+recreate this PV if spec.nfs (server or path) changes —
+    # the only immutable field here; Retain keeps the data. The PVC must be gone
+    # first: a Bound PV blocks on the pv-protection finalizer.
     kustomize.toolkit.fluxcd.io/force: "Enabled"
   labels:
     type: nfs
     app: nfs-pv
 spec:
+  # Pre-reserve the PV for its overlay's PVC (patched per app), so nothing else
+  # can claim a storageClassName "" volume that happens to match.
+  claimRef:
+    namespace: downloads
+    name: nfs-pvc
   capacity:
     storage: 1Gi
   accessModes:

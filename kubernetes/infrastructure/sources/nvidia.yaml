@@ -1,7 +1,5 @@
 ---
-# NVIDIA k8s-device-plugin Helm chart repo. Source for the
-# nvidia-device-plugin HelmRelease (controllers/nvidia-device-plugin), which
-# advertises nvidia.com/gpu on the labelled GPU node (pve-prec-01's agent).
+# Chart source for the nvidia-device-plugin HelmRelease (docs/43-gpu-passthrough.md).
 apiVersion: source.toolkit.fluxcd.io/v1
 kind: HelmRepository
 metadata:

@@ -43,7 +43,7 @@ The `acme_certs` Ansible role sets up the certificate infrastructure:
 ```bash
 task dns:deploy
 # Or directly:
-ansible-playbook ansible/playbooks/dns.yml
+ansible-playbook -i ansible/inventories/prod ansible/playbooks/dns.yml
 ```
 
 This role:
@@ -64,15 +64,20 @@ Ansible does NOT issue certificates from Let's Encrypt automatically (to avoid a
 You must manually issue the certificate once:
 
 ```bash
-# On dns-01 as root
-export CF_Token=$(op read "op://Homelab/Cloudflare DNS Token/credential")
-export CF_Account_ID=$(op read "op://Homelab/Cloudflare DNS Token/username")
+# From the workstation, where the 1Password CLI is signed in - dns-01 has no `op`
+CF_Token=$(op read "op://Homelab/Cloudflare DNS Token/credential")
+CF_Account_ID=$(op read "op://Homelab/Cloudflare DNS Token/username")
 
-/root/.acme.sh/acme.sh --issue --dns dns_cf \
+ssh eric@10.0.10.150 "sudo CF_Token='$CF_Token' CF_Account_ID='$CF_Account_ID' \
+  /root/.acme.sh/acme.sh --issue --dns dns_cf \
   -d esweiss.com \
   -d '*.esweiss.com' \
-  --keylength ec-256
+  --keylength ec-256"
 ```
+
+The credentials are only needed for the first issuance or after the Cloudflare
+token rotates. acme.sh stores them as `SAVED_CF_Token` / `SAVED_CF_Account_ID` in
+`/root/.acme.sh/account.conf` and reuses them on renewal.
 
 **Step 2: Install and Distribute (Automatic via Ansible)**
 
@@ -169,6 +174,17 @@ from="10.0.10.150",command="sudo /usr/local/sbin/cert-receive",restrict ssh-ed25
 - `/usr/local/sbin/homelab-cert-reload.sh` on `dns-01`
 - `/usr/local/sbin/cert-receive` + `/etc/sudoers.d/cert-receive` on each sudo target
 
+### Capturing host keys for cert distribution
+
+`task certs:show-host-keys` prints the current SSH host key of every entry in
+`acme_certs_distribution_targets`. Paste each `host_key` value into the matching
+entry in `ansible/inventories/prod/host_vars/dns-01.yml`, then re-run
+`task dns:deploy` (or any play running the `acme_certs` role).
+
+SSH from dns-01 to those hosts is strict (`StrictHostKeyChecking=yes`), so a
+host rebuild that changes the fingerprint fails the cert push loudly until the
+key is captured again.
+
 ### HAOS operator runbook (legacy path + optional hardening)
 
 HAOS (`home`, `ssh_no_sudo: true`, SSH add-on on :22222 as root) keeps the
@@ -206,13 +222,21 @@ Certificates have specific ownership/permissions for security:
 
 ### AdGuard Home (dns-01, dns-02)
 
-DoT (DNS-over-TLS) on port 853 and AdGuard's own HTTPS/DoH listener on port 443. The human-facing HTTPS admin UI and DoH are AdGuard's own :443, which the Traefik IngressRoute (scheme https) at `dns-01.esweiss.com`/`dns-02.esweiss.com` proxies. `force_https` stays false (see below) because the role reconciles AdGuard over the plaintext localhost :3000 API (incl. split-horizon rewrites); a global redirect would 301 those to :443 and fail TLS verification, breaking reconciliation. The :3000 listener is firewall-restricted to admin LAN/Tailscale.
+AdGuard serves DoT on :853 and its own HTTPS/DoH listener on :443. The Traefik
+IngressRoute at `dns-01.esweiss.com` / `dns-02.esweiss.com` proxies that :443
+with `scheme: https`.
+
+`force_https` stays false: the role reconciles AdGuard over its plaintext admin
+API on :3000, and a global redirect would 301 those calls to :443 and fail TLS
+verification. The web listener keeps the default wildcard bind, so the role
+dials that API on loopback. The :3000 listener is firewall-restricted to the
+admin LAN and Tailscale.
 
 ```yaml
 tls:
   enabled: true
   server_name: dns.esweiss.com
-  force_https: false  # role reconciles via the plaintext localhost :3000 API; a global redirect would 301 those calls to :443 and break reconciliation
+  force_https: false  # the role reconciles over the plaintext :3000 admin API; see above
   port_https: 443
   port_dns_over_tls: 853
   certificate_path: /opt/AdGuardHome/certs/fullchain.pem
@@ -407,7 +431,7 @@ The acme.sh pipeline remains active for non-k3s services (AdGuard Home, SMTP rel
 
 ```bash
 # Full pipeline (site.yml tags the role as acme_certs; dns.yml defines no tags)
-ansible-playbook ansible/playbooks/site.yml --tags acme_certs
+ansible-playbook -i ansible/inventories/prod ansible/playbooks/site.yml --tags acme_certs
 
 # Manual distribution: run the reload script on dns-01
 # sudo /usr/local/sbin/homelab-cert-reload.sh

@@ -14,6 +14,10 @@ released as a library tag and adopted here by bumping `requirements.yml`. What
 this repo proves is the composition: that the roles this site actually runs
 together still converge together, against the pinned collection.
 
+The four files under `ansible/molecule/` are vendored from weisssrv-lib's
+`molecule-shared/`. Fix one upstream and re-vendor it here; a local edit is
+lost on the next re-vendor.
+
 ## Prerequisites
 
 ```bash
@@ -52,6 +56,12 @@ destroy` cleans up.
 
 ## The stacks
 
+A scenario cannot override anything `inventories/prod/group_vars/all.yml`
+defines. The converge play loads all.yml through `vars_files`, which outranks
+both inventory group_vars and the play's own `vars:`. Steer such a key through
+the scenario's `provisioner.env` instead, where all.yml reads it from the
+environment. A key all.yml does not define can live in either place.
+
 ### DNS stack — `integration-tests/dns-stack/`
 
 `unbound` + `adguard_home` + `adguard_sync` across two servers (dns-01 primary,
@@ -84,8 +94,9 @@ the credentials are mock. Real mail flow is verified in production.
 
 `base` + `qol` + `tailscale` on two hosts. Asserted: packages, admin user and
 sudoers, timezone, the zsh/neovim configuration, and that the Tailscale package
-and unit land. `tailscale up` self-skips because the scenario sets no
-`TAILSCALE_AUTH_KEY`, which is what makes it runnable in a container.
+lands and the unit is installed and enabled. `tailscale up` self-skips because
+the scenario sets no `TAILSCALE_AUTH_KEY`, which is what makes it runnable in a
+container. The daemon's runtime state is deliberately not asserted.
 
 ### Storage stack — `integration-tests/storage-stack/`
 
@@ -105,6 +116,19 @@ issuance is mocked (a real CA + wildcard leaf are generated locally), so what is
 exercised is everything after issuance: key generation, the pinned-host-key push
 path, the forced-command receiver, the sudoers entry, and the per-target reload.
 
+### Not covered by any stack
+
+Two lifecycles have no composition coverage here. The k3s lifecycle
+(`proxmox_vm` -> k3s server/agent -> `kube_vip`) and the Ansible-provisioned
+guests (gitlab, nextcloud, immich, immich_ml, plex, home_assistant, windows)
+appear in no stack. Their per-role scenarios in weisssrv-lib are render and
+contract scenarios by design — they set `k3s_skip_install`, `gitlab_skip_install`,
+`nextcloud_skip_install`, `immich_skip_install`, `immich_ml_skip_install`,
+`docker_engine_skip_install` and `compose_app_skip_install` — so the install and
+composition halves are proven only against production, by
+`playbooks/postflight.yml` (`task infra:verify`) and the per-guest `:verify`
+tasks.
+
 ## Idempotence
 
 Four of the five stacks run `idempotence` in their `test_sequence`: converge
@@ -117,27 +141,6 @@ so the key deployment is genuinely changed on every converge.
 A stack that starts failing idempotence usually points at a task in the
 *collection* with a missing `changed_when`, an unconditional file write, or a
 shell command with no `creates:` guard — fix it in weisssrv-lib.
-
-## Expected negative-path failures and the junit report
-
-If a scenario drives a guard task to failure inside `block`/`rescue` to prove
-the guard fires, the Ansible junit callback records the RAW task failure even
-though the rescue handles it, which would leave red entries in a green
-pipeline's report. No stack declares one today — the declaration file below is
-absent and the sanitize step is a no-op — so this is the contract to follow when
-adding the first. Two mechanisms keep the report truthful:
-
-1. **Declared downgrades** — a scenario lists its expected failing task names in
-   `molecule/default/expected-junit-failures.txt`, and CI's last script step
-   (`scripts/sanitize-junit-expected-failures.py`, which runs only when molecule
-   SUCCEEDED) replaces exactly those entries with a system-out note. Undeclared
-   failures stay red, and a failed job keeps its raw report. Add the task name to
-   the declaration file when you add a negative-path exercise.
-2. **Retry hygiene** — `scripts/molecule-retry.sh` clears the junit directory
-   between attempts, so a transient first attempt no longer uploads red
-   testcases alongside the passing retry.
-
-Job status remains the arbiter; the report agrees with it.
 
 ## Container caveats
 
@@ -154,6 +157,32 @@ with a comment saying why.
 Note the architecture: the containers are amd64. On an arm64 workstation Docker
 must have binfmt/qemu emulation available, and some scenarios are slow enough
 that CI is the practical arbiter.
+
+## Expected negative-path failures
+
+No stack declares one today. If you add a scenario that drives a guard task to
+failure inside `block`/`rescue`, the junit callback records the raw failure even
+though the rescue handles it — list the task name in
+`molecule/default/expected-junit-failures.txt` and
+`scripts/sanitize-junit-expected-failures.py` (CI's last step, and only on a
+molecule success) downgrades exactly those entries. Undeclared failures stay
+red, and `scripts/molecule-retry.sh` clears the junit directory between attempts
+so a transient first try never uploads alongside a passing retry.
+
+A negative case must also prove that the guard is what failed. A `rescue:` that
+only logs catches every failure in the block, the sentinel task included, so
+write it the way the collection's role scenarios do: end the block with
+`set_fact: <case>_failed: false`, set it true in the `rescue` under
+`when: ansible_failed_task.name == '<the guard task name>'`, and assert the fact
+from a task outside the block with `| default(false)`.
+
+Each line of the file is a case-sensitive substring matched against the junit
+testcase name, and declares one testcase. A line ending in ` ::<n>` declares
+that it may match n of them. Blank lines and `#` comments are ignored.
+
+Keep every pattern narrow. Under `--strict` the gate fails when a declaration
+matches more testcases than it declares, so a broad pattern cannot green-wash a
+real failure elsewhere in the scenario.
 
 ## Pre-deployment checklist
 

@@ -45,6 +45,15 @@ brew install --cask 1password-cli   # Secrets management
 # Install helpful tools
 brew install jq yq                  # JSON/YAML processors
 brew install knot                   # provides kdig for DoT verification
+
+# Install the rest of the toolchain `task lint` and the k3s tasks need. Each one
+# is a hard precondition: a missing binary aborts the task instead of skipping.
+brew install shellcheck tflint kustomize kubeconform helm
+brew install gettext                # provides envsubst
+brew install coreutils              # provides gtimeout (collect-state, diagnose:network)
+brew install kubernetes-cli         # provides kubectl
+brew install fluxcd/tap/flux        # or: task flux:install-cli
+brew install prometheus alertmanager # provide promtool and amtool
 ```
 
 **Linux (Debian/Ubuntu)**:
@@ -68,6 +77,13 @@ sudo apt install terraform
 
 # Install tools
 sudo apt install -y jq knot-dnsutils
+
+# Lint toolchain
+sudo apt install -y shellcheck gettext-base
+
+# tflint, kustomize, kubeconform, helm, kubectl, flux and the promtool/amtool
+# pair have no Debian packages that track the versions CI uses — install each
+# from its upstream release.
 ```
 
 ### 2. Verify Installations
@@ -133,9 +149,24 @@ yamllint --version
 ```
 
 These tools validate:
-- Ansible playbooks and roles (production profile)
+- Ansible playbooks and inventory (production profile)
 - YAML syntax and formatting
 - Security best practices
+
+`task lint` also needs a `weisssrv-lib` checkout beside this one. The
+vendored-copy gate compares this repo's vendored scripts against the library
+and never skips, so without a checkout it fails:
+
+```bash
+git clone https://git.ericsweiss.com/eric/weisssrv-lib.git ../weisssrv-lib
+
+# Or point the gate at an existing checkout
+export WEISSSRV_LIB_PATH=/path/to/weisssrv-lib
+```
+
+`$WEISSSRV_COLLECTION_PATH` is a different switch. It only makes
+`task ansible:lint` use a local untagged collection, and it does not satisfy
+this gate.
 
 ### 6. Configure SSH
 
@@ -179,7 +210,7 @@ eval $(op signin)
 
 ### 3. Create Required Items in "Homelab" Vault
 
-**[docs/15-credential-rotation.md](./15-credential-rotation.md) §
+**[docs/15-credential-rotation.md](15-credential-rotation.md) §
 "Required 1Password Items" is the canonical inventory** — item titles, types and
 field names all live there, and a field change must land in that one place.
 Create the following items before starting the phases in this guide (the rest of
@@ -243,46 +274,12 @@ ssh eric@10.0.10.151  # smtp-relay
 
 If SSH fails, see [Bootstrapping New Systems](18-bootstrap-new-systems.md) for setup instructions.
 
-### Creating `eric` User on New LXCs
+### Creating the `eric` User on a New Guest
 
-```bash
-# On each LXC:
-sudo pct enter 150
-
-# Create user
-useradd -m -s /bin/bash eric
-mkdir -p /home/eric/.ssh
-cp /root/.ssh/authorized_keys /home/eric/.ssh/
-chown -R eric:eric /home/eric/.ssh
-chmod 700 /home/eric/.ssh
-chmod 600 /home/eric/.ssh/authorized_keys
-
-# Add sudo access
-echo "eric ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/eric
-chmod 440 /etc/sudoers.d/eric
-
-exit
-```
-
-### Configure NOPASSWD Sudo (Bootstrap Only)
-
-For existing Proxmox hosts, configure passwordless sudo manually (one-time setup):
-
-```bash
-# pve-nas-01
-ssh eric@10.0.10.102
-echo 'eric ALL=(ALL) NOPASSWD: ALL' | sudo tee /etc/sudoers.d/eric
-sudo chmod 440 /etc/sudoers.d/eric
-exit
-
-# pve-opt-03
-ssh eric@10.0.10.106
-echo 'eric ALL=(ALL) NOPASSWD: ALL' | sudo tee /etc/sudoers.d/eric
-sudo chmod 440 /etc/sudoers.d/eric
-exit
-```
-
-**Note**: This is only needed for existing hosts. New VMs provisioned via Ansible will have this configured automatically by the `weisssrv.infra.base` role.
+[docs/18 — Bootstrapping new systems](18-bootstrap-new-systems.md) owns this
+procedure: § Proxmox hosts for a host, § LXC Container Bootstrap for a
+container. New VMs provisioned by Ansible get the user from the
+`weisssrv.infra.base` role and need no manual step.
 
 ### Verify Firewall Allows Ansible SSH
 
@@ -326,10 +323,10 @@ task ansible:ping
 
 ```bash
 # Collect system information
-ansible all -m setup --tree /tmp/facts
+ansible -i ansible/inventories/prod all -m setup --tree /tmp/facts
 
 # Check a specific host
-ansible pve-nas-01 -m setup | grep ansible_distribution
+ansible -i ansible/inventories/prod pve-nas-01 -m setup | grep ansible_distribution
 ```
 
 This verifies Ansible can execute commands on all hosts.
@@ -341,7 +338,7 @@ This verifies Ansible can execute commands on all hosts.
 task infra:check
 
 # OR manually:
-ansible-playbook ansible/playbooks/site.yml --check
+ansible-playbook -i ansible/inventories/prod ansible/playbooks/site.yml --check
 
 # Watch for errors or failures
 # This shows what WOULD change without actually changing anything
@@ -361,7 +358,7 @@ Start with the least risky deployment:
 task infra:base
 
 # OR manually:
-ansible-playbook ansible/playbooks/base.yml
+ansible-playbook -i ansible/inventories/prod ansible/playbooks/base.yml
 
 # This should be mostly idempotent (no changes if already configured)
 ```
@@ -372,7 +369,7 @@ ansible-playbook ansible/playbooks/base.yml
 ssh eric@10.0.10.102
 
 # Check installed packages
-ansible all -m shell -a "which nvim htop"
+ansible -i ansible/inventories/prod all -m shell -a "which nvim htop"
 ```
 
 ### Phase 5: Deploy Storage Services (NAS Only)
@@ -391,11 +388,12 @@ smbclient -L //10.0.10.102 -N
 ### Phase 6: Deploy DNS Stack
 
 ```bash
-# Dry-run DNS deployment
-ansible-playbook ansible/playbooks/dns.yml --check
+# Dry-run DNS deployment (the op run prefix is required: the play reads the
+# AdGuard and cert-distribution credentials from 1Password)
+op run -- ansible-playbook -i ansible/inventories/prod ansible/playbooks/dns.yml --check
 
 # Deploy
-ansible-playbook ansible/playbooks/dns.yml
+op run -- ansible-playbook -i ansible/inventories/prod ansible/playbooks/dns.yml
 
 # Verify DNS works
 dig @10.0.10.150 esweiss.com
@@ -412,21 +410,35 @@ task infra:deploy
 # This runs all playbooks against all hosts
 ```
 
-### Phase 8: Initialize Terraform
+### Phase 8: Terraform - the four state roots
+
+Each root has its own `task terraform:<root>-{init,plan,apply}`, its own GitLab
+state name and its own credentials. `task terraform:init|plan|apply` are
+unprefixed aliases for the **Cloudflare** root.
+
+| Root | Manages | Apply |
+|---|---|---|
+| `terraform/cloudflare` | Public DNS records | Routine - `deploy-terraform` on `main` |
+| `terraform/tailscale` | Tailnet ACL, SSH rules, split DNS | Supervised - a bad policy severs tailnet access ([docs/05](05-tailscale.md)) |
+| `terraform/authentik` | SSO applications, providers, groups | Supervised ([docs/40](40-authentik-terraform.md)) |
+| `terraform/unifi` | VLANs, zone firewall, WLANs | Supervised - a bad apply can cut the LAN ([docs/46](46-unifi-network.md)) |
+
+On a fresh build, apply Cloudflare here. The three supervised roots follow their
+own runbooks once the cluster is up.
 
 ```bash
-# Initialize Terraform (handles state backend auth via 1Password)
-task terraform:init
-
-# Plan changes
-task terraform:plan
-
-# Review the plan
-# If it looks correct, apply
-task terraform:apply
+# Cloudflare (state backend auth injected via op run)
+task terraform:cloudflare-init
+task terraform:cloudflare-plan
+task terraform:cloudflare-apply
 ```
 
-> **Note**: The `task terraform:*` commands are preferred because they inject Cloudflare API credentials and GitLab HTTP state backend auth via `op run`. For manual `terraform` commands, you must export `TF_VAR_cloudflare_api_token`, `TF_VAR_cloudflare_account_id`, and the `TF_HTTP_*` environment variables yourself.
+> **Note**: prefer the `task terraform:*` commands - they inject each root's
+> credentials and the GitLab HTTP state-backend auth via `op run`. A manual
+> `terraform` invocation against `terraform/cloudflare` needs
+> `TF_VAR_cloudflare_api_token`, `TF_VAR_cloudflare_account_id` and the
+> `TF_HTTP_*` variables exported by hand; the other roots need their own
+> provider credentials instead.
 
 ### Phase 9: Deploy the k3s Platform
 
@@ -557,7 +569,7 @@ cat CLUSTER_STATUS.txt
 
 4. **Test with verbose**:
    ```bash
-   ansible pve-nas-01 -m ping -vvv
+   ansible -i ansible/inventories/prod pve-nas-01 -m ping -vvv
    ```
 
 ### 1Password CLI Not Working
@@ -590,13 +602,17 @@ cat CLUSTER_STATUS.txt
    op read "op://Homelab/Cloudflare Terraform Token/credential"
    ```
 
-2. **Export manually** (if not using `task terraform:plan`):
+2. **Export manually** (if not using `task terraform:cloudflare-plan`):
    ```bash
-   export CLOUDFLARE_API_TOKEN=$(op read "op://Homelab/Cloudflare Terraform Token/credential")
-   export CLOUDFLARE_ACCOUNT_ID=$(op read "op://Homelab/Cloudflare Terraform Token/username")
-   cd terraform/cloudflare
-   terraform plan
+   # Assign, then export: `export VAR=$(...)` returns export's status, so a
+   # failed vault read would leave the variable empty and pass silently.
+   TF_VAR_cloudflare_api_token=$(op read "op://Homelab/Cloudflare Terraform Token/credential")
+   TF_VAR_cloudflare_account_id=$(op read "op://Homelab/Cloudflare Terraform Token/username")
+   export TF_VAR_cloudflare_api_token TF_VAR_cloudflare_account_id
    ```
+   The GitLab HTTP state backend also needs the `TF_HTTP_*` variables, so
+   `task terraform:cloudflare-plan` is the shorter path: it injects all of them via
+   `op run` (see the note in Phase 8).
 
 3. **Verify Cloudflare token permissions** (Terraform token):
    - Zone: DNS: Edit
@@ -617,12 +633,12 @@ cat CLUSTER_STATUS.txt
 
 2. **Force handlers**:
    ```bash
-   ansible-playbook ansible/playbooks/site.yml --force-handlers
+   ansible-playbook -i ansible/inventories/prod ansible/playbooks/site.yml --force-handlers
    ```
 
 3. **Check specific task**:
    ```bash
-   ansible-playbook ansible/playbooks/site.yml --start-at-task="Task name"
+   ansible-playbook -i ansible/inventories/prod ansible/playbooks/site.yml --start-at-task="Task name"
    ```
 
 ### Service Not Starting
@@ -637,7 +653,7 @@ cat CLUSTER_STATUS.txt
 
 2. **Check service status**:
    ```bash
-   ansible host -m systemd -a "name=service-name state=started"
+   ansible -i ansible/inventories/prod host -m systemd -a "name=service-name state=started"
    ```
 
 3. **Manually restart**:
@@ -683,12 +699,12 @@ task dns:deploy            # DNS stack only
 task storage:deploy        # NAS services only
 
 # Terraform
-task terraform:plan        # Show changes
-task terraform:apply       # Apply changes
+task terraform:cloudflare-plan   # Show Cloudflare DNS changes
+task terraform:cloudflare-apply  # Apply Cloudflare DNS changes
 
 # Troubleshooting
-ansible all -m ping -vvv   # Verbose ping test
-ansible host -m shell -a "command"  # Run command on host
+ansible -i ansible/inventories/prod all -m ping -vvv   # Verbose ping test
+ansible -i ansible/inventories/prod host -m shell -a "command"  # Run command on host
 ssh eric@host              # Manual SSH
 ```
 

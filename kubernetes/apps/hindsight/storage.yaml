@@ -1,17 +1,7 @@
 ---
-# NFS-backed persistent state for Hindsight: `pg0/` (the embedded PostgreSQL
-# data dir, i.e. the memory store) and `models/` (the GGUF the llama sidecar
-# downloads once). Lives on the encrypted ssd/appdata dataset, so the nightly
-# ssd/appdata -> archive replication captures it; the subdir is created by the
-# nas_storage role.
-#
-# PostgreSQL-on-NFS is a deliberate deviation from the zvol convention: a
-# single-client hard NFSv4.2 mount (RWO + claimRef + Recreate) is a supported
-# configuration, the dataset is tiny, and NFS buys automatic backup. README.md
-# records the zvol fallback if latency or locking ever bites.
-#
-# NFS-over-TLS PV; hostname (not IP) + force annotation rationale:
-# apps/download-clients/_nfs-pv/resources.yaml and docs/07.
+# NFS-backed state for Hindsight: `pg0/` (embedded PostgreSQL) and `models/`, on
+# encrypted ssd/appdata so nightly replication captures it. README.md covers the
+# PostgreSQL-on-NFS mount and the zvol fallback; TLS PV details in docs/07.
 apiVersion: v1
 kind: PersistentVolume
 metadata:
@@ -56,3 +46,54 @@ spec:
     requests:
       storage: 20Gi
   volumeName: hindsight-data
+
+---
+# Offsite-eligible landing zone for the pg-dump sidecar: /backups-apps/hindsight
+# = tank/backups/apps/hindsight, so the dumps ride archive replication and
+# restic B2 (docs/42). Restore: docs/12.
+
+# Trap: `task storage:deploy` creates this export on pve-nas-01. It must run
+# before this manifest reconciles, or the Recreate Deployment that mounts the
+# claim stalls in ContainerCreating with the serving pod already gone (README).
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: hindsight-pg-dump
+  annotations:
+    kustomize.toolkit.fluxcd.io/force: "Enabled"
+  labels:
+    type: nfs
+    app: hindsight
+spec:
+  claimRef:
+    namespace: hindsight
+    name: hindsight-pg-dump
+  capacity:
+    storage: 5Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  nfs:
+    server: pve-nas-01.${cluster_internal_domain}
+    path: /backups-apps/hindsight
+  mountOptions:
+    - nfsvers=4.2
+    - hard
+    - noatime
+    - xprtsec=tls
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: hindsight-pg-dump
+  namespace: hindsight
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ""
+  resources:
+    requests:
+      storage: 5Gi
+  volumeName: hindsight-pg-dump

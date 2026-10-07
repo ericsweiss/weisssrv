@@ -8,6 +8,18 @@
   gather_facts: true
 
   tasks:
+    # molecule.yml platforms[].groups drive the `group_names` guards below; an
+    # empty group would skip those assertions and still report a pass.
+    - name: Assert the molecule roster resolved
+      ansible.builtin.assert:
+        that:
+          - groups['dns_primary'] | default([]) | length == 1
+          - groups['dns_replica'] | default([]) | length == 1
+        fail_msg: >-
+          molecule.yml no longer produces dns_primary and dns_replica, so the
+          guarded assertions in this scenario skip.
+      run_once: true
+
     # Unbound Verification
     - name: Check Unbound service is running
       ansible.builtin.systemd:
@@ -24,23 +36,12 @@
         fail_msg: "Unbound is not active"
         success_msg: "Unbound is running"
 
-    - name: Wait for Unbound to fully start
-      ansible.builtin.pause:
-        seconds: 5
-
-    - name: Check Unbound is listening on port 5335
+    - name: Wait for Unbound to listen on port 5335
       ansible.builtin.wait_for:
         host: 127.0.0.1
         port: 5335
-        timeout: 15
+        timeout: 30
         msg: "Unbound not listening on port 5335"
-      failed_when: false
-      register: unbound_port_check
-
-    - name: Warn if Unbound port check failed
-      ansible.builtin.debug:
-        msg: "Warning: Unbound not listening on port 5335 (may be expected in containers)"
-      when: unbound_port_check is failed
 
     - name: Test DNS resolution through Unbound
       ansible.builtin.command: dig @127.0.0.1 -p 5335 google.com +short
@@ -52,16 +53,9 @@
       ansible.builtin.debug:
         msg: "Unbound query result: {{ unbound_query.stdout_lines }}"
 
-    # Dead-var guard: prove converge's unbound_forwarders override was actually
-    # consumed by the template. The two positive checks alone can't do this —
-    # converge's values (1.1.1.1#cloudflare-dns.com, 8.8.8.8#dns.google) are also
-    # members of the role's 6-entry default, so if the variable were renamed the
-    # role would fall back to the default and still render both, passing silently.
-    # The negative check closes that: 9.9.9.9#dns.quad9.net is in the default but
-    # NOT in converge's override, so it renders ONLY on a default fallback —
-    # asserting its absence makes the guard fail on the exact ignored/renamed
-    # regression it names, without adding a dead forwarder that could flake the
-    # live-resolution assert below.
+    # Dead-var guard: both codified forwarders are also role defaults, so the
+    # negative check on 9.9.9.9 (a default-only entry) is what proves the
+    # override was consumed rather than silently ignored.
     - name: Read rendered unbound config
       ansible.builtin.command: cat /etc/unbound/unbound.conf.d/managed.conf
       register: unbound_rendered
@@ -93,42 +87,22 @@
         fail_msg: "AdGuard Home is not active"
         success_msg: "AdGuard Home is running"
 
-    - name: Wait for AdGuard Home to fully start
-      ansible.builtin.pause:
-        seconds: 10
-
-    # INTEGRATION TEST LIMITATION - DNS queries via AdGuard:
-    # AdGuard's API config (upstream, rewrites, filtering) DOES run now, but its
-    # own resolution path still isn't representative in-container: the role skips
-    # the resolv.conf switch (skip_resolv_conf_update), so we validate DNS
-    # resolution via Unbound (AdGuard's upstream) instead:
-    # - Unbound DoT recursive resolution works
-    # - The DNS chain is properly configured
-    #
-    # The rewrite reconciliation IS asserted below (dns-01). Full AdGuard
-    # resolution is validated in production via postflight.yml
-
-    - name: Check AdGuard Home web UI is accessible
+    # AdGuard's own resolution path is not representative in-container (the role
+    # skips the resolv.conf switch), so DNS resolution is asserted through
+    # Unbound, its upstream. The API surface is asserted directly below.
+    - name: Wait for the AdGuard Home web UI to answer
       ansible.builtin.uri:
         url: "http://127.0.0.1:{{ adguard_home_http_port | default(3000) }}/control/status"
         method: GET
-        status_code: [200, 401, 403]  # May require auth
+        status_code: [200, 401, 403]
         timeout: 10
       register: adguard_home_ui
-      failed_when: false
+      until: adguard_home_ui.status | default(-1) in [200, 401, 403]
+      retries: 12
+      delay: 5
 
-    - name: Log AdGuard Home UI status
-      ansible.builtin.debug:
-        msg: "AdGuard Home UI returned status {{ adguard_home_ui.status }}"
-
-    # We verify the service is running and web UI is accessible;
-    # DNS resolution is tested via Unbound (which is AdGuard's upstream)
-
-    # AdGuard rewrite reconciliation (dns-01 only)
     # The API pass is gated on adguard_home_is_primary, so the rewrite
-    # add/reconcile path runs there; dns-02 would receive them via sync (not
-    # exercised here). Proves the codified adguard_home_rewrites reached the live
-    # instance through the role's API path.
+    # reconcile runs on dns-01 only; dns-02 receives them via sync, not asserted here.
     - name: Fetch live DNS rewrites from AdGuard (dns-01)
       ansible.builtin.uri:
         url: "http://127.0.0.1:{{ adguard_home_http_port | default(3000) }}/control/rewrite/list"
@@ -153,14 +127,7 @@
         label: "{{ item.domain }}"
       when: "'dns_primary' in group_names"
 
-    # AdGuard Sync Verification (primary only - dns-01)
-    # Note: Sync runs ON dns-01 to push config TO dns-02
-    - name: Check AdGuard Sync service exists
-      ansible.builtin.stat:
-        path: /etc/systemd/system/adguardhome-sync.service
-      register: sync_service_file
-      when: "'dns_primary' in group_names"
-
+    # Sync runs ON dns-01 to push config TO dns-02.
     - name: Check AdGuard Sync timer is enabled
       ansible.builtin.systemd:
         name: adguardhome-sync.timer
@@ -170,17 +137,19 @@
       when: "'dns_primary' in group_names"
       failed_when: false
 
+    # Defaulted, not guarded on `is defined`: an absent unit must fail here
+    # rather than skip the one assertion that would have caught it.
     - name: Assert AdGuard Sync timer is active
       ansible.builtin.assert:
         that:
-          - sync_timer.status.UnitFileState == "enabled"
-          - sync_timer.status.ActiveState == "active"
-        fail_msg: "AdGuard Sync timer is not enabled/active"
+          - sync_timer.status.UnitFileState | default('ABSENT') == "enabled"
+          - sync_timer.status.ActiveState | default('ABSENT') == "active"
+        fail_msg: >-
+          AdGuard Sync timer is not enabled/active:
+          UnitFileState={{ sync_timer.status.UnitFileState | default('ABSENT') }}
+          ActiveState={{ sync_timer.status.ActiveState | default('ABSENT') }}
         success_msg: "AdGuard Sync timer is running"
-      when:
-        - "'dns_primary' in group_names"
-        - sync_timer is defined
-        - sync_timer.status is defined
+      when: "'dns_primary' in group_names"
 
     - name: Check AdGuard Sync configuration file
       ansible.builtin.stat:
@@ -197,11 +166,6 @@
         success_msg: "AdGuard Sync configuration exists"
       when: "'dns_primary' in group_names"
 
-    # Integration Tests
-    - name: Wait for services to stabilize
-      ansible.builtin.pause:
-        seconds: 5
-
     # DNS chain test via Unbound (AdGuard's upstream) - verifies Unbound → upstream DNS
     - name: Verify DNS resolution via Unbound
       ansible.builtin.assert:
@@ -211,48 +175,19 @@
         fail_msg: "Unbound DNS resolution failed"
         success_msg: "Unbound DNS resolution working (Unbound → upstream)"
 
-    # Cross-server connectivity (dns-02 -> dns-01)
-    - name: Wait for primary AdGuard Home to be accessible
-      ansible.builtin.pause:
-        seconds: 5
+    # Cross-server connectivity (dns-02 -> dns-01): both containers share the
+    # scenario docker network, so an unreachable primary is a real failure.
+    - name: Wait for the primary AdGuard Home port
+      ansible.builtin.wait_for:
+        host: dns-01
+        port: 3000
+        timeout: 60
       when: "'dns_replica' in group_names"
 
-    - name: Test connectivity from replica to primary
+    - name: Assert the replica reaches the primary AdGuard Home
       ansible.builtin.uri:
         url: "http://dns-01:3000/control/status"
         method: GET
         timeout: 15
         status_code: [200, 301, 302, 401, 403]
-      register: replica_to_primary
       when: "'dns_replica' in group_names"
-      failed_when: false
-
-    - name: Log primary connectivity result
-      ansible.builtin.debug:
-        msg: "Primary connectivity: {{ replica_to_primary.status | default('FAILED') }} ({{ replica_to_primary.msg | default('unknown error') }})"
-      when: "'dns_replica' in group_names"
-
-    - name: Warn if replica cannot reach primary (non-fatal in containers)
-      ansible.builtin.debug:
-        msg: "Warning: Replica cannot reach primary AdGuard Home (may be expected in container networking)"
-      when:
-        - "'dns_replica' in group_names"
-        - replica_to_primary.status is not defined or replica_to_primary.status not in [200, 301, 302, 401, 403]
-
-    # Final Summary
-    - name: Integration test summary
-      ansible.builtin.debug:
-        msg: |
-          DNS Stack Integration Test Results:
-          ===================================
-          Host: {{ inventory_hostname }}
-          Role: {% if 'dns_primary' in group_names %}Primary (syncs TO replica){% else %}Replica (synced FROM primary){% endif %}
-          Unbound: {{ 'RUNNING' if (unbound_service.status.ActiveState | default('unknown')) == 'active' else 'FAILED' }}
-          AdGuard Home: {{ 'RUNNING' if (adguard_home_service.status.ActiveState | default('unknown')) == 'active' else 'FAILED' }}
-          {% if 'dns_primary' in group_names %}
-          AdGuard Sync: {{ 'CONFIGURED' if (sync_config.stat.exists | default(false)) else 'MISSING' }}
-          {% endif %}
-          {% if 'dns_replica' in group_names %}
-          Primary Connectivity: {{ 'OK' if (replica_to_primary.status | default(0)) in [200, 301, 302, 401, 403] else 'WARNING' }}
-          {% endif %}
-          DNS Resolution (Unbound): {{ 'OK' if (unbound_query.rc | default(1)) == 0 else 'FAILED' }}

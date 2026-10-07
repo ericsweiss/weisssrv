@@ -1,21 +1,13 @@
-# Application access-policy group bindings — the enforcement structure for
-# per-app access. Every application carries AT LEAST one group binding (order 0);
-# with policy_engine_mode "any", membership of a bound group is required to pass
-# authorization. Homarr is the one two-tier case (two bindings, below). All
-# bindings are Terraform-created; none is imported.
-#
-# FAILS OPEN, so the coupling is asserted: an application with zero bindings is
-# reachable by every authenticated user. The module's precondition on
-# authentik_application fails the plan for any slug missing here, including in
-# the read-only authentik-drift-plan job.
-#
-# Bindings are the one object class WITHOUT prevent_destroy (module-side, by
-# design): they are cheap to recreate and are how access is widened or narrowed.
+# CRITICAL: per-app access bindings. Authorization fails open, so an application with
+# zero bindings is reachable by every authenticated user; the module's precondition
+# fails the plan for any slug missing here. Every app carries at least one binding, and
+# with policy_engine_mode "any" membership of one bound group is enough. Bindings are
+# the one object class without prevent_destroy, since they are how access is changed.
 
 locals {
-  # Binding key -> {application slug, group name gating it}. The seven Downloads
-  # (media-client) apps share media-admins; every other app is gated by its own
-  # per-app group. Key = state address, so it is stable per binding, not derived.
+  # Binding key -> {application slug, group gating it}. The Downloads apps share
+  # media-admins; every other app has its own group. The key is the state address, so
+  # it stays stable per binding rather than being derived.
   policy_bindings = {
     # Home
     bar    = { application = "bar", group = "bar-assistant-users" }
@@ -24,11 +16,9 @@ locals {
     home   = { application = "home", group = "home-assistant-users" }
     photos = { application = "photos", group = "immich-users" }
 
-    # Homarr dashboard: two access tiers. homarr-admins is also the group name
-    # Homarr matches from the OIDC `groups` claim to grant board-admin;
-    # homarr-users members pass the Authentik gate but land as regular
-    # (non-admin) Homarr users. policy_engine_mode "any" on the app means EITHER
-    # binding grants access.
+    # Homarr has two tiers: homarr-admins is also the group Homarr matches from the
+    # OIDC `groups` claim to grant board-admin, while homarr-users members pass the
+    # Authentik gate as regular users.
     dashboard-admins = { application = "dashboard", group = "homarr-admins", order = 0 }
     dashboard-users  = { application = "dashboard", group = "homarr-users", order = 1 }
 

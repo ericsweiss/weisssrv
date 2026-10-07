@@ -1,13 +1,7 @@
 ---
-# Flux Kustomization: platform controllers (HelmReleases) — see
-# kubernetes/infrastructure/controllers/kustomization.yaml for the current set.
-#
-# Depends on sources (charts pullable + version ConfigMap present) and on crds
-# (the monitoring CRDs a controller's ServiceMonitor needs at render time).
-#
-# optional: false on both — a missing cluster-versions or cluster-config here
-# is a real fault and must fail loudly rather than render empty chart versions
-# or empty hostnames.
+# Flux Kustomization: platform controllers (HelmReleases); the current set is
+# in kubernetes/infrastructure/controllers/kustomization.yaml. Depends on
+# sources (charts + version ConfigMap) and crds (monitoring CRDs).
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:

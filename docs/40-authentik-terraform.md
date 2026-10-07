@@ -5,28 +5,15 @@ providers, OAuth2 providers, the GitLab SAML provider, groups with their
 memberships, and the per-application group policy bindings — is codified in
 [`terraform/authentik/`](../terraform/authentik/) (current counts in the
 module README's "What is managed" table). The original object set was
-**imported** from the live deployment with a zero-diff plan (one approved
-exception, below); later additions are Terraform-authored and created by
-supervised apply. The module README is the reference for what is
+**imported** from the live deployment with a zero-diff plan; later additions are
+Terraform-authored and created by supervised apply. The module README is the reference for what is
 managed vs deliberately unmanaged, the secret-injection table, provider
 quirks, and the add-an-app recipe; this page covers day-2 operations.
 
-The resource **shape** now comes from the weisssrv-lib `authentik-sso` module at
-the `?ref=` pinned in `main.tf` — held equal to `WEISSSRV_LIB_REF` by
-`scripts/test_site_configs.py`; the files here hold this site's data as
-one map per object class. Nothing about the workflow below changed with that
-move — plan is still read-only, apply is still supervised, and no live object is
-touched: `moved.tf` re-addresses all 78 resource instances, so the first plan
-after the merge is moves and nothing else.
-
-**Ordering, until the adoption apply lands.** `moved` blocks reach state only
-through `apply`, so between the merge and the supervised
-`task terraform:authentik-apply` that persists them, state still carries the
-pre-move root addresses. Two consequences while that window is open: the
-read-only `authentik-drift-plan` job is **expectedly yellow** (it exits 2 on the
-78 pending moves — see § Drift handling), and `import.sh` must not be read as
-"state is already migrated" (it isn't; the script's own guard handles it — see
-`terraform/authentik/README.md` § Import methodology).
+The resource **shape** comes from the weisssrv-lib `authentik-sso` module at the
+`?ref=` pinned in `main.tf` — held equal to `WEISSSRV_LIB_REF` by
+`scripts/test_site_configs.py`; the files here hold this site's data as one map
+per object class.
 
 **Ground rules** (same posture as `terraform/tailscale`):
 
@@ -89,8 +76,10 @@ every user; rename a map key with a `moved {}` block.
 1. Edit the module on a feature branch (usual MR workflow — never push main).
 2. `task terraform:authentik-plan` — the diff must contain exactly what you
    meant to change and nothing else.
-3. MR → merge. The `authentik-drift-plan` CI job (advisory, `allow_failure`)
-   re-plans post-merge on `main` and on the schedule — it has no
+3. MR → merge. The `authentik-drift-plan` CI job re-plans post-merge on `main`
+   and on the schedule; drift is an allowed yellow
+   (`allow_failure: exit_codes: [2]`) while a broken detector exits 1 and fails
+   red. It has no
    `merge_request_event` rule (it materializes vault secrets), so step 2's local
    plan is the pre-merge control.
 4. Supervised apply (see ground rules), then `task terraform:authentik-plan`
@@ -107,12 +96,8 @@ groups + per-app bindings — docs/37 § SSO) is the worked example of this flow
 
 ## Drift handling (Admin-UI edits)
 
-The scheduled `authentik-drift-plan` job exits 2 (yellow) when the live
-objects differ from the code — **or** when state owes a pending `moved` block,
-which Terraform also counts as a non-empty change. The second case is the one
-documented expected-yellow: until the supervised apply persists `moved.tf`, the
-plan is the 78 moves and nothing else, and any line that is *not* a move is real
-drift. It closes with that apply. On real drift:
+The scheduled `authentik-drift-plan` job exits 2 (yellow) when the live objects
+differ from the code. A non-empty drift plan is always real. On real drift:
 
 - **Intended UI hot-fix** → codify it: mirror the change in the module,
   MR it, and the next plan is clean. Do NOT apply first — apply would revert
@@ -158,8 +143,10 @@ import each, then verify a clean plan) lives in
 [`terraform/authentik/README.md`](../terraform/authentik/README.md)
 § "Import methodology and disaster recovery". Follow it there rather than
 re-deriving it here. Import addresses are module-qualified
-(`module.sso.authentik_group.this["grafana-users"]`); `import.sh` refuses to run
-if its table and `imports.tf` disagree.
+(`module.sso.authentik_group.this["grafana-users"]`). `import.sh` derives its
+address/id pairs from `imports.tf` at run time rather than keeping a second copy
+of the table, and `import.sh --check` prints them without touching Terraform or
+the API.
 
 If **authentik itself** is rebuilt from scratch, the module recreates every
 managed object (`terraform plan` will show all-create) — but the unmanaged
@@ -167,7 +154,9 @@ prerequisites (flows, mappings, cert) are authentik's own defaults and the
 OAuth2 client ids/secrets are pinned, so app configs keep working. The
 embedded outpost is authentik's own object: re-import it (its uuid changes on
 a rebuild — update `imports.tf`), after which the managed provider list
-reapplies; no Admin-UI steps remain.
+reapplies. The one non-default prerequisite is the admin authentication flow's
+MFA validation stage binding: it is configured in the UI, is not in this module,
+and must be re-created by hand after a rebuild.
 
 ## Related documentation
 

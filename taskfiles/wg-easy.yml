@@ -1,0 +1,40 @@
+# https://taskfile.dev
+# wg-easy internet-exit VPN: admin UI vpn.esweiss.com, endpoint
+# vpn.ericsweiss.com:51820/udp. `downloads:vpn*` is Gluetun egress (docs/38).
+version: '3'
+
+tasks:
+  status:
+    desc: Show status of the wg-easy VPN (pods, services, VIP, PVC, ingress)
+    cmds:
+      - task: :_app:status
+        vars:
+          NS: wg-easy
+          SECTIONS: |
+            wg-easy Namespace|pods
+            Services (LoadBalancer VIP)|svc
+            PVC|pvc
+            IngressRoute|ingressroute
+
+  peers:
+    desc: Show live WireGuard peers/handshakes (kubectl exec wg show)
+    cmds:
+      - kubectl exec -n wg-easy deployment/wg-easy -- wg show 2>/dev/null || echo "wg0 not up yet (no clients configured, or pod not ready)"
+
+  logs:
+    desc: Tail wg-easy logs
+    cmds:
+      - task: :_app:logs
+        vars:
+          NS: wg-easy
+          TARGET: deployment/wg-easy
+          TAIL: "50"
+
+  restart:
+    desc: Restart the wg-easy pod (pod delete; Flux-managed, replicas:1 + Recreate)
+    cmds:
+      - task: :_app:restart
+        vars:
+          NS: wg-easy
+          SELECTOR: -l app.kubernetes.io/name=wg-easy
+          TIMEOUT: 180s

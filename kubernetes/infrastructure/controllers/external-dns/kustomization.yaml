@@ -7,10 +7,9 @@ resources:
   - release.yaml
   - networkpolicy.yaml
 
-# Egress is kube-dns, the kube-apiserver (it watches Ingress/Service/IngressRoute)
-# and public HTTPS (the Cloudflare API) — the three shared components, unmodified:
-# external-dns has no reason to reach a public resolver, so it does NOT take
-# cert-manager's :53 patch.
+# Egress is kube-dns, the kube-apiserver it watches, and public HTTPS for the
+# Cloudflare API: the three shared components unmodified. external-dns needs no
+# public resolver, so it does not take cert-manager's :53 patch.
 components:
   - ../../../components/netpol-baseline
   - ../../../components/netpol-egress-dns

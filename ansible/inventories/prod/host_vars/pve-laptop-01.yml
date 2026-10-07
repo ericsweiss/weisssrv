@@ -1,8 +1,0 @@
----
-# pve-laptop-01 specific configuration
-
-# ZFS ARC cap = 2 GiB, overriding the 8 GiB group default: a 14-15 GiB host
-# running a 6 GiB k3s guest — a larger ARC competes with guest RAM and pushes it
-# to swap. local-ssd here backs VM disks, not a media library, so a large cache
-# wins little.
-zfs_arc_cap_max_bytes: 2147483648

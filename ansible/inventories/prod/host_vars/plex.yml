@@ -10,20 +10,16 @@ proxmox_lxc_cores: 4
 proxmox_lxc_memory: 8192
 proxmox_lxc_swap: 2048
 proxmox_lxc_disk_size: 64G
-# ssd (encrypted): the role only places NEW containers — the live rootfs was
-# created on local-lvm and is migrated once with
-# `pct move-volume 152 rootfs ssd --delete` (stopped, at a deploy window).
+# ssd (encrypted): the role only places NEW containers. Migrate a live rootfs
+# once with `pct move-volume 152 rootfs ssd --delete`, stopped, at a window.
 proxmox_lxc_storage: ssd
 
 # Nesting required for systemd 257+ (Debian 13).
 proxmox_lxc_nesting: true
 
-#
-# onboot=0: the rootfs and the mp0 /config bind (/mnt/ssd/appdata/plex) both
-# live on the ENCRYPTED ssd pool, so pct start fails until ssd unlocks. This CT
-# is started by pve-start-encrypted-guests.service AFTER
-# zfs-mount-encrypted.service unlocks ssd — NOT by pve-guests at boot. See the
-# zfs_encryption role and docs/32-zfs-encryption.md.
+# onboot=0: the rootfs and the /config bind both live on the ENCRYPTED ssd
+# pool, so pct start fails until ssd unlocks. pve-start-encrypted-guests.service
+# starts this CT after zfs-mount-encrypted.service, not pve-guests (docs/32).
 proxmox_lxc_onboot: false
 proxmox_lxc_startup_order: 50
 proxmox_lxc_startup_delay: 10
@@ -48,15 +44,12 @@ proxmox_lxc_bind_mounts:
     container_path: /media
     options: "mp=/media,backup=0,ro=0"
 
-# Plex-specific configuration
+# Container-side bind-mount targets, restated because they must stay coupled
+# to proxmox_lxc_bind_mounts above; the role fails loudly when config or
+# transcode is not mounted. Media group/gid take the role default (media/2000).
 plex_config_dir: /config
 plex_transcode_dir: /transcode
 plex_media_dir: /media
-
-# Media group configuration
-# Must match NAS storage configuration (GID 2000)
-plex_media_group: media
-plex_media_gid: 2000
 
 # GPU passthrough for Intel Arc B580 hardware transcoding
 # Pass through /dev/dri devices for hardware-accelerated transcoding

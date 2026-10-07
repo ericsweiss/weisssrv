@@ -77,9 +77,8 @@ spec:
               GPU. Verify the llama sidecar loaded the model onto the card
               (nvidia-smi / logs). See docs/43-gpu-passthrough.md.
 
-        # Target UP but exporting zero DCGM_FI_DEV_* series — the state neither
-        # GpuExporterDown (up==0) nor the temp/offload rules (absent series) can
-        # catch. Usually the container toolkit's
+        # Target UP but exporting zero DCGM_FI_DEV_* series, which no other GPU
+        # rule catches. Usually the container toolkit's
         # accept-nvidia-visible-devices-envvar-when-unprivileged flag (docs/43).
         - alert: GpuTelemetryMissing
           expr: >-

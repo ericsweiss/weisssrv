@@ -1,0 +1,188 @@
+# https://taskfile.dev
+# Maintenance: OS and application updates, plus the version-discovery tasks
+# that keep group_vars/all.yml current (docs/12).
+version: '3'
+
+# Anchors aliased by the tasks below. YAML anchors do not cross files, so each
+# namespace file carries the precondition list it uses.
+x-preconditions:
+  op: &op_preconditions
+    - sh: command -v ansible-playbook
+      msg: "ansible-playbook not installed. pip install ansible, then: task ansible:install-collections"
+    - sh: command -v op
+      msg: "1Password CLI not installed: https://developer.1password.com/docs/cli/get-started/"
+    # `op account list`, not `op whoami`: with the desktop-app integration whoami
+    # reports "not signed in" in the non-interactive shell Task uses here.
+    - sh: op account list 2>/dev/null
+      msg: "1Password CLI not authenticated. Run: eval $(op signin)"
+
+tasks:
+  # Host-touching updates run through maintenance-run-with-verify.sh, as their
+  # CI twins do: verify runs whatever the playbook's outcome, so a manual run
+  # cannot report success on a cluster CI would have failed.
+  update-packages:
+    desc: Update OS packages on all hosts (rolling, interactive)
+    dir: "{{.ANSIBLE_DIR}}"
+    cmds:
+      - bash {{.ROOT_DIR}}/scripts/maintenance-run-with-verify.sh ansible-playbook -i {{.INVENTORY}} playbooks/maintenance/update-packages.yml {{.CLI_ARGS}}
+
+  update-applications:
+    desc: Update base applications (AdGuard, Tailscale, Plex, Ansible collections)
+    dir: "{{.ANSIBLE_DIR}}"
+    # Anchor shared by the base-update variants. Must stay equal to the
+    # maintenance-update-applications job's `variables:` — same playbook, and a
+    # different op:// set takes a different LXC authorized_keys branch.
+    env: &base_app_env
+      ROOT_EMAIL_ALIAS: op://Homelab/Email Config/root_alias
+      SSH_PUBLIC_KEY: op://Homelab/SSH Key/public key
+      SMTP_RELAY_USER: op://Homelab/SMTP Relay Auth/username
+      SMTP_RELAY_PASSWORD: op://Homelab/SMTP Relay Auth/password
+      ADGUARD_ADMIN_PASSWORD: op://Homelab/AdGuard Home/password
+      TAILSCALE_AUTH_KEY: op://Homelab/Tailscale Auth Key/credential
+      DNS01_SSH_PRIVATE_KEY: op://Homelab/DNS-01 SSH Key/private key
+      DNS01_SSH_PUBLIC_KEY: op://Homelab/DNS-01 SSH Key/public key
+      # Twin of the CI jobs' env: the plex role fail-louds without it.
+      PLEX_PFX_PASSPHRASE: op://Homelab/Plex Custom Certificate/password
+    preconditions: *op_preconditions
+    cmds:
+      - bash {{.ROOT_DIR}}/scripts/maintenance-run-with-verify.sh op run -- ansible-playbook -i {{.INVENTORY}} playbooks/maintenance/update-applications.yml {{.CLI_ARGS}}
+
+  update-full:
+    desc: Full base update - OS packages + applications (rolling, interactive)
+    dir: "{{.ANSIBLE_DIR}}"
+    env: *base_app_env
+    preconditions: *op_preconditions
+    cmds:
+      - bash {{.ROOT_DIR}}/scripts/maintenance-run-with-verify.sh op run -- ansible-playbook -i {{.INVENTORY}} playbooks/maintenance/update-full.yml {{.CLI_ARGS}}
+
+  update-full-auto:
+    desc: Full base update - OS packages + applications (rolling, auto-reboot)
+    dir: "{{.ANSIBLE_DIR}}"
+    env: *base_app_env
+    preconditions: *op_preconditions
+    cmds:
+      - bash {{.ROOT_DIR}}/scripts/maintenance-run-with-verify.sh op run -- ansible-playbook -i {{.INVENTORY}} playbooks/maintenance/update-full.yml -e auto_reboot=true {{.CLI_ARGS}}
+
+  update-plex:
+    desc: Update Plex Media Server only (apt latest)
+    dir: "{{.ANSIBLE_DIR}}"
+    env: *base_app_env
+    preconditions: *op_preconditions
+    cmds:
+      - bash {{.ROOT_DIR}}/scripts/maintenance-run-with-verify.sh op run -- ansible-playbook -i {{.INVENTORY}} playbooks/maintenance/update-applications.yml --limit plex {{.CLI_ARGS}}
+
+  update-k3s-nodes:
+    desc: Rolling k3s binary upgrades (cordon/upgrade/restart/uncordon; kernel reboots via kured)
+    dir: "{{.ANSIBLE_DIR}}"
+    env:
+      K3S_TOKEN: op://Homelab/K3s Cluster Token/credential
+      # Agent token (ANS-D-2) enabled — keep node upgrades on the lower-privilege
+      # token (see docs/19 "Agent token").
+      K3S_AGENT_TOKEN: op://Homelab/K3s Agent Token/credential
+    preconditions: *op_preconditions
+    cmds:
+      - bash {{.ROOT_DIR}}/scripts/maintenance-run-with-verify.sh op run -- ansible-playbook -i {{.INVENTORY}} playbooks/maintenance/update-k3s-nodes.yml {{.CLI_ARGS}}
+
+  check-versions:
+    desc: Check all services for available version updates
+    env:
+      GITHUB_TOKEN: op://Homelab/GitHub Token/credential
+    # Anchor shared by both check-versions tasks. `op run` also exits 1 when
+    # unauthenticated, which the 0-or-1 rc convention below would read as
+    # "nothing to update".
+    preconditions: &check_versions_preconditions
+      - sh: command -v op
+        msg: "1Password CLI is not installed. Install via: https://developer.1password.com/docs/cli/get-started/"
+      # `op account list`, not `op whoami` — see the note on infra:deploy's preconditions.
+      - sh: op account list 2>/dev/null
+        msg: "1Password CLI not authenticated. Run: eval $(op signin)"
+    cmds:
+      # The script's own rc travels out-of-band in a temp file so it can be told
+      # apart from op's. An empty file means op failed before the script exited,
+      # and the 0-or-1 convention must NOT be applied to that.
+      - |
+        rc_file=$(mktemp)
+        trap 'rm -f "$rc_file"' EXIT
+        op run -- sh -c 'python3 ./scripts/check-versions.py {{.CLI_ARGS}}; echo $? > '"$rc_file" || true
+        rc=$(cat "$rc_file" 2>/dev/null || true)
+        if [ -z "$rc" ]; then
+          echo "ERROR: check-versions.py did not run to completion (op run / interpreter failure above)" >&2
+          exit 2
+        fi
+        # 0 = up to date, 1 = updates available (scripts/check-versions.py).
+        [ "$rc" -le 1 ] || exit "$rc"
+
+  check-versions-json:
+    desc: Check all versions and output as JSON
+    env:
+      GITHUB_TOKEN: op://Homelab/GitHub Token/credential
+    preconditions: *check_versions_preconditions
+    cmds:
+      # Same out-of-band rc handling as check-versions; stdout stays pure JSON.
+      - |
+        rc_file=$(mktemp)
+        trap 'rm -f "$rc_file"' EXIT
+        op run -- sh -c 'python3 ./scripts/check-versions.py --json {{.CLI_ARGS}}; echo $? > '"$rc_file" || true
+        rc=$(cat "$rc_file" 2>/dev/null || true)
+        if [ -z "$rc" ]; then
+          echo "ERROR: check-versions.py did not run to completion (op run / interpreter failure above)" >&2
+          exit 2
+        fi
+        [ "$rc" -le 1 ] || exit "$rc"
+
+  update-version:
+    desc: "Update a single service version in all.yml + regenerate ConfigMap (task maintenance:update-version SERVICE=gluetun)"
+    vars:
+      SERVICE: '{{.SERVICE | default ""}}'
+    env:
+      GITHUB_TOKEN: op://Homelab/GitHub Token/credential
+    cmds:
+      - |
+        SERVICE="{{.SERVICE}}"
+        if [ -z "$SERVICE" ]; then
+          echo "Usage: task maintenance:update-version SERVICE=<name>"
+          echo ""
+          echo "Available services:"
+          op run -- python3 ./scripts/check-versions.py --list
+          exit 1
+        fi
+        op run -- python3 ./scripts/check-versions.py --update "$SERVICE"
+      - task: :flux:sync-versions
+      - echo "all.yml + versions-configmap.yaml updated. Commit both and raise MR."
+
+  update-all-versions:
+    desc: Update all outdated service versions in all.yml + regenerate ConfigMap
+    env:
+      GITHUB_TOKEN: op://Homelab/GitHub Token/credential
+    cmds:
+      - op run -- python3 ./scripts/check-versions.py --update-all
+      - task: :flux:sync-versions
+      - echo "all.yml + versions-configmap.yaml updated. Commit both and raise MR."
+
+  update-cluster:
+    desc: Complete k3s cluster update (nodes + version bump + Flux reconcile)
+    cmds:
+      - echo "==================================="
+      - echo "K3s Cluster Full Update"
+      - echo "==================================="
+      - echo ""
+      - echo "Phase 1 - Update k3s binaries on nodes (rolling)"
+      - task: update-k3s-nodes
+      - echo ""
+      - echo "Phase 2 - Check for new versions across managed services"
+      - task: check-versions
+      - echo ""
+      - echo "Phase 3 - Bump all outdated versions in all.yml"
+      - task: update-all-versions
+      - echo ""
+      - echo "Phase 4 - Regenerate cluster-versions ConfigMap from all.yml"
+      - task: :flux:sync-versions
+      - echo ""
+      - 'echo "NOTE - commit + push all.yml and versions-configmap.yaml so Flux"'
+      - echo "reconciles the new versions into the cluster."
+      - echo ""
+      - echo "==================================="
+      - echo "Cluster update staging complete."
+      - echo "==================================="
+      - echo ""
+      - echo "Verify cluster status with 'task flux:status'"

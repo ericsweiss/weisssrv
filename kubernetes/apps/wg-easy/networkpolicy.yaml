@@ -13,19 +13,9 @@ spec:
     - Egress
 
 ---
-# Ingress to the wg-easy pod:
-#   - WireGuard UDP 51820 from anywhere (WAN peers arrive here DNAT'd from the
-#     MetalLB VIP .99 with their real source IP preserved by ETP Local).
-#   - UI/metrics TCP 51821 from the traefik namespace (the internal IngressRoute,
-#     the ONLY intended UI path — fronted by lan-tailscale-only + Authentik).
-#   - UI/metrics TCP 51821 from the observability namespace, but SCOPED to the
-#     Prometheus pod only (ServiceMonitor scrape of /metrics/prometheus, same
-#     port as the UI). 51821 also serves the admin UI, so admitting the whole
-#     observability namespace would let any pod there reach the UI directly,
-#     bypassing the Traefik/Authentik path; the podSelector narrows it to the
-#     one scraper that legitimately needs the port (least-privilege, mirroring
-#     recipes/networkpolicy.yaml). The scrape itself is additionally gated by a
-#     Bearer token (service-monitors/wg-easy.yaml).
+# Ingress: WireGuard UDP 51820 from anywhere (ETP Local keeps WAN peer source
+# IPs); TCP 51821 from traefik and the Prometheus pod only, since that port also
+# serves the admin UI and must not open to the whole observability namespace.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -59,17 +49,11 @@ spec:
           port: 51821
 
 ---
-# Egress from the wg-easy pod — THE CNI-layer no-LAN killswitch.
-#
-# Tunneled client traffic is NAT'd out through this pod's eth0, so it is governed
-# by this policy: 0.0.0.0/0 EXCEPT every RFC1918/CGNAT/link-local block means a
-# connected peer reaches the internet but never the LAN, pod/service CIDRs or the
-# tailnet, whatever AllowedIPs their client carries (docs/38, layer 2).
-#
-# There is deliberately NO kube-dns allow: it would let a client point its
-# resolver at the CoreDNS ClusterIP and turn this into an open internal
-# resolver. The pod runs dnsPolicy:None with public resolvers instead, and
-# client DNS is pushed the same way. No apiserver or SMTP egress either.
+# CRITICAL: the CNI-layer no-LAN killswitch. Tunneled client traffic NATs out
+# this pod's eth0, so 0.0.0.0/0 minus every RFC1918/CGNAT/link-local block
+# fences a peer out of the LAN, pod/service CIDRs and the tailnet (docs/38).
+# There is no kube-dns allow: it would make this an open internal resolver. The
+# pod runs dnsPolicy:None with public resolvers and pushes the same to clients.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

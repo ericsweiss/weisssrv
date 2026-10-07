@@ -1,10 +1,7 @@
 ---
-# Prometheus scrapes Reloader's PodMonitor (release.yaml reloader.podMonitor)
-# directly on the pod's `http` container port 9090. The namespace runs
-# default-deny-ingress (netpol-baseline component in kustomization.yaml), so
-# without this allow the scrape is REJECTed at the CNI and TargetDown fires for
-# job reloader/reloader-reloader. Kubelet probes originate in the host netns and
-# bypass the policy, so the pod stays 1/1 while the scrape fails.
+# Prometheus scrapes Reloader's PodMonitor on container port 9090 and the
+# namespace is default-deny-ingress, so this allow is what keeps TargetDown
+# quiet. Kubelet probes bypass policy, so the pod stays 1/1 when it is missing.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

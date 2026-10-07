@@ -253,7 +253,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max(immich_queues_integrity_check_active)",
+          "expr": "max(immich_queues_integrity_check_active) OR vector(0)",
           "refId": "A",
           "legendFormat": "active"
         }
@@ -486,7 +486,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(immich_jobs_integrity_checksum_files_success_total[$__rate_interval]))",
+          "expr": "sum(rate(immich_jobs_integrity_checksum_files_success_total[$__rate_interval])) OR vector(0)",
           "refId": "A",
           "legendFormat": "checksum files"
         },
@@ -495,7 +495,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(immich_jobs_integrity_missing_files_success_total[$__rate_interval]))",
+          "expr": "sum(rate(immich_jobs_integrity_missing_files_success_total[$__rate_interval])) OR vector(0)",
           "refId": "B",
           "legendFormat": "missing files"
         },

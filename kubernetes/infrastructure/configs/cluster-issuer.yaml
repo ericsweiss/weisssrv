@@ -7,10 +7,37 @@ spec:
   acme:
     server: https://acme-v02.api.letsencrypt.org/directory
 
-    email: ericsweiss1@gmail.com
+    email: ${cluster_acme_email}
 
     privateKeySecretRef:
       name: letsencrypt-prod-account-key
+
+    solvers:
+      - dns01:
+          cloudflare:
+            apiTokenSecretRef:
+              name: cloudflare-api-token
+              key: api-token
+        selector:
+          dnsZones:
+            - ${cluster_external_domain}
+            - ${cluster_internal_domain}
+
+---
+# Staging: same solver, far higher rate limits, untrusted certificates. Point a
+# Certificate's issuerRef here while a new zone or token scope is unproven.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+
+    email: ${cluster_acme_email}
+
+    privateKeySecretRef:
+      name: letsencrypt-staging-account-key
 
     solvers:
       - dns01:

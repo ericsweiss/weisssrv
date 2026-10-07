@@ -1,11 +1,6 @@
-# Import blocks binding the objects that existed at adoption time to their live
-# API ids (applications by slug, providers by pk, groups by uuid). Idempotent:
-# a no-op once the resource is in state.
-#
-# Addresses are module-qualified; moved.tf covers state that predates the move.
-# Terraform-AUTHORED objects have no block here, which is why a state-loss
-# rebuild is not a one-command re-import — see README "Import methodology /
-# disaster recovery".
+# Import blocks binding adopted objects to their live API ids: applications by
+# slug, providers by pk, groups by uuid. A no-op once the resource is in state.
+# See README "Import methodology / disaster recovery"; import.sh reads this file.
 
 # Applications (id = slug). Static list, NOT local.applications: a newly
 # authored app has no live object to import, and a for_each over the map would

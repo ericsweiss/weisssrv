@@ -1,37 +1,32 @@
-# Terraform state files
-*.tfstate
-*.tfstate.*
-*.tfstate.backup
+# Terraform-local copies of the root .gitignore's terraform patterns, kept next
+# to the code they protect. The root patterns already match at any depth; this
+# file only makes the rules visible where terraform runs.
 
-# Terraform directory
-.terraform/
-# Note: .terraform.lock.hcl is committed for reproducibility
+# Saved plans. A plan resolves every variable, so it is a blob holding each
+# provider credential and client secret in the clear.
+*.tfplan
+*.tfplan.json
+tfplan
+tfplan.json
+plan.out
 
-# Terraform variables files that might contain secrets
+# Variable files - secret-bearing.
 *.tfvars
 *.tfvars.json
 
-# Saved plans. A plan stores sensitive attribute values in the CLEAR, and the
-# repo-wide pattern is `-out=tfplan` with no extension (CI and every runbook), so
-# `*.tfplan` alone does not match. A plan of terraform/authentik holds every OIDC
-# client secret plus the injected basic-auth passwords, and gitleaks does not
-# pattern-match the binary msgpack form.
-tfplan
-tfplan.json
-*.tfplan
-*.tfplan.json
-plan.out
-
-# Crash log files
+# Crash logs (they embed the request that crashed, provider config included)
 crash.log
 crash.*.log
 
-# Override files
+# Override files: local, unreviewed config that silently wins over the checked-in
+# HCL. Never commit one.
 override.tf
 override.tf.json
 *_override.tf
 *_override.tf.json
 
-# CLI configuration files
+# CLI configuration (credentials blocks, mirror config)
 .terraformrc
 terraform.rc
+
+# .terraform.lock.hcl is COMMITTED — it pins the exact provider builds.

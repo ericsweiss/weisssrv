@@ -1,17 +1,6 @@
 # Pod-network controls for the observability namespace. default-deny-ingress
-# comes from components/netpol-baseline (wired in kustomization.yaml); the scoped
-# allows below open it back up. Loki matters most here: it runs
-# auth_enabled=false, and the loki-push-auth basicAuth middleware guards only the
-# Traefik IngressRoute, not the ClusterIP.
-#
-# Egress is deliberately unrestricted: the exporters reach many LAN hosts
-# (Proxmox API, AdGuard, Unbound, Plex, ZFS, and the UniFi gear on the VLAN 1
-# management subnet 10.0.1.0/24 — docs/46), Alertmanager reaches smtp-relay and
-# Discord, and Prometheus remote-scrapes the host node-exporters, so a
-# default-deny-egress would mean enumerating the whole LAN surface. There is
-# therefore no egress allowlist here for a new probe target to be added to; a
-# future default-deny-egress in this namespace must enumerate 10.0.1.0/24 with
-# the rest.
+# comes from components/netpol-baseline and the scoped allows below reopen it.
+# Egress is unrestricted, so a new probe target joins no allowlist (docs/31).
 
 ---
 # Allow all intra-namespace ingress so the stack keeps working: Prometheus
@@ -57,10 +46,9 @@ spec:
           port: 3100
 
 ---
-# Grafana UI — reachable from Traefik only (everything else is covered by the
-# intra-namespace allow above). Prometheus :9090 / Alertmanager :9093 have no
-# IngressRoute (access is kubectl port-forward per docs/31), so no Traefik
-# allowance exists for them; add one per-port if a route is ever created.
+# Grafana UI, reachable from Traefik only. Prometheus :9090 and Alertmanager
+# :9093 have no IngressRoute and so no Traefik allowance; add one per port if a
+# route is ever created (docs/31).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -82,11 +70,9 @@ spec:
           port: 3000  # Grafana
 
 ---
-# prometheus-operator admission webhooks (:10250, TLS): the apiserver calls the
-# operator pod directly to validate PrometheusRule/AlertmanagerConfig objects.
-# It runs on the host network, so its source IP is not selectable by
-# namespace/pod selectors — hence the unsourced allow on a port that serves only
-# the webhook. Without it, failurePolicy=Ignore admits invalid rules unvalidated.
+# prometheus-operator admission webhook (:10250, TLS), called by the apiserver.
+# It arrives as the node's flannel gateway address, so the peer is the pod CIDR;
+# the LAN /24 covers a call that leaves the node unmasqueraded.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -99,6 +85,11 @@ spec:
   policyTypes:
     - Ingress
   ingress:
-    - ports:
+    - from:
+        - ipBlock:
+            cidr: 10.42.0.0/16
+        - ipBlock:
+            cidr: 10.0.10.0/24
+      ports:
         - protocol: TCP
           port: 10250

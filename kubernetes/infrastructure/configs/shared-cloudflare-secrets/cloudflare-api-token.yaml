@@ -1,9 +1,7 @@
 ---
 # Cloudflare API token, fanned out by one ClusterExternalSecret to every
-# namespace labeled esweiss.com/cloudflare-api-token=true (cert-manager DNS-01,
-# external-dns, cloudflare-ddns today — a new consumer just labels its
-# namespace). Replaces three byte-identical per-namespace ExternalSecrets.
-# Sourced from 1Password item "Cloudflare DNS Token".
+# namespace labeled esweiss.com/cloudflare-api-token=true; a new consumer just
+# labels its namespace. Sourced from 1Password item "Cloudflare DNS Token".
 apiVersion: external-secrets.io/v1
 kind: ClusterExternalSecret
 metadata:

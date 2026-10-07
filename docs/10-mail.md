@@ -72,7 +72,7 @@ Path: `/etc/postfix/tls/`
 
 ### Ansible Role
 
-Deploy with: the `weisssrv.infra.smtp_relay` role (`ansible/playbooks/mail.yml`)
+Deploy with: the `weisssrv.infra.smtp_relay` role (`ansible/playbooks/site.yml --tags smtp_relay`)
 
 ## Postfix Null Client (Proxmox Hosts)
 
@@ -96,7 +96,7 @@ client deliver/bounce `*@esweiss.com` locally instead of relaying it.
 
 ### Ansible Role
 
-Deploy with: the `weisssrv.infra.postfix_null_client` role (`ansible/playbooks/site.yml`)
+Deploy with: the `weisssrv.infra.postfix_null_client` role (`ansible/playbooks/site.yml --tags postfix_null_client`)
 
 ## Mail Aliases
 
@@ -123,7 +123,7 @@ IN ACCEPT -source +dc/core-cluster -p tcp -dport 25 -log nolog
 ```
 
 The rendered group is owned by the collection's `proxmox_firewall` template —
-see [docs/11-firewall.md](./11-firewall.md) if these ever disagree.
+see [docs/11-firewall.md](11-firewall.md) if these ever disagree.
 
 ## Testing
 

@@ -66,8 +66,6 @@ spec:
               cpu: 10m
               memory: 32Mi
             limits:
-              # 96Mi: the recommender's uncapped want crossed the old 64Mi
-              # ceiling's cap on the larger libraries (lidarr/radarr ~61Mi
-              # after margin, live ~25-29Mi) — shared here, so every instance
-              # moves together with its VPA caps (0.8x).
+              # Shared ceiling: all four instances move together, and their VPA
+              # caps sit at 0.8x (docs/33).
               memory: 96Mi

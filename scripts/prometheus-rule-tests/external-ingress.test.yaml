@@ -1,0 +1,163 @@
+---
+# promtool unit tests for ExternalIngressDown: the >=3 hostname floor, the
+# split-horizon exclusion of AdGuard-rewritten names, the dark-gateway and
+# dead-1.1.1.1 inhibitions, and InternetProbeMissing on that witness target.
+rule_files:
+  - rules.yaml
+evaluation_interval: 1m
+tests:
+  # Three genuinely-external hostnames down: the public edge is gone.
+  - interval: 1m
+    input_series:
+      - series: 'probe_success{instance="https://plex.ericsweiss.com", job="blackbox-http"}'
+        values: '0+0x40'
+      - series: 'probe_success{instance="https://food.ericsweiss.com", job="blackbox-http"}'
+        values: '0+0x40'
+      - series: 'probe_success{instance="https://bar.ericsweiss.com", job="blackbox-http"}'
+        values: '0+0x40'
+    alert_rule_test:
+      # Inside the 15m hold.
+      - eval_time: 12m
+        alertname: ExternalIngressDown
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: ExternalIngressDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+
+  # Two external plus two split-horizon names down is still under the floor:
+  # auth and photos resolve to the internal VIP, so they are excluded.
+  - interval: 1m
+    input_series:
+      - series: 'probe_success{instance="https://plex.ericsweiss.com", job="blackbox-http"}'
+        values: '0+0x40'
+      - series: 'probe_success{instance="https://food.ericsweiss.com", job="blackbox-http"}'
+        values: '0+0x40'
+      - series: 'probe_success{instance="https://auth.ericsweiss.com", job="blackbox-http"}'
+        values: '0+0x40'
+      - series: 'probe_success{instance="https://photos.ericsweiss.com", job="blackbox-http"}'
+        values: '0+0x40'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: ExternalIngressDown
+        exp_alerts: []
+
+  # Three external names down WITH the gateway also dark: NetworkGearProbeFailed
+  # is the cause and the only alert, so this one must stay silent.
+  - interval: 1m
+    input_series:
+      - series: 'probe_success{instance="https://plex.ericsweiss.com", job="blackbox-http"}'
+        values: '0+0x40'
+      - series: 'probe_success{instance="https://food.ericsweiss.com", job="blackbox-http"}'
+        values: '0+0x40'
+      - series: 'probe_success{instance="https://bar.ericsweiss.com", job="blackbox-http"}'
+        values: '0+0x40'
+      - series: 'probe_success{instance="10.0.10.1", job="blackbox-icmp"}'
+        values: '0+0x40'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: ExternalIngressDown
+        exp_alerts: []
+
+  # The same outage with the gateway answering: the inhibition must not swallow
+  # a real public-edge failure.
+  - interval: 1m
+    input_series:
+      - series: 'probe_success{instance="https://plex.ericsweiss.com", job="blackbox-http"}'
+        values: '0+0x40'
+      - series: 'probe_success{instance="https://food.ericsweiss.com", job="blackbox-http"}'
+        values: '0+0x40'
+      - series: 'probe_success{instance="https://bar.ericsweiss.com", job="blackbox-http"}'
+        values: '0+0x40'
+      - series: 'probe_success{instance="10.0.10.1", job="blackbox-icmp"}'
+        values: '1+0x40'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: ExternalIngressDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+
+  # A healthy edge.
+  - interval: 1m
+    input_series:
+      - series: 'probe_success{instance="https://plex.ericsweiss.com", job="blackbox-http"}'
+        values: '1+0x40'
+      - series: 'probe_success{instance="https://food.ericsweiss.com", job="blackbox-http"}'
+        values: '1+0x40'
+      - series: 'probe_success{instance="https://bar.ericsweiss.com", job="blackbox-http"}'
+        values: '1+0x40'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: ExternalIngressDown
+        exp_alerts: []
+
+  # The same three names down with the 1.1.1.1 witness dark: this is an upstream
+  # outage, not a public-ingress fault, so the critical page must stay silent.
+  - interval: 1m
+    input_series:
+      - series: 'probe_success{instance="https://plex.ericsweiss.com", job="blackbox-http"}'
+        values: '0+0x40'
+      - series: 'probe_success{instance="https://food.ericsweiss.com", job="blackbox-http"}'
+        values: '0+0x40'
+      - series: 'probe_success{instance="https://bar.ericsweiss.com", job="blackbox-http"}'
+        values: '0+0x40'
+      - series: 'probe_success{instance="10.0.10.1", job="blackbox-icmp"}'
+        values: '1+0x40'
+      - series: 'probe_success{instance="1.1.1.1", job="blackbox-icmp"}'
+        values: '0+0x40'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: ExternalIngressDown
+        exp_alerts: []
+
+  # Gateway and witness both answering: the edge is at fault and it pages.
+  - interval: 1m
+    input_series:
+      - series: 'probe_success{instance="https://plex.ericsweiss.com", job="blackbox-http"}'
+        values: '0+0x40'
+      - series: 'probe_success{instance="https://food.ericsweiss.com", job="blackbox-http"}'
+        values: '0+0x40'
+      - series: 'probe_success{instance="https://bar.ericsweiss.com", job="blackbox-http"}'
+        values: '0+0x40'
+      - series: 'probe_success{instance="10.0.10.1", job="blackbox-icmp"}'
+        values: '1+0x40'
+      - series: 'probe_success{instance="1.1.1.1", job="blackbox-icmp"}'
+        values: '1+0x40'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: ExternalIngressDown
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: ExternalIngressDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+
+  # InternetProbeMissing: the witness target gone means the suppressor above is
+  # unarmed. A failing witness is not a missing one. 10m pins the 15m hold.
+  - interval: 1m
+    input_series:
+      - series: 'probe_success{instance="10.0.10.1", job="blackbox-icmp"}'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: InternetProbeMissing
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: InternetProbeMissing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: '1.1.1.1'
+
+  # The witness present and failing: still not missing.
+  - interval: 1m
+    input_series:
+      - series: 'probe_success{instance="1.1.1.1", job="blackbox-icmp"}'
+        values: '0+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: InternetProbeMissing
+        exp_alerts: []

@@ -1,17 +1,11 @@
 ---
-# One delegated `pvesh get /cluster/resources` against pve_probe_host, skipped
-# once an earlier host in the loop has answered.
-#
-# Looping an INCLUDE around a single delegated task is deliberate: a task that
-# loops delegate_to itself silently ends the host's task sequence with rc 0 when
-# any delegate is unreachable (ignore_unreachable does not cover that), so the
-# caller would report green having reconciled nothing — and one Proxmox host is
-# routinely out. Same pattern as the collection's proxmox_firewall
-# probe-delegate.yml.
-#
-# Caller contract: loop_var pve_probe_host; reads/sets pve_cluster_json (the
-# first successful stdout) and pve_probe_results (one "host: rc=N" entry per
-# host actually probed, for the caller's failure message).
+# CRITICAL: loop the INCLUDE around one delegated task, never delegate_to inside
+# a loop — an unreachable delegate there ends the host's task sequence with rc 0
+# (ignore_unreachable does not cover it) and the caller reports green having
+# reconciled nothing. One Proxmox host is routinely out.
+# Queries `pvesh get /cluster/resources` on pve_probe_host, skipped once an
+# earlier host answered. Caller contract: loop_var pve_probe_host; reads/sets
+# pve_cluster_json and pve_probe_results ("host: rc=N" per host probed).
 
 - name: Query the Proxmox cluster resource list from {{ pve_probe_host }}
   ansible.builtin.command: pvesh get /cluster/resources --type vm --output-format json

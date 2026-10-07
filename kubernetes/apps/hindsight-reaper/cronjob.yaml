@@ -1,9 +1,7 @@
 ---
-# Hindsight admission-rejected pod reaper. The program is hindsight-reaper.py in
-# this directory, mounted from the configMapGenerator in kustomization.yaml; unit
-# tests in scripts/test_hindsight_reaper.py. Root cause (GPU-node reboot
-# admission race) and why prevention would need the GPU Operator:
-# docs/43-gpu-passthrough.md § Reaping admission-rejected pods.
+# Hindsight admission-rejected pod reaper. The program is hindsight-reaper.py
+# here, mounted from the configMapGenerator in kustomization.yaml.
+# Background: docs/43-gpu-passthrough.md § Reaping admission-rejected pods.
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -19,14 +17,12 @@ spec:
   concurrencyPolicy: Forbid  # Never overlap reaper runs.
   jobTemplate:
     spec:
-      # Hard ceiling for the WHOLE Job, retries included — not per attempt. Holds
-      # backoffLimit+1 = 3 attempts of the script's soft BUDGET_SECONDS (60s)
-      # plus one API_TIMEOUT_SECONDS (10s) overrun and pod startup each:
-      # 3 * ~75s, with margin.
+      # Ceiling for the whole Job, retries included, not per attempt. Holds
+      # 3 attempts of the script's 60s budget plus a 10s API overrun and startup.
       activeDeadlineSeconds: 240
-      # Delete the reaper's OWN finished Job pods after 1h so it does not itself
-      # leak pods.
-      ttlSecondsAfterFinished: 3600
+      # Bounds how long a finished Job object lingers, leaving a half-day to
+      # inspect a failure (the history limits bound the count).
+      ttlSecondsAfterFinished: 43200
       # Retry on a transient API blip; a persistent failure (e.g. broken RBAC)
       # exhausts this and surfaces as a failed Job (the script exits non-zero on
       # any non-race list/delete error).
@@ -44,11 +40,8 @@ spec:
               type: RuntimeDefault
           containers:
             - name: reaper
-              # The SAME trusted, digest-pinned image the runner reaper and
-              # cloudflare-ddns run — python:3.14-slim has reliable date math
-              # (datetime.fromisoformat), is already vetted here, and needs no
-              # new image or version-pin. Digest-pinned because this is a
-              # pod-DELETING workload.
+              # The same digest-pinned image the runner reaper and cloudflare-ddns
+              # run. Digest-pinned because this workload deletes pods.
               image: python:3.14-slim@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c5320d762a27986facfc3355c1
               command:
                 - python3

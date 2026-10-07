@@ -1,12 +1,7 @@
 ---
-# Adopt the built-in `default` namespace to harden it. It hosts only the
-# vm-ingress backend Services/EndpointSlices and IngressRoutes (apps stage) —
-# no pods — but without PSA labels and a default-deny NetworkPolicy a pod
-# accidentally deployed there would be completely unguarded. Neither PSA nor
-# NetworkPolicy affects Services/EndpointSlices/IngressRoutes, so the
-# vm-ingress routing is untouched; both only bite if pods appear (fail-closed).
-#
-# prune: disabled — Flux must never attempt to delete a built-in namespace.
+# Adopt the built-in `default` namespace so PSA labels and a default-deny
+# NetworkPolicy guard any pod that lands there. It holds only the vm-ingress
+# Services and IngressRoutes, which neither affects. Prune stays disabled.
 apiVersion: v1
 kind: Namespace
 metadata:

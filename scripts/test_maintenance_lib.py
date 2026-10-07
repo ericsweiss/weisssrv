@@ -1,14 +1,7 @@
-#!/usr/bin/env python3
 """Unit tests for scripts/maintenance-lib.sh.
 
-The library holds the pure parsing / state-machine helpers extracted from the
-maintenance scripts that run in production maintenance CI. They used to be inline
-awk/grep with zero coverage, so a kubectl column-order change or a regression in
-a fail-closed verdict would have failed silently. Each test sources the library
-in a bash subprocess and drives one helper with synthetic input.
-
-Run with pytest:
-    pytest scripts/test_maintenance_lib.py -v
+Each test sources the library in a bash subprocess and drives one pure parsing
+or state-machine helper with synthetic input.
 """
 
 from __future__ import annotations
@@ -17,24 +10,13 @@ import subprocess
 import textwrap
 from pathlib import Path
 
-import pytest
+from conftest import source_and_run
 
 LIB = Path(__file__).resolve().parent / "maintenance-lib.sh"
 
 
 def _run(func_call: str, stdin: str = "") -> subprocess.CompletedProcess:
-    """Source the library and run a function call, returning the completed proc.
-
-    `func_call` is bash appended after sourcing, e.g. 'not_ready_node_names'
-    or 'deployment_replicas_ok 2 2'.
-    """
-    script = f". {LIB}\n{func_call}\n"
-    return subprocess.run(
-        ["bash", "-c", script],
-        input=stdin,
-        capture_output=True,
-        text=True,
-    )
+    return source_and_run(LIB, func_call, stdin)
 
 
 # not_ready_node_names
@@ -506,9 +488,3 @@ class TestHaSettleVerdict:
     def test_pending_down_streak_not_short_circuited(self):
         # A single (un-latched) down probe still blocks the never-down path.
         assert self._verdict("false", 1, 120, 60) == "keep-waiting"
-
-
-if __name__ == "__main__":
-    import sys
-
-    sys.exit(pytest.main([__file__, "-v"]))

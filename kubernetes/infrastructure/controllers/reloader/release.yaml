@@ -1,8 +1,7 @@
 ---
-# stakater/Reloader — rolls workloads annotated `reloader.stakater.com/auto`
-# when a ConfigMap they mount changes, so an edit reaches running pods without a
-# manual rollout. Opt-in only: an unannotated workload is never touched.
-# Secrets are deliberately out of scope (ignoreSecrets below).
+# stakater/Reloader rolls workloads annotated `reloader.stakater.com/auto`
+# when a mounted ConfigMap changes. Opt-in only; Secrets are out of scope
+# (ignoreSecrets below).
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -35,11 +34,9 @@ spec:
     reloader:
       # Watch every namespace so opt-in annotations work anywhere.
       watchGlobally: true
-      # Reloads here are ConfigMap-driven (the download-clients VPN config), so
-      # ignore Secrets: this drops cluster-wide Secret get/list/watch from
-      # Reloader's RBAC, keeping the secret-read surface off this controller.
-      # (Annotated workloads still auto-reload on their ConfigMap changes; a rare
-      # credential-Secret rotation is handled by a manual restart.)
+      # Reloads here are ConfigMap-driven, so ignore Secrets: this drops
+      # cluster-wide Secret get/list/watch from Reloader's RBAC. A credential
+      # rotation is handled by a manual restart.
       ignoreSecrets: true
       logFormat: json
       # PodMonitor, not the chart's deprecated serviceMonitor: it scrapes the pod

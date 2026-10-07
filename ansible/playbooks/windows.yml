@@ -1,13 +1,10 @@
 ---
-# Builds the Win11 VM SHELL and its guest firewall. The VM is created STOPPED —
-# Windows is installed INTERACTIVELY from the Proxmox console (docs/39, which
-# also lists the ISO prerequisite).
-#
-# gather_facts MUST stay false: the guest is ansible_connection: local, so facts
-# would be the operator's workstation. Every provisioning task delegates to the
-# Proxmox host and escalates there.
-#
-# Usage: task windows:provision (see also :provision-check, :status, :verify)
+# Builds the Win11 VM shell and its guest firewall. The VM is created STOPPED;
+# Windows is installed from the Proxmox console (docs/39-windows-vm.md).
+
+# CRITICAL: gather_facts MUST stay false. The guest is ansible_connection:
+# local, so facts would describe the operator's workstation. Provisioning
+# delegates to the Proxmox host.
 
 - name: Provision Windows VM
   hosts: windows_vms

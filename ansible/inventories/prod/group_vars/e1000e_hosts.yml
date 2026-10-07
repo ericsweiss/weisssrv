@@ -1,0 +1,13 @@
+---
+# nic0 here is an Intel e1000e/I219-LM: a wedged TX unit is not driver-recoverable
+# and the link stays up, so traffic black-holes and the OptiPlex bonds never fail
+# over. tso/gso/gro off is the cure, applied live and persisted by nic_tuning (docs/34).
+nic_tuning_overrides:
+  - interface: nic0
+    options:
+      - feature: tso
+        value: "off"
+      - feature: gso
+        value: "off"
+      - feature: gro
+        value: "off"

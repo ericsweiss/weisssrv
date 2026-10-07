@@ -39,10 +39,11 @@ gotchas that bite. Copy an existing app rather than inventing a shape.
    DB/stateful; memory-only when an HPA owns CPU. See `docs/33-autoscaling.md`.
 5. **Certificate** per host (`certificate.yaml`): issuer and `renewBefore` per
    docs/29 § Adding a New App; copy a neighbour's `certificate.yaml`.
-6. **IngressRoutes**: public → `external-dns.alpha.kubernetes.io/target:
-   ${cluster_external_domain}` annotation + `hsts-header` middleware; internal →
-   `lan-tailscale-only` + `hsts-header`. Reference platform middlewares from the
-   `traefik` namespace.
+6. **IngressRoutes**: the middleware set and the external-dns target annotation
+   are docs/29 § Adding a New App; copy a neighbour's `ingress-route.yaml` and
+   reference the platform middlewares from the `traefik` namespace. Spell every
+   domain and VIP as a `${cluster_*}` placeholder — a literal reds
+   `scripts/check-cluster-literals.py`.
 7. **Secrets** (`externalsecret.yaml`): the ClusterSecretStore name and the
    reference format are in docs/29 § Adding a New App — `remoteRef.key` is the 1P
    item TITLE and `remoteRef.property` the field, which is the part people get
@@ -50,21 +51,38 @@ gotchas that bite. Copy an existing app rather than inventing a shape.
 8. **Version pin**: add `${<app>_version}` to `group_vars/all.yml`, run
    `task flux:sync-versions`, commit both files. New Helm chart → add a
    `HelmRepository` under `kubernetes/infrastructure/sources/`.
-9. **Observability** (mandatory): ServiceMonitor/PodMonitor in the right place +
-   scrape NetworkPolicy; a down/stale alert rule (§ Alert rules below); a
-   blackbox probe for user-facing endpoints where no exporter covers
-   reachability. Grafana dashboard only if a good upstream one exists (ConfigMap
-   sidecar via `configMapGenerator` in `observability/dashboards/`).
-10. **DNS**: internal = `adguard_home_rewrites` entry in `group_vars/dns.yml` (answer
-    `10.0.10.101` for Traefik-fronted). External = the external-dns annotation
-    above (no Terraform edit) unless it needs a nested subdomain / DNS-only
-    record — then one entry in `local.dns_records` in `terraform/cloudflare/dns.tf`
+9. **Observability** (mandatory): the required set is docs/29 § Adding a New App.
+   § Alert rules below is the part docs/29 does not cover — the standalone
+   `PrometheusRule` layout, the mandatory `runbook_url`, and the promtool unit
+   test.
+10. **DNS**: the internal `adguard_home_rewrites` entry and the answer it takes
+    are docs/29 § Adding a New App. External is the external-dns annotation
+    unless the name needs a nested subdomain or a DNS-only record — then one
+    entry in `local.dns_records` in `terraform/cloudflare/dns.tf`
     (`protected = true`; the resources themselves live in the library module).
-11. **Docs**: a `docs/NN-*.md` deployment page (next free number) + its row in the
-    `README.md` docs index and the application table in `CLAUDE.md`, the per-app
-    `kubernetes/apps/<app>/README.md` (required by
+11. **Docs**: a `docs/NN-*.md` deployment page (next free number) plus its rows
+    in the `README.md` docs index and the `README.md` § Applications table, the
+    per-app `kubernetes/apps/<app>/README.md` (required by
     `kubernetes/apps/kustomization.yaml`), and `docs/16-next-steps.md` updated
-    (mark done / remove from planned).
+    (mark done / remove from planned). `scripts/test_doc_inventories.py` fails a
+    docs page with no index row.
+
+## A receiver reached from outside the cluster
+
+An app that terminates a protocol from the LAN rather than sitting behind
+Traefik needs more than an IngressRoute.
+`kubernetes/infrastructure/observability/alloy-syslog/` is the worked example:
+
+- Its own address pool entry in
+  `kubernetes/infrastructure/configs/metallb-ip-pools.yaml` (`autoAssign: false`)
+  claimed by a `metallb.io/loadBalancerIPs` annotation on the Service.
+- A `${cluster_*}` key for the address in
+  `kubernetes/infrastructure/sources/cluster-config.yaml`, plus its registration
+  in `scripts/check-cluster-literals.py` and the matching inventory mirror.
+- `externalTrafficPolicy: Local` when the source IP matters.
+- A **guest** firewall allow, not a `cluster.fw` rule: see
+  `references/add-vm-app.md` § Firewall — VIP-destined frames are filtered by
+  the guest firewall of the announcing node.
 
 ## Alert rules
 
@@ -137,7 +155,9 @@ For a new alert:
 - Authentik applications/providers/group-bindings are **codified in
   `terraform/authentik/`** (`applications.tf`, `providers_oauth2.tf`,
   `providers_proxy.tf`, `providers_saml.tf`, `groups.tf`,
-  `policy_bindings.tf`) — each file is a `locals` MAP fed to the weisssrv-lib
+  `policy_bindings.tf`, and — for people rather than applications —
+  `users.tf` + `imports.tf`, covered by the SSO row of the skill's decision
+  tree) — each file is a `locals` MAP fed to the weisssrv-lib
   `authentik-sso` module, not a set of resources, so adding an app is a map
   entry. Edit the `.tf` files, review the plan line-by-line,
   then run a supervised `op run -- terraform apply` — **never the UI** (UI-created

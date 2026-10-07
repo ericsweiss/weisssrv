@@ -7,10 +7,8 @@ driver:
 
 platforms:
   - name: base-test-01
-    # The systemd-container block is identical for every platform in this
-    # scenario, so it is anchored once and merged into the rest; only name
-    # differs. Anchors are per-file — YAML has no cross-file include — so each
-    # scenario carries its own copy of the shape.
+    # Shared systemd-container shape including group membership; only the
+    # name differs per platform.
     <<: &systemd_platform
       image: "${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:v0.17.1}"
       pre_build_image: true
@@ -36,16 +34,15 @@ platforms:
 dependency:
   name: galaxy
   options:
-    # The single source of truth for the weisssrv.infra pin these
-    # scenarios exercise. Resolved by ansible-galaxy in molecule's CWD,
-    # which is the scenario's stack dir (ansible/integration-tests/<stack>).
+    # Single source of truth for the weisssrv.infra pin, resolved in molecule's
+    # CWD (the stack dir).
     requirements-file: ../../requirements.yml
 provisioner:
   name: ansible
   env:
     # Required for molecule_docker plugin (upstream broken conditional in destroy.yml)
     ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
-    # Provide dummy SSH key for testing (base role expects this via all.yml lookup)
+    # Dummy key: all.yml looks SSH_PUBLIC_KEY up and the base role requires it.
     # yamllint disable-line rule:line-length
     SSH_PUBLIC_KEY: "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC3qctest123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123== test@molecule"
   playbooks:
@@ -53,20 +50,9 @@ provisioner:
   inventory:
     group_vars:
       base_managed:
-        # Base role configuration
-        # timezone inherited from production all.yml (America/Los_Angeles)
-        # admin_user (eric) comes from production all.yml via converge vars_files
-        base_common_packages:
-          - curl
-          - wget
-          - git
-          - htop
-          - tmux
-          - neovim
-          - net-tools
-        # SSH hardening is exercised end-to-end by the base role's own molecule
-        # scenario (sshd -T asserted); skip it here to keep this integration
-        # test focused on the base+qol+tailscale interaction.
+        # timezone, admin_user and base_common_packages come from production
+        # all.yml via the converge play's vars_files, which outranks this block.
+        # SSH hardening is covered by the base role's own molecule scenario.
         base_skip_ssh_config: true
         base_skip_dns_config: true  # DNS resolver needs real network
         # No TAILSCALE_AUTH_KEY in the env, so the role installs and configures

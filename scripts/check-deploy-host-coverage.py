@@ -1,60 +1,42 @@
 #!/usr/bin/env python3
-"""Assert every role a CI-deployed playbook declares actually reaches every host
-that playbook declares it for.
-
-check-deploy-coverage.sh answers "does SOME deploy job trigger on this path?".
-That is a weaker question than it looks: a job can be credited for a role while
-running it on a fraction of the hosts the inventory says need it.
-
-So this gate computes, per role:
-
-    declared = every host of every play that includes the role, across the
-               playbooks CI actually deploys
-    covered  = the hosts reached by deploy-stage invocations that select the
-               role's tag (or run untagged)
-
-and fails on a non-empty `declared - covered`.
-
-Roles ship from the weisssrv.infra collection, so a role edit is a
-`ansible/requirements.yml` bump rather than a path under this repo — the
-"does the job trigger on the role's path" half moved to
-check-deploy-coverage.sh's view of that file, and what remains here is the
-host-reachability half. The shape it catches: a job that triggers on a role but
-`--limit`s or `--tags`-away most of the hosts the inventory declares it for.
-
-Deliberately static: it parses hosts.yml, the playbooks, and .gitlab-ci.yml. No
-inventory plugin, no ansible, no cluster.
-
-Exit codes: 0 covered, 1 gaps found, 2 the input could not be analysed (an
-unparseable host pattern or a playbook a deploy job references but that does not
-exist) — never a silent pass.
+"""Assert every role a CI-deployed playbook declares reaches every host it is
+declared for. Per role, the hosts its plays declare minus the hosts the deploy
+jobs reach must be empty. Static parse: hosts.yml, playbooks and .gitlab-ci.yml.
 """
 
 from __future__ import annotations
 
+import argparse
 import re
 import sys
 from pathlib import Path
 
-import yaml
+try:
+    import yaml
+except ImportError:  # pragma: no cover - environment guard
+    print("ERROR: PyYAML required: pip install pyyaml", file=sys.stderr)
+    raise SystemExit(2) from None
 
-# --repo exists so the unit tests can drive the gate against a fixture tree;
-# every real invocation uses the default (the repo this script lives in).
+# PYTHONSAFEPATH, and any invocation that is not a direct script run, keeps this
+# directory off sys.path, so the companion module is placed there explicitly.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+try:
+    import inventory_tree  # noqa: E402
+    from ci_playbook_invocations import (  # noqa: E402
+        load_ci,
+        parse_invocations,
+        script_lines,
+    )
+except ImportError as exc:  # pragma: no cover - environment guard
+    sys.exit(f"{exc.name}.py must sit next to this script")
+
 REPO = Path(__file__).resolve().parent.parent
-if "--repo" in sys.argv:
-    REPO = Path(sys.argv[sys.argv.index("--repo") + 1]).resolve()
-INVENTORY = REPO / "ansible/inventories/prod/hosts.yml"
-PLAYBOOK_DIR = REPO / "ansible/playbooks"
-CI_FILE = REPO / ".gitlab-ci.yml"
+HOSTS_YML = "ansible/inventories/prod/hosts.yml"
 
-# Roles whose host-set gap is a deliberate, documented operating decision. Same
-# contract as check-deploy-coverage.sh's INTENTIONALLY_UNMAPPED_* lists: every
-# entry needs a rationale naming what deploys it instead. Keyed by role, valued
-# with the reason (printed when the gate reports a skip).
+# Roles whose host-set gap is a deliberate operating decision, keyed by SHORT
+# role name while playbooks declare `weisssrv.infra.<role>`. Same contract as
+# check-deploy-coverage.sh: every entry names what deploys it instead.
 ACKNOWLEDGED_GAPS = {
-    # Node lifecycle (rolling cordon/upgrade, kernel reboots via kured) is
-    # human-in-the-loop by design — `task k3s:deploy`. Already on
-    # check-deploy-coverage.sh's INTENTIONALLY_UNMAPPED_ROLES.
     "k3s": "k3s node lifecycle is manual (task k3s:deploy)",
     "proxmox_vm": "VM provisioning is manual (task k3s:provision-vms and friends)",
     "proxmox_lxc": "LXC provisioning is manual (same reasoning as proxmox_vm)",
@@ -62,12 +44,9 @@ ACKNOWLEDGED_GAPS = {
     "zfs_encryption": "ZFS passphrase activation is a manual cold-boot operation",
 }
 
-# Runtime-only ledger groups. _reachability-probe.yml fills them by group_by with
-# whatever a given run could not reach, and the deploy plays subtract them
-# (`base_managed:!deploy_skipped`); hosts.yml declares them empty so the pattern
-# does not warn. Excluding one must NOT shrink the declared host set: a host that
-# one run happened to skip still needs a deploy job covering it. Every other
-# exclusion/intersection still dies rather than being modelled wrongly.
+# Runtime-only ledger groups, filled by _reachability-probe.yml and subtracted by
+# the deploy plays (`base_managed:!deploy_skipped`). Excluding one must NOT shrink
+# the declared set: a host one run skipped still needs a deploy job covering it.
 RUNTIME_LEDGER_GROUPS = frozenset({"deploy_skipped", "deploy_reached", "deploy_lost"})
 
 
@@ -82,45 +61,16 @@ def load_yaml(path: Path):
         return yaml.safe_load(handle)
 
 
-def build_inventory() -> dict[str, set[str]]:
-    """Map every group AND host name to the set of hosts it expands to.
-
-    Two passes, because a group can be REFERENCED with an empty body before or
-    after it is defined (`base_managed: {children: {proxmox:, dns:, mail:}}`
-    names three groups defined further up). A single recursive walk would
-    resolve those references to the empty set — and silently under-report the
-    declared host set, which is the one thing this gate must never do.
-    """
-    data = load_yaml(INVENTORY)
-    direct_hosts: dict[str, set[str]] = {}
-    child_names: dict[str, set[str]] = {}
-
-    def collect(name: str, body) -> None:
-        body = body or {}
-        direct_hosts.setdefault(name, set())
-        child_names.setdefault(name, set())
-        direct_hosts[name] |= set(body.get("hosts") or {})
-        for child_name, child_body in (body.get("children") or {}).items():
-            child_names[name].add(child_name)
-            collect(child_name, child_body)
-
-    collect("all", data.get("all", {}))
-
-    resolved: dict[str, set[str]] = {}
-
-    def resolve(name: str, seen: frozenset[str] = frozenset()) -> set[str]:
-        if name in resolved:
-            return resolved[name]
-        if name in seen:
-            die(f"ERROR: inventory group cycle involving {name!r}")
-        hosts = set(direct_hosts.get(name, set()))
-        for child in child_names.get(name, set()):
-            hosts |= resolve(child, seen | {name})
-        resolved[name] = hosts
-        return hosts
-
-    groups = {name: resolve(name) for name in direct_hosts}
-    for host in groups["all"]:
+def build_inventory(root: Path) -> dict[str, set[str]]:
+    """Map every group AND host name to the set of hosts it expands to."""
+    index = inventory_tree.group_index(inventory_tree.load_inventory(root / HOSTS_YML))
+    try:
+        groups = {
+            name: set(inventory_tree.resolve_hosts(name, index, strict=True)) for name in index
+        }
+    except inventory_tree.InventoryCycle as exc:
+        die(f"ERROR: {exc}")
+    for host in groups.get("all", set()):
         groups.setdefault(host, {host})
     return groups
 
@@ -151,9 +101,9 @@ def expand(pattern: str | None, groups: dict[str, set[str]]) -> set[str]:
     return hosts
 
 
-def parse_playbook(rel_path: str) -> list[dict]:
+def parse_playbook(rel_path: str, root: Path) -> list[dict]:
     """Return [{hosts, roles: {role: tags}}] for one playbook."""
-    path = PLAYBOOK_DIR / rel_path
+    path = root / "ansible/playbooks" / rel_path
     if not path.exists():
         die(f"ERROR: deploy job references {path}, which does not exist")
     plays = []
@@ -184,17 +134,23 @@ def as_list(value) -> list[str]:
     return [str(v) for v in value]
 
 
-def parse_ci() -> list[dict]:
-    """Return one entry per deploy-stage ansible-playbook invocation."""
+def short_name(role: str) -> str:
+    """Playbooks declare `weisssrv.infra.<role>`; ACKNOWLEDGED_GAPS is keyed short."""
+    return role.rsplit(".", 1)[-1]
 
-    def passthrough(loader, tag_suffix, node):
-        # `!reference [job, key]` appears throughout rules:; returning None makes
-        # the entry a non-dict the walker skips (same trick as
-        # check-deploy-coverage.sh) instead of failing the safe loader.
+
+def relative_playbook(token: str | None) -> str | None:
+    """CI spells playbooks relative to ansible/; parse_playbook wants the part
+    under playbooks/. A call to anything else is not this gate's subject."""
+    if not token:
         return None
+    _, marker, rel = token.rpartition("playbooks/")
+    return rel if marker else None
 
-    yaml.SafeLoader.add_multi_constructor("!", passthrough)
-    ci = yaml.safe_load(CI_FILE.read_text())
+
+def parse_ci(root: Path) -> list[dict]:
+    """Return one entry per deploy-stage ansible-playbook invocation."""
+    ci = load_ci(root / ".gitlab-ci.yml")
 
     invocations = []
     for job_name, job in ci.items():
@@ -210,39 +166,48 @@ def parse_ci() -> list[dict]:
             if isinstance(rule_changes, dict):
                 rule_changes = rule_changes.get("paths") or []
             changes |= {c for c in rule_changes if isinstance(c, str)}
-        for line in job.get("script") or []:
-            if not isinstance(line, str) or "ansible-playbook" not in line:
-                continue
-            match = re.search(r"playbooks/(\S+\.ya?ml)", line)
-            if not match:
-                continue
-            limit = re.search(r"--limit\s+(\S+)", line)
-            tags = re.search(r"--tags\s+(\S+)", line)
-            invocations.append(
-                {
-                    "job": job_name,
-                    "playbook": match.group(1),
-                    "limit": limit.group(1) if limit else None,
-                    "tags": set(tags.group(1).split(",")) if tags else None,
-                    "changes": changes,
-                }
-            )
+        # script_lines expands a `!reference [.anchor, script]` block, so a
+        # referenced invocation counts toward coverage instead of vanishing.
+        for line in script_lines(job, ci):
+            for call in parse_invocations(line):
+                playbook = relative_playbook(call["playbook"])
+                if playbook is None:
+                    continue
+                invocations.append(
+                    {
+                        "job": job_name,
+                        "playbook": playbook,
+                        "limit": call["limit"],
+                        "tags": call["tags"],
+                        "skip_tags": call["skip_tags"],
+                        "changes": changes,
+                    }
+                )
     return invocations
 
 
-def main() -> int:
-    groups = build_inventory()
-    invocations = parse_ci()
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Assert CI deploy jobs reach every host each role is declared for.")
+    parser.add_argument(
+        "--repo",
+        type=Path,
+        default=REPO,
+        help="repo root to inspect (the unit tests drive fixture trees through it)",
+    )
+    args = parser.parse_args(argv)
+    root = args.repo.resolve()
+
+    groups = build_inventory(root)
+    invocations = parse_ci(root)
     if not invocations:
         print("ERROR: no deploy-stage ansible-playbook invocations found in .gitlab-ci.yml", file=sys.stderr)
         return 2
 
     playbooks = {inv["playbook"] for inv in invocations}
-    parsed = {name: parse_playbook(name) for name in sorted(playbooks)}
+    parsed = {name: parse_playbook(name, root) for name in sorted(playbooks)}
 
     declared: dict[str, set[str]] = {}
     covered: dict[str, set[str]] = {}
-    untriggered: dict[str, set[str]] = {}
 
     for plays in parsed.values():
         for play in plays:
@@ -255,8 +220,7 @@ def main() -> int:
         for play in parsed[inv["playbook"]]:
             play_hosts = expand(play["hosts"], groups)
             # No --limit means the play runs on everything it targets, including
-            # the controller-only `hosts: localhost` plays that no inventory
-            # group expands to.
+            # the controller-only `hosts: localhost` plays.
             reached = play_hosts if inv["limit"] is None else play_hosts & expand(inv["limit"], groups)
             for role, tags in play["roles"].items():
                 if inv["tags"] is not None and not (inv["tags"] & tags):
@@ -264,17 +228,32 @@ def main() -> int:
                 covered.setdefault(role, set())
                 covered[role] |= reached
 
+    # `--skip-tags` subtracts roles this gate cannot attribute, so such a job
+    # would be scored as covering everything its tags select.
+    unreadable = [
+        f"{inv['job']}: --skip-tags {','.join(sorted(inv['skip_tags']))} on {inv['playbook']} "
+        "is not modelled, so this job's coverage was not scored. Teach "
+        "ci_playbook_invocations.py and this gate rather than the job."
+        for inv in invocations
+        if inv["skip_tags"]
+    ]
+    if unreadable:
+        print("ERROR: deploy invocations this gate cannot score:\n", file=sys.stderr)
+        for line in unreadable:
+            print(f"  {line}", file=sys.stderr)
+        return 2
+
     failures = []
     for role in sorted(declared):
-        if role in ACKNOWLEDGED_GAPS:
+        if short_name(role) in ACKNOWLEDGED_GAPS:
             continue
         gap = declared[role] - covered.get(role, set())
         if gap:
-            failures.append((role, gap, sorted(untriggered.get(role, set()))))
+            failures.append((role, gap))
 
     if failures:
         print("ERROR: roles that CI deploys to only part of the host set they are declared for:\n", file=sys.stderr)
-        for role, gap, _jobs in failures:
+        for role, gap in failures:
             print(f"  {role} — unreached hosts: {', '.join(sorted(gap))}", file=sys.stderr)
             print(
                 "      (no deploy-stage invocation selects it for those hosts —"
@@ -290,8 +269,9 @@ def main() -> int:
         return 1
 
     print(f"All {len(declared)} roles in CI-deployed playbooks reach every host they are declared for.")
+    declared_short = {short_name(role) for role in declared}
     for role, reason in sorted(ACKNOWLEDGED_GAPS.items()):
-        if role in declared:
+        if role in declared_short:
             print(f"  (skipped {role}: {reason})")
     return 0
 

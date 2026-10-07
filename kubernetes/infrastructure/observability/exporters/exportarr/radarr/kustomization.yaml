@@ -11,10 +11,7 @@ patches:
       kind: Deployment
       name: exportarr-arr
     patch: |
-      # The Deployment patches below address containers/env/ports by INDEX, which
-      # a reordered base would silently repoint (a wrong URL or API key fails the
-      # scrape only, with no build error). These `test` ops make the base's shape
-      # a build-time assertion instead.
+      # `test` ops assert the base shape (see ../_exportarr).
       - op: test
         path: /spec/template/spec/containers/0/name
         value: exportarr

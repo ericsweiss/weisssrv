@@ -1,21 +1,15 @@
-"""Unit tests for the gitlab-runner-reaper CronJob program.
-
-The module lives next to its manifests
-(kubernetes/apps/gitlab-runner-reaper/gitlab-runner-reaper.py) because kustomize
-only accepts configMapGenerator sources inside the kustomization root, so it is
-loaded by path here.
-
-What is under test is the set of guards between the CronJob and deleting a LIVE
-CI job pod or an in-flight job's registry credential Secret every 15 minutes.
-The fixtures below are the recorded shapes those guards see.
+"""Unit tests for the gitlab-runner-reaper CronJob program, loaded by path from
+kubernetes/apps/gitlab-runner-reaper/. Under test are the guards between the
+CronJob and deleting a live job pod or an in-flight job's credential Secret.
 """
-import importlib.util
+import json
 import urllib.error
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 import yaml
+from script_loader import load_path
 
 MODULE_PATH = (
     Path(__file__).resolve().parent.parent
@@ -27,10 +21,7 @@ NOW = datetime(2026, 8, 15, 12, 0, 0, tzinfo=timezone.utc)
 
 
 def _load():
-    spec = importlib.util.spec_from_file_location("gitlab_runner_reaper", MODULE_PATH)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return load_path(MODULE_PATH)
 
 
 @pytest.fixture(scope="module")
@@ -109,9 +100,8 @@ MANAGER = "gitlab-runner-privileged-7d9c8f5b64-2xqzt"
 def executor_secret(tag: str) -> str:
     """A per-job credentials Secret name.
 
-    GitLab Runner names it from the same ProjectUniqueName as the executor pod,
-    so it carries the -project-/-concurrent- markers the name guard requires;
-    the tag stands in for the random suffix.
+    Named from the same ProjectUniqueName as the executor pod, so it carries the
+    -project-/-concurrent- markers the name guard requires.
     """
     return f"runner-hz7ktcs-project-42-concurrent-0-{tag}"
 
@@ -155,10 +145,20 @@ def test_module_exists():
     assert MODULE_PATH.is_file(), f"{MODULE_PATH} missing — the CronJob mounts it"
 
 
-def test_label_carries_the_unsubstituted_placeholder(reaper):
-    # The raw file is what Flux substitutes; a literal here would be a
-    # cluster-identity leak (scripts/check-cluster-literals.py).
-    assert reaper.LABEL == "${cluster_node_label_domain}/runner-class"
+def test_the_label_selector_comes_from_the_cronjob(reaper):
+    # The module holds no cluster identity: the label arrives as env, and Flux
+    # substitutes the placeholder in the manifest.
+    assert _container_env()["RUNNER_CLASS_LABEL"] == \
+        "${cluster_node_label_domain}/runner-class"
+    assert reaper.load_config(_container_env()).runner_class_label == \
+        _container_env()["RUNNER_CLASS_LABEL"]
+
+
+def test_load_config_fails_closed_without_a_label(reaper):
+    # With no label selector every pod in the namespace is a candidate and only
+    # the name guard stands between the sweep and a manager pod.
+    with pytest.raises(SystemExit, match="RUNNER_CLASS_LABEL"):
+        reaper.load_config({"NAMESPACES": "gitlab-runner"})
 
 
 # --- name guards -----------------------------------------------------------
@@ -251,7 +251,8 @@ def test_creation_age_minutes(reaper):
 
 def test_load_config_defaults_match_the_manifest(reaper):
     env = _container_env()
-    cfg = reaper.load_config({"NAMESPACES": env["NAMESPACES"]})
+    cfg = reaper.load_config({"NAMESPACES": env["NAMESPACES"],
+                              "RUNNER_CLASS_LABEL": env["RUNNER_CLASS_LABEL"]})
     assert cfg.namespaces == env["NAMESPACES"].split()
     # Every knob the manifest sets explicitly must equal the code default, or
     # the two drift silently: the CronJob wins in-cluster while every test here
@@ -260,7 +261,7 @@ def test_load_config_defaults_match_the_manifest(reaper):
         "the CronJob sets an env var load_config does not read"
     for name, value in cfg._asdict().items():
         manifest = env.get(name.upper())
-        if manifest is not None and name != "namespaces":
+        if manifest is not None and name not in ("namespaces", "runner_class_label"):
             assert value == int(manifest), f"{name} differs from the CronJob env"
     # activeDeadlineSeconds covers the whole Job INCLUDING retries, so the
     # per-attempt share is deadline / (backoffLimit + 1): the soft budget must
@@ -274,9 +275,21 @@ def test_load_config_defaults_match_the_manifest(reaper):
 def test_load_config_fails_closed_on_an_empty_namespace_list(reaper):
     # An empty list sweeps nothing and exits 0 — indistinguishable from a clean
     # run in the Job history, so it must refuse to start instead.
-    for env in ({}, {"NAMESPACES": "   "}):
+    label = {"RUNNER_CLASS_LABEL": "example.test/runner-class"}
+    for env in ({}, dict(label, NAMESPACES="   ")):
         with pytest.raises(SystemExit):
             reaper.load_config(env)
+
+
+def test_load_config_rejects_non_positive_values(reaper):
+    env = {"NAMESPACES": "a", "RUNNER_CLASS_LABEL": "example.test/runner-class",
+           "MAX_AGE_MINUTES": "-1"}
+    with pytest.raises(SystemExit, match="MAX_AGE_MINUTES=-1"):
+        reaper.load_config(env)
+    env = {"NAMESPACES": "a", "RUNNER_CLASS_LABEL": "example.test/runner-class",
+           "PAGE_LIMIT": "0"}
+    with pytest.raises(SystemExit, match="PAGE_LIMIT=0"):
+        reaper.load_config(env)
 
 
 def test_rotation_period_equals_the_cronjob_schedule():
@@ -289,7 +302,8 @@ def test_rotation_period_equals_the_cronjob_schedule():
 # --- pod reaping -----------------------------------------------------------
 
 def _cfg(reaper, **over):
-    base = {"NAMESPACES": "gitlab-runner"}
+    base = {"NAMESPACES": "gitlab-runner",
+            "RUNNER_CLASS_LABEL": "example.test/runner-class"}
     base.update(over)
     return reaper.load_config(base)
 
@@ -372,7 +386,8 @@ def test_pod_listing_follows_the_continue_token(reaper):
         {"items": [pod(EXECUTOR, uid="u1")], "metadata": {"continue": "tok"}},
         {"items": [pod(EXECUTOR + "-2", uid="u2")]},
     ]})
-    listed = list(reaper.iter_terminal_pods(api, "gitlab-runner", "Succeeded", 25))
+    listed = list(reaper.iter_terminal_pods(api, "gitlab-runner", "Succeeded", 25,
+                                            "example.test/runner-class"))
     assert [p["metadata"]["uid"] for p in listed] == ["u1", "u2"]
     assert len(api.raw_paths) == 2
     assert "continue=tok" in api.raw_paths[1]
@@ -540,12 +555,9 @@ def test_budget_stop_leaves_the_later_namespaces_untouched_and_says_so(reaper):
 
 
 def test_budget_stop_in_the_last_namespace_still_reports_a_partial_run(reaper):
-    # The stop lands in the FINAL namespace of the rotation, so there is nothing
-    # AFTER it: the only namespace left unswept is the one the stop happened in.
-    # Reporting the namespaces strictly after the stop (order[index + 1:]) would
-    # make this run log nothing and claim budget_stop=no — and since rotation
-    # moves the head every run, a reaper that always times out one namespace
-    # short reaches this shape on a schedule.
+    # The stop lands in the FINAL namespace, so nothing follows it: reporting
+    # only the namespaces AFTER the stop would log nothing and claim
+    # budget_stop=no, and rotation reaches this shape on a schedule.
     cfg = _cfg(reaper, NAMESPACES="gitlab-runner-privileged gitlab-runner")
     order = reaper.rotate_namespaces(cfg.namespaces, NOW, cfg.rotate_period_seconds)
 
@@ -617,14 +629,75 @@ def test_namespace_start_rotates_between_scheduled_runs(reaper):
     assert reaper.rotate_namespaces([], NOW) == []
 
 
-if __name__ == "__main__":
-    import sys
-    sys.exit(pytest.main([__file__, "-v"]))
+class _FakeResponse:
+    def __init__(self, body: bytes):
+        self._body = body
 
-def test_load_config_rejects_non_positive_values(reaper):
-    env = {"NAMESPACES": "a", "MAX_AGE_MINUTES": "-1"}
-    with pytest.raises(SystemExit, match="MAX_AGE_MINUTES=-1"):
-        reaper.load_config(env)
-    env = {"NAMESPACES": "a", "PAGE_LIMIT": "0"}
-    with pytest.raises(SystemExit, match="PAGE_LIMIT=0"):
-        reaper.load_config(env)
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+
+class TestKubeApi:
+    """The only place the HTTP method, body and headers reach the wire."""
+
+    def _capture(self, reaper, monkeypatch, body: bytes = b'{"items": []}'):
+        seen = {}
+
+        def fake_urlopen(req, timeout=None, context=None):
+            seen["req"] = req
+            seen["timeout"] = timeout
+            return _FakeResponse(body)
+
+        monkeypatch.setattr(reaper.urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(reaper.ssl, "create_default_context", lambda cafile=None: "ctx")
+        return seen
+
+    def test_a_get_carries_the_bearer_token_and_no_body(self, reaper, monkeypatch):
+        seen = self._capture(reaper, monkeypatch)
+        api = reaper.KubeApi("tok", "/dev/null", 5)
+        assert api.request("GET", "/api/v1/pods") == {"items": []}
+        req = seen["req"]
+        assert req.get_method() == "GET"
+        assert req.full_url == reaper.API + "/api/v1/pods"
+        assert req.headers["Authorization"] == "Bearer tok"
+        assert "Content-type" not in req.headers
+        assert req.data is None
+        assert seen["timeout"] == 5
+
+    def test_a_body_is_sent_as_json(self, reaper, monkeypatch):
+        seen = self._capture(reaper, monkeypatch)
+        api = reaper.KubeApi("tok", "/dev/null", 5)
+        api.request("DELETE", "/api/v1/namespaces/ns/pods/p", {"preconditions": {"uid": "u"}})
+        req = seen["req"]
+        assert req.get_method() == "DELETE"
+        assert req.headers["Content-type"] == "application/json"
+        assert json.loads(req.data.decode()) == {"preconditions": {"uid": "u"}}
+
+    def test_an_empty_response_body_is_an_empty_mapping(self, reaper, monkeypatch):
+        self._capture(reaper, monkeypatch, body=b"")
+        api = reaper.KubeApi("tok", "/dev/null", 5)
+        assert api.request("DELETE", "/api/v1/namespaces/ns/pods/p") == {}
+
+    def test_from_service_account_reads_the_mounted_token(self, reaper, monkeypatch, tmp_path):
+        (tmp_path / "token").write_text("mounted-token\n", encoding="utf-8")
+        (tmp_path / "ca.crt").write_text("", encoding="utf-8")
+        seen = self._capture(reaper, monkeypatch)
+        api = reaper.KubeApi.from_service_account(5, sa_dir=str(tmp_path))
+        api.request("GET", "/api/v1/pods")
+        assert seen["req"].headers["Authorization"] == "Bearer mounted-token"
+
+    def test_an_unreachable_apiserver_propagates(self, reaper, monkeypatch):
+        def boom(req, timeout=None, context=None):
+            raise urllib.error.URLError("down")
+
+        monkeypatch.setattr(reaper.urllib.request, "urlopen", boom)
+        monkeypatch.setattr(reaper.ssl, "create_default_context", lambda cafile=None: "ctx")
+        api = reaper.KubeApi("tok", "/dev/null", 5)
+        with pytest.raises(urllib.error.URLError):
+            api.request("GET", "/api/v1/pods")

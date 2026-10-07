@@ -1,14 +1,7 @@
 ---
-# Cluster-wide wildcard Certificates used by IngressRoutes in the
-# `default` namespace (Plex, Home Assistant, AdGuard, router, and
-# vm-ingress HA bypass routes). These produce the `ericsweiss-com-tls`
-# and `esweiss-com-tls` Secrets in the `default` namespace.
-#
-# cert-manager ClusterIssuer (letsencrypt-prod) issues these via DNS-01
-# over Cloudflare. Renewal happens 30 days before expiration.
-#
-# Apps outside the `default` namespace carry their own wildcard Certificate,
-# because Traefik reads TLS Secrets only from the IngressRoute's own namespace.
+# Wildcard Certificates for the `default` namespace IngressRoutes, issued by
+# letsencrypt-prod over DNS-01. Apps elsewhere carry their own: Traefik reads a
+# TLS Secret only from the route's own namespace.
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
@@ -39,10 +32,7 @@ spec:
   dnsNames:
     - "*.${cluster_internal_domain}"
     - ${cluster_internal_domain}
-  # CANONICAL stagger note (the other two legs point here). The three identical
-  # *.esweiss.com wildcards live in separate namespaces because Traefik only
-  # reads TLS Secrets from the IngressRoute's own namespace, so each fires its
-  # own ACME order. renewBefore is staggered across the legs — default 720h /
-  # external-secrets 600h / downloads 480h — so they don't all renew in the same
-  # window and burn the Let's Encrypt 5/week duplicate-cert limit at once.
+  # CRITICAL: stagger anchor, the other two wildcard legs point here. Each
+  # namespace's *.esweiss.com wildcard orders separately, so renewBefore is
+  # staggered (720h / 600h / 480h) to stay under the 5/week duplicate limit.
   renewBefore: 720h   # 30 days (stagger anchor)

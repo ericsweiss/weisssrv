@@ -1,10 +1,7 @@
 ---
-# Scrape Immich's native Prometheus metrics from the external VM (10.0.10.157).
-# IMMICH_TELEMETRY_INCLUDE=all exposes plain-HTTP /metrics on the API (8081) and
-# microservices (8082) ports of the immich-server container, both published on
-# the VM and firewall-gated to the k3s nodes (sg-immich). Pod scrapes leave the
-# cluster masqueraded to node IPs in the LAN /24, so no token/TLS is needed. The
-# default `job` label is the Service name (immich-metrics) — ImmichDown reads it.
+# Scrape Immich's native Prometheus metrics from the external VM (10.0.10.157),
+# on the plain-HTTP API (8081) and microservices (8082) ports, firewall-gated to
+# the k3s nodes by sg-immich. ImmichDown reads the `job` label immich-metrics.
 apiVersion: v1
 kind: Service
 metadata:

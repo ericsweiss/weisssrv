@@ -11,10 +11,9 @@ spec:
   groups:
     - name: homelab.kubernetes-resources
       rules:
-        # Upstream KubeCPUOvercommit's shape (requests must fit after removing
-        # the largest node) minus the gitlab-runner* namespaces, which
-        # deliberately over-request CPU for burst CI against a correctly-sized
-        # ResourceQuota and flapped the upstream rule for 15-30m per burst.
+        # Taken from kube-prometheus-stack 91.4.1
+        # Upstream's shape minus the gitlab-runner* namespaces, which
+        # over-request CPU for burst CI against a sized ResourceQuota.
         - alert: KubeCPUOvercommit
           expr: >-
             sum(namespace_cpu:kube_pod_container_resource_requests:sum{namespace!~"gitlab-runner.*"})
@@ -36,17 +35,9 @@ spec:
               namespaces are excluded because their ResourceQuota
               deliberately over-requests for burst CI.
 
-        # The leading indicator the other two memory alerts lack: OOMKilled is
-        # the post-mortem and VPARecommendationExceedsLimit keys off the
-        # recommender, which lags a burst by hours. This is the live working set
-        # against the container's own limit.
-        #
-        # Exclusions are the workloads whose steady state legitimately sits near
-        # the ceiling: hindsight/llama is GPU/model-pinned with a deliberate Off
-        # VPA (docs/43) and routinely runs above 0.9, and Prometheus and Loki
-        # count reclaimable page cache in their working set. Everything else
-        # crossing 0.9 for 15m is a real sizing gap. llama is not left unwatched
-        # — HindsightLlamaMemoryNearLimit below carries it at 0.95.
+        # Live working set against the container's own limit, the leading
+        # indicator ahead of an OOMKill. Excludes workloads that steadily sit
+        # near the ceiling: hindsight/llama, Prometheus, Loki and Grafana.
         - alert: ContainerMemoryNearLimit
           expr: >-
             (
@@ -65,7 +56,7 @@ spec:
               or
               kube_pod_container_resource_limits{resource="memory",
                                                  namespace="observability",
-                                                 container=~"prometheus|loki"}
+                                                 container=~"prometheus|loki|grafana"}
             )
           for: 15m
           labels:
@@ -83,12 +74,39 @@ spec:
               where the workload has a VPA, its maxAllowed alongside — docs/33
               "Applying an Off-tier recommendation".
 
-        # hindsight/llama's own band, since the 0.9 rule above excludes it. It
-        # is the one container in the cluster with neither a VPA recommendation
-        # (its VPA is deliberately Off — docs/43) nor a leading indicator, so an
-        # OOMKill is otherwise its first and only signal. 0.95 sits clear of its
-        # normal ceiling, so a crossing is a leak / KV-spill signature rather
-        # than page-cache flap.
+        # Grafana, Loki and Prometheus, excluded from the 0.9 rule above. RSS is
+        # the non-reclaimable half, which is what the OOM killer counts.
+        - alert: PageCacheWorkloadRSSNearLimit
+          expr: >-
+            (
+              max by (namespace, pod, container) (
+                container_memory_rss{namespace="observability", container=~"grafana|loki|prometheus"}
+              )
+              / on (namespace, pod, container) group_left ()
+              max by (namespace, pod, container) (
+                kube_pod_container_resource_limits{resource="memory",
+                                                   namespace="observability",
+                                                   container=~"grafana|loki|prometheus"}
+              )
+            ) > 0.9
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: '${cluster_runbook_base_url}/33-autoscaling.md'
+            summary: >-
+              {{ $labels.namespace }}/{{ $labels.container }} RSS is within 10%
+              of its memory limit
+            description: >-
+              Non-reclaimable memory in {{ $labels.namespace }}/{{ $labels.pod }}
+              has held above 90% of the container's memory limit for 15 minutes
+              ({{ $value | humanizePercentage }}). Unlike the working set this
+              is not page cache: raise the limit and the VPA maxAllowed in git
+              — docs/33 "Applying an Off-tier recommendation".
+
+        # hindsight/llama's own band, since the 0.9 rule above excludes it. Its
+        # VPA is Off (docs/43), so without this an OOMKill is its only signal.
+        # 0.95 sits clear of its normal ceiling.
         - alert: HindsightLlamaMemoryNearLimit
           expr: >-
             (
@@ -118,11 +136,9 @@ spec:
               leak) before raising the limit — its GPU node has little
               allocatable memory left to give.
 
-        # A container that OOMKills and restarts cleanly is invisible upstream:
-        # KubePodCrashLooping needs a restart RATE and KubeContainerWaiting needs
-        # the container to stay down. Edge-triggered on the restart counter and
-        # qualified by the last-terminated reason, so it reports the event rather
-        # than the surviving state and self-resolves after the 1h window.
+        # A container that OOMKills and restarts cleanly is invisible to
+        # KubePodCrashLooping and KubeContainerWaiting. Edge-triggered on the
+        # restart counter, qualified by the last-terminated reason.
         - alert: ContainerOOMKilled
           expr: >-
             increase(kube_pod_container_status_restarts_total[1h]) > 0
@@ -139,8 +155,11 @@ spec:
             description: >-
               Container {{ $labels.container }} in pod
               {{ $labels.namespace }}/{{ $labels.pod }} hit its memory
-              limit and was killed by the kernel. Compare the container's
-              limit against its VPA recommendation
-              (`kubectl describe vpa -n {{ $labels.namespace }}`) and
-              raise the size in git — the limit is a hand-set number, not
-              something the VPA maintains for an Off-tier workload.
+              limit and was killed by the kernel. Live limit
+              {{ with query (printf "kube_pod_container_resource_limits{namespace='%s', pod='%s', container='%s', resource='memory'}" $labels.namespace $labels.pod $labels.container) }}{{ . | first | value | humanize1024 }}B{{ else }}unknown{{ end }},
+              working set now
+              {{ with query (printf "container_memory_working_set_bytes{namespace='%s', pod='%s', container='%s'}" $labels.namespace $labels.pod $labels.container) }}{{ . | first | value | humanize1024 }}B{{ else }}unknown{{ end }}.
+              A live limit above the one in git means the VPA rescaled it, so
+              the kill was against a moved ceiling. Raise the size in git — the
+              limit is a hand-set number, not something the VPA maintains for an
+              Off-tier workload.

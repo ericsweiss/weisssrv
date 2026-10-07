@@ -1,13 +1,7 @@
 ---
 # promtool unit tests for the multi-day staleness family: the off-node etcd
-# snapshot and the CRITICAL escalation arm of each backup chain
-# (backup.test.yaml covers the warning/failed arms). These are the alerts that
-# stand between a silently-dead backup and a restore that cannot happen.
-# The input interval matches evaluation_interval so every evaluation lands on a
-# fresh sample — a sparser input goes stale past the 5m lookback and resets the
-# `for:` window mid-test.
-# rule_files is resolved relative to this file's runtime location; the lint
-# script copies the tests next to the extracted rules.yaml before running them.
+# snapshot and each backup chain's critical arm. Input interval matches
+# evaluation_interval so no sample goes stale inside a `for:` window.
 rule_files:
   - rules.yaml
 evaluation_interval: 1h
@@ -110,11 +104,12 @@ tests:
               instance: '10.0.10.102:9101'
 
   # Per-app dump landing zone: the label set must survive to the alert, or the
-  # page cannot name which app stopped dumping.
+  # page cannot name which app stopped dumping. A non-zero mtime, because 0 is
+  # the never-landed sentinel the staleness arms exclude.
   - interval: 1h
     input_series:
       - series: 'backup_artifact_last_mtime_seconds{app="authentik", instance="10.0.10.102:9101"}'
-        values: '0+0x130'
+        values: '1+0x130'
     alert_rule_test:
       - eval_time: 121h
         alertname: BackupArtifactStaleCritical
@@ -141,7 +136,7 @@ tests:
               instance: '10.0.10.102:9101'
 
   # Every chain succeeding on schedule (timestamp tracking wall clock) must
-  # leave all four critical arms silent — the false-positive guard.
+  # leave the critical arms and the warning arm silent — the false-positive guard.
   - interval: 1h
     input_series:
       - series: 'archive_backup_last_success_timestamp_seconds{instance="10.0.10.102:9101"}'
@@ -164,4 +159,7 @@ tests:
         exp_alerts: []
       - eval_time: 121h
         alertname: BackupArtifactStaleCritical
+        exp_alerts: []
+      - eval_time: 121h
+        alertname: ArchiveBackupStale
         exp_alerts: []

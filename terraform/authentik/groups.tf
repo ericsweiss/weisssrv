@@ -1,23 +1,12 @@
-# Groups + memberships. Membership is modelled here on the group's `users`
-# list (the goauthentik provider models it group-side; authentik_user.groups
-# is the same relation from the other end — managing both would fight). The
-# module resolves each USERNAME to its pk through a data source; users
-# themselves are NOT managed.
-#
-# MEMBERSHIP IS EXHAUSTIVE. The provider treats `users` as the authoritative
-# full list, so adding a second household member to homarr-users / mealie-users /
-# home-assistant-users in the Admin console is drift: authentik-drift-plan
-# reports it and the next supervised apply DELETES them from the group, removing
-# their access. The diff is a list of pks, not names, so it is easy to approve by
-# accident. Add people here instead — one more username in the relevant `users`
-# list.
-#
-# Deliberately unmanaged: "authentik Read-only" (auto-generated alongside its
-# managed role by authentik's RBAC bootstrap).
-#
-# Every group carries the module's prevent_destroy: a renamed key plans as
-# destroy+create, which drops the memberships and every binding referencing it
-# (README § Guardrails).
+# Groups and memberships, modelled group-side on each group's `users` list.
+# The module resolves each username to its pk; users are not managed here, and
+# "authentik Read-only" is left unmanaged. Guardrails: README.
+
+# CRITICAL: membership is exhaustive. The provider treats `users` as the full
+# authoritative list, so a member added in the Admin console is drift and the
+# next supervised apply deletes them from the group, removing their access. The
+# diff shows pks rather than names, so it is easy to approve by accident. Add
+# people here instead.
 
 locals {
   # The single human operator. authentik's bootstrap admin (akadmin) is only in
@@ -73,10 +62,8 @@ locals {
       }
     },
     {
-      # authentik's built-in superuser group. Managed (unlike "authentik
-      # Read-only") because its membership is user-curated state: eric was added
-      # alongside the bootstrap akadmin account. Key differs from the name
-      # because the name carries a space.
+      # authentik's built-in superuser group, managed because its membership is
+      # user-curated state. The key differs from the name, which has a space.
       "authentik-admins" = {
         name         = "authentik Admins"
         is_superuser = true
@@ -86,12 +73,8 @@ locals {
   )
 
   # Basic-auth injection attributes, kept out of local.groups so that map stays
-  # non-sensitive. The attribute NAMES are what the proxy providers'
-  # basic_auth_*_attribute fields reference (providers_proxy.tf); group
-  # attributes merge into every member's user attributes, so membership alone
-  # grants the credential injection. The values are op-run-injected from the SAME
-  # 1Password items the apps' real credentials live in (variables.tf) — never
-  # literals in authentik config.
+  # non-sensitive. The names are referenced by providers_proxy.tf, and the
+  # values are op-run-injected from 1Password (variables.tf).
   group_secret_attributes = {
     # media-admins gates the seven Downloads apps (policy_bindings.tf) and
     # injects the NZBGet ControlUsername/ControlPassword pair for the nzbget

@@ -1,16 +1,11 @@
 ---
-# Full system update playbook
-# Updates both OS packages AND applications in a single operation
-# Performs rolling updates to minimize service disruption
-#
-# Phase 1: OS packages (rolling, one host at a time)
-# Phase 2-5: Applications (imported from update-applications.yml)
+# Full system update: OS packages rolling one host at a time (phase 1), then
+# the application plays imported from update-applications.yml.
 
-# NOTE: Inventory order is NOT a safety mechanism here. The reboot protections
-# live in _reboot-if-needed.yml: pve-nas-01 sets proxmox_self_reboot_safe: false
-# so its reboot is always DEFERRED to an operator, and the CI executor
-# self-host detection defers/detaches the reboot of whichever host runs the
-# executor VM (covering pve-prec-01 when it hosts the runner).
+# CRITICAL: inventory order is not a safety mechanism. The reboot protections
+# live in _reboot-if-needed.yml, where pve-nas-01 sets
+# proxmox_self_reboot_safe: false and the CI executor self-host detection
+# defers the reboot of whichever host runs the executor VM.
 - name: Full system update - OS packages (rolling)
   hosts: base_managed
   become: true
@@ -22,7 +17,7 @@
       vars:
         apt_upgrade_phase_label: "=== Updating {{ inventory_hostname }} - Phase 1: OS Packages ==="
 
-# Phase 2-5: Import application updates (single source of truth)
+# Import the application updates (single source of truth)
 - name: Full system update - Applications
   ansible.builtin.import_playbook: update-applications.yml
 

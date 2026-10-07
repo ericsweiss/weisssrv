@@ -1,8 +1,7 @@
 ---
 # GitLab Runner leaked-pod + leaked-credentials-secret reaper. The program is
-# gitlab-runner-reaper.py in this directory, mounted from the configMapGenerator
-# in kustomization.yaml; unit tests in scripts/. What leaks, the guard-by-guard
-# reasoning and the RBAC trade-off: docs/13-ci-cd.md § Runner garbage collection.
+# gitlab-runner-reaper.py here, mounted by kustomization.yaml's configMapGenerator.
+# Guards and RBAC trade-off: docs/13-ci-cd.md § Runner garbage collection.
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -15,16 +14,13 @@ spec:
   concurrencyPolicy: Forbid  # Never overlap reaper runs.
   jobTemplate:
     spec:
-      # Hard ceiling for the WHOLE Job, retries included — not per attempt. It
-      # therefore has to hold backoffLimit+1 = 3 attempts of the script's soft
-      # BUDGET_SECONDS (90s) plus one API_TIMEOUT_SECONDS (10s) overrun and pod
-      # startup each: 3 * ~110s. At the old 120s the first attempt consumed the
-      # entire budget and backoffLimit 2 was dead letter. Still well under the
-      # */15 schedule, and concurrencyPolicy: Forbid covers the rest.
+      # Ceiling for the WHOLE Job, retries included: backoffLimit+1 = 3 attempts
+      # of BUDGET_SECONDS (90s) + one API_TIMEOUT_SECONDS overrun + startup,
+      # ~3 * 110s. Well under the */15 schedule; Forbid covers the rest.
       activeDeadlineSeconds: 360
-      # Delete the reaper's OWN finished Job pods after 1h so the reaper does not
-      # itself leak pods.
-      ttlSecondsAfterFinished: 3600
+      # Bounds how long a finished Job object lingers, leaving a half-day to
+      # inspect a failure (the history limits bound the count).
+      ttlSecondsAfterFinished: 43200
       # Retry on a transient API blip; a persistent failure (e.g. broken RBAC)
       # exhausts this and surfaces as a failed Job (script exits non-zero on any
       # non-race list/delete error).
@@ -43,13 +39,9 @@ spec:
               type: RuntimeDefault
           containers:
             - name: reaper
-              # Reuse the SAME trusted, digest-pinned image cloudflare-ddns runs.
-              # NOT rancher/kubectl: that image is busybox/Alpine and its
-              # `date -d <RFC3339>` cannot parse the timestamps, which would make
-              # the reaper a silent no-op. python:3.14-slim has reliable date math
-              # (datetime.fromisoformat), is already vetted in this repo, and needs
-              # no new image or version-pin to maintain. Digest-pinned because this
-              # is a pod-DELETING workload.
+              # Digest-pinned: this workload deletes pods. The image must ship
+              # python3 — the program is gitlab-runner-reaper.py, stdlib only;
+              # a shell-only base cannot run it at all.
               image: python:3.14-slim@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c5320d762a27986facfc3355c1
               command:
                 - python3
@@ -57,6 +49,10 @@ spec:
               env:
                 - name: NAMESPACES
                   value: "gitlab-runner-privileged gitlab-runner"
+                # Guard 1: the label every executor pod carries and no manager
+                # pod does. Must match pod_labels in BOTH runner releases.
+                - name: RUNNER_CLASS_LABEL
+                  value: "${cluster_node_label_domain}/runner-class"
                 - name: MAX_AGE_MINUTES
                   value: "30"
                 - name: MAX_SECRET_AGE_MINUTES

@@ -1,9 +1,7 @@
 ---
-# promtool unit tests for the ZFS pool-health and SMART alerts — the data-loss
-# class, where a PromQL edit that makes a rule never fire is invisible until the
-# thing it watches has already failed.
-# rule_files is resolved relative to this file's runtime location; the lint
-# script copies the tests next to the extracted rules.yaml before running them.
+# promtool unit tests for the ZFS pool-health and SMART alerts. rule_files
+# resolves relative to this file's runtime location; the lint script copies the
+# tests next to the extracted rules.yaml before running them.
 rule_files:
   - rules.yaml
 evaluation_interval: 1m
@@ -72,8 +70,8 @@ tests:
         alertname: ZFSPoolDataErrors
         exp_alerts: []
 
-  # ZFSPoolDeviceErrors sums read+write+cksum per pool, so a single erroring
-  # vdev must still trip it (the sum-by is what makes per-device labels drop out).
+  # ZFSPoolDeviceErrors takes the max over the per-type rows, so a single
+  # erroring type must still trip it (the max-by drops the type/device labels).
   - interval: 1m
     input_series:
       - series: 'zfs_pool_status_errors_total{pool="archive", instance="10.0.10.102:9101", device="sdb", type="read"}'
@@ -88,6 +86,49 @@ tests:
               severity: warning
               pool: archive
               instance: '10.0.10.102:9101'
+
+  # A resilvering vdev still reports its counters: the pool pages as DEGRADED
+  # and the per-vdev cksum errors page alongside it.
+  - interval: 1m
+    input_series:
+      - series: 'zfs_pool_status_health_code{pool="tank", instance="10.0.10.102:9101"}'
+        values: '2+0x10'
+      - series: 'zfs_pool_status_errors_total{pool="tank", instance="10.0.10.102:9101", device="sde", type="cksum"}'
+        values: '17+0x10'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: ZFSPoolNotOnline
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              pool: tank
+              instance: '10.0.10.102:9101'
+      - eval_time: 6m
+        alertname: ZFSPoolDeviceErrors
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              pool: tank
+              instance: '10.0.10.102:9101'
+
+  # A FAULTED vdev ("too many errors") reports read and write counters on the
+  # same pool; the max-by collapses them to one alert.
+  - interval: 1m
+    input_series:
+      - series: 'zfs_pool_status_health_code{pool="archive", instance="10.0.10.103:9101"}'
+        values: '2+0x10'
+      - series: 'zfs_pool_status_errors_total{pool="archive", instance="10.0.10.103:9101", device="sdf", type="read"}'
+        values: '41+0x10'
+      - series: 'zfs_pool_status_errors_total{pool="archive", instance="10.0.10.103:9101", device="sdf", type="write"}'
+        values: '9+0x10'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: ZFSPoolDeviceErrors
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              pool: archive
+              instance: '10.0.10.103:9101'
 
   # SMARTDeviceUnhealthy: min_over_time rides through standby gaps, so one
   # FAILED sample keeps the alert firing for the whole 6h window.

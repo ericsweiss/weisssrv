@@ -1,0 +1,341 @@
+# https://taskfile.dev
+# Lint gates. `task lint` in the root Taskfile runs these in order and mirrors
+# the CI lint stage.
+version: '3'
+
+# Precondition anchors aliased by the gates below.
+x-preconditions:
+  needs_pyyaml: &needs_pyyaml
+    sh: python3 -c "import yaml" 2>/dev/null
+    msg: "PyYAML not installed (pip install pyyaml)"
+  needs_python3: &needs_python3
+    sh: command -v python3
+    msg: "python3 not installed"
+
+tasks:
+  shellcheck:
+    desc: ShellCheck scripts/*.sh and terraform/*/*.sh (mirrors the CI shellcheck job)
+    preconditions:
+      - sh: command -v shellcheck
+        msg: "shellcheck not installed. brew install shellcheck"
+    cmds:
+      # Exactly the CI shellcheck job's direct_globs. The roles' shell lives in
+      # the weisssrv.infra collection, where the library's pipeline checks it.
+      - shellcheck --severity=warning --exclude=SC1091,SC2034 scripts/*.sh
+      - shellcheck --severity=warning --exclude=SC1091,SC2034 terraform/*/*.sh
+
+  ruff:
+    desc: Ruff over scripts/ and the in-manifest Python (mirrors the CI python-lint job)
+    preconditions:
+      - sh: command -v ruff
+        msg: "ruff not installed. pip install ruff"
+    cmds:
+      # ruff exits 0 on a target holding no Python, so the CI include checks a
+      # linted-nothing floor before the run. Same semantics here: a target that
+      # matched nothing is reported, and matching nothing anywhere fails.
+      - |
+        set -eu
+        found=0
+        for t in scripts kubernetes; do
+          if [ -n "$(find "$t" -name '*.py' -type f -print -quit)" ]; then
+            found=1
+          else
+            echo "no Python file under $t/"
+          fi
+        done
+        [ "$found" -eq 1 ] || { echo "ERROR: ruff matched no Python file — the target list covers nothing in this repo"; exit 1; }
+      # Verbatim the CI python-lint include's targets/config. Directory form,
+      # not a file list: ruff applies its excludes only when it walks a
+      # directory. kubernetes/ is in scope for the ConfigMap-mounted programs.
+      - ruff check --config ruff.toml scripts kubernetes
+
+  yamllint:
+    desc: Baseline YAML syntax check (mirrors the CI yaml-lint job)
+    preconditions:
+      - sh: command -v yamllint
+        msg: "yamllint not installed. pip install yamllint"
+    cmds:
+      # The CI yaml-lint job's config and targets. `-d relaxed` selects
+      # yamllint's own shipped profile and would override this one.
+      - yamllint -c lint/yamllint-relaxed.yml ansible/ kubernetes/ scripts/ lint/ .gitlab-ci.yml .gitlab/ Taskfile.yml taskfiles/
+      # terraform/ is in the CI target list too, but a local tree also holds
+      # .terraform provider checkouts: prune those and lint the repo's own YAML.
+      - |
+        set -eu
+        tf_yaml=$(find terraform -name '.terraform' -prune -o -type f \( -name '*.yml' -o -name '*.yaml' \) -print)
+        if [ -z "$tf_yaml" ]; then
+          echo "no YAML under terraform/"
+        else
+          echo "$tf_yaml" | xargs yamllint -c lint/yamllint-relaxed.yml
+        fi
+
+  coverage-checks:
+    desc: Deploy-coverage, integration-matrix and backup-artifact-app gates (mirror the CI lint stage)
+    preconditions:
+      - *needs_pyyaml
+    cmds:
+      - bash scripts/check-deploy-coverage.sh
+      - python3 scripts/check-deploy-host-coverage.py
+      # --ci-file: the matrix lives in its own included file, so its `changes:`
+      # trigger can name a file that only it lives in.
+      - python3 scripts/check-integration-matrix-coverage.py --ci-file .gitlab/ci/integration-jobs.yml
+      # The NAS collector's app list and BackupArtifactStale's per-app absent()
+      # arms are edited on separate lifecycles and nothing else notices a
+      # divergence. Both paths are arguments because the script is vendored.
+      - >-
+        python3 scripts/check-backup-artifact-apps.py
+        --host-vars ansible/inventories/prod/host_vars/pve-nas-01.yml
+        --rules kubernetes/infrastructure/observability/rules/scripts.yaml
+      # A role FQCN passed to a systemd/service task resolves to a unit that
+      # does not exist, and `failed_when: false` turns that into a permanent
+      # silent no-op. ansible-lint checks module ARGUMENTS, not unit names.
+      - python3 scripts/check-ansible-service-names.py
+
+  tailscale-policy:
+    desc: Validate terraform/tailscale/policy.hujson (syntax, tag declarations, route approvals)
+    preconditions:
+      - *needs_pyyaml
+    cmds:
+      # The module reads policy.hujson with file(), so terraform fmt/validate
+      # never parse it and the only other reader is the Tailscale API during the
+      # supervised apply. CI's repo-policy-checks runs this same task.
+      - python3 scripts/check-tailscale-policy.py
+
+  sync-checks:
+    desc: Generated-file freshness (hosts.env, versions-configmap) — mirrors the CI repo-sync-checks job
+    preconditions:
+      - *needs_pyyaml
+    cmds:
+      # Both generators take --output, so each file is regenerated into a temp
+      # dir and diffed. The tracked copy is never rewritten, so an interrupted
+      # generator cannot leave it truncated in the working tree.
+      - |
+        set -uo pipefail
+        FAILED=0
+        TMPDIR_SYNC=$(mktemp -d)
+        trap 'rm -rf "$TMPDIR_SYNC"' EXIT
+
+        python3 scripts/generate-hosts-env.py \
+          --inventory ansible/inventories/prod/hosts.yml \
+          --map scripts/hosts-env-map.yml \
+          --output "$TMPDIR_SYNC/hosts.env" \
+          --regen-command "task hosts:sync" >/dev/null
+        if ! diff -u scripts/hosts.env "$TMPDIR_SYNC/hosts.env"; then
+          echo "ERROR: scripts/hosts.env is out of sync with ansible/inventories/prod/hosts.yml"
+          echo "Run: task hosts:sync and commit the result."
+          FAILED=1
+        else
+          echo "scripts/hosts.env is in sync"
+        fi
+
+        python3 scripts/generate-versions-configmap.py \
+          --vars-file ansible/inventories/prod/group_vars/all.yml \
+          --output "$TMPDIR_SYNC/versions-configmap.yaml" \
+          --nested-key helm_chart_versions \
+          --regen-command "task flux:sync-versions" >/dev/null
+        if ! diff -u {{.VERSIONS_CM}} "$TMPDIR_SYNC/versions-configmap.yaml"; then
+          echo "ERROR: {{.VERSIONS_CM}} is out of sync with group_vars/all.yml"
+          echo "Run: task flux:sync-versions and commit the result."
+          FAILED=1
+        else
+          echo "{{.VERSIONS_CM}} is in sync"
+        fi
+        exit "$FAILED"
+
+  version-coverage:
+    desc: Assert every pin in all.yml has a scripts/check-versions.py registry entry
+    # Offline: it compares two local key sets, hence `lint` rather than the
+    # network-bound maintenance:check-versions. A pin missing from the registry
+    # is never reported as outdated, so the weekly bump skips it.
+    preconditions:
+      - *needs_python3
+    cmds:
+      - python3 scripts/check-versions.py --check-coverage
+
+  flux-version-pin:
+    desc: Assert the CI flux CLI pin, the versions ConfigMap and gotk-components agree (mirrors the flux-version-pin check in CI repo-policy-checks)
+    # A CLI newer than the committed gotk-components installs a control plane
+    # nobody reviewed, so the three pins are one gate.
+    cmds:
+      - python3 scripts/check-flux-version-pin.py
+    preconditions:
+      - *needs_python3
+
+  image-gc-threshold:
+    desc: Check KubeletImageGCIneffective fires at the kubelet image-gc high watermark in group_vars/k3s.yml
+    cmds:
+      - python3 scripts/check-image-gc-threshold.py
+    preconditions:
+      - *needs_pyyaml
+
+  kubectl-version-pin:
+    desc: Check the CI kubectl pin stays within +/-1 minor of k3s_version (mirrors the kubectl-version-pin check in CI repo-policy-checks)
+    cmds:
+      - python3 scripts/check-kubectl-version-pin.py
+    preconditions:
+      - *needs_python3
+
+  busybox-version-pin:
+    desc: Check post-maintenance-verify.sh's busybox image against busybox_version in all.yml
+    cmds:
+      - |
+        set -eu
+        # The DNS probe is a plain kubectl run, so it cannot use Flux's
+        # ${busybox_version} substitution — this gate is what keeps it in step.
+        PIN=$(sed -n 's/.*--image=busybox:\([0-9.]*\).*/\1/p' scripts/post-maintenance-verify.sh | head -1)
+        AV=$(sed -n 's/^busybox_version: *"\{0,1\}\([0-9.]*\)"\{0,1\} *$/\1/p' ansible/inventories/prod/group_vars/all.yml | head -1)
+        echo "post-maintenance-verify busybox: ${PIN:-<not found>} / all.yml busybox_version: ${AV:-<not found>}"
+        [ -n "$PIN" ] || { echo "Could not extract the busybox image pin from scripts/post-maintenance-verify.sh"; exit 1; }
+        [ -n "$AV" ] || { echo "Could not extract busybox_version from group_vars/all.yml"; exit 1; }
+        [ "$PIN" = "$AV" ] || { echo "busybox pin (${PIN}) drifted from busybox_version (${AV}) — bump scripts/post-maintenance-verify.sh"; exit 1; }
+
+  lib-pins:
+    desc: Check every weisssrv-lib include ref and the collection pin against variables.WEISSSRV_LIB_REF
+    cmds:
+      - python3 scripts/check-lib-pins.py
+    preconditions:
+      - *needs_pyyaml
+
+  kustomization-coverage:
+    desc: "Every manifest is listed by its kustomization, every listed name resolves, and no stage renders nothing"
+    preconditions:
+      - *needs_pyyaml
+    cmds:
+      - python3 scripts/check-kustomization-coverage.py
+
+  cluster-literals:
+    desc: "Cluster identity is cluster-config placeholders, not literals — and that ConfigMap matches the Ansible inventory"
+    preconditions:
+      - *needs_pyyaml
+    cmds:
+      - python3 scripts/check-cluster-literals.py
+
+  tailnet-dns-parity:
+    desc: "tailnet-dns override zone matches the direct-IP AdGuard rewrites"
+    preconditions:
+      - *needs_python3
+    cmds:
+      - python3 scripts/check-tailnet-dns-parity.py
+
+  ci-policy:
+    desc: "CI-file policy: deploy jobs trigger on the collection pin, and include-input pins match variables: (mirrors the collection-pin-trigger + ci-pin-parity checks in CI repo-policy-checks)"
+    preconditions:
+      - *needs_pyyaml
+    cmds:
+      # Both gates fire only on a .gitlab-ci.yml edit, the change where a green
+      # `task lint` is most likely to be read as proof the pipeline is clean.
+      # They live in scripts/ so this task and repo-policy-checks share code.
+      - python3 scripts/check-collection-pin-trigger.py
+      - bash scripts/check-ci-pin-parity.sh
+
+  netpol-except-parity:
+    desc: Assert every NetworkPolicy RFC1918 except-list matches the substituted source
+    cmds:
+      - python3 scripts/check-netpol-except-parity.py --config scripts/netpol-except.yaml
+    preconditions:
+      - *needs_pyyaml
+
+  comment-length:
+    desc: Fail a comment block over three content lines (eight when it opens "CRITICAL:")
+    cmds:
+      # The config carries the exclude list: a vendored copy's comments are the
+      # library's, and a trim here is reverted by the next re-vendor.
+      - python3 scripts/check-comment-length.py --config scripts/comment-length.yaml
+    preconditions:
+      - *needs_pyyaml
+
+  vpn-provider-parity:
+    desc: Assert the VPN provider -> required-key map agrees across the pre-flight, the gluetun sidecar and the task wrapper
+    cmds:
+      - python3 scripts/check-vpn-provider-parity.py
+    preconditions:
+      - *needs_python3
+
+  deploy-preflight:
+    desc: Assert every CI deploy job's playbook + --tags selection resolves to real tasks (mirrors the CI deploy-preflight job)
+    cmds:
+      - python3 scripts/deploy-preflight.py
+    preconditions:
+      - sh: command -v ansible-playbook
+        msg: "ansible-playbook not installed (pip install ansible)"
+      - *needs_pyyaml
+
+  doc-links:
+    desc: Resolve relative Markdown cross-links (mirrors CI docs-link-check)
+    # CHECK_DOC_LINKS_PATHS/IGNORE are pre-seeded for check-doc-links'
+    # backticked-path pass; inert until the lib pin ships it.
+    env:
+      CHECK_DOC_LINKS_PATHS: "1"
+      CHECK_DOC_LINKS_IGNORE: "docs/[A-Z]* terraform/state/* */tfplan */check-vendored-copies.py"
+    cmds:
+      - python3 scripts/check-doc-links.py
+    preconditions:
+      - *needs_python3
+
+  runbook-anchors:
+    desc: Resolve every alert runbook_url against docs/ (target file + #anchor)
+    cmds:
+      - python3 scripts/check-runbook-anchors.py
+    preconditions:
+      - *needs_python3
+
+  upstream-rule-mirror:
+    desc: Assert every mirrored upstream rule, test-dir and in-tree, names the chart version it was taken at
+    cmds:
+      - python3 scripts/check-upstream-rule-mirror.py
+    preconditions:
+      - *needs_pyyaml
+
+  unifi-doc-parity:
+    desc: Assert docs/46 § Site settings still says what terraform/unifi/main.tf sets
+    cmds:
+      - python3 scripts/check-unifi-doc-parity.py
+    preconditions:
+      - *needs_python3
+
+  tenant-wiring:
+    desc: Assert every tenant wiring file carries the confinement it is supposed to
+    cmds:
+      - python3 scripts/check-tenant-wiring.py
+    preconditions:
+      - *needs_pyyaml
+
+  secret-rotation:
+    desc: Assert every ESO-managed credential has a rotation path written in docs/15
+    cmds:
+      - python3 scripts/check-secret-rotation-coverage.py
+    preconditions:
+      - *needs_pyyaml
+
+  guest-endpoint-parity:
+    desc: Assert every hand-written guest endpoint address is a real inventory host
+    cmds:
+      - python3 scripts/check-guest-endpoint-parity.py
+    preconditions:
+      - *needs_pyyaml
+
+  host-log-staleness:
+    desc: Assert loki/host-log-staleness.yaml still matches the alloy_host play
+    cmds:
+      - python3 scripts/generate-host-log-staleness.py --check
+    preconditions:
+      - *needs_pyyaml
+
+  taskfile-smoke:
+    desc: Assert every Taskfile-referenced script + the hosts.env dotenv target exists (mirrors the taskfile check in CI repo-policy-checks)
+    cmds:
+      - bash scripts/check-taskfile.sh
+
+  prometheus-config:
+    desc: Validate kube-prometheus alert rules + Alertmanager config (promtool/amtool; mirrors CI prometheus-config-lint)
+    preconditions:
+      - sh: command -v promtool
+        msg: "promtool not installed (ships in the prometheus release tarball)"
+      - sh: command -v amtool
+        msg: "amtool not installed (ships in the alertmanager release tarball)"
+      - *needs_pyyaml
+    cmds:
+      - bash scripts/lint-prometheus-config.sh
+      # Syntax vs behaviour: check-config proves the file parses, this proves
+      # where each alert actually lands and that the inhibit pairs still bind.
+      - python3 scripts/check-alertmanager-behaviour.py --config scripts/alertmanager-behaviour.yaml

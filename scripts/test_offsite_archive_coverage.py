@@ -1,28 +1,7 @@
-#!/usr/bin/env python3
 """Drift guard: the offsite (restic -> B2) and archive dataset lists must agree.
 
-The original gate read `ansible/roles/{restic_offsite,nas_storage}/...`; both
-roles moved to the weisssrv.infra collection, and with them the defaults. What
-did NOT move is the data: this cluster's two lists now live side by side in
-`ansible/inventories/prod/host_vars/pve-nas-01.yml`, so the invariant is
-re-expressed against the inventory and needs no collection checkout.
-
-The durability invariant (docs/42): restic reads the newest `archsync-*`
-snapshot of each source, and its freshness guard aborts when that snapshot is
-stale. An offsite source that is NOT an archive source therefore has no snapshot
-to read and would silently never upload.
-
-Both directions are asserted:
-
-  * every restic source is covered by an archive source (itself or an ancestor —
-    archive replication is recursive, which is how the two file-bearing zvols
-    `tank/{immich,nextcloud}-data/disk` are covered by their parents);
-  * every archive source is either an offsite source or listed in
-    ARCHIVE_ONLY with a reason, so dropping a dataset from the restic list
-    cannot pass as "intentional" without saying so.
-
-Run with pytest:
-    pytest scripts/test_offsite_archive_coverage.py -v
+Both live in host_vars/pve-nas-01.yml. Every restic source needs a covering archive
+source or ancestor, and every archive source must be offsite or in ARCHIVE_ONLY (docs/42).
 """
 from __future__ import annotations
 
@@ -124,9 +103,3 @@ class TestOffsiteArchiveParity:
     @pytest.mark.parametrize("dataset", sorted(ARCHIVE_ONLY))
     def test_archive_only_entries_carry_a_reason(self, dataset):
         assert ARCHIVE_ONLY[dataset].strip(), f"{dataset}: empty reason"
-
-
-if __name__ == "__main__":
-    import sys
-
-    sys.exit(pytest.main([__file__, "-v"]))

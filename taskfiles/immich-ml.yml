@@ -1,0 +1,69 @@
+# https://taskfile.dev
+# Immich GPU ML LXC — a LAN API for the Immich VM only (docs/36).
+version: '3'
+
+tasks:
+  deploy:
+    desc: Deploy the Immich GPU ML LXC (provisions the container and installs the OpenVINO stack)
+    dir: "{{.ANSIBLE_DIR}}"
+    # Anchors shared with immich-ml:deploy-check so dry-run and deploy can't diverge.
+    env: &immich_ml_env
+      ROOT_EMAIL_ALIAS: op://Homelab/Email Config/root_alias
+      SMTP_RELAY_USER: op://Homelab/SMTP Relay Auth/username
+      SMTP_RELAY_PASSWORD: op://Homelab/SMTP Relay Auth/password
+      SSH_PUBLIC_KEY: op://Homelab/SSH Key/public key
+      # immich-ml.yml runs alloy_host, which asserts the Loki push creds.
+      # The immich_ml role itself needs no secrets.
+      LOKI_PUSH_USER: op://Homelab/Loki Push Auth/username
+      LOKI_PUSH_PASSWORD: op://Homelab/Loki Push Auth/password
+    preconditions: &immich_ml_deploy_preconditions
+      - sh: command -v ansible-playbook
+        msg: "ansible-playbook is not installed"
+      # `op account list`, not `op whoami` — see the note on infra:deploy's preconditions.
+      - sh: op account list 2>/dev/null
+        msg: "1Password CLI not authenticated. Run: eval $(op signin)"
+    cmds:
+      - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/immich-ml.yml {{.CLI_ARGS}}
+
+  deploy-check:
+    desc: Check mode - show what the Immich ML deployment would change
+    dir: "{{.ANSIBLE_DIR}}"
+    env: *immich_ml_env
+    preconditions: *immich_ml_deploy_preconditions
+    cmds:
+      - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/immich-ml.yml --check --diff {{.CLI_ARGS}}
+
+  status:
+    desc: Show the Immich ML stack status (compose ps + GPU device + /ping)
+    cmds:
+      - echo "=== Immich ML compose stack ==="
+      - ssh eric@{{.IMMICH_ML_IP}} "sudo docker compose --project-directory /opt/immich-ml/compose ps" || echo "Immich ML LXC not reachable or stack not up"
+      - echo ""
+      - echo "=== GPU device (/dev/dri) ==="
+      - ssh eric@{{.IMMICH_ML_IP}} "ls -la /dev/dri" || echo "/dev/dri not present in the container"
+      - echo ""
+      # Probed over SSH on the LXC loopback — sg-immich-ml admits :3003 from
+      # the Immich VM only (the endpoint is authless; least privilege), so a
+      # direct probe from the operator's LAN source is firewall-dropped by design.
+      - echo "=== ML /ping (127.0.0.1:3003 in the LXC) ==="
+      - ssh eric@{{.IMMICH_ML_IP}} "curl -s --max-time 10 http://127.0.0.1:3003/ping" || echo "ML service not responding"
+
+  verify:
+    desc: Smoke-test the Immich ML LXC (compose up, /dev/dri present, /ping answers) — exits non-zero on failure
+    cmds:
+      - bash scripts/verify-immich-ml.sh
+
+  console:
+    desc: SSH to the Immich ML LXC
+    cmds:
+      - ssh eric@{{.IMMICH_ML_IP}}
+
+  logs:
+    desc: Tail the Immich ML compose logs
+    cmds:
+      - ssh eric@{{.IMMICH_ML_IP}} "sudo docker compose --project-directory /opt/immich-ml/compose logs -f --tail=200"
+
+  restart:
+    desc: Restart the Immich ML compose stack
+    cmds:
+      - ssh eric@{{.IMMICH_ML_IP}} "sudo systemctl restart immich-ml-compose.service"

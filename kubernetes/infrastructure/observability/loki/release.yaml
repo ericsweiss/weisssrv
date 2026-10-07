@@ -1,8 +1,7 @@
 ---
-# Grafana Loki — log aggregation in single-binary (monolithic) mode, RF=1, 30-day
-# retention, pinned to the NAS agent for its ZFS zvol PV (WAL + chunks).
-# Ingested by the in-cluster Alloy DaemonSet (container logs) and the host-side
-# alloy_host units (journald). Sizing and limits: docs/31-observability.md.
+# Grafana Loki in single-binary mode, RF=1, 90-day retention, pinned to the NAS
+# agent for its ZFS zvol PV. Fed by the in-cluster Alloy DaemonSet and the
+# host-side alloy_host units. Sizing and limits: docs/31-observability.md.
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -34,14 +33,19 @@ spec:
       remediateLastFailure: true
   values:
     global:
-      # `platform` (sources/priorityclasses.yaml). global is the chart's
-      # documented all-pods override; it reaches the singleBinary StatefulSet
-      # (the only component enabled here) and the gateway if it is ever turned
-      # on. The canary and the two caches carry their own keys — all three are
-      # disabled below.
+      # priorityClassName `platform`: global is the chart's documented all-pods
+      # override and reaches the singleBinary StatefulSet, the only component
+      # enabled here.
       priorityClassName: platform
 
-    deploymentMode: Monolithic  # Renamed from SingleBinary in chart 12.0.0; singleBinary: values block name unchanged
+    # Monolithic is configured through the values block still keyed singleBinary.
+    deploymentMode: Monolithic
+
+    # The rules sidecar watches its own namespace (searchNamespace unset) and
+    # reads only loki_rule ConfigMaps, so a namespace Role replaces the chart's
+    # default cluster-wide configmaps+secrets grant to the Loki ServiceAccount.
+    rbac:
+      namespaced: true
 
     loki:
       auth_enabled: false
@@ -62,43 +66,38 @@ spec:
           chunks_directory: /var/loki/chunks
           rules_directory: /var/loki/rules
       limits_config:
-        retention_period: 720h
-        max_query_length: 720h
-        # Ingestion caps, sized to absorb a fleet-wide WAL replay after an
-        # outage rather than steady-state volume — a rejected line is lost
-        # (RF=1, senders do not retry a 4xx). Retention, not these caps, is
-        # what bounds the 75Gi zvol.
+        # 90 days holds about 24 GiB of the 75Gi volume (docs/31 owns the
+        # sizing); max_query_length must track retention or the extra is
+        # unqueryable.
+        retention_period: 2160h
+        max_query_length: 2160h
+        # Ingestion caps sized to absorb a fleet-wide WAL replay, since a
+        # rejected line is lost at RF=1. Retention, not these caps, bounds the
+        # 75Gi zvol.
         ingestion_rate_mb: 16
         ingestion_burst_size_mb: 32
         per_stream_rate_limit: 8MB
         per_stream_rate_limit_burst: 16MB
-        # A host that has been down for days replays journald older than Loki's
-        # 7-day default, which lands as `greater_than_max_sample_age`. 14 days is
-        # inside the 30-day retention, so nothing is accepted that would be
-        # compacted away immediately.
+        # A host down for days replays journald older than Loki's 7-day default,
+        # which lands as `greater_than_max_sample_age`. 14 days is inside
+        # retention, so nothing accepted is compacted away immediately.
         reject_old_samples_max_age: 336h
-        # Stream ceiling, pinned rather than left at Loki's default so the
-        # cardinality budget is reviewable next to the labels that spend it.
-        # Every stream holds an open chunk for up to max_chunk_age, so this is a
-        # memory bound as much as an index one — it exists to stop a relabel
-        # mistake (a per-pid or per-message-id label) taking the log plane down.
+        # Stream ceiling, pinned so the cardinality budget sits next to the
+        # labels that spend it. Every stream holds an open chunk for up to
+        # max_chunk_age, so a relabel mistake here takes the log plane down.
         max_global_streams_per_user: 2000
       # Out-of-order accept window = max_chunk_age/2; anything older is rejected
-      # as `too_far_behind`. 12h (a 6h window) covers a multi-hour Loki outage,
-      # not just the senders' WAL replay. alloy_host_journal_max_age must stay
-      # inside that 6h window — an unenforced convention, stated on both halves
-      # (alloy_host role README, "Sender/receiver pair").
+      # as `too_far_behind`. alloy_host_journal_max_age must stay inside that 6h
+      # window — an unenforced convention (alloy_host role README).
       ingester:
         max_chunk_age: 12h
       compactor:
         retention_enabled: true
         delete_request_store: filesystem
         working_directory: /var/loki/compactor
-      # Ruler: evaluate LogQL alerting rules in-process (ruler.replicas stays 0,
-      # so it runs under the monolithic -target=all) and push firing alerts to
-      # Alertmanager. Rule files are delivered by the loki-sc-rules sidecar into
-      # /rules/fake — with auth_enabled:false the single tenant is "fake" and the
-      # ruler's local storage scans <directory>/<tenant>/.
+      # Ruler: evaluate LogQL alerting rules in-process (ruler.replicas stays 0)
+      # and push firing alerts to Alertmanager. The loki-sc-rules sidecar
+      # delivers rule files into /rules/fake, the auth_enabled:false tenant dir.
       rulerConfig:
         wal:
           dir: /var/loki/ruler-wal
@@ -116,25 +115,26 @@ spec:
     # Route each loki_rule ConfigMap into the "fake" (auth-disabled) tenant
     # subdir so the ruler finds them under /rules/fake/. The sidecar reads this
     # annotation off each rule ConfigMap (set in kustomization.yaml).
-    # singleBinary.sidecar and sidecar.rules.enabled stay at their chart defaults.
     sidecar:
+      # The chart ships the rules sidecar with no requests and no OOM ceiling.
+      resources:
+        requests:
+          cpu: 10m
+          memory: 128Mi
+        limits:
+          memory: 256Mi
       rules:
         folderAnnotation: k8s-sidecar-target-directory
+        resource: configmap
 
     singleBinary:
       replicas: 1
       persistence:
         enabled: true
         size: 75Gi
-        # storageClass "-" is LOAD-BEARING and must NOT be changed to a plain "".
-        # The chart renders storageClassName via `{{- with $storageClass }}`: the
-        # "-" sentinel emits a literal `storageClassName: ""` (bind ONLY the
-        # pre-provisioned loki-data zvol PV), whereas a plain "" is falsy to
-        # `with` and DROPS the field, letting the default local-path class
-        # capture the claim onto the stateless VM bootdisk. LocalPathPVExists
-        # (rules/storage.yaml) catches any recurrence; StatefulSet
-        # volumeClaimTemplates are immutable, so a live rebind is a runbook step
-        # (docs/29), not something this manifest can fix.
+        # CRITICAL: storageClass "-" must not become "". The chart's `with`
+        # drops a falsy value and local-path then captures the claim onto the
+        # stateless VM bootdisk; the "-" sentinel binds the loki-data PV.
         storageClass: "-"
       nodeSelector:
         ${cluster_node_label_domain}/nas: "true"
@@ -143,12 +143,13 @@ spec:
           operator: Equal
           value: "true"
           effect: PreferNoSchedule
-      # Request tracks the VPA's recorded Off-tier target (729Mi — docs/33
-      # §Applying an Off-tier recommendation); the limit stays 1Gi.
+      # Off-tier VPA: the request is hand-applied from the recorded target
+      # (docs/33 §Applying an Off-tier recommendation). The recommendation
+      # counts reclaimable page cache, so it is not a capacity signal.
       resources:
         requests:
           cpu: 100m
-          memory: 768Mi
+          memory: 1Gi
         limits:
           memory: 1Gi
 

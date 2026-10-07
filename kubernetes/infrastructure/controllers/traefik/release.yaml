@@ -10,11 +10,8 @@ metadata:
 spec:
   interval: 30m
   releaseName: traefik
-  # Revert out-of-band edits to chart-rendered objects. Repo rule: enabled
-  # unless the chart ships a webhook whose caBundle is injected at runtime
-  # (cert-manager, external-secrets, metallb, vpa, kube-prometheus-stack —
-  # drift correction would wipe it every reconcile). Safe here, and
-  # autoscaling.enabled omits .spec.replicas so the HPA has nothing to fight.
+  # The repo-wide rule and its one exception: kubernetes/README.md § How it
+  # reconciles.
   driftDetection:
     mode: enabled
   chart:
@@ -46,10 +43,9 @@ spec:
       enabled: true
       minAvailable: 1
 
-    # Chart-native autoscaling (min 2 / max 6 on ~70% CPU) rather than a
-    # standalone HPA: it makes the chart omit `.spec.replicas`, so a helm
-    # upgrade cannot re-assert replicas:1 under the HA floor. The Traefik VPA
-    # (configs/vpa/platform.yaml) is memory-only, so it never contends on CPU.
+    # Chart-native autoscaling rather than a standalone HPA: it makes the chart
+    # omit `.spec.replicas`, so a helm upgrade cannot re-assert replicas:1 under
+    # the HA floor. The Traefik VPA is memory-only and never contends on CPU.
     autoscaling:
       enabled: true
       minReplicas: 2
@@ -78,10 +74,6 @@ spec:
               value: 1
               periodSeconds: 120
 
-    # No static `replicas` (autoscaling owns it); metrics come from the
-    # ServiceMonitor below, not scrape annotations.
-    deployment: {}
-
     # Service configuration (external/public traffic - *.ericsweiss.com)
     # Note: traefik-internal-service.yaml provides separate LoadBalancer for internal traffic (*.esweiss.com) on .101
     service:
@@ -89,33 +81,16 @@ spec:
       annotations:
         # Use MetalLB public pool for external Traefik traffic
         metallb.io/loadBalancerIPs: "${cluster_metallb_public_vip}"
-      # Preserve source IP for IP allowlist middleware to work correctly.
-      # MetalLB L2 + externalTrafficPolicy:Local is endpoint-aware: the speaker
-      # only announces the VIP from a node with a Ready Traefik endpoint, so the
-      # single-IP public pool cannot blackhole while at least one Traefik pod is
-      # Ready (it runs on every esweiss.com/ingress node, spread by anti-affinity).
-      #
-      # No NodePorts: MetalLB L2 announces the VIP directly and never uses them.
-      # healthCheckNodePort stays — required by externalTrafficPolicy: Local.
-      # Nothing owns spec.ports[*].nodePort, so already-allocated ports must be
-      # stripped by hand (docs/12-runbooks.md).
+      # externalTrafficPolicy Local preserves the client source IP the ipAllowList
+      # middlewares read. allocateLoadBalancerNodePorts: false drops the data-plane
+      # NodePorts; MetalLB L2 announces the VIP (docs/12-runbooks.md).
       spec:
         externalTrafficPolicy: Local
         allocateLoadBalancerNodePorts: false
 
-    # Dashboard / api@internal, chained like every other admin UI here:
-    # lan-tailscale-strict (LAN + Tailscale, no pod CIDR) -> authentik-auth ->
-    # hsts-header. It has no backend login of its own and /api/rawdata dumps the
-    # whole router/service/middleware topology (every internal hostname, every
-    # ClientIP bypass), so an in-cluster pod — a GitLab CI job pod included —
-    # reaching it is a real escalation; the strict allowlist is what keeps the
-    # pod CIDR out (configs/traefik-middlewares.yaml) and forward-auth is the
-    # identity gate on top.
-    #
-    # authentik-auth only answers for a host the embedded outpost knows: the
-    # traefik_dashboard proxy provider + `traefik` application + traefik-admins
-    # binding + the outpost key in terraform/authentik. Removing any of those
-    # 404s the forward-auth call and breaks this route.
+    # Dashboard / api@internal: lan-tailscale-strict, authentik-auth,
+    # hsts-header. The dashboard has no backend login, so forward-auth is the
+    # identity gate; its provider lives in terraform/authentik.
     ingressRoute:
       dashboard:
         enabled: true
@@ -151,12 +126,9 @@ spec:
     providers:
       kubernetesCRD:
         enabled: true
-        # ACCEPTED RISK, single-operator only. Any IngressRoute may reference
-        # middlewares/Services in other namespaces, and watching every namespace
-        # is why the chart's ClusterRole holds cluster-wide secrets get/list/watch
-        # (one decision, not two). REVIEW BEFORE THE FIRST TENANT ONBOARDS
-        # (docs/30): scope the provider per-tenant or set allowCrossNamespace:
-        # false. Nothing enforces this precondition today.
+        # Accepted risk, single-operator only: any IngressRoute may reference
+        # another namespace. check-tenant-traefik-isolation.py gates this at
+        # the first tenant onboarding (docs/30).
         allowCrossNamespace: true
       kubernetesIngress:
         enabled: true
@@ -168,29 +140,18 @@ spec:
         port: 80
       websecure:
         port: 443
-        # TLS is on by default on websecure in Traefik v3+.
-        # readTimeout bounds how long a request BODY may stream; the v3 default
-        # of 60s cuts large registry pushes and Nextcloud/Immich uploads. 30m
-        # fits multi-GB uploads and is still slowloris-resistant here.
+        # TLS is on by default on websecure in Traefik v3. readTimeout bounds
+        # how long a request body may stream; 30m fits multi-GB registry and
+        # Nextcloud uploads and stays slowloris-resistant.
         transport:
           respondingTimeouts:
             readTimeout: 30m
-        # No forwardedHeaders.trustedIPs: Traefik treats every client — the
-        # Cloudflare edge included — as untrusted and OVERWRITES X-Forwarded-*.
-        # Downstream therefore sees the CF edge address rather than the visitor,
-        # but no internet client can inject X-Forwarded-Host/Proto either.
-        # Trusting the CF ranges here only pays off as part of the coordinated
-        # real-client-IP change in docs/16-next-steps.md (CF Transform Rule +
-        # header pinning + the guest nginx/Authentik trust lists).
-      # git-ssh TCP passthrough for LAN clients. The pre-renumber path was the
-      # gateway's hairpin NAT (LAN -> WAN IP :2222 -> the port forward), which
-      # the homelab VLAN's sources no longer traverse — and the internal
-      # rewrite of git.ericsweiss.com points at the internal VIP anyway, where
-      # nothing listened on 2222 until this entrypoint. Kept OFF the
-      # chart-managed public service: external clients keep using the WAN
-      # forward straight to the VM, and 2222 on the public VIP would only
-      # duplicate it. traefik-internal-service.yaml exposes it on .101;
-      # the IngressRouteTCP lives in kubernetes/apps/vm-ingress/gitlab.yaml.
+        # No forwardedHeaders.trustedIPs: Traefik treats every client, the
+        # Cloudflare edge included, as untrusted and overwrites X-Forwarded-*.
+
+      # git-ssh TCP passthrough for LAN clients on the internal VIP only.
+      # Exposed by traefik-internal-service.yaml; the route lives in
+      # apps/vm-ingress/gitlab.yaml.
       gitssh:
         port: 2222
         expose:

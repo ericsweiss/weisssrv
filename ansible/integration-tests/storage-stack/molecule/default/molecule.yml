@@ -1,18 +1,7 @@
 ---
-# Storage Stack Integration Test
-# Tests: nas_storage role configuration (NFS exports + Samba shares)
-#
-# IMPORTANT: Docker container limitations
-# - NFS server: Configuration tested, but service won't fully work (kernel modules)
-# - Samba server: Full testing works (user-space daemon)
-# - NFS client mounts: NOT possible in Docker (requires kernel NFS support)
-# - CIFS/SMB mounts: NOT possible without CAP_SYS_ADMIN and kernel modules
-#
-# This test validates:
-# 1. Configuration files are correctly generated
-# 2. Packages are installed
-# 3. Samba service runs and shares are accessible
-# 4. Idempotence of the role
+# nas_storage scenario: NFS export + Samba share rendering, Samba service and
+# client access. NFS/CIFS client mounts are not possible in Docker — server-side
+# render only. Scenario conventions: ansible/TESTING.md.
 
 driver:
   name: docker
@@ -20,11 +9,8 @@ driver:
 platforms:
   # NAS Server - runs nas_storage role
   - name: nas-server
-    # The systemd-container block is identical for both platforms, so it is
-    # anchored once and merged into the client; name, groups and capabilities
-    # stay per-entry (SYS_ADMIN is the NAS server's alone). Anchors are
-    # per-file — YAML has no cross-file include — so each scenario carries its
-    # own copy of the shape.
+    # Shared systemd-container shape; only name/groups/capabilities differ per
+    # platform (SYS_ADMIN is the NAS server's alone).
     <<: &systemd_platform
       image: "${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:v0.17.1}"
       pre_build_image: true
@@ -57,16 +43,15 @@ platforms:
 dependency:
   name: galaxy
   options:
-    # The single source of truth for the weisssrv.infra pin these
-    # scenarios exercise. Resolved by ansible-galaxy in molecule's CWD,
-    # which is the scenario's stack dir (ansible/integration-tests/<stack>).
+    # Single source of truth for the weisssrv.infra pin, resolved in molecule's
+    # CWD (the stack dir).
     requirements-file: ../../requirements.yml
 provisioner:
   name: ansible
   env:
     # Required for molecule_docker plugin (upstream broken conditional in destroy.yml)
     ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
-    # Provide dummy SSH key for testing (base role expects this via all.yml lookup)
+    # Dummy key: all.yml looks SSH_PUBLIC_KEY up and the base role requires it.
     # yamllint disable-line rule:line-length
     SSH_PUBLIC_KEY: "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC3qctest123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123== test@molecule"
     # Samba user password: the nas_storage role's nas_storage_samba_password
@@ -78,10 +63,7 @@ provisioner:
       callbacks_enabled: profile_tasks, timer
       stdout_callback: ansible.builtin.default
       result_format: yaml
-  # Custom playbooks for Ansible 2.20+ compatibility
   playbooks:
-    create: create.yml
-    destroy: destroy.yml
     prepare: ../../../_shared/prepare.yml
     converge: converge.yml
     verify: verify.yml
@@ -114,11 +96,9 @@ provisioner:
             clients:
               - spec: "172.16.0.0/12"
                 options: "rw,sync,no_subtree_check,no_root_squash"
-          # Prod-shaped export mirroring host_vars/pve-nas-01.yml
-          # (/export/appdata): bind_source under /mnt/tank (exercises the
-          # ZFS-anchored fstab bind path), export-level xprtsec=tls, fsid, and
-          # all_squash uid/gid mapping. verify.yml asserts the rendered
-          # /etc/exports line (server-side render only; no TLS mount needed).
+          # Prod-shaped export mirroring host_vars/pve-nas-01.yml: bind_source
+          # under /mnt/tank, export-level xprtsec=tls, fsid, all_squash mapping.
+          # verify.yml asserts the rendered /etc/exports line.
           - path: /export/appdata
             bind_source: /mnt/tank/appdata
             owner: 1000

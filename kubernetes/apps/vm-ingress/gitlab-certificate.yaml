@@ -1,16 +1,9 @@
 ---
-# Certificates for GitLab services
-# The main *.ericsweiss.com cert doesn't cover nested subdomains like:
-# - registry.git.ericsweiss.com
-# - pages.git.ericsweiss.com
-# - *.pages.git.ericsweiss.com
-#
-# These certs are used by Traefik for TLS termination since nested subdomains
-# use DNS-only mode (not proxied through Cloudflare).
+# GitLab certificates. The apex wildcard covers one label only, so the nested
+# git.* names need their own certs and nested Pages/IDE groups must use
+# hyphenated single-label names (docs/27).
 
-# GitLab Web UI and Registry - git.ericsweiss.com, registry.git.ericsweiss.com
-
-# External domain - git.ericsweiss.com (covered by wildcard) + registry.git (nested)
+# External domain - git.ericsweiss.com + registry.git.ericsweiss.com
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
@@ -46,11 +39,7 @@ spec:
   renewBefore: 720h
 
 ---
-# GitLab Pages: pages.git.ericsweiss.com + the single-label wildcard.
-#
-# A wildcard covers one label only, so nested groups
-# (group.subgroup.pages.git...) are NOT covered. Use hyphenated group names, or
-# configure GitLab to build Pages URLs with hyphens, if that is ever needed.
+# GitLab Pages: pages.git + the single-label wildcard (see header).
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
@@ -86,20 +75,9 @@ spec:
   renewBefore: 720h
 
 ---
-# GitLab Web IDE - *.ide.git.ericsweiss.com (extension host)
-#
-# Per-extension SOP isolation: each VS Code extension iframe is loaded from
-# <ext-id>.ide.git.ericsweiss.com so the browser SOP keeps extension JS away
-# from the GitLab session cookie. CVE-2026-5816 mitigation; see
-# docs/27-gitlab-deployment.md.
-#
-# Same single-label wildcard limitation as gitlab-pages-wildcard above; GitLab
-# sanitizes dotted extension IDs to single-label form before using them as a
-# Host header.
-#
-# No internal *.ide.git.esweiss.com mirror because Web IDE is loaded as an
-# iframe from git.ericsweiss.com (canonical external host), so there's no
-# LAN-only entry point that would benefit from a split-horizon mirror.
+# GitLab Web IDE extension host. Each extension iframe loads from its own
+# subdomain so the browser SOP keeps extension JS away from the GitLab session
+# cookie (docs/27). Single-label wildcard, external host only.
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:

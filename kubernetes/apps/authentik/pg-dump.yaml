@@ -1,22 +1,7 @@
 ---
-# Nightly logical backup of the bundled Authentik PostgreSQL. The postgres PV
-# is only a crash-consistent zvol snapshot; this pg_dump adds a restorable
-# logical dump (gzipped plain SQL, DROP-if-exists) to the per-app NFS export
-# /backups-apps/authentik = tank/backups/apps/authentik (encrypted aes-256-gcm), NOT
-# ssd/appdata — the landing zone is deliberately the offsite-eligible one, so
-# the dump rides tank/backups -> archive AND the restic B2 file walk (docs/42). Restore: `gunzip -c <file> | psql -h authentik-postgresql -U
-# authentik authentik`.
-#
-# 02:30: after smartd's 02:00 short tests, well before the 03:30-~05:45 vzdump
-# window, the 06:00 media-mover, and the 06:30 archive replication — so the
-# fresh dump lands in that night's archive snapshot without contending for NAS
-# I/O (docs/06). Staggered 15 min ahead of recipes/mealie's 02:45 dump.
-#
-# Credentials are reused from the app's own authentik-secrets Secret (no new 1P
-# item). The postgres client image is pinned to the same ${postgresql_version}
-# as the server so pg_dump major matches. NFS is mounted by the kubelet on the
-# node, not the pod, so it is not governed by this namespace's egress
-# NetworkPolicy — only kube-dns + Postgres :5432 need allowing (networkpolicy.yaml).
+# Nightly logical backup of the bundled Authentik PostgreSQL to the offsite-eligible
+# NFS export /backups-apps/authentik (the postgres PV alone is only a crash-consistent
+# zvol snapshot). Schedule rationale, retention and restore: README, docs/42.
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -29,7 +14,7 @@ spec:
   schedule: "30 2 * * *"
   # Local time so 02:30 lines up with the NAS's local-time overnight jobs
   # (vzdump/media-mover/archive) rather than the controller's default UTC.
-  timeZone: America/Los_Angeles
+  timeZone: ${cluster_timezone}
   concurrencyPolicy: Forbid
   startingDeadlineSeconds: 3600
   successfulJobsHistoryLimit: 3
@@ -60,29 +45,20 @@ spec:
             - name: pg-dump
               image: postgres:${postgresql_version}
               imagePullPolicy: IfNotPresent
-              # bash, not sh: dash has no pipefail, and without it a failed
-              # pg_dump would still gzip to exit 0 — a truncated dump would be
-              # rotated in as "successful" and the staleness alert never fires.
+              # bash, not sh: dash has no pipefail, so a failed pg_dump would
+              # still gzip to exit 0 and rotate in a truncated dump.
               command: ["/bin/bash", "-ec"]
-              # Brace-free shell vars ($var, not ${var}): the ${var} form is
-              # reserved for Flux postBuild substitution (cluster-versions) and
-              # the flux:lint scanner rejects any ${x} not in that ConfigMap.
+              # Brace-free shell vars ($var): ${var} is Flux postBuild syntax.
               args:
                 - |
                   set -o pipefail
-                  # NetworkPolicy ipset propagation to remote nodes lags pod
-                  # creation by ~5-15s, so a job that dials the instant it
-                  # starts loses that race on every backoff attempt. Wait,
-                  # bounded, until the server is actually reachable.
+                  # Wait for NetworkPolicy ipset propagation (~5-15s) before dialing.
                   for i in $(seq 1 30); do
                     if pg_isready -q; then break; fi
                     if [ "$i" = 30 ]; then echo "postgres unreachable after 150s" >&2; exit 1; fi
                     sleep 5
                   done
-                  # Sweep partial writes from earlier failed runs first: the
-                  # retention loop below globs only *.sql.gz, so a crashed dump's
-                  # .tmp file would otherwise sit in the restore directory forever
-                  # and ride into B2.
+                  # Sweep .tmp files from crashed runs; the retention glob only sees *.sql.gz.
                   rm -f /backups/authentik-*.sql.gz.tmp
                   ts="$(date +%Y%m%d-%H%M%S)"
                   out="/backups/authentik-$ts.sql.gz"
@@ -118,9 +94,12 @@ spec:
                 capabilities:
                   drop: ["ALL"]
               resources:
+                # The tmp emptyDir's sizeLimit is the cap; this request is what
+                # ranks the pod by its own usage under node pressure.
                 requests:
                   cpu: 50m
                   memory: 64Mi
+                  ephemeral-storage: 64Mi
                 limits:
                   memory: 256Mi
               volumeMounts:
@@ -133,4 +112,7 @@ spec:
               persistentVolumeClaim:
                 claimName: authentik-pg-dump
             - name: tmp
-              emptyDir: {}
+              emptyDir:
+                # HOME for pg_dump; the dump itself streams to the backups PVC.
+                # Over sizeLimit the kubelet evicts the pod.
+                sizeLimit: 64Mi

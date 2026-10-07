@@ -1,22 +1,15 @@
-"""Unit tests for the hindsight-reaper CronJob program.
-
-The module lives next to its manifests
-(kubernetes/apps/hindsight-reaper/hindsight-reaper.py) because kustomize only
-accepts configMapGenerator sources inside the kustomization root, so it is loaded
-by path here.
-
-What is under test is the guard set between the CronJob and deleting a pod every
-6 hours: only Failed-phase, only old enough, only via a uid-preconditioned
-delete, and never the live Running replica (which the server-side phase selector
-excludes before the script sees it).
+"""Unit tests for the hindsight-reaper CronJob program, loaded by path from
+kubernetes/apps/hindsight-reaper/. The guards under test: Failed phase only, old
+enough only, uid-preconditioned delete only, never the live Running replica.
 """
-import importlib.util
+import json
 import urllib.error
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 import yaml
+from script_loader import load_path
 
 MODULE_PATH = (
     Path(__file__).resolve().parent.parent
@@ -28,10 +21,7 @@ NOW = datetime(2026, 9, 13, 12, 0, 0, tzinfo=timezone.utc)
 
 
 def _load():
-    spec = importlib.util.spec_from_file_location("hindsight_reaper", MODULE_PATH)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return load_path(MODULE_PATH)
 
 
 @pytest.fixture(scope="module")
@@ -44,21 +34,29 @@ def _ts(minutes_ago: int) -> str:
 
 
 def pod(name, uid="pod-uid", *, created_minutes_ago=90, reason="UnexpectedAdmissionError",
-        bad_timestamp=False, no_timestamp=False, owner="ReplicaSet"):
+        bad_timestamp=False, no_timestamp=False, owner="ReplicaSet",
+        terminated_reason=None):
+    """A Failed pod. `terminated_reason` sets the container-level terminated
+    reason, which is the only place Kubernetes ever writes OOMKilled.
+    """
     meta = {"name": name, "uid": uid}
     if not no_timestamp:
         meta["creationTimestamp"] = "not-a-date" if bad_timestamp else _ts(created_minutes_ago)
     if owner is not None:
         meta["ownerReferences"] = [{"kind": owner, "name": name.rsplit("-", 1)[0]}]
-    return {"metadata": meta, "status": {"phase": "Failed", "reason": reason}}
+    status = {"phase": "Failed", "reason": reason}
+    if terminated_reason is not None:
+        status["containerStatuses"] = [
+            {"name": "app", "state": {"terminated": {"reason": terminated_reason}}}
+        ]
+    return {"metadata": meta, "status": status}
 
 
 class FakeApi:
     """Records deletes and serves programmed list pages.
 
-    `pages` is a list of {"items": [...], "continue": "tok"|None} served in order
-    to successive GET list calls. `delete_errors` maps a pod name to an exception
-    the DELETE for it should raise. `list_error` raises on the first GET.
+    `pages` are served in order to successive GETs, `delete_errors` maps a pod
+    name to the exception its DELETE raises, `list_error` raises on the first GET.
     """
 
     def __init__(self, pages, delete_errors=None, list_error=None):
@@ -165,18 +163,34 @@ def test_keeps_unknown_age_pod(reaper):
     assert api.deleted == []
 
 
-@pytest.mark.parametrize("reason", ["Evicted", "OOMKilled"])
-def test_preserves_resource_pressure_pods(reaper, reason):
-    # A node-pressure eviction / OOM is evidence to investigate, so an old
-    # Failed pod carrying such a reason is KEPT despite being past MIN_AGE.
-    api = FakeApi([{"items": [pod("hindsight-evicted", reason=reason, created_minutes_ago=300)]}])
+def test_preserves_evicted_pod(reaper):
+    # A node-pressure eviction is evidence to investigate, so an old Failed pod
+    # carrying it is KEPT despite being past MIN_AGE.
+    api = FakeApi([{"items": [pod("hindsight-evicted", reason="Evicted",
+                                  created_minutes_ago=300)]}])
     out = reaper.reap(api, _cfg(reaper), NOW, _never_over)
     assert out.deleted == 0
     assert api.deleted == []
 
 
-def test_preserve_reasons_are_kept_out_of_the_sweep(reaper):
-    assert reaper.PRESERVE_REASONS == frozenset({"Evicted", "OOMKilled"})
+def test_preserves_oomkilled_pod(reaper):
+    # OOMKilled lands on the container status, never on status.reason, so the
+    # preserve check has to read both levels.
+    api = FakeApi([{"items": [pod("hindsight-oom", reason="Error",
+                                  terminated_reason="OOMKilled",
+                                  created_minutes_ago=300)]}])
+    out = reaper.reap(api, _cfg(reaper), NOW, _never_over)
+    assert out.deleted == 0
+    assert api.deleted == []
+
+
+def test_sweeps_a_pod_whose_container_reason_is_not_preserved(reaper):
+    # Proves the container-level read is a filter, not a blanket keep.
+    api = FakeApi([{"items": [pod("hindsight-err", reason="Error",
+                                  terminated_reason="Error",
+                                  created_minutes_ago=300)]}])
+    out = reaper.reap(api, _cfg(reaper), NOW, _never_over)
+    assert out.deleted == 1
 
 
 def test_keeps_non_replicaset_owned_pod(reaper):
@@ -274,3 +288,77 @@ def test_image_is_digest_pinned(reaper):
 
 def test_label_selector_targets_hindsight(reaper):
     assert reaper.LABEL == "app.kubernetes.io/name=hindsight"
+
+
+class _FakeResponse:
+    def __init__(self, body: bytes):
+        self._body = body
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+
+class TestKubeApi:
+    """The only place the HTTP method, body and headers reach the wire."""
+
+    def _capture(self, reaper, monkeypatch, body: bytes = b'{"items": []}'):
+        seen = {}
+
+        def fake_urlopen(req, timeout=None, context=None):
+            seen["req"] = req
+            seen["timeout"] = timeout
+            return _FakeResponse(body)
+
+        monkeypatch.setattr(reaper.urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(reaper.ssl, "create_default_context", lambda cafile=None: "ctx")
+        return seen
+
+    def test_a_get_carries_the_bearer_token_and_no_body(self, reaper, monkeypatch):
+        seen = self._capture(reaper, monkeypatch)
+        api = reaper.KubeApi("tok", "/dev/null", 5)
+        assert api.request("GET", "/api/v1/pods") == {"items": []}
+        req = seen["req"]
+        assert req.get_method() == "GET"
+        assert req.full_url == reaper.API + "/api/v1/pods"
+        assert req.headers["Authorization"] == "Bearer tok"
+        assert "Content-type" not in req.headers
+        assert req.data is None
+        assert seen["timeout"] == 5
+
+    def test_a_body_is_sent_as_json(self, reaper, monkeypatch):
+        seen = self._capture(reaper, monkeypatch)
+        api = reaper.KubeApi("tok", "/dev/null", 5)
+        api.request("DELETE", "/api/v1/namespaces/ns/pods/p", {"preconditions": {"uid": "u"}})
+        req = seen["req"]
+        assert req.get_method() == "DELETE"
+        assert req.headers["Content-type"] == "application/json"
+        assert json.loads(req.data.decode()) == {"preconditions": {"uid": "u"}}
+
+    def test_an_empty_response_body_is_an_empty_mapping(self, reaper, monkeypatch):
+        self._capture(reaper, monkeypatch, body=b"")
+        api = reaper.KubeApi("tok", "/dev/null", 5)
+        assert api.request("DELETE", "/api/v1/namespaces/ns/pods/p") == {}
+
+    def test_from_service_account_reads_the_mounted_token(self, reaper, monkeypatch, tmp_path):
+        (tmp_path / "token").write_text("mounted-token\n", encoding="utf-8")
+        (tmp_path / "ca.crt").write_text("", encoding="utf-8")
+        seen = self._capture(reaper, monkeypatch)
+        api = reaper.KubeApi.from_service_account(5, sa_dir=str(tmp_path))
+        api.request("GET", "/api/v1/pods")
+        assert seen["req"].headers["Authorization"] == "Bearer mounted-token"
+
+    def test_an_unreachable_apiserver_propagates(self, reaper, monkeypatch):
+        def boom(req, timeout=None, context=None):
+            raise urllib.error.URLError("down")
+
+        monkeypatch.setattr(reaper.urllib.request, "urlopen", boom)
+        monkeypatch.setattr(reaper.ssl, "create_default_context", lambda cafile=None: "ctx")
+        api = reaper.KubeApi("tok", "/dev/null", 5)
+        with pytest.raises(urllib.error.URLError):
+            api.request("GET", "/api/v1/pods")

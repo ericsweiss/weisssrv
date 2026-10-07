@@ -1,9 +1,7 @@
 ---
-# Immich servers configuration
-#
-# Image/version pins live in group_vars/all.yml; paths, ports, container
-# identities and the compose network are role defaults. This file carries the
-# site values only — the collection role ships nothing weisssrv-specific.
+# Immich servers configuration. Image/version pins live in group_vars/all.yml;
+# paths, ports, container identities and the compose network are role defaults.
+# This file carries the site values only.
 
 immich_external_url: "https://photos.{{ external_domain }}"
 
@@ -23,9 +21,8 @@ immich_nginx_self_signed_subj: "/CN=photos.{{ internal_domain }}"
 immich_nginx_self_signed_san: "DNS:*.{{ internal_domain }}"
 
 # Trusted proxy hop for X-Forwarded-For. Pinned rather than left to the role
-# default: the derivation is a hard assert now, so an empty resolution fails the
-# play instead of attributing every request to Traefik. These two groups are the
-# only proxies in front of this VM (sg-immich admits :443 from k3s_nodes).
+# default: the derivation is a hard assert, so an empty resolution fails the
+# play instead of attributing every request to Traefik.
 immich_nginx_real_ip_groups:
   - k3s_servers
   - k3s_agents
@@ -35,24 +32,25 @@ immich_nginx_real_ip_groups:
 # 8081/8082 plus the 9187 exporter), so loopback would break the scrape.
 immich_metrics_bind: "{{ ansible_host }}"
 
+# cgroup cap on immich-server, 8 GiB of the VM's 12 GiB. Remote-ML leaks
+# (immich-app/immich#31488) otherwise walk the whole VM into HostMemAvailableLow;
+# the container restarts instead of the host swapping.
+immich_server_mem_limit: "8g"
+
 # postgres_exporter sidecar for the in-cluster Prometheus. Unauthenticated —
 # scoped by sg-immich's :9187 rule to k3s_nodes.
 immich_postgres_exporter_enabled: true
 immich_postgres_exporter_version: "{{ postgres_exporter_version }}"
 
-# Offsite-eligible backup landing (mirrors gitlab_servers.yml): pg_dump artifacts
-# relocate onto the per-app tank/backups/apps NFS export so they ride the
-# archsync file walk into restic B2 (docs/42). Mounted over TLS (xprtsec=tls;
-# tlshd via the nfs_tls role, gated on this flag); the dataset is aes-256-gcm.
+# Offsite-eligible backup landing (mirrors gitlab_servers.yml): pg_dump
+# artifacts land on the per-app tank/backups/apps NFS export and ride archsync
+# into restic B2. Mounted xprtsec=tls; the dataset is aes-256-gcm (docs/42).
 immich_backup_nfs_enabled: true
 immich_backup_nfs_server: "pve-nas-01.{{ internal_domain }}"
 immich_backup_nfs_export: /backups-apps/immich
 
-# 01:00, not the role's 02:30 default: the nightly guest backups used to pack
-# into 02:00-03:15 (gitlab 02:00, nextcloud 02:34, immich 02:39) and their
-# combined working sets swapped ~10 GiB of idle guest memory every night
-# (docs/06 § NAS memory management). Spread so the window holds one heavy
-# job at a time: immich 01:00 -> nextcloud 01:30 -> gitlab 02:00 -> vzdump
-# 03:30.
+# 01:00, not the role's 02:30 default. The backup stagger keeps one heavy job
+# in the window at a time: immich 01:00 -> nextcloud 01:30 -> gitlab 02:00 ->
+# vzdump 03:30 (docs/06 § NAS memory management).
 immich_backup_hour: "01"
 immich_backup_minute: "00"

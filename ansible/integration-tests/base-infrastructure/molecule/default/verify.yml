@@ -87,7 +87,7 @@
         that:
           - timezone_link.stat.exists
           - timezone_link.stat.islnk
-          - "'America/Los_Angeles' in timezone_link.stat.lnk_source"
+          - timezone in timezone_link.stat.lnk_source
         fail_msg: "Timezone not configured correctly"
         success_msg: "Timezone configured"
 
@@ -214,17 +214,28 @@
         fail_msg: "Tailscale package not installed (dpkg -l shows no ii/hi tailscale line)"
         success_msg: "Tailscale package installed (dpkg-held)"
 
-    - name: Check Tailscale daemon service
+    # The unit is asserted installed+enabled, not running: without an auth key
+    # the role never runs `tailscale up`, and tailscaled runtime in a container
+    # is not something this scenario should depend on.
+    - name: Check Tailscale daemon unit
       ansible.builtin.systemd:
         name: tailscaled
-        state: started
       check_mode: true
       register: tailscaled_service
       failed_when: false
 
+    - name: Assert tailscaled unit is installed and enabled
+      ansible.builtin.assert:
+        that:
+          - tailscaled_service.status.UnitFileState | default('') == 'enabled'
+        fail_msg: >-
+          tailscaled unit is not installed+enabled
+          (UnitFileState={{ tailscaled_service.status.UnitFileState | default('ABSENT') }})
+        success_msg: "tailscaled unit installed and enabled"
+
     - name: Log Tailscale service status
       ansible.builtin.debug:
-        msg: "Tailscaled service: {{ tailscaled_service.status.ActiveState }}"
+        msg: "Tailscaled service: {{ tailscaled_service.status.ActiveState | default('UNKNOWN') }}"
 
     # Integration Verification
     - name: Test zsh is functional
@@ -252,31 +263,3 @@
     - name: Log Oh My Zsh theme
       ansible.builtin.debug:
         msg: "Oh My Zsh theme: {{ theme_test.stdout }}"
-
-    # Final Summary
-    - name: Integration test summary
-      ansible.builtin.debug:
-        msg: |
-          Base Infrastructure Integration Test Results:
-          =============================================
-          Host: {{ inventory_hostname }}
-
-          Base Role:
-            - Admin User: {{ 'OK' if admin_user_check is not changed else 'FAILED' }}
-            - Shell: {{ user_info.ansible_facts.getent_passwd[admin_user][5] }}
-            - Sudoers: {{ 'OK' if sudoers_file.stat.exists else 'FAILED' }}
-            - Base Packages: {{ 'OK' if base_pkgs is not changed else 'FAILED' }}
-            - Timezone: {{ timezone_link.stat.lnk_source | default('UNKNOWN') }}
-
-          QoL Role:
-            - Oh My Zsh: {{ 'OK' if ohmyzsh_dir.stat.exists else 'FAILED' }}
-            - Zsh Plugins: {{ 'OK' if 'git' in zsh_plugins_check.stdout else 'FAILED' }}
-            - Neovim: {{ 'OK' if neovim_check.rc == 0 else 'FAILED' }}
-            - Vundle: {{ 'OK' if vundle_dir.stat.exists else 'FAILED' }}
-            - fzf: {{ 'OK' if fzf_check.rc == 0 else 'FAILED' }}
-            - ripgrep: {{ 'OK' if ripgrep_check.rc == 0 else 'FAILED' }}
-
-          Tailscale Role:
-            - APT Source: {{ 'OK' if tailscale_source.stat.exists else 'FAILED' }}
-            - Package: {{ 'OK' if tailscale_pkg.rc == 0 else 'FAILED' }}
-            - Daemon: {{ tailscaled_service.status.ActiveState | default('UNKNOWN') }}

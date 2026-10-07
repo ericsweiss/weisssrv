@@ -1,13 +1,7 @@
 ---
-# Shared Gluetun VPN sidecar Component: the `gluetun` container (command
-# wrapper, NET_ADMIN, FIREWALL_OUTBOUND_SUBNETS, probes, resources, mounts), the
-# `check-vpn-config` initContainer, the tun/vpn-config volumes and the pod
-# dnsPolicy/dnsConfig — the killswitch semantics defined exactly once.
-#
-# Applied as a strategic-merge patch, so the sidecar/initContainer/volumes are
-# PREPENDED ahead of the app's own containers. Each consumer (../nzbget,
-# ../qbittorrent) patches only the per-app ConfigMap name and the extra ports it
-# exposes through the shared netns.
+# CRITICAL: shared Gluetun sidecar, initContainer, volumes and pod DNS — the
+# VPN killswitch defined once. Merged as a strategic patch ahead of the app's
+# own containers; consumers patch only their ConfigMap name and extra ports.
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 patches:

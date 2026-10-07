@@ -1,7 +1,6 @@
 ---
-# promtool unit tests for ZFSPoolScrubStale, which has two firing arms: the
-# never-scrubbed sentinel (last_scrub_seconds == 0) and the >35-day staleness
-# branch (guarded by last_scrub_seconds > 0 so the sentinel doesn't double-count).
+# promtool unit tests for ZFSPoolScrubStale's two arms: the never-scrubbed
+# sentinel (last_scrub_seconds == 0) and the >35-day staleness branch.
 # 6h interval keeps the 35-day branch's sample count tractable.
 rule_files:
   - rules.yaml

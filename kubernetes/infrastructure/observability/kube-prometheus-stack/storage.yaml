@@ -1,8 +1,7 @@
 ---
-# Prometheus TSDB storage: a hostPath on k3s-agt-nas-01 backed by an ext4
-# filesystem on the ssd/appdata/prometheus/data zvol, attached to the VM by the
-# proxmox_vm role (vm_additional_disks in hosts.yml). Data survives pod and VM
-# recreation because the zvol lives on the Proxmox host's pool.
+# Prometheus TSDB on a hostPath on k3s-agt-nas-01, backed by the
+# ssd/appdata/prometheus/data zvol attached by proxmox_vm (vm_additional_disks in
+# hosts.yml). Data survives pod and VM recreation.
 apiVersion: v1
 kind: PersistentVolume
 metadata:
@@ -17,15 +16,8 @@ spec:
     - ReadWriteOnce
   persistentVolumeReclaimPolicy: Retain
   storageClassName: ""
-  # Pre-bound, like loki-data and grafana-data: a classless RWO PV is otherwise
-  # claimable by any classless RWO PVC <=150Gi in any namespace during the window
-  # after a PVC delete/recreate, and reclaimPolicy Retain would leave the TSDB
-  # volume Released with no automatic path back.
-  #
-  # The name is the operator's volumeClaimTemplate name joined to the StatefulSet
-  # pod ordinal: <claim>-<statefulset>-0 where the StatefulSet is
-  # prometheus-<Prometheus CR name>. It therefore moves if the release name or
-  # the storage spec's volumeClaimTemplate name changes.
+  # Pre-bound: a classless RWO PV is otherwise claimable by any classless RWO PVC
+  # <=150Gi in any namespace. The claim name moves with a release rename.
   claimRef:
     namespace: observability
     name: prometheus-kube-prometheus-stack-prometheus-db-prometheus-kube-prometheus-stack-prometheus-0
@@ -40,7 +32,3 @@ spec:
               operator: In
               values:
                 - k3s-agt-nas-01
-
-# Note: No PVC defined here. The kube-prometheus-stack Helm chart creates its own
-# PVC via the volumeClaimTemplate in the Prometheus StatefulSet spec. The
-# volumeClaimTemplate references this PV by name (volumeName: prometheus-data).

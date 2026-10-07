@@ -3,10 +3,16 @@
 # host-level observability). k3s, Plex, GitLab, Home Assistant, Nextcloud,
 # Immich, and Immich ML have dedicated playbooks with separate lifecycles.
 
-# smtp-relay has no dedicated playbook, so its create path is codified here.
-# Runs FIRST (purely delegated, gather_facts: false): the base_managed play
-# below connects directly to smtp-relay and would mark a lost container
-# UNREACHABLE, excluding it from every subsequent play.
+# FIRST, and purely delegated: a container that does not exist yet would be
+# marked unreachable by the base_managed play below and dropped from every
+# later DNS or mail play. proxmox_lxc is idempotent, so both are no-ops here.
+- name: Provision DNS LXC containers
+  hosts: dns
+  gather_facts: false
+  roles:
+    - role: weisssrv.infra.proxmox_lxc
+      tags: [proxmox_lxc]
+
 - name: Provision SMTP relay LXC container
   hosts: mail
   gather_facts: false
@@ -14,25 +20,16 @@
     - role: weisssrv.infra.proxmox_lxc
       tags: [proxmox_lxc]
 
-# Runs after the SMTP provisioning play above (which must own the first
-# connection attempt to smtp-relay) and before anything is deployed. Its
-# companion gate is imported at the very bottom of this file.
+# Runs after the provisioning plays above (which must own the first connection
+# attempt to each container) and before anything is deployed. Its companion
+# gate is imported at the very bottom of this file.
 - name: Probe reachability before deploying
   ansible.builtin.import_playbook: _reachability-probe.yml
 
 - name: Deploy base configuration to all managed hosts
-  # The reachability contract, referenced by every multi-host play below:
-  #   - `!deploy_skipped` drops what the probe could not reach; left in, such a
-  #     host fails on the first task templating an ungathered fact, which the
-  #     gate's deploy_expected_absent_hosts downgrade cannot undo.
-  #   - `ignore_unreachable` covers a host that dies BETWEEN probe and play, so
-  #     the hosts that ARE up still converge. `--tags` does not suppress fact
-  #     gathering, so this bites even for plays a tag-scoped run selects nothing
-  #     from.
-  #   - The single-host plays below (mail, pve-nas-01) deliberately carry
-  #     NEITHER: skipping their one host means the deploy did nothing, which
-  #     must stay red.
-  # See _reachability-probe.yml for why exit 0 is not proof of a deploy.
+  # Reachability contract for the multi-host plays: `!deploy_skipped` drops
+  # what the probe could not reach and `ignore_unreachable` covers a host that
+  # dies afterwards. Single-host plays carry neither.
   hosts: base_managed:!deploy_skipped
   become: true
   ignore_unreachable: true
@@ -57,20 +54,17 @@
     # switchover); self-gates on encrypted_swap_enabled.
     - role: weisssrv.infra.encrypted_swap
       tags: [encrypted_swap]
-    # ZFS ARC cap on the COMPUTE hosts only (proxmox_role != 'nas'):
-    # pve-nas-01's ARC is owned by nas_storage on the storage playbook lifecycle.
-    # Self-gates on zfs_arc_cap_max_bytes (group_vars/proxmox.yml). Protects the
-    # VFIO-passthrough host (pinned guest RAM) from an uncapped ARC — docs/43.
+    # ZFS ARC cap on the compute hosts only; pve-nas-01's ARC belongs to
+    # nas_storage. Self-gates on zfs_arc_cap_max_bytes and protects the
+    # VFIO-passthrough host's pinned guest RAM (docs/43).
     - role: weisssrv.infra.zfs_arc_cap
       tags: [zfs_arc_cap]
       when: proxmox_role != 'nas'
-    # Host-side GPU VFIO codification (IOMMU cmdline + vfio-pci bind + nouveau
-    # blacklist). Self-gates on vfio_passthrough_enabled (set only on
-    # pve-prec-01 in hosts.yml); STAGES config + prints reboot-required, never
-    # reboots — the operator applies it in a maintenance window (docs/43).
+    # Host-side GPU VFIO config: IOMMU cmdline, vfio-pci bind, nouveau
+    # blacklist. Composed unconditionally so a host turned off is reconciled
+    # off; staged without rebooting, applied in a window (docs/43).
     - role: weisssrv.infra.vfio_passthrough
       tags: [vfio_passthrough]
-      when: vfio_passthrough_enabled | default(false)
     - role: weisssrv.infra.tailscale
       tags: [tailscale]
       when: tailscale_enabled | bool
@@ -114,11 +108,10 @@
       tags: [adguard_sync]
 
 # MUST run AFTER certificate management: nfs_tls's preflight fails loud without
-# the wildcard cert/key, which the acme_certs play above distributes — so an
-# earlier NAS play breaks a fresh site.yml bootstrap. (storage.yml is the
-# standalone NAS playbook for re-runs once the cert is distributed.)
+# the wildcard cert/key the acme_certs play above distributes, so an earlier NAS
+# play breaks a fresh bootstrap.
 - name: Deploy NAS storage configuration
-  hosts: pve-nas-01
+  hosts: nas
   become: true
   roles:
     # BEFORE nas_storage, so tlshd is verified before any xprtsec=tls export is
@@ -164,29 +157,69 @@
 - name: Deploy host-level metrics (node_exporter on bare metal, DNS, mail, GitLab, Nextcloud, Immich, and k3s-server hosts)
   hosts: proxmox:dns:mail:gitlab_servers:nextcloud_servers:immich_servers:k3s_servers:!deploy_skipped
   become: true
-  # App VMs are provisioned by their own deploy jobs, which need this one to
-  # succeed first — so on a first deploy the VM does not exist yet. Skipping is
-  # safe: their own playbook also ships node_exporter_host, and a genuinely-down
-  # host surfaces via NodeDown.
+  # App VMs are provisioned by their own deploy jobs, so on a first deploy the
+  # VM does not exist yet. Their own playbook also ships node_exporter_host, and
+  # a genuinely-down host surfaces via HostExporterDown.
   ignore_unreachable: true
   roles:
     - role: weisssrv.infra.node_exporter_host
       tags: [node_exporter_host]
+  post_tasks:
+    # These hosts are outside the base_managed ledger, so a skip here reaches
+    # neither the probe nor the gate. ignore_unreachable keeps a dead host in
+    # ansible_play_hosts, so the registered probe result is what names it.
+    - name: Probe the connection the metrics play needed
+      ansible.builtin.ping:
+      register: metrics_probe
+      tags: [always]
+    - name: Report hosts the metrics play could not reach
+      vars:
+        missed: >-
+          {{ ansible_play_hosts_all | map('extract', hostvars)
+             | selectattr('metrics_probe.unreachable', 'defined')
+             | map(attribute='inventory_hostname') | list }}
+      ansible.builtin.debug:
+        msg: "Host metrics NOT converged on: {{ missed | join(', ') }}"
+      when: missed | length > 0
+      run_once: true
+      delegate_to: localhost
+      become: false
+      tags: [always]
 
 - name: Deploy host-side log collection (Alloy → Loki)
   hosts: base_managed:plex_servers:gitlab_servers:nextcloud_servers:immich_servers:immich_ml_servers:k3s_servers:k3s_agents:!deploy_skipped
   become: true
-  # Same first-deploy ordering as the metrics play above.
+  # Same first-deploy ordering as the metrics play above; a genuinely-down host
+  # surfaces via HostLogShippingStale.
   ignore_unreachable: true
   roles:
     - role: weisssrv.infra.alloy_host
       tags: [alloy_host]
+  post_tasks:
+    # Same reachability reporting as the metrics play above: the registered
+    # probe result, not an ansible_play_hosts difference, names a host that
+    # never converged.
+    - name: Probe the connection the log-shipping play needed
+      ansible.builtin.ping:
+      register: logging_probe
+      tags: [always]
+    - name: Report hosts the log-shipping play could not reach
+      vars:
+        missed: >-
+          {{ ansible_play_hosts_all | map('extract', hostvars)
+             | selectattr('logging_probe.unreachable', 'defined')
+             | map(attribute='inventory_hostname') | list }}
+      ansible.builtin.debug:
+        msg: "Journald shipping NOT converged on: {{ missed | join(', ') }}"
+      when: missed | length > 0
+      run_once: true
+      delegate_to: localhost
+      become: false
+      tags: [always]
 
 # Guests that cannot run Ansible: the .fw writes are delegated to a Proxmox
-# host (/etc/pve is clustered). windows_vms is included so an inventory-only
-# guest_security_groups edit still deploys 155.fw via deploy-ansible-firewall.
-# The two groups differ on ansible_become, but the .fw write carries its own
-# explicit become: true, so both render.
+# host, since /etc/pve is clustered. windows_vms is included so an
+# inventory-only guest_security_groups edit still deploys 155.fw.
 - name: Deploy guest firewall rules for delegation-only VMs
   hosts: services:windows_vms
   gather_facts: false
@@ -194,10 +227,9 @@
     - role: weisssrv.infra.proxmox_firewall
       tags: [proxmox_firewall]
 
-# The k3s guest .fw files are otherwise written only by k3s.yml, which has no CI
-# deploy job — so they run here too, letting an inventory-only edit deploy via
-# deploy-ansible-firewall. cluster.fw is run_once-guarded, so this writes guest
-# .fw only.
+# The k3s guest .fw files are otherwise written only by k3s.yml, which has no
+# CI deploy job, so they run here too. cluster.fw is run_once-guarded, so this
+# writes guest .fw only.
 - name: Deploy k3s guest firewall rules
   hosts: k3s
   gather_facts: false
@@ -205,9 +237,8 @@
     - role: weisssrv.infra.proxmox_firewall
       tags: [proxmox_firewall]
 
-# Last, so every play has had its chance to converge: fail the run if any
-# base_managed host was skipped as unreachable above, or has stopped answering
-# since the probe. Carries the probe's host pattern (NOT localhost, which
-# --limit empties) so the scoped CI jobs are gated too.
+# Last, once every play has had its chance to converge: fail the run if any
+# base_managed host was skipped as unreachable or has stopped answering. It
+# carries the probe's host pattern so the scoped CI jobs are gated too.
 - name: Gate on the reachability ledger
   ansible.builtin.import_playbook: _reachability-gate.yml

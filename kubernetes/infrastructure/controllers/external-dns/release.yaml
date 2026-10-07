@@ -1,9 +1,7 @@
 ---
-# external-dns HelmRelease — adopts the existing release `external-dns` in
-# external-dns namespace (matching releaseName + targetNamespace). Chart version
-# substituted from cluster-versions ConfigMap. The `cloudflare-api-token` Secret
-# referenced by env.CF_API_TOKEN is managed by an ExternalSecret in
-# infrastructure/configs/shared-cloudflare-secrets/.
+# external-dns HelmRelease, adopting the `external-dns` release in the
+# external-dns namespace. The `cloudflare-api-token` Secret behind
+# env.CF_API_TOKEN comes from infrastructure/configs/shared-cloudflare-secrets/.
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -26,11 +24,10 @@ spec:
         namespace: flux-system
       interval: 12h
   install:
-    # disableWait prevents bootstrap deadlock: the cloudflare-api-token Secret
-    # is created by configs stage (which depends on controllers). Without this,
-    # Helm --wait blocks on pod readiness → pods need Secret → deadlock.
-    # Only needed for install (fresh bootstrap); upgrades run in steady-state
-    # where the Secret already exists.
+    # CRITICAL: disableWait prevents a bootstrap deadlock. The
+    # cloudflare-api-token Secret is created by the configs stage, which depends
+    # on controllers, so Helm --wait would block on pods that need that Secret.
+    # Install only; upgrades run where the Secret already exists.
     disableWait: true
     remediation:
       retries: 3
@@ -48,13 +45,8 @@ spec:
     # Orange-cloud the records: DDoS protection + origin-IP hiding.
     extraArgs:
       - --cloudflare-proxied
-      # external-dns 0.22.0 changed the default annotation prefix from
-      # external-dns.alpha.kubernetes.io/ to external-dns.kubernetes.io/. Every
-      # IngressRoute here (and the app-template) uses the alpha prefix for its
-      # /target annotation, so pin it back: without this, 0.22.0 ignores those
-      # annotations, resolves no target, and policy=sync DELETES every
-      # external-dns-owned record (food/bar/cloud/agent/home/auth/status/
-      # dashboard all vanished after the 0.20.0 -> 0.22.0 bump). docs/08.
+      # IngressRoutes here and in the app template annotate with the alpha
+      # prefix; external-dns >= 0.22 defaults to external-dns.kubernetes.io/.
       - --annotation-prefix=external-dns.alpha.kubernetes.io/
 
     env:
@@ -75,13 +67,12 @@ spec:
     txtOwnerId: "k3s-external-dns"
     txtPrefix: "_external-dns."
 
-    # Shared zone: ericsweiss.com is also managed by terraform/cloudflare (static
-    # records) and the cloudflare-ddns CronJob (apex public IP). This is safe
-    # because the txt registry below stamps every external-dns-owned record with
-    # txtOwnerId, so `policy: sync` only deletes records external-dns created —
-    # terraform/DDNS records (no matching owner TXT) are never touched. Keep
-    # record names disjoint across the three owners. See docs/08-dns.md.
-    policy: sync  # create + delete records this owner created (txt-registry scoped)
+    # CRITICAL: ericsweiss.com is shared with terraform/cloudflare and the
+    # cloudflare-ddns CronJob. `policy: sync` is safe only because the txt
+    # registry stamps every external-dns record with txtOwnerId, so records
+    # without a matching owner TXT are never deleted. Keep record names
+    # disjoint across the three owners (docs/08-dns.md).
+    policy: sync
 
     registry: txt
 
@@ -107,10 +98,9 @@ spec:
     serviceMonitor:
       enabled: true
 
-    # The limit is hand-set and the VPA is RequestsOnly, so this number is the
-    # real ceiling: 30d working-set peak (~151Mi) +60%, rounded up. Keep in
-    # lockstep with the external-dns VPA maxAllowed in configs/vpa/platform.yaml
-    # — the request may rise to the ceiling, never past it.
+    # The VPA is RequestsOnly, so this hand-set limit is the real ceiling. Keep
+    # it in lockstep with the external-dns VPA maxAllowed in
+    # configs/vpa/platform.yaml.
     resources:
       requests:
         cpu: 50m

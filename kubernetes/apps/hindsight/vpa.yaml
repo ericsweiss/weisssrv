@@ -1,10 +1,7 @@
 ---
 # VPA: Off (recommendations only) — stateful/fixed-footprint tier (docs/33).
-# The hindsight container fronts an embedded PostgreSQL (eviction-resizing a
-# DB pod for a few hundred Mi is a bad trade), and the llama container's
-# memory is dictated by the pinned GGUF + context size, not by usage history —
-# a percentile estimate would under-provision the resident model. Recommend
-# mode still feeds the Goldilocks-style visibility without ever evicting.
+# hindsight fronts an embedded PostgreSQL and llama's memory is set by the
+# pinned GGUF + context size, so neither suits a percentile estimate.
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
 metadata:
@@ -14,19 +11,20 @@ spec:
   updatePolicy: {updateMode: "Off"}
   resourcePolicy:
     containerPolicies:
-      # llama is EXCLUDED (mode Off), not merely capped: its working set is
-      # dominated by the mmap'd GGUF's file-backed pages, which grow to fill the
-      # cgroup limit and are reclaimed under pressure, so a percentile estimate
-      # just tracks the limit. Hand-sized in deployment.yaml, retuned from
-      # measured RSS (docs/43); memory headroom is covered by the
-      # near-limit alert in observability instead (docs/31).
+      # llama is EXCLUDED, not merely capped: its working set is the mmap'd
+      # GGUF's file-backed pages, which grow to the cgroup limit, so a
+      # percentile estimate just tracks it. Hand-sized in deployment.yaml.
       - containerName: llama
         mode: "Off"
-      # Caps for the recorded recommendation (docs/33: every policy carries
-      # minAllowed/maxAllowed). maxAllowed.memory matches the hindsight
-      # container's 3Gi limit so growth is recorded up to the binding ceiling.
-      # Nothing here ever applies the recommendation to a pod, so the cap only
-      # bounds what is recorded (docs/33: `Off` is exempt from the cap rule).
+      # Its own cap: the "*" 3Gi would exceed this sidecar's 256Mi limit.
+      - containerName: pg-dump
+        minAllowed: {cpu: 25m, memory: 32Mi}
+        maxAllowed: {cpu: 200m, memory: 256Mi}
+        controlledResources: [cpu, memory]
+        controlledValues: RequestsOnly
+      # Caps for the recorded recommendation only — nothing here applies it to
+      # a pod. maxAllowed.memory matches the hindsight container's 3Gi limit so
+      # growth is recorded up to the binding ceiling (docs/33).
       - containerName: "*"
         minAllowed: {cpu: 25m, memory: 256Mi}
         maxAllowed: {cpu: 2, memory: 3Gi}

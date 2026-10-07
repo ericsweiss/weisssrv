@@ -1,13 +1,7 @@
 ---
-# NFS-backed persistent state for Hermes Agent (config, API keys, sessions,
-# skills, memories -> /opt/data in the container) on the encrypted ssd/appdata
-# dataset, so the nightly archive replication captures it as a child of an
-# existing backup root. The export is all_squash,anonuid=1000,anongid=2000, so
-# every container write lands as 1000:2000 whatever the in-container UID; the
-# subdir is created + owned by the nas_storage role (nas_storage_appdata_dirs).
-#
-# NFS-over-TLS PV; hostname (not IP) + force annotation rationale:
-# apps/download-clients/_nfs-pv/resources.yaml and docs/07.
+# NFS-over-TLS state for Hermes Agent (/opt/data) on the encrypted ssd/appdata
+# dataset. The export squashes every write to 1000:2000; nas_storage owns the
+# subdir. Hostname and force-annotation notes: _nfs-pv/resources.yaml, docs/07.
 apiVersion: v1
 kind: PersistentVolume
 metadata:

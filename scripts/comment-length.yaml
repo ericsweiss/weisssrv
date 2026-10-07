@@ -1,0 +1,58 @@
+---
+# Scope for scripts/check-comment-length.py (`task lint:comment-length`).
+# Excludes are the weisssrv-lib copies, whose comments only a re-vendor can
+# change, plus the `pending_vendor` paths the next pin bump vendors.
+paths:
+  - .
+exclude:
+  - .editorconfig
+  - .gitlab/secret-detection-ruleset.toml
+  - .gitleaks.toml
+  - .pre-commit-config.yaml
+  - lint/yamllint-relaxed.yml
+  - ruff.toml
+  - scripts/b2-bucket-drift.py
+  - scripts/check-alertmanager-behaviour.py
+  - scripts/check-backup-artifact-apps.py
+  - scripts/check-comment-length.py
+  - scripts/check-default-deny-coverage.py
+  - scripts/check-deploy-coverage.sh
+  - scripts/check-doc-links.py
+  - scripts/check-hpa-vpa-invariant.py
+  - scripts/check-kubectl-version-pin.py
+  - scripts/check-lib-pins.py
+  - scripts/check-netpol-except-parity.py
+  - scripts/check-pvc-storageclass.py
+  - scripts/check-scrape-netpol.py
+  - scripts/check-secretstore-scope.py
+  - scripts/check-taskfile.sh
+  - scripts/check-versions.py
+  - scripts/extract-prometheus-config.py
+  - scripts/find-pve-host-for-vm.sh
+  - scripts/find-reachable-host.sh
+  - scripts/flux-env.sh
+  - scripts/flux-render.sh
+  - scripts/generate-hosts-env.py
+  - scripts/generate-versions-configmap.py
+  - scripts/inventory_tree.py
+  - scripts/kubeconform-skipped.py
+  - scripts/lint-prometheus-config.sh
+  - scripts/maintenance-run-with-verify.sh
+  - scripts/molecule-retry.sh
+  - scripts/resolve-tool.sh
+  - scripts/sanitize-junit-expected-failures.py
+  - scripts/shell-lib.sh
+  - scripts/supervised-apply-guard.sh
+  - scripts/test_check_lib_pins.py
+  - scripts/validate-helm-values.py
+  - scripts/version-bump-mr.py
+  - scripts/version-check-ci.py
+
+# Excluded paths the library offers but this repo has not vendored yet. The pin
+# bump that registers each one in scripts/vendored-manifest.yml drops it here.
+# scripts/test_comment_length_config.py fails an exclude in neither set.
+pending_vendor:
+  - scripts/check-comment-length.py
+  - scripts/inventory_tree.py
+  - scripts/maintenance-run-with-verify.sh
+  - scripts/supervised-apply-guard.sh

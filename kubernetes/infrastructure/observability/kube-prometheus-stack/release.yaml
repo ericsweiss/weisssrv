@@ -1,8 +1,7 @@
 ---
-# kube-prometheus-stack HelmRelease — Prometheus, Grafana, Alertmanager,
-# node-exporter and kube-state-metrics. Prometheus is single-replica and pinned
-# to the NAS agent for its ZFS zvol PV (accepted SPOF, docs/31); Alertmanager
-# runs two gossiping replicas. Custom alert rules live in observability/rules/.
+# kube-prometheus-stack HelmRelease: Prometheus, Grafana, Alertmanager,
+# node-exporter, kube-state-metrics. Prometheus is single-replica, pinned to
+# the NAS agent for its zvol PV (docs/31); rules live in observability/rules/.
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -23,10 +22,9 @@ spec:
         namespace: flux-system
       interval: 12h
   install:
-    # The monitoring.coreos.com CRDs are owned by the infrastructure-crds stage
-    # (prometheus-operator-crds), which runs before controllers so a fresh
-    # bootstrap has them when Traefik renders a ServiceMonitor. crds.enabled
-    # below stops this chart shipping its own crds/-dir copies.
+    # The monitoring.coreos.com CRDs are owned by the infrastructure-crds stage,
+    # which runs before controllers. crds.enabled below stops this chart
+    # shipping its own crds/-dir copies.
     crds: Skip
     remediation:
       retries: 3
@@ -41,13 +39,13 @@ spec:
       enabled: false
     prometheus:
       prometheusSpec:
-        # `platform` (sources/priorityclasses.yaml). The chart has no global
-        # key: the operator, Prometheus and Alertmanager each read their own
-        # (prometheusOperator.priorityClassName below,
-        # prometheus.prometheusSpec / alertmanager.alertmanagerSpec here).
-        # Grafana, kube-state-metrics and node-exporter are subcharts and stay
-        # unclassed — losing one costs a dashboard, not the platform.
+        # priorityClassName `platform` is set per component — the chart has no
+        # global key. Grafana, kube-state-metrics and node-exporter are subcharts
+        # and stay unclassed.
         priorityClassName: platform
+
+        # Pins the operator default so a chart bump cannot move `for:` semantics.
+        evaluationInterval: 30s
 
         # Prometheus runs as nobody (65534); fsGroup ensures the PVC is writable
         securityContext:
@@ -76,20 +74,15 @@ spec:
                   storage: 150Gi
               volumeName: prometheus-data
 
-        # retentionSize is the limit that binds; 365d is an outer bound. The cap
-        # is sized against the FILESYSTEM, not the PV's nominal 150Gi:
-        # /mnt/prometheus-data is ext4 with a 5% root reserve that
-        # node_filesystem_avail_bytes excludes, so DiskUsageWarning would trip
-        # near 117GB of data. 110GB lands the full-disk case at ~75% with room
-        # for compaction scratch, and retention.size covers the WAL and head
-        # chunks as well as persisted blocks.
+        # retentionSize binds; 365d is an outer bound. 110GB is sized against
+        # the ext4 filesystem (not the PV's nominal 150Gi) so a full disk lands
+        # at ~75% with room for compaction scratch.
         retention: 365d
         retentionSize: 110GB
 
-        # The static-target exporters (node-exporter-host, zfs, unbound, and the
-        # gitlab/home-assistant/immich/nextcloud ServiceMonitors) ship hand-written
-        # discovery.k8s.io/v1 EndpointSlices, not core/v1 Endpoints. The operator
-        # defaults to the Endpoints role, which would find no targets for them.
+        # The static-target exporters ship hand-written discovery.k8s.io/v1
+        # EndpointSlices, not core/v1 Endpoints. The operator's default
+        # Endpoints role finds no targets for them.
         serviceDiscoveryRole: EndpointSlice
 
         # Discover ServiceMonitors, PodMonitors, and PrometheusRules in ALL namespaces
@@ -100,11 +93,9 @@ spec:
         ruleSelectorNilUsesHelmValues: false
         ruleNamespaceSelector: {}
 
-        # Request tracks the recorded Off-tier target (the scheduler and the
-        # eviction ranking see the request, not the limit); the limit equals the
-        # VPA's maxAllowed so the recommendation is never clamped, with
-        # VPARecommendationExceedsLimit as the guard. Sizing method: docs/33
-        # §Applying an Off-tier recommendation.
+        # Request tracks the recorded Off-tier target; the limit equals the VPA's
+        # maxAllowed, so a clamp shows as uncappedTarget above target and
+        # VPARecommendationExceedsLimit reads the uncapped side (docs/33).
         resources:
           requests:
             cpu: 200m
@@ -116,14 +107,13 @@ spec:
       alertmanagerSpec:
         priorityClassName: platform
         configSecret: alertmanager-config
-        # Two gossiping replicas over an emptyDir. No volumeClaimTemplate on
-        # purpose: the only dynamic class is local-path (node-local, would pin
-        # Alertmanager to one node) and an NFS-backed static PV would make the
-        # alerting plane hard-depend on the NAS. The pair replicates silences and
-        # the nflog instead, so a rescheduled replica re-syncs from its peer
-        # rather than starting blank. The chart's default soft pod anti-affinity
-        # keeps them apart without blocking scheduling during maintenance.
+        # Two gossiping replicas over an emptyDir, no volumeClaimTemplate:
+        # local-path would pin Alertmanager to one node, an NFS PV would tie the
+        # alerting plane to the NAS. The pair replicates silences and the nflog.
         replicas: 2
+        # The chart already spreads the pair with a preferred podAntiAffinity
+        # over kubernetes.io/hostname; an `affinity:` here duplicates that key
+        # and fails the render.
         resources:
           requests:
             cpu: 50m
@@ -140,12 +130,9 @@ spec:
       ingress:
         enabled: false
 
-      # The app container gets NO ServiceAccount token; only the two sidecars
-      # talk to the apiserver. automountServiceAccountToken is pod-level, so the
-      # token is handed back to just those containers via the projected volume
-      # below + their extraMounts. extraContainerVolumes, NOT extraVolumes: the
-      # latter's template understands only claim/hostPath/csi/configMap/emptyDir
-      # and would silently render a projected volume as an emptyDir.
+      # The app container gets no ServiceAccount token; the projected volume
+      # below hands it to the two sidecars. extraContainerVolumes, not
+      # extraVolumes: the latter renders a projected volume as an emptyDir.
       automountServiceAccountToken: false
       extraContainerVolumes:
         - name: sidecar-kube-api-access
@@ -166,19 +153,21 @@ spec:
                       fieldRef:
                         fieldPath: metadata.namespace
 
-      # Grafana's SA loses cluster-wide `secrets` read — the chart's ClusterRole
-      # and ClusterRoleBinding are replaced by the pair in grafana-rbac.yaml,
-      # which carries the rationale. NOT `useExistingClusterRole`: that keeps the
-      # chart's binding and only rewrites its roleRef, which the RBAC API
-      # forbids.
+      # The chart's ClusterRole and Binding are replaced by the pair in
+      # grafana-rbac.yaml, so Grafana's SA loses cluster-wide `secrets` read.
       rbac:
         create: false
 
       grafana.ini:
         server:
           root_url: https://grafana.${cluster_internal_domain}
+        # SSO-only needs BOTH: disable_login_form removes the browser form and
+        # auth.basic.enabled=false closes `curl -u` against the chart-generated
+        # admin credential.
         auth:
           disable_login_form: true
+        auth.basic:
+          enabled: false
         analytics:
           check_for_updates: false
           check_for_plugin_updates: false
@@ -186,9 +175,8 @@ spec:
           feedback_links_enabled: false
 
       # Static OIDC (Authentik): grafana-users can log in, grafana-admins get
-      # the Admin role. The issuer host is the EXTERNAL one for every OIDC
-      # consumer here, internal-only apps included — the AdGuard split-horizon
-      # rewrite keeps the traffic on the LAN (docs/31).
+      # the Admin role. The issuer host is the external one; the AdGuard
+      # split-horizon rewrite keeps the traffic on the LAN (docs/31).
       env:
         GF_AUTH_GENERIC_OAUTH_ENABLED: "true"
         GF_AUTH_GENERIC_OAUTH_NAME: "Authentik"
@@ -211,11 +199,17 @@ spec:
             name: observability-secrets
             key: grafana-oidc-client-secret
 
-      # Dashboard sidecar — auto-discovers ConfigMaps with grafana_dashboard label.
-      # `resource: configmap` (chart default is `both`): with `secrets` gone from
-      # the SA's ClusterRole, a sidecar watching Secrets would log Forbidden every
-      # cycle. Every dashboard/datasource here is a ConfigMap.
+      # Dashboard sidecar: auto-discovers ConfigMaps labelled grafana_dashboard.
+      # `resource: configmap` keeps it off Secrets, which the SA cannot read and
+      # would log Forbidden on. skipReload: that endpoint is closed under SSO.
       sidecar:
+        # Applies to both sidecars; the chart ships neither requests nor limits.
+        resources:
+          requests:
+            cpu: 10m
+            memory: 128Mi
+          limits:
+            memory: 256Mi
         dashboards:
           enabled: true
           label: grafana_dashboard
@@ -223,14 +217,24 @@ spec:
           searchNamespace: ALL
           folderAnnotation: grafana_folder
           resource: configmap
+          # folderAnnotation is inert without this: the provider needs
+          # foldersFromFilesStructure for the sidecar's per-folder directories
+          # to become Grafana folders, otherwise every dashboard lands in root.
+          provider:
+            foldersFromFilesStructure: true
+          skipReload: true
           extraMounts:
             - name: sidecar-kube-api-access
               mountPath: /var/run/secrets/kubernetes.io/serviceaccount
               readOnly: true
         datasources:
-          # Set fixed UID so custom dashboard JSON can reference "prometheus"
+          # Fixed UID: dashboard JSON references this datasource as "prometheus".
           uid: prometheus
           resource: configmap
+          # With the reload endpoint closed, the datasources must be written
+          # before Grafana starts rather than pushed in afterwards.
+          skipReload: true
+          initDatasources: true
           extraMounts:
             - name: sidecar-kube-api-access
               mountPath: /var/run/secrets/kubernetes.io/serviceaccount
@@ -255,13 +259,9 @@ spec:
       initChownData:
         enabled: false
 
-      # NFS-ESTALE self-heal: liveness stats /var/lib/grafana so a stale or hung
-      # handle restarts the pod and it remounts.
-      #
-      # httpGet MUST be explicitly nulled: helm deep-merges into the subchart's
-      # defaults, whose livenessProbe carries httpGet, and the apiserver rejects
-      # a probe with BOTH handlers ("may not specify more than 1 handler type").
-      # kubeconform cannot catch it — only a live upgrade surfaces it.
+      # NFS-ESTALE self-heal: liveness stats /var/lib/grafana so a stale handle
+      # restarts the pod. httpGet must stay explicitly nulled: helm merges into
+      # the subchart's default probe and the apiserver rejects two handlers.
       livenessProbe:
         httpGet: null
         exec:
@@ -274,20 +274,20 @@ spec:
         timeoutSeconds: 10
         failureThreshold: 3
 
-      # SQLite on NFS cannot tolerate two writers; RollingUpdate would run
-      # old+new pods against the same DB during every upgrade.
-      # rollingUpdate must be explicitly nulled: a patch that only sets
-      # type=Recreate leaves any existing rollingUpdate fields in place, and
-      # the API rejects that combination ("rollingUpdate: Forbidden ... when
-      # strategy type is 'Recreate').
+      # SQLite on NFS cannot tolerate two writers, so Recreate not
+      # RollingUpdate. rollingUpdate must stay explicitly nulled: leftover
+      # fields under type=Recreate are rejected by the API.
       deploymentStrategy:
         type: Recreate
         rollingUpdate: null
 
+      # Page-cache-dominated, so the recommendation is not a capacity signal
+      # (docs/33): the 1Gi limit is the ceiling and the request is raised to
+      # meet it. maxAllowed in observability/vpa.yaml tracks this value.
       resources:
         requests:
           cpu: 100m
-          memory: 512Mi
+          memory: 1Gi
         limits:
           memory: 1Gi
 
@@ -297,9 +297,8 @@ spec:
     prometheus-node-exporter:
       tolerations:
         - operator: Exists
-      # The processes collector is off by default; node_processes_* gives
-      # process/thread/PID-limit visibility on the memory-tight NAS and fills the
-      # node-exporter-full dashboard's "System Processes" panels.
+      # --collector.processes is off by default; node_processes_* fills the
+      # node-exporter-full dashboard's "System Processes" row for the k3s nodes.
       extraArgs:
         - --collector.processes
       resources:
@@ -308,17 +307,14 @@ spec:
           memory: 32Mi
         limits:
           # No CPU limit: node-exporter bursts during scrape collection and CFS
-          # throttling was the dominant CPUThrottlingHigh source. Its VPA is
-          # controlledValues: RequestsOnly so it cannot re-impose one. The memory
-          # limit matches that VPA's maxAllowed.
+          # throttling was the dominant CPUThrottlingHigh source. The memory
+          # limit matches its VPA's maxAllowed.
           memory: 128Mi
 
     kube-state-metrics:
-      # Sized by the docs/33 rule: the declared values are what the pod admits at
-      # whenever the VPA admission webhook is unavailable (failurePolicy: Ignore).
-      # The VPA is RequestsOnly, so this limit is the binding OOM ceiling and its
-      # maxAllowed tracks it exactly (observability/vpa.yaml) — move both in the
-      # same commit.
+      # Sized per docs/33: the values the pod admits when the VPA webhook is
+      # unavailable. The VPA is RequestsOnly, so this limit is the binding OOM
+      # ceiling; move it with maxAllowed in observability/vpa.yaml.
       resources:
         requests:
           cpu: 50m
@@ -434,10 +430,8 @@ spec:
                           ready: [status, conditions, "[type=Ready]", status]
                           suspended: [spec, suspend]
               # The VPA components export no recommendation metrics, so this
-              # emits one series per container and resource (labels: container,
-              # resource, unit) for both the capped and uncapped recommendation.
-              # Consumed by VPARecommendationCapped/ExceedsLimit in
-              # observability/rules/infrastructure.yaml.
+              # emits one series per container and resource for both the capped
+              # and uncapped recommendation. Consumed by rules/infrastructure.yaml.
               - groupVersionKind:
                   group: autoscaling.k8s.io
                   version: v1
@@ -448,17 +442,14 @@ spec:
                   exported_namespace: [metadata, namespace]
                   target_kind: [spec, targetRef, kind]
                   target_name: [spec, targetRef, name]
-                  # Policy shape, needed by VPARecommendationExceedsLimit.
-                  # kube-state-metrics' [key=value] selector is an exact string
-                  # match, so "*" is a literal entry name, not a wildcard: a VPA
-                  # that names every container instead of carrying a "*" entry
-                  # gets no label at all (an unset path just omits the label).
+                  # Policy shape, needed by VPARecommendationExceedsLimit. The
+                  # [key=value] selector matches exactly, so "*" is a literal
+                  # entry name: a VPA without a "*" entry gets no label.
                   update_mode: [spec, updatePolicy, updateMode]
                   controlled_values: [spec, resourcePolicy, containerPolicies, "[containerName=*]", controlledValues]
                 # One entry per (metric, resource): valueFrom must resolve to a
-                # scalar quantity, so target/uncappedTarget split into their cpu
-                # and memory members, with commonLabels carrying resource/unit so
-                # the two never collide.
+                # scalar, so target/uncappedTarget split into cpu and memory with
+                # commonLabels carrying resource/unit so the two never collide.
                 metrics:
                   - name: recommendation_target
                     # Same metric family as the memory series below — the HELP
@@ -524,11 +515,19 @@ spec:
           memory: 96Mi
         limits:
           memory: 384Mi
+      # Feeds both config-reloader sidecars (Prometheus and Alertmanager); the
+      # chart ships them with no requests and no OOM ceiling.
+      prometheusConfigReloader:
+        resources:
+          requests:
+            cpu: 10m
+            memory: 48Mi
+          limits:
+            memory: 96Mi
 
     # k3s bundles kube-scheduler and kube-controller-manager into the server
     # process and embeds kube-proxy, none with standalone metrics endpoints.
-    # Disabling prevents false-positive *Down criticals and removes dashboards
-    # that always show "No data".
+    # Disabling prevents false-positive *Down criticals and empty dashboards.
     kubeProxy:
       enabled: false
     kubeScheduler:
@@ -536,13 +535,9 @@ spec:
     kubeControllerManager:
       enabled: false
 
-    # The flip side of that bundling: on a k3s SERVER, :10250/metrics serves the
-    # whole embedded registry, so those series are stored twice (job="kubelet"
-    # and job="apiserver"). Dropping the server copies removes roughly a quarter
-    # of the head series; agents keep everything, since nothing there is
-    # duplicated. Scoped by the `node` target label so replacing a server needs
-    # no edit here. Helm REPLACES this list rather than merging it, so the
-    # chart's own default rule is repeated below.
+    # On a k3s server, :10250/metrics serves the whole embedded registry, so
+    # those series are stored twice; dropping the server copies trims the head.
+    # Helm replaces this list rather than merging, so the chart default repeats.
     kubelet:
       serviceMonitor:
         metricRelabelings:
@@ -558,11 +553,9 @@ spec:
             sourceLabels: [__name__, node]
             separator: ;
             regex: (apiserver|etcd|scheduler|workqueue|lasso)_.*;k3s-srv-.*
-    # k3s embeds etcd but exposes its metrics: the server nodes run with
-    # etcd-expose-metrics: true (the weisssrv.infra.k3s role), serving standard etcd
-    # metrics on :2381 over plain HTTP. Enabling this also re-enables the
-    # upstream etcd alert rules, which are gated on kubeEtcd.enabled. Port 2381
-    # is restricted to k3s_nodes by the Proxmox firewall (docs/11).
+    # k3s servers run with etcd-expose-metrics: true, serving etcd metrics on
+    # :2381 over plain HTTP (restricted to k3s_nodes by the Proxmox firewall,
+    # docs/11). Enabling this also re-enables the upstream etcd alert rules.
     kubeEtcd:
       enabled: true
       endpoints:
@@ -581,30 +574,19 @@ spec:
     # replacement in observability/rules/ — never a silent removal.
     defaultRules:
       disabled:
-        # Fires transiently on every privileged-CI burst: the
-        # gitlab-runner-privileged ResourceQuota deliberately over-requests CPU,
-        # tripping the "cluster can't tolerate one node failure" check for the
-        # 15-30m a burst runs. Replaced by the CI-namespace-excluding copy in
-        # rules/kubernetes-resources.yaml.
-        #
-        # KubeMemoryOvercommit stays ENABLED on the same bursts, deliberately:
-        # memory is incompressible, so a CI burst that overcommits it can
-        # OOMKill platform workloads rather than just slowing everything down.
-        # The CPU rule's exclusion buys quiet on a compressible resource; the
-        # memory rule's noise is the signal (docs/33).
+        # Fires on every privileged-CI burst, which over-requests CPU by design.
+        # Replaced by the CI-namespace-excluding copy in
+        # rules/kubernetes-resources.yaml (docs/33).
         KubeCPUOvercommit: true
-        # Both select job="node-exporter", the in-cluster DaemonSet, which runs
-        # without the systemd collector and exports zero node_systemd_* series.
-        # The collector is enabled only on the host exporter
-        # (node_exporter_host_systemd_collector), so every node_systemd_* series
-        # carries job="node-exporter-host" — which is what the replacements in
-        # rules/host-exporter.yaml select.
+        # Both select job="node-exporter", which runs without the systemd
+        # collector. Every node_systemd_* series carries job="node-exporter-host"
+        # instead, which is what rules/host-exporter.yaml selects.
         NodeSystemdServiceFailed: true
         NodeSystemdServiceCrashlooping: true
+        # 5m pages on a pair of transient webhook timeouts. Replaced by the
+        # 15m copy in rules/monitoring.yaml.
+        AlertmanagerClusterFailedToSendAlerts: true
 
     # Custom alert rules live in observability/rules/ as standalone
-    # PrometheusRule CRs, one file per group — kubeconform-validated, diffed
-    # without re-rendering this release, and linted (with the promtool unit
-    # tests) by scripts/lint-prometheus-config.sh. Prometheus discovers them
-    # through the nil-selector settings above. Every custom alert carries a
-    # runbook_url; upstream chart rules deliberately do not.
+    # PrometheusRule CRs, one file per group, discovered through the
+    # nil-selector settings above and linted by scripts/lint-prometheus-config.sh.

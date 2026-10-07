@@ -1,8 +1,7 @@
 ---
-# vm-ingress: IngressRoutes for non-Kubernetes workloads (Plex LXC, HA VM,
-# AdGuard LXCs, Router, GitLab VM). Resources span the `default`, `gitlab`,
-# and `traefik` (middleware.yaml) namespaces — the per-resource
-# metadata.namespace is preserved verbatim.
+# vm-ingress: routing objects for non-Kubernetes workloads; README.md lists the
+# targets. Resources span the default, gitlab and traefik namespaces, so there
+# is no namespace transformer and each resource keeps its own metadata.namespace.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
@@ -25,10 +24,9 @@ resources:
 components:
   - ../../components/netpol-baseline
 patches:
-  # No top-level namespace transformer here (resources span three namespaces),
-  # so namespace the shared default-deny-ingress explicitly. `gitlab` is the one
-  # namespace this kustomization creates; `default` and `traefik` carry their
-  # own policies.
+  # No namespace transformer here, so namespace the shared default-deny-ingress
+  # explicitly. `gitlab` is the one namespace this kustomization creates;
+  # `default` and `traefik` carry their own policies.
   - target:
       kind: NetworkPolicy
       name: default-deny-ingress

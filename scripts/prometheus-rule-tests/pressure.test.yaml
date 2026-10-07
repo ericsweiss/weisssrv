@@ -1,10 +1,7 @@
 ---
-# promtool unit tests for the PSI (pressure-stall) host alerts. These assert
-# three things: the firing threshold, the 15m hold that keeps the nightly
-# backup-chain burst out of the alert stream, and the instance rescope — only
-# the six bare-metal Proxmox hosts (10.0.10.102-107) may fire; the
-# node-exporter-host job also scrapes DNS LXCs, smtp-relay, the GitLab VM, and
-# the 3 k3s server VMs, which must NOT trip a "Proxmox host" alert.
+# promtool unit tests for the PSI host alerts: the firing threshold, the 15m
+# hold that keeps the nightly backup-chain burst silent, and the instance
+# rescope so only the six bare-metal Proxmox hosts can fire.
 rule_files:
   - rules.yaml
 evaluation_interval: 1m
@@ -27,10 +24,9 @@ tests:
               job: node-exporter-host
               instance: '10.0.10.102:9101'
 
-  # THE BURST CASE. pve-nas-01's nightly media-mover/archive/restic chain
-  # crosses the threshold in a single ~6-minute band most days — the chain
-  # working, not a fault. Six minutes of stall then back to idle must stay
-  # silent, which is the whole reason the hold is 15m and not 5m.
+  # The burst case: pve-nas-01's nightly backup chain crosses the threshold for
+  # ~6 minutes most days as normal operation. Six minutes of stall then idle
+  # stays silent, which is why the hold is 15m.
   - interval: 1m
     input_series:
       - series: 'node_pressure_io_waiting_seconds_total{job="node-exporter-host", instance="10.0.10.102:9101"}'
@@ -66,4 +62,38 @@ tests:
     alert_rule_test:
       - eval_time: 40m
         alertname: ProxmoxHostMemoryPressure
+        exp_alerts: []
+
+  # CorosyncWedged: corosync pinned near 100% CPU averaged over 10m. Normal CPU
+  # is 1-2%, so the baseline arm must stay silent.
+  - interval: 1m
+    input_series:
+      - series: 'proxmox_corosync_cpu_percent{instance="10.0.10.102:9101"}'
+        values: '95+0x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: CorosyncWedged
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              instance: '10.0.10.102:9101'
+
+  - interval: 1m
+    input_series:
+      - series: 'proxmox_corosync_cpu_percent{instance="10.0.10.102:9101"}'
+        values: '2+0x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: CorosyncWedged
+        exp_alerts: []
+
+  # A membership-change spike: 2m at 100% never averages past 90 over the 10m
+  # window, which is what the window is there to absorb.
+  - interval: 1m
+    input_series:
+      - series: 'proxmox_corosync_cpu_percent{instance="10.0.10.102:9101"}'
+        values: '2+0x5 100+0x2 2+0x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: CorosyncWedged
         exp_alerts: []

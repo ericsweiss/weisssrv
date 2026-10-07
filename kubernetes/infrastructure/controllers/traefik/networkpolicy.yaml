@@ -1,13 +1,7 @@
 ---
-# Traefik NetworkPolicies. Ingress only: egress is deliberately unrestricted
-# because Traefik proxies to backend Services in every namespace, so a
-# default-deny-egress would mean enumerating the whole cluster service surface.
-#
-# Edge data plane: web (80) + websecure (443) reachable from anywhere
-# (LoadBalancer client traffic). release.yaml overrides the web/websecure
-# entrypoint container ports to 80/443 (ports.web.port / ports.websecure.port),
-# and the LoadBalancer Services target those container ports directly with
-# externalTrafficPolicy: Local, so the NetworkPolicy is evaluated at 80/443.
+# Traefik NetworkPolicies, ingress only: Traefik proxies to Services in every
+# namespace, so egress stays unrestricted. release.yaml puts the web and
+# websecure entrypoints on container ports 80/443, which is where these match.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

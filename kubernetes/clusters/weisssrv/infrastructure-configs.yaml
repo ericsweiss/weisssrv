@@ -1,14 +1,7 @@
 ---
-# Flux Kustomization: platform configs (CRs that depend on the controllers'
-# CRDs being installed). Includes ClusterSecretStore (ESO), ClusterIssuer +
-# wildcard Certificates (cert-manager), IPAddressPool + L2Advertisement
-# (MetalLB), the CoreDNS HPA replica pin, VPA policies, cloudflare-ddns
-# CronJob, and shared-cloudflare-secrets ExternalSecrets.
-#
-# Depends on infrastructure-controllers so every CRD exists and the webhooks
-# (cert-manager in particular) are serving.
-#
-# optional: false — same rationale as the other stages.
+# Flux Kustomization: platform configs, the CRs needing the controllers' CRDs
+# plus the built-in-kind NetworkPolicy sets. Depends on
+# infrastructure-controllers so every CRD exists and the webhooks are serving.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:

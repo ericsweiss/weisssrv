@@ -1,28 +1,7 @@
 ---
-# Flux Kustomization: metrics-server, deliberately its OWN stage rather than a
-# member of infrastructure-controllers.
-#
-# Why it is carved out: infrastructure-controllers runs `wait: true`, so every
-# object it applies is health-checked and a single failing HelmRelease makes the
-# whole stage not-Ready — which requeues infrastructure-configs and, behind it,
-# observability and apps. metrics-server is the release whose readiness depends
-# on an ANSIBLE step, not on anything Flux applies: `metrics-server` is in
-# `k3s_disable` (group_vars/k3s.yml), and that flag reaches the servers from
-# `task k3s:deploy` / the manual `maintenance-k3s-provision` job, never from the
-# merge pipeline. On a cluster provisioned ahead of the merge there is no gap at
-# all; when the two drift, the carve-out contains the wait here instead of
-# freezing the entire tree below it.
-#
-# It is also a leaf in every other sense: nothing in the cluster needs the
-# Resource Metrics API to be served before it can be APPLIED (HPAs and the VPA
-# recommender consume metrics.k8s.io at runtime), so no stage should ever
-# dependsOn it.
-#
-# dependsOn sources only: the metrics-server HelmRepository and both
-# substitution ConfigMaps live there. wait: true is kept ON PURPOSE — this
-# stage's readiness is what tells an operator the Resource Metrics API is
-# actually being served, and scripts/deploy-verify.sh reports it by name (the
-# list is derived from this directory by scripts/flux-child-kustomizations.py).
+# Flux Kustomization: metrics-server. Its own stage, not a member of
+# infrastructure-controllers, so its wait cannot freeze configs/observability/
+# apps; nothing dependsOn it. Rationale: docs/33-autoscaling.md § Components.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:

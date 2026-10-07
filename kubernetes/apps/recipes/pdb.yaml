@@ -1,0 +1,13 @@
+---
+# Keep at least one salt-rim replica during voluntary disruption (node drains,
+# rolling upgrades) so the Bar Assistant UI stays reachable.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: salt-rim
+  namespace: recipes
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: salt-rim

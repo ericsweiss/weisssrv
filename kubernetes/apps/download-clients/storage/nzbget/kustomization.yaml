@@ -21,6 +21,9 @@ patches:
       - op: replace
         path: /spec/nfs/path
         value: /appdata/nzbget
+      - op: replace
+        path: /spec/claimRef/name
+        value: nzbget-config
   - target:
       kind: PersistentVolumeClaim
       name: nfs-pvc

@@ -34,17 +34,11 @@ spec:
           port: 7575
 
 ---
-# Egress for the homarr pod. Its integration widgets poll each service's raw API
-# on a direct in-cluster/LAN URL, bypassing the Authentik perimeter (which would
-# 302 an API client to a login page). One `to:` block per target class (docs/41):
-# kube-dns; the downloads namespace UI ports; traefik :443 (OIDC plus the
-# Nextcloud/Immich integrations, which resolve to the internal VIP); public :443
-# for icons and version checks; and an explicit per-host LAN allowlist, the
-# deliberate inverse of that public rule.
-#
-# The namespaceSelector peers are load-bearing: kube-proxy DNATs a ClusterIP/VIP
-# to the backend pod IP before policy evaluation, so an ipBlock cannot match.
-# No kube-apiserver reach (automountServiceAccountToken is false).
+# CRITICAL: egress for the homarr pod, whose widgets poll each service's raw API
+# directly, bypassing the Authentik perimeter (docs/41). The namespaceSelector
+# peers are load-bearing: kube-proxy DNATs a ClusterIP or VIP to the backend pod
+# IP before policy evaluation, so an ipBlock peer can never match. One `to:`
+# block per target class, each labelled below.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -123,7 +117,7 @@ spec:
       ports:
         - protocol: TCP
           port: 3000
-    # 5b. Proxmox API (any node; six /32 entries for headroom)
+    # 5b. Proxmox API - one /32 per host (.102-.107); add a line when a host joins.
     - to:
         - ipBlock: { cidr: 10.0.10.102/32 }
         - ipBlock: { cidr: 10.0.10.103/32 }

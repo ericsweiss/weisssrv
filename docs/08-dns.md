@@ -141,8 +141,7 @@ The codified list covers (see dns.yml for the authoritative entries):
 - All six Proxmox hosts (`pve-*.esweiss.com` → .102–.107)
 - Infrastructure VMs/LXCs: `smtp-relay` (.151), `plex-direct` (.152),
   `gitlab` (.153), `home-direct` (.154), `windows` (.155), `nextcloud` (.156),
-  `immich` (.157). The immich-ml LXC (.158) has no rewrite on purpose — it is
-  reached only by the Immich VM, by IP.
+  `immich` (.157), `immich-ml` (.158).
 - All nine k3s nodes plus `k3s.esweiss.com` → .161 (API VIP)
 - `dns.esweiss.com` → .150/.160 (direct DoT access);
   `dns-01`/`dns-02.esweiss.com` → **10.0.10.101** (Traefik internal VIP,
@@ -152,32 +151,37 @@ The codified list covers (see dns.yml for the authoritative entries):
 - `vip-public.ericsweiss.com` → .100; `vip-internal.esweiss.com` → .101
 - ~25 app/service hostnames (`auth`, `git`, `grafana`, `loki`, `connect`,
   `traefik`, `plex`, `home`, `food`, `bar`, the *arr stack, etc.) → .101
-- **Five cross-domain exceptions** — `auth.ericsweiss.com` and the GitLab
-  family (`git`, `registry.git`, `pages.git`, `*.pages.git`) → .101 (below)
+- **Six cross-domain exceptions** — `auth.ericsweiss.com` and the GitLab family
+  (`git`, `registry.git`, `pages.git`, `*.pages.git`) → .101, and
+  `photos.ericsweiss.com` → .100 (below)
 
 #### Cross-domain rewrites (`*.ericsweiss.com` answered internally)
 
 Rewrites are otherwise `*.esweiss.com` only; the external zone is Cloudflare's.
-Five external names are deliberate exceptions. All of them would otherwise
+Six external names are deliberate exceptions. All of them would otherwise
 **hairpin**: a LAN client resolves the public IP and sends the packet back out
-to the WAN address of the gateway it sits behind. The ASUS looped that back; the
-UniFi gateway does not do so reliably for the node announcing the address, which
-turned a latent slow path into two outages in two days.
+to the WAN address of the gateway it sits behind, which the UniFi gateway does
+not reliably loop back for the node announcing the address.
+
+Five answer the internal VIP `.101`. `photos` answers the public VIP `.100`,
+because its Traefik router lives on `websecure`
+(`kubernetes/apps/vm-ingress/immich.yaml`).
 
 | Name | → | Why the external name is unavoidable |
 |---|---|---|
 | `auth.ericsweiss.com` | `.101` | The OIDC **issuer** must be the public name, so every server-side discovery/JWKS fetch uses it. Over the WAN, Cloudflare bot protection 403s non-browser user agents |
-| `git.ericsweiss.com` | `.101` | GitLab advertises its token realm on `external_url`, so a registry pull is redirected to `https://git.ericsweiss.com/jwt/auth` no matter which registry hostname containerd started from. Hermes `ImagePullBackOff`, 2026-08-22 |
-| `registry.git.ericsweiss.com` | `.101` | CI pulls the molecule image by its external name; the runner hairpinned and timed out, failing 43/43 molecule jobs in weisssrv-lib !35 |
+| `git.ericsweiss.com` | `.101` | GitLab advertises its token realm on `external_url`, so a registry pull is redirected to `https://git.ericsweiss.com/jwt/auth` whichever registry hostname containerd started from |
+| `registry.git.ericsweiss.com` | `.101` | CI pulls the molecule image by its external name |
 | `pages.git.ericsweiss.com` | `.101` | Parity — same class of name, same path, nothing has broken yet |
 | `*.pages.git.ericsweiss.com` | `.101` | Parity, as above |
+| `photos.ericsweiss.com` | `.100` | DNS-only (grey-cloud) at Cloudflare, because Immich mobile uploads exceed the 100 MB proxied body cap (docs/36), so the public name would otherwise hairpin |
 
 `ide.git` and `*.ide.git` are deliberately **not** rewritten: the Web IDE
 extension host must hairpin via Cloudflare so GitLab sees the WAN address
 (docs/27 § Web IDE extension host), and that probe now carries a second job —
 see the residual below.
 
-Three consequences to keep in mind before adding a sixth:
+Three consequences to keep in mind before adding a seventh:
 
 - **The matching blackbox probe stops testing the public path.** `gitlab-external`,
   `gitlab-registry-external`, `gitlab-pages-external` and `authentik-oidc-issuer`
@@ -228,6 +232,14 @@ the SSO stack (Authentik down, cluster down, or Traefik down must not lock
 you out of your resolvers). `adguardhome-sync` also keeps targeting the raw
 hostnames, so the sync hop never traverses the SSO middleware.
 
+Over Tailscale, `dns-01`/`dns-02` and the other `lan-tailscale-strict` routes
+(`traefik`, `connect`, `router`) work through **subnet routing only**. On the
+mesh path the request arrives from the Tailscale proxy pod, whose pod source IP
+the strict allowlist rejects. A new IngressRoute chaining `lan-tailscale-strict`
+must also be added to the tailnet-dns override zone
+(`kubernetes/apps/tailnet-dns/configmap.yaml`), or it 403s for every tailnet
+client.
+
 ### External zone ownership (ericsweiss.com)
 
 The public `ericsweiss.com` Cloudflare zone has **three** record owners — they
@@ -239,7 +251,11 @@ itself with a TXT registry:
 - **external-dns** (`controllers/external-dns`, `policy: sync`) — records derived
   from k3s Ingresses/Services/IngressRoutes, each stamped with
   `txtOwnerId: k3s-external-dns`. Sync only deletes records carrying that owner
-  TXT, so it never touches Terraform/DDNS records.
+  TXT, so it never touches Terraform/DDNS records. Every public IngressRoute
+  here carries `external-dns.alpha.kubernetes.io/target:
+  ${cluster_external_domain}`, so each public app name is a CNAME to the apex:
+  the Terraform-managed apex A record is a prerequisite for all of them, not
+  just for the bare domain.
 - **cloudflare-ddns CronJob** (`configs/cloudflare-ddns`) — keeps the *content*
   (public IP) of four A records current: the apex, `git`, `direct` and `vpn`.
   `proxied`, `ttl` and the record decorations (`comment`, `tags`, `settings`)
@@ -254,6 +270,19 @@ itself with a TXT registry:
 Keep hostnames disjoint across the three owners; a collision would let two
 tools fight over one record.
 
+#### Annotation prefix pin
+
+external-dns 0.22.0 changed its default annotation prefix from
+`external-dns.alpha.kubernetes.io/` to `external-dns.kubernetes.io/`. Every
+IngressRoute in this repo and in weisssrv-app-template still uses the alpha
+prefix for its `/target` annotation, so `controllers/external-dns/release.yaml`
+pins `--annotation-prefix=external-dns.alpha.kubernetes.io/`. Without the flag,
+0.22.0 ignores those annotations, resolves no target, and `policy: sync` deletes
+every record carrying `txtOwnerId: k3s-external-dns`.
+
+The exit is to retag every IngressRoute to the new prefix, update both
+templates, then drop the flag ([docs/16](16-next-steps.md)).
+
 #### Reverse DNS (PTR Records)
 
 PTR records are implemented as `$dnsrewrite` filter rules in
@@ -264,8 +293,7 @@ PTR records are implemented as `$dnsrewrite` filter rules in
 ```
 
 dns.yml carries PTR rules for the infrastructure hosts (.102–.107,
-.150/.151/.160, .152–.157), all k3s nodes, and the VIPs. immich-ml (.158) is
-deliberately absent, like its forward rewrite.
+.150/.151/.160, .152–.158), all k3s nodes, and the VIPs.
 
 **Note**: AdGuard Home syncs DNS rewrites from dns-01 to dns-02 automatically via adguardhome-sync.
 
@@ -350,13 +378,17 @@ in the appropriate `group_vars` or `host_vars` file. Verify with:
 ansible <host> -m shell -a 'cat /etc/resolv.conf'
 ```
 
-## Known Issues
-
-1. **AdGuardHome.sig permissions**: On dns-02, the signature file may have world-writable permissions. The Ansible role includes a fix task.
-
-2. **Subnetcache warning**: Unbound logs a warning about prefetch not working with subnetcache. This is cosmetic and does not affect functionality.
-
 ## Troubleshooting
+
+### Benign log lines and handled quirks
+
+- Unbound logs `warning: subnetcache: prefetch is set but not working for data
+  originating from the subnet module cache` (and the same line for
+  `serve-expired`) on every start. Cosmetic: only the subnet module's own cache
+  entries are affected.
+- The upstream AdGuard release can ship `AdGuardHome.sig` unreadable by the
+  `adguard` service user. The `adguard_home` role sets mode `0644` on every
+  AdGuard host, so no manual action is needed.
 
 ### Check Unbound
 

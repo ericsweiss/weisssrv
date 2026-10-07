@@ -137,7 +137,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "max(pve_cpu_usage_ratio{id=\"lxc/151\"}) * 100",
+          "expr": "max(max by (id) (pve_cpu_usage_ratio) * on(id) group_left() max by (id) (pve_guest_info{type=\"lxc\", name=\"smtp-relay\"})) * 100",
           "legendFormat": "cpu",
           "refId": "A"
         }
@@ -184,7 +184,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "max(pve_memory_usage_bytes{id=\"lxc/151\"} / pve_memory_size_bytes{id=\"lxc/151\"}) * 100",
+          "expr": "max(max by (id) (pve_memory_usage_bytes) / max by (id) (pve_memory_size_bytes) * on(id) group_left() max by (id) (pve_guest_info{type=\"lxc\", name=\"smtp-relay\"})) * 100",
           "legendFormat": "memory",
           "refId": "A"
         }

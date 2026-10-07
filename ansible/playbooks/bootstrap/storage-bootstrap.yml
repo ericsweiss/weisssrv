@@ -1,30 +1,13 @@
 ---
-# Storage Bootstrap Playbook
-# WARNING: This playbook can create ZFS pools and datasets
-# ONLY use this for:
-#   - Initial NAS setup (brand new hardware)
-#   - Complete disaster recovery (rebuild from scratch)
-#   - Adding new storage pools
-#
-# This playbook is INTERACTIVE and will:
-#   1. Detect existing infrastructure
-#   2. Warn about what will be created/modified
-#   3. Require explicit confirmation before proceeding
-#
-# Usage:
-#   ansible-playbook playbooks/bootstrap/storage-bootstrap.yml --limit pve-nas-01
+# Creates MISSING ZFS DATASETS on the NAS after interactive confirmation.
+# It never creates, destroys or modifies a POOL; a missing pool aborts the run.
+# Prerequisites and first-run order: docs/44-storage-bootstrap.md.
 
 - name: Storage Infrastructure Bootstrap - Pre-flight Checks
-  hosts: pve-nas-01
+  hosts: nas
   become: true
   gather_facts: true
   tasks:
-    - name: Verify this is pve-nas-01
-      ansible.builtin.assert:
-        that:
-          - inventory_hostname == 'pve-nas-01'
-        fail_msg: "This playbook should only run on pve-nas-01. Use --limit pve-nas-01"
-
     - name: Display warning banner
       ansible.builtin.debug:
         msg:
@@ -32,13 +15,14 @@
           - "              STORAGE BOOTSTRAP PLAYBOOK"
           - "================================================================"
           - ""
-          - "WARNING: This playbook can CREATE storage infrastructure"
-          - "         including ZFS pools and datasets"
+          - "This playbook creates MISSING ZFS DATASETS only."
+          - "ZFS pools are NEVER created here - the run aborts with the"
+          - "manual zpool create recipe if a pool is missing."
           - ""
           - "Use cases:"
           - "  - Initial NAS setup (brand new hardware)"
           - "  - Complete disaster recovery"
-          - "  - Adding new ZFS pools"
+          - "  - Adding datasets to an existing pool"
           - ""
           - "This playbook will:"
           - "  1. Detect existing infrastructure"
@@ -47,7 +31,7 @@
           - "================================================================"
 
 - name: Phase 1 - Detect Existing Infrastructure
-  hosts: pve-nas-01
+  hosts: nas
   become: true
   gather_facts: true
   tasks:
@@ -135,10 +119,28 @@
             {% for dir in critical_dirs.results %}
             {{ dir.item }}: {{ 'EXISTS' if dir.stat.exists else 'MISSING' }}
             {% endfor %}
+          - ""
+          - "Bind Sources:"
+          - >-
+            {% for src in bind_sources.results | selectattr('stat', 'defined') %}
+            {{ src.item.bind_source }}: {{ 'EXISTS' if src.stat.exists else 'MISSING' }}
+            {% endfor %}
           - "================================================================"
 
+    # Without the module the detection above is meaningless: zpool/zfs list both
+    # fail silently and every configured pool looks missing.
+    - name: Assert the ZFS kernel module is loaded
+      ansible.builtin.assert:
+        that:
+          - zfs_module.rc == 0
+        fail_msg: >-
+          ZFS kernel module is not loaded on {{ inventory_hostname }}; pool and
+          dataset detection above is meaningless. See
+          docs/44-storage-bootstrap.md before re-running.
+        quiet: true
+
 - name: Phase 2 - Determine Required Actions
-  hosts: pve-nas-01
+  hosts: nas
   become: true
   tasks:
     - name: Determine pools that need creation
@@ -189,48 +191,27 @@
           - "  - MergerFS union mounts"
           - "================================================================"
 
-    - name: Check if this is a new installation
-      ansible.builtin.set_fact:
-        is_new_installation: "{{ (pools_to_create | length > 0) or (datasets_to_create | length > 0) }}"
-
-    - name: CRITICAL WARNING - Pool creation required
-      ansible.builtin.debug:
-        msg:
-          - "================================================================"
-          - "                    CRITICAL WARNING"
-          - "================================================================"
-          - ""
-          - "The following ZFS pools need to be created:"
-          - "  {{ pools_to_create | join(', ') }}"
-          - ""
-          - "WARNING: ZFS POOL CREATION IS NOT AUTOMATED"
-          - ""
-          - "You must manually create ZFS pools first using:"
-          - ""
-          - "  zpool create -o ashift=12 \\"
-          - "               -O acltype=posixacl \\"
-          - "               -O compression=zstd \\"
-          - "               -O normalization=formD \\"
-          - "               -O relatime=on \\"
-          - "               -O xattr=sa \\"
-          - "               -m /mnt/POOLNAME \\"
-          - "               POOLNAME raidz2 /dev/disk/by-id/..."
-          - ""
-          - "See docs/06-zfs.md for detailed pool creation instructions"
-          - ""
-          - "After creating pools, re-run this playbook"
-          - "================================================================"
-      when: pools_to_create | length > 0
-
-    - name: Abort if pools need creation
+    - name: Abort - ZFS pools must be created manually
       ansible.builtin.fail:
         msg: |
-          ZFS pools must be created manually first.
-          See warning above and docs/06-zfs.md for instructions.
+          ZFS pool creation is not automated. Missing pools: {{ pools_to_create | join(', ') }}
+
+          Create each one by hand, then re-run this playbook:
+
+            zpool create -o ashift=12 \
+                         -O acltype=posixacl \
+                         -O compression=zstd \
+                         -O normalization=formD \
+                         -O relatime=on \
+                         -O xattr=sa \
+                         -m /mnt/POOLNAME \
+                         POOLNAME raidz2 /dev/disk/by-id/...
+
+          Pool geometry and the tier rationale: docs/06-zfs.md.
       when: pools_to_create | length > 0
 
 - name: Phase 3 - Interactive Confirmation
-  hosts: pve-nas-01
+  hosts: nas
   become: true
   tasks:
     - name: Confirm dataset creation
@@ -264,13 +245,12 @@
       when: datasets_to_create | length > 0
 
 - name: Phase 4 - Create ZFS Datasets
-  hosts: pve-nas-01
+  hosts: nas
   become: true
   tasks:
-    # Encrypted datasets carry `encryption:` in their properties but no
-    # keyformat/keylocation (the key comes from 1Password at boot), so a bare
-    # `zfs create -o encryption=...` fails. They must be created manually per
-    # docs/32-zfs-encryption.md — skip them here and say so.
+    # Encrypted datasets carry `encryption:` but no keyformat/keylocation, so a
+    # bare `zfs create -o encryption=...` fails. They are created by hand per
+    # docs/32-zfs-encryption.md and skipped here.
     - name: Create missing ZFS datasets
       ansible.builtin.command: >
         zfs create
@@ -317,7 +297,7 @@
       when: datasets_to_create | length > 0
 
 - name: Phase 5 - Create Directory Structure
-  hosts: pve-nas-01
+  hosts: nas
   become: true
   tasks:
     - name: Create required groups
@@ -365,30 +345,35 @@
         label: "{{ item.bind_source | default('N/A') }}"
       when: item.bind_source is defined
 
-    - name: Create MergerFS source directories (NVMe hot tier)
+    # mergerfs mounts over its target and refuses to start on a missing
+    # branch; the role creates neither.
+    - name: Create the mergerfs branch directories
+      ansible.builtin.file:
+        path: "{{ item.1 }}"
+        state: directory
+        owner: "{{ admin_user }}"
+        group: "{{ nas_storage_media_group | default('media') }}"
+        mode: "02775"
+      loop: "{{ nas_storage_mergerfs_mounts | default([]) | subelements('sources') }}"
+      loop_control:
+        label: "{{ item.1 }}"
+
+    # Subdirectories inside the branches, plus the media-mover destination,
+    # which is not a mergerfs source.
+    - name: Create the media tier subdirectories
       ansible.builtin.file:
         path: "{{ item }}"
         state: directory
         owner: "{{ admin_user }}"
-        group: media
+        group: "{{ nas_storage_media_group | default('media') }}"
         mode: "02775"
       loop:
-        - /mnt/nvme/media
         - /mnt/nvme/media/downloads
         - /mnt/nvme/media/library
-
-    - name: Create media-mover destination directories (tank cold tier)
-      ansible.builtin.file:
-        path: "{{ item }}"
-        state: directory
-        owner: "{{ admin_user }}"
-        group: media
-        mode: "02775"
-      loop:
         - /mnt/tank/media/library
 
 - name: Phase 6 - Configure Storage Services
-  hosts: pve-nas-01
+  hosts: nas
   become: true
   tasks:
     - name: Run NFS configuration
@@ -400,13 +385,13 @@
       ansible.builtin.include_role:
         name: weisssrv.infra.nas_storage
         tasks_from: mergerfs.yml
-      when: nas_storage_mergerfs_mounts is defined
+      when: nas_storage_mergerfs_mounts | default([]) | length > 0
 
     - name: Run Samba configuration
       ansible.builtin.include_role:
         name: weisssrv.infra.nas_storage
         tasks_from: samba.yml
-      when: nas_storage_samba_shares is defined
+      when: nas_storage_samba_shares | default([]) | length > 0
 
     - name: Run media-mover configuration
       ansible.builtin.include_role:
@@ -415,7 +400,7 @@
       when: nas_storage_media_mover_enabled | default(false)
 
 - name: Phase 7 - Verification
-  hosts: pve-nas-01
+  hosts: nas
   become: true
   tasks:
     - name: Verify ZFS datasets are mounted
@@ -428,6 +413,19 @@
       register: nfs_verification
       changed_when: false
       failed_when: false
+
+    - name: Assert every declared NFS export is live
+      ansible.builtin.assert:
+        that:
+          - nfs_verification.rc == 0
+          - nfs_verification.stdout_lines | length > 1
+          - nas_storage_exports | map(attribute='path')
+            | difference(nfs_verification.stdout | regex_findall('^(/\S+)', multiline=True))
+            | length == 0
+        fail_msg: >-
+          showmount -e localhost did not list every declared export, so the k3s
+          NFS PVs will not mount. Check `systemctl status nfs-server` and
+          `exportfs -v` before running `task infra:verify`.
 
     - name: Verify MergerFS mounts
       ansible.builtin.command: findmnt -t fuse.mergerfs -o TARGET,SOURCE
@@ -446,7 +444,7 @@
           - "{{ mounted_datasets.stdout_lines | map('regex_replace', '^', '  ') | join('\n') }}"
           - ""
           - "NFS Exports:"
-          - "{{ nfs_verification.stdout_lines | default(['  (check failed)']) | map('regex_replace', '^', '  ') | join('\n') }}"
+          - "{{ nfs_verification.stdout_lines | map('regex_replace', '^', '  ') | join('\n') }}"
           - ""
           - "MergerFS Mounts:"
           - "{{ mergerfs_verification.stdout_lines | default(['  (none or check failed)']) | map('regex_replace', '^', '  ') | join('\n') }}"

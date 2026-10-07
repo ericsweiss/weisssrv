@@ -1,0 +1,5 @@
+---
+# 14-15 GiB hosts running a 6 GiB k3s guest, whose local-ssd backs VM disks
+# rather than a media library. 2 GiB ARC, overriding the 8 GiB compute default
+# in group_vars/proxmox.yml.
+zfs_arc_cap_max_bytes: 2147483648

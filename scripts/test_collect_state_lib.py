@@ -1,37 +1,24 @@
-#!/usr/bin/env python3
-"""Unit tests for scripts/collect-state-lib.sh.
-
-The library holds collect-state.sh's pure logic: the secret-redaction guard
-that scrubs CLUSTER_STATUS.txt (a regression here would silently ship
-tokens/passwords into an artifact agents and operators read) and the tri-state
-health classifiers behind the regular (OK/PARTIAL/FAILED) and --json
-(healthy/degraded/catastrophic) verdicts. Each test sources the library in a
-bash subprocess and drives one helper with synthetic input.
-
-Run with pytest:
-    pytest scripts/test_collect_state_lib.py -v
+"""Unit tests for scripts/collect-state-lib.sh: the secret-redaction guard over
+CLUSTER_STATUS.txt and the tri-state health classifiers. Each test sources the
+library in a bash subprocess and drives one helper with synthetic input.
 """
 
 from __future__ import annotations
 
+import json
 import re
+import shlex
 import subprocess
 from pathlib import Path
 
 import pytest
+from conftest import require_tool, source_and_run
 
 LIB = Path(__file__).resolve().parent / "collect-state-lib.sh"
 
 
 def _run(func_call: str, stdin: str = "") -> subprocess.CompletedProcess:
-    """Source the library and run a function call, returning the completed proc."""
-    script = f". {LIB}\n{func_call}\n"
-    return subprocess.run(
-        ["bash", "-c", script],
-        input=stdin,
-        capture_output=True,
-        text=True,
-    )
+    return source_and_run(LIB, func_call, stdin)
 
 
 def _redact(text: str, tmp_path: Path) -> str:
@@ -122,12 +109,8 @@ class TestRedactBenign:
         assert out == line + "\n"
 
 
-# classifiers
-# classify_regular <pve_reachable> <k3s_api_ok> <k3s_ready> <k3s_total>
-#                  <hosts_ok> <hosts_total> <coverage_pct> <coverage_floor>
-#                  <flux_not_ready> <zfs_degraded> <gitlab_ok>
-# classify_json    <pve_up> <pve_total> <k3s_api_ok> <k3s_ready> <k3s_total>
-#                  <flux_not_ready> <zfs_degraded> <gitlab_ok>
+# classifiers. The helpers below name each positional argument of
+# classify_regular and classify_json.
 
 def _regular(pve, api, ready, total, hosts_ok, hosts_total, pct, floor,
              flux, zfs, gitlab, sections_ok=1, sections_total=1,
@@ -141,10 +124,11 @@ def _regular(pve, api, ready, total, hosts_ok, hosts_total, pct, floor,
     return res.stdout.strip()
 
 
-def _json(pve_up, pve_total, api, ready, total, flux, zfs, gitlab) -> str:
+def _json(pve_up, pve_total, api, ready, total, flux, zfs, gitlab,
+          alerts=0) -> str:
     res = _run(
         f"classify_json {pve_up} {pve_total} {api} {ready} {total} "
-        f"{flux} {zfs} {gitlab}"
+        f"{flux} {zfs} {gitlab} {alerts}"
     )
     assert res.returncode == 0, res.stderr
     return res.stdout.strip()
@@ -182,10 +166,8 @@ class TestClassifyRegular:
         assert _regular(6, "true", 9, 9, 9, 19, 47, 50, 0, 0, 1) == "FAILED"
 
     def test_app_vms_down_degrades_not_failed(self):
-        # The Nextcloud/Immich/Immich-ML app VMs are now collected hosts (they
-        # count toward HOSTS_TOTAL). All 3 unreachable out of 22 collected hosts
-        # keeps coverage at 86% (above the floor) with core infra up, so the
-        # verdict is PARTIAL — never FAILED, never a false OK.
+        # App VMs count toward HOSTS_TOTAL; 3 of 22 unreachable stays above the
+        # coverage floor with core infra up, so the verdict is PARTIAL.
         assert _regular(6, "true", 9, 9, 19, 22, 86, 50, 0, 0, 1) == "PARTIAL"
 
     def test_probe_failure_defaults_never_promote(self):
@@ -205,8 +187,7 @@ class TestClassifyRegular:
                         sections_ok=22, sections_total=22) == "OK"
 
     def test_firing_alert_degrades(self):
-        # A firing non-Watchdog alert under a green header is the exact lie the
-        # artifact used to tell (TargetDown active, "Status: OK").
+        # A firing non-Watchdog alert must degrade the verdict.
         assert _regular(6, "true", 9, 9, 19, 19, 100, 50, 0, 0, 1,
                         alerts=1) == "PARTIAL"
 
@@ -247,6 +228,20 @@ class TestClassifyJson:
         # API unreachable (collector-side): degraded, not catastrophic.
         assert _json(6, 6, "false", 0, 0, 0, 0, 1) == "degraded"
 
+    def test_firing_alert_degrades(self):
+        # The signal regular mode already gates on: --json must not answer
+        # healthy while a non-Watchdog alert fires.
+        assert _json(6, 6, "true", 9, 9, 0, 0, 1, alerts=1) == "degraded"
+
+    def test_firing_alerts_never_catastrophic(self):
+        # Alert noise degrades; it never claims the cluster is down.
+        assert _json(6, 6, "true", 9, 9, 0, 0, 1, alerts=99) == "degraded"
+
+    def test_unknown_alerts_degrade(self):
+        # An unaskable Alertmanager arrives here as 1, so a snapshot that
+        # measured nothing cannot read healthy.
+        assert _json(6, 6, "true", 9, 9, 0, 0, 1, alerts=1) == "degraded"
+
 
 class TestClassifierParity:
     """Regular and --json verdicts must agree on shared signals: OK <=> healthy,
@@ -256,33 +251,34 @@ class TestClassifierParity:
     PARITY = {"OK": "healthy", "PARTIAL": "degraded", "FAILED": "catastrophic"}
 
     @pytest.mark.parametrize(
-        "pve,api,ready,total,flux,zfs,gitlab",
+        "pve,api,ready,total,flux,zfs,gitlab,alerts",
         [
-            (6, "true", 9, 9, 0, 0, 1),   # green
-            (6, "true", 9, 9, 1, 0, 1),   # flux stuck
-            (6, "true", 9, 9, 0, 2, 1),   # zfs degraded
-            (6, "true", 9, 9, 0, 0, 0),   # gitlab down
-            (5, "true", 9, 9, 0, 0, 1),   # one pve host down
-            (6, "true", 8, 9, 0, 0, 1),   # one k3s node not ready
-            (6, "false", 0, 0, 0, 0, 1),  # kubectl unreachable
-            (0, "true", 0, 0, 0, 0, 0),   # nothing reachable
-            (6, "true", 0, 9, 0, 0, 1),   # api ok, zero nodes ready
+            (6, "true", 9, 9, 0, 0, 1, 0),   # green
+            (6, "true", 9, 9, 1, 0, 1, 0),   # flux stuck
+            (6, "true", 9, 9, 0, 2, 1, 0),   # zfs degraded
+            (6, "true", 9, 9, 0, 0, 0, 0),   # gitlab down
+            (5, "true", 9, 9, 0, 0, 1, 0),   # one pve host down
+            (6, "true", 8, 9, 0, 0, 1, 0),   # one k3s node not ready
+            (6, "false", 0, 0, 0, 0, 1, 0),  # kubectl unreachable
+            (0, "true", 0, 0, 0, 0, 0, 0),   # nothing reachable
+            (6, "true", 0, 9, 0, 0, 1, 0),   # api ok, zero nodes ready
+            (6, "true", 9, 9, 0, 0, 1, 3),   # alerts firing
         ],
     )
     def test_same_signals_map_to_paired_verdicts(self, pve, api, ready, total,
-                                                 flux, zfs, gitlab):
+                                                 flux, zfs, gitlab, alerts):
         # Full host coverage so the regular-only coverage gate is neutral;
         # hosts_ok tracks pve reachability for the one-host-down case.
         hosts_total = 19
         hosts_ok = hosts_total if pve == 6 else (0 if pve == 0 else 18)
         pct = hosts_ok * 100 // hosts_total
         reg = _regular(pve, api, ready, total, hosts_ok, hosts_total, pct, 50,
-                       flux, zfs, gitlab)
-        js = _json(pve, 6, api, ready, total, flux, zfs, gitlab)
+                       flux, zfs, gitlab, alerts=alerts)
+        js = _json(pve, 6, api, ready, total, flux, zfs, gitlab, alerts=alerts)
         assert self.PARITY[reg] == js, (
             f"verdict mismatch: regular={reg} json={js} for "
             f"pve={pve} api={api} ready={ready}/{total} flux={flux} "
-            f"zfs={zfs} gitlab={gitlab}"
+            f"zfs={zfs} gitlab={gitlab} alerts={alerts}"
         )
 
 
@@ -338,20 +334,33 @@ class TestRegularFailingPredicates:
                       "alerts_firing=4"):
             assert token in out, f"{token} missing from {out!r}"
 
-    def test_agrees_with_classify_regular(self):
-        # Empty output must mean OK, and non-empty must mean not-OK — otherwise
-        # the console line would contradict the verdict it annotates.
-        for override in ({}, {"alerts": 1}, {"flux": 1}, {"hosts_ok": 18}):
-            args = {**self.ALL_GREEN, **override}
-            verdict = _regular(**args)
-            failing = _failing(**args)
-            assert (verdict == "OK") == (failing == ""), (verdict, failing)
+    @pytest.mark.parametrize(
+        "override",
+        [
+            {},
+            {"alerts": 4},
+            {"flux": 2},
+            {"zfs": 1},
+            {"gitlab": 0},
+            {"hosts_ok": 18},
+            {"sections_ok": 3},
+            {"ready": 8},
+            {"api": "false"},
+            {"pve": 0},
+            {"pct": 15},
+        ],
+    )
+    def test_agrees_with_classify_regular(self, override):
+        # classify_regular's OK arm IS this function, so empty output must mean
+        # OK and non-empty must mean not-OK on every signal it names.
+        args = {**self.ALL_GREEN, **override}
+        verdict = _regular(**args)
+        failing = _failing(**args)
+        assert (verdict == "OK") == (failing == ""), (verdict, failing)
 
 
-# compose_active_sections: sentinel section-dispatch
-# compose_active_sections <health_url> <nginx_cert> <backup_timer> <backup_prom>
-# echoes the comma-joined optional sections that render ("-" drops a section;
-# `metrics` is nested under `backup`).
+# compose_active_sections echoes the comma-joined optional sections that
+# render. "-" drops a section and `metrics` is nested under `backup`.
 
 def _sections(health_url, nginx_cert, backup_timer, backup_prom) -> str:
     res = _run(
@@ -433,9 +442,8 @@ class TestFirewallGuestFwList:
 
 
 # cs_capped / cs_emit: remote section emitters
-# These replace `producer | head -N || echo msg`: that pipeline exits with
-# head's status (so the fallback is unreachable) and caps with no marker. Both
-# properties are asserted here.
+# They fall back on empty input and mark a capped section, which
+# `producer | head -N || echo msg` cannot do (see TestNoDeadPipelineFallbacks).
 
 def _capped(cap: int, fallback: str, stdin: str) -> list[str]:
     res = _run(f"cs_capped {cap} '{fallback}'", stdin=stdin)
@@ -496,12 +504,16 @@ class TestCsCapped:
 
 
 # source guard: the dead-fallback idiom must not come back
-# The helpers above only help if the remote bodies actually use them. This is
-# the regression gate on collect-state.sh itself: `producer | head -N || echo
-# "msg"` (or tail/wc) can never print msg, because the pipeline exits with
-# head's status.
+# `producer | head -N || echo "msg"` (or tail/wc) can never print msg — the
+# pipeline exits with head's status. This is the gate on collect-state.sh.
 
 COLLECT_STATE = Path(__file__).resolve().parent / "collect-state.sh"
+
+
+def _code(lines: list[str]) -> str:
+    """Drop whole-line comments so a probe named only in prose does not count."""
+    return "\n".join(ln for ln in lines if not ln.lstrip().startswith("#"))
+
 
 DEAD_FALLBACK_RE = re.compile(
     r"\|\s*(head|tail|wc)(\s[^|\n]*)?\|\|\s*echo"
@@ -539,14 +551,15 @@ class TestNoDeadPipelineFallbacks:
             assert not DEAD_FALLBACK_RE.search(ok), ok
 
 
-# DR coverage of the NAS backup section
-# CLUSTER_STATUS.txt is the artifact a restore is planned from, so "a backup
-# ran" is not enough: it has to show that a restore was PROVEN and how deep
-# recovery goes. These pin the sections whose absence is invisible in the
-# output.
+# DR coverage of the NAS backup section. CLUSTER_STATUS.txt is the artifact a
+# restore is planned from, so these pin the sections whose absence would be
+# invisible in the output.
 
 class TestBackupSectionCoverage:
-    SRC = COLLECT_STATE.read_text()
+    SRC = _code(COLLECT_STATE.read_text().splitlines())
+    # Couples the bound to the producer: a pin matching only the word would pass
+    # with the `timeout` prefix dropped.
+    TIMEOUT_RE = re.compile(r"\btimeout\s+\d+\s+restic-offsitectl snapshots\b")
 
     @pytest.mark.parametrize(
         "prom",
@@ -561,7 +574,10 @@ class TestBackupSectionCoverage:
         ],
     )
     def test_every_backup_textfile_is_collected(self, prom):
-        assert prom in self.SRC, f"{prom} is produced on the NAS but never collected"
+        assert f"cat /var/lib/node_exporter/{prom}" in self.SRC, (
+            f"{prom} is produced on the NAS but never collected; the name "
+            "appearing in prose is not a probe"
+        )
 
     def test_restic_snapshot_inventory_is_listed_and_bounded(self):
         assert "restic-offsitectl snapshots" in self.SRC, (
@@ -571,39 +587,378 @@ class TestBackupSectionCoverage:
         line = next(
             ln for ln in self.SRC.splitlines() if "restic-offsitectl snapshots" in ln
         )
-        assert "timeout" in line, "the listing reaches B2; an unattended run must not hang"
+        assert self.TIMEOUT_RE.search(line), (
+            "the listing reaches B2, so it must be wrapped in `timeout <seconds>`; "
+            "the bare word in a comment is not a timeout"
+        )
         # The producer is captured and its status tested, so cs_capped bounds the
         # output on the SUCCESS branch a few lines below rather than on this one.
-        block = self.SRC.split("restic-offsitectl snapshots", 1)[1].split("\nfi\n", 1)[0]
-        assert "cs_capped" in block, "an unbounded snapshot table would swamp the artifact"
+        block = self._snapshot_block()
+        assert "cs_capped" in block, "the snapshot listing must go through cs_capped"
 
     def test_a_failed_snapshot_listing_does_not_read_as_an_empty_repository(self):
-        """collect-state-lib's rule: a fallback describes the EMPTY case only.
-
-        A B2 timeout, a missing binary and a repository holding zero recovery
-        points are three different states, and the last one is a DR emergency —
-        the artifact must not render them identically.
-        """
-        block = self.SRC.split("restic-offsitectl snapshots", 1)[1].split("\nfi\n", 1)[0]
+        """A fallback describes the empty case only, never a failed listing."""
+        block = self._snapshot_block()
         assert "rc=$?" in block, "the producer's exit status must be captured, not discarded"
-        assert "124" in block, "a timeout needs its own wording"
+        assert re.search(r'\$rc"?\s*\]?\s*(-eq|==)\s*124', block), (
+            "the timeout branch (rc 124) must be tested separately"
+        )
         assert "NO snapshots" in block, "the empty-repository case must say so explicitly"
+
+    def test_the_timeout_pin_rejects_a_bare_invocation(self):
+        """Mutation proof for the pin above."""
+        assert not self.TIMEOUT_RE.search(
+            "snaps=$(sudo restic-offsitectl snapshots 2>&1); rc=$?  # timeout 90"
+        )
+        assert self.TIMEOUT_RE.search("snaps=$(sudo timeout 90 restic-offsitectl snapshots)")
 
     def test_artifact_listing_is_pattern_driven_not_newest_file(self):
         """`ls -t | head -1` reports the newest file of ANY kind, so the
         companion copies written after a dump win — which is exactly the
         failure the section exists to detect."""
-        assert "APP_PATTERNS_EOF" in self.SRC, (
+        block = self._artifact_block()
+        assert "APP_PATTERNS_EOF" in block, (
             "the per-app artifact listing must read the rendered collector's "
             "inventory patterns, not re-declare them"
         )
-        assert "NO ARTIFACT matching" in self.SRC, (
+        assert "NO ARTIFACT matching" in block, (
             "an app dir holding no pattern-matching file must say so explicitly"
         )
-        assert "companion" in self.SRC, "companions belong in their own line, not the artifact slot"
+        assert "companion" in block, (
+            "companions must be listed on their own line, not in the artifact slot"
+        )
+
+    @classmethod
+    def _snapshot_block(cls) -> str:
+        return cls.SRC.split("restic-offsitectl snapshots", 1)[1].split("\nfi\n", 1)[0]
+
+    @classmethod
+    def _artifact_block(cls) -> str:
+        return cls.SRC.split("newest restorable artifact per app", 1)[1].split(
+            "No per-app backup landing dirs", 1
+        )[0]
 
 
-if __name__ == "__main__":
-    import sys
+# warning_events_filter: the Warning-event exclusion policy
+# Reads a Warning-event list on stdin and counts the events at or after the
+# cutoff, minus the CI pool's capacity overflow.
 
-    sys.exit(pytest.main([__file__, "-v"]))
+CUTOFF = "2026-01-01T00:00:00Z"
+
+RUNNER_OVERFLOW = (
+    "0/9 nodes are available: 3 Insufficient cpu, 6 node(s) had untolerated taint"
+)
+
+
+def _event(reason="BackOff", namespace="default", message="",
+           ts="2026-01-01T12:00:00Z", key="lastTimestamp") -> dict:
+    return {
+        "reason": reason,
+        "message": message,
+        "metadata": {"namespace": namespace},
+        key: ts,
+    }
+
+
+def _warning_events(items, cutoff=CUTOFF) -> str:
+    res = _run(f"warning_events_filter '{cutoff}'",
+               stdin=json.dumps({"items": items}))
+    assert res.returncode == 0, res.stderr
+    return res.stdout.strip()
+
+
+class TestWarningEventsFilter:
+    @pytest.fixture(autouse=True)
+    def _jq(self):
+        require_tool("jq", "collect-state warning-events filter",
+                     "Install jq in the job image.")
+
+    def test_runner_capacity_overflow_is_excluded(self):
+        # Every CI pipeline produces these; counting them would keep the header
+        # permanently noisy.
+        assert _warning_events([
+            _event("FailedScheduling", "gitlab-runner", RUNNER_OVERFLOW),
+        ]) == "0"
+
+    def test_runner_overflow_citing_a_real_blocker_still_counts(self):
+        assert _warning_events([
+            _event("FailedScheduling", "gitlab-runner",
+                   RUNNER_OVERFLOW + "; persistentvolumeclaim not found"),
+        ]) == "1"
+
+    def test_same_reason_outside_the_runner_namespaces_counts(self):
+        assert _warning_events([
+            _event("FailedScheduling", "downloads", RUNNER_OVERFLOW),
+        ]) == "1"
+
+    def test_non_failedscheduling_warning_counts(self):
+        assert _warning_events([
+            _event("BackOff", "gitlab-runner", "Back-off restarting container"),
+        ]) == "1"
+
+    def test_event_time_only_inside_the_cutoff_counts(self):
+        # Events-API events carry eventTime with lastTimestamp absent.
+        assert _warning_events([
+            _event("BackOff", "default", "", key="eventTime"),
+        ]) == "1"
+
+    def test_event_before_the_cutoff_is_dropped(self):
+        assert _warning_events([
+            _event("BackOff", "default", "", ts="2025-12-31T23:00:00Z"),
+        ]) == "0"
+
+    def test_unparseable_input_reads_as_unknown(self):
+        # A failed kubectl must never render as "no warnings".
+        res = _run(f"warning_events_filter '{CUTOFF}'", stdin="not json")
+        assert res.stdout.strip() == "unknown"
+
+
+# probe parity: every shared probe must run in BOTH collect-state.sh modes
+# The --json branch silently lost probe_firing_alerts once; this is the gate.
+
+PROBE_DEF_RE = re.compile(r"^(probe_[a-z0-9_]+)\(\)", re.MULTILINE)
+JSON_BRANCH_START = 'if [ "${1:-}" = "--json" ]; then'
+
+
+def _split_modes() -> tuple[str, str]:
+    """Return (json_branch_code, regular_mode_code) from collect-state.sh."""
+    lines = COLLECT_STATE.read_text().splitlines()
+    start = next(i for i, ln in enumerate(lines) if ln.strip() == JSON_BRANCH_START)
+    end = next(i for i in range(start + 1, len(lines)) if lines[i] == "fi")
+    return _code(lines[start + 1:end]), _code(lines[end + 1:])
+
+
+class TestProbeParity:
+    def test_every_probe_is_called_in_both_modes(self):
+        json_branch, regular = _split_modes()
+        probes = PROBE_DEF_RE.findall(COLLECT_STATE.read_text())
+        assert probes, "no probe_* definitions found — the parser drifted"
+        missing = [
+            p for p in probes
+            if p not in json_branch or p not in regular
+        ]
+        assert not missing, (
+            "these probes run in only one mode, so the two classifiers no "
+            f"longer see the same signals: {missing}"
+        )
+
+    def test_the_split_finds_both_halves(self):
+        # A gate that cannot fail proves nothing: both halves must be non-empty
+        # and the json branch must be the smaller one.
+        json_branch, regular = _split_modes()
+        assert "classify_json" in json_branch
+        assert "classify_regular" in regular
+
+
+# probe_zfs_degraded: a pool that failed to import has no `zpool list` row at
+# all, so absence on a storage host must count, not read as zero degraded.
+
+
+def _extract_function(name: str) -> str:
+    """The shell text of one top-level function in collect-state.sh."""
+    src = COLLECT_STATE.read_text().splitlines()
+    start = next(i for i, ln in enumerate(src) if ln.startswith(f"{name}() {{"))
+    end = next(i for i in range(start + 1, len(src)) if src[i] == "}")
+    return "\n".join(src[start:end + 1])
+
+
+def _probe_zfs(listings: dict[str, str | None], nas_hosts: str,
+               expect: str = "", unknown: bool = False) -> tuple[str, str]:
+    """Drive probe_zfs_degraded over stubbed `zpool list` output per host.
+
+    A listing of None is a host whose ssh/zpool call failed. Returns
+    (ZFS_DEGRADED_RESULT, ZFS_MISSING_RESULT).
+    """
+    arms = []
+    for host, listing in listings.items():
+        body = "return 1" if listing is None else f"printf '%s' {shlex.quote(listing)}"
+        arms.append(f"    {host}) {body} ;;")
+    script = "\n".join([
+        "set -euo pipefail",
+        "SSH_USER=ops",
+        "PVE_HOSTS=(" + " ".join(shlex.quote(h) for h in listings) + ")",
+        f"NAS_HOSTS={shlex.quote(nas_hosts)}",
+        f"NAS_ZFS_POOLS={shlex.quote(expect)}",
+        f"NAS_ZFS_POOLS_UNKNOWN={'true' if unknown else 'false'}",
+        "ssh_probe_cmd() {",
+        '  case "${1#*@}" in',
+        *arms,
+        "    *) return 1 ;;",
+        "  esac",
+        "}",
+        _extract_function("probe_zfs_degraded"),
+        "probe_zfs_degraded",
+        'echo "$ZFS_DEGRADED_RESULT"',
+        'echo "$ZFS_MISSING_RESULT"',
+    ])
+    res = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert res.returncode == 0, res.stderr
+    count, missing = res.stdout.split("\n")[:2]
+    return count, missing
+
+
+class TestProbeZfsDegraded:
+    def test_every_expected_pool_present_is_clean(self):
+        assert _probe_zfs(
+            {"pve-nas-01": "tank\tONLINE\nssd\tONLINE\n"},
+            nas_hosts="pve-nas-01", expect="tank ssd",
+        ) == ("0", "")
+
+    def test_a_pool_missing_from_the_listing_counts(self):
+        count, missing = _probe_zfs(
+            {"pve-nas-01": "tank\tONLINE\n"},
+            nas_hosts="pve-nas-01", expect="tank ssd",
+        )
+        assert count == "1"
+        assert missing == "pool ssd is NOT IMPORTED on pve-nas-01"
+
+    def test_an_unreachable_storage_host_names_its_expected_pools(self):
+        count, missing = _probe_zfs(
+            {"pve-nas-01": None}, nas_hosts="pve-nas-01", expect="tank",
+        )
+        assert count == "1"
+        assert missing == "pool tank could not be listed on pve-nas-01"
+
+    def test_a_non_storage_host_with_no_pools_is_not_a_finding(self):
+        assert _probe_zfs({"pve-opt-01": ""}, nas_hosts="pve-nas-01") == ("0", "")
+
+    def test_an_unknown_roster_counts_rather_than_passing(self):
+        count, missing = _probe_zfs(
+            {"pve-nas-01": "tank\tONLINE\n"}, nas_hosts="pve-nas-01", unknown=True,
+        )
+        assert count == "1"
+        assert "unchecked" in missing
+
+    def test_a_degraded_pool_still_counts(self):
+        assert _probe_zfs(
+            {"pve-nas-01": "tank\tDEGRADED\n"}, nas_hosts="pve-nas-01", expect="tank",
+        ) == ("1", "")
+
+
+def _nas_pools_assignment() -> str:
+    """The multi-line NAS_ZFS_POOLS assignment as collect-state.sh writes it."""
+    lines = COLLECT_STATE.read_text().splitlines()
+    start = next(i for i, ln in enumerate(lines) if ln.startswith("NAS_ZFS_POOLS="))
+    end = next(i for i in range(start, len(lines)) if lines[i].endswith("|| true)}\""))
+    return "\n".join(lines[start:end + 1])
+
+
+class TestNasPoolRoster:
+    """The roster the absence check is gated on: derived, not baked."""
+
+    def test_the_roster_reads_the_inventory_at_run_time(self):
+        src = COLLECT_STATE.read_text()
+        assert "NAS_ZFS_POOLS=" in src and "nas_storage_zfs_pools:" in src, (
+            "the NAS_ZFS_POOLS roster no longer reads nas_storage_zfs_pools, so a "
+            "renamed pool would go unprobed"
+        )
+
+    def test_the_derivation_finds_this_cluster_pools(self):
+        res = subprocess.run(
+            ["bash", "-c",
+             f'_SCRIPT_DIR={shlex.quote(str(COLLECT_STATE.parent))}\n'
+             + _nas_pools_assignment() + '\nprintf "%s" "$NAS_ZFS_POOLS"'],
+            capture_output=True, text=True,
+        )
+        assert res.returncode == 0, res.stderr
+        assert res.stdout.split(), "no nas_storage_zfs_pools names parsed out of host_vars"
+
+
+# probe_flux_not_ready: the query fails exactly when Flux is gone, so a 0 there
+# would promote the verdict to healthy. It degrades to "unknown" and the callers
+# coerce that to 1 for the classifiers and to null for the JSON.
+
+
+def _probe_flux(payload: str | None) -> str:
+    """Drive probe_flux_not_ready over a stubbed kubectl. None = query failed."""
+    body = "return 1" if payload is None else f"printf '%s' {shlex.quote(payload)}"
+    script = "\n".join([
+        "set -euo pipefail",
+        f"kubectl() {{ {body}; }}",
+        _extract_function("probe_flux_not_ready"),
+        "probe_flux_not_ready",
+    ])
+    res = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert res.returncode == 0, res.stderr
+    return res.stdout.strip()
+
+
+class TestProbeFluxNotReady:
+    @pytest.fixture(autouse=True)
+    def _jq(self):
+        require_tool("jq", "collect-state Flux readiness probe",
+                     "Install jq in the job image.")
+
+    def test_a_failed_query_is_unknown_not_zero(self):
+        assert _probe_flux(None) == "unknown"
+
+    def test_unparseable_json_is_unknown_not_zero(self):
+        assert _probe_flux("not json at all") == "unknown"
+
+    def test_all_ready_is_zero(self):
+        assert _probe_flux(json.dumps({"items": [
+            {"status": {"conditions": [{"type": "Ready", "status": "True"}]}},
+        ]})) == "0"
+
+    def test_a_suspended_object_counts(self):
+        assert _probe_flux(json.dumps({"items": [
+            {"spec": {"suspend": True},
+             "status": {"conditions": [{"type": "Ready", "status": "True"}]}},
+        ]})) == "1"
+
+
+class TestCoerceInt:
+    def test_a_count_passes_through(self):
+        assert _run("coerce_int 3 1").stdout == "3"
+
+    def test_unknown_takes_the_verdict_fallback(self):
+        # 1, not 0: "could not ask" must demote the verdict, never promote it.
+        assert _run("coerce_int unknown 1").stdout == "1"
+
+    def test_unknown_takes_the_json_fallback(self):
+        assert _run("coerce_int unknown null").stdout == "null"
+
+    def test_an_empty_value_takes_the_fallback(self):
+        assert _run("coerce_int '' 1").stdout == "1"
+
+    def test_a_zero_count_is_not_mistaken_for_unknown(self):
+        assert _run("coerce_int 0 1").stdout == "0"
+
+    @pytest.mark.parametrize("fallback", ["1", "0", "null"])
+    @pytest.mark.parametrize("value", ["", "unknown", "N/A", "-1", "3.5"])
+    def test_a_non_numeric_value_never_reads_as_a_count(self, value, fallback):
+        assert _run(f"coerce_int '{value}' {fallback}").stdout == fallback
+
+
+class TestFluxCallSitesCoerce:
+    """Both modes must feed the classifiers a coerced number: an "unknown"
+    reaching classify_json's `-eq 0` test is a bash error, not a verdict."""
+
+    SRC = _code(COLLECT_STATE.read_text().splitlines())
+
+    def test_both_classifiers_read_the_coerced_value(self):
+        assert 'coerce_int "$FLUX_NOT_READY" 1' in self.SRC
+        assert 'coerce_int "$FLUX_NOT_READY_REG" 1' in self.SRC
+        assert '"$FLUX_NOT_READY_NUM"' in self.SRC
+        assert '"$FLUX_NOT_READY" "$ZFS_DEGRADED"' not in self.SRC
+        assert '"$FLUX_NOT_READY_REG" "$ZFS_DEGRADED_REG"' not in self.SRC
+
+    def test_the_json_field_can_still_be_null(self):
+        assert 'coerce_int "$FLUX_NOT_READY" null' in self.SRC
+
+    def test_no_call_site_hand_rolls_the_digit_case(self):
+        # Every coercion goes through coerce_int, so the verdict and the JSON
+        # fallbacks cannot drift apart per site.
+        assert "*[!0-9]*)" not in self.SRC
+
+    def test_the_alert_and_event_call_sites_coerce(self):
+        assert 'coerce_int "$ALERTS_FIRING" null' in self.SRC
+        assert 'coerce_int "$(probe_warning_events)" null' in self.SRC
+
+    def test_an_unaskable_alertmanager_degrades_in_both_modes(self):
+        # Fallback 1, never 0: a verdict input of 0 would read a snapshot that
+        # measured nothing as clean.
+        assert 'coerce_int "$ALERTS_FIRING" 1' in self.SRC
+        assert 'coerce_int "$ALERTS_FIRING_REG" 1' in self.SRC
+        assert 'coerce_int "$ALERTS_FIRING" 0' not in self.SRC
+        assert 'coerce_int "$ALERTS_FIRING_REG" 0' not in self.SRC

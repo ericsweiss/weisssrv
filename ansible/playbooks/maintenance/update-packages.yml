@@ -18,68 +18,36 @@
   become: true
   serial: 1  # One node at a time to maintain cluster availability
   tasks:
-    # Verify kured is rolled out ONCE, up front, while it is idle: a dead or
-    # absent kured means the sentinel below flags a reboot that never happens.
-    # `when: inventory_hostname == ansible_play_hosts_all[0]` — NOT run_once,
-    # which re-fires per serial:1 batch and would abort on a node whose kured pod
-    # is legitimately mid-reboot. Catches kured ABSENT only; present-but-wedged is
-    # backstopped by NodeStuckCordoned + the MaintenanceRebootDeferred metric.
+    # CRITICAL: check kured once while it is idle. An absent kured means the
+    # sentinel below flags a reboot that never happens. `run_once` alone
+    # re-fires per serial:1 batch, so the `when:` guard pins this to host one.
     - name: Verify kured DaemonSet is healthy before delegating reboots to it
       ansible.builtin.command: >-
         k3s kubectl -n kube-system rollout status ds/kured --timeout=120s
       register: kured_rollout
       changed_when: false
       # Budget tolerates an agent VM still rejoining after an earlier host
-      # reboot. Delegates to a server other than the first play host, falling
-      # back to the first server.
+      # reboot.
       retries: 6
       delay: 20
       until: kured_rollout.rc == 0
       run_once: true
       when: inventory_hostname == ansible_play_hosts_all[0]
-      delegate_to: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
+      delegate_to: "{{ k3s_delegate_server }}"
 
-    - name: Display current k3s node being updated
-      ansible.builtin.debug:
-        msg: "=== Updating k3s node: {{ inventory_hostname }} ==="
-
-    - name: Update apt cache
-      ansible.builtin.apt:
-        update_cache: true
-        cache_valid_time: 0
-
-    - name: Check for available updates
-      ansible.builtin.command: apt list --upgradable
-      register: upgradable_packages
-      changed_when: false
-
-    - name: Display available updates
-      ansible.builtin.debug:
-        msg: "{{ upgradable_packages.stdout_lines }}"
-      when: upgradable_packages.stdout_lines | length > 1
-
-    - name: Upgrade packages (safe upgrade)
-      ansible.builtin.apt:
-        upgrade: safe
-        autoclean: true
-        autoremove: true
-      register: apt_upgrade
-
-    - name: Display upgrade summary
-      ansible.builtin.debug:
-        msg:
-          - "Packages upgraded: {{ apt_upgrade.changed }}"
-          - "{{ apt_upgrade.stdout_lines | default([]) }}"
+    - name: Upgrade packages
+      ansible.builtin.include_tasks: _apt-upgrade.yml
+      vars:
+        apt_upgrade_phase_label: "=== Updating k3s node: {{ inventory_hostname }} ==="
 
     - name: Check and detect if reboot needed (skip actual reboot - kured handles it)
       ansible.builtin.include_tasks: _reboot-if-needed.yml
       vars:
         skip_reboot: true
 
-    # k3s kernel reboots are kured's job — draining from CI would evict the
+    # k3s kernel reboots are kured's job: draining from CI would evict the
     # executor's own pod and deadlock. Flagging the sentinel hands the node to
-    # kured, which reboots one at a time, outliving this job. See
-    # kubernetes/infrastructure/controllers/kured/release.yaml.
+    # kured, which reboots one at a time, outliving this job.
     - name: Flag node for kured reboot (kernel updated)
       ansible.builtin.file:
         path: /var/run/reboot-required
@@ -100,46 +68,11 @@
   become: true
   serial: 1  # One host at a time
   tasks:
-    - name: Display current host being updated
-      ansible.builtin.debug:
-        msg: "=== Updating application host: {{ inventory_hostname }} ==="
-
-    - name: Update apt cache
-      ansible.builtin.apt:
-        update_cache: true
-        cache_valid_time: 0
-
-    - name: Check for available updates
-      ansible.builtin.command: apt list --upgradable
-      register: upgradable_packages
-      changed_when: false
-
-    - name: Display available updates
-      ansible.builtin.debug:
-        msg: "{{ upgradable_packages.stdout_lines }}"
-      when: upgradable_packages.stdout_lines | length > 1
-
-    - name: Upgrade packages (safe upgrade)
-      ansible.builtin.apt:
-        upgrade: safe
-        autoclean: true
-        autoremove: true
-      register: apt_upgrade
-
-    - name: Display upgrade summary
-      ansible.builtin.debug:
-        msg:
-          - "Packages upgraded: {{ apt_upgrade.changed }}"
-          - "{{ apt_upgrade.stdout_lines | default([]) }}"
-
-    - name: Check and reboot if needed
-      ansible.builtin.include_tasks: _reboot-if-needed.yml
-
-    - name: Verify services after reboot
-      ansible.builtin.service:
-        name: ssh
-        state: started
-      when: reboot_required | bool
+    # Same shared phase as play 1; _ensure-nfs-server-healthy.yml self-skips here.
+    - name: Upgrade packages and handle the reboot
+      ansible.builtin.include_tasks: _apt-upgrade-and-reboot.yml
+      vars:
+        apt_upgrade_phase_label: "=== Updating application host: {{ inventory_hostname }} ==="
 
 - name: Update summary
   hosts: localhost

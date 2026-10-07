@@ -1,0 +1,221 @@
+# https://taskfile.dev
+# Home Assistant runs as a standalone Proxmox VM, not in k3s; Traefik fronts
+# it via IngressRoute + Service/EndpointSlice (docs/24).
+version: '3'
+
+tasks:
+  status:
+    desc: Show Home Assistant VM and ingress status
+    cmds:
+      - echo "=== Home Assistant VM Status ==="
+      - |
+        # Locate the VM's current node via the shared, hardened helper
+        # (HA-resilient: ha-manager -> cluster resources -> per-host qm scan).
+        CURRENT_NODE=$(scripts/find-pve-host-for-vm.sh {{.HA_VM_ID}} {{.PVE_HOSTS}} || true)
+        if [ -z "$CURRENT_NODE" ]; then
+          echo "Cannot find VM {{.HA_VM_ID}} on any reachable Proxmox host"
+        else
+          echo "VM {{.HA_VM_ID}} is on node: $CURRENT_NODE"
+          ssh "$CURRENT_NODE" "sudo qm status {{.HA_VM_ID}}" 2>/dev/null || echo "Cannot reach node $CURRENT_NODE"
+        fi
+      - echo ""
+      - echo "=== Network Connectivity ==="
+      - |
+        if curl -s --connect-timeout 2 http://{{.HOME_ASSISTANT_IP}}:8123 >/dev/null 2>&1; then
+          echo "Home Assistant HTTP: OK ({{.HOME_ASSISTANT_IP}}:8123)"
+        else
+          echo "Home Assistant HTTP: UNREACHABLE"
+        fi
+      - echo ""
+      - echo "=== Kubernetes Resources ==="
+      - kubectl get service home-assistant-backend -n default -o wide 2>/dev/null || echo "Service not found"
+      - kubectl get endpointslice home-assistant-backend -n default 2>/dev/null || echo "EndpointSlice not found"
+      - kubectl get ingressroute -A 2>/dev/null | grep -E "NAME|home-assistant" || echo "IngressRoutes not found"
+      - echo ""
+      - echo "=== Traefik Routing Test ==="
+      - |
+        echo "Internal (home.esweiss.com):"
+        curl -sk --connect-timeout 5 https://home.esweiss.com -o /dev/null -w "  HTTP Status: %{http_code}\n" 2>/dev/null || echo "  UNREACHABLE"
+        echo "External (home.ericsweiss.com):"
+        curl -sk --connect-timeout 5 https://home.ericsweiss.com -o /dev/null -w "  HTTP Status: %{http_code}\n" 2>/dev/null || echo "  UNREACHABLE"
+
+  vm-start:
+    desc: Start the Home Assistant VM
+    cmds:
+      - |
+        set -eo pipefail
+        CURRENT_NODE=$(scripts/find-pve-host-for-vm.sh {{.HA_VM_ID}} {{.PVE_HOSTS}})
+        echo "Starting VM {{.HA_VM_ID}} on $CURRENT_NODE..."
+        ssh "$CURRENT_NODE" "sudo qm start {{.HA_VM_ID}}"
+      - echo "Waiting for Home Assistant to be reachable..."
+      - |
+        for i in $(seq 1 30); do
+          if curl -s --connect-timeout 2 http://{{.HOME_ASSISTANT_IP}}:8123 >/dev/null 2>&1; then
+            echo "Home Assistant is up!"
+            exit 0
+          fi
+          echo "Waiting... ($i/30)"
+          sleep 5
+        done
+        echo "ERROR: Home Assistant did not answer on {{.HOME_ASSISTANT_IP}}:8123 within 150s."
+        echo "       Check the guest console: qm status {{.HA_VM_ID}} on its PVE host (docs/24)."
+        exit 1
+
+  vm-stop:
+    desc: Stop the Home Assistant VM gracefully
+    cmds:
+      - |
+        set -eo pipefail
+        CURRENT_NODE=$(scripts/find-pve-host-for-vm.sh {{.HA_VM_ID}} {{.PVE_HOSTS}})
+        echo "Stopping VM {{.HA_VM_ID}} on $CURRENT_NODE..."
+        if ssh "$CURRENT_NODE" "sudo qm shutdown {{.HA_VM_ID}}"; then
+          echo "Sent shutdown signal to Home Assistant VM"
+        else
+          echo "ERROR: Failed to stop VM {{.HA_VM_ID}} on $CURRENT_NODE"
+          exit 1
+        fi
+
+  vm-restart:
+    desc: "Restart the Home Assistant VM (graceful shutdown + start; FORCE=1 hard-resets a wedged guest)"
+    vars:
+      FORCE: '{{.FORCE | default "0"}}'
+    cmds:
+      - |
+        set -eo pipefail
+        CURRENT_NODE=$(scripts/find-pve-host-for-vm.sh {{.HA_VM_ID}} {{.PVE_HOSTS}})
+        if [ "{{.FORCE}}" = "1" ]; then
+          echo "FORCE=1: hard-resetting VM {{.HA_VM_ID}} on $CURRENT_NODE (recorder DB may lose recent history)..."
+          ssh "$CURRENT_NODE" "sudo qm reset {{.HA_VM_ID}}"
+          echo "Sent reset signal to Home Assistant VM"
+          exit 0
+        fi
+        # Graceful ACPI shutdown + start. A hard `qm reset` risks recorder-DB
+        # corruption, so it stays behind FORCE=1; `qm reboot` waits on the QEMU
+        # Guest Agent, which HAOS does not run.
+        echo "Shutting down VM {{.HA_VM_ID}} on $CURRENT_NODE..."
+        ssh "$CURRENT_NODE" "sudo qm shutdown {{.HA_VM_ID}} --timeout 120"
+        for i in $(seq 1 30); do
+          STATUS=$(ssh "$CURRENT_NODE" "sudo qm status {{.HA_VM_ID}}" 2>/dev/null || true)
+          case "$STATUS" in *stopped*) break ;; esac
+          echo "Waiting for shutdown... ($i/30)"
+          sleep 5
+        done
+        STATUS=$(ssh "$CURRENT_NODE" "sudo qm status {{.HA_VM_ID}}" 2>/dev/null || true)
+        case "$STATUS" in
+          *stopped*) ;;
+          *)
+            echo "ERROR: VM {{.HA_VM_ID}} did not stop cleanly (status: ${STATUS:-unknown})."
+            echo "Re-run with FORCE=1 to hard-reset: task home-assistant:vm-restart FORCE=1"
+            exit 1
+            ;;
+        esac
+        echo "Starting VM {{.HA_VM_ID}} on $CURRENT_NODE..."
+        ssh "$CURRENT_NODE" "sudo qm start {{.HA_VM_ID}}"
+        for i in $(seq 1 30); do
+          if curl -s --connect-timeout 2 http://{{.HOME_ASSISTANT_IP}}:8123 >/dev/null 2>&1; then
+            echo "Restart complete - Home Assistant is up!"
+            exit 0
+          fi
+          echo "Waiting... ($i/30)"
+          sleep 5
+        done
+        echo "ERROR: Home Assistant did not answer on {{.HOME_ASSISTANT_IP}}:8123 within 150s."
+        echo "       Check the guest console: qm status {{.HA_VM_ID}} on $CURRENT_NODE (docs/24)."
+        exit 1
+
+  console:
+    desc: Open SSH console to Home Assistant (if SSH add-on installed)
+    cmds:
+      - |
+        echo "Connecting to Home Assistant..."
+        echo "Note: Requires SSH add-on to be installed in Home Assistant"
+        ssh root@{{.HOME_ASSISTANT_IP}} -p 22222 || echo "SSH connection failed. Is the SSH add-on installed and configured?"
+
+  logs:
+    desc: View Home Assistant core logs via API (reads token from HA_TOKEN env var)
+    cmds:
+      - |
+        if [ -z "$HA_TOKEN" ]; then
+          echo "Usage: HA_TOKEN=<long-lived-access-token> task home-assistant:logs"
+          echo ""
+          echo "To get a token:"
+          echo "1. Go to https://home.esweiss.com/profile"
+          echo "2. Scroll to 'Long-Lived Access Tokens'"
+          echo "3. Create a new token"
+          echo ""
+          echo "Tip: 'export HA_TOKEN=...' (or read it from 1Password) keeps the"
+          echo "token out of process listings — it's sent via curl --config below."
+          exit 1
+        fi
+        # Bearer token via curl's stdin config, never argv, so it stays out of
+        # process listings. --fail-with-body plus a captured body, because piping
+        # into head would emit the error page as if it were the logs.
+        resp=$(curl -sS --fail-with-body --config - https://home.esweiss.com/api/error_log <<EOF
+        header = "Authorization: Bearer $HA_TOKEN"
+        EOF
+        ) || { echo "ERROR: failed to fetch Home Assistant logs (network error or HTTP >=400)" >&2; exit 1; }
+        printf '%s\n' "$resp" | head -100
+
+  snapshot:
+    desc: Create a Proxmox snapshot of the Home Assistant VM
+    vars:
+      NAME: '{{.NAME | default "manual"}}'
+      DESC: '{{.DESC | default "Manual snapshot"}}'
+    cmds:
+      - |
+        set -eo pipefail
+        NAME="{{.NAME}}"
+        DESC="{{.DESC}}"
+        # NAME is interpolated into a remote `qm snapshot` command; pin it to the
+        # Proxmox snapshot-name charset so it can't break out of the quoting.
+        if ! printf '%s' "$NAME" | grep -qE '^[A-Za-z0-9][A-Za-z0-9_-]*$'; then
+          echo "ERROR: NAME must match ^[A-Za-z0-9][A-Za-z0-9_-]*$ (Proxmox snapshot-name rules)"
+          exit 1
+        fi
+        # DESC is wrapped in single quotes remotely; reject single quotes so it
+        # can't terminate the quoting and inject into the root qm command.
+        case "$DESC" in
+          *\'*) echo "ERROR: DESC must not contain a single quote"; exit 1 ;;
+        esac
+        CURRENT_NODE=$(scripts/find-pve-host-for-vm.sh {{.HA_VM_ID}} {{.PVE_HOSTS}})
+        echo "Creating snapshot '$NAME' of Home Assistant VM on $CURRENT_NODE..."
+        if ssh "$CURRENT_NODE" "sudo qm snapshot {{.HA_VM_ID}} '${NAME}' --description '${DESC}'"; then
+          echo "Snapshot created successfully"
+        else
+          echo "ERROR: Failed to create snapshot of VM {{.HA_VM_ID}} on $CURRENT_NODE"
+          exit 1
+        fi
+        echo ""
+        echo "To list snapshots: ssh $CURRENT_NODE 'sudo qm listsnapshot {{.HA_VM_ID}}'"
+        echo "To rollback: ssh $CURRENT_NODE \"sudo qm rollback {{.HA_VM_ID}} '${NAME}'\""
+
+  deploy-config:
+    desc: Deploy Home Assistant configuration via Ansible with 1Password secrets
+    dir: "{{.ANSIBLE_DIR}}"
+    env:
+      HA_OIDC_CLIENT_ID: op://Homelab/Home Assistant SSO/authentik-client-id
+      HA_OIDC_CLIENT_SECRET: op://Homelab/Home Assistant SSO/authentik-client-secret
+    cmds:
+      - |
+        echo "Deploying Home Assistant configuration..."
+        echo ""
+        op run -- ansible-playbook -i {{.INVENTORY}} -e "ansible_become=false" playbooks/home-assistant.yml
+        echo ""
+        echo "Configuration deployed successfully!"
+        echo ""
+        echo "Next steps:"
+        echo "  1. Review changes via Home Assistant UI"
+        echo "  2. Configuration has been validated automatically"
+        echo "  3. Restart Home Assistant: task home-assistant:vm-restart"
+        echo ""
+        echo "Or restart now with: task home-assistant:restart-after-config"
+
+  restart-after-config:
+    desc: Restart Home Assistant after configuration deployment
+    cmds:
+      - echo "Restarting Home Assistant..."
+      - task: vm-restart
+      - echo "Waiting for Home Assistant to come back online..."
+      - sleep 30
+      - echo "Testing connectivity..."
+      - task: status

@@ -19,7 +19,7 @@
     - weisssrv.infra.unbound
     - weisssrv.infra.unbound_exporter
     - weisssrv.infra.adguard_home
-    # Also in site.yml; listed here so a standalone deploy stays in sync.
+    # Shared with site.yml; scripts/test_shared_role_playbook_sync.py keeps the two in step.
     - weisssrv.infra.node_exporter_host
     - weisssrv.infra.alloy_host
 

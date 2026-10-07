@@ -14,3 +14,6 @@ spec:
         minAllowed: {cpu: 25m, memory: 64Mi}
         maxAllowed: {cpu: 500m, memory: 512Mi}
         controlledResources: [cpu, memory]
+        # RequestsOnly with maxAllowed.memory == the 512Mi manager limit in
+        # components/gitlab-runner-common: recommendations move requests only.
+        controlledValues: RequestsOnly

@@ -1,23 +1,6 @@
-"""Gates for the doc inventories that keep silently drifting from the code.
-
-1. **`--tags` invocations in the docs.** Ansible exits 0 with every task skipped
-   when a tag matches nothing, so a runbook that names a tag the playbook does
-   not declare is a silent no-op — the failure mode that made a documented SMTP
-   credential rotation deploy nothing. Every `ansible-playbook <playbook>
-   --tags/--skip-tags <tag>` in the docs must name a tag that playbook really
-   reaches.
-2. **Namespaced `task ns:name` references** in the docs and the agent-facing
-   files (which no gate covered — `lint:taskfile-smoke` checks the reverse
-   direction, Taskfile → scripts). A renamed task leaves every runbook that
-   named it pointing at nothing.
-3. **The docs/13 job tables vs the pipeline.** Those tables are the operator's
-   map of CI, and a job missing from them is invisible to anyone reading the doc
-   rather than the YAML. Only the locally-defined jobs can be enumerated from
-   `.gitlab-ci.yml` — the library-included ones are documented there too but
-   come from `weisssrv-lib` — so those are what this gate holds.
-
-All run under `pytest scripts/` (`task scripts:test`, part of `task lint`, and
-the CI `python-tests` job).
+"""Gates holding the doc inventories to the code: `--tags` invocations, `task
+ns:name` references, the docs/13 CI job tables and docs/15's 1Password item
+inventory. Runs under `pytest scripts/`.
 """
 from __future__ import annotations
 
@@ -25,18 +8,24 @@ import os
 import re
 from pathlib import Path
 
-import pytest
 import yaml
+
+import taskfile_tree
+from test_vendored_byte_identity import load_ci_doc
 
 REPO = Path(__file__).resolve().parent.parent
 PLAYBOOK_DIR = REPO / "ansible" / "playbooks"
 
 # Roles ship from the weisssrv.infra collection, so their task-level tags are
-# only readable where the collection is installed.
+# readable from an installed collection or from the weisssrv-lib checkout the
+# vendored-copy gate already requires.
+_LIB_CHECKOUT = Path(os.environ.get("WEISSSRV_LIB_PATH") or REPO.parent / "weisssrv-lib")
 _ROLE_DIR_CANDIDATES = (
     os.environ.get("WEISSSRV_INFRA_ROLES"),
-    REPO / ".tmp/collections/ansible_collections/weisssrv/infra/roles",
+    # `task ansible:lint` installs the pinned collection here.
+    REPO / ".ansible-home/collections/ansible_collections/weisssrv/infra/roles",
     Path.home() / ".ansible/collections/ansible_collections/weisssrv/infra/roles",
+    _LIB_CHECKOUT / "ansible_collections/weisssrv/infra/roles",
 )
 
 # Markdown files whose `ansible-playbook ... --tags` examples are operator-facing.
@@ -50,20 +39,20 @@ _TAGS_RE = re.compile(r"--(?:skip-)?tags[= ]+(?P<tags>[A-Za-z0-9_,.<>-]+)")
 _PLAYBOOK_RE = re.compile(r"(?P<path>[\w./-]*ansible/playbooks/[\w./-]+\.yml|[\w./-]+\.yml)")
 
 
-def _roles_dir() -> Path | None:
+def _roles_dir() -> Path:
     for candidate in _ROLE_DIR_CANDIDATES:
         if candidate and Path(candidate).is_dir():
             return Path(candidate)
-    return None
+    raise AssertionError(
+        "no weisssrv.infra roles found: install the collection "
+        "(`task ansible:lint`, or `task ansible:install-collections`) or "
+        "provide a weisssrv-lib checkout (set $WEISSSRV_LIB_PATH, or place one at "
+        f"{REPO.parent / 'weisssrv-lib'}). This gate never skips."
+    )
 
 
 def _tags_reachable_from(playbook: Path, roles_dir: Path) -> set[str]:
-    """Every tag a `--tags` selection could match in this playbook.
-
-    Play-level `tags:`, role-entry `tags:`, and task-level `tags:` anywhere in
-    the roles the playbook loads (tags propagate down, and a role-level tag ADDS
-    to rather than replaces the task-level ones).
-    """
+    """Every tag a `--tags` selection could match in this playbook."""
     tags: set[str] = set()
     roles: set[str] = set()
 
@@ -126,12 +115,6 @@ def _doc_tag_invocations() -> list[tuple[Path, str, str]]:
 
 def test_documented_tags_exist_in_their_playbook():
     roles_dir = _roles_dir()
-    if roles_dir is None:
-        pytest.skip(
-            "weisssrv.infra roles are not installed, so role task tags cannot be "
-            "resolved; run `ansible-galaxy collection install -r "
-            "ansible/requirements.yml -p .tmp/collections` first"
-        )
     problems = []
     for doc, playbook_ref, tag in _doc_tag_invocations():
         playbook = REPO / playbook_ref
@@ -155,35 +138,50 @@ def test_documented_tag_scan_finds_the_real_invocations():
     assert len(found) >= 8, f"expected the docs to carry --tags examples, found {found}"
 
 
-# `task ns:name` inside backticks. Colon-less tokens are skipped: prose like
-# "a task with …" is indistinguishable from a bare task name, and namespaced
-# names are where renames actually happen.
+# `task ns:name` inside backticks. Colon-less tokens are skipped here: prose
+# like "a task with …" is indistinguishable from a bare task name.
 _TASK_RE = re.compile(r"`+\s*task ([a-zA-Z][a-zA-Z0-9:_-]*)")
+
+# Second pass for the bare names (`task lint`, `task collect-state`): a whole
+# inline code span that starts with `task `, which prose never is.
+_CODE_SPAN = re.compile(r"`([^`\n]+)`")
+_SPAN_TASK = re.compile(r"^task\s+([a-zA-Z][a-zA-Z0-9:_-]*)")
 
 _AGENT_FILES = ("README.md", "CLAUDE.md", "AGENTS.md", ".cursorrules",
                 "ansible/README.md", "ansible/TESTING.md")
 
 
 def _taskfile_names() -> set[str]:
-    data = yaml.safe_load((REPO / "Taskfile.yml").read_text(encoding="utf-8"))
-    return set(data.get("tasks", {}))
+    """Every task in the includes: tree, not just the root file's own."""
+    return set(taskfile_tree.load_tasks(REPO))
+
+
+def _task_tokens_in(text: str) -> list[str]:
+    """Task names one document names: namespaced anywhere, bare in a whole span."""
+    tokens = []
+    for m in _TASK_RE.finditer(text):
+        token = m.group(1)
+        # `task immich:*` — a glob, not a task name.
+        if ":" not in token or token.endswith(":"):
+            continue
+        tokens.append(token)
+    for span in _CODE_SPAN.finditer(text):
+        m = _SPAN_TASK.match(span.group(1).strip())
+        if m and ":" not in m.group(1):
+            tokens.append(m.group(1))
+    return tokens
 
 
 def _doc_task_tokens() -> list[tuple[Path, str]]:
     files = sorted((REPO / "docs").glob("*.md"))
     files += [REPO / name for name in _AGENT_FILES]
     files += sorted((REPO / ".claude").rglob("*.md"))
-    found = []
-    for f in files:
-        if not f.is_file():
-            continue
-        for m in _TASK_RE.finditer(f.read_text(encoding="utf-8")):
-            token = m.group(1)
-            # `task immich:*` — a glob, not a task name.
-            if ":" not in token or token.endswith(":"):
-                continue
-            found.append((f, token))
-    return found
+    return [
+        (f, token)
+        for f in files
+        if f.is_file()
+        for token in _task_tokens_in(f.read_text(encoding="utf-8"))
+    ]
 
 
 def test_documented_task_names_exist():
@@ -200,6 +198,177 @@ def test_task_token_scan_finds_the_real_references():
     assert len(tokens) >= 50, f"expected many `task ns:name` references, found {len(tokens)}"
 
 
+def test_the_scan_resolves_bare_task_names():
+    """`task lint` carries no namespace, so a colon-requiring scan skips it."""
+    bare = {token for _, token in _doc_task_tokens() if ":" not in token}
+    assert "lint" in bare, "the bare-name pass found none of the docs' `task lint` uses"
+
+
+def test_prose_about_a_task_is_not_read_as_a_task_name():
+    """Mutation case: a bare name counts only as a whole code span."""
+    assert _task_tokens_in("a task with the same name, and `task` on its own") == []
+    assert _task_tokens_in("run `task lint` before the MR") == ["lint"]
+    assert _task_tokens_in("`task flux:reconcile -- --with-source`") == ["flux:reconcile"]
+
+
+# --- docs/15's 1Password inventory vs the items the repo really references ----
+
+CRED_DOC = REPO / "docs" / "15-credential-rotation.md"
+
+# The vaults this deployment reads. Anything else in an `op://` URI is a doc
+# placeholder, not a reference.
+_OP_VAULTS = ("Homelab", "Homelab-Boot")
+
+# An item TITLE. Tight enough to reject the `op://Homelab/[^/]+/...` grep
+# patterns the Taskfile's own credential-scan tasks carry.
+_OP_ITEM_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._'-]*$")
+_OP_URI_RE = re.compile(
+    r"op://(?:" + "|".join(_OP_VAULTS) + r")/([^/\n\"'`]+)/"
+)
+
+# Documented items nothing in the repo can reference, each with the reason.
+# They are real vault items: entered in an app's own UI, read from a CI variable
+# rather than an `op://` URI, or kept for an alternate provider.
+_DOC_ONLY_ITEMS = {
+    "Flux Webhook Token": "optional Flux Receiver path; the GitLab agent drives reconcile",
+    "GitLab Version Bump Bot Token": "read as the VERSION_BUMP_BOT_TOKEN CI variable",
+    "Homarr Integrations": "DR record of credentials entered in the Homarr UI",
+    "Homarr Proxmox Token": "entered in the Homarr UI",
+    "OpenAI API Key": "entered in Mealie's UI",
+    "Service Account Auth Token weisssrv": "read as OP_SERVICE_ACCOUNT_TOKEN in CI",
+    "VPN Unlimited Credentials": "alternate Gluetun provider, not the configured one",
+}
+
+
+def _documented_1p_items() -> set[str]:
+    """First-column item titles of every table in docs/15 § Inventory."""
+    text = CRED_DOC.read_text(encoding="utf-8")
+    block = text[text.index("### Inventory"):text.index("### Item detail")]
+    items: set[str] = set()
+    for line in block.splitlines():
+        line = line.strip()
+        if not line.startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if len(cells) < 2:
+            continue
+        first = cells[0]
+        # Header row and the `|---|` separator.
+        if first == "Item" or not first or set(first) <= set("-: "):
+            continue
+        # One row can list several items (the four WiFi SSIDs).
+        for part in first.split(","):
+            part = part.strip().strip("`")
+            if part:
+                items.add(part)
+    return items
+
+
+def _eso_item_keys() -> set[str]:
+    """`remoteRef.key` / `dataFrom.extract.key` = the 1Password item TITLE."""
+    keys: set[str] = set()
+
+    def walk(node) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key in ("remoteRef", "extract") and isinstance(value, dict) and "key" in value:
+                    keys.add(str(value["key"]))
+                walk(value)
+        elif isinstance(node, list):
+            for entry in node:
+                walk(entry)
+
+    for path in sorted((REPO / "kubernetes").rglob("*.yaml")):
+        text = path.read_text(encoding="utf-8")
+        if "remoteRef" not in text and "extract" not in text:
+            continue
+        try:
+            docs = list(yaml.safe_load_all(text))
+        except yaml.YAMLError:
+            continue
+        for doc in docs:
+            walk(doc)
+    return keys
+
+
+def _op_uri_items() -> set[str]:
+    """Item titles in the `op://vault/Item/field` URIs the host-side tooling reads."""
+    items: set[str] = set()
+    sources = [REPO / ".gitlab-ci.yml", REPO / "Taskfile.yml"]
+    sources += sorted(taskfile_tree.include_paths(REPO).values())
+    for path in sources:
+        for match in _OP_URI_RE.finditer(path.read_text(encoding="utf-8")):
+            title = match.group(1).strip()
+            if _OP_ITEM_RE.match(title):
+                items.add(title)
+    return items
+
+
+def _zfs_passphrase_items() -> set[str]:
+    """`zfs_encryption_pools[].item` — the boot-unlock passphrases."""
+    items: set[str] = set()
+
+    def walk(node) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key == "zfs_encryption_pools" and isinstance(value, list):
+                    for pool in value:
+                        if isinstance(pool, dict) and pool.get("item"):
+                            items.add(str(pool["item"]))
+                walk(value)
+        elif isinstance(node, list):
+            for entry in node:
+                walk(entry)
+
+    for path in sorted((REPO / "ansible" / "inventories" / "prod").rglob("*.yml")):
+        text = path.read_text(encoding="utf-8")
+        if "zfs_encryption_pools" not in text:
+            continue
+        try:
+            walk(yaml.safe_load(text))
+        except yaml.YAMLError:
+            continue
+    return items
+
+
+def _referenced_1p_items() -> set[str]:
+    return _eso_item_keys() | _op_uri_items() | _zfs_passphrase_items()
+
+
+def test_every_referenced_1p_item_is_documented():
+    documented = _documented_1p_items()
+    referenced = _referenced_1p_items()
+    assert documented, "docs/15 § Inventory parsed to nothing"
+    assert referenced, "no 1Password item reference found anywhere in the repo"
+    missing = sorted(referenced - documented)
+    assert not missing, (
+        "1Password items the repo consumes but docs/15 § Inventory does not list:\n  "
+        + "\n  ".join(missing)
+    )
+
+
+def test_every_documented_1p_item_is_referenced_or_declared_doc_only():
+    unused = sorted(_documented_1p_items() - _referenced_1p_items() - set(_DOC_ONLY_ITEMS))
+    assert not unused, (
+        "docs/15 § Inventory lists items nothing references. Remove the row, or add "
+        "it to _DOC_ONLY_ITEMS with the reason it cannot be referenced:\n  "
+        + "\n  ".join(unused)
+    )
+
+
+def test_the_1p_reference_scan_sees_each_source():
+    """Guard the three scanners: each really does find references."""
+    assert len(_eso_item_keys()) >= 20
+    assert len(_op_uri_items()) >= 20
+    assert _zfs_passphrase_items()
+
+
+def test_every_doc_only_item_carries_a_reason_and_is_documented():
+    documented = _documented_1p_items()
+    for item, reason in _DOC_ONLY_ITEMS.items():
+        assert item in documented, f"{item} is declared doc-only but docs/15 does not list it"
+        assert len(reason.split()) >= 4, f"{item} needs a real reason, not {reason!r}"
+
 # --- docs/13 job tables vs the pipeline -------------------------------------
 
 CI_FILE = REPO / ".gitlab-ci.yml"
@@ -214,20 +383,9 @@ _CI_RESERVED = {
 }
 
 
-class _CILoader(yaml.SafeLoader):
-    """SafeLoader that survives GitLab's `!reference` tag.
-
-    `safe_load` raises on it and .gitlab-ci.yml uses it freely; the values are
-    irrelevant here, only the top-level job NAMES are read.
-    """
-
-
-_CILoader.add_multi_constructor("!", lambda loader, suffix, node: None)
-
-
 def _local_ci_jobs() -> set[str]:
     """Every job `.gitlab-ci.yml` defines itself — hidden fragments excluded."""
-    ci = yaml.load(CI_FILE.read_text(encoding="utf-8"), Loader=_CILoader) or {}
+    ci = load_ci_doc(CI_FILE)
     return {
         name
         for name, job in ci.items()
@@ -236,12 +394,7 @@ def _local_ci_jobs() -> set[str]:
 
 
 def _documented_ci_jobs() -> set[str]:
-    """First-column backticked names of every `| Job | ... |` table row in docs/13.
-
-    Scoped to those tables rather than every backtick in the file: a job name
-    that happens to appear in prose is not the operator-facing row this gate is
-    about, and counting it would let a table lose a row without failing.
-    """
+    """First-column backticked names of every `| Job | ... |` row in docs/13."""
     documented: set[str] = set()
     in_job_table = False
     for line in CI_DOC.read_text(encoding="utf-8").splitlines():
@@ -274,3 +427,36 @@ def test_ci_job_scan_finds_the_real_pipeline():
     """Guard both scanners: an empty side would make the gate above vacuous."""
     assert len(_local_ci_jobs()) >= 20
     assert len(_documented_ci_jobs()) >= 20
+
+
+# --- README's docs/ index vs the directory ----------------------------------
+
+README_DOC = REPO / "README.md"
+
+
+def _readme_documentation_section() -> str:
+    """README.md from the `## Documentation` heading to the next `## ` heading.
+
+    Scoped so that a `docs/NN` link anywhere else in the README (the Applications
+    table, for one) cannot satisfy the assertion below.
+    """
+    text = README_DOC.read_text(encoding="utf-8")
+    start = text.index("\n## Documentation\n")
+    rest = text[start + 1 :]
+    end = rest.index("\n## ", 1)
+    return rest[:end]
+
+
+def test_readme_indexes_every_doc():
+    section = _readme_documentation_section()
+    missing = sorted(p.name for p in (REPO / "docs").glob("*.md") if f"](docs/{p.name})" not in section)
+    assert not missing, (
+        "docs/ files with no row in README.md § Documentation:\n  " + "\n  ".join(missing)
+    )
+
+
+def test_readme_index_scan_finds_the_real_docs():
+    """Guard the slice: an empty or mis-sliced section would pass vacuously."""
+    section = _readme_documentation_section()
+    assert "](docs/01-overview.md)" in section
+    assert section.count("](docs/") >= 40

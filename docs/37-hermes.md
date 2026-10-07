@@ -129,9 +129,15 @@ both from the `onepassword-homelab` ClusterSecretStore:
   - `hass-token` → a Home Assistant long-lived access token, upserted into
     `/opt/data/.env` by the init container like the Discord token; its
     presence auto-enables the homeassistant tool (see §Home Assistant).
-  - The five SYNCED fields (oidc secret, api-server-key, claude/discord
-    tokens, hass-token) must exist on the item or the whole Secret fails to
-    sync; the three retired dashboard-* fields are reserve-only.
+  - `op-service-account-token` ← the SEPARATE 1Password item **Hermes Agent 1P
+    Service Account**/`credential` → `OP_SERVICE_ACCOUNT_TOKEN` in the gateway
+    container env (see §1Password). A distinct item so its blast radius and
+    rotation stay isolated.
+  - `hermes-secrets` therefore has SIX keys from TWO items: five properties on
+    **Hermes Secrets** (oidc secret, api-server-key, claude/discord tokens,
+    hass-token) and `credential` on **Hermes Agent 1P Service Account**. Any one
+    of them missing fails the whole Secret. The three retired `dashboard-*`
+    fields on the Hermes Secrets item are reserve-only and not synced.
 - **`hermes-registry-pull`** ← 1Password item **Hermes Registry Pull** → a
   `kubernetes.io/dockerconfigjson` Secret for `registry.git.esweiss.com`, used
   by `imagePullSecrets`.
@@ -225,8 +231,9 @@ enters the model context.
   (`--output-format json` returns structured results + a `session_id` for
   `--resume` follow-ups). Auth is the long-lived OAuth token from
   `claude setup-token` (**Claude Max subscription**) delivered as
-  `CLAUDE_CODE_OAUTH_TOKEN` via ESO; CLI state persists in
-  `CLAUDE_CONFIG_DIR=/opt/data/.claude` on NFS. **Never set
+  `CLAUDE_CODE_OAUTH_TOKEN` via ESO to the **gateway container only** (the
+  dashboard keeps `CLAUDE_CONFIG_DIR` for read-only state visibility); CLI state
+  persists in `CLAUDE_CONFIG_DIR=/opt/data/.claude` on NFS. **Never set
   `ANTHROPIC_API_KEY`** in this pod — its mere presence flips the CLI to
   metered API billing.
 - **Codex** (already the LLM engine's CLI): registered as an MCP tool server in
@@ -263,23 +270,26 @@ references it), `task hermes:restart`, then verify with
 ## SSO — dashboard Authentik OIDC (OIDC-only)
 
 Access is the dashboard's own Authentik OIDC login — one Authentik prompt,
-both hostnames. (A forward-auth perimeter used to sit in front of it; that
-layer was removed as redundant once the dashboard's login became Authentik
-OIDC itself.)
+both hostnames.
 
 1. **Dashboard OIDC (the auth layer).** The dashboard's `self_hosted`
    generic-OIDC `dashboard_auth` provider points at Authentik: issuer
    `https://auth.ericsweiss.com/application/o/agent/`, client
    `hermes-dashboard`, confidential (non-empty client secret) with PKCE always
    on, standard discovery from `{issuer}/.well-known/openid-configuration`,
-   callback `GET /auth/callback`. Config is env-only in this deployment
-   (`HERMES_DASHBOARD_OIDC_*` — env wins over `config.yaml`). No
-   `PUBLIC_URL` pin: the redirect_uri is reconstructed per-request from
-   Traefik's `X-Forwarded-Host`/`-Proto` (`FORWARDED_ALLOW_IPS` makes uvicorn
-   trust them — safe because the NetworkPolicy admits only Traefik, which
-   overwrites those headers), so each hostname round-trips to its own
-   `/auth/callback` — both are **strict** allowed redirect URIs on the
-   authentik provider, the same dual-host pattern as immich/nextcloud.
+   callback `GET /auth/callback`. The OIDC settings are env-only in this
+   deployment (`HERMES_DASHBOARD_OIDC_*` — env wins over `config.yaml`). No
+   `public_url` pin: the redirect_uri is reconstructed per-request from
+   Traefik's `X-Forwarded-Host`/`-Proto`. Hermes honours those headers only
+   from the peers listed in `dashboard.trusted_proxies` in
+   `/opt/data/config.yaml` (the pod CIDR, `10.42.0.0/16`; wildcards and `/0`
+   are rejected, and the `FORWARDED_ALLOW_IPS` env has no effect) — safe
+   because the NetworkPolicy admits only Traefik, which overwrites those
+   headers — so each hostname round-trips to its own `/auth/callback`. Both
+   are **strict** allowed redirect URIs on the authentik provider, the same
+   dual-host pattern as immich/nextcloud. That config key lives on the data
+   volume like the Codex MCP registration and survives pod recreation; a
+   change to it needs a dashboard restart.
    Authorization requires membership of the `hermes-users` group (the
    `agent` application's policy binding).
 2. **Traefik-only NetworkPolicy.** Ingress on `:9119` is default-deny except
@@ -291,10 +301,7 @@ OIDC itself.)
    exactly one session provider the auth middleware **auto-launches** the
    login flow, and for OIDC that is the intended **silent-SSO redirect**: a
    live Authentik session means no chooser click and no visible prompt.
-   (Historical note: a chooser existed briefly while `basic` was registered
-   alongside OIDC, because auto-launch on a password-only provider raises
-   `NotImplementedError` → HTTP 500 — retiring `basic` removes the chooser
-   AND the hazard.) When Authentik is fully down the dashboard UI is
+   When Authentik is fully down the dashboard UI is
    unreachable by design — operate via `kubectl exec … hermes` (CLI), or
    emergency-revert by re-adding the `HERMES_DASHBOARD_BASIC_AUTH_*` env
    trio + the three ESO entries (values retained on the 1P item).
@@ -329,7 +336,7 @@ read real container env — see §SSO.)
 
 Two write paths into `.env`:
 
-- **Codified (Discord + Codex home + camofox + Home Assistant).** The
+- **Codified (Discord + Codex home + camofox + Home Assistant + 1Password).** The
   `init-data` initContainer
   ([`deployment.yaml`](../kubernetes/apps/hermes/deployment.yaml)) upserts
   `DISCORD_BOT_TOKEN` (ESO ← 1P `discord-bot-token`), `DISCORD_ALLOWED_USERS`
@@ -375,11 +382,10 @@ README for the two-container hindsight + llama.cpp architecture, the fully
 local LLM, and the Postgres-on-NFS storage decision). Hermes talks to it via
 the bundled `hindsight` memory plugin in **`local_external`** mode.
 
-The `llama.cpp` sidecar offloads inference to the **GTX 1660 Ti passed through to
-the prec-01 agent** (`server-cuda-` image + `-ngl 99` + `nvidia.com/gpu`), which
-cuts extraction latency ~10× vs the prior CPU build; the CPU-era
-timeout/thread tuning is annotated as legacy pending GPU re-measurement. Full
-mechanics + the driver/CUDA compatibility risk are in
+The `llama.cpp` sidecar runs inference on the **GTX 1660 Ti passed through to the
+prec-01 agent** (`server-cuda-` image, `-ngl 99`, `nvidia.com/gpu`); its timeout
+and thread values still carry the CPU-era sizing and are pending
+re-measurement. Full mechanics + the driver/CUDA compatibility risk are in
 [docs/43-gpu-passthrough.md](43-gpu-passthrough.md).
 
 **Enablement is runtime config, deliberately NOT in git**: `memory.provider`
@@ -550,8 +556,8 @@ or self-authored.
   pinned `hermes_op_version`) from 1Password's signed apt repo.
 - `OP_SERVICE_ACCOUNT_TOKEN` is delivered by ESO from the **dedicated** 1P item
   *Hermes Agent 1P Service Account* → the `hermes-secrets` Secret
-  (`op-service-account-token`) → the **gateway container env** (plus an
-  `/opt/data/.env` upsert). It is a *separate* item from **Hermes Secrets** so
+  (`op-service-account-token`) → the **gateway container env**. It is a
+  *separate* item from **Hermes Secrets** so
   its blast radius and rotation are isolated (docs/15).
 
 **Why gateway container env (not just `.env`):** the agent runs `op` through the
@@ -571,12 +577,18 @@ should list only the Agent vault.
 (`*.1password.com:443`, already allowed by the egress NetworkPolicy — not the
 in-cluster Connect that backs ESO). Scope it in the 1Password service-accounts
 console to **only** the isolated Agent vault (read+write). Two consequences to
-accept: (1) the raw token sits in the gateway env / `.env`, readable by the
+accept: (1) the raw token sits in the gateway container env, readable by the
 agent's shell — but the agent already has broad execution (Claude Code / Codex
 delegates) and can read every other `/opt/data/.env` token, and the SA reaches
 only the low-stakes Agent vault, so this adds no new class of exposure; (2)
 secrets the agent reads/writes flow through its LLM provider — so the Agent vault
 is for **disposable, agent-scoped** secrets only, never infra credentials.
+
+`/opt/data` is the `ssd/appdata` NFS dataset, so every token in
+`/opt/data/.env` — the Discord and Home Assistant tokens included — is captured
+by the nightly archive replica and the restic B2 walk (docs/42 § Coverage).
+Rotate by **revoking** the old credential in its provider, never by replacing
+the value alone.
 
 ---
 
@@ -586,7 +598,7 @@ is for **disposable, agent-scoped** secrets only, never infra credentials.
   `task hermes:logs [COMPONENT=dashboard|gateway]`.
 - **Reachability**: a blackbox HTTP probe on `https://agent.esweiss.com`
   (`module: http_sso`, added to `exporters/blackbox-exporter.yaml`). The generic
-  **`EndpointDown`** alert (`probe_success == 0` for 5m, warning) covers it —
+  **`EndpointDown`** alert (`probe_success == 0` for 10m, warning) covers it —
   the same pattern every other web app here relies on; no per-app rule is added.
 - **Crash-loops**: covered by the standard kube-state-metrics alerts on both
   containers.
@@ -614,7 +626,7 @@ is for **disposable, agent-scoped** secrets only, never infra credentials.
 No Grafana dashboard is added — there is no dedicated upstream Hermes dashboard,
 and the app has no Prometheus `/metrics` endpoint. (The **Hindsight** memory
 backend does: native `/metrics` on its API port, scraped via
-`observability/service-monitors/hindsight.yaml`, with the `HindsightDown`
+`kubernetes/apps/hindsight/servicemonitor.yaml`, with the `HindsightDown`
 kube-state alert — see `kubernetes/apps/hindsight/README.md`.)
 
 ---
@@ -668,10 +680,11 @@ reports both pins.
   the subdir exists; no pod action is needed.
 - **Dashboard won't start**:
   - `CreateContainerConfigError` → `hermes-secrets` has not synced. Check
-    `task hermes:status` and that the **Hermes Secrets** 1Password item exists
-    with **all eight** fields (docs/15) — a missing field fails the whole
-    Secret, including a not-yet-created `hermes-dashboard-oidc-client-secret`
-    or `hass-token`.
+    `task hermes:status`, then that all six synced properties exist: the five
+    ESO-consumed fields on the **Hermes Secrets** item plus `credential` on
+    **Hermes Agent 1P Service Account** (docs/15). One missing property fails
+    the whole Secret. The three `dashboard-*` reserve fields are not synced —
+    their absence is harmless.
   - `CrashLoopBackOff` with a start-up refusal in the logs → the dashboard's
     `0.0.0.0` bind is fail-closed and no auth provider registered. Confirm the
     `HERMES_DASHBOARD_OIDC_*` env (issuer, client id, client secret) is
@@ -683,9 +696,11 @@ reports both pins.
 - **OIDC login fails with a redirect_uri error**: the provider allows exactly
   two strict URIs — `https://agent.ericsweiss.com/auth/callback` and
   `https://agent.esweiss.com/auth/callback`. The dashboard reconstructs the
-  redirect_uri per-request from `X-Forwarded-Host`/`-Proto`, which uvicorn
-  only trusts because of `FORWARDED_ALLOW_IPS` (deployment.yaml) — if that
-  env is missing the callback degrades to the pod-local URL and mismatches.
+  redirect_uri per-request from `X-Forwarded-Host`/`-Proto`, which it trusts
+  only from `dashboard.trusted_proxies` in `/opt/data/config.yaml` — if that
+  list is missing or does not cover Traefik's pod address, the callback is
+  built as `http://…` and mismatches. Check what the pod sends with
+  `curl -sI -L https://agent.esweiss.com/ | grep -o 'redirect_uri=[^&]*'`.
   Discovery failures point at the issuer:
   `https://auth.ericsweiss.com/application/o/agent/` must serve
   `.well-known/openid-configuration`, which requires the `agent` application

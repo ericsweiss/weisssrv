@@ -1,19 +1,12 @@
 ---
-# Aggregate bounds for the privileged-runner namespace. Every dimension derives
-# from release.yaml's `concurrent` and must move with it: a quota that admits
-# fewer pods than the runner submits does not throttle, it 403s the job into
-# runner_system_failure.
-#
-# `pods` is the only dimension that should ever bind (an over-tight pods count
-# just queues work in GitLab). The rest are sized to the full pods allowance:
-#   pods 25              = concurrent:12 + churn (Terminating pods still count)
-#   requests.cpu 38      = 25 x 1.5 cpu
-#   requests.memory 25Gi = 25 x ~1Gi
-#   limits.memory 82Gi   = 25 x ~3.25Gi
-#
-# Deliberately NO cpu / limits.cpu dimension: it would force every pod here to
-# declare a CPU limit, rejecting the runner manager (which runs without one to
-# avoid CFS throttling). CPU is bounded by requests.cpu.
+# CRITICAL: `pods` (25 = 12 concurrent job pods, the manager, and 12 churn slots
+# for Terminating pods) is the only dimension meant to bind; the rest are 25 x
+# the per-job-pod figures in release.yaml and sum above cluster allocatable
+# (docs/16 § CI/CD). Re-derive all of them when `concurrent` or the agent VM
+# size (proxmox_vm_cores/proxmox_vm_memory in hosts.yml) moves: a quota
+# admitting fewer pods than the runner submits 403s the job into
+# runner_system_failure. No cpu or limits.cpu dimension — it would force a CPU
+# limit on every pod here and reject the runner manager, which runs without one.
 apiVersion: v1
 kind: ResourceQuota
 metadata:

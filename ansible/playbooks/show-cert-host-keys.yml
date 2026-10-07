@@ -1,20 +1,10 @@
 ---
-# Capture current SSH host keys for acme_certs_distribution_targets and
-# print them in a paste-ready format for host_vars/dns-01.yml.
-#
-# Usage:
-#   task certs:show-host-keys
-#
-# After capturing, paste each host_key value into the matching entry in
-# ansible/inventories/prod/host_vars/dns-01.yml under
-# acme_certs_distribution_targets, then re-run `task dns:deploy` (or any play
-# that runs the acme_certs role). Subsequent SSH from dns-01 to those
-# hosts is strict (StrictHostKeyChecking=yes), so a host rebuild that
-# changes the fingerprint will fail the cert push loudly until you
-# capture again and update.
+# Prints the SSH host keys of acme_certs_distribution_targets, ready to paste
+# into _acme_certs_targets in group_vars/dns.yml. Cert pushes use
+# StrictHostKeyChecking=yes, so a rebuilt host fails until its key is updated.
 
 - name: Show SSH host keys for cert distribution targets
-  hosts: dns-01
+  hosts: dns_primary
   gather_facts: false
   become: false
   tasks:

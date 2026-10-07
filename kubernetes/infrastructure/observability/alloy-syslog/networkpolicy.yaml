@@ -1,13 +1,7 @@
 ---
-# Let the UniFi gateway reach the alloy-syslog receiver on :1514/udp. The
-# observability default-deny-ingress (components/netpol-baseline) blocks it
-# otherwise. externalTrafficPolicy: Local on the Service preserves the gateway's
-# real source IP, so this scopes to the two addresses the UCG could source syslog
-# from — its VLAN-10 SVI (10.0.10.1) and the UniFi management subnet
-# (10.0.1.0/24, docs/46). Literal CIDRs are correct here: NetworkPolicy ipBlocks
-# are parsed before Flux substitutes, and neither address has a cluster-config
-# placeholder. Tighten to the single confirmed source once syslog is live and the
-# origin IP is observed (docs/31).
+# UCG syslog -> alloy-syslog :1514/udp through the observability default-deny. eTP
+# Local preserves the gateway's source IP, scoping this to its VLAN-10 SVI — the one
+# source sg-syslog-vip accepts (docs/46). ipBlocks parse before Flux substitutes.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -24,8 +18,6 @@ spec:
     - from:
         - ipBlock:
             cidr: 10.0.10.1/32
-        - ipBlock:
-            cidr: 10.0.1.0/24
       ports:
         - protocol: UDP
           port: 1514

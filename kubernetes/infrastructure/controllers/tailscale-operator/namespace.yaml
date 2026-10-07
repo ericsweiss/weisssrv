@@ -1,11 +1,7 @@
 ---
-# Namespace for the Tailscale operator and the proxy StatefulSets it creates
-# (one per exposed Service, e.g. traefik-tailnet and ts-dns).
-#
-# pod-security enforce=privileged: the proxy pods need NET_ADMIN for kernel-mode
-# tailnet networking, which baseline/restricted forbid. The elevation is scoped
-# to this namespace and the images come from the pinned chart. NetworkPolicy
-# posture is in kustomization.yaml.
+# Namespace for the Tailscale operator and the proxy StatefulSets it creates,
+# one per exposed Service. pod-security is privileged because the proxy pods
+# need NET_ADMIN. NetworkPolicy posture is in kustomization.yaml.
 apiVersion: v1
 kind: Namespace
 metadata:

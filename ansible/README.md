@@ -16,6 +16,7 @@ composition, and the integration tests that exercise the roles together.
 | `inventories/prod/group_vars/all.yml` | Single source of truth for every version pin |
 | `inventories/prod/group_vars/<group>.yml`, `host_vars/<host>.yml` | Group/host overrides — and, since the roles are generic, all the site data they used to default to |
 | `playbooks/` | Entry points (`site.yml` is the fan-out; per-area playbooks mirror the `deploy-*` CI jobs) |
+| `playbooks/tasks/` | Task files several playbooks include: the check-mode reachability guard, the PVE cluster probe, and the cert-target re-seed |
 | `integration-tests/` | Multi-role molecule stacks (DNS, mail, base, storage, certs) |
 | `molecule/` | Shared prepare/warm-up tasks the integration-test scenarios import |
 | `TESTING.md` | What this repo tests, how to run it, and what moved to the library |
@@ -42,6 +43,20 @@ To iterate against an unmerged library change, point `version:` at a branch,
 re-run `ansible-galaxy install -r requirements.yml --force`, and change it back
 to a tag before opening the merge request.
 
+## Guest playbooks and the cert-distribution key
+
+`weisssrv.infra.base` rewrites `authorized_keys`, so a re-provisioned guest
+loses the `acme_certs` distribution key pinned there. Each guest that is a cert
+target (`plex.yml`, `immich.yml`, `nextcloud.yml`, `gitlab.yml`) ends with a
+play on the `dns_primary` group (dns-01, the cert authority) that includes
+`tasks/_reseed-cert-target.yml` with `reseed_cert_target_host` set to that
+guest. Two more playbooks carry the same re-seed: `base.yml` loops every
+`acme_certs_distribution_targets` entry after the fleet-wide base run, and
+`mail.yml` re-seeds the relay from its own inline block. Adding a new
+cert-target guest means adding the same play. `dns-02` needs none: `dns.yml`
+already runs `acme_certs` in full. Details are in
+`docs/15-credential-rotation.md`.
+
 ## Code conventions
 
 These are repo-wide rules; `CLAUDE.md`, `AGENTS.md` and `.cursorrules` point
@@ -66,9 +81,10 @@ here rather than restating them.
   file, passes a credential, …). `ansible-lint` does **not** fully catch this —
   it matches known password module params, not the template-writes-a-secret
   pattern — so apply it by hand. Secrets themselves are `op://Homelab/...`
-  references in the invoking `Taskfile.yml` task's `env:` block, mirrored by the
-  matching CI job's `variables:` (`task secrets:show` prints the live set);
-  never literals, and never in the inventory. See
+  references in the invoking task's `env:` block (the owning
+  `taskfiles/<ns>.yml`, or the root `Taskfile.yml`), mirrored by the matching CI
+  job's `variables:` (`task secrets:show` prints the live set); never literals,
+  and never in the inventory. See
   `docs/15-credential-rotation.md` § Secrets model.
 - **Tags**: playbooks tag roles at the `roles:` level (see `site.yml`); a task may
   add finer tags (the `base` role tags its SSH/user tasks `ssh` / `users`).
@@ -78,11 +94,24 @@ here rather than restating them.
 - **Follow existing patterns** — mirror the closest neighbouring playbook or
   inventory block instead of inventing a new shape. The handler and service
   patterns the roles follow are documented in the collection's own README.
-- **Cross-cutting roles are listed twice on purpose.** `node_exporter_host`,
-  `alloy_host` and `nfs_tls` are deployed by `site.yml` in dedicated plays AND
-  by each app playbook, so a standalone `task <app>:deploy` does not leave
-  metrics, log shipping or tlshd behind. Each app playbook marks them with
-  `# Also in site.yml; listed here so a standalone deploy stays in sync.`
+- **Cross-cutting roles are listed twice on purpose.** `node_exporter_host` and
+  `alloy_host` are deployed by `site.yml` in dedicated plays AND by each app
+  playbook, so a standalone `task <app>:deploy` does not leave metrics or log
+  shipping behind. Each app playbook marks them with `# Shared with site.yml;
+  ...`, and `scripts/test_shared_role_playbook_sync.py` fails when the two
+  disagree about either role on any host.
+- **`nfs_tls` is narrower.** It runs where a host mounts pve-nas-01's exports
+  over `xprtsec=tls` — the Proxmox hosts, the k3s nodes and pve-nas-01 itself as
+  the server. The sync gate does not cover it, so add it by hand when a new
+  guest needs a TLS mount.
+
+- **`ansible.cfg` sizing and trust model.** `forks = 15` is sized to the CI
+  runner build container's memory cap (`kubernetes/apps/gitlab-runner/release.yaml`);
+  raise the two together. There is no fact-caching backend on purpose, so facts
+  are gathered once per run and never outlive it. `host_key_checking` stays on
+  with `StrictHostKeyChecking=accept-new`: after a legitimate host rebuild, run
+  `ssh-keygen -R <host>` and let accept-new record the new key. Never set
+  `host_key_checking=False`.
 
 ## Testing
 
@@ -93,6 +122,11 @@ here rather than restating them.
 - `task ansible:test` runs the integration-test stacks (needs Docker).
 - Per-role molecule scenarios run in weisssrv-lib, against the role. Details and
   container caveats: [TESTING.md](TESTING.md).
+- `task infra:verify` runs `playbooks/postflight.yml`. It is read-only apart
+  from one deliberate exception: it triggers a single `adguardhome-sync` run,
+  because starting the unit is the only way to prove the sandbox can start.
+  That run pushes dns-01's config to dns-02, so it reports as changed. Pass
+  `-e postflight_exercise_sync=false` to skip it.
 
 ## Secrets
 

@@ -8,14 +8,12 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR/../ansible"
 
 echo "=== 1/6 OS package updates ==="
-# self_reboot_delay applies only when the executor lands on an opt-* host (no
-# etcd member), where _reboot-if-needed.yml arms a DETACHED reboot that survives
-# the job; on an etcd-server host it defers to the operator instead.
-# maintenance-rearm-self-reboot.sh (the after_script) re-arms that reboot to +60s
-# at job end, so 5400s is only the fallback for a runner crash — sized to outlast
-# ops 2-6 plus verify. Raise it, never lower it: a late fallback reboot is
-# harmless, an early one kills the executor. The detached reboot fires after this
-# run's verify, so the NEXT run validates that host.
+# CRITICAL: self_reboot_delay is the fallback reboot for a runner crash; the
+# after_script (maintenance-rearm-self-reboot.sh) re-arms it to +60s at job end.
+# Raise it, never lower it — an early fallback reboot kills the executor
+# mid-run. It is sized to outlast ops 2-6 plus verify.
+# The detached reboot arms only on an opt-* host (no etcd member); on an
+# etcd-server host _reboot-if-needed.yml defers to the operator.
 op run -- ansible-playbook -i inventories/prod playbooks/maintenance/update-packages.yml \
   -e auto_reboot=true -e self_reboot_delay=5400
 echo ""

@@ -34,9 +34,8 @@ The `build-hermes-agent` CI job (`.gitlab-ci.yml`) does both stages.
 
 ## Pins (`ansible/inventories/prod/group_vars/all.yml`)
 
-- **`hermes_version`** — the upstream **release tag** (e.g. `v2026.7.7.2`, which
-  is release `0.18.2`). Used verbatim as `git clone --branch` and as the built
-  image tag.
+- **`hermes_version`** — the upstream **release tag**, used verbatim as `git
+  clone --branch` and as the built image tag.
 - **`hermes_git_sha`** — the immutable commit the tag must resolve to. The build
   refuses to run if `git clone --branch hermes_version` resolves elsewhere,
   defending against a moved/compromised upstream tag. Bump in lockstep with
@@ -49,8 +48,8 @@ The `build-hermes-agent` CI job (`.gitlab-ci.yml`) does both stages.
   `-r1` on a `hermes_version` bump. CI hard-fails the build if the prefix does
   not match `hermes_version`, so the two cannot drift.
 - **`hermes_codex_version`** — the OpenAI Codex CLI version baked in by the
-  wrapper (e.g. `0.144.5`; requires `>= 0.130.0` for the Hermes runtime). Bumped
-  independently of the Hermes release.
+  wrapper; requires `>= 0.130.0` for the Hermes runtime. Bumped independently of
+  the Hermes release.
 - **`hermes_claude_version`** — the Claude Code CLI version baked in alongside
   Codex (`npm i -g @anthropic-ai/claude-code@<version>`) for the coding-delegate
   path. Bumped independently.

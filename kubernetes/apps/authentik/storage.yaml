@@ -10,6 +10,11 @@ metadata:
     type: local
     app: authentik
 spec:
+  # Pre-bound: a classless RWO PV is otherwise claimable by any classless RWO
+  # PVC of <= 10Gi in any namespace.
+  claimRef:
+    namespace: authentik
+    name: authentik-postgres-data
   capacity:
     storage: 10Gi
   accessModes:
@@ -45,15 +50,9 @@ spec:
   volumeName: authentik-postgres-data
 
 ---
-# authentik-pg-dump landing zone: tank/backups/apps/authentik, the encrypted
-# file-walkable dump dataset that rides both the nightly archive replication and
-# the restic offsite B2 walk — where a zvol snapshot never could (docs/42).
-#
-# DEPLOY-ORDER DEPENDENCY: the nas_storage role creates the subdir and its
-# per-app export, so run the ansible storage deploy before this PV reconciles.
-#
-# NFS-over-TLS PV; hostname (not IP) + force annotation rationale:
-# apps/download-clients/_nfs-pv/resources.yaml and docs/07.
+# authentik-pg-dump landing zone on tank/backups/apps/authentik, the file-walkable
+# dump dataset that rides the nightly replication and the restic offsite walk
+# (docs/42). nas_storage creates the subdir and export, so deploy storage first.
 apiVersion: v1
 kind: PersistentVolume
 metadata:
@@ -74,7 +73,7 @@ spec:
   persistentVolumeReclaimPolicy: Retain
   storageClassName: ""
   nfs:
-    server: pve-nas-01.${cluster_internal_domain}
+    server: ${cluster_nas_host}
     path: /backups-apps/authentik
   mountOptions:
     - nfsvers=4.2

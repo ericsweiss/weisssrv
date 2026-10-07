@@ -10,15 +10,9 @@ spec:
     - Egress
 
 ---
-# Ingress: the API port (:8888) admits exactly its two consumers —
-#   * the hermes namespace (the gateway's hindsight memory plugin; scoped to
-#     the whole namespace, whose only workload is the hermes pod), and
-#   * the Prometheus scraper in observability (/metrics rides the same port;
-#     podSelector-narrowed so other observability pods can't reach the memory
-#     API — least-privilege, mirroring wg-easy/recipes).
-# The llama sidecar (:8080) and the control-plane UI (:9999) get no ingress
-# allow at all: hindsight reaches llama over pod-localhost (not NetworkPolicy-
-# gated), and the UI is operator-only via kubectl port-forward.
+# Ingress: the API port (:8888) admits the hermes namespace and, for /metrics on the
+# same port, the Prometheus pod in observability. The llama sidecar and the
+# control-plane UI get no allow: llama is pod-localhost and the UI is port-forward only.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -46,14 +40,9 @@ spec:
           port: 8888
 
 ---
-# Egress for the hindsight pod:
-#   * kube-dns (name resolution)
-#   * public HTTPS (:443) — the llama sidecar's one-time HuggingFace GGUF
-#     download (cached on NFS afterwards, and re-used on image bumps unless the
-#     model pin changes). Everything else is local: the LLM is pod-localhost,
-#     embeddings/reranker are baked into the image, PostgreSQL is embedded.
-# No LAN/RFC1918 egress, no SMTP, no kube-apiserver
-# (automountServiceAccountToken is false).
+# Egress for the hindsight pod: kube-dns, and public HTTPS for the llama sidecar's
+# one-time model download. Everything else it needs is pod-local, so there is no
+# LAN/RFC1918 egress, no SMTP and no kube-apiserver.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

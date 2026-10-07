@@ -1,11 +1,7 @@
 ---
-# ClusterIP fronting the Hindsight API on :8888 — consumed by the Hermes
-# gateway's hindsight memory plugin at
-# http://hindsight.hindsight.svc.cluster.local:8888 (docs/37 §Memory backend)
-# and scraped by Prometheus (/metrics on the same port —
-# observability/service-monitors/hindsight.yaml). The control-plane UI (:9999)
-# and the llama sidecar (:8080) are deliberately NOT exposed: no Service port,
-# and the namespace NetworkPolicy admits nothing to them.
+# ClusterIP fronting the Hindsight API on :8888, consumed by the Hermes gateway's
+# memory plugin (docs/37) and scraped by Prometheus on the same port. The
+# control-plane UI (:9999) and the llama sidecar (:8080) stay unexposed.
 apiVersion: v1
 kind: Service
 metadata:

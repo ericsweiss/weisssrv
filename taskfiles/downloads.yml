@@ -1,0 +1,220 @@
+# https://taskfile.dev
+# Download/media stack: nzbget, qbittorrent and the *arr apps, each with its
+# own optional Gluetun VPN sidecar (docs/21).
+version: '3'
+
+tasks:
+  status:
+    desc: Show status of download clients and media stack
+    cmds:
+      - echo "=== Download Clients Namespace ==="
+      - kubectl get pods -n downloads -o wide
+      - echo ""
+      - echo "=== Services ==="
+      - kubectl get svc -n downloads
+      - echo ""
+      - echo "=== PVCs ==="
+      - kubectl get pvc -n downloads
+      - echo ""
+      - echo "=== VPN ConfigMaps ==="
+      - 'echo "NZBGet VPN:"'
+      - kubectl get configmap nzbget-vpn-config -n downloads -o jsonpath='{.data}' 2>/dev/null || echo "  Not configured"
+      - echo ""
+      - 'echo "qBittorrent VPN:"'
+      - kubectl get configmap qbittorrent-vpn-config -n downloads -o jsonpath='{.data}' 2>/dev/null || echo "  Not configured"
+      - echo ""
+      - echo "=== IngressRoutes ==="
+      - kubectl get ingressroute -n downloads
+
+  vpn:
+    desc: "Toggle a client's VPN live (task downloads:vpn -- APP=<nzbget|qbittorrent> STATE=<on|off>)"
+    vars:
+      APP: '{{.APP | default ""}}'
+      STATE: '{{.STATE | default ""}}'
+    cmds:
+      # Accepts both the `-- APP=.. STATE=..` CLI_ARGS form and the native
+      # go-task var form; the script reconciles the two.
+      - bash scripts/downloads-vpn.sh "{{.APP}}" "{{.STATE}}" {{.CLI_ARGS}}
+
+  vpn-provider:
+    desc: "Switch a client's VPN provider live (task downloads:vpn-provider -- APP=<nzbget|qbittorrent> PROVIDER=<privadovpn> [COUNTRIES=<country[,country]>])"
+    vars:
+      APP: '{{.APP | default ""}}'
+      PROVIDER: '{{.PROVIDER | default ""}}'
+      COUNTRIES: '{{.COUNTRIES | default ""}}'
+    cmds:
+      # A multi-word COUNTRIES value needs the native quoted form, e.g.
+      #   task downloads:vpn-provider APP=qbittorrent PROVIDER=privadovpn COUNTRIES="United States"
+      - bash scripts/downloads-vpn-provider.sh "{{.APP}}" "{{.PROVIDER}}" "{{.COUNTRIES}}" {{.CLI_ARGS}}
+
+  vpn-status:
+    desc: Check VPN connection status for all download clients
+    cmds:
+      - |
+        for APP in nzbget qbittorrent; do
+          echo "=== $APP VPN Status ==="
+          VPN_ENABLED=$(kubectl get configmap "$APP-vpn-config" -n downloads -o jsonpath='{.data.vpn_enabled}' 2>/dev/null || echo "unknown")
+          VPN_PROVIDER=$(kubectl get configmap "$APP-vpn-config" -n downloads -o jsonpath='{.data.vpn_provider}' 2>/dev/null || echo "unknown")
+          echo "VPN Enabled: $VPN_ENABLED"
+          echo "Provider: $VPN_PROVIDER"
+          if [ "$VPN_ENABLED" = "true" ]; then
+            echo "Gluetun logs (last 10 lines):"
+            kubectl logs -n downloads -l app.kubernetes.io/name="$APP" -c gluetun --tail=10 2>/dev/null || echo "  Cannot get logs"
+            echo "Public IP:"
+            kubectl exec -n downloads deployment/"$APP" -c gluetun -- wget -qO- https://checkip.amazonaws.com 2>/dev/null || echo "  Cannot reach checkip.amazonaws.com"
+          fi
+          echo ""
+        done
+      - echo "=== Live VPN Ops (GitOps-safe; changes stick, Reloader rolls the pod) ==="
+      - 'echo "  task downloads:vpn -- APP=<nzbget|qbittorrent> STATE=<on|off>"'
+      - 'echo "  task downloads:vpn-provider -- APP=<...> PROVIDER=<privadovpn> [COUNTRIES=<...>]"'
+      - 'echo "  Resync git default: kubectl delete configmap <app>-vpn-config -n downloads && task flux:reconcile"'
+
+  verify-vpn:
+    desc: Assert VPN egress differs from LAN egress and the NetworkPolicy blocks direct LAN access from VPN-routed pods
+    cmds:
+      - |
+        set -eo pipefail
+        FAILED=0
+        # Reference (non-VPN) egress IP from prowlarr — its netpol allows
+        # TCP 443 out, and it does NOT ride the Gluetun tunnel.
+        LAN_IP=$(kubectl exec -n downloads deployment/prowlarr -- \
+          sh -c 'wget -qO- -T 10 https://checkip.amazonaws.com' 2>/dev/null || true)
+        if [ -z "$LAN_IP" ]; then
+          echo "ERROR: could not determine the non-VPN egress IP (via prowlarr)"
+          exit 1
+        fi
+        echo "Non-VPN egress IP (prowlarr): $LAN_IP"
+        for APP in nzbget qbittorrent; do
+          VPN_ENABLED=$(kubectl get configmap "$APP-vpn-config" -n downloads -o jsonpath='{.data.vpn_enabled}' 2>/dev/null || echo "unknown")
+          if [ "$VPN_ENABLED" != "true" ]; then
+            echo "SKIP: $APP vpn_enabled=$VPN_ENABLED"
+            continue
+          fi
+          VPN_IP=$(kubectl exec -n downloads deployment/"$APP" -c gluetun -- \
+            wget -qO- -T 10 https://checkip.amazonaws.com 2>/dev/null || true)
+          if [ -z "$VPN_IP" ]; then
+            echo "FAIL: $APP: could not fetch the VPN egress IP"
+            FAILED=1
+          elif [ "$VPN_IP" = "$LAN_IP" ]; then
+            echo "FAIL: $APP egress IP $VPN_IP equals the non-VPN egress IP — VPN leak"
+            FAILED=1
+          else
+            echo "OK: $APP egress IP $VPN_IP differs from the non-VPN egress IP"
+          fi
+        done
+        # gluetun's own firewall permits RFC1918, so allow-gluetun-vpn-egress is
+        # the ONLY layer containing LAN access from these pods. A netpol drop is
+        # a connect timeout, so a completed connect means it is not.
+        QB_VPN=$(kubectl get configmap qbittorrent-vpn-config -n downloads -o jsonpath='{.data.vpn_enabled}' 2>/dev/null || echo "unknown")
+        if [ "$QB_VPN" != "true" ]; then
+          echo "SKIP: containment check needs qbittorrent on the tunnel (vpn_enabled=$QB_VPN)"
+          exit $FAILED
+        fi
+        echo "Checking NetworkPolicy LAN containment from qbittorrent (expect timeout)..."
+        GATEWAY=$(scripts/cluster-config-value.sh cluster_lan_gateway) || exit 1
+        # A TCP connect to :443 is the verdict: an HTTP error still means the
+        # connect completed. Anything the probe cannot decide is inconclusive,
+        # not a pass.
+        OUT=$(kubectl exec -n downloads deployment/qbittorrent -c gluetun -- \
+          sh -c 'command -v nc >/dev/null 2>&1 || { echo NOPROBE; exit 0; }
+                 ERR=$(nc -z -w 5 "'"$GATEWAY"'" 443 2>&1) && { echo REACHED; exit 0; }
+                 case "$ERR" in *"nvalid option"*|*[Uu]sage*) echo NOPROBE ;; *) echo BLOCKED ;; esac' 2>/dev/null || true)
+        case "$OUT" in
+          *BLOCKED*) echo "OK: direct LAN connect from the qbittorrent pod was blocked" ;;
+          *REACHED*) echo "FAIL: qbittorrent pod reached $GATEWAY:443 directly — NetworkPolicy not containing LAN egress"; FAILED=1 ;;
+          *)         echo "FAIL: containment check inconclusive — could not probe TCP $GATEWAY:443 from the gluetun container"; FAILED=1 ;;
+        esac
+        exit $FAILED
+
+  restart:
+    desc: Restart all download clients and media apps
+    cmds:
+      # Selected by app.kubernetes.io/name: part-of=media-stack is
+      # Deployment-metadata-only and is not propagated to pod templates.
+      - task: :_app:restart
+        vars:
+          NS: downloads
+          SELECTOR: -l 'app.kubernetes.io/name in (nzbget,qbittorrent,prowlarr,sonarr,radarr,lidarr,pulsarr)'
+          WAIT_SELECTOR: --all
+          BANNER: Restarting download clients and *arr apps (pod delete)...
+
+  logs:
+    desc: "View logs for a specific app (task downloads:logs APP=nzbget [CONTAINER=gluetun])"
+    vars:
+      APP: '{{.APP | default "nzbget"}}'
+      CONTAINER: '{{.CONTAINER | default ""}}'
+    cmds:
+      - |
+        APP="{{.APP}}"
+        CONTAINER="{{.CONTAINER}}"
+
+        case "$APP" in
+          nzbget|qbittorrent)
+            if [ -n "$CONTAINER" ]; then
+              echo "=== $APP / $CONTAINER logs ==="
+              kubectl logs -n downloads -l app.kubernetes.io/name="$APP" -c "$CONTAINER" -f
+            else
+              echo "=== $APP logs (main container) ==="
+              kubectl logs -n downloads -l app.kubernetes.io/name="$APP" -c "$APP" -f
+            fi
+            ;;
+          nzbget-vpn|qbittorrent-vpn)
+            REAL_APP="${APP%-vpn}"
+            echo "=== $REAL_APP / gluetun logs ==="
+            kubectl logs -n downloads -l app.kubernetes.io/name="$REAL_APP" -c gluetun -f
+            ;;
+          *)
+            echo "=== $APP logs ==="
+            kubectl logs -n downloads -l app.kubernetes.io/name="$APP" -f
+            ;;
+        esac
+
+  shell:
+    desc: "Open shell in app container (task downloads:shell APP=nzbget [CONTAINER=gluetun])"
+    vars:
+      APP: '{{.APP | default "nzbget"}}'
+      CONTAINER: '{{.CONTAINER | default ""}}'
+    cmds:
+      - |
+        APP="{{.APP}}"
+        CONTAINER="{{.CONTAINER}}"
+
+        case "$APP" in
+          nzbget|qbittorrent)
+            if [ -n "$CONTAINER" ]; then
+              echo "Opening shell in $APP / $CONTAINER..."
+              kubectl exec -it -n downloads deployment/"$APP" -c "$CONTAINER" -- /bin/sh
+            else
+              echo "Opening shell in $APP..."
+              kubectl exec -it -n downloads deployment/"$APP" -c "$APP" -- /bin/sh
+            fi
+            ;;
+          *)
+            echo "Opening shell in $APP..."
+            kubectl exec -it -n downloads deployment/"$APP" -- /bin/sh
+            ;;
+        esac
+
+  delete:
+    desc: Delete download clients and media stack (preserves namespace, PVCs, and secrets)
+    cmds:
+      - echo "Deleting workloads (preserving namespace, storage, and secrets)..."
+      - |
+        # Workload resources only, never namespace/storage/secrets. Flux
+        # recreates them on the next reconcile unless the apps Kustomization is
+        # suspended first. part-of=media-stack is kustomization.yaml's label.
+        kubectl delete deployment -n downloads -l app.kubernetes.io/part-of=media-stack --ignore-not-found
+        kubectl delete ingressroute -n downloads --all --ignore-not-found
+        echo "Remaining Deployments (should be none until Flux recreates them):"
+        kubectl get deployment -n downloads
+      - |
+        echo ""
+        echo "Workloads deleted. Namespace, PVCs, and secrets preserved."
+        echo "Flux will recreate the workloads on next reconcile (~1 minute)."
+        echo "To keep them deleted, suspend the apps Kustomization first:"
+        echo "  task flux:suspend -- flux-system/kustomization/apps"
+        echo ""
+        echo "To fully remove everything:"
+        echo "  task flux:suspend -- flux-system/kustomization/apps"
+        echo "  kubectl delete namespace downloads"

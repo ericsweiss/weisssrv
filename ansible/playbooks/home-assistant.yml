@@ -1,8 +1,6 @@
 ---
-# Deploys Home Assistant CONFIG FILES over SSH/SCP — HAOS itself is not
-# Ansible-manageable.
-#
-# Usage: task home-assistant:deploy-config
+# Deploys Home Assistant CONFIG FILES over SSH/SCP; HAOS itself is not
+# Ansible-manageable. docs/24-home-assistant-deployment.md.
 
 - name: Deploy Home Assistant Configuration
   # NOT `hosts: home`: HAOS is not a real Ansible target (port 22222, root with

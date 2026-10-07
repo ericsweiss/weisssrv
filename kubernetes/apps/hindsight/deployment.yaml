@@ -1,10 +1,7 @@
 ---
-# Hindsight (vectorize-io) — long-term agent memory for Hermes (docs/37
-# §Memory backend). One pod: the hindsight image (API :8888, UI :9999, embedded
-# pg0 PostgreSQL on NFS) + a llama.cpp server sidecar as its OpenAI-compatible
-# LLM, mirroring upstream's docker/docker-compose/local-llm/ example.
-# Recreate strategy: the single RWO NFS volume holds a live PostgreSQL data dir
-# and must never be dual-mounted across a rolling update.
+# Hindsight, long-term agent memory for Hermes (docs/37 §Memory backend). One
+# pod: the hindsight image (API :8888, UI :9999, embedded PostgreSQL on NFS)
+# plus llama.cpp and pg-dump sidecars. Recreate: the RWO volume holds live PGDATA.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -26,10 +23,9 @@ spec:
         app.kubernetes.io/name: hindsight
         app.kubernetes.io/part-of: hindsight
     spec:
-      # Hard pin to k3s-agt-prec-01: the GTX 1660 Ti is passed through there, so
-      # the llama sidecar's nvidia.com/gpu request is satisfiable only on that
-      # node (docs/43). prec-01 down = Hindsight down and Hermes falls back to
-      # its built-in memory. Rehome = move the GPU + edit this hostname.
+      # Hard pin to k3s-agt-prec-01: the GTX 1660 Ti is passed through there,
+      # so the llama sidecar's nvidia.com/gpu request is satisfiable nowhere
+      # else (docs/43). Rehome = move the GPU and edit this hostname.
       affinity:
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -64,7 +60,7 @@ spec:
           imagePullPolicy: IfNotPresent
           env:
             - name: TZ
-              value: America/Los_Angeles
+              value: ${cluster_timezone}
             # llama-server is OpenAI-compatible, so the `openai` provider points
             # at the sidecar over pod-localhost. The key is unused by
             # llama-server but must be non-empty.
@@ -110,14 +106,13 @@ spec:
             periodSeconds: 15
             timeoutSeconds: 10
             failureThreshold: 4
-          # In-process torch/sentence-transformers embeddings + flashrank
-          # reranker + embedded PostgreSQL + the Next.js control plane. Request
-          # tracks the recorded VPA target (`Off` tier — applied by hand): 1920Mi
-          # covers the 1805Mi 30d working-set peak. No CPU limit (docs/33).
+          # In-process embeddings + reranker + embedded PostgreSQL + the Next.js
+          # control plane. `Off` tier, applied by hand: 1536Mi clears both the
+          # VPA target (1402Mi) and the 1226Mi 30d peak. No CPU limit (docs/33).
           resources:
             requests:
               cpu: 200m
-              memory: 1920Mi
+              memory: 1536Mi
             limits:
               memory: 3Gi
           # Runs as the image's unprivileged `hindsight` user (UID 1000),
@@ -131,12 +126,96 @@ spec:
             - name: data
               subPath: pg0
               mountPath: /home/hindsight/.pg0
+        # ── Nightly logical dump of the embedded pg0 ─────────────────────
+        - name: pg-dump
+          # Same image as the API container: pg0 listens on pod-localhost only,
+          # so the dump must share this pod's network namespace, and the
+          # matching pg_dump already ships on the data volume.
+          image: ghcr.io/vectorize-io/hindsight:${hindsight_version}
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "-ec"]
+          # Brace-free shell vars ($var): ${var} is Flux postBuild syntax.
+          args:
+            - |
+              set -o pipefail
+              pg=/pg0/instances/hindsight/instance.json
+              # Every step is checked explicitly: calling dump() from a `||`
+              # list suppresses errexit for the whole body, so an unguarded
+              # failure would publish a truncated dump and prune a good one.
+              dump() {
+                PGPASSWORD=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["password"])' "$pg") \
+                  || { echo "pg0 instance.json unreadable" >&2; return 1; }
+                export PGPASSWORD PGHOST=127.0.0.1 PGPORT=5432 PGUSER=hindsight PGDATABASE=hindsight
+                bin=$(ls -d /pg0/installation/*/bin | tail -1)
+                [ -x "$bin/pg_dump" ] || { echo "pg_dump not found" >&2; return 1; }
+                rm -f /backups/hindsight-*.sql.gz.tmp
+                ts=$(date +%Y%m%d-%H%M%S)
+                out=/backups/hindsight-$ts.sql.gz
+                if "$bin/pg_dump" --clean --if-exists | gzip -c > "$out.tmp"; then
+                  mv "$out.tmp" "$out"
+                  ls -1t /backups/hindsight-*.sql.gz | tail -n +$((RETENTION + 1)) \
+                    | while IFS= read -r f; do rm -f "$f"; done
+                  echo "wrote $out"
+                else
+                  rm -f "$out.tmp"; echo "pg-dump failed" >&2; return 1
+                fi
+              }
+              # First run on an empty landing zone: the backup-artifact alerts
+              # read an empty directory as mtime 0 and page critical long
+              # before the first 03:15 dump would land.
+              if ! ls /backups/hindsight-*.sql.gz >/dev/null 2>&1; then
+                i=0
+                while [ "$i" -lt 20 ]; do
+                  dump && break
+                  i=$((i + 1)); sleep 30
+                done
+              fi
+              # Never exit: a crash-looping sidecar drops the pod out of the
+              # Service. A failed dump is surfaced by BackupArtifactStale.
+              while true; do
+                now=$(date +%s)
+                next=$(date -d "$DUMP_AT today" +%s)
+                [ "$next" -gt "$now" ] || next=$(date -d "$DUMP_AT tomorrow" +%s)
+                sleep $((next - now))
+                dump || true
+              done
+          env:
+            - name: TZ
+              value: ${cluster_timezone}
+            - name: DUMP_AT
+              value: "03:15"
+            - name: RETENTION
+              value: "7"
+            - name: HOME
+              value: /tmp
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            # The tmp emptyDir's sizeLimit is the cap; this request is what
+            # ranks the pod by its own usage under node pressure.
+            requests:
+              cpu: 25m
+              memory: 64Mi
+              ephemeral-storage: 64Mi
+            limits:
+              memory: 256Mi
+          volumeMounts:
+            - name: data
+              subPath: pg0
+              mountPath: /pg0
+              readOnly: true
+            - name: backups
+              mountPath: /backups
+            - name: tmp
+              mountPath: /tmp
         # ── llama.cpp server: local LLM for memory extraction ────────────
         - name: llama
           # Official llama.cpp CUDA server image, pinned as server-cuda-<build>
-          # (hindsight_llamacpp_version). GHCR publishes server-<build> and
-          # server-cuda-<build> from the same build number, so one pin covers
-          # both. CUDA 12.8 — see the driver note in the k3s role's gpu.yml.
+          # (hindsight_llamacpp_version); GHCR builds server-<build> from the
+          # same number. CUDA 12.8 — driver note in the k3s role's gpu.yml.
           image: ghcr.io/ggml-org/llama.cpp:server-cuda-${hindsight_llamacpp_version}
           imagePullPolicy: IfNotPresent
           env:
@@ -162,13 +241,12 @@ spec:
               value: "8192"
             # ONE slot: Hindsight sizes its extraction prompts to the advertised
             # 8192 context, so parallel slots split it and every retain fails
-            # "Context size has been exceeded". Retention is background work, so
-            # serialized inference is fine.
+            # "Context size has been exceeded". Retention is background work.
             - name: LLAMA_ARG_N_PARALLEL
               value: "1"
             # 4 threads. Nominally these only feed the GPU under -ngl 99, but
-            # measured CPU is ~0.9 cores at p95 (see the resources block), so
-            # retune from measured tok/s rather than deleting (docs/43).
+            # measured CPU is ~0.9 cores at p95, so retune from measured tok/s
+            # rather than deleting (docs/43).
             - name: LLAMA_ARG_THREADS
               value: "4"
           # /health returns 503 while the model loads. The 30-minute startup
@@ -188,25 +266,24 @@ spec:
             periodSeconds: 30
             timeoutSeconds: 10
             failureThreshold: 5
-          # Model + KV cache live in VRAM (-ngl 99); the host side is mostly the
-          # mmap'd GGUF page cache, which is reclaimable — so the request sits
-          # UNDER the working set on purpose and the limit is a reclaim ceiling,
-          # deliberately not raised after a one-off anon-RSS spill OOMKilled the
-          # container (the GPU node is near its allocatable-memory ceiling in
-          # limits). Watch the growth instead.
-          #
-          # The CPU request tracks the measured p95 rather than the "threads only
-          # feed the GPU" premise above: a sustained ~0.9 cores is the second
-          # signal to check when revisiting whether the model is still fully
-          # offloaded. No CPU limit (docs/33); nvidia.com/gpu is an integer
-          # extended resource, so its request auto-mirrors the limit.
+          # VRAM holds the model + KV cache (-ngl 99); the host side is the
+          # reclaimable mmap'd GGUF page cache, so the request sits under the
+          # working set and the limit is a reclaim ceiling. No CPU limit.
           resources:
             requests:
               cpu: 900m
               memory: 2Gi
             limits:
               memory: 4Gi
+              # Integer extended resource: the request mirrors this.
               nvidia.com/gpu: "1"
+          # Runs as root — the image caches the GGUF under /root — but with no
+          # added capabilities: the nvidia RuntimeClass injects the device via
+          # cgroups, not via Linux capabilities.
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
           volumeMounts:
             # llama-server caches HuggingFace downloads under ~/.cache/huggingface
             # (the image runs as root); persist the GGUF across pod recreates.
@@ -217,3 +294,11 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: hindsight-data
+        - name: backups
+          persistentVolumeClaim:
+            claimName: hindsight-pg-dump
+        - name: tmp
+          emptyDir:
+            # HOME for the pg-dump sidecar; the dumps themselves land on the
+            # backups PVC. Over sizeLimit the kubelet evicts the pod.
+            sizeLimit: 64Mi

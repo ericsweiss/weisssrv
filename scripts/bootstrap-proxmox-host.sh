@@ -1,100 +1,82 @@
 #!/usr/bin/env bash
-# Bootstrap a fresh Proxmox host for Ansible management
-#
-# This script creates user 'eric' with passwordless sudo and deploys
-# the SSH public key from 1Password. Run from your workstation against
-# new Proxmox hosts that only have root SSH access.
-#
-# Usage:
-#   ./scripts/bootstrap-proxmox-host.sh <host-ip> '<ssh-public-key>'
-#
-# Or with 1Password CLI:
-#   ./scripts/bootstrap-proxmox-host.sh 10.0.10.103 "$(op read 'op://Homelab/SSH Key/public key')"
-#
-# Prerequisites:
-#   - Proxmox VE installed on target host
-#   - Network connectivity to target host
-#   - Root password for target host (prompted during execution)
+# Bootstrap a fresh Proxmox host for Ansible management: create the admin user
+# with passwordless sudo and deploy an SSH public key. Run from a workstation
+# against a host that only has root SSH access; no arguments prints usage.
 
 set -euo pipefail
 
 HOST_IP="${1:-}"
 SSH_PUBLIC_KEY="${2:-}"
+DEFAULT_ADMIN_USER='eric'
+ADMIN_USER="${3:-$DEFAULT_ADMIN_USER}"
 
 if [[ -z "$HOST_IP" ]] || [[ -z "$SSH_PUBLIC_KEY" ]]; then
-    echo "Usage: $0 <host-ip> '<ssh-public-key>'"
-    echo ""
-    echo "Examples:"
-    echo "  $0 10.0.10.103 'ssh-ed25519 AAAAC3NzaC1... eric@MacBookPro.esweiss.com'"
-    echo "  $0 10.0.10.103 \"\$(op read 'op://Homelab/SSH Key/public key')\""
-    echo ""
-    echo "This script will:"
-    echo "  1. Create user 'eric' with passwordless sudo"
-    echo "  2. Set password for eric user"
-    echo "  3. Deploy SSH public key for eric"
-    echo "  4. Verify SSH access works"
+    cat <<USAGE
+Usage: $0 <host-ip> '<ssh-public-key>' [user]
+
+Examples:
+  $0 10.0.10.103 "\$(cat ~/.ssh/id_ed25519.pub)"
+  $0 10.0.10.103 "\$(op read 'op://Homelab/SSH Key/public key')"
+
+The user defaults to $DEFAULT_ADMIN_USER, the ansible_user this inventory uses.
+This script will:
+  1. Install sudo if the image lacks it
+  2. Create the user with passwordless sudo
+  3. Set a console password for the user
+  4. Append the SSH public key to its authorized_keys
+  5. Verify SSH and sudo access
+USAGE
     exit 1
 fi
 
-echo "============================================"
-echo "Bootstrapping Proxmox host at $HOST_IP"
-echo "============================================"
-echo ""
-echo "This script will:"
-echo "  1. Create user 'eric' with passwordless sudo"
-echo "  2. Set password for eric user"
-echo "  3. Deploy SSH public key for eric"
-echo "  4. Verify SSH access works"
-echo ""
-read -p "Continue? (y/N) " -n 1 -r
+case "$ADMIN_USER" in
+    root|*[!a-z0-9_-]*|"")
+        echo "ERROR: '$ADMIN_USER' is not a usable admin username" >&2
+        exit 1
+        ;;
+esac
+
+echo "Bootstrapping Proxmox host $HOST_IP for user '$ADMIN_USER'"
+read -r -p "Continue? (y/N) " -n 1 REPLY
 echo
-if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-    echo "Aborted."
+case "$REPLY" in
+    y|Y) ;;
+    *) echo "Aborted."; exit 1 ;;
+esac
+
+echo ""
+echo "=== Console password for '$ADMIN_USER' ==="
+read -r -s -p "Password: " ADMIN_PASSWORD
+echo
+read -r -s -p "Confirm password: " ADMIN_PASSWORD_CONFIRM
+echo
+
+if [[ "$ADMIN_PASSWORD" != "$ADMIN_PASSWORD_CONFIRM" ]]; then
+    echo "ERROR: passwords do not match" >&2
     exit 1
 fi
-
-echo ""
-echo "=== Password Setup ==="
-echo "Enter password for user 'eric' (will be set on $HOST_IP)"
-echo "This password will be used for local console access and sudo."
-echo ""
-
-read -r -s -p "Password: " ERIC_PASSWORD
-echo
-read -r -s -p "Confirm password: " ERIC_PASSWORD_CONFIRM
-echo
-
-if [[ "$ERIC_PASSWORD" != "$ERIC_PASSWORD_CONFIRM" ]]; then
-    echo ""
-    echo "ERROR: Passwords do not match!"
-    exit 1
-fi
-
-if [[ -z "$ERIC_PASSWORD" ]]; then
-    echo ""
-    echo "ERROR: Password cannot be empty!"
+if [[ -z "$ADMIN_PASSWORD" ]]; then
+    echo "ERROR: password cannot be empty" >&2
     exit 1
 fi
 
 # base64 so a password containing $, `, quotes or backslashes cannot be
 # interpreted as shell by the remote heredoc.
-ERIC_PASSWORD_B64=$(printf '%s' "$ERIC_PASSWORD" | base64)
+ADMIN_PASSWORD_B64=$(printf '%s' "$ADMIN_PASSWORD" | base64)
 
 echo ""
-echo "=== Step 1: Creating user 'eric' on $HOST_IP ==="
-echo "You will be prompted for the root password..."
+echo "=== Step 1: creating '$ADMIN_USER' on $HOST_IP (root password prompt follows) ==="
 echo ""
 
-# The base64-encoded password is embedded directly in the script via unquoted heredoc.
-# This expands $ERIC_PASSWORD_B64 locally before sending, keeping the secret out of
-# process arguments on both machines. All remote variables must be escaped (\$).
+# CRITICAL: the heredoc is unquoted so $ADMIN_PASSWORD_B64 expands locally, keeping the
+# secret out of process arguments on both machines. Every remote variable must therefore
+# be escaped (\$) or it is expanded here instead of on the target.
 # shellcheck disable=SC2087  # Unquoted heredoc is intentional for variable expansion
 ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 "root@${HOST_IP}" bash << REMOTE_SCRIPT
 set -euo pipefail
 
-ERIC_PASSWORD_B64="$ERIC_PASSWORD_B64"
-
-echo "Checking for existing user 'eric'..."
+ADMIN_USER="$ADMIN_USER"
+ADMIN_PASSWORD_B64="$ADMIN_PASSWORD_B64"
 
 if ! command -v sudo &>/dev/null; then
     echo "Installing sudo package..."
@@ -117,10 +99,8 @@ if ! command -v sudo &>/dev/null; then
 
     trap restore_repos EXIT
 
-    # Move a repo file to .disabled, but REFUSE to clobber a pre-existing
-    # .disabled (a repo someone disabled before us) — overwriting it would
-    # corrupt its content and make restore_repos later restore the wrong file.
-    # Only record what we actually moved so restore_repos re-enables exactly ours.
+    # Move a repo file to .disabled, refusing to clobber a pre-existing .disabled so
+    # restore_repos re-enables exactly the files this script moved.
     disable_repo_file() {
         local repo_file="\$1"
         local disabled_file="\$repo_file.disabled"
@@ -174,44 +154,47 @@ if ! command -v sudo &>/dev/null; then
 
 fi
 
-if ! id eric &>/dev/null; then
-    useradd -m -s /bin/bash eric
-    echo "Created user 'eric'"
+if ! id "\$ADMIN_USER" &>/dev/null; then
+    useradd -m -s /bin/bash "\$ADMIN_USER"
+    echo "Created user '\$ADMIN_USER'"
 else
-    echo "User 'eric' already exists"
+    echo "User '\$ADMIN_USER' already exists"
 fi
 
 # base64 keeps the password out of the remote command line.
-ERIC_PASSWORD=\$(echo "\$ERIC_PASSWORD_B64" | base64 -d)
-echo "eric:\$ERIC_PASSWORD" | chpasswd
-unset ERIC_PASSWORD  # Clear from memory
-echo "Password set for user 'eric'"
+ADMIN_PASSWORD=\$(echo "\$ADMIN_PASSWORD_B64" | base64 -d)
+echo "\$ADMIN_USER:\$ADMIN_PASSWORD" | chpasswd
+unset ADMIN_PASSWORD
+echo "Password set for user '\$ADMIN_USER'"
 
 if ! grep -q "^sudo:" /etc/group; then
     groupadd sudo
 fi
-usermod -aG sudo eric
+usermod -aG sudo "\$ADMIN_USER"
 
-if ! grep -q "^%sudo" /etc/sudoers; then
-    echo "%sudo   ALL=(ALL:ALL) ALL" >> /etc/sudoers
-fi
+# visudo -cf BEFORE install: a syntax error anywhere in sudoers locks every sudo
+# user out of the host, and this is the only admin path in. Both rules go to
+# /etc/sudoers.d so neither is an unvalidated append to /etc/sudoers.
+install_sudoers() {
+    local rule=\$1 dest=\$2 tmp
+    tmp=\$(mktemp)
+    printf '%s\\n' "\$rule" > "\$tmp"
+    if ! visudo -cf "\$tmp"; then
+        rm -f "\$tmp"
+        echo "ERROR: refusing to install an invalid \$dest" >&2
+        exit 1
+    fi
+    install -m 440 -o root -g root "\$tmp" "\$dest"
+    rm -f "\$tmp"
+}
 
-# visudo -cf BEFORE install: a syntax error anywhere in /etc/sudoers.d locks
-# every sudo user out of the host, and this is the only admin path in.
-SUDOERS_TMP=\$(mktemp)
-echo 'eric ALL=(ALL) NOPASSWD: ALL' > "\$SUDOERS_TMP"
-if ! visudo -cf "\$SUDOERS_TMP"; then
-    rm -f "\$SUDOERS_TMP"
-    echo "ERROR: refusing to install an invalid /etc/sudoers.d/eric" >&2
-    exit 1
-fi
-install -m 440 -o root -g root "\$SUDOERS_TMP" /etc/sudoers.d/eric
-rm -f "\$SUDOERS_TMP"
-echo "Configured passwordless sudo for eric"
+install_sudoers '%sudo   ALL=(ALL:ALL) ALL' /etc/sudoers.d/00-sudo-group
+install_sudoers "\$ADMIN_USER ALL=(ALL) NOPASSWD: ALL" "/etc/sudoers.d/\$ADMIN_USER"
+echo "Configured passwordless sudo for \$ADMIN_USER"
 
-mkdir -p /home/eric/.ssh
-chmod 700 /home/eric/.ssh
-chown eric:eric /home/eric/.ssh
+mkdir -p "/home/\$ADMIN_USER/.ssh"
+chmod 700 "/home/\$ADMIN_USER/.ssh"
+chown "\$ADMIN_USER:\$ADMIN_USER" "/home/\$ADMIN_USER/.ssh"
 
 echo ""
 echo "User setup complete. SSH key deployment next..."
@@ -220,21 +203,17 @@ REMOTE_SCRIPT
 echo ""
 echo "=== Step 2: Deploying SSH public key ==="
 
-# The base64-encoded key is embedded directly in the script via unquoted heredoc.
-# This expands $SSH_KEY_B64 locally before sending, keeping the secret out of
-# process arguments on both machines. All remote variables must be escaped (\$).
+# Unquoted heredoc: $SSH_KEY_B64 expands locally; remote vars are escaped (\$).
 SSH_KEY_B64=$(printf '%s' "$SSH_PUBLIC_KEY" | base64)
 # shellcheck disable=SC2087  # Unquoted heredoc is intentional for variable expansion
 ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 "root@${HOST_IP}" bash << DEPLOY_KEY
 set -euo pipefail
 
+ADMIN_USER="$ADMIN_USER"
 SSH_KEY_B64="$SSH_KEY_B64"
 SSH_KEY=\$(echo "\$SSH_KEY_B64" | base64 -d)
-AUTH=/home/eric/.ssh/authorized_keys
-# Append-if-absent, never truncate. A re-run against a host that has since
-# gained a second admin key, a CI deploy key, or the dns-01 cert-distribution
-# key must not destroy them — and the verification step below would still
-# report SUCCESS, because the key it tests with is the survivor.
+AUTH="/home/\$ADMIN_USER/.ssh/authorized_keys"
+# Append if absent; never truncate — the host may carry other admin keys.
 touch "\$AUTH"
 if grep -qxF "\$SSH_KEY" "\$AUTH"; then
     echo "SSH key already present in \$AUTH (no change)"
@@ -243,22 +222,22 @@ else
     echo "SSH key appended to \$AUTH"
 fi
 chmod 600 "\$AUTH"
-chown eric:eric "\$AUTH"
+chown "\$ADMIN_USER:\$ADMIN_USER" "\$AUTH"
 echo "Authorized keys now present: \$(grep -c '^[^#[:space:]]' "\$AUTH")"
 DEPLOY_KEY
 
 echo ""
-echo "=== Step 3: Verifying SSH access as eric ==="
+echo "=== Step 3: Verifying SSH access as $ADMIN_USER ==="
 
 sleep 2
 
-if ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=10 "eric@${HOST_IP}" "echo 'SSH access as eric: SUCCESS'"; then
+if ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=10 "${ADMIN_USER}@${HOST_IP}" "echo 'SSH access as ${ADMIN_USER}: SUCCESS'"; then
     echo ""
     echo "=== Step 4: Verifying sudo access ==="
     # Capture stderr and tolerate a non-zero exit so a misconfigured remote sudo
     # (or a BatchMode no-tty prompt) doesn't abort under `set -e` before the
     # diagnostic below can run; the captured message lands in the error string.
-    REMOTE_SUDO_WHOAMI=$(ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=10 "eric@${HOST_IP}" "sudo whoami" 2>&1) || true
+    REMOTE_SUDO_WHOAMI=$(ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=10 "${ADMIN_USER}@${HOST_IP}" "sudo whoami" 2>&1) || true
     if [[ "$REMOTE_SUDO_WHOAMI" == "root" ]]; then
         echo "Sudo access: SUCCESS (sudo whoami returned 'root')"
     else
@@ -266,31 +245,26 @@ if ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=10
         exit 1
     fi
 
-    echo ""
-    echo "============================================"
-    echo "Bootstrap COMPLETE for $HOST_IP"
-    echo "============================================"
-    echo ""
-    echo "User 'eric' configured with:"
-    echo "  - Password set (for local console access)"
-    echo "  - Passwordless sudo enabled"
-    echo "  - SSH key authentication enabled"
-    echo ""
-    echo "Next steps:"
-    echo "  1. Create local-ssd ZFS pool (see docs/26-multi-node-implementation.md)"
-    echo "  2. Update ansible/inventories/prod/hosts.yml"
-    echo "  3. Run: task infra:base -- --limit <hostname>"
-    echo ""
+    cat <<DONE
+
+Bootstrap COMPLETE for $HOST_IP. User '$ADMIN_USER' now has a console
+password, passwordless sudo and SSH key authentication.
+
+Next steps:
+  1. Create the local-ssd ZFS pool (docs/26-multi-node-implementation.md)
+  2. Add the host to ansible/inventories/prod/hosts.yml
+  3. Run: task infra:base -- --limit <hostname>
+DONE
 else
-    echo ""
-    echo "============================================"
-    echo "ERROR: SSH access as eric FAILED!"
-    echo "============================================"
-    echo ""
-    echo "Troubleshooting:"
-    echo "  1. Check that your SSH private key is loaded: ssh-add -l"
-    echo "  2. Verify the public key matches: ssh-keygen -lf ~/.ssh/id_ed25519.pub"
-    echo "  3. Check permissions on remote host:"
-    echo "     ssh root@$HOST_IP 'ls -la /home/eric/.ssh/'"
+    cat >&2 <<FAILED
+
+ERROR: SSH access as $ADMIN_USER FAILED.
+
+Troubleshooting:
+  1. Check that your SSH private key is loaded: ssh-add -l
+  2. Verify the public key matches: ssh-keygen -lf ~/.ssh/id_ed25519.pub
+  3. Check permissions on the remote host:
+     ssh root@$HOST_IP 'ls -la /home/$ADMIN_USER/.ssh/'
+FAILED
     exit 1
 fi

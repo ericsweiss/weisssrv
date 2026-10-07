@@ -1,8 +1,7 @@
 ---
-# targetRef.name is the chart-generated Deployment name and is chart-version
-# coupled (the v1->v2 chart bump renamed it). If a chart upgrade renames the
-# workload again, this VPA silently orphans (no error surfaced) — re-check the
-# name after gitlab-agent chart bumps.
+# targetRef.name is the chart-generated Deployment name; a chart upgrade that
+# renames the workload silently orphans this VPA with no error surfaced, so
+# re-check it after gitlab-agent chart bumps.
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
 metadata:
@@ -12,7 +11,10 @@ spec:
   updatePolicy: {updateMode: Initial}
   resourcePolicy:
     containerPolicies:
+      # RequestsOnly with maxAllowed.memory == the 160Mi limit declared in
+      # release.yaml (docs/33 rule): recommendations move requests, not limits.
       - containerName: "*"
         minAllowed: {cpu: 10m, memory: 64Mi}
-        maxAllowed: {cpu: 500m, memory: 512Mi}
+        maxAllowed: {cpu: 500m, memory: 160Mi}
         controlledResources: [cpu, memory]
+        controlledValues: RequestsOnly

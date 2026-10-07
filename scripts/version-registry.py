@@ -1,10 +1,7 @@
-"""Site registry for scripts/check-versions.py (the default config path).
+"""Site registry for scripts/check-versions.py: every pinned version this
+cluster tracks and where its upstream lives.
 
-Every pinned version this cluster tracks, where its upstream lives, and how a
-bump is rolled out. The Python form (rather than JSON) keeps each entry's
-inline rationale next to the entry.
-
-Schema: weisssrv-lib docs/SCRIPTS.md § check-versions.py.
+Schema: weisssrv-lib docs/SCRIPTS.md, check-versions.py section.
 """
 
 _SERVICES: list[dict] = [
@@ -33,6 +30,10 @@ _SERVICES: list[dict] = [
         "version_prefix": "v",
         "strip_prefix": False,
         "tag_filter": r"^v\d+\.\d+\.\d+\+k3s\d+$",
+        "coupled_vars": ["k3s_install_script_checksum"],
+        "checksum_var": "k3s_install_script_checksum",
+        "checksum_url": "https://raw.githubusercontent.com/k3s-io/k3s/{version}/install.sh",
+        "notes": "k3s_install_script_checksum is the sha256 of install.sh at the tag.",
     },
     {
         "name": "kube-vip",
@@ -71,14 +72,9 @@ _SERVICES: list[dict] = [
         "tag_filter": r"^v\d+\.\d+\.\d+$",
     },
     {
-        # Uptime Kuma (kubernetes/apps/uptime-kuma, docs/45). Docker Hub
-        # `louislam/uptime-kuma`, tracked there rather than on GitHub because
-        # the deployed tag is the Docker one: the manifest pins
-        # `${uptime_kuma_version}-rootless`, and the regex keeps the bare X.Y.Z
-        # releases while excluding the floating majors (2), the channel tags
-        # (next, beta, nightly2) and the -slim/-rootless variants that share
-        # the repo. Flux-managed image pin, so it routes through
-        # flux:sync-versions.
+        # Tracked on Docker Hub because the manifest pins the Docker tag
+        # (`${uptime_kuma_version}-rootless`, docs/45). The regex keeps bare
+        # X.Y.Z and drops the floating majors, channel tags and variants.
         "name": "Uptime Kuma",
         "var_name": "uptime_kuma_version",
         "category": "dockerhub",
@@ -87,10 +83,9 @@ _SERVICES: list[dict] = [
         "source_url": "https://github.com/louislam/uptime-kuma/releases",
     },
     {
-        # Garage (kubernetes/apps/ci-cache) — the runners' S3 cache backend.
-        # Docker Hub dxflrs/garage; the pin carries the full vX.Y.Z tag, and
-        # the regex drops the floating majors (v2) and arch variants.
-        # Flux-managed image pin, so it routes through flux:sync-versions.
+        # The runners' S3 cache backend (kubernetes/apps/ci-cache). The pin
+        # carries the full vX.Y.Z tag; the regex drops the floating majors and
+        # arch variants.
         "name": "Garage (CI cache)",
         "var_name": "garage_version",
         "category": "dockerhub",
@@ -99,11 +94,9 @@ _SERVICES: list[dict] = [
         "source_url": "https://garagehq.deuxfleurs.fr/documentation/",
     },
     {
-        # Immich app (immich-server + immich-machine-learning images share this
-        # tag). The coupled DB/Valkey pins (immich_postgres_version,
-        # immich_valkey_version) are NOT tracked here — they must be taken from
-        # the SAME release's docker-compose.yml (vectorchord/pgvectors coupling),
-        # so they sit in untracked_allowlist below rather than being auto-bumped.
+        # immich-server and immich-machine-learning share this tag. The coupled
+        # DB/Valkey pins come from the SAME release's docker-compose.yml, so they
+        # sit in untracked_allowlist rather than being auto-bumped.
         "name": "Immich",
         "var_name": "immich_version",
         "category": "github",
@@ -122,13 +115,17 @@ _SERVICES: list[dict] = [
         "version_prefix": "v",
         "strip_prefix": False,
         "tag_filter": r"^v\d{4}\.\d+\.\d+(\.\d+)?$",
+        "coupled_vars": ["hermes_git_sha", "hermes_image_version"],
+        "notes": (
+            "hermes_git_sha is the PEELED annotated-tag commit "
+            "(`git ls-remote 'refs/tags/<tag>*'`, the ^{} row); hermes_image_version "
+            "re-starts at -r1 for the new tag."
+        ),
     },
     {
-        # OpenAI Codex CLI, baked into the hermes-agent image (npm @openai/codex)
-        # so Hermes' Codex app-server runtime can delegate OpenAI/Codex turns to
-        # it. Upstream tags stable releases `rust-vX.Y.Z`; the pin is the bare npm
-        # version (0.144.5), so strip the "rust-v" prefix. The tag_filter excludes
-        # the per-platform alpha tags (rust-vX.Y.Z-alpha.N). Requires >=0.130.0.
+        # Baked into the hermes-agent image (npm @openai/codex). The pin is the
+        # bare npm version, so the `rust-v` prefix is stripped and the filter
+        # excludes the per-platform alpha tags. Requires >=0.130.0.
         "name": "Codex CLI (Hermes)",
         "var_name": "hermes_codex_version",
         "category": "github",
@@ -138,11 +135,9 @@ _SERVICES: list[dict] = [
         "tag_filter": r"^rust-v\d+\.\d+\.\d+$",
     },
     {
-        # Claude Code CLI, baked into the hermes-agent image alongside Codex
-        # (npm @anthropic-ai/claude-code) so Hermes can delegate coding tasks to
-        # headless `claude -p` runs on the Claude Max subscription. Upstream tags
-        # stable releases `vX.Y.Z`; the pin is the bare npm version, so strip
-        # the "v" prefix.
+        # Baked into the hermes-agent image alongside Codex (npm
+        # @anthropic-ai/claude-code) for headless `claude -p` runs. The pin is
+        # the bare npm version, so the `v` prefix is stripped.
         "name": "Claude Code CLI (Hermes)",
         "var_name": "hermes_claude_version",
         "category": "github",
@@ -152,11 +147,9 @@ _SERVICES: list[dict] = [
         "tag_filter": r"^v\d+\.\d+\.\d+$",
     },
     {
-        # 1Password CLI (op), baked into the hermes-agent image so Hermes' 1Password
-        # skill can drive `op` against the isolated Agent vault. 1Password ships it
-        # via its own signed apt repo (no GitHub release feed), and the pin is the
-        # full DEB version string — hence manual: check `apt-cache madison
-        # 1password-cli` against the repo (or the CLI2 release history) and bump.
+        # Baked into the hermes-agent image so the 1Password skill can drive
+        # `op`. Shipped only via 1Password's signed apt repo, and the pin is the
+        # full DEB version, hence manual: `apt-cache madison 1password-cli`.
         "name": "1Password CLI (Hermes)",
         "var_name": "hermes_op_version",
         "category": "manual",
@@ -164,12 +157,8 @@ _SERVICES: list[dict] = [
         "notes": "op CLI baked into the hermes image (docker/hermes-agent). Full DEB version pin — bump via `apt-cache madison 1password-cli` against 1Password's signed apt repo, sync-versions, commit; CI rebuilds the wrapper.",
     },
     {
-        # Camofox anti-detection browser server, built from source by the
-        # build-camofox-browser CI job (upstream publishes no image). The pin is
-        # the bare semver used as the built image tag; upstream tags releases
-        # `vX.Y.Z`, so strip the prefix. hermes_camofox_git_sha (the tag's
-        # commit) moves in lockstep — same supply-chain pattern as
-        # hermes_version/hermes_git_sha.
+        # Built from source by build-camofox-browser (upstream publishes no
+        # image). hermes_camofox_git_sha, the tag's commit, moves in lockstep.
         "name": "Camofox browser (Hermes)",
         "var_name": "hermes_camofox_version",
         "category": "github",
@@ -177,23 +166,17 @@ _SERVICES: list[dict] = [
         "version_prefix": "v",
         "strip_prefix": True,
         "tag_filter": r"^v\d+\.\d+\.\d+$",
-        "held": True,
         "notes": (
-            "1.13.1+ held: upstream's own Dockerfile does not build. 1.13.1 "
-            "moved the transitive better-sqlite3 12.9.0 -> 13.0.1, which has no "
-            "prebuilt binary for node 22, so `npm ci` falls back to `node-gyp "
-            "rebuild` and dies with 'not found: make' — their node:22-slim base "
-            "installs python3-minimal but no compiler. We build their Dockerfile "
-            "UNMODIFIED by design (docker/camofox-browser/README.md), so this is "
-            "not patchable here without forking the supply chain. Re-check when "
-            "upstream adds build-essential or the dep ships a node 22 prebuilt."
+            "Built from upstream's UNMODIFIED Dockerfile by build-camofox-browser "
+            "(docker/camofox-browser/README.md), so a bump also needs "
+            "hermes_camofox_git_sha re-resolved to the PEELED tag commit "
+            "(`git ls-remote 'refs/tags/<tag>*'`, the ^{} row)."
         ),
+        "coupled_vars": ["hermes_camofox_git_sha"],
     },
     {
-        # Hindsight agent-memory server (Hermes' memory backend). The pin is the
-        # ghcr.io/vectorize-io/hindsight image tag — bare semver, matching the
-        # GitHub release tag with the "v" stripped (verified: release vX.Y.Z
-        # publishes image tag X.Y.Z).
+        # Hindsight agent-memory server, Hermes' memory backend. The pin is the
+        # ghcr.io/vectorize-io/hindsight image tag: the release tag less its "v".
         "name": "Hindsight (Hermes memory)",
         "var_name": "hindsight_version",
         "category": "github",
@@ -203,12 +186,9 @@ _SERVICES: list[dict] = [
         "tag_filter": r"^v\d+\.\d+\.\d+$",
     },
     {
-        # llama.cpp server sidecar for Hindsight's local LLM
-        # (ghcr.io/ggml-org/llama.cpp:server-<pin>). Upstream tags a build
-        # (bNNNN) many times per day and only some builds publish a server
-        # image, so auto-nagging on "latest release" would be pure churn —
-        # bumped opportunistically when touching the hindsight app (verify the
-        # server-bNNNN tag exists on ghcr before pinning), hence manual.
+        # llama.cpp server sidecar (ghcr.io/ggml-org/llama.cpp:server-<pin>).
+        # Upstream tags builds many times a day and only some publish a server
+        # image, so this is bumped by hand after checking the tag exists.
         "name": "llama.cpp server (Hindsight)",
         "var_name": "hindsight_llamacpp_version",
         "category": "manual",
@@ -216,10 +196,8 @@ _SERVICES: list[dict] = [
         "notes": "Pin bNNNN whose ghcr server-cuda-bNNNN (CUDA) image tag exists; any recent build serves the pinned GGUF.",
     },
     {
-        # nvidia-open from NVIDIA's CUDA apt repo (debian13), exact apt version
-        # installed on the GPU k3s agent (k3s role tasks/gpu.yml). Manual: the apt
-        # version string (X.Y.Z-N) tracks the CUDA repo package — bump when it
-        # moves. See docs/43 for why >=570 (CUDA 12.8) is required on GeForce.
+        # nvidia-open from NVIDIA's debian13 CUDA apt repo, the exact apt version
+        # installed on the GPU k3s agent. >=570 is required on GeForce (docs/43).
         "name": "NVIDIA driver (nvidia-open, CUDA repo)",
         "var_name": "nvidia_driver_version",
         "category": "manual",
@@ -237,15 +215,20 @@ _SERVICES: list[dict] = [
         "notes": "Apt version X.Y.Z-N from nvidia.github.io/libnvidia-container/stable/deb.",
     },
     {
-        # cuda-keyring apt package — ships the debian13 CUDA repo signing key +
-        # the matching sources file (k3s role tasks/gpu.yml, SHA256-verified
-        # before install). Manual: NVIDIA versions the .deb; bump it and the
-        # nvidia_cuda_keyring_sha256 pin in all.yml in lockstep.
+        # cuda-keyring apt package: the debian13 CUDA repo signing key and
+        # sources file. Bump it and nvidia_cuda_keyring_sha256 in all.yml
+        # together.
         "name": "NVIDIA cuda-keyring",
         "var_name": "nvidia_cuda_keyring_version",
         "category": "manual",
         "source_url": "https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/",
-        "notes": "cuda-keyring_<version>_all.deb; SHA256-pinned in all.yml (nvidia_cuda_keyring_sha256).",
+        "notes": "cuda-keyring_<version>_all.deb; nvidia_cuda_keyring_sha256 is the sha256 of that .deb in the source_url directory.",
+        "coupled_vars": ["nvidia_cuda_keyring_sha256"],
+        "checksum_var": "nvidia_cuda_keyring_sha256",
+        "checksum_url": (
+            "https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/"
+            "cuda-keyring_{version}_all.deb"
+        ),
     },
     {
         # DCGM exporter image tag (nvcr.io/nvidia/k8s/dcgm-exporter). Manual: the
@@ -268,12 +251,9 @@ _SERVICES: list[dict] = [
         "tag_filter": r"^v\d+\.\d+\.\d+$",
     },
     {
-        # Authentik is deployed via the goauthentik Helm chart, so the version
-        # pinned in `authentik_version` is read as a chart tag (e.g.
-        # `version: "{{ authentik_version }}"` in the HelmRelease). The chart
-        # publishes a few days after the matching GitHub release tag, so query
-        # the chart repo directly — pinning a GitHub tag Flux can't yet resolve
-        # fails reconciliation with "no 'authentik' chart with version ... found".
+        # authentik_version is read as a CHART tag by the HelmRelease, and the
+        # chart publishes days after the GitHub release, so query the chart repo:
+        # a GitHub tag Flux cannot resolve fails reconciliation outright.
         "name": "Authentik",
         "var_name": "authentik_version",
         "category": "helm",
@@ -287,6 +267,9 @@ _SERVICES: list[dict] = [
         "category": "dockerhub",
         "docker_image": "library/postgres",
         "tag_regex": r"^(\d+(?:\.\d+)?)-trixie$",  # Matches 17-trixie, 17.1-trixie, etc.
+        # Hub pages the tag list; the -trixie tag for the pinned major is off
+        # page one at the default size.
+        "dockerhub_page_size": 100,
         "notes": "Used by Authentik (bundled PostgreSQL). Only checks updates within current major version.",
         "pin_major_version": True,  # Only suggest updates within same major version
     },
@@ -296,6 +279,7 @@ _SERVICES: list[dict] = [
         "category": "dockerhub",
         "docker_image": "library/postgres",
         "tag_regex": r"^(\d+(?:\.\d+)?)-alpine$",  # Matches 16-alpine, 16.1-alpine, etc.
+        "dockerhub_page_size": 100,
         "notes": "Used by Mealie (standalone deployment). Only checks updates within current major version.",
         "pin_major_version": True,  # Only suggest updates within same major version
     },
@@ -347,15 +331,9 @@ _SERVICES: list[dict] = [
         "docker_image": "library/redis",
         "tag_regex": r"^(\d+\.\d+\.\d+-alpine)$",
     },
-    # LinuxServer.io container images
-    # LinuxServer.io tags follow these patterns:
-    #   version-vX.Y.Z (nzbget), version-X.Y.Z-rN (qbittorrent),
-    #   version-X.Y.Z.BUILD (*arr apps - stable branch)
-    # lsio_version_regex is authoritative: it both selects the tag and captures
-    # the bare version (group 1) that gets pinned in all.yml.
-    # Stable tags get buried under daily develop/nightly pushes (3 arch variants
-    # each), so the *arr/NZBGet entries below set lsio_name_filter="version-"
-    # (server-side filter) + lsio_max_pages to page deeper than the default.
+    # LinuxServer.io container images. lsio_version_regex selects the tag and
+    # captures the bare version in group 1. Stable tags sit under daily develop
+    # pushes, hence lsio_name_filter and lsio_max_pages here.
     {
         "name": "NZBGet",
         "var_name": "nzbget_version",
@@ -423,10 +401,9 @@ _SERVICES: list[dict] = [
         "source_url": "https://artifacthub.io/packages/helm/metallb/metallb",
         "held": True,
         "notes": (
-            "0.16.x intentionally held back: open apiserver-flooding "
-            "regression (metallb#3063). Rationale in "
-            "kubernetes/infrastructure/controllers/metallb/release.yaml; "
-            "re-evaluate when the issue closes."
+            "held at 0.15.x: 0.16.x floods the apiserver on this topology. "
+            "Confirm upstream has shipped a fix before unholding. Rationale in "
+            "kubernetes/infrastructure/controllers/metallb/release.yaml."
         ),
     },
     {
@@ -460,6 +437,11 @@ _SERVICES: list[dict] = [
         "helm_repo": "https://kubernetes-sigs.github.io/external-dns",
         "helm_chart": "external-dns",
         "source_url": "https://artifacthub.io/packages/helm/external-dns/external-dns",
+        "notes": (
+            "controllers/external-dns/release.yaml pins "
+            "--annotation-prefix=external-dns.alpha.kubernetes.io/; 0.22.0 changed the "
+            "default and dropping the flag makes policy=sync delete every owned record."
+        ),
     },
     {
         "name": "External Secrets Operator",
@@ -480,19 +462,9 @@ _SERVICES: list[dict] = [
     {
         "name": "Tailscale",
         "var_name": "tailscale_version",
-        # Track the Tailscale apt repo instead of GitHub releases — the apt
-        # publish cadence lags GitHub by days/weeks and we install via apt
-        # (base role → tailscale_version pin → `apt install tailscale=...`).
-        # Reporting the GitHub version repeatedly suggests bumps the apt
-        # repo can't satisfy yet.
-        #
-        # The Packages index URL is hardcoded to trixie/amd64 because every
-        # host that gets Tailscale installed is a Debian Trixie / amd64
-        # Proxmox node (CLAUDE.md > "Current Infrastructure"). If we add a
-        # different suite/arch to the fleet, also extend this to a list and
-        # check every relevant index — otherwise we'd advertise a version
-        # the actual `apt install` target can't satisfy (which is exactly
-        # the bug this entry is meant to prevent).
+        # Tracked on the apt repo, not GitHub: install is `apt install
+        # tailscale=<pin>`. The index is trixie/amd64 because every Tailscale
+        # host is one.
         "category": "apt_repo",
         "apt_index_url": "https://pkgs.tailscale.com/stable/debian/dists/trixie/main/binary-amd64/Packages.gz",
         "apt_package": "tailscale",
@@ -501,12 +473,9 @@ _SERVICES: list[dict] = [
     {
         "name": "Grafana Alloy (host)",
         "var_name": "alloy_host_version",
-        # Host-side Alloy apt package (alloy_host role: `apt install alloy=...`
-        # from the Grafana repo, then dpkg-hold). Distinct from the in-cluster
-        # helm_chart_versions.alloy chart entry above — that one only tracks the
-        # Helm chart, leaving this fleet-wide agent otherwise unchecked. The repo
-        # is arch-agnostic `stable main` (alloy_host role repo line), so the
-        # binary-amd64 index is the right one for our amd64 fleet.
+        # Host-side Alloy apt package (alloy_host role), distinct from the
+        # in-cluster helm_chart_versions.alloy chart entry above. The Grafana
+        # repo is `stable main`, so binary-amd64 is the index for this fleet.
         "category": "apt_repo",
         "apt_index_url": "https://apt.grafana.com/dists/stable/main/binary-amd64/Packages.gz",
         "apt_package": "alloy",
@@ -516,9 +485,12 @@ _SERVICES: list[dict] = [
     {
         "name": "GitLab EE",
         "var_name": "gitlab_version",
-        "category": "gitlab",
+        "category": "apt_repo",
+        "apt_url": "https://packages.gitlab.com/gitlab/gitlab-ee/debian/dists/trixie/main/binary-amd64/Packages",
+        "apt_package": "gitlab-ee",
+        "apt_exclude_regex": r"(rc|beta|alpha)",
         "source_url": "https://packages.gitlab.com/gitlab/gitlab-ee",
-        "notes": "GitLab EE (CE features). Check packages.gitlab.com for apt versions.",
+        "notes": "GitLab EE (CE features).",
     },
     {
         "name": "GitLab Runner",
@@ -537,12 +509,9 @@ _SERVICES: list[dict] = [
         "source_url": "https://gitlab.com/gitlab-org/charts/gitlab-agent/tags",
     },
     {
-        # In-cluster pull-through registry cache for CI (kubernetes/apps/
-        # registry-cache, docs/27). The CNCF distribution image, Docker Hub
-        # `library/registry`. Bare X.Y.Z tags only — the regex excludes the
-        # floating majors/minors (3, 3.1) and pre-releases (3.0.0-rc.4) that
-        # share the repo. Flux-managed image (registry_cache_version pin ->
-        # cluster-versions ConfigMap), so it routes through flux:sync-versions.
+        # Pull-through registry cache for CI (docs/27): the CNCF distribution
+        # image on Docker Hub. The regex keeps bare X.Y.Z and drops the floating
+        # majors and pre-releases that share the repo.
         "name": "Registry Cache (distribution)",
         "var_name": "registry_cache_version",
         "category": "dockerhub",
@@ -558,6 +527,11 @@ _SERVICES: list[dict] = [
         "helm_repo": "https://prometheus-community.github.io/helm-charts",
         "helm_chart": "kube-prometheus-stack",
         "source_url": "https://artifacthub.io/packages/helm/prometheus-community/kube-prometheus-stack",
+        "coupled_vars": ["helm_chart_versions.prometheus_operator_crds"],
+        "notes": (
+            "prometheus_operator_crds moves with it: the CRD stage must carry the "
+            "prometheus-operator appVersion this chart expects."
+        ),
     },
     {
         "name": "prometheus-operator-crds",
@@ -666,8 +640,9 @@ _SERVICES: list[dict] = [
             "step with kubernetes/clusters/weisssrv/flux-system/gotk-components.yaml, "
             "which is regenerated by `flux install --export` from a matching CLI "
             "and only truly validated by a bootstrap. Bumping the GitOps control "
-            "plane blind is the highest-blast-radius change in the repo. "
-            "Re-evaluate as a dedicated, bootstrap-tested Flux upgrade."
+            "plane blind is the highest-blast-radius change in the repo. A 2.9.x "
+            "patch is re-evaluated on each upstream release and ships as its own "
+            "MR; a minor or major move stays a dedicated bootstrap-tested change."
         ),
     },
     {
@@ -693,7 +668,13 @@ _SERVICES: list[dict] = [
         "github_repo": "pdf/zfs_exporter",
         "version_prefix": "v",
         "strip_prefix": True,
-        "notes": "On bump also update zfs_exporter_checksum in all.yml (sha256 of the release .tar.gz).",
+        "notes": "zfs_exporter_checksum is the sha256 of the release .tar.gz asset for the new tag.",
+        "coupled_vars": ["zfs_exporter_checksum"],
+        "checksum_var": "zfs_exporter_checksum",
+        "checksum_url": (
+            "https://github.com/pdf/zfs_exporter/releases/download/"
+            "v{version}/zfs_exporter-{version}.linux-amd64.tar.gz"
+        ),
     },
     {
         "name": "AdGuard Exporter",
@@ -710,7 +691,13 @@ _SERVICES: list[dict] = [
         "github_repo": "letsencrypt/unbound_exporter",
         "version_prefix": "v",
         "strip_prefix": True,
-        "notes": "On bump also update unbound_exporter_checksum in all.yml (upstream ships no checksum file).",
+        "notes": "unbound_exporter_checksum is computed here: upstream ships no checksum file.",
+        "coupled_vars": ["unbound_exporter_checksum"],
+        "checksum_var": "unbound_exporter_checksum",
+        "checksum_url": (
+            "https://github.com/letsencrypt/unbound_exporter/releases/download/"
+            "v{version}/unbound_exporter-v{version}.x86_64.deb"
+        ),
     },
     {
         "name": "Redis Exporter",
@@ -719,11 +706,12 @@ _SERVICES: list[dict] = [
         "docker_image": "oliver006/redis_exporter",
         "tag_regex": r"^(v\d+\.\d+\.\d+)$",
     },
-    # Plex (apt repo, auto-checked via fetch_plex_version)
     {
         "name": "Plex Media Server",
         "var_name": "plex_version",
-        "category": "plex",
+        "category": "apt_repo",
+        "apt_url": "https://repo.plex.tv/deb/dists/public/main/binary-amd64/Packages",
+        "apt_package": "plexmediaserver",
         "source_url": "https://www.plex.tv/media-server-downloads/",
     },
     # Nextcloud (Docker Compose stack on the NAS-pinned VM)
@@ -746,6 +734,7 @@ _SERVICES: list[dict] = [
         "docker_image": "library/postgres",
         "tag_regex": r"^(\d+(?:\.\d+)?)-trixie$",
         "pin_major_version": True,
+        "dockerhub_page_size": 100,
         "notes": "Used by Nextcloud (standalone container). Only checks updates within the current major.",
     },
     # Nextcloud's Redis reuses the shared `redis_version` pin (the "Redis" entry
@@ -761,31 +750,62 @@ _SERVICES: list[dict] = [
     },
     # CI tooling images
     {
-        # The pr-agent AI reviewer image. The tag+digest pin lives in
-        # weisssrv-lib's ci/review/pr-agent.yml, which this repo includes at
-        # WEISSSRV_LIB_REF and passes no `image:` input to — so there is no
-        # local pin to read and `current` reads as unknown. Kept tracked, and
-        # held, so the credential-handling reviewer still shows an upstream
-        # release stream: a bump is a library MR + a ref bump here, never an
-        # edit in this repo. `codiumai/` is the frozen pre-rename namespace
-        # (tags stop at 0.34) and would report an update that does not exist.
+        # The pin lives in weisssrv-lib's ci/review/pr-agent.yml, so `current`
+        # reads as unknown here and a bump is a library MR plus a ref bump.
+        # Tracked anyway to keep the reviewer's release stream visible.
         "name": "pr-agent (CI reviewer)",
         "var_name": "pr_agent_version",
         "category": "dockerhub",
         "docker_image": "pragent/pr-agent",
         "tag_regex": r"^(\d+\.\d+(?:\.\d+)?)$",
+        # held keeps the row non-fatal: `current` is unreadable from here, so
+        # every upstream release would otherwise report as an update forever.
         "held": True,
         "notes": (
-            "pinned by tag+digest in weisssrv-lib ci/review/pr-agent.yml; bump "
-            "it there, tag, then move WEISSSRV_LIB_REF"
+            "current is UNREADABLE here — the tag+digest lives in weisssrv-lib "
+            "ci/review/pr-agent.yml. Compare Latest against that file, bump it "
+            "there, tag, then move WEISSSRV_LIB_REF."
         ),
         "source_url": "https://github.com/qodo-ai/pr-agent/releases",
     },
-    # Manifest-pinned container images (kubernetes/, not all.yml)
-    # Tag+digest `image:` pins that live directly in kubernetes/ manifests with
-    # no ${...} substitution from all.yml. version_file names the manifest(s)
-    # the current tag is read from; like the CI pins above, updates are manual
-    # tag+digest edits there (update_version_in_file refuses to auto-rewrite).
+    {
+        # PY_JOB_IMAGE: the digest-pinned image of the jobs that hold vault
+        # credentials. `current` is the tag of the first python job image in
+        # .gitlab-ci.yml, which the variable tracks.
+        "name": "python (CI job image)",
+        "var_name": "py_job_image_version",
+        "category": "dockerhub",
+        "docker_image": "library/python",
+        "image_ref": "python",
+        "tag_regex": r"^(3\.\d+)-slim$",
+        "dockerhub_name_filter": "-slim",
+        "version_file": ".gitlab-ci.yml",
+        "notes": (
+            "Bump the tag AND re-pin PY_JOB_IMAGE's @sha256 together in the "
+            ".gitlab-ci.yml variables block. ansible-core 2.18 caps the "
+            "controller at 3.13, so a newer minor waits for the ansible bump."
+        ),
+        "source_url": "https://hub.docker.com/_/python",
+    },
+    {
+        # TF_JOB_IMAGE: tag and digest move together in the .gitlab-ci.yml
+        # variables block.
+        "name": "Terraform (CI job image)",
+        "var_name": "tf_job_image_version",
+        "category": "dockerhub",
+        "docker_image": "hashicorp/terraform",
+        "image_ref": "hashicorp/terraform",
+        "tag_regex": r"^(\d+\.\d+\.\d+)$",
+        "version_file": ".gitlab-ci.yml",
+        "notes": (
+            "Bump the tag AND re-pin the @sha256 of TF_JOB_IMAGE together; the "
+            "terraform roots' required_version floor moves with it."
+        ),
+        "source_url": "https://hub.docker.com/r/hashicorp/terraform/tags",
+    },
+    # Manifest-pinned container images: tag+digest `image:` pins living in
+    # kubernetes/ manifests with no ${...} substitution. version_file names
+    # every manifest carrying the pin.
     {
         "name": "gluetun-exporter",
         "var_name": "gluetun_exporter_version",
@@ -811,41 +831,36 @@ _SERVICES: list[dict] = [
         "version_file": [
             "kubernetes/infrastructure/configs/cloudflare-ddns/cronjob.yaml",
             "kubernetes/apps/gitlab-runner-reaper/cronjob.yaml",
+            "kubernetes/apps/hindsight-reaper/cronjob.yaml",
         ],
         "source_url": "https://hub.docker.com/_/python",
-        "notes": "Both CronJobs share one tag+digest pin; bump them together.",
+        "notes": "Three CronJobs share one tag+digest pin; bump them together.",
     },
     {
-        # Upstream publishes no versioned tags (see the manifest header): the
-        # pin is an immutable @sha256 of `latest`, re-resolved manually when
-        # updating — nothing to compare against, hence category manual.
-        "name": "prometheus-plex-exporter",
-        "var_name": "plex_exporter_version",
-        "category": "manual",
-        "image_ref": "ghcr.io/jsclayton/prometheus-plex-exporter",
-        "version_file": "kubernetes/infrastructure/observability/exporters/plex-exporter.yaml",
-        "source_url": "https://github.com/jsclayton/prometheus-plex-exporter",
-        "notes": "Digest-pinned `latest` (no upstream version tags); re-resolve the digest manually to update.",
-    },
-    {
-        # virtio-win publishes no GitHub releases/tags (the virtio-win-pkg-scripts
-        # repo has neither) — versions are cut only to the Fedora ISO archive, so
-        # this is a manual check. On bump: pick the newest virtio-win-X.Y.NNN at
-        # the source_url, update proxmox_vm_virtio_win_version in all.yml, and recompute the
-        # ISO sha256 (proxmox_vm_virtio_win_checksum) since Fedora ships no ISO checksum.
-        # Current tag is read from all.yml (no version_file). See docs/39.
+        # No upstream releases or tags: versions are cut only to the Fedora ISO
+        # archive, so this is a manual check. A bump also recomputes
+        # proxmox_vm_virtio_win_checksum, since Fedora ships none (docs/39).
         "name": "virtio-win",
         "var_name": "proxmox_vm_virtio_win_version",
         "category": "manual",
         "source_url": "https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/",
-        "notes": "VirtIO driver ISO for the Windows 11 VM; no GitHub releases — check the Fedora stable-virtio dir and recompute proxmox_vm_virtio_win_checksum on bump.",
+        "notes": "VirtIO driver ISO for the Windows 11 VM; no GitHub releases — check the Fedora stable-virtio dir, and proxmox_vm_virtio_win_checksum is the sha256 of the ISO you pick.",
+        "coupled_vars": ["proxmox_vm_virtio_win_checksum"],
     },
     {
-        # Debian LXC root template (pveam appliance). Proxmox silently rotates
-        # the point build out of its index, which breaks a cached-template
-        # recreate. No release feed to poll; check the pveam index on a Proxmox
-        # host. Authoritative pin lives in all.yml (mirrored as the proxmox_lxc
-        # role default).
+        # Debian cloud image for proxmox_vm guests. `latest/` moves and its
+        # SHA512SUMS moves with it, so the site pins a dated directory. No
+        # release feed; read the dated index at the source_url.
+        "name": "Debian cloud image",
+        "var_name": "proxmox_vm_cloud_image_url",
+        "category": "manual",
+        "source_url": "https://cloud.debian.org/images/cloud/trixie/",
+        "notes": "Pick the newest dated directory, then bump proxmox_vm_cloud_image_url, _name and _checksum in all.yml together — the sha512 comes from that directory's SHA512SUMS.",
+    },
+    {
+        # Proxmox silently rotates the point build out of its pveam index,
+        # which breaks a cached-template recreate. No feed to poll: check the
+        # index on a Proxmox host. The pin in all.yml is authoritative.
         "name": "Debian LXC template (pveam)",
         "var_name": "proxmox_lxc_template",
         "category": "manual",
@@ -854,6 +869,8 @@ _SERVICES: list[dict] = [
     },
     {
         # postgres_exporter sidecar in the immich + nextcloud compose stacks.
+        # The k8s mealie sidecar pins the same exporter separately (own entry
+        # below).
         "name": "postgres_exporter",
         "var_name": "postgres_exporter_version",
         "category": "github",
@@ -863,10 +880,23 @@ _SERVICES: list[dict] = [
         "tag_filter": r"^v\d+\.\d+\.\d+$",
     },
     {
+        # postgres_exporter sidecar in the mealie-postgres pod (tag+digest,
+        # hand-edited). Same upstream as the all.yml postgres_exporter entry
+        # used by the immich/nextcloud compose stacks — bump both together.
+        "name": "postgres_exporter (mealie sidecar)",
+        "var_name": "postgres_exporter_k8s_version",
+        "category": "github",
+        "github_repo": "prometheus-community/postgres_exporter",
+        "version_prefix": "v",
+        "strip_prefix": False,
+        "tag_filter": r"^v\d+\.\d+\.\d+$",
+        "image_ref": "quay.io/prometheuscommunity/postgres-exporter",
+        "version_file": "kubernetes/apps/recipes/mealie.yaml",
+        "source_url": "https://github.com/prometheus-community/postgres_exporter/releases",
+    },
+    {
         # Vim plugin manager cloned at a tag by the qol role. Upstream is
-        # ARCHIVED at v0.10.2 — there will never be another release, so any
-        # live query is permanent noise (its Releases endpoint 404s: tags
-        # only). `manual` performs no network call; the pin is final.
+        # archived, so the pin is final and `manual` makes no network call.
         "name": "Vundle.vim",
         "var_name": "qol_vundle_version",
         "category": "manual",
@@ -892,10 +922,9 @@ _FLUX_MANAGED = {
     "meilisearch_version", "redis_version", "busybox_version",
     "authentik_version", "postgresql_version",
     "gitlab_runner_helm_version", "gitlab_agent_helm_version",
-    "registry_cache_version",
+    "registry_cache_version", "garage_version",
     "exportarr_version", "proxmox_exporter_version",
-    "zfs_exporter_version", "adguard_exporter_version",
-    "unbound_exporter_version", "redis_exporter_version",
+    "adguard_exporter_version", "redis_exporter_version",
     "dcgm_exporter_version", "coredns_tailnet_version",
 }
 
@@ -915,6 +944,10 @@ _ANSIBLE_DEPLOY = {
     "alloy_host_version": "task maintenance:update-applications",
     "adguard_home_version": "task maintenance:update-applications --limit dns",
     "adguard_sync_version": "task maintenance:update-applications --limit dns-01",
+    # Host-side exporters: they ship in the versions ConfigMap but no manifest
+    # reads them, so the rollout is the playbook that installs the binary.
+    "zfs_exporter_version": "task storage:deploy",
+    "unbound_exporter_version": "task dns:deploy",
     "gitlab_version": "task gitlab:deploy",
     "immich_version": "task immich:deploy",
     "postgres_exporter_version": "task immich:deploy && task nextcloud:deploy",
@@ -926,6 +959,11 @@ _ANSIBLE_DEPLOY = {
     # destroy + re-provision (docs/39).
     "proxmox_vm_virtio_win_version": (
         "task windows:provision  # downloads the new ISO only on a fresh VM"
+    ),
+    # Only changes which image a NEWLY created VM downloads; existing guests
+    # keep their disks.
+    "proxmox_vm_cloud_image_url": (
+        "applies on the next proxmox_vm create; no rollout needed"
     ),
     # Only changes which template a NEWLY created LXC pulls; existing containers
     # keep their rootfs. Keep the proxmox_lxc role default in step.
@@ -961,8 +999,8 @@ CONFIG = {
     "report_title": "Homelab Version Check Report",
     # Everything with no more specific rollout path.
     "default_deploy_command": "task infra:deploy",
-    # Digest-locked `image:` pins that live outside the vars file.
-    "version_file_aliases": {"ci": ".gitlab-ci.yml"},
+    # Short names for `version_file` paths outside the vars file; none in use.
+    "version_file_aliases": {},
     # Pins deliberately outside the checker: no independent upstream feed, or a
     # release-coupled value that must never be bumped on its own.
     "untracked_allowlist": [
@@ -978,8 +1016,7 @@ CONFIG = {
         "immich_valkey_version",
         # Built here, not pulled: the -rN suffix rebuilds the same upstream tag.
         "hermes_image_version",
-        # Pinned with their .deb sha256 in all.yml; bumped as a pair by hand.
-        "restic_offsite_restic_version",
+        # Pinned with its .deb sha256 in all.yml; bumped as a pair by hand.
         "restic_offsite_rclone_version",
     ],
     "services": [

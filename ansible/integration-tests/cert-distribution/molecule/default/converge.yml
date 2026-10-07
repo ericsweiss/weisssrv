@@ -11,6 +11,19 @@
 
 
   pre_tasks:
+    # molecule.yml platforms[].groups drive every `group_names` guard below and
+    # the later cert_servers / cert_clients plays; an empty group would skip them
+    # all and still report a pass.
+    - name: Assert the molecule roster resolved
+      ansible.builtin.assert:
+        that:
+          - groups['cert_servers'] | default([]) | length == 1
+          - groups['cert_clients'] | default([]) | length == 2
+        fail_msg: >-
+          molecule.yml no longer produces cert_servers and cert_clients, so the
+          guarded tasks and the per-group plays in this scenario skip.
+      run_once: true
+
     - name: Container warm-up (apt locks, dpkg state, cache, systemd)
       ansible.builtin.include_tasks: ../../../../molecule/tasks/container-warmup.yml
 
@@ -30,15 +43,15 @@
 
     - name: Create admin user
       ansible.builtin.user:
-        name: "{{ admin_username }}"
+        name: "{{ admin_user }}"
         state: present
         shell: /bin/bash
         create_home: true
 
     - name: Configure passwordless sudo for admin user
       ansible.builtin.copy:
-        content: "{{ admin_username }} ALL=(ALL) NOPASSWD: ALL\n"
-        dest: "/etc/sudoers.d/{{ admin_username }}"
+        content: "{{ admin_user }} ALL=(ALL) NOPASSWD: ALL\n"
+        dest: "/etc/sudoers.d/{{ admin_user }}"
         mode: '0440'
         validate: 'visudo -cf %s'
 
@@ -50,33 +63,52 @@
 
     - name: Ensure .ssh directory exists for admin user
       ansible.builtin.file:
-        path: /home/{{ admin_username }}/.ssh
+        path: /home/{{ admin_user }}/.ssh
         state: directory
-        owner: "{{ admin_username }}"
-        group: "{{ admin_username }}"
+        owner: "{{ admin_user }}"
+        group: "{{ admin_user }}"
         mode: '0700'
 
-    - name: Accept host keys (for SSH distribution - eric user)
-      ansible.builtin.shell: |
-        ssh-keyscan -H {{ item }} >> /home/{{ admin_username }}/.ssh/known_hosts
-        chown {{ admin_username }}:{{ admin_username }} /home/{{ admin_username }}/.ssh/known_hosts
+    # Scanned on the cert server (the controller cannot resolve the container
+    # names), then fed to known_hosts so repeated converges stay idempotent.
+    - name: Scan the client host keys
+      ansible.builtin.command: "ssh-keyscan -t ed25519 {{ item }}"
       loop:
         - cert-client-01
         - cert-client-02
-      when: "'cert_servers' in group_names"
+      register: client_host_keys
       changed_when: false
+      when: "'cert_servers' in group_names"
 
-    - name: Accept host keys (for SSH distribution - root user for distribution script)
-      ansible.builtin.shell: |
-        mkdir -p /root/.ssh
-        ssh-keyscan -H {{ item }} >> /root/.ssh/known_hosts
-        chmod 700 /root/.ssh
-        chmod 644 /root/.ssh/known_hosts
-      loop:
-        - cert-client-01
-        - cert-client-02
+    - name: Ensure root has a .ssh directory
+      ansible.builtin.file:
+        path: /root/.ssh
+        state: directory
+        mode: '0700'
       when: "'cert_servers' in group_names"
-      changed_when: false
+
+    # The distribution script runs as root; the admin user drives it by hand.
+    - name: Trust the client host keys for the admin user and for root
+      ansible.builtin.known_hosts:
+        path: "{{ item.1 }}"
+        name: "{{ item.0.item }}"
+        key: "{{ item.0.stdout }}"
+        state: present
+      loop: >-
+        {{ client_host_keys.results | default([])
+           | product(['/home/' ~ admin_user ~ '/.ssh/known_hosts', '/root/.ssh/known_hosts'])
+           | list }}
+      loop_control:
+        label: "{{ item.0.item }} -> {{ item.1 }}"
+      when: "'cert_servers' in group_names"
+
+    - name: Own the admin known_hosts file
+      ansible.builtin.file:
+        path: "/home/{{ admin_user }}/.ssh/known_hosts"
+        owner: "{{ admin_user }}"
+        group: "{{ admin_user }}"
+        mode: '0644'
+      when: "'cert_servers' in group_names"
 
     - name: Create certificate directories on clients
       ansible.builtin.file:
@@ -85,13 +117,9 @@
         mode: '0755'
       when: "'cert_clients' in group_names"
 
-# Generate the cert-distribution keypair + collect each client's host key,
-# then add_host inject onto dns-01 so the role gets valid input.
-#
-# Why here and not in prepare.yml: molecule runs prepare and converge as
-# separate ansible-playbook invocations, so add_host vars don't survive.
-# Within a single converge.yml, add_host vars are visible to subsequent
-# plays — including the cert_servers play that applies acme_certs.
+# Generate the cert-distribution keypair, collect each client's host key, then add_host
+# inject onto dns-01. This lives here, not in prepare.yml, because add_host vars do not
+# survive between molecule's separate ansible-playbook invocations.
 - name: Converge - Collect cert client host keys
   hosts: cert_clients
   become: true
@@ -229,10 +257,8 @@
         dest: /root/.acme.sh/acme.sh
         mode: '0755'
 
-    # The mock acme.sh above makes the role's "acme.sh installed" check true, so
-    # it skips the real tarball install — the only thing that ships dnsapi/. The
-    # role then asserts the dns_cf.sh DNS-01 hook exists, so mock it too (a
-    # non-empty stub satisfies the stat-based assert without a network install).
+    # The mock acme.sh makes the role skip the tarball install that ships dnsapi/, so
+    # the dns_cf.sh DNS-01 hook it asserts on needs a stub too.
     - name: Create mock acme.sh dnsapi directory
       ansible.builtin.file:
         path: /root/.acme.sh/dnsapi
@@ -253,11 +279,9 @@
         state: directory
         mode: '0755'
 
-    # The forced-command receiver validates every pushed bundle with openssl
-    # (parse, notAfter, key==cert, SAN, AND chains to a CA in the client
-    # truststore), so a self-signed leaf is rejected — hence a real wildcard
-    # leaf signed by a throwaway CA, which the play below installs on each
-    # client before the push.
+    # The forced-command receiver validates every pushed bundle with openssl, including
+    # chaining to a CA in the client truststore, so a self-signed leaf is rejected. The
+    # play below installs the throwaway CA on each client before the push.
     - name: Generate a CA-chained wildcard cert (leaf + CA) for distribution
       ansible.builtin.shell:
         chdir: "{{ acme_certs_local_cert_dir }}"

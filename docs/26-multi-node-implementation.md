@@ -194,7 +194,8 @@ After deployment, manually authenticate each host with Tailscale:
 
 ```bash
 # SSH to each host and run tailscale up with the FULL canonical flag set,
-# verbatim from terraform/tailscale/README.md § Recovery — `tailscale up`
+# verbatim from terraform/tailscale/README.md § Adding a host to
+# `tag:subnet-router` — `tailscale up`
 # rejects a flag set omitting already-configured non-default prefs (hence
 # --reset + everything), and on a fresh host an incomplete set would
 # authenticate it untagged, or without the Tailscale SSH fallback (--ssh) and
@@ -202,7 +203,7 @@ After deployment, manually authenticate each host with Tailscale:
 # Proxmox host is a subnet router (tag:subnet-router, tag-only auto-approval),
 # and a host that accepts routes while sitting ON the LAN consumes its peers'
 # advertisement of its own subnet — a routing loop. Canonical source for this
-# command: terraform/tailscale/README.md § Recovery.
+# command: terraform/tailscale/README.md § Adding a host to `tag:subnet-router`.
 ssh eric@10.0.10.103 "sudo tailscale up --reset --accept-routes=false --accept-dns=false --advertise-routes=10.0.10.0/24 --advertise-tags=tag:subnet-router --operator=eric --ssh"
 ssh eric@10.0.10.104 "sudo tailscale up --reset --accept-routes=false --accept-dns=false --advertise-routes=10.0.10.0/24 --advertise-tags=tag:subnet-router --operator=eric --ssh"
 ssh eric@10.0.10.105 "sudo tailscale up --reset --accept-routes=false --accept-dns=false --advertise-routes=10.0.10.0/24 --advertise-tags=tag:subnet-router --operator=eric --ssh"
@@ -349,6 +350,17 @@ inline in that file. Current label/taint placement is summarised in
 > `pve-start-encrypted-guests.service` after the pool unlocks (see hosts.yml and
 > [docs/32-zfs-encryption.md](32-zfs-encryption.md)).
 
+**Storage placement.** The HA guests run from the compute hosts' `local-ssd`
+ZFS pools, which is what makes them replicable. The two k3s VMs on pve-nas-01 (k3s-srv-nas-01 VM 222,
+k3s-agt-nas-01 VM 202) **deliberately stay on `local-lvm`** and are not
+HA-managed: VM 222 is an etcd quorum member and pve-nas-01's `ssd` pool is
+encrypted, so a root disk there would put cluster quorum behind a boot-time key
+unlock ([docs/32-zfs-encryption.md](32-zfs-encryption.md) carries the reasoning).
+
+To move a guest onto its host's own pool (`local-ssd` on compute, `ssd` on the
+NAS), either use **VM > Hardware > Disk > Disk Action > Move Storage** in the
+web UI or run `qm move-disk <vmid> scsi0 local-ssd --delete`.
+
 ### Step 3.2: Update DNS Records
 
 Verify DNS records exist for new k3s nodes in `ansible/inventories/prod/group_vars/dns.yml`. The records should already be present per docs/08-dns.md.
@@ -388,8 +400,9 @@ export KUBECONFIG=~/.kube/config-k3s
 kubectl get nodes
 # Should show 4 nodes now (3 original + 1 new server)
 
-# Verify etcd health
-kubectl get pods -n kube-system | grep etcd
+# Verify embedded etcd health (k3s runs etcd in-process; there is no etcd pod)
+kubectl get --raw /healthz/etcd   # expects: ok — anything else means etcd is unhealthy
+kubectl get nodes -l node-role.kubernetes.io/etcd=true
 ```
 
 **Wait 2-3 minutes for etcd to stabilize, then add k3s-srv-prec-01:**
@@ -529,31 +542,9 @@ ssh eric@10.0.10.102 "sudo ha-manager migrate ct:150 pve-laptop-01"
 
 ### Step 4.4: Test HA Functionality
 
-> Historical — the node names below are the ones this expansion used. The live
-> failover test, with the current homes, is `docs/25-multi-node-expansion.md`
-> § Step 6: Testing HA Failover; dns-01's home is now pve-prec-01.
-
-```bash
-# Test DNS failover
-# 1. Note current location (should show pve-laptop-01 after migration)
-task proxmox:ha-status | grep 150
-
-# 2. Migrate dns-01 to pve-opt-03 (or any other available node)
-ssh pve-nas-01 "sudo ha-manager migrate ct:150 pve-opt-03"
-
-# 3. Wait for migration
-sleep 60
-
-# 4. Test DNS still works
-dig google.com @10.0.10.150
-# Should still resolve
-
-# 5. Migrate back to original node (pve-laptop-01)
-ssh pve-nas-01 "sudo ha-manager migrate ct:150 pve-laptop-01"
-
-# 6. Verify it moved back
-task proxmox:ha-status | grep 150
-```
+The live failover test is
+[docs/25-multi-node-expansion.md](25-multi-node-expansion.md) § Step 6: Testing
+HA Failover.
 
 ---
 
@@ -591,8 +582,9 @@ task collect-state
 **WARNING: This will cause brief downtime. Do during maintenance window.**
 
 ```bash
-# 1. Identify current kube-vip leader
-kubectl get pods -n kube-system -l app=kube-vip -o wide
+# 1. Identify the current kube-vip control-plane leader (the node holding the API VIP)
+kubectl -n kube-system get lease plndr-cp-lock -o jsonpath='{.spec.holderIdentity}{"\n"}'
+kubectl get pods -n kube-system -l app.kubernetes.io/name=kube-vip -o wide
 
 # 2. Simulate server failure (stop one server VM)
 ssh eric@10.0.10.103 "sudo qm stop 223"  # Stop k3s-srv-laptop-01
@@ -633,12 +625,12 @@ ssh eric@<proxmox-host> "sudo qm stop <vmid> && sudo qm destroy <vmid>"
 
 # 3. Remove from Ansible inventory (comment out entries)
 
-# 4. If etcd is corrupted, restore from snapshot
-ssh eric@10.0.10.222 << 'EOF'
-sudo systemctl stop k3s
-sudo k3s server --cluster-reset --cluster-reset-restore-path=/var/lib/rancher/k3s/server/db/snapshots/<snapshot-name>
-sudo systemctl start k3s
-EOF
+# 4. If etcd is corrupted, restore from an etcd snapshot — see
+#    docs/17-disaster-recovery.md § etcd Snapshots, which owns the procedure.
+#    It is a multi-server sequence: stop k3s on all three servers, run
+#    --cluster-reset --cluster-reset-restore-path on one, then remove
+#    /var/lib/rancher/k3s/server/db/etcd on the other two and restart them
+#    so they rejoin. Resetting one server alone leaves a split control plane.
 ```
 
 ### Rollback Proxmox Cluster
@@ -677,87 +669,6 @@ for r in affinity-dns-01 affinity-smtp-relay affinity-dns-02 affinity-home-assis
   sudo ha-manager rules remove "$r" || true
 done
 EOF
-```
-
----
-
-## Answers to Design Questions
-
-### 1. Bootstrap Procedure
-
-**Exact sequence for creating eric user and deploying SSH keys:**
-
-1. SSH as root to new host (using password from Proxmox installation)
-2. Create user eric: `useradd -m -s /bin/bash -G sudo eric`
-3. Configure passwordless sudo: `echo 'eric ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/eric`
-4. Create SSH directory: `mkdir -p /home/eric/.ssh && chmod 700 /home/eric/.ssh`
-5. Deploy SSH key from 1Password
-6. Set permissions: `chmod 600 /home/eric/.ssh/authorized_keys && chown -R eric:eric /home/eric/.ssh`
-7. Test SSH as eric from workstation
-
-The bootstrap script automates this entire process.
-
-### 2. Cluster Formation Order
-
-**Create cluster first, then add nodes one at a time.**
-
-- Create cluster on pve-nas-01 (existing, most important node)
-- Join existing node pve-opt-03 first (already has VMs, proves join works)
-- Join new nodes one by one, verifying cluster health between each
-- Never join multiple nodes simultaneously
-
-### 3. k3s Expansion Order
-
-**Yes, servers MUST be added before agents. Order matters for etcd:**
-
-1. Add k3s-srv-laptop-01 (server 2) - wait for etcd sync
-2. Add k3s-srv-prec-01 (server 3) - establishes 3-node quorum
-3. Add all agents (can be parallel after quorum is established)
-
-The k3s role handles this automatically based on `k3s_is_first_server` flag.
-
-### 4. HA Migration Testing
-
-**Safest approach:**
-
-1. Start with DNS (redundant via dns-01/dns-02)
-2. Use `ha-manager migrate` command (not `fence` or host shutdown)
-3. Monitor with continuous ping to service IP
-4. Test one service at a time
-5. Full host failure testing only after all individual migrations work
-
-### 5. Inventory Structure
-
-**Move hosts from `proxmox_unmanaged` to `proxmox` group:**
-
-- Remove the `proxmox_unmanaged` group entirely
-- All 6 hosts go in `proxmox` group with `proxmox_role` variable
-- `proxmox_role: nas` for pve-nas-01, `proxmox_role: compute` for all others
-- `ansible_connection: local` removed (only used for unmanaged hosts)
-
-### 6. Storage Migration for Existing VMs
-
-**Settled — the question this section asked has an answer, recorded here so a
-rebuild does not re-open it.**
-
-The HA guests were moved off `local-lvm` onto the compute hosts' `local-ssd`
-ZFS pools, which is what makes them replicable: home-assistant (VM 154) runs on
-pve-prec-01 with `proxmox_storage: local-ssd` (host_vars/home.yml), as do the
-dns and smtp-relay containers.
-
-The two k3s VMs on pve-nas-01 (k3s-srv-nas-01 VM 222, k3s-agt-nas-01 VM 202)
-**deliberately stay on `local-lvm`** and are not HA-managed: VM 222 is an etcd
-quorum member and pve-nas-01's ZFS `ssd` pool is encrypted, so a root disk there
-would put cluster quorum behind a boot-time key unlock. The reasoning and the
-blast radius of that choice are in `docs/32-zfs-encryption.md`. Plex (CT 152)
-stays on pve-nas-01 for its bind mounts, with its sensitive `/config` bound from
-the encrypted `ssd/appdata`.
-
-Migration procedure, if a future guest does need to move:
-```bash
-# Via Web UI: VM > Hardware > Disk > Disk Action > Move Storage
-# Or CLI (target the host's own pool — local-ssd on compute, ssd on the NAS):
-qm move-disk <vmid> scsi0 local-ssd --delete
 ```
 
 ---

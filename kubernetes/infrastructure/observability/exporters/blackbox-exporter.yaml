@@ -1,10 +1,7 @@
 ---
-# Blackbox exporter + its probe target list. Every https target feeds the generic
-# EndpointDown alert; the three load-bearing hostnames also feed
-# EndpointDownCritical, and every *.ericsweiss.com target feeds
-# BlackboxCertExpiringSoon (rules/monitoring.yaml). The icmp_ping targets are
-# the exception: they are excluded from EndpointDown and feed the purpose-built
-# NetworkGearProbeFailed instead.
+# Blackbox exporter and its probe target list. rules/monitoring.yaml owns which
+# targets feed EndpointDown / EndpointDownCritical / BlackboxCertExpiringSoon /
+# NetworkGearProbeFailed, including their exclusions.
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -34,19 +31,9 @@ spec:
       retries: 3
       remediateLastFailure: true
   values:
-    # The icmp_ping module needs a socket the chart's default securityContext
-    # cannot open: it drops ALL capabilities (so no CAP_NET_RAW, so no
-    # `ip4:icmp` raw socket) and runs as uid/gid 1000. blackbox_exporter tries
-    # an UNPRIVILEGED ICMP datagram socket first on Linux, which needs the
-    # running gid to fall inside net.ipv4.ping_group_range — Debian ships
-    # "1 0" (an empty range), so without this every icmp probe fails with
-    # "socket: operation not permitted" and NetworkGearProbeFailed fires
-    # forever on healthy gear.
-    #
-    # ping_group_range is one of the kubelet's SAFE sysctls (namespaced, no
-    # effect outside the pod), so it needs no node-side allowlist — and it is
-    # the reason NET_RAW is NOT granted here: a capability would apply to every
-    # socket the container opens, this applies to ping sockets only.
+    # icmp_ping needs the pod's gid inside net.ipv4.ping_group_range for an
+    # unprivileged ICMP socket; Debian ships an empty range, so every icmp probe
+    # fails without this. Narrower than NET_RAW, which covers every socket.
     podSecurityContext:
       sysctls:
         - name: net.ipv4.ping_group_range
@@ -62,11 +49,8 @@ spec:
             preferred_ip_protocol: ip4
             tls_config:
               insecure_skip_verify: false
-        # For targets fronted by an auth gate. The probe verifies ingress + TLS +
-        # backend reachability, not an authenticated session: 301/302 is a
-        # redirect to a login, 401/403 an auth or IP-allowlist rejection — all
-        # proof the router and backend are alive, while a real outage still
-        # returns 502/503 or times out.
+        # For targets behind an auth gate: 301/302/401/403 all prove the router and
+        # backend are alive, while a real outage returns 502/503 or times out.
         http_sso:
           prober: http
           timeout: 10s
@@ -116,8 +100,7 @@ spec:
           module: http_2xx
         - name: traefik
           url: https://traefik.${cluster_internal_domain}
-          # SSO-fronted since the dashboard gained forward-auth: a 302 to
-          # Authentik is the healthy shape.
+          # SSO-fronted: a 302 to Authentik is the healthy shape.
           module: http_sso
         - name: sonarr
           url: https://tv.${cluster_internal_domain}
@@ -154,11 +137,9 @@ spec:
         - name: homarr
           url: https://dashboard.${cluster_internal_domain}
           module: http_sso
-        # Uptime Kuma, internal PUBLIC router: `/` 302s to the entry status
-        # page, and the probe must FOLLOW it — http_sso accepts the 302
-        # itself, which would stay green even when the redirect target is
-        # broken. RED until the docs/45 first-run checklist sets the entry
-        # status page.
+        # Uptime Kuma, internal PUBLIC router: `/` 302s to the entry status page
+        # and the probe must FOLLOW it — http_sso accepts the 302 itself and
+        # would stay green with a broken redirect target.
         - name: uptime-kuma
           url: https://status.${cluster_internal_domain}
           module: http_2xx
@@ -193,7 +174,7 @@ spec:
           module: http_sso
         # Host-side Alloy's log-shipping path (loki-push-auth 401s unauthenticated).
         - name: loki-push
-          url: https://loki.${cluster_internal_domain}
+          url: https://loki.${cluster_internal_domain}/loki/api/v1/push
           module: http_sso
         # The ingress + TLS hop for 1Password Connect, which no other alert
         # covers. /health, not / (404); its access-controlled IngressRoute
@@ -229,7 +210,7 @@ spec:
           url: 10.0.10.160:53
           module: dns_resolution
         - name: smtp-relay
-          url: smtp-relay.${cluster_internal_domain}:587
+          url: ${cluster_smtp_host}:587
           module: tcp_connect
         - name: k3s-api-vip
           url: ${cluster_api_vip}:6443
@@ -240,20 +221,11 @@ spec:
         - name: windows-rdp
           url: 10.0.10.155:3389
           module: tcp_connect
-        # UniFi network gear (docs/46). ICMP, not tcp_connect: the switch and AP
-        # expose no management port worth probing — they are adopted by the
-        # gateway's controller — so liveness is the only signal available, and
-        # the gateway is probed the same way for a uniform NetworkGearProbeFailed
-        # expression. The two mgmt addresses sit on VLAN 1 (10.0.1.0/24), which
-        # the cluster reaches through the gateway — the `homelab-to-internal-icmp`
-        # policy pair in terraform/unifi/networks.tf is what lets it.
-        #
-        # Which of these are EXPECTED RED, for how long, and what clears each
-        # one are owned by docs/46 § Expected breakage — not restated here,
-        # because a transitional note next to a live alert target is read as
-        # sanction long after it stops being true.
+        # UniFi network gear (docs/46). ICMP because the switch and AP expose no
+        # management port — liveness is the only signal. The VLAN-1 mgmt addresses
+        # are reachable via terraform/unifi's homelab-to-internal-icmp policy pair.
         - name: unifi-gateway
-          url: 10.0.10.1
+          url: ${cluster_lan_gateway}
           module: icmp_ping
         - name: unifi-switch
           url: 10.0.1.2
@@ -261,10 +233,14 @@ spec:
         - name: unifi-ap
           url: 10.0.1.3
           module: icmp_ping
-        # GitLab Container Registry: its own router and certificate, which the
-        # git.esweiss.com probe does not cover (a broken registry otherwise
-        # surfaces only as a mid-pipeline ImagePullBackOff). http_sso tolerates
-        # both the 200 it answers today and a future 401.
+        # Outside-in WAN witness, not a monitored device: ExternalIngressDown
+        # suppresses on it to tell an upstream outage from a public-ingress
+        # fault, InternetProbeMissing pins it, and EndpointDown excludes it.
+        - name: internet-witness
+          url: 1.1.1.1
+          module: icmp_ping
+        # GitLab Container Registry: its own router and certificate, not covered by
+        # the git probe. http_sso tolerates both the 200 it answers and a future 401.
         - name: gitlab-registry
           url: https://registry.git.${cluster_internal_domain}
           module: http_sso
@@ -274,30 +250,15 @@ spec:
         - name: gitlab-pages
           url: https://pages.git.${cluster_internal_domain}
           module: http_pages
-        # External path (Cloudflare -> WAN -> MetalLB .100): catches DDNS drift
-        # and public-ingress breakage the internal probes cannot see. AdGuard
-        # rewrites only *.esweiss.com, so most *.ericsweiss.com probes below
-        # genuinely leave the LAN — the exceptions are the five cross-domain
-        # rewrites (auth, and the git/registry.git/pages.git family), whose
-        # targets each say so. Each externally-published app is probed on BOTH
-        # names, with modules mirroring its internal probe.
+        # External path (Cloudflare -> WAN -> MetalLB .100): catches DDNS drift and
+        # public-ingress breakage the internal probes cannot see. The five
+        # cross-domain rewrites below are the exceptions and each says so.
         - name: home-assistant-external
           url: https://home.${cluster_external_domain}
           module: http_2xx
-        # NOT external despite the hostname, since 2026-08-22: the whole
-        # git/registry.git/pages.git family are AdGuard split-horizon exceptions
-        # (group_vars/dns.yml), so that containerd's token fetch at /jwt/auth
-        # and CI's registry pulls do not hairpin. These three therefore probe
-        # the internal VIP over the EXTERNAL hostnames' routers and certs —
-        # coverage the *.esweiss.com probes do not give — but none of them
-        # witnesses DDNS drift or public-ingress breakage any more.
-        #
-        # What still does: gitlab-webide-external at the bottom of this list.
-        # registry.git, pages.git and ide.git are all CNAMEs to direct, so that
-        # one probe covers the direct A record and the direct-TLS path for all
-        # of them. The `git` A record is separately DDNS-managed and now has NO
-        # external probe — the residual is docs/08 § Cross-domain rewrites, with
-        # the follow-up in docs/16. Do not "fix" this by dropping a rewrite.
+        # Split-horizon exception: the git/registry.git/pages.git family resolves
+        # internally (docs/08), so these probe the internal VIP over the external
+        # routers and certs; gitlab-webide-external covers the public path.
         - name: gitlab-external
           url: https://git.${cluster_external_domain}
           module: http_2xx
@@ -308,19 +269,17 @@ spec:
         - name: gitlab-pages-external
           url: https://pages.git.${cluster_external_domain}
           module: http_pages
-        # NOT external despite the hostname: auth.ericsweiss.com is the AdGuard
-        # split-horizon exception (group_vars/dns.yml), so this probes the
-        # internal VIP — the same path server-side OIDC discovery takes, on a
-        # different router and cert from the auth.esweiss.com probe. The public
-        # front door cannot be probed from in-cluster while the rewrite stands.
+        # Split-horizon exception (docs/08): this probes the internal VIP over the
+        # external router and cert — the path server-side OIDC discovery takes.
         - name: authentik-oidc-issuer
           url: https://auth.${cluster_external_domain}
           module: http_2xx
         - name: nextcloud-external
           url: https://cloud.${cluster_external_domain}
           module: http_sso
-        # DNS-only (proxy-bypassed) CNAME so large uploads skip Cloudflare —
-        # which also leaves it the name most exposed to DDNS drift.
+        # Split-horizon exception (docs/08): photos.${cluster_external_domain} is
+        # rewritten to the public VIP, so this probes the external router and
+        # cert from the LAN and does not witness DDNS drift.
         - name: immich-external
           url: https://photos.${cluster_external_domain}
           module: http_sso
@@ -330,10 +289,9 @@ spec:
         - name: homarr-external
           url: https://dashboard.${cluster_external_domain}
           module: http_sso
-        # The public status page — the one target whose whole point is being
-        # reachable WITHOUT a session, so the probe follows the entry-page
-        # redirect to a real 200 (http_sso would bless the 302 alone, masking
-        # a 404 target). RED until the entry status page is set (docs/45).
+        # The public status page, reachable WITHOUT a session, so the probe
+        # follows the entry-page redirect to a real 200 (http_sso would bless
+        # the 302 alone and mask a 404 target).
         - name: uptime-kuma-external
           url: https://status.${cluster_external_domain}
           module: http_2xx
@@ -351,9 +309,11 @@ spec:
         - name: gitlab-webide-external
           url: https://ide.git.${cluster_external_domain}
           module: http_sso
+    # The probe fleet's working set already peaks above 64Mi, so the limit is
+    # the OOM ceiling a pod admitted without the VPA webhook has to fit under.
     resources:
       requests:
         cpu: 25m
         memory: 32Mi
       limits:
-        memory: 64Mi
+        memory: 128Mi

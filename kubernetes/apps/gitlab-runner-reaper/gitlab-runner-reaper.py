@@ -1,14 +1,8 @@
 #!/usr/bin/env python3
 """Delete leaked GitLab Runner executor pods and their per-job dockercfg Secrets.
 
-Mounted into the gitlab-runner-reaper CronJob from the configMapGenerator in this
-directory (kustomize refuses generator sources outside the kustomization root,
-which is why this is not in scripts/; its tests are
-scripts/test_gitlab_runner_reaper.py). Stdlib only — the job runs a bare
-python:3-slim image with no pip step.
-
-What leaks, the guard-by-guard reasoning and the RBAC trade-off:
-docs/13-ci-cd.md § Runner garbage collection.
+Mounted into the gitlab-runner-reaper CronJob by the configMapGenerator here;
+stdlib only. What leaks and the guards: docs/13-ci-cd.md.
 """
 from __future__ import annotations
 
@@ -22,17 +16,15 @@ from datetime import datetime, timezone
 from typing import NamedTuple
 from urllib.parse import urlencode
 
-# Flux substitutes this from the cluster-config ConfigMap when the
-# configMapGenerator output is reconciled, so the raw file (what pytest imports)
-# carries the placeholder, not the domain.
-LABEL = "${cluster_node_label_domain}/runner-class"
-
 API = "https://kubernetes.default.svc"
 SA_DIR = "/var/run/secrets/kubernetes.io/serviceaccount"
 
 
 class Config(NamedTuple):
     namespaces: list[str]
+    # Guard 1: the pod label every executor carries and no manager pod does.
+    # Comes from the CronJob env so this file holds no cluster identity.
+    runner_class_label: str
     max_age_minutes: int
     # Leaked dockercfg Secrets have no termination time, so their clock runs from
     # creationTimestamp; a much longer floor than pods, since no job runs that
@@ -59,8 +51,14 @@ def load_config(env: dict | None = None) -> Config:
     # is indistinguishable from a clean sweep in the Job history.
     if not namespaces:
         raise SystemExit("NAMESPACES is empty — nothing to reap; refusing to run")
+    label = env.get("RUNNER_CLASS_LABEL", "").strip()
+    # Without the label selector every pod in the namespace is a candidate, and
+    # only the name guard would stand between the sweep and a manager pod.
+    if not label:
+        raise SystemExit("RUNNER_CLASS_LABEL is empty; refusing to run")
     cfg = Config(
         namespaces=namespaces,
+        runner_class_label=label,
         max_age_minutes=int(env.get("MAX_AGE_MINUTES", "30")),
         max_secret_age_minutes=int(env.get("MAX_SECRET_AGE_MINUTES", "180")),
         budget_seconds=int(env.get("BUDGET_SECONDS", "90")),
@@ -116,9 +114,7 @@ class KubeApi:
 def _paged(api, path: str, params: dict, page: int):
     """Yield each list response, following the continue token.
 
-    Paged rather than listed whole so a large leaked backlog cannot exhaust the
-    container's memory limit before anything is deleted. urlencode because the
-    label key's '/' and the field selectors' '=' must be encoded.
+    Paged so a large backlog cannot exhaust the container's memory limit.
     """
     params = dict(params, limit=str(page))
     while True:
@@ -130,8 +126,8 @@ def _paged(api, path: str, params: dict, page: int):
         params["continue"] = cont
 
 
-def iter_terminal_pods(api, ns: str, phase: str, page: int):
-    params = {"labelSelector": LABEL, "fieldSelector": f"status.phase={phase}"}
+def iter_terminal_pods(api, ns: str, phase: str, page: int, label: str):
+    params = {"labelSelector": label, "fieldSelector": f"status.phase={phase}"}
     for resp in _paged(api, f"/api/v1/namespaces/{ns}/pods", params, page):
         yield from resp.get("items", [])
 
@@ -145,15 +141,12 @@ def iter_dockercfg_secrets(api, ns: str, page: int):
 
 
 def live_pod_refs(api, ns: str, page: int, over_budget) -> tuple[set, set] | None:
-    """-> (live pod UIDs, secret names referenced via imagePullSecrets), or None.
+    """CRITICAL: -> (live pod UIDs, imagePullSecrets names), or None.
 
-    None means the budget ran out with pages still unread, so the ref set is
-    INCOMPLETE. That set is the only thing standing between reap_secrets and an
-    in-flight job's credentials — a pod missing from it makes its Secret look
-    unreferenced — so a partial one must never feed deletions. The budget is
-    checked only when a continue token says another page is pending: on the last
-    page the set is complete, and abandoning the namespace there would be a
-    pointless skip.
+    None means the budget ran out with pages unread, so the ref set is
+    incomplete and must never feed deletions: a pod missing from it makes an
+    in-flight job's Secret look unreferenced. The budget is checked only while a
+    continue token says another page is pending.
     """
     uids: set[str] = set()
     pull_secrets: set[str] = set()
@@ -173,20 +166,17 @@ def live_pod_refs(api, ns: str, page: int, over_budget) -> tuple[set, set] | Non
 
 
 def parse_ts(ts: str) -> datetime:
-    # K8s RFC3339 ends in 'Z'; fromisoformat needs +00:00.
+    # Normalize the RFC3339 'Z' so this also parses on pre-3.11 interpreters.
     return datetime.fromisoformat(ts.replace("Z", "+00:00"))
 
 
 def terminal_age_minutes(pod: dict, now: datetime) -> int | None:
-    """Age from the NEWEST terminated.finishedAt across init + regular +
-    ephemeral container statuses.
+    """CRITICAL: age from the newest terminated.finishedAt across all statuses.
 
-    A container with no parseable finishedAt KEEPS the pod (None) when it
-    actually started (has a containerID) and is SKIPPED when it never started —
-    a pod that fails in an init container leaves its later containers unstarted,
-    and they must not block reaping. NEVER falls back to
-    startTime/creationTimestamp: those are hours older than completion for a
-    long job, so a freshly-terminal one would be deleted.
+    A container with no parseable finishedAt keeps the pod (None) when it
+    started and is skipped when it never did. There is no fallback to startTime
+    or creationTimestamp: those are hours older than completion for a long job,
+    so a freshly terminal pod would be deleted.
     """
     status = pod.get("status", {})
     statuses = (status.get("initContainerStatuses", [])
@@ -229,12 +219,9 @@ def is_executor_name(name: str) -> bool:
 
 
 def is_runner_secret_name(name: str) -> bool:
-    # Guard 2: the executor's credentials Secret is named from the same
-    # ProjectUniqueName as its pod, so it carries the identical
-    # runner-<id>-project-<n>-concurrent-<n>-<hash> markers. The prefix ALONE is
-    # not enough — a hand-created 'runner-registry' dockercfg Secret in the
-    # namespace would match it and be reaped — so require the executor markers,
-    # exactly as the pod-name guard does.
+    # Guard 2: the executor's credentials Secret carries the same
+    # runner-<id>-project-<n>-concurrent-<n>-<hash> markers as its pod. The
+    # prefix alone would also match a hand-created dockercfg Secret.
     return is_executor_name(name)
 
 
@@ -278,7 +265,7 @@ def reap_pods(api, cfg: Config, ns: str, now: datetime, over_budget, log=print) 
     # terminal phase separately.
     for phase in ("Succeeded", "Failed"):
         try:
-            for pod in iter_terminal_pods(api, ns, phase, cfg.page):
+            for pod in iter_terminal_pods(api, ns, phase, cfg.page, cfg.runner_class_label):
                 if over_budget():
                     log(f"BUDGET {cfg.budget_seconds}s reached; "
                         "leaving remaining pods for the next run", flush=True)
@@ -324,9 +311,8 @@ def reap_secrets(api, cfg: Config, ns: str, now: datetime, over_budget, log=prin
         refs = live_pod_refs(api, ns, cfg.page, over_budget)
         if refs is None:
             # Hard stop, not a partial sweep: with an incomplete live-ref set
-            # guard 3 cannot be evaluated, and every secret it would judge
-            # "unreferenced" might belong to a running job. budget_hit makes
-            # run() log the BUDGET STOP line for this namespace.
+            # guard 3 cannot be evaluated and a secret judged unreferenced may
+            # belong to a running job.
             log(f"BUDGET {cfg.budget_seconds}s reached while listing live pods in {ns}; "
                 "skipping the secret sweep (an incomplete live-pod set could not "
                 "prove a secret unreferenced)", flush=True)
@@ -374,12 +360,8 @@ def rotate_namespaces(namespaces: list[str], now: datetime,
                       period_seconds: int = 900) -> list[str]:
     """Namespaces with the start position advanced one slot per scheduled run.
 
-    A budget stop leaves every namespace after the current one unvisited, so a
-    fixed order starves the tail whenever the head carries a standing backlog.
-    Keying the offset on the wall-clock slot rotates the head by one each run
-    with no persisted state — so period_seconds must equal the CronJob's
-    schedule period (ROTATE_PERIOD_SECONDS in cronjob.yaml, held to the schedule
-    by the test).
+    A budget stop leaves the tail unvisited, so a fixed order starves it.
+    period_seconds must equal ROTATE_PERIOD_SECONDS in cronjob.yaml.
     """
     if not namespaces:
         return namespaces
@@ -408,10 +390,8 @@ def run(api, cfg: Config, now: datetime, over_budget, log=print) -> int:
         if secrets.budget_hit:
             unvisited = order[index:]
             break
-    # A budget stop exits 0, so this line is the ONLY signal that the run was
-    # partial — without it a permanently over-budget reaper looks like a clean
-    # no-op in the logs. Distinguishable prefix so it could be alerted on —
-    # no rule yet (docs/16 § CI/CD).
+    # A budget stop exits 0; this line is the only signal the run was partial.
+    # Alerted by GitlabRunnerReaperPartialSweep (observability/loki/runner-reaper.yaml).
     if unvisited:
         log(f"BUDGET STOP after {cfg.budget_seconds}s; "
             f"not fully reaped this run: {' '.join(unvisited)}", flush=True)

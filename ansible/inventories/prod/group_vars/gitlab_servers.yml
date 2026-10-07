@@ -6,8 +6,7 @@ gitlab_registry_data_dir: "/mnt/gitlab-repos/registry"
 
 # Offsite-eligible landing: the daily backup goes to the per-app
 # tank/backups/apps NFS export (TLS, by hostname so the wildcard cert verifies)
-# so it rides archsync into restic B2 — docs/42. The whole-VM vzdump image stays
-# the local bare-metal DR path.
+# so it rides archsync into restic B2. The vzdump image stays the DR path.
 gitlab_backup_nfs_enabled: true
 gitlab_backup_nfs_server: "pve-nas-01.{{ internal_domain }}"
 gitlab_backup_nfs_export: "/backups-apps/gitlab"
@@ -27,11 +26,9 @@ gitlab_saml_admin_groups:
 # smtp-relay over SASL+TLS, loopback-only); the relay host, credentials and
 # aliases are defined in all.yml.
 
-# Role default (loopback + LAN /24) PLUS the k3s pod CIDR: the verify probes run
-# in runner pods, and on a node hosting a Traefik replica the connection
-# short-circuits in-cluster (externalTrafficPolicy: Local preserves the pod IP),
-# so GitLab sees 10.42.x. Exposure ceiling is unauthenticated /-/metrics to
-# in-cluster pods — accepted.
+# Role default is loopback only; the LAN /24 and the k3s pod CIDR are site
+# additions (a verify probe from a runner pod on a Traefik node arrives as
+# 10.42.x). Ceiling: unauthenticated /-/metrics to the LAN and in-cluster pods.
 gitlab_monitoring_whitelist:
   - 127.0.0.1
   - 10.0.10.0/24
@@ -56,12 +53,9 @@ gitlab_pages_external_url: "https://pages.git.{{ external_domain }}"
 # browser same-origin policy isolates extension code from the session cookie
 # (CVE-2026-5816). Bare parent hostname, no wildcard.
 gitlab_web_ide_extension_host_domain: "ide.git.{{ external_domain }}"
-# Instance-ADMIN api token — the Web IDE block PUTs /application/settings, which
-# is admin-only. Read from GITLAB_ADMIN_API_TOKEN, deliberately NOT
-# GITLAB_API_TOKEN: that name is a project-level masked CI variable (the
-# version-check comment token, weisssrv-bot/Reporter) and project CI/CD variables
-# outrank a job's variables: block, so a job-level GITLAB_API_TOKEN op:// ref is
-# silently shadowed by the project token and the deploy 403s. See docs/27.
+# Instance-ADMIN api token: the Web IDE block PUTs /application/settings. Read
+# from GITLAB_ADMIN_API_TOKEN, NOT GITLAB_API_TOKEN - that name is a project
+# CI/CD variable, which outranks a job's and silently 403s the deploy (docs/27).
 gitlab_api_token: >-
   {{ lookup('ansible.builtin.env', 'GITLAB_ADMIN_API_TOKEN')
      or undef(hint='GITLAB_ADMIN_API_TOKEN env var must be set (run via the task wrapper / op run)') }}
@@ -84,17 +78,17 @@ gitlab_saml_idp_cert_fingerprint: >-
      or undef(hint='GITLAB_SAML_CERT_FINGERPRINT env var must be set (run via the task wrapper / op run)') }}
 gitlab_saml_idp_sso_url: "https://auth.{{ external_domain }}/application/saml/git/sso/binding/redirect/"
 
-# X-Forwarded-For is trusted from the LAN and both cluster CIDRs (Traefik pods
-# proxy the web UI).
-gitlab_nginx_real_ip_trusted_addresses:
-  - 10.0.10.0/24
-  - 10.42.0.0/16
-  - 10.43.0.0/16
+# X-Forwarded-For is trusted from the k3s nodes running Traefik plus both
+# cluster CIDRs, derived from the inventory so no other LAN host can forge a
+# client address (GitLab rate-limits, bans and audits by it).
+gitlab_nginx_real_ip_trusted_addresses: >-
+  {{ (groups['k3s_servers'] + groups['k3s_agents'])
+     | map('extract', hostvars, 'ansible_host') | select('defined') | list
+     + ['10.42.0.0/16', '10.43.0.0/16'] }}
 
 # gitlab_ssh_port (2222) is WAN-facing and REDIRECTs to the system sshd, so
-# without this every local account would accept internet pubkey attempts.
-# The admin patterns track proxmox_firewall_admin_lan_cidrs: the homelab LAN
-# plus the /29 admin-device block on the Home VLAN, never the whole VLAN.
+# without this every local account would accept internet pubkey attempts. The
+# admin patterns track proxmox_firewall_admin_lan_cidrs, never the whole VLAN.
 gitlab_ssh_allowusers_enabled: true
 gitlab_ssh_allowed_users:
   - git
@@ -106,3 +100,9 @@ gitlab_ssh_allowed_users:
 # (Omnibus binds it to localhost by default). Unauthenticated — scoped by
 # sg-gitlab's :9187 rule to k3s_nodes.
 gitlab_postgres_exporter_listen_address: "0.0.0.0:9187"
+
+# kube-prometheus-stack scrapes the guest and Alertmanager runs in the
+# observability namespace, so Omnibus's bundled pair is pure overhead.
+# `prometheus_monitoring['enable']` stays true, so /-/metrics is unaffected.
+gitlab_bundled_prometheus_enabled: false
+gitlab_bundled_alertmanager_enabled: false

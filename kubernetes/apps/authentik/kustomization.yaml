@@ -17,3 +17,4 @@ resources:
 
 components:
   - ../../components/netpol-baseline
+  - ../../components/netpol-egress-dns

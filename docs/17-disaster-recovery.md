@@ -18,44 +18,18 @@ its own procedure: see **[docs/44-storage-bootstrap.md](44-storage-bootstrap.md)
 Run it after the ZFS pools exist (docs/06) and before the k3s and Flux tracks
 below.
 
-## Storage Safety Guarantees
+## Storage safety
 
-The storage management in this infrastructure is designed to be non-destructive:
+Ansible storage tasks set ZFS properties, create zvols, mount filesystems, and
+configure services (NFS exports, Samba shares, SMART and backup jobs). They
+never create or destroy pools, never destroy datasets, never format a disk and
+never delete data; `task storage:deploy` and the `nas_storage` role fail loudly
+when an expected resource is absent rather than creating it.
 
-**What storage tasks will NOT do:**
-- Create or destroy ZFS pools
-- Create or destroy ZFS datasets
-- Format any disks
-- Delete any files
-- Overwrite existing data
-
-**What storage tasks WILL do:**
-- Set ZFS dataset properties (metadata only - compression, mountpoint, etc.)
-- Mount existing filesystems (MergerFS, NFS bind mounts)
-- Configure services (NFS exports, Samba shares)
-- Install and configure monitoring (SMART, backup jobs)
-
-### Safe vs Destructive Operations
-
-**Safe Operations** (automated via Ansible):
-- Setting ZFS properties (compression, atime, recordsize)
-- Creating mount points and bind mounts
-- Configuring NFS exports and Samba shares
-- Moving data between tiers (media mover)
-- Creating backups
-
-**Destructive Operations** (require manual intervention):
-- Creating ZFS pools (must be done manually)
-- Destroying ZFS datasets
-- Formatting disks
-- Deleting data permanently
-
-The *regular* storage tasks (`task storage:deploy` / the `nas_storage`
-role) are idempotent and fail safely if expected resources don't exist
-rather than creating them. The *bootstrap* flow
-([docs/44](44-storage-bootstrap.md)) is the deliberate exception: it creates
-missing datasets and directories, but only interactively and after an explicit
-confirmation step — pools are never created by either path.
+Pools are created by hand ([docs/06](06-zfs.md)). The one exception is the
+bootstrap flow ([docs/44](44-storage-bootstrap.md)), which creates missing
+datasets and directories interactively after an explicit confirmation — it still
+never creates a pool.
 
 ## Accepted Risk: NAS-Concentrated State
 
@@ -102,7 +76,7 @@ documented fallback.
 ## Accepted Risk: Network Fabric SPOF
 
 The network fabric is a single point of failure the rest of this analysis
-otherwise omits, and the UniFi migration ([docs/46](46-unifi-network.md)) did not
+otherwise omits, and the UniFi migration ([docs/48](48-unifi-audit-and-migration.md)) did not
 remove it — it segmented the estate without adding redundancy. Both legs of every
 active-backup bond plug into **one switch** (now the USW-Pro-XG-8-PoE; see
 [docs/34-bond-mac-flapping.md](34-bond-mac-flapping.md)), and there is **one
@@ -119,8 +93,8 @@ Segmentation adds one wrinkle — pve-nas-01 now reaches VLAN 10 through a tagge
 sub-interface over the Connection A run, so that run is a SPOF for the NAS
 specifically. This is inherent to a homelab budget. **A second switch + a second
 corosync ring on a separate NIC/VLAN is a tracked roadmap item that needs a user
-decision** — see [docs/16-next-steps.md](16-next-steps.md) ("Network-fabric
-SPOF: second switch + corosync ring").
+decision** — see [docs/16-next-steps.md](16-next-steps.md) § Accepted risks
+("Network fabric is a single point of failure").
 
 ## What vzdump does and does not cover
 
@@ -129,11 +103,14 @@ actually holds. Both matter when you are deciding whether `qmrestore` is a
 legitimate recovery path.
 
 **1. App-data zvols are excluded (`vzdump_backup: false` in `hosts.yml`).** The
-Authentik/Mealie PostgreSQL, Prometheus, Loki, GitLab-repo and Nextcloud/Immich
-zvols, plus the Plex `/config` LXC bind mount (`mp0` → `/mnt/ssd/appdata/plex`,
-`backup=0`), are backed up by `archive-backupctl` (`ssd/appdata` → `archive`,
-raw ZFS). Without the exclusion they would be captured twice. **`archive-backupctl`
-is their sole backup path.** The bulk media zvols
+Authentik/Mealie PostgreSQL, GitLab-repo and Nextcloud/Immich zvols, plus the
+Plex `/config` LXC bind mount (`mp0` → `/mnt/ssd/appdata/plex`, `backup=0`), are
+backed up by `archive-backupctl` (`ssd/appdata` → `archive`, raw ZFS). Without
+the exclusion they would be captured twice. **`archive-backupctl` is their sole
+backup path.** The `prometheus` and `loki` children are dropped from that send as
+well (`nas_storage_archive_backup_exclude`), so **both TSDB zvols have no backup
+tier beyond same-pool snapshots** — see [docs/06](06-zfs.md) § Datasets. The bulk
+media zvols
 (`tank/{nextcloud,immich}-data`) likewise carry `backup=0` and ride their own
 `tank/…-data → archive` replication.
 
@@ -181,7 +158,8 @@ flood).
 **The two things that must survive outside the house:**
 
 1. **The IaC itself.** GitLab (`git.esweiss.com`) hosts the canonical repos AND
-   the Terraform HTTP state backends for `terraform/{cloudflare,tailscale,authentik}`.
+   the Terraform HTTP state backends for all four roots,
+   `terraform/{cloudflare,tailscale,authentik,unifi}`.
    Its nightly tarball reaches B2 — but you cannot read B2 without the repo's
    tooling, so the bootstrap copy is the **read-only GitHub mirror**
    (`github.com/ericsweiss/weisssrv`). `weisssrv-lib` and both templates are
@@ -193,9 +171,10 @@ flood).
    ansible-galaxy install -r <(sed 's#git.ericsweiss.com/eric#github.com/ericsweiss#' ansible/requirements.yml)
    ```
 
-   What the mirrors do **not** carry: issues/MRs, the container registry, and
-   Terraform state. Those come back from the GitLab tarball once GitLab itself is
-   running.
+   What the mirrors do **not** carry: issues/MRs and Terraform state, which come
+   back from the GitLab tarball once GitLab itself is running; and the container
+   registry, which is in **neither** the tarball nor B2 — see
+   [docs/27](27-gitlab-deployment.md) § Backups.
 2. **The credentials.** The 1Password vault (survives independently) plus an
    **offline** copy of `restic_repo_password` — without it the entire B2 repo is
    an inert blob (`docs/15-credential-rotation.md`).
@@ -204,14 +183,15 @@ flood).
 
 | # | Step | Depends on | Rough RTO |
 |---|---|---|---|
+| 0 | Get a working LAN back: adopt the replacement UniFi console and configure enough by hand (WAN, one VLAN, DHCP, DNS) to route and resolve. Everything below assumes the network is up; the codified network comes back in step 8. There is no offsite copy of the console's `.unf` today ([docs/16](16-next-steps.md) § UniFi network follow-ups), so this is hand work | hardware | 1–2 h |
 | 1 | Install Proxmox on the replacement hosts, restore `/etc/pve` from the `pve-cluster` archive once B2 is readable (or rebuild the cluster and re-add nodes) | hardware | 2–4 h |
 | 2 | Clone the IaC from the **GitHub mirror**; sign in to 1Password; restore the offline `restic_repo_password` | GitHub + 1Password | 15 min |
 | 3 | Create the ZFS pools by hand (never automated — docs/06), then run the [storage bootstrap](44-storage-bootstrap.md). **`nvme` lives on partition 4 of the Proxmox boot disk you installed in step 1** — create it against `...-part4`, never the whole device | 1, 2 | 1–2 h |
-| 4 | Restore from B2: `restic-offsitectl restore <source>` for `backups`, `share`, `appdata`, `k3s-etcd`, and the two data zvol trees. `restic-offsitectl` is role-shipped, so before step 3 has run it does not exist — the fallback is raw `restic -r rclone:b2:weisssrv-backup/restic restore` with the offline repo password | 3 | hours–days (data-volume bound; 621 GB raw at review time) |
+| 4 | Restore from B2: `restic-offsitectl restore <source>` for every name in `restic_offsite_sources` + `restic_offsite_zvol_sources` (`ansible/inventories/prod/host_vars/pve-nas-01.yml`) — today `backups`, `backups-apps` (the logical dumps), `share`, `appdata`, `databases`, `k3s-etcd` and the two data zvol trees. `restic-offsitectl` is role-shipped, so before step 3 has run it does not exist — the fallback is raw `restic -r rclone:b2:weisssrv-backup/restic restore` with the offline repo password | 3 | hours–days (data-volume bound; 621 GB raw at review time) |
 | 5 | Rebuild the k3s VMs + cluster (`task k3s:deploy`), restoring etcd from the off-node snapshot if a same-identity cluster is wanted. **Never `qmrestore` a k3s guest** — no image exists, and a stale server image corrupts etcd quorum | 3, 4 | 1–2 h |
 | 6 | Bootstrap Flux + ESO (the two manual secrets — `docs/29-flux-operations.md`), let Flux reconcile everything in `kubernetes/` | 5 | 30–60 min |
-| 7 | Rebuild the VM/LXC apps via their playbooks, then replay logical dumps from the restored `backups/apps/<app>` (`gitlab-backup restore`, `pg_restore`, HAOS tar import — the HA tars need `backup_encryption_key`) | 4, 6 | 2–4 h |
-| 8 | Re-point DNS: `terraform/cloudflare` state is inside the restored GitLab, so restore GitLab (step 7) **before** any terraform apply | 7 | 30 min |
+| 7 | Rebuild the VM/LXC apps via their playbooks, then replay logical dumps from the restored `backups-apps` source (`gitlab-backup restore`, `pg_restore`, HAOS tar import — the HA tars need `backup_encryption_key`); the container registry is in no offsite tier, so re-push images from `docker/` and the weisssrv-lib CI images | 4, 6 | 2–4 h |
+| 8 | Re-apply `terraform/cloudflare` (DNS) and `terraform/unifi` (VLANs, zone firewall, DHCP reservations, the `:32400` forward), replacing step 0's hand configuration. Both roots keep their state inside the restored GitLab, so restore GitLab (step 7) **before** any terraform apply | 7 | 30–60 min |
 
 Bare-metal guest images are deliberately **not** in B2 (vzdump is local +
 archive only), so step 7 is "reprovision via Ansible, then restore data" — not
@@ -219,19 +199,27 @@ archive only), so step 7 is "reprovision via Ansible, then restore data" — not
 the reason the GitHub mirror is a hard dependency rather than a convenience.
 
 **Nothing above is proven until it is drilled** — see docs/42 § "Restore drills".
+The cadence is quarterly and `BackupRestoreDrillStale` pages critical at 100
+days; the Restore Drill Age tile on the backup-nightly-jobs dashboard turns red
+at the same number. Each drill must prove at least 4 of the 5 restic sources
+(`restic_offsite_restore_drill_min_sources` in `host_vars/pve-nas-01.yml`), so a
+drill that narrows to one source fails instead of passing.
 
 ## GitLab project state that is not in git
 
-A GitLab project restore brings back the repos, issues, MRs and registry from
-the nightly tarball, but a handful of project settings live only in the API and
-come back at their DEFAULTS. Re-apply them after step 7 above.
+A GitLab project restore brings back the repos, issues and MRs from the nightly
+tarball — not the container registry or CI artifacts
+([docs/27](27-gitlab-deployment.md) § Backups) — but a handful of project
+settings live only in the API and come back at their DEFAULTS. Re-apply them
+after step 7 above.
 
 **Resource-group process modes.** `.gitlab-ci.yml` declares the resource groups
 (the per-target `deploy-*` set plus `infrastructure-maintenance`), but a group's
 `process_mode` is an API-only setting and a restore resets every group to
 `unordered` — which lets queued deploys and maintenance ops execute out of
 submission order, breaking the merge ordering the `workflow:` comment relies on.
-Every group must be `oldest_first`. Verify and re-apply:
+Every group must be `oldest_first`, `version-bump-bot` included. Verify and
+re-apply:
 
 ```bash
 glab api projects/eric%2Fweisssrv/resource_groups
@@ -254,58 +242,72 @@ loaded key, so any restored dataset needs `zfs load-key` before it can be read
 ### From the archive (`archive-backupctl`)
 
 `archive-backupctl` is the restore tool for every directly-replicated dataset.
-Import the pool first if it is detached (`archive-backupctl plug`), then:
+Import the pool first if it is detached (`archive-backupctl plug`). Targets are
+`share`, `backups`, `nextcloud-data`, `proxmox`, `immich-data`, `appdata`,
+`databases`, `k3s-etcd`, or `all`.
+
+#### Safe restore to a clone (default)
+
+The default restores the latest snapshot into a new dataset
+`<target>-restore-<timestamp>`, mounted under `/mnt/restore/<target>/<ts>/`, and
+leaves the live dataset untouched. The clone is received onto the SOURCE pool
+(`tank` or `ssd`), so the space cost lands there rather than on the archive —
+check `zfs list -o avail <pool>` first for large targets. The tool resets the
+received lockdown props (mountpoint, readonly) and attempts the mount itself;
+encrypted trees still need the unlock below.
 
 ```bash
-# SAFE (default): restore the latest snapshot into a NEW dataset
-#   <source>-restore-<timestamp>, mounted under /mnt/restore/<target>/<ts>/.
-# Non-destructive — the live dataset is untouched. The restore is received onto
-# the SOURCE pool (tank/ssd), so the space cost lands there, not on the archive;
-# check `zfs list -o avail <pool>` first for large targets. The tool resets the
-# received lockdown props (mountpoint, readonly) and attempts the mount itself;
-# encrypted (key-less) trees still need the load-key + mount steps below.
-sudo archive-backupctl restore <target>   # share|backups|nextcloud-data|proxmox|
-                                          # immich-data|appdata|databases|
-                                          # k3s-etcd|all
+sudo archive-backupctl restore <target>
+```
 
-# The restored clone is raw + encrypted (key-less). These pools use multiple
-# SIBLING encryption roots that share one passphrase (Model B, docs/32) — NOT one
-# nested root: a bare `zfs load-key -r` reads the passphrase once, unlocks the
-# first root, and fails the rest. `-L prompt` re-prompts per root (this is exactly
-# what the tool prints; the per-root loop in docs/32 is the scriptable form):
-sudo zfs load-key -r -L prompt <pool>/<target>-restore-<timestamp>   # e.g.
-                                                          # ssd/appdata-restore-<ts>
-sudo zfs mount -r <pool>/<target>-restore-<timestamp>     # scoped to the restore
-                     # tree (under /mnt/restore/<target>/<ts>/). Mounts the restored
-                     # *filesystem* children only — the app-DB ZVOLS (authentik/
-                     # postgres, prometheus/data, loki/data, gitlab/repos) are block
-                     # devices: after load-key they appear under /dev/zvol/<pool>/
-                     # ...-restore-<ts>/..., restore them per "App-data zvols" below.
+#### Unlock and verify the clone
 
-# VERIFY before trusting the restore — a key-less `zfs mount` silently mounts
-# nothing. No row may read `unavailable` (snapshots/unencrypted read `-`):
+The clone is raw and encrypted, so it carries no loaded key. These pools use
+multiple SIBLING encryption roots sharing one passphrase (Model B,
+[docs/32](32-zfs-encryption.md)), not one nested root: a bare `zfs load-key -r`
+reads the passphrase once, unlocks the first root and fails the rest. `-L prompt`
+re-prompts per root, which is what the tool itself prints; the scriptable
+per-root loop is in docs/32.
+
+`zfs mount -r` mounts the restored *filesystem* children only. The app-DB zvols
+(authentik/postgres, prometheus/data, loki/data, gitlab/repos) are block devices:
+after load-key they appear under `/dev/zvol/<pool>/<target>-restore-<ts>/...` and
+are restored per § App-data zvols below.
+
+Verify before trusting the restore — a key-less `zfs mount` silently mounts
+nothing. No row may read `unavailable`; snapshots and unencrypted datasets read
+`-`.
+
+```bash
+sudo zfs load-key -r -L prompt <pool>/<target>-restore-<timestamp>
+sudo zfs mount -r <pool>/<target>-restore-<timestamp>
+
 sudo zfs get -H -o value -r keystatus <pool>/<target>-restore-<timestamp> \
   | grep -qx unavailable && echo "STILL LOCKED — load-key per root before reading"
-
-# DESTRUCTIVE in-place restore (`zfs receive -u -F` over the LIVE dataset). The
-# tool does NOT stop consumers, and `receive -F` cannot roll back a dataset whose
-# zvol children are held open by a running guest — it fails "dataset is busy", or
-# corrupts the live volume if forced through. QUIESCE EVERY WRITER FIRST:
-#   1. Stop the guest(s) holding the dataset. For ssd/appdata that is the
-#      k3s-agt-nas-01 VM (vmid 202: authentik/mealie postgres, prometheus, loki),
-#      the GitLab VM (vmid 153: gitlab/repos), the Nextcloud VM (vmid 156:
-#      nextcloud app/postgres), AND the Immich VM (vmid 157: immich app/postgres)
-#      — a recursive restore over ssd/appdata touches ALL of them. `qm stop <vmid>`
-#      releases the passthrough zvol; scaling the k8s pod to 0 does NOT (the VM,
-#      not the pod, holds it).
-#      For tank/{share,proxmox}: stop/unexport the NFS consumers.
-#   2. Confirm nothing holds the zvol nodes (zfs holds lists snapshot holds, not
-#      open devices): sudo fuser -v /dev/zvol/ssd/appdata/*/*   # expect no holders
-#   3. sudo archive-backupctl restore-force <target>
-#   4. Load the key + confirm the data reads (DB starts, files present) BEFORE
-#      restarting consumers (`qm start`/`pct start`, re-enable exports).
-sudo archive-backupctl restore-force <target>
 ```
+
+#### Destructive in-place restore (`restore-force`)
+
+> **Quiesce every writer first.** `zfs receive -u -F` cannot roll back a dataset
+> whose zvol children are held open by a running guest: it fails `dataset is
+> busy`, or corrupts the live volume if forced through. The tool does not stop
+> consumers.
+
+`appdata` is not a valid `restore-force` target — the recursive `receive -F`
+destroys the excluded `prometheus` and `loki` zvols. See § App-data zvols below.
+
+| Dataset | Held by | Release with |
+|---|---|---|
+| `ssd/appdata` | k3s-agt-nas-01 VM 202 (authentik/mealie postgres, prometheus, loki), GitLab VM 153 (gitlab/repos), Nextcloud VM 156, Immich VM 157 — a recursive restore over `ssd/appdata` touches all four | `qm stop <vmid>`. Scaling the k8s pod to 0 does NOT release it: the VM holds the zvol, not the pod |
+| `tank/share`, `tank/proxmox` | NFS consumers | stop them, or unexport |
+
+1. Stop the guests holding the dataset.
+2. Confirm nothing holds the zvol nodes — `zfs holds` lists snapshot holds, not
+   open devices, so use `fuser`: `sudo fuser -v /dev/zvol/ssd/appdata/*/*`
+   (expect no holders).
+3. Run the restore: `sudo archive-backupctl restore-force <target>`.
+4. Load the key and confirm the data reads (DB starts, files present) BEFORE
+   `qm start` / `pct start` and re-enabling exports.
 
 After a force restore the tool automatically resets the lockdown props the
 stream carries from the archive (mountpoint back to `/mnt/<pool>/<dataset>`,
@@ -316,28 +318,36 @@ deploy afterwards to re-assert the full `host_vars` property set.
 Never `zfs load-key` + mount an `archive/<dataset>` in place — it dirties the raw
 incremental chain and forces a full re-seed (docs/32). Always restore to a clone.
 
-### App-data zvols (Postgres, Prometheus, Loki, GitLab repos, Nextcloud/Immich)
+### App-data zvols (Postgres, GitLab repos, Nextcloud/Immich)
 
-These live on `ssd/appdata` and — since the vzdump dedup (`backup=0`) — are **no
-longer in the VM/CT vzdumps**; `archive/appdata` is now their sole backup. Restore
-them from the archive, not from a VM image:
+The `authentik`, `mealie`, `gitlab`, `nextcloud` and `immich` children of
+`ssd/appdata` are excluded from the VM/CT vzdumps (`vzdump_backup: false`), so
+`archive/appdata` is their sole backup. Restore them from the archive, not from a
+VM image. `ssd/appdata/prometheus` and `ssd/appdata/loki` are not in
+`archive/appdata` at all, so there is nothing to restore for either TSDB.
+
+The zvol you need is e.g. `ssd/appdata-restore-<ts>/authentik/postgres`. These
+zvols are PASSTHROUGH block devices on the k3s-agt-nas-01 VM (vmid 202): the
+in-guest pod is not the holder, the VM is. Stopping the VM to release the device
+also takes mealie postgres and both TSDBs offline.
 
 ```bash
 sudo archive-backupctl restore appdata                  # -> ssd/appdata-restore-<ts>
 sudo zfs load-key -r -L prompt ssd/appdata-restore-<ts> # per-root prompt (Model B)
-# The zvol you need is e.g. ssd/appdata-restore-<ts>/prometheus/data. These zvols
-# are PASSTHROUGH block devices on the k3s-agt-nas-01 VM (vmid 202) — the in-guest
-# pod is NOT the holder, the VM is. Stop the VM to release the device (this also
-# takes authentik/mealie postgres + loki offline); then send the snapshot back:
 sudo qm stop 202                                        # on pve-nas-01
-sudo fuser -v /dev/zvol/ssd/appdata/prometheus/data     # confirm free (host side)
-sudo zfs send ssd/appdata-restore-<ts>/prometheus/data@<snap> \
-  | sudo zfs receive -F ssd/appdata/prometheus/data
+sudo fuser -v /dev/zvol/ssd/appdata/authentik/postgres  # confirm free (host side)
+sudo zfs send ssd/appdata-restore-<ts>/authentik/postgres@<snap> \
+  | sudo zfs receive -F ssd/appdata/authentik/postgres
 sudo qm start 202                                       # bring the node back, verify
-# (`restore-force appdata` does the same `receive -F` recursively over the WHOLE
-#  ssd/appdata tree — every zvol held by vmids 202, 153, 156, AND 157 — so stop
-#  ALL of them first, not just 202, per the destructive-restore quiesce steps above.)
 ```
+
+> **CRITICAL — do not use `restore-force appdata`.** It replays the whole
+> archive-side tree through one recursive `receive -F`, and because `prometheus`
+> and `loki` are missing from the send, that receive DESTROYS
+> `ssd/appdata/prometheus` and `ssd/appdata/loki` on the live pool. Use
+> `archive-backupctl restore appdata` into `ssd/appdata-restore-<ts>`, then a
+> per-dataset `zfs send | zfs receive` of only the dataset you are recovering, as
+> above. The zvols it would destroy are held by vmids 202, 153, 156 and 157.
 
 The zvol re-attaches to its VM via the `proxmox_vm` role's `vm_additional_disks`
 on the next deploy (it carries `vzdump_backup: false`, so it stays out of vzdump).
@@ -347,19 +357,25 @@ on the next deploy (it carries `vzdump_backup: false`, so it stays out of vzdump
 Every VM/CT OS disk is in the nightly `vzdump` on `tank/proxmox` (live, decrypted
 on pve-nas-01) and replicated to `archive/proxmox` (raw/encrypted).
 
+> **`--force` destroys the existing guest.** If `<vmid>`/`<ctid>` still exists,
+> `qmrestore` and `pct restore` refuse unless you add `--force` or pick a fresh,
+> unused id. `--force` first destroys the existing guest config and its OS/root
+> volume, then restores. Prefer a fresh id. The app-data passthrough zvols (raw
+> `/dev/zvol` paths, `vzdump_backup: false`) and Plex's bind mount are not
+> Proxmox-managed, so `--force` only drops their config reference — re-attached
+> on the next deploy, the underlying data untouched.
+
+Normal case, from the live `tank/proxmox` copy (or the Proxmox UI):
+
 ```bash
-# Normal case — from the live tank/proxmox copy (Proxmox UI, or):
-# NOTE: if <vmid>/<ctid> still exists, qmrestore/pct restore REFUSE unless you add
-#   --force (or pick a fresh, unused id). --force first DESTROYS the existing guest
-#   config + its OS/root volume, then restores. The app-data passthrough zvols (raw
-#   /dev/zvol paths, backup=0) and Plex's bind mount are NOT Proxmox-managed, so
-#   --force only drops their config reference (re-attached on next deploy) — the
-#   underlying data is untouched. Prefer a fresh id to avoid touching the live guest.
 sudo qmrestore /mnt/tank/proxmox/dump/vzdump-qemu-<vmid>-<ts>.vma.zst <vmid> --storage <pool>
 sudo pct restore <ctid> /mnt/tank/proxmox/dump/vzdump-lxc-<ctid>-<ts>.tar.zst --storage <pool>
+```
 
-# If only the archive copy survives, restore it, load the key + mount, then
-# restore the guest from the dump dir on the restored dataset:
+If only the archive copy survives, restore it, load the key and mount, then
+restore the guest from the dump dir on the restored dataset:
+
+```bash
 sudo archive-backupctl restore proxmox           # -> tank/proxmox-restore-<ts>,
                                                  #    mounted at /mnt/restore/proxmox/<ts>/
 sudo zfs load-key -r -L prompt tank/proxmox-restore-<ts>
@@ -390,7 +406,10 @@ restic snapshots                      # find the snapshot to restore
 restic-offsitectl verify              # (optional) restic check integrity first
 
 # Whole-source restore (default target /mnt/restore/restic/<name>/<ts>):
-#   names: backups | share | appdata | databases | k3s-etcd | immich-data | nextcloud-data
+#   names: backups | backups-apps | share | appdata | databases | k3s-etcd |
+#          immich-data | nextcloud-data
+#   (source of truth: restic_offsite_sources / restic_offsite_zvol_sources in
+#    ansible/inventories/prod/host_vars/pve-nas-01.yml)
 sudo restic-offsitectl restore appdata
 
 # Ad-hoc single-path restore:
@@ -402,9 +421,14 @@ restic restore latest --target /mnt/restore/immich --include /run/restic-offsite
 ```
 
 restic restores are **already decrypted** (restic holds the repo key) — unlike
-the archive `zfs send -w` path, no `zfs load-key` is needed. Logical DB dumps
-land under `.../backups/apps/<app>` in the restored `backups` tree; replay them
-with the app's normal restore (`pg_restore`, `gitlab-backup restore`, etc.).
+the archive `zfs send -w` path, no `zfs load-key` is needed.
+
+Logical DB dumps are their **own** source: `sudo restic-offsitectl restore
+backups-apps` puts them at
+`/mnt/restore/restic/backups-apps/<ts>/mnt/restic-src/backups-apps/<app>`.
+`tank/backups/apps` is a child dataset, so the `apps/` directory inside a
+`backups` restore is empty by design. Replay with the app's normal restore
+(`pg_restore`, `gitlab-backup restore`, HAOS tar import).
 
 ### Other backup types
 
@@ -413,7 +437,9 @@ with the app's normal restore (`pg_restore`, `gitlab-backup restore`, etc.).
   `/mnt/backups-offsite` (= `tank/backups/apps/gitlab`), so it now rides the
   archsync file walk into B2 (docs/42) instead of only the whole-VM vzdump image.
   Restore with `gitlab-backup restore` (`docs/27-gitlab-deployment.md`); the
-  whole-VM vzdump image remains the bare-metal DR path.
+  whole-VM vzdump image remains the bare-metal DR path — but not for the
+  registry: the `gitlab-repos` zvol carries `vzdump_backup: false` (hosts.yml),
+  so a vzdump restore returns an empty blob store.
 - **Grafana** — the SQLite DB (`grafana.db`) lives on the NFS export
   `/appdata/grafana`, a bind of `ssd/appdata`, so it rides the `ssd/appdata →
   archive/appdata` replication (it is a *file*, not a zvol — the send-back above
@@ -432,7 +458,10 @@ with the app's normal restore (`pg_restore`, `gitlab-backup restore`, etc.).
   rides `tank/backups → archive` **and** the restic B2 offsite walk (docs/42);
   staleness alerts `AuthentikBackupStale` / `MealieBackupStale`. The Postgres
   zvols themselves ride `ssd/appdata → archive` (crash-consistent); prefer the
-  logical dump for restores.
+  logical dump for restores. After an Authentik restore, re-create the
+  admin-flow MFA validation stage binding in the Authentik UI (Stages → MFA
+  validation): flows and stages are outside `terraform/authentik`, so a rebuild
+  comes up without it.
 - **Nextcloud** — the nightly `pg_dump` lands under `tank/backups/apps/nextcloud`
   (rides `tank/backups → archive` + restic B2); the app/postgres zvols ride
   `ssd/appdata → archive`, and the bulk library on `tank/nextcloud-data` has its
@@ -477,9 +506,19 @@ with the app's normal restore (`pg_restore`, `gitlab-backup restore`, etc.).
 
 k3s's built-in scheduled snapshots are active on every server node
 (12-hour cadence, retention 5, `/var/lib/rancher/k3s/server/db/snapshots/`),
-plus `task k3s:backup` for on-demand ones. Restore procedure: `k3s server
---cluster-reset --cluster-reset-restore-path=<snapshot>` on one server, then
-rejoin the others.
+plus `task k3s:backup` for on-demand ones.
+
+**Restore procedure — all three servers, in order:**
+
+1. `sudo systemctl stop k3s` on every server.
+2. On one server:
+   `sudo k3s server --cluster-reset --cluster-reset-restore-path=/var/lib/rancher/k3s/server/db/snapshots/<snapshot>`,
+   then `sudo systemctl start k3s` and wait for it to report Ready.
+3. On each other server: `sudo rm -rf /var/lib/rancher/k3s/server/db/etcd` and
+   `sudo systemctl start k3s`, so it rejoins the reset member.
+
+Skipping step 3 leaves a divergent control plane: the reset node is a
+single-member cluster while the others still hold their own etcd data.
 
 **Off-node copy — enabled.** Snapshots live on the server-node disks; losing all
 three servers (or the Proxmox hosts under them) would otherwise lose etcd — the
@@ -561,7 +600,7 @@ workloads. MetalLB, Traefik, and all other platform components are deployed by
 Flux in the next step.
 
 The previous etcd snapshot (if available) contained a snapshot of every
-Secret value at snapshot time — but restoring from etcd is uncommon in our
+Secret value at snapshot time — but restoring from etcd is uncommon in this
 topology. The canonical "restore" path is: reinstall k3s fresh → bootstrap
 Flux → let ESO re-sync every Secret from 1Password. The only state NOT in
 git is the ZFS zvols that back Postgres (Authentik, Mealie) and the GitLab

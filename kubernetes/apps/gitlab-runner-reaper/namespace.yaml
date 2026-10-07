@@ -1,10 +1,7 @@
 ---
-# Dedicated namespace for the GitLab Runner leaked-pod reaper CronJob.
-# A dedicated namespace (rather than living inside either runner's dir) is
-# required because the reaper must span BOTH runner namespaces
-# (gitlab-runner-privileged + gitlab-runner). PSA restricted is satisfied — the
-# reaper pod is runAsNonRoot/65534, drops ALL caps, readOnlyRootFilesystem,
-# seccomp RuntimeDefault.
+# Dedicated namespace for the GitLab Runner leaked-pod reaper CronJob, which
+# spans both the gitlab-runner-privileged and gitlab-runner namespaces.
+# The reaper pod satisfies PSA restricted.
 apiVersion: v1
 kind: Namespace
 metadata:

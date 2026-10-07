@@ -8,8 +8,10 @@ resources:
   - externalsecret.yaml
   - deployment.yaml
   - service.yaml
+  - servicemonitor.yaml
   - networkpolicy.yaml
   - vpa.yaml
 
 components:
   - ../../components/netpol-baseline
+  - ../../components/netpol-egress-dns

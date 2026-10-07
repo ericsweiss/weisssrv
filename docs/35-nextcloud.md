@@ -61,7 +61,7 @@ Three ZFS zvol passthrough disks (created by `proxmox_vm`, mounted by
 
 | Mount | zvol | Size | scsi | Contents | Encrypted (root) | Backup |
 |---|---|---|---|---|---|---|
-| `/mnt/nextcloud-app` | `ssd/appdata/nextcloud/app` | 20G | 1 | compose dir, html/config, nightly pg_dump | Yes (`ssd/appdata`) | archive (raw) + pg_dump; vzdump-excluded |
+| `/mnt/nextcloud-app` | `ssd/appdata/nextcloud/app` | 20G | 1 | compose dir, html/config | Yes (`ssd/appdata`) | archive (raw); vzdump-excluded |
 | `/mnt/nextcloud-postgres` | `ssd/appdata/nextcloud/postgres` | 16G | 2 | PostgreSQL PGDATA | Yes (`ssd/appdata`) | archive (raw); vzdump-excluded |
 | `/mnt/nextcloud-data` | `tank/nextcloud-data/disk` | 2T **sparse** | 3 | Nextcloud user data (`/data`) | Yes (`tank/nextcloud-data`) | archive (raw); vzdump-excluded |
 | VM root (scsi0) | `ssd/pve` | 40G | 0 | OS + Docker | Yes (`ssd/pve`) | vzdump (`all: true`) |
@@ -74,10 +74,14 @@ Three ZFS zvol passthrough disks (created by `proxmox_vm`, mounted by
   already covered by `ssd/appdata` → `archive/appdata`.
 - The data zvols carry `vzdump_backup: false` (`backup=0`) so the nightly vzdump
   captures only the OS root disk and doesn't double-store the app data.
-- A **nightly `pg_dump`** (`nextcloud-backup.timer`, 02:30) writes a
-  gzip'd logical dump to `/mnt/nextcloud-app/backups` (which rides the app zvol →
-  archive), keeping `nextcloud_backup_keep_days` (7) locally, and emits
-  `nextcloud_backup_*` node_exporter textfile metrics.
+- A **nightly `pg_dump`** (`nextcloud-backup.timer`, 01:30) writes a gzip'd
+  logical dump to `/mnt/backups-offsite` — an NFS mount (`xprtsec=tls`) of
+  `pve-nas-01:/backups-apps/nextcloud` = `tank/backups/apps/nextcloud`, so it
+  rides archive and restic B2 ([docs/42](42-offsite-backup.md)). It keeps
+  `nextcloud_backup_keep_days` (7) there and emits `nextcloud_backup_*`
+  node_exporter textfile metrics. `/mnt/backups-offsite` is the sole dump
+  location. The local `/mnt/nextcloud-app/backups` directory is superseded and
+  nothing prunes it, so sweep it by hand once.
 - **Data ownership**: the container runs as `www-data` (uid/gid 33); the role
   chowns `/mnt/nextcloud-app/html` and `/mnt/nextcloud-data/data` to `33:33`.
 
@@ -86,8 +90,19 @@ Three ZFS zvol passthrough disks (created by `proxmox_vm`, mounted by
 The bulk data zvol is thin-provisioned at a 2T ceiling. To raise it:
 
 ```bash
+# 1. Grow the zvol on the NAS, and keep the VM config's size= in step
 ssh eric@10.0.10.102 "sudo zfs set volsize=4T tank/nextcloud-data/disk"
-ssh eric@10.0.10.156 "sudo resize2fs /dev/disk/by-id/... "   # the ext4 fs on the zvol
+ssh eric@10.0.10.102 "sudo qm set 156 -scsi3 /dev/zvol/tank/nextcloud-data/disk,backup=0,size=4T"
+
+# 2. Make the guest see the new capacity. The disk is a raw /dev/zvol
+#    passthrough, not a storage-managed volume, so `qm resize` does not apply:
+#    stop+start the VM, or rescan the SCSI device live.
+ssh eric@10.0.10.156 \
+  'dev=$(basename "$(readlink -f /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_drive-scsi3)"); \
+   echo 1 | sudo tee "/sys/block/$dev/device/rescan"'
+
+# 3. Grow the filesystem (whole-device ext4, no partition table)
+ssh eric@10.0.10.156 "sudo resize2fs /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_drive-scsi3"
 ```
 
 (Increase `size:` in `hosts.yml` to keep inventory truthful; `proxmox_vm` never
@@ -134,7 +149,9 @@ The client id/secret live on the **Nextcloud SSO** 1Password item (`client-id`,
 
 ### SSRF toggle (`allow_local_remote_servers`) — accepted risk
 
-The `nextcloud` role sets `allow_local_remote_servers=true` (`tasks/main.yml`).
+`group_vars/nextcloud_servers.yml` sets
+`nextcloud_oidc_allow_local_remote_servers: true`, which the role applies as
+`allow_local_remote_servers=true`. It is an opt-in here, not a role default.
 Nextcloud's SSRF guard (`LocalAddressChecker`) otherwise refuses any server-side
 fetch to an RFC1918 address, and split-horizon DNS resolves `auth.ericsweiss.com`
 to the **internal** Traefik VIP `10.0.10.101` — so the `user_oidc` discovery
@@ -160,17 +177,11 @@ work and is **not** implemented today.
 ## Outgoing mail (SMTP relay)
 
 Nextcloud sends notifications, share invites, and password-reset mail through the
-homelab SMTP relay, configured as **`smtp-relay.esweiss.com:25` without SASL**
-(`nextcloud_smtp_*` in `group_vars/nextcloud_servers.yml`); the relay adds TLS on
-the Gmail hop.
-
-> **Known gap.** The relay's `mynetworks` is loopback-only and its
-> `smtpd_relay_restrictions` is `permit_sasl_authenticated,
-> reject_unauth_destination` (docs/10) — the LAN `permit_mynetworks` path the
-> port-25 config assumed no longer exists, so unauthenticated relay from `.156`
-> is refused. The fix is to move Nextcloud onto submission with the null-client
-> SASL credentials, the way `gitlab_servers.yml` already does; tracked in
-> `docs/16-next-steps.md`.
+homelab SMTP relay on **authenticated submission** — `smtp-relay.esweiss.com:587`
+with STARTTLS and the shared null-client SASL credential (`nextcloud_smtp_*` in
+`group_vars/nextcloud_servers.yml`, the same shape as `gitlab_servers.yml`). The
+relay's `mynetworks` is loopback-only, so authentication is required, not
+optional; the relay adds TLS on the Gmail hop.
 
 The `nextcloud` role applies this with `occ config:system:set mail_*` (the
 image's `SMTP_*` env only autoconfigures a fresh install, not the live instance),
@@ -244,9 +255,10 @@ real wildcard cert is distributed. To install the real cert (POST-PROVISION):
   `NextcloudDown` (`nextcloud_up == 0` / absent, `homelab.monitoring`),
   `NextcloudBackupFailed` / `NextcloudBackupStale` (`homelab.scripts`), plus the
   generic `EndpointDown` on the blackbox probe.
-- **Grafana**: no dashboard shipped yet — the upstream xperimental exporter
-  dashboard uses a `${DS_LOCAL}` import-input datasource that needs adapting for
-  the sidecar. Metrics are queryable in Explore; see docs/16 follow-up.
+- **Grafana**: `kubernetes/infrastructure/observability/dashboards/nextcloud.json`,
+  hand-authored against the metrics the nextcloud-exporter actually serves —
+  availability, users/files/shares, storage and database size, host logs
+  (docs/31 § Dashboard Inventory).
 
 ## Restore runbook
 
@@ -256,7 +268,7 @@ real wildcard cert is distributed. To install the real cert (POST-PROVISION):
 ssh eric@10.0.10.156
 cd /mnt/nextcloud-app/compose
 sudo docker compose exec -T nextcloud php occ maintenance:mode --on
-gunzip -c /mnt/nextcloud-app/backups/nextcloud-db-<ts>.sql.gz \
+gunzip -c /mnt/backups-offsite/nextcloud-db-<ts>.sql.gz \
   | sudo docker compose exec -T nextcloud-db psql -U nextcloud -d nextcloud
 sudo docker compose exec -T nextcloud php occ maintenance:mode --off
 ```

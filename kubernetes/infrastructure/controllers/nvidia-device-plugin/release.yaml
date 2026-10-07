@@ -1,12 +1,7 @@
 ---
-# NVIDIA k8s device plugin — a DaemonSet that discovers the GPU on the node and
-# advertises it to the kubelet as the nvidia.com/gpu extended resource. With
-# time-slicing (values.config below) the single physical GPU is advertised as 4
-# shareable units, so the GPU is a general cluster resource: any pod can request
-# `nvidia.com/gpu: 1` (a slice) — Hindsight's llama container is just one of them.
-# Pinned to the GPU node by nodeSelector on the esweiss.com/gpu=nvidia label
-# (hosts.yml VM 207). It exports no metrics — DCGM does that
-# (observability/exporters/dcgm-exporter).
+# NVIDIA k8s device plugin: a DaemonSet advertising the node's GPU to the
+# kubelet as nvidia.com/gpu, time-sliced into 4 shareable units any pod may
+# request. Metrics come from dcgm-exporter, not from here (docs/43).
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -52,18 +47,14 @@ spec:
         operator: Equal
         value: "true"
         effect: PreferNoSchedule
-    # Clear the chart's GPU-autodetect nodeAffinity: it requires Node/GPU Feature
-    # Discovery labels this cluster does not run, so it matches nothing and the
-    # DaemonSet sits at DESIRED=0. Must be `null`, NOT `{}` — Helm deep-merges
-    # maps, so an empty map leaves the chart default in place. nodeSelector above
-    # is then what governs placement.
+    # Clear the chart's GPU-autodetect nodeAffinity: it wants Feature Discovery
+    # labels this cluster lacks, so the DaemonSet would sit at DESIRED=0. It
+    # must be `null`; Helm deep-merges maps, so `{}` keeps the chart default.
     affinity:
       nodeAffinity: null
-    # Memory limit only, no CPU limit (docs/33). Hand-sized against measurement
-    # (request at the working set, limit at 2x) because no VPA may touch this:
-    # evicting the DaemonSet that advertises nvidia.com/gpu would deschedule
-    # every GPU pod. This key reaches the plugin container only — the sidecar is
-    # sized by the postRenderer below.
+    # Memory limit only, no CPU limit (docs/33). Hand-sized rather than
+    # VPA-managed, because evicting this DaemonSet deschedules every GPU pod.
+    # The key reaches the plugin container only; the sidecar is sized below.
     resources:
       requests:
         cpu: 25m
@@ -71,11 +62,8 @@ spec:
       limits:
         memory: 128Mi
     # Advertise the one physical GPU as 4 shareable replicas. config.default
-    # names the map entry used on a node with no
-    # nvidia.com/device-plugin.config label, so `default: any` is required.
-    #
-    # Time-slicing shares COMPUTE, not VRAM: co-scheduled pods must fit together
-    # in the card's 6 GB. `replicas` is a concurrency ceiling, not a guarantee.
+    # names the map entry for a node with no device-plugin.config label. Time
+    # slicing shares compute, not VRAM: co-scheduled pods share the card's 6 GB.
     config:
       default: any
       map:
@@ -88,10 +76,9 @@ spec:
               resources:
                 - name: nvidia.com/gpu
                   replicas: 4
-  # Size the config-manager sidecar the chart injects whenever config.map is set:
-  # it exposes no values key for resources, so without this the pod under-requests
-  # by the sidecar's whole footprint. Strategic-merge (containers are name-keyed),
-  # so it survives any change in container ORDER, unlike a JSON-pointer index patch.
+  # Size the config-manager sidecar the chart injects whenever config.map is
+  # set; the chart exposes no values key for its resources. Strategic-merge, so
+  # it survives a change in container order.
   postRenderers:
     - kustomize:
         patches:

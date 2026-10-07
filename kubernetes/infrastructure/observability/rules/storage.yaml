@@ -10,10 +10,8 @@ spec:
   groups:
     - name: homelab.storage
       rules:
-        # efivarfs is the kernel's NVRAM-backed virtual fs at
-        # /sys/firmware/efi/efivars; it commonly sits above 70% (filled
-        # with EFI variables) and isn't a real disk-usage signal.
-        # devtmpfs/iso9660 are also virtual / read-only.
+        # efivarfs commonly sits above 70% with EFI variables and is not a
+        # disk-usage signal. devtmpfs and iso9660 are virtual or read-only.
         - alert: DiskUsageWarning
           expr: >-
             (1 - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs|efivarfs|devtmpfs|iso9660"}
@@ -23,7 +21,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#recovering-space-on-the-prometheus-loki-zvols'
             summary: 'Disk usage above 80% on {{ $labels.instance }}:{{ $labels.mountpoint }}'
             description: >-
               Disk usage is {{ $value | printf "%.1f" }}%
@@ -39,12 +37,29 @@ spec:
           labels:
             severity: critical
           annotations:
-            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#recovering-space-on-the-prometheus-loki-zvols'
             summary: 'Disk usage above 90% on {{ $labels.instance }}:{{ $labels.mountpoint }}'
             description: >-
               Disk usage is {{ $value | printf "%.1f" }}%
               on {{ $labels.instance }}
               mount {{ $labels.mountpoint }}.
+
+        # The k3s node root fs is also the kubelet image filesystem. Above the
+        # 70% image-gc-high-threshold the kubelet GCs continuously, which
+        # DiskUsageWarning at 80% catches too late.
+        - alert: KubeletImageGCIneffective
+          expr: >-
+            100 * (1 - node_filesystem_avail_bytes{job="node-exporter",mountpoint="/"}
+            / node_filesystem_size_bytes{job="node-exporter",mountpoint="/"}) > 70
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#pruning-unused-container-images'
+            summary: 'Kubelet image GC cannot reach its low watermark on {{ $labels.instance }}'
+            description: >-
+              Root filesystem is {{ $value | printf "%.1f" }}% used, above the
+              kubelet image-gc-high-threshold (70%).
 
         - alert: PVCUsageWarning
           expr: (kubelet_volume_stats_used_bytes / kubelet_volume_stats_capacity_bytes) * 100 > 80
@@ -52,7 +67,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#recovering-space-on-the-prometheus-loki-zvols'
             summary: 'PVC {{ $labels.persistentvolumeclaim }} in {{ $labels.namespace }} above 80%'
             description: 'PVC usage is {{ $value | printf "%.1f" }}%.'
 
@@ -62,7 +77,7 @@ spec:
           labels:
             severity: critical
           annotations:
-            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#recovering-space-on-the-prometheus-loki-zvols'
             summary: 'PVC {{ $labels.persistentvolumeclaim }} in {{ $labels.namespace }} above 90%'
             description: 'PVC usage is {{ $value | printf "%.1f" }}%.'
 
@@ -85,12 +100,9 @@ spec:
               pin its storageClassName to "" and rebind to the intended
               static zvol/NFS PV (loki/release.yaml, docs/29).
 
-        # Inode exhaustion: byte-usage rules above miss a filesystem that
-        # fills its inode table (many tiny files) while still having free
-        # bytes. The chart's default NodeFilesystemAlmostOutOfFiles only
-        # covers the in-cluster node-exporter; this fires across both that
-        # job and the bare-metal node-exporter-host job (port 9101) so a
-        # Proxmox host root running out of inodes is caught too.
+        # Inode exhaustion, which the byte-usage rules above miss. The chart's
+        # NodeFilesystemAlmostOutOfFiles covers the in-cluster node-exporter
+        # only; this spans that job and node-exporter-host.
         - alert: InodeUsageWarning
           expr: >-
             (node_filesystem_files_free{fstype!~"tmpfs|overlay|squashfs|efivarfs|devtmpfs|iso9660"}
@@ -100,7 +112,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#recovering-space-on-the-prometheus-loki-zvols'
             summary: 'Inodes below 10% free on {{ $labels.instance }}:{{ $labels.mountpoint }}'
             description: >-
               Only {{ $value | printf "%.1f" }}% of inodes are free
@@ -116,7 +128,7 @@ spec:
           labels:
             severity: critical
           annotations:
-            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#recovering-space-on-the-prometheus-loki-zvols'
             summary: 'Inodes below 5% free on {{ $labels.instance }}:{{ $labels.mountpoint }}'
             description: >-
               Only {{ $value | printf "%.1f" }}% of inodes are free
@@ -136,7 +148,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: '${cluster_runbook_base_url}/06-zfs.md'
+            runbook_url: '${cluster_runbook_base_url}/06-zfs.md#nas-memory-management'
             summary: 'NAS swap not clearing — above 2 GiB for 2 days on {{ $labels.instance }}'
             description: >-
               pve-nas-01 swap has stayed above 2 GiB for 2 days (min
@@ -147,15 +159,17 @@ spec:
               management).
 
         # The inverse failure: no swap at all has no usage to accumulate, so
-        # NASSwapNotClearing cannot see it, and a swapless run of this
-        # memory-overcommitted box OOMs under pressure.
+        # NASSwapNotClearing cannot see it. Defers to the fleet-wide
+        # EncryptedSwapRestoreFailed wherever the finalize gauge exists.
         - alert: NASSwapGone
-          expr: node_memory_SwapTotal_bytes{instance="10.0.10.102:9101"} == 0
+          expr: >-
+            node_memory_SwapTotal_bytes{instance="10.0.10.102:9101"} == 0
+            unless on (instance) encrypted_swap_any_swap_active
           for: 30m
           labels:
             severity: warning
           annotations:
-            runbook_url: '${cluster_runbook_base_url}/42-offsite-backup.md'
+            runbook_url: '${cluster_runbook_base_url}/32-zfs-encryption.md#host-swap-dm-crypt'
             summary: 'NAS has zero swap configured on {{ $labels.instance }}'
             description: >-
               pve-nas-01 reports SwapTotal == 0 — the structurally
@@ -163,28 +177,116 @@ spec:
               typically a failed encrypted-swap switch or a swapon that
               never restored a device. Check `swapon --show`,
               `systemctl status systemd-cryptsetup@cryptswap` and
-              /etc/fstab on pve-nas-01 (docs/42 §Encrypted swap).
+              /etc/fstab on pve-nas-01 (docs/32 §Host swap (dm-crypt)).
 
-        # 0 = script error, unsafe headroom abort, or a failed guest restart
-        # ("0=failed or aborted-unsafe" in the metric HELP). Daily timer, so a
-        # failure persists to the next run; for:1h matches the other
-        # *_last_run_success alerts.
+        # Every encrypted-swap failure branch exits 0 to keep the host booting,
+        # so this gauge is the only report that a finalize run ended with no
+        # swap at all. The SwapTotal arm clears it once swap is back.
+        - alert: EncryptedSwapRestoreFailed
+          expr: >-
+            encrypted_swap_any_swap_active == 0
+            and on (instance) (node_memory_SwapTotal_bytes == 0)
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: '${cluster_runbook_base_url}/32-zfs-encryption.md#host-swap-dm-crypt'
+            summary: 'Encrypted-swap finalize left {{ $labels.instance }} with no swap'
+            description: >-
+              The encrypted-swap switch on {{ $labels.instance }} failed and the
+              plaintext fallback could not be restored, so the host is running
+              with no swap. Check `swapon --show`,
+              `systemctl status systemd-cryptsetup@cryptswap` and
+              `journalctl -t encrypted-swap` (docs/32 §Host swap (dm-crypt)).
+
+        # Encrypted swap off while swap is up: finalize fell back to the
+        # plaintext device and exited 0, so only this gauge says the host swaps
+        # in cleartext. The swapless case is EncryptedSwapRestoreFailed's.
+        - alert: EncryptedSwapPlaintextFallback
+          expr: >-
+            encrypted_swap_mapper_active == 0
+            and on (instance) (encrypted_swap_any_swap_active == 1)
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: '${cluster_runbook_base_url}/32-zfs-encryption.md#host-swap-dm-crypt'
+            summary: 'Swap on {{ $labels.instance }} is plaintext, not the dm-crypt mapper'
+            description: >-
+              The dm-crypt swap mapper is not the active swap device on
+              {{ $labels.instance }}, so swapped-out memory is written in
+              cleartext while the finalize unit reads green. Check
+              `swapon --show`,
+              `systemctl status systemd-cryptsetup@cryptswap` and
+              `journalctl -t encrypted-swap` (docs/32 §Host swap (dm-crypt)).
+
+        # The witness for both alerts above: the gauges exist only while
+        # finalize writes its textfile, and it runs at boot, so absence is the
+        # signal, not age. The 7d arm keeps never-encrypted hosts quiet.
+        - alert: EncryptedSwapMetricsMissing
+          expr: >-
+            (
+              up{job="node-exporter-host"} == 1
+              unless on (instance) encrypted_swap_finalize_last_run_seconds
+            )
+            and on (instance)
+            (max_over_time(encrypted_swap_finalize_last_run_seconds[7d]) > 0)
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: '${cluster_runbook_base_url}/32-zfs-encryption.md#host-swap-dm-crypt'
+            summary: 'Encrypted-swap gauges have disappeared on {{ $labels.instance }}'
+            description: >-
+              {{ $labels.instance }} published the encrypted-swap gauges and no
+              longer does, so EncryptedSwapPlaintextFallback and
+              EncryptedSwapRestoreFailed are blind there. Check that the
+              node_exporter textfile directory still holds
+              encrypted_swap.prom and that encrypted-swap-finalize ran on the
+              last boot (docs/32 §Host swap (dm-crypt)).
+
+        # 0 means a script error, an unsafe headroom abort or a failed guest
+        # restart. The timer is daily, so a failure persists to the next run.
         - alert: SwapCleanFailed
           expr: swap_clean_last_run_success == 0
           for: 1h
           labels:
             severity: warning
           annotations:
-            runbook_url: '${cluster_runbook_base_url}/06-zfs.md'
+            runbook_url: '${cluster_runbook_base_url}/06-zfs.md#nas-memory-management'
             summary: 'NAS swap-clean job failed or aborted-unsafe on {{ $labels.instance }}'
             description: >-
               The daily swap-clean run on pve-nas-01 recorded a non-clean
               outcome (swap_clean_last_run_success == 0) — a script error, an
               unsafe headroom abort (ARC-shrink or a guest that would not stop
-              gracefully), or a failed guest restart. Swap may not be
+              gracefully), an escalation that could not reach its headroom
+              target (check swap_clean_skip_reason_info), or a failed guest
+              restart. Swap may not be
               resetting; if it keeps building day after day that also surfaces
               as NASSwapNotClearing. Check `journalctl -t swap-clean` (docs/06
               §NAS memory management).
+
+        # A pre-flight skip keeps run_success at 1 and advances the success
+        # timestamp, so a conflicting unit that never clears wedges the nightly
+        # reset while every other gauge reads healthy.
+        - alert: SwapCleanSkipped
+          expr: >-
+            swap_clean_skip_reason_info == 1
+            and on (instance)
+            (min_over_time(swap_clean_last_run_skipped[3d]) == 1)
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: '${cluster_runbook_base_url}/06-zfs.md#nas-memory-management'
+            summary: 'NAS swap-clean has skipped every run for 3 days on {{ $labels.instance }}'
+            description: >-
+              swap-clean on pve-nas-01 skipped the swap cycle on every run for
+              three days, reason "{{ $labels.reason }}" — swap is no longer
+              being reset and nothing else reports it, because a skip still
+              counts as a successful run. Clear the blocking unit or drop it
+              from nas_storage_swap_clean_conflicting_units (docs/06 §NAS
+              memory management).
 
         # A guest swap-clean stopped did not come back on `qm start`: a
         # production guest is DOWN. The gauge is always emitted (0 on a good
@@ -195,7 +297,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: '${cluster_runbook_base_url}/06-zfs.md'
+            runbook_url: '${cluster_runbook_base_url}/06-zfs.md#nas-memory-management'
             summary: 'NAS swap-clean failed to restart a stopped guest on {{ $labels.instance }}'
             description: >-
               swap-clean on pve-nas-01 gracefully stopped a production guest
@@ -208,17 +310,16 @@ spec:
               self-resolves even if the guest is still down — the guest's
               own app-down/blackbox alerts are the persistent signal.
 
-        # Informational: swap-clean stopped (and restarted) production guests to
-        # free RAM. severity:info — InfoInhibitor is scoped by namespace, so a
-        # host-level info alert still reaches discord-default. [6h] rather than
-        # [1d] so one event does not latch the alert on for a full day.
+        # Informational: swap-clean stopped and restarted production guests to
+        # free RAM. The InfoInhibitor target matcher exempts this alertname, so
+        # the host-level notice still reaches discord-default. [6h] avoids a latch.
         - alert: SwapCleanStoppedGuests
           expr: max_over_time(swap_clean_guests_stopped_count[6h]) > 0
           for: 5m
           labels:
             severity: info
           annotations:
-            runbook_url: '${cluster_runbook_base_url}/06-zfs.md'
+            runbook_url: '${cluster_runbook_base_url}/06-zfs.md#nas-memory-management'
             summary: 'NAS swap-clean stopped production guests to reclaim swap'
             description: >-
               swap-clean on pve-nas-01 had to gracefully stop
@@ -227,11 +328,9 @@ spec:
               headroom alone no longer covers the swap — the box is running
               short on RAM (docs/06 §NAS memory management).
 
-        # Per-device SMART health from the smartmon textfile collector
-        # (node_exporter_host, every 5m): the drive-level precursors the ZFS
-        # pool alerts only see after corruption reaches a pool. Every rule reads
-        # through an over_time window because `smartctl -n standby` leaves a
-        # sleeping drive's attribute series absent for that cycle.
+        # Per-device SMART health from the smartmon textfile collector: the
+        # drive-level precursors the ZFS pool alerts see only after corruption.
+        # over_time windows ride through a standby drive's absent series.
         - alert: SMARTDeviceUnhealthy
           # min_over_time stays 0 once a drive has reported FAILED, riding
           # through subsequent standby gaps; a healthy (1) or never-probed
@@ -319,9 +418,18 @@ spec:
         # Collector meta-failure. The absent() arm makes an undeployed collector
         # loud instead of silently blind (mirrors the other *CollectorStale).
         - alert: SMARTCollectorStale
+          # The success arm catches the collector refreshing its sentinel while
+          # publishing zero device series (smartctl gone, no device enumerated).
+          # The max_over_time guard keeps a host with no SMART devices quiet.
           expr: >-
             (time() - smartmon_collector_last_success_seconds > 900)
             or absent(smartmon_collector_last_success_seconds)
+            or (
+              smartmon_collector_success == 0
+              and on(instance) (
+                max_over_time(smartmon_collector_success[7d]) > 0
+              )
+            )
           for: 5m
           labels:
             severity: warning
@@ -329,8 +437,10 @@ spec:
             runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#handling-disk-failure-zfs'
             summary: 'smartmon collector is degraded or missing on {{ $labels.instance }}'
             description: >-
-              smartmon_collector_last_success_seconds is stale (>15m) or
-              entirely absent — the SMART device alerts on this host are
-              serving stale or no inputs. Check
+              smartmon_collector_last_success_seconds is stale (>15m),
+              entirely absent, or the collector reports success 0
+              (smartctl unrunnable or no device enumerated) — the SMART
+              device alerts on this host are serving stale or no
+              inputs. Check
               `journalctl -u smartmon-collector.service` and
               `systemctl status smartmon-collector.timer`.

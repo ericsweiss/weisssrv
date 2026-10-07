@@ -1,0 +1,50 @@
+# https://taskfile.dev
+# Hermes Agent (docs/37).
+version: '3'
+
+tasks:
+  status:
+    desc: Show Hermes Agent status
+    cmds:
+      - task: :_app:status
+        vars:
+          NS: hermes
+          SECTIONS: |
+            Hermes Namespace|pods
+            Services|svc
+            PVC|pvc
+            IngressRoutes|ingressroute
+            ExternalSecrets|externalsecrets
+
+  logs:
+    desc: "View Hermes logs (task hermes:logs [COMPONENT=dashboard|gateway])"
+    vars:
+      COMPONENT: '{{.COMPONENT | default "dashboard"}}'
+    cmds:
+      - |
+        COMPONENT="{{.COMPONENT}}"
+        echo "=== Hermes $COMPONENT logs ==="
+        kubectl logs -n hermes deploy/hermes -c "$COMPONENT" -f
+
+  restart:
+    desc: Restart Hermes Agent (pod delete; Flux-managed, gateway + dashboard)
+    cmds:
+      - task: :_app:restart
+        vars:
+          NS: hermes
+          SELECTOR: -l app.kubernetes.io/name=hermes
+          BANNER: Restarting Hermes...
+
+  shell:
+    desc: "Open a shell in the Hermes dashboard container (task hermes:shell [COMPONENT=dashboard|gateway])"
+    vars:
+      COMPONENT: '{{.COMPONENT | default "dashboard"}}'
+    cmds:
+      - kubectl exec -it -n hermes deploy/hermes -c "{{.COMPONENT}}" -- /bin/sh
+
+  codex-login:
+    desc: "One-time ChatGPT-subscription login for the Codex runtime (device-code flow; see docs/37)"
+    cmds:
+      - echo "Starting Codex device-code login in the gateway container."
+      - echo "Open the printed URL in your browser, sign in to ChatGPT, and enter the code."
+      - kubectl exec -it -n hermes deploy/hermes -c gateway -- codex login --device-auth

@@ -1,8 +1,7 @@
 ---
-# Cloudflare DDNS: every 5 minutes, point the four WAN A records
-# (ericsweiss.com, direct., git., vpn.) at the current public IPv4.
-# The program is cloudflare-ddns.py in this directory, mounted from the
-# configMapGenerator in kustomization.yaml; unit tests in scripts/.
+# Cloudflare DDNS: every 5 minutes, point the four WAN A records (ericsweiss.com,
+# direct., git., vpn.) at the current public IPv4. The program is cloudflare-ddns.py
+# here, mounted by kustomization.yaml's configMapGenerator; tests in scripts/.
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -10,18 +9,19 @@ metadata:
   namespace: cloudflare-ddns
 spec:
   schedule: "*/5 * * * *"
+  # Bounds the missed-schedule lookback, so a long control-plane outage cannot
+  # wedge scheduling on the 100-missed-starts limit.
+  startingDeadlineSeconds: 120
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 3
-  concurrencyPolicy: Forbid  # Don't start new job if previous is still running
+  concurrencyPolicy: Forbid
   jobTemplate:
     spec:
       # Bounded well above the few seconds a run takes.
       activeDeadlineSeconds: 300
       ttlSecondsAfterFinished: 3600
-      # Default backoffLimit is 6, which is far too many retries for a 5-min
-      # CronJob — a transient Cloudflare API outage would quickly queue 6
-      # failing pods. Two retries gives API blips a chance to recover while
-      # keeping the failure visible in the next scheduled run.
+      # Two retries, not the default 6: a Cloudflare API outage would otherwise
+      # queue six failing pods every 5 minutes.
       backoffLimit: 2
       template:
         spec:
@@ -38,14 +38,18 @@ spec:
               type: RuntimeDefault
           containers:
           - name: ddns-update
-            # Use python:3-slim (Debian) for reliable DNS resolution. Alpine/musl has issues
-            # with getaddrinfo() in Kubernetes environments (EAI_NONAME errors).
-            # Pinned to specific SHA digest for reproducibility and security
+            # Debian, not Alpine: musl's getaddrinfo() returns EAI_NONAME in
+            # this cluster. Digest-pinned.
             image: python:3.14-slim@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c5320d762a27986facfc3355c1
             command:
             - python3
             - /opt/ddns/cloudflare-ddns.py
             env:
+            # The program's whole configuration: it reads no site data of its own.
+            - name: DDNS_ZONE
+              value: "${cluster_external_domain}"
+            - name: DDNS_RECORDS
+              value: "${cluster_ddns_records}"
             - name: CF_API_TOKEN
               valueFrom:
                 secretKeyRef:

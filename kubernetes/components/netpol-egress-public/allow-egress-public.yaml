@@ -1,10 +1,7 @@
 ---
-# Public-unicast HTTPS egress. The except list is the RFC-reserved and private
-# IPv4 space — a standards constant, NOT this cluster's LAN — and this is the
-# single copy for every namespace-wide policy in the repo. It stops a
-# compromised platform pod from reaching the LAN, loopback, cloud-metadata or
-# CGNAT/tailnet space. scripts/check-netpol-except-parity.py calls it
-# "reserved-full" and fails any copy that drifts from it.
+# Public-unicast HTTPS egress. The except list is RFC-reserved and private IPv4
+# space, a standards constant, and keeps a compromised pod off the LAN,
+# loopback, cloud-metadata and CGNAT space. Gated as "reserved-full".
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

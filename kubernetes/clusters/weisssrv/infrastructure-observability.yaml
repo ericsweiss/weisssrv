@@ -1,15 +1,7 @@
 ---
-# Flux Kustomization: observability stack (Prometheus, Grafana, Loki, Alloy,
-# exporters, dashboards).
-#
-# dependsOn infrastructure-configs, in parallel with apps: the monitoring CRDs
-# come from the crds stage and the ClusterSecretStore from configs, so both are
-# in place here. Keeping it off the apps chain means a failed observability
-# upgrade blocks only this stage.
-#
-# optional: false — same rationale as the other stages: a missing
-# cluster-versions or cluster-config here is a real fault, not a reason to
-# render empty.
+# Observability stack; the set is in
+# kubernetes/infrastructure/observability/kustomization.yaml. Depends on
+# infrastructure-configs and runs parallel to apps, so a failure blocks only it.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:

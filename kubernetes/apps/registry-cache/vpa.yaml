@@ -1,9 +1,7 @@
 ---
-# VPA: Initial — resize CPU+memory on natural pod restarts (single
-# stateless-scheduling workload; the emptyDir cache is disposable, so an
-# eviction/restart only costs a re-warm, never data). This is the tier
-# docs/33-autoscaling.md prescribes for single-pod apps (same as homarr/the
-# runners; no HPA owns CPU). Bounded so a runaway request can't claim the node.
+# VPA Initial: resize CPU and memory on natural pod restarts. The emptyDir
+# cache is disposable, so a restart costs only a re-warm. Tier docs/33 gives
+# single-pod apps; bounded so a runaway request cannot claim the node.
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
 metadata:

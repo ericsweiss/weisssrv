@@ -27,9 +27,9 @@ shared `netpol-baseline` component.
 One Deployment, `replicas: 1`, `strategy: Recreate`, one container on :7575.
 NAS-avoiding + modern-CPU (state is on NFS, not a node-local zvol). The
 nginx-fronted image runs its **own root entrypoint** (it templates `/etc/nginx`
-at boot), so it does **not** run fully non-root — forcing `runAsUser: 1000`
-crash-looped it on first deploy (EACCES templating `/etc/nginx`; see the
-`deployment.yaml` comment). It still hardens everything it can: the
+at boot), so it does **not** run fully non-root and `runAsUser` must not be
+forced — doing so fails with EACCES while templating `/etc/nginx`. It still
+hardens everything it can: the
 container drops **ALL** capabilities and adds back only the four load-bearing
 ones — `CHOWN`, plus `SETUID`/`SETGID` (the nginx master stays root and drops
 its workers to the `nginx` user) and `DAC_OVERRIDE` (nginx tmp/log dirs) — with
@@ -73,8 +73,7 @@ Key env (see `deployment.yaml`):
   Authentik `homarr-admins` group maps to the same-named Homarr admin group,
   which is what grants admin. This is also the fix for Homarr's OIDC-only
   admin-assignment sharp edge (homarr-labs#2108 — a pure OIDC-only *first* login
-  does not auto-grant admin; the group mapping does). The mapping was verified
-  synced before the flip to SSO-only. Break-glass DR for a total Authentik
+  does not auto-grant admin; the group mapping does). Break-glass DR for a total Authentik
   outage is documented below.
 - `AUTH_OIDC_ISSUER=https://auth.ericsweiss.com/application/o/dashboard/` —
   **trailing slash required** for Authentik discovery. The application slug is
@@ -86,6 +85,12 @@ Key env (see `deployment.yaml`):
   claim to same-named Homarr groups. The Terraform-managed Authentik group
   `homarr-admins` (with `eric` as its member) maps to the Homarr group of the
   same name, which is granted admin at onboarding (checklist step 2).
+- Access tiers: the `dashboard` application binds **two** Authentik groups with
+  `policy_engine_mode: any` — either binding passes the gate. `homarr-admins`
+  (order 0) also maps by name to the Homarr admin group via the groups claim,
+  which is what grants admin; `homarr-users` (order 1) passes the gate only and
+  lands the member as a regular Homarr user. Add a household member to
+  `homarr-users` in `terraform/authentik/groups.tf` (supervised apply, docs/40).
 
 The OIDC client secret and `SECRET_ENCRYPTION_KEY` come from ESO
 (`homarr-secrets`, 1Password item `Homarr SSO`). `SECRET_ENCRYPTION_KEY`
@@ -148,9 +153,10 @@ per-host `/32` or per-namespace egress rule).
 | Immich | Immich | `https://photos.esweiss.com` | API key |
 
 Immich is reached via Traefik on :443 (`https://photos.esweiss.com`), **not**
-the direct API port `:2283` — the target firewall (`sg-immich`) does not expose
-`:2283` to the cluster, consistent with the removed netpol rule 5e. Its API and
-web UI share the one host (same shape as the Nextcloud row).
+the direct API port `:2283` — the target firewall (`sg-immich`) admits the k3s
+nodes on 443/8081/8082 only, so no dedicated egress rule exists (see the `5e.`
+note in `networkpolicy.yaml`). Its API and web UI share the one host (same shape
+as the Nextcloud row).
 
 Reaching the `downloads` namespace also requires the reciprocal ingress rule
 `allow-homarr-ingress` in
@@ -194,27 +200,13 @@ Hermes (agent.esweiss.com).
 
 ## Proxmox read-only API token
 
-Homarr's Proxmox widget needs an API token. Mint a least-privilege **read-only**
-token using the built-in `PVEAuditor` role. On any Proxmox node (e.g.
-`pve-nas-01`), as root:
+Homarr's Proxmox widget reuses the exporter's token, `monitoring@pve!exporter`
+(`PVEAuditor`, read-only). The `proxmox_firewall` role creates it when it is
+absent and the secret is printed once; rotation is
+[docs/15](15-credential-rotation.md) § Proxmox API Token.
 
-```sh
-# Optional: a custom, even-tighter audit role. The aclmod below uses the
-# built-in PVEAuditor, so this line is not required — keep it only if you
-# prefer a hand-scoped role.
-pveum role add PVEAuditorRO -privs "Datastore.Audit VM.Audit Sys.Audit Pool.Audit" 2>/dev/null || true
-
-pveum user add homarr@pve
-pveum aclmod / -user homarr@pve -role PVEAuditor    # built-in read-only role
-# --privsep 0 => the token inherits the user's (read-only) ACL. Prints the
-# token-id + secret ONCE — record both in 1Password "Homarr Proxmox Token".
-pveum user token add homarr@pve homarr --privsep 0
-```
-
-This is a control-plane auth change, kept **out** of Ansible deliberately (a
-documented manual step; it could later be codified in a `proxmox_*` role). In
-the Homarr Proxmox widget, use `https://10.0.10.102:8006` (any node), the
-token-id (e.g. `homarr@pve!homarr`) and the token secret. Leave "ignore
+In the Homarr Proxmox widget, use `https://10.0.10.102:8006` (any node), the
+token-id `monitoring@pve!exporter` and the token secret. Leave "ignore
 TLS"/self-signed **off**: the PVE cluster CA is trusted process-wide via
 `NODE_EXTRA_CA_CERTS`, so `https://<node>:8006` verifies. Toggling
 ignore-TLS is an un-codified verification downgrade — invisible to git review —
@@ -227,11 +219,11 @@ and must be avoided.
 > pre-existing (not homarr-introduced); genuine source-scoping is deferred to
 > the planned vmbr0 VLAN segmentation (docs/16).
 
-## Secrets / 1Password prerequisites
+## 1Password items
 
-Create these **before** the Flux reconcile (ESO) and the Terraform apply:
+Homarr consumes these items from the Homelab vault:
 
-- **`Homarr SSO`** (new): `client-id` (literal `homarr`), `client-secret`
+- **`Homarr SSO`**: `client-id` (literal `homarr`), `client-secret`
   (`openssl rand -hex 32`), `secret-encryption-key` (`openssl rand -hex 32`).
   ESO consumes `client-secret` + `secret-encryption-key`; terraform/authentik
   consumes `client-secret` (the same field, so the two sides can't drift). Both
@@ -243,9 +235,10 @@ Create these **before** the Flux reconcile (ESO) and the Terraform apply:
   deleted at the SSO-only cutover (checklist step 1); no current auth path
   consumes them — the break-glass DR mints its own username + one-time password
   via `homarr-cli recreate-admin` (§SSO).
-- **`Homarr Proxmox Token`** (new): `token-id`, `token-secret` (from the pveum
-  step above). Entered in the Homarr UI, not ESO.
-- **`Homarr Integrations`** (new, DR convenience — not ESO-consumed): record the
+- **`Homarr Proxmox Token`**: `token-id`, `token-secret` — the same
+  `monitoring@pve!exporter` pair as the exporter (§ Proxmox read-only API
+  token). Entered in the Homarr UI, not ESO.
+- **`Homarr Integrations`** (DR convenience — not ESO-consumed): record the
   newly-minted per-integration creds so they survive a rebuild —
   `sonarr-api-key`, `radarr-api-key`, `lidarr-api-key`, `prowlarr-api-key`,
   `immich-api-key`, `nextcloud-app-password`.
@@ -256,10 +249,10 @@ Full item inventory: docs/15 "Required 1Password Items".
 
 ## Observability
 
-A blackbox probe target for `https://dashboard.esweiss.com` (module `http_sso`
-— Homarr answers an unauthenticated probe with a 302 to its OIDC login, which
-`http_sso` accepts) is added to the observability exporters; the generic
-`EndpointDown` alert covers it — no new rule. Homarr v1 exposes no Prometheus
+`https://dashboard.esweiss.com` is probed by the observability exporters
+(module `http_sso` — Homarr answers an unauthenticated probe with a 302 to its
+OIDC login, which `http_sso` accepts); the generic `EndpointDown` alert covers
+it — no dedicated rule. Homarr v1 exposes no Prometheus
 `/metrics` endpoint (no ServiceMonitor). Config is env + SQLite, not a watched
 ConfigMap (no Reloader annotation). Autoscaling is `vpa.yaml`
 (`updateMode: Initial`; docs/33).
@@ -270,8 +263,9 @@ ConfigMap (no Reloader annotation). Autoscaling is `vpa.yaml`
 
 Runs after the MR merges, Flux reconciles the app, and the supervised
 `terraform/authentik` apply creates the Authentik objects. Prerequisites: the
-`Homarr SSO` 1P item exists, the `Homarr Proxmox Token` was minted (pveum step
-above), and the NAS `/appdata/homarr` dir + DNS rewrite are deployed.
+`Homarr SSO` 1P item exists, the `Homarr Proxmox Token` carries the
+`monitoring@pve!exporter` pair, and the NAS `/appdata/homarr` dir + DNS rewrite
+are deployed.
 
 1. **Onboarding / admin bootstrap** — a pure OIDC-only *first* login does not
    auto-grant admin (homarr-labs#2108), so the initial admin is bootstrapped

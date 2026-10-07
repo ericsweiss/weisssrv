@@ -1,13 +1,11 @@
-"""Coverage for flux-env.sh — the two-ConfigMap entry point.
+"""Coverage for flux-env.sh, the two-ConfigMap entry point.
 
-`task flux:lint` and the library's flux-lint CI job both call a single
-`<script> export-versions <configmap>`, while this cluster substitutes from
-cluster-versions AND cluster-config. Everything below is about that seam: the
-union, the precedence, and the de-duplication that keeps a file named on both
-sides from being read twice.
+This cluster substitutes from cluster-versions and cluster-config while
+`task flux:lint` calls one `export-versions <configmap>`.
 """
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -27,8 +25,12 @@ def configmap(path: Path, name: str, data: dict) -> Path:
 
 
 def run(subcommand: str, *args: str, extra: str | None = None) -> subprocess.CompletedProcess:
-    env = {"PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"}
-    if extra is not None:
+    # Inherit the environment: the script shells out to python3, which needs its
+    # own site-packages for PyYAML. Only the extra-ConfigMaps input is pinned.
+    env = {**os.environ}
+    if extra is None:
+        env.pop("FLUX_EXTRA_CONFIGMAPS", None)
+    else:
         env["FLUX_EXTRA_CONFIGMAPS"] = extra
     return subprocess.run(
         ["bash", str(SCRIPT), subcommand, *args],

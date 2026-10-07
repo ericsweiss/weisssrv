@@ -43,12 +43,16 @@ there, get a tag cut, then land the pin bump plus everything else in one MR here
    `docs/15-credential-rotation.md`.
 7. **Playbook** — a `ansible/playbooks/<app>.yml` (or extend an existing one)
    referencing `weisssrv.infra.<app>`, wired into `ansible/playbooks/site.yml`.
-8. **Taskfile** — add `<app>:deploy` / `:status` / `:verify` wrappers mirroring
-   `gitlab:*` (globals like the VM IP/ID go at the top of `Taskfile.yml`).
+8. **Taskfile** — a new `taskfiles/<app>.yml` with `deploy` / `status` /
+   `verify` tasks mirroring `taskfiles/gitlab.yml`, registered in the root
+   `includes:` map. Host IPs arrive from the `scripts/hosts.env` dotenv; a VM ID,
+   which `hosts.env` does not carry, goes in the root `vars:`.
 9. **CI coverage** — the new deploy target needs a `deploy-*` job in
    `.gitlab-ci.yml` (`scripts/check-deploy-coverage.sh`, run by `task lint`);
    the role's molecule scenario is covered by the library's own matrix, and the
-   pin bump is what brings it here.
+   pin bump is what brings it here. Name the new `host_vars/<host>.yml`
+   literally in that job's `changes:` list — a `host_vars/**` glob gets no
+   coverage credit and the gate reds.
 10. **Firewall** — a new `[group sg-<app>]` in `proxmox_firewall_security_groups`
     (`group_vars/all.yml`) plus `guest_security_groups` on the guest in
     `hosts.yml` (add `sg-vm-admin` + `sg-metrics`). Three client scopes, least
@@ -62,6 +66,12 @@ there, get a tag cut, then land the pin bump plus everything else in one MR here
     `proxmox_firewall_metrics_scrape_ports` (`{port, sources[], comment}`, next
     to `proxmox_firewall_dns_admin_ports` in the same file) — the role builds in
     only its own exporters' ports.
+    A flow addressed to a MetalLB VIP is FORWARDED to the announcing node's
+    guest, so the GUEST firewall filters it and it never reaches
+    `PVEFW-HOST-IN`. Open it with a site security group assigned via
+    `guest_security_groups` on every guest that can announce the VIP, never with
+    `proxmox_firewall_cluster_rules` — a datacenter `[RULES]` entry compiles
+    into HOST-IN and is inert for VIP traffic.
 11. **Backups** — a NEW top-level ZFS dataset is added to
     `nas_storage_archive_backup_sources` in `host_vars/pve-nas-01.yml`;
     `ssd/appdata/*` children are already auto-enrolled. Anything that must go
@@ -87,8 +97,8 @@ there, get a tag cut, then land the pin bump plus everything else in one MR here
     `kubernetes/infrastructure/observability/rules/` with a `runbook_url` and a
     promtool unit test (`references/add-k8s-app.md` § Alert rules is canonical);
     a blackbox probe for the user-facing endpoint.
-17. **Docs** — a `docs/NN-*.md` deployment page (next free number), its row in the
-    `README.md` docs index, the application table in `CLAUDE.md`, and
+17. **Docs** — a `docs/NN-*.md` deployment page (next free number), its rows in
+    the `README.md` docs index and the `README.md` § Applications table, and
     `docs/16-next-steps.md` (mark done / remove from planned). The role's own
     README lives with the role, in the collection.
 

@@ -12,7 +12,7 @@ backend + 1Password-injected credentials) with one crucial difference:
 > the `terraform-plan` job's `merge_request_event` rule cannot match, so the job
 > is inert and the MR widget shows nothing (see its rule comment in
 > `.gitlab-ci.yml`, which is the authority). The mandatory pre-merge review is a
-> local `task terraform:plan`.
+> local `task terraform:cloudflare-plan`.
 
 ## Shape from the library, records from here
 
@@ -65,20 +65,40 @@ rot in git and eventually publish a lease that belongs to someone else.
 Every record sets `protected = true`, which routes it to a module resource
 carrying `lifecycle { prevent_destroy = true }` — because an auto-applying module
 plus a counts-only MR widget means a deleted or renamed map key would drop a
-record from public DNS with no confirmation step. Removing one is a deliberate
-**two-step** change:
+record from public DNS with no confirmation step.
 
-1. clear `protected` on the entry, commit/merge;
-2. delete the entry, commit/merge.
+`prevent_destroy` refuses any plan that destroys a protected record, and a flag
+change re-addresses the record (`cloudflare_record.protected["<key>"]` →
+`cloudflare_record.this["<key>"]`), which Terraform plans as a destroy. So
+clearing the flag on its own does not work — it is the blocked step. Two paths:
+
+- **Un-protecting a record you are keeping.** In one MR, set `protected = false`
+  AND add a root `moved { from = module.zone.cloudflare_record.protected["<key>"]
+  to = module.zone.cloudflare_record.this["<key>"] }`. `moved` re-addresses state
+  instead of destroying, so the apply is clean.
+- **Deleting a record.** Do the un-protect MR above first, then delete the map
+  entry in a second MR — the record is now an ordinary `cloudflare_record.this`
+  and the destroy applies. Both MRs auto-apply on merge, so read each plan
+  locally first.
 
 `prevent_destroy` does not block in-place updates, and `moved` blocks (state
 renames — `moved.tf` holds the ones from the pre-module layout) are unaffected.
+
+The `deploy-terraform` job adds a second guard outside Terraform: it counts the
+deletes in the saved plan and refuses the apply if there are any, protected or
+not, and a replacement counts as a delete. The delete-a-record MR above is what
+trips it. When the deletion is the reviewed intent, either apply from your
+workstation with `task terraform:cloudflare-apply`, or re-run the job from the
+pipeline with the variable `ALLOW_DNS_DELETE=1`.
+
+`moved.tf` is the permanent map of the pre-module state addresses: the blocks
+stay, and removing one rides a supervised plan and apply.
 
 The zone-settings override is protected the same way at the pinned ref, so
 flipping `manage_zone_settings = false` — which would revert `ssl`/HSTS/
 `min_tls_version` zone-wide — plans a destroy that `prevent_destroy` refuses.
 The deliberate path is
-`terraform state rm 'module.zone.cloudflare_zone_settings_override.this[0]'`
+`task terraform:cloudflare-state -- rm 'module.zone.cloudflare_zone_settings_override.this[0]'`
 first, then flipping the variable. Removing the whole `module "zone"` block
 likewise fails on the records' `prevent_destroy`.
 
@@ -107,16 +127,11 @@ TF_HTTP_UNLOCK_METHOD=DELETE     # and unlocks via DELETE (else apply → 405)
 ## Taskfile wrappers
 
 ```bash
-task terraform:init     # terraform init (GitLab state backend)
-task terraform:plan     # review the diff vs the live zone
-task terraform:apply    # normally unnecessary — CI applies on merge to main
+task terraform:cloudflare-init     # terraform init (GitLab state backend)
+task terraform:cloudflare-plan     # review the diff vs the live zone
+task terraform:cloudflare-apply    # normally unnecessary — CI applies on merge to main
 ```
 
-> The **unprefixed** `terraform:*` tasks are this (Cloudflare) module; the
-> siblings are `terraform:tailscale-*`, `terraform:authentik-*` and
-> `terraform:unifi-*`. So `task terraform:apply` right after editing
-> `terraform/authentik` — or `terraform/unifi`, where a wrong apply is a LAN you
-> cannot reach the gateway from — applies
-> **Cloudflare** (the task sets its own directory, regardless of `pwd`), against
-> whatever plan is on disk, and unlike the prefixed tasks it carries no
-> `-auto-approve` refusal guard.
+The unprefixed `task terraform:init/plan/apply` remain as aliases for these
+three; every other root is addressed by its own prefix (`terraform:tailscale-*`,
+`terraform:authentik-*`, `terraform:unifi-*`).

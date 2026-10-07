@@ -1,20 +1,15 @@
 ---
-# Garage (garagehq.deuxfleurs.fr) as the runners' S3 cache backend — chosen
-# over MinIO because MinIO's upstream was archived in 2026-04 and this repo
-# does not adopt dead upstreams. v2.3.0+ single-node mode self-initializes:
-# --default-bucket creates GARAGE_DEFAULT_BUCKET owned by the
-# GARAGE_DEFAULT_ACCESS_KEY/SECRET_KEY pair on first boot, so there is no
-# init Job and the 1Password item stays the single source of the key pair.
-#
-# Storage is an emptyDir ON PURPOSE (registry-cache precedent): the content
-# is a CACHE the runners re-derive, and node-local storage avoids the
-# sqlite-on-NFS locking class entirely. A pod reschedule costs one cold
-# pipeline, nothing else.
+# Garage single-node S3 backend for the GitLab runner cache. Design and
+# durability posture: README.md.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: ci-cache
   namespace: ci-cache
+  annotations:
+    # garage reads garage.toml at start only, and the subPath ConfigMap mount
+    # never updates in place: Reloader rolls the pod on a config change.
+    reloader.stakater.com/auto: "true"
   labels:
     app.kubernetes.io/name: ci-cache
 spec:
@@ -88,9 +83,12 @@ spec:
             capabilities:
               drop: [ALL]
           resources:
+            # emptyDir.sizeLimit below is the data cap; this request is what
+            # ranks the pod by its own usage under node pressure.
             requests:
               cpu: 100m
               memory: 256Mi
+              ephemeral-storage: 25Gi
             limits:
               memory: 1Gi
           volumeMounts:

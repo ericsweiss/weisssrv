@@ -1,18 +1,12 @@
-# NOTE: CI jobs do NOT currently use this agent's kubeconfig — the k8s-touching
-# jobs read a long-lived kubeconfig from 1Password. The ci_access grant below is
-# retained for a future migration to the agent's scoped, short-lived credential;
-# until then it is unused by the pipeline.
-ci_access:
-  projects:
-    - id: eric/weisssrv
-
-# Lets GitLab query cluster resources for the dashboard.
+# No ci_access grant: nothing in CI uses the agent's kubeconfig, and its
+# ServiceAccount is cluster-admin — a standing grant hands every MR pipeline
+# that identity. Re-add it with the migration tracked in docs/16.
 observability:
   logging:
     level: warn
 
 # remote_development off: agentk >= v19 hard-fails at startup on its synchronous
-# apiserver probe, which races NetworkPolicy enforcement. Unused here (no Web
-# IDE / remote workspaces).
+# apiserver probe, which races NetworkPolicy enforcement. No GitLab Workspaces
+# here; the browser Web IDE and its ide.git extension host need no agent grant.
 remote_development:
   enabled: false

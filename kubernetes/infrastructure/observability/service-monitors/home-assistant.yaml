@@ -53,12 +53,9 @@ spec:
         credentials:
           name: observability-exporter-secrets
           key: ha-api-token
-      # HAOS is HTTPS-only (acme_certs distributes the wildcard cert to
-      # /ssl/, and configuration.yaml sets ssl_certificate under http:), so a
-      # plain-HTTP scrape returns EOF/RST. The target is a bare IP because HAOS
-      # is not a k8s Service, and `serverName` rewrites SNI/host validation to
-      # home.esweiss.com so the wildcard verifies against the system CA bundle
-      # without a caFile or insecureSkipVerify.
+      # HAOS is HTTPS-only (acme_certs distributes the wildcard to /ssl/) and the
+      # target is a bare IP, so serverName rewrites SNI/host validation for the
+      # wildcard to verify against the system CA bundle.
       scheme: https
       tlsConfig:
         serverName: home.${cluster_internal_domain}

@@ -1,10 +1,7 @@
 ---
-# ts-dns: exposes the CoreDNS resolver to the tailnet as an operator device
-# (stable MagicDNS name ts-dns.<tailnet>.ts.net; 100.x is read back by
-# terraform/tailscale/split_dns.tf and set as the Split-DNS nameserver for
-# esweiss.com). UDP+TCP 53 on one LoadBalancer Service (MixedProtocolLBService,
-# GA since k8s 1.26). Device carries tag:k8s (operator default) -> reachable by
-# group:admins per policy.hujson.
+# ts-dns exposes the CoreDNS resolver to the tailnet as an operator device; its
+# 100.x address is read back by terraform/tailscale/split_dns.tf as the
+# Split-DNS nameserver for esweiss.com. UDP and TCP 53 on one LoadBalancer.
 apiVersion: v1
 kind: Service
 metadata:

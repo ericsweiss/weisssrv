@@ -1,0 +1,359 @@
+# https://taskfile.dev
+# Terraform roots, state in the GitLab HTTP backend. CI uses CI_JOB_TOKEN, local
+# runs a 1Password token. terraform:init/plan/apply alias the cloudflare root.
+version: '3'
+
+tasks:
+  cloudflare-init:
+    desc: Initialize Terraform for the cloudflare DNS module (GitLab state backend)
+    dir: "{{.TERRAFORM_DIR}}/cloudflare"
+    # Anchor shared by the cloudflare init/plan/apply tasks: the GitLab state
+    # backend and the Cloudflare vars in one place. terraform init ignores the
+    # TF_VAR_* values; op run resolves them from the Homelab vault.
+    env: &tf_state_env
+      TF_VAR_cloudflare_api_token: op://Homelab/Cloudflare Terraform Token/credential
+      TF_VAR_cloudflare_account_id: op://Homelab/Cloudflare Terraform Token/username
+      TF_HTTP_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/cloudflare"
+      TF_HTTP_LOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/cloudflare/lock"
+      TF_HTTP_UNLOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/cloudflare/lock"
+      TF_HTTP_USERNAME: "terraform"
+      TF_HTTP_PASSWORD: "op://Homelab/GitLab Terraform State Token/credential"
+      TF_HTTP_LOCK_METHOD: "POST"
+      TF_HTTP_UNLOCK_METHOD: "DELETE"
+    # Anchor shared by the cloudflare plan/apply tasks (same terraform + op-auth checks).
+    preconditions: &tf_preconditions
+      - sh: command -v terraform
+        msg: "terraform is not installed. Install via: https://www.terraform.io/downloads"
+      - sh: command -v op
+        msg: "1Password CLI is not installed"
+      # `op account list`, not `op whoami` — see the note on infra:deploy's preconditions.
+      - sh: op account list 2>/dev/null
+        msg: "1Password CLI not authenticated. Run: eval $(op signin)"
+    cmds:
+      - op run -- terraform init {{.CLI_ARGS}}
+
+  cloudflare-plan:
+    desc: Plan cloudflare DNS changes
+    dir: "{{.TERRAFORM_DIR}}/cloudflare"
+    env: *tf_state_env
+    preconditions: *tf_preconditions
+    cmds:
+      - op run -- terraform plan {{.CLI_ARGS}}
+
+  cloudflare-apply:
+    desc: Apply cloudflare DNS changes (interactive confirm; CI also auto-applies on main)
+    dir: "{{.TERRAFORM_DIR}}/cloudflare"
+    env: *tf_state_env
+    preconditions: *tf_preconditions
+    cmds:
+      - op run -- terraform apply {{.CLI_ARGS}}
+
+  cloudflare-state:
+    desc: "Run a `terraform state` subcommand against the cloudflare state (state surgery / read-only state inspection) — usage: task terraform:cloudflare-state -- show <address>"
+    dir: "{{.TERRAFORM_DIR}}/cloudflare"
+    env: *tf_state_env
+    preconditions: *tf_preconditions
+    cmds: &tf_state_cmds
+      # `state` reads the GitLab HTTP backend, whose credentials live only in
+      # each root's env anchor. The verb is HARDCODED so apply/destroy can never
+      # run with them and bypass that root's apply task and its guard.
+      - |
+        if [ -z "{{.CLI_ARGS}}" ]; then
+          echo "Usage: task {{.TASK}} -- <state subcommand> [args]"
+          echo "Example: see this task's description in \`task --list\`."
+          exit 1
+        fi
+      - op run -- terraform state {{.CLI_ARGS}}
+
+  # Unprefixed aliases for the cloudflare module — see the note above.
+  init:
+    desc: "Alias for terraform:cloudflare-init"
+    cmds:
+      - task: cloudflare-init
+        vars: {CLI_ARGS: "{{.CLI_ARGS}}"}
+
+  plan:
+    desc: "Alias for terraform:cloudflare-plan"
+    cmds:
+      - task: cloudflare-plan
+        vars: {CLI_ARGS: "{{.CLI_ARGS}}"}
+
+  apply:
+    desc: "Alias for terraform:cloudflare-apply"
+    cmds:
+      - task: cloudflare-apply
+        vars: {CLI_ARGS: "{{.CLI_ARGS}}"}
+
+  # terraform/tailscale: its own GitLab state name and the Tailscale OAuth creds
+  # (scope acl). apply is supervised — a bad ACL severs tailnet/SSH
+  # (terraform/tailscale/README.md).
+  tailscale-init:
+    desc: Initialize Terraform for the tailscale ACL module (GitLab state backend)
+    dir: "{{.TERRAFORM_DIR}}/tailscale"
+    # Anchor shared by terraform:tailscale-init/plan/apply — Tailscale OAuth vars
+    # + the tailscale-specific HTTP state name in one place.
+    env: &tf_tailscale_env
+      TF_VAR_tailscale_oauth_client_id: op://Homelab/Tailscale OAuth/client id
+      TF_VAR_tailscale_oauth_client_secret: op://Homelab/Tailscale OAuth/credential
+      TF_HTTP_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/tailscale"
+      TF_HTTP_LOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/tailscale/lock"
+      TF_HTTP_UNLOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/tailscale/lock"
+      TF_HTTP_USERNAME: "terraform"
+      TF_HTTP_PASSWORD: "op://Homelab/GitLab Terraform State Token/credential"
+      TF_HTTP_LOCK_METHOD: "POST"
+      TF_HTTP_UNLOCK_METHOD: "DELETE"
+    preconditions: *tf_preconditions
+    cmds:
+      - op run -- terraform init {{.CLI_ARGS}}
+
+  tailscale-plan:
+    desc: "Plan tailscale ACL changes (review the diff vs the live tailnet ACL)"
+    dir: "{{.TERRAFORM_DIR}}/tailscale"
+    env: *tf_tailscale_env
+    preconditions: *tf_preconditions
+    cmds:
+      - op run -- terraform plan {{.CLI_ARGS}}
+
+  tailscale-apply:
+    desc: "SUPERVISED: apply the tailscale ACL — overwrites the live tailnet ACL; read terraform/tailscale/README.md and complete the pre-apply checklist first. Do NOT pass -auto-approve."
+    dir: "{{.TERRAFORM_DIR}}/tailscale"
+    env: *tf_tailscale_env
+    preconditions: *tf_preconditions
+    cmds:
+      # A bad tailnet ACL can sever SSH/tailnet, so the apply is supervised:
+      # non-tty refused, -auto-approve refused, the word "apply" typed.
+      # terraform's own prompt is the second gate.
+      - '{{.ROOT_DIR}}/scripts/supervised-apply-guard.sh terraform:tailscale-apply "terraform/tailscale — this rewrites the live tailnet ACL (SSH access to the whole estate)" {{.CLI_ARGS}}'
+      - op run -- terraform apply {{.CLI_ARGS}}
+
+  tailscale-state:
+    desc: "Run a `terraform state` subcommand against the tailscale state (state surgery / read-only state inspection) — usage: task terraform:tailscale-state -- show <address>"
+    dir: "{{.TERRAFORM_DIR}}/tailscale"
+    env: *tf_tailscale_env
+    preconditions: *tf_preconditions
+    cmds: *tf_state_cmds
+
+  # terraform/authentik: its own GitLab state name, the authentik API token and
+  # the per-provider OAuth2 client secrets the apps consume. Changing a provider
+  # can break a login, so read the plan before confirming (docs/40).
+  authentik-init:
+    desc: Initialize Terraform for the authentik SSO module (GitLab state backend)
+    dir: "{{.TERRAFORM_DIR}}/authentik"
+    # Anchor shared by terraform:authentik-init/plan/import/apply — authentik API
+    # token + OAuth2 client secrets + the authentik-specific HTTP state name
+    # in one place.
+    env: &tf_authentik_env
+      TF_VAR_authentik_token: op://Homelab/Authentik Terraform Token/credential
+      TF_VAR_oauth2_client_secret_mealie: op://Homelab/Mealie SSO/oidc-client-secret
+      TF_VAR_oauth2_client_secret_bar_assistant: op://Homelab/Bar Assistant SSO/authentik-client-secret
+      TF_VAR_oauth2_client_secret_home_assistant: op://Homelab/Home Assistant SSO/authentik-client-secret
+      TF_VAR_oauth2_client_secret_grafana: op://Homelab/Grafana SSO/oidc-client-secret
+      TF_VAR_oauth2_client_secret_nextcloud: op://Homelab/Nextcloud SSO/client-secret
+      TF_VAR_oauth2_client_secret_immich: op://Homelab/Immich SSO/client-secret
+      TF_VAR_oauth2_client_secret_hermes_dashboard: op://Homelab/Hermes Secrets/hermes-dashboard-oidc-client-secret
+      TF_VAR_oauth2_client_secret_homarr: op://Homelab/Homarr SSO/client-secret
+      TF_VAR_basic_auth_nzbget_username: op://Homelab/NZBGet/username
+      TF_VAR_basic_auth_nzbget_password: op://Homelab/NZBGet/password
+      TF_VAR_basic_auth_adguard_username: op://Homelab/AdGuard Home/username
+      TF_VAR_basic_auth_adguard_password: op://Homelab/AdGuard Home/password
+      TF_VAR_user_identities: op://Homelab/Authentik User Identities/notesPlain
+      TF_HTTP_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/authentik"
+      TF_HTTP_LOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/authentik/lock"
+      TF_HTTP_UNLOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/authentik/lock"
+      TF_HTTP_USERNAME: "terraform"
+      TF_HTTP_PASSWORD: "op://Homelab/GitLab Terraform State Token/credential"
+      TF_HTTP_LOCK_METHOD: "POST"
+      TF_HTTP_UNLOCK_METHOD: "DELETE"
+    preconditions: *tf_preconditions
+    cmds:
+      - op run -- terraform init {{.CLI_ARGS}}
+
+  authentik-plan:
+    desc: "Plan authentik SSO changes (read-only diff vs the live authentik objects)"
+    dir: "{{.TERRAFORM_DIR}}/authentik"
+    env: *tf_authentik_env
+    preconditions: *tf_preconditions
+    cmds:
+      - op run -- terraform plan {{.CLI_ARGS}}
+
+  authentik-apply:
+    desc: "SUPERVISED: apply authentik SSO changes (applications/providers/groups) — review terraform:authentik-plan first"
+    dir: "{{.TERRAFORM_DIR}}/authentik"
+    env: *tf_authentik_env
+    preconditions: *tf_preconditions
+    cmds:
+      # This root owns every SSO application/provider, so an unreviewed apply can
+      # lock the estate out of Authentik. CI never runs this task.
+      - '{{.ROOT_DIR}}/scripts/supervised-apply-guard.sh terraform:authentik-apply "terraform/authentik — this rewrites live SSO applications, providers and groups" {{.CLI_ARGS}}'
+      - op run -- terraform apply {{.CLI_ARGS}}
+
+  authentik-import:
+    desc: "One-time/DR state bootstrap: terraform-import every resource in imports.tf (read-only against the API; writes only Terraform state)"
+    dir: "{{.TERRAFORM_DIR}}/authentik"
+    env: *tf_authentik_env
+    preconditions: *tf_preconditions
+    cmds:
+      - op run -- ./import.sh
+
+  authentik-state:
+    desc: "Run a `terraform state` subcommand against the authentik state (state surgery / read-only state inspection) — usage: task terraform:authentik-state -- show <address>"
+    dir: "{{.TERRAFORM_DIR}}/authentik"
+    env: *tf_authentik_env
+    preconditions: *tf_preconditions
+    cmds: *tf_state_cmds
+
+  # terraform/unifi: its own GitLab state name, the controller API key and the
+  # four SSID pre-shared keys. This root owns the VLANs, the zone firewall and
+  # the WLANs, so an unreviewed apply can strand the controller (docs/46).
+  unifi-init:
+    desc: Initialize Terraform for the UniFi network module (GitLab state backend)
+    dir: "{{.TERRAFORM_DIR}}/unifi"
+    # Anchor shared by terraform:unifi-init/plan/apply. Each SSID is its own
+    # variable because one TF_VAR cannot carry four op:// references; adding a
+    # WLAN adds a line here AND in the unifi-drift-plan job (docs/46).
+    env: &tf_unifi_env
+      TF_VAR_unifi_api_url: op://Homelab/UniFi Controller/url
+      TF_VAR_unifi_api_key: op://Homelab/UniFi Controller/api-key
+      TF_VAR_wlan_passphrase_home: op://Homelab/WiFi TheRevengers/password
+      TF_VAR_wlan_passphrase_iot: op://Homelab/WiFi Panopticon/password
+      TF_VAR_wlan_passphrase_guest: op://Homelab/WiFi kugel-tikka-masala/password
+      TF_VAR_wlan_passphrase_work: op://Homelab/WiFi DunderMiffLAN/password
+      TF_HTTP_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/unifi"
+      TF_HTTP_LOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/unifi/lock"
+      TF_HTTP_UNLOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/unifi/lock"
+      TF_HTTP_USERNAME: "terraform"
+      TF_HTTP_PASSWORD: "op://Homelab/GitLab Terraform State Token/credential"
+      TF_HTTP_LOCK_METHOD: "POST"
+      TF_HTTP_UNLOCK_METHOD: "DELETE"
+    preconditions: *tf_preconditions
+    cmds:
+      - op run -- terraform init {{.CLI_ARGS}}
+
+  unifi-plan:
+    desc: "Plan UniFi network changes (read-only diff vs the live controller: networks, zones, policies, WLANs)"
+    dir: "{{.TERRAFORM_DIR}}/unifi"
+    env: *tf_unifi_env
+    preconditions: *tf_preconditions
+    cmds:
+      - op run -- terraform plan {{.CLI_ARGS}}
+
+  unifi-apply:
+    desc: "SUPERVISED: apply UniFi network changes (VLANs/zones/firewall policies/WLANs) — review terraform:unifi-plan first"
+    dir: "{{.TERRAFORM_DIR}}/unifi"
+    env: *tf_unifi_env
+    preconditions: *tf_preconditions
+    cmds:
+      # This root owns every VLAN, the zone firewall and the SSIDs, so an
+      # unreviewed apply can sever routing to the controller itself and recovery
+      # is then physical. CI never runs this task — unifi-drift-plan plans and stops.
+      - '{{.ROOT_DIR}}/scripts/supervised-apply-guard.sh terraform:unifi-apply "terraform/unifi — this rewrites live VLANs, firewall zones/policies and WLANs" {{.CLI_ARGS}}'
+      - op run -- terraform apply {{.CLI_ARGS}}
+
+  unifi-import:
+    desc: "One-time/DR state bootstrap: terraform-import one pre-existing controller object (read-only against the API; writes only Terraform state) — usage: task terraform:unifi-import -- <address> <id>"
+    dir: "{{.TERRAFORM_DIR}}/unifi"
+    env: *tf_unifi_env
+    preconditions: *tf_preconditions
+    cmds:
+      # No import.sh counterpart to authentik's: the UniFi ids are read off the
+      # live controller one object at a time, so the address and id arrive as
+      # CLI_ARGS. The order is terraform/unifi/README.md § Adopting the live site.
+      - |
+        if [ -z "{{.CLI_ARGS}}" ]; then
+          echo "Usage: task terraform:unifi-import -- <address> <id>"
+          echo "Example: task terraform:unifi-import -- 'module.network.unifi_network.this[\"default\"]' name=Default"
+          exit 1
+        fi
+      - op run -- terraform import {{.CLI_ARGS}}
+
+  unifi-state:
+    desc: "Run a `terraform state` subcommand against the UniFi state (state surgery / read-only state inspection) — usage: task terraform:unifi-state -- show <address>"
+    dir: "{{.TERRAFORM_DIR}}/unifi"
+    env: *tf_unifi_env
+    preconditions: *tf_preconditions
+    cmds: *tf_state_cmds
+
+  unifi-untaint:
+    desc: "Untaint one UniFi resource (clears the destroy-and-recreate mark a failed create leaves) — usage: task terraform:unifi-untaint -- '<address>'"
+    dir: "{{.TERRAFORM_DIR}}/unifi"
+    env: *tf_unifi_env
+    preconditions: *tf_preconditions
+    cmds:
+      # `untaint` only clears a taint mark; it never reaches the controller. The
+      # verb is HARDCODED so these backend credentials never reach a generic
+      # terraform passthrough. CLI_ARGS is spliced bare — Task already shell-quotes it.
+      - |
+        {{if not .CLI_ARGS}}
+        echo "Usage: task terraform:unifi-untaint -- '<resource address>'"
+        echo "Example: task terraform:unifi-untaint -- 'module.network.unifi_wlan.this[\"home\"]'"
+        exit 1
+        {{end}}
+      - op run -- terraform untaint {{.CLI_ARGS}}
+
+  unifi-settings-drift:
+    desc: "Drift-check the console-owned UniFi settings (IPS posture) against scripts/unifi-settings.json (read-only)"
+    # The module ignores the whole `ips` block, so no plan shows this drift.
+    env:
+      UNIFI_API_URL: op://Homelab/UniFi Controller/url
+      UNIFI_API_KEY: op://Homelab/UniFi Controller/api-key
+      # The console serves its own certificate on the LAN address it is.
+      UNIFI_ALLOW_INSECURE: "1"
+    # No terraform in this task, so only the 1Password checks apply.
+    preconditions:
+      - sh: command -v op
+        msg: "1Password CLI is not installed"
+      # `op account list`, not `op whoami` — see the note on infra:deploy's preconditions.
+      - sh: op account list 2>/dev/null
+        msg: "1Password CLI not authenticated. Run: eval $(op signin)"
+    cmds:
+      - op run -- python3 scripts/unifi-settings-drift.py
+
+  validate:
+    desc: Validate Terraform configuration (alias for validate-local)
+    cmds:
+      - task: validate-local
+
+  fmt:
+    desc: Format Terraform files (all modules)
+    dir: "{{.TERRAFORM_DIR}}"
+    cmds:
+      # Run from terraform/ so -recursive covers every module (cloudflare +
+      # tailscale + authentik + unifi), matching the CI terraform-fmt job.
+      - terraform fmt -recursive
+
+  fmt-check:
+    desc: Check Terraform formatting (all modules)
+    dir: "{{.TERRAFORM_DIR}}"
+    cmds:
+      - terraform fmt -check -recursive
+
+  tflint:
+    desc: Lint every Terraform root with tflint (no backend auth required)
+    dir: "{{.TERRAFORM_DIR}}"
+    preconditions:
+      - sh: command -v tflint
+        msg: "tflint not installed. brew install tflint or see https://github.com/terraform-linters/tflint"
+    cmds:
+      # --recursive walks all four roots under terraform/; the modules they
+      # call live in weisssrv-lib.
+      # `tflint --init` fetches the plugins named in .tflint.hcl, if any.
+      - tflint --init
+      - tflint --recursive --minimum-failure-severity=error
+
+  validate-local:
+    desc: Validate Terraform syntax for every module (no backend auth required)
+    dir: "{{.TERRAFORM_DIR}}"
+    cmds:
+      - |
+        set -euo pipefail
+        # Validate every module under terraform/ (mirrors the CI
+        # terraform-validate job). A per-module .terraform/validate dir caches
+        # the module downloads and keeps a backend-free init off the real state.
+        for mod in */; do
+          [ -f "${mod}versions.tf" ] || continue
+          echo "=== terraform validate ${mod} ==="
+          ( cd "$mod" \
+            && export TF_DATA_DIR=".terraform/validate" \
+            && terraform init -backend=false -input=false > /dev/null \
+            && terraform validate )
+        done

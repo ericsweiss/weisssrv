@@ -160,7 +160,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "max(redis_up)",
+          "expr": "max(redis_up{job=\"redis-exporter\"})",
           "legendFormat": "redis",
           "refId": "A"
         }
@@ -200,7 +200,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "max(redis_connected_clients)",
+          "expr": "max(redis_connected_clients{job=\"redis-exporter\"})",
           "legendFormat": "clients",
           "refId": "A"
         }
@@ -233,7 +233,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "max(redis_memory_used_bytes)",
+          "expr": "max(redis_memory_used_bytes{job=\"redis-exporter\"})",
           "legendFormat": "used",
           "refId": "A"
         }
@@ -278,13 +278,13 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "max(irate(redis_keyspace_hits_total[5m]))",
+          "expr": "max(irate(redis_keyspace_hits_total{job=\"redis-exporter\"}[5m]))",
           "legendFormat": "hits",
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "max(irate(redis_keyspace_misses_total[5m]))",
+          "expr": "max(irate(redis_keyspace_misses_total{job=\"redis-exporter\"}[5m]))",
           "legendFormat": "misses",
           "refId": "B"
         }
@@ -329,21 +329,117 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "max(redis_memory_used_bytes)",
+          "expr": "max(redis_memory_used_bytes{job=\"redis-exporter\"})",
           "legendFormat": "used",
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "max(redis_memory_max_bytes)",
+          "expr": "max(redis_memory_max_bytes{job=\"redis-exporter\"})",
           "legendFormat": "max",
           "refId": "B"
         }
       ]
     },
     {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisLabel": "",
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 5, "w": 12, "x": 0, "y": 11 },
+      "id": 13,
+      "options": {
+        "legend": {
+          "calcs": ["mean", "max"],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "title": "Redis Commands / sec",
+      "type": "timeseries",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (cmd) (rate(redis_commands_total{job=\"redis-exporter\"}[5m]))",
+          "legendFormat": "{{cmd}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisLabel": "",
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 5, "w": 12, "x": 12, "y": 11 },
+      "id": 14,
+      "options": {
+        "legend": {
+          "calcs": ["mean", "max"],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "title": "Redis Expired / Evicted Keys",
+      "type": "timeseries",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(redis_expired_keys_total{job=\"redis-exporter\"}[5m]))",
+          "legendFormat": "expired",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(redis_evicted_keys_total{job=\"redis-exporter\"}[5m]))",
+          "legendFormat": "evicted",
+          "refId": "B"
+        }
+      ]
+    },
+    {
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 11 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 16 },
       "id": 102,
       "panels": [],
       "title": "Resource Usage",
@@ -373,7 +469,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 17 },
       "id": 9,
       "options": {
         "legend": {
@@ -418,7 +514,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 17 },
       "id": 10,
       "options": {
         "legend": {
@@ -441,7 +537,7 @@
     },
     {
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 20 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 25 },
       "id": 103,
       "panels": [],
       "title": "Probe History",
@@ -475,7 +571,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 21 },
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 26 },
       "id": 11,
       "options": {
         "legend": {
@@ -504,7 +600,7 @@
     },
     {
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 27 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 32 },
       "id": 104,
       "panels": [],
       "title": "Logs",
@@ -512,7 +608,7 @@
     },
     {
       "datasource": { "type": "loki", "uid": "loki" },
-      "gridPos": { "h": 14, "w": 24, "x": 0, "y": 28 },
+      "gridPos": { "h": 14, "w": 24, "x": 0, "y": 33 },
       "id": 12,
       "options": {
         "dedupStrategy": "none",

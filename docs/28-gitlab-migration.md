@@ -23,7 +23,7 @@ This guide covers:
 3. 1Password service account setup for CI/CD
 4. Runner registration
 5. Scheduled pipeline configuration
-6. AI code review tool integration (PR-Agent/Qodo Merge)
+6. AI code review (the shared PR-Agent job)
 7. Verification checklist
 8. Rollback plan
 
@@ -332,148 +332,41 @@ Runner token rotation (glrt-* tokens):
 
 ### Step 5.2: (Optional) Create Additional Schedules
 
-Additional schedules can be created for specific maintenance tasks. Note that scheduled
-pipelines run only `version-check` and `secret_detection` -- all other jobs (lint,
-validate, test, ai-review, gate, deploy, and maintenance) are explicitly excluded from
-scheduled pipelines via `when: never` rules, so schedules will never trigger builds,
-tests, deployments, or maintenance operations.
+Additional schedules can be created for specific maintenance tasks. What a
+scheduled pipeline actually runs is documented in the pipeline-source header of
+`.gitlab-ci.yml` and in [docs/13-ci-cd.md](13-ci-cd.md) § Validate Stage: an
+unqualified schedule runs `version-check`, `secret_detection` and the four
+read-only Terraform/B2 drift plans (tailscale, authentik, unifi, b2). Everything
+else is `when: never`, except two typed schedules — `SCHEDULE_TYPE=full-test`
+(the integration tests, unfiltered) and `SCHEDULE_TYPE=version-bump`
+(version-bump-bot). No schedule deploys.
 
 To add a scheduled pipeline:
 1. Click **New schedule**
 2. Configure the interval, timezone, and target branch
 3. Click **Save pipeline schedule**
 
-## Part 6: AI Code Review Integration
+## Part 6: AI Code Review
 
-### Option A: Qodo Merge / PR-Agent (Recommended for Self-Hosted)
+The MR reviewer is the shared library template `eric/weisssrv-lib`
+`/ci/review/pr-agent.yml`, included from `.gitlab-ci.yml` at
+`$WEISSSRV_LIB_REF` with `secrets_source: "env"` and gated on `$OPENAI__KEY`.
+The image is digest-pinned in the template (`pragent/pr-agent:0.40.0@sha256:…`;
+the older `codiumai/` namespace is frozen at 0.34).
 
-PR-Agent by Qodo is open-source and fully supports self-hosted GitLab.
+Both credentials are **masked project CI variables**, not 1Password reads:
 
-#### Step 6.1: Add PR-Agent CI Job
+- `OPENAI__KEY` — the `OpenAI API Key` 1Password item is Mealie's, not this
+  job's.
+- `GITLAB__PERSONAL_ACCESS_TOKEN` — the `weisssrv-review-bot` **project** access
+  token (**Settings > Access Tokens**, role Developer, scopes `api`,
+  `read_repository`). Never the instance-admin `GitLab API Token` item: an
+  MR-branch-controlled job must not hold admin scope.
 
-**Note:** The canonical CI configuration is in `.gitlab-ci.yml` at the repo root. The snippet below is for reference only and may not reflect the latest production settings.
-
-The job below runs in whatever stage is configured in the canonical `.gitlab-ci.yml`
-(currently `ai-review`). See the live pipeline file for the definitive stage list.
-
-```yaml
-# AI-powered code review via PR-Agent
-pr-agent-review:
-  image: codiumai/pr-agent:latest
-  variables:
-    CONFIG__GIT_PROVIDER: "gitlab"
-    GITLAB__URL: "https://git.ericsweiss.com"
-  script:
-    - |
-      # Get secrets from 1Password
-      export GITLAB__PERSONAL_ACCESS_TOKEN=$(op read "op://Homelab/GitLab API Token/credential")
-      export OPENAI__KEY=$(op read "op://Homelab/OpenAI API Key/api-key")
-
-      # Run PR-Agent review (must use full MR URL, not just the IID)
-      python -m pr_agent.cli \
-        --pr_url="https://git.ericsweiss.com/eric/weisssrv/-/merge_requests/${CI_MERGE_REQUEST_IID}" \
-        review
-      python -m pr_agent.cli \
-        --pr_url="https://git.ericsweiss.com/eric/weisssrv/-/merge_requests/${CI_MERGE_REQUEST_IID}" \
-        improve
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-  allow_failure: true  # Don't block MRs on AI review
-```
-
-#### Step 6.2: Create the PR-Agent token
-
-> The live project does **not** use the `GitLab API Token` 1Password item here —
-> that item is the instance-admin PAT, and pointing an MR-branch-controlled job
-> at it would hand admin scope to any branch. Mint a **project** access token
-> instead.
-
-1. In the project: **Settings > Access Tokens**
-2. Name `weisssrv-review-bot`, role Developer, scopes `api`, `read_repository`
-3. Store the value in the masked CI variable `GITLAB__PERSONAL_ACCESS_TOKEN`
-   (the job runs `secrets_source: env`)
-
-#### Step 6.3: OpenAI key
-
-Store the key in the masked CI variable `OPENAI__KEY`. The `OpenAI API Key`
-1Password item is Mealie's, not this job's.
-
-### Option B: Cursor Bugbot (Requires Paid GitLab)
-
-Cursor Bugbot supports self-hosted GitLab but requires GitLab Premium or Ultimate for project access tokens.
-
-#### Requirements:
-- **GitLab Premium or Ultimate** (for project access tokens)
-- **Network access**: GitLab must be accessible from cursor.com servers or via IP whitelist
-
-#### Step 6.4: Setup (If Using Paid GitLab)
-
-1. Navigate to Cursor dashboard: https://cursor.com/dashboard
-2. Go to **Advanced** > **Bugbot**
-3. Enter your GitLab instance URL: `https://git.ericsweiss.com`
-4. Create GitLab application:
-   - Navigate to **Admin Area** > **Applications** (instance-level)
-   - Create application with:
-     - **Name**: `Cursor Bugbot`
-     - **Redirect URI**: `https://cursor.com/gitlab-connected`
-     - **Trusted**: Yes
-     - **Confidential**: Yes
-     - **Scopes**: `api`, `write_repository`
-5. Enter Application ID and Secret in Cursor dashboard
-6. Sync repositories and enable Bugbot on weisssrv
-
-### Option C: OpenAI Codex CI Integration
-
-The OpenAI Codex cookbook approach uses Codex CLI in a GitLab CI job.
-
-#### Step 6.5: Add Codex Review Job
-
-```yaml
-codex-review:
-  stage: ai-review
-  image: node:20
-  before_script:
-    - npm install -g @openai/codex-cli
-  script:
-    - |
-      export OPENAI_API_KEY=$(op read "op://Homelab/OpenAI API Key/api-key")
-
-      # Get changed files
-      git diff --name-only $CI_MERGE_REQUEST_DIFF_BASE_SHA...HEAD > changed_files.txt
-
-      # Review each file
-      for file in $(cat changed_files.txt); do
-        if [ -f "$file" ]; then
-          echo "Reviewing: $file"
-          codex review "$file" >> review_output.txt 2>&1 || true
-        fi
-      done
-
-      # Post results as MR comment
-      if [ -s review_output.txt ]; then
-        curl --request POST \
-          --header "PRIVATE-TOKEN: $(op read 'op://Homelab/GitLab API Token/credential')" \
-          --data-urlencode "body@review_output.txt" \
-          "https://git.ericsweiss.com/api/v4/projects/$CI_PROJECT_ID/merge_requests/$CI_MERGE_REQUEST_IID/notes"
-      fi
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-  allow_failure: true
-```
-
-### Comparison of AI Code Review Options
-
-| Feature | PR-Agent (Qodo) | Cursor Bugbot | OpenAI Codex CI |
-|---------|-----------------|---------------|-----------------|
-| Self-hosted GitLab | Yes | Requires Premium+ | Yes |
-| Open source | Yes | No | Partial |
-| AI model | OpenAI/Claude/etc. | Proprietary | OpenAI |
-| Setup complexity | Medium | Low | High |
-| Cost | Free (self-hosted) + AI API | $20/seat/month | AI API only |
-| MR comments | Yes | Yes | Custom implementation |
-| Multi-line suggestions | Yes | Yes | Limited |
-
-**Recommendation**: Start with **PR-Agent** as it's open-source, supports self-hosted GitLab on any tier, and covers all standard review features.
+`secrets_source: env` is deliberate — it keeps 1Password out of a job whose CI
+config comes from the branch under review. Inputs and defaults live in the
+template's `spec.inputs`; pipeline wiring is in
+[docs/13-ci-cd.md](13-ci-cd.md) § Shared CI library.
 
 ## Part 7: Verification Checklist
 
@@ -537,7 +430,7 @@ After merging to main:
 
 1. Navigate to **CI/CD** > **Schedules**
 2. Click **Play** on the version check schedule
-3. Verify pipeline runs and `version-check` and `secret_detection` jobs complete (these are the only two jobs that run on scheduled pipelines)
+3. Verify the pipeline runs and the scheduled job set completes — see the pipeline-source header in `.gitlab-ci.yml` for what a schedule triggers
 
 ## Part 8: Rollback Plan
 
@@ -624,18 +517,6 @@ git config push.default current
 git remote set-url --push origin ssh://git@git.ericsweiss.com:2222/eric/weisssrv.git
 ```
 
-### Clean Up Stale DDNS CronJob
-
-The DDNS CronJob was moved from the `default` namespace to `cloudflare-ddns`. Remove the
-old CronJob to avoid duplicate executions:
-
-```bash
-kubectl delete cronjob cloudflare-ddns -n default --ignore-not-found
-```
-
-(The DDNS CronJob itself is now part of `kubernetes/infrastructure/configs/cloudflare-ddns/`
-and Flux-managed.)
-
 ### Notify Collaborators
 
 If others access the repository:
@@ -688,5 +569,3 @@ If others access the repository:
 - [GitLab Push Mirroring](https://docs.gitlab.com/ee/user/project/repository/mirror/push.html)
 - [1Password Service Accounts](https://developer.1password.com/docs/service-accounts/)
 - [PR-Agent Documentation](https://qodo-merge-docs.qodo.ai/)
-- [Cursor Bugbot Setup](https://cursor.com/docs/bugbot)
-- [OpenAI Codex GitLab Cookbook](https://developers.openai.com/cookbook/examples/codex/secure_quality_gitlab/)

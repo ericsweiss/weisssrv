@@ -1,12 +1,7 @@
 ---
-# Homarr dashboard (homarr-labs) — a single-container Next.js standalone app
-# serving the homelab launcher/dashboard on :7575. All runtime state is env +
-# the SQLite DB on the NFS volume (populated through the UI); there is no
-# HelmRelease because a chart adds nothing over these raw manifests (docs/41).
-#
-# strategy: Recreate + replicas: 1 — the single RWO NFS volume backing the
-# SQLite DB must never be dual-mounted across a rolling update (SQLite is a
-# single-writer store; see storage.yaml).
+# Homarr dashboard (docs/41) — one Next.js container on :7575, state in env +
+# the SQLite DB on the NFS volume. Recreate + replicas 1: the RWO volume backs
+# a single-writer SQLite store and must never be dual-mounted.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -48,10 +43,9 @@ spec:
         ${cluster_node_label_domain}/cpu: "modern"
       # No in-cluster API access.
       automountServiceAccountToken: false
-      # Homarr v1.x is nginx-fronted: run.sh templates /etc/nginx/nginx.conf at
-      # boot, so the image needs its own root entrypoint — pinning runAsUser
-      # breaks that templating and nothing ever listens on :7575. Data writes
-      # still land 1000:2000 via the export's all_squash mapping.
+      # nginx-fronted: run.sh templates /etc/nginx/nginx.conf at boot, so the
+      # image needs its root entrypoint — pinning runAsUser breaks that and
+      # nothing listens on :7575. Data writes land 1000:2000 via all_squash.
       securityContext:
         fsGroup: 2000
         seccompProfile:
@@ -60,10 +54,8 @@ spec:
         options:
           - name: ndots
             value: "1"
-          # ClusterFirst pods resolve via the DNAT'd kube-dns ClusterIP; force a
-          # fresh socket for glibc's parallel A/AAAA queries so the conntrack
-          # DNAT-insert race can't cost a ~5s resolver stall. The pod does
-          # in-cluster + LAN + external DNS. Kept in sync with hermes/mealie.
+          # ClusterFirst pod on the DNAT'd kube-dns path — fresh socket for the
+          # second parallel A/AAAA query avoids the ~5s conntrack DNAT race.
           - name: single-request-reopen
       containers:
         - name: homarr
@@ -73,7 +65,7 @@ spec:
           imagePullPolicy: IfNotPresent
           env:
             - name: TZ
-              value: America/Los_Angeles
+              value: ${cluster_timezone}
             # Trust the PVE cluster CA for the Proxmox integration's
             # https://<node>:8006 calls (see pve-ca-configmap.yaml).
             # NODE_EXTRA_CA_CERTS extends the default store, never replaces it.
@@ -86,13 +78,9 @@ spec:
                 secretKeyRef:
                   name: homarr-secrets
                   key: secret-encryption-key
-            # SSO-only: OIDC (Authentik) is the sole login provider; there is
-            # no standing local admin. Admin comes from the `homarr-admins` OIDC
-            # groups claim mapping to the same-named Homarr group (homarr-labs#2108:
-            # an OIDC-only first login does not auto-grant admin, the group
-            # mapping does). DR for a total Authentik outage: re-enable
-            # "credentials" via `task flux:dev-apply` + `homarr-cli
-            # recreate-admin` in the pod. See docs/41 §SSO.
+            # SSO-only: OIDC (Authentik) is the sole login provider and admin
+            # comes from the `homarr-admins` groups claim, not from first login.
+            # Authentik-outage break-glass: docs/41 §SSO.
             - name: AUTH_PROVIDERS
               value: "oidc"
             - name: AUTH_OIDC_CLIENT_ID
@@ -102,11 +90,9 @@ spec:
                 secretKeyRef:
                   name: homarr-secrets
                   key: oidc-client-secret
-            # Issuer = the `dashboard` application slug on the EXTERNAL authentik
-            # host, WITH the trailing slash Authentik's OIDC discovery requires.
-            # auth.ericsweiss.com resolves internally to Traefik VIP .101
-            # (split-horizon); the server-side discovery/JWKS/token fetch rides
-            # the traefik-namespace :443 egress rule (networkpolicy.yaml).
+            # Issuer = the `dashboard` slug on the EXTERNAL authentik host, WITH
+            # the trailing slash discovery requires. In-pod that name resolves
+            # to Traefik VIP .101, so discovery rides the traefik egress rule.
             - name: AUTH_OIDC_ISSUER
               value: https://auth.${cluster_external_domain}/application/o/dashboard/
             # Authorize endpoint, set for parity with the goauthentik integration
@@ -130,21 +116,18 @@ spec:
             # explicit SSO button; harmless with credentials retired).
             - name: AUTH_OIDC_AUTO_LOGIN
               value: "false"
-            # NextAuth (Auth.js v5) must trust Traefik's forwarded Host to build
-            # the correct per-hostname callback for the dual external/internal
-            # hostnames. Traefik overwrites the forwarded headers itself and the
-            # NetworkPolicy admits only Traefik to :7575, so this is safe.
+            # NextAuth must trust Traefik's forwarded Host to build the right
+            # per-hostname callback. Safe here: Traefik overwrites those headers
+            # and the NetworkPolicy admits only Traefik to :7575.
             - name: AUTH_TRUST_HOST
               value: "true"
           ports:
             - name: http
               containerPort: 7575
               protocol: TCP
-          # tcpSocket, not httpGet: Homarr is a redirect-heavy SPA (an
-          # unauthenticated GET 302s to the OIDC login), so a listener-up check
-          # is the honest health signal without coupling pod health to any
-          # specific route/status. startupProbe covers the first Next.js boot +
-          # SQLite migration on the NFS volume.
+          # tcpSocket, not httpGet: Homarr is a redirect-heavy SPA, so a
+          # listener-up check is the honest health signal. startupProbe covers
+          # the first Next.js boot + SQLite migration on the NFS volume.
           startupProbe:
             tcpSocket:
               port: http
@@ -162,12 +145,9 @@ spec:
             periodSeconds: 30
             timeoutSeconds: 10
             failureThreshold: 5
-          # Hand-set limit (the VPA is RequestsOnly — docs/33 § Limit
-          # oscillation): 896Mi is the 30d working-set peak (548Mi) +60%. The
-          # old 512Mi sat under that peak and only held because the mutating
-          # VPA webhook rewrote it upward at admission — and that webhook is
-          # failurePolicy: Ignore, so a pod admitted while it is down runs at
-          # whatever this file declares.
+          # Hand-set limit (VPA is RequestsOnly - docs/33): 896Mi = 30d
+          # working-set peak (548Mi) +60%. The VPA webhook is failurePolicy:
+          # Ignore, so a pod admitted while it is down runs at exactly this.
           resources:
             requests:
               cpu: 50m
@@ -179,11 +159,9 @@ spec:
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
-              # The root entrypoint's needs, nothing more — each cap verified
-              # against the live pod: chown data dirs, setuid/setgid so nginx
-              # workers drop to the unprivileged user, and DAC_OVERRIDE for
-              # nginx's /var/lib/nginx logs/tmp dirs (without it nginx dies at
-              # boot with EACCES and nothing listens on :7575).
+              # The root entrypoint's needs, nothing more: chown data dirs,
+              # setuid/setgid so nginx workers drop to the unprivileged user,
+              # DAC_OVERRIDE for nginx's /var/lib/nginx dirs (else EACCES).
               add: ["CHOWN", "SETUID", "SETGID", "DAC_OVERRIDE"]
             # run.sh writes /etc/nginx/nginx.conf + nginx tmp/cache dirs and
             # Next.js writes cache/tmp under the app tree — rootfs must be

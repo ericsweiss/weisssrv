@@ -1,30 +1,8 @@
 #!/usr/bin/env python3
 """Delete admission-rejected (Failed-phase) Hindsight pods left by GPU-node reboots.
 
-Hindsight's llama sidecar requests nvidia.com/gpu, satisfiable only on the single
-GPU agent (pve-prec-01). When that node reboots — kured coordinated reboots,
-driver reloads — the kubelet starts admitting pods before the NVIDIA device
-plugin has re-registered healthy GPUs, so a replacement pod scheduled in that
-window is rejected at admission ("no healthy devices present; cannot allocate
-unhealthy devices nvidia.com/gpu"). The Deployment recovers correctly once the
-GPU is healthy, but each rejected pod lingers in phase=Failed: the ReplicaSet
-controller never deletes pods it owns, and cluster pod-GC only fires past a high
-cluster-wide threshold, so they accumulate across reboots until swept by hand.
-
-This is that sweep. It lists Failed-phase pods carrying the Hindsight app label in
-the hindsight namespace and deletes those older than MIN_AGE_MINUTES (a margin so
-a just-failed pod the controllers are still reconciling is never touched). It
-NEVER touches a Running/Pending pod, so the live replica is safe, and it KEEPS
-Failed pods whose reason is Evicted or OOMKilled — a resource-pressure eviction
-on this memory-constrained GPU node is evidence to investigate, not a corpse to
-sweep. Root cause and why prevention would need the full GPU Operator:
-docs/43-gpu-passthrough.md § Reaping admission-rejected pods.
-
-Mounted into the hindsight-reaper CronJob from the configMapGenerator in this
-directory (kustomize refuses generator sources outside the kustomization root,
-which is why this is not in scripts/; its tests are
-scripts/test_hindsight_reaper.py). Stdlib only — the job runs a bare
-python:3-slim image with no pip step.
+Stdlib only, mounted into the hindsight-reaper CronJob by this directory's
+configMapGenerator. Behaviour and root cause: docs/43-gpu-passthrough.md.
 """
 from __future__ import annotations
 
@@ -38,17 +16,14 @@ from datetime import datetime, timezone
 from typing import NamedTuple
 from urllib.parse import urlencode
 
-# Hindsight's Deployment pod-template label; a static app label, so unlike the
-# runner reaper's cluster-config placeholder it needs no Flux substitution and
-# pytest imports it as-is. Restricting the sweep to labelled pods means an
-# unrelated pod that someone `kubectl run`s into the namespace is never reaped.
+# Hindsight's Deployment pod-template label. Static, so unlike the runner
+# reaper's cluster-config placeholder it needs no Flux substitution. Restricting
+# the sweep to labelled pods spares an unrelated pod in the namespace.
 LABEL = "app.kubernetes.io/name=hindsight"
 
-# Failed pods carrying one of these reasons are diagnostically valuable — a
-# node-pressure eviction or OOM on the memory-constrained GPU node is a signal to
-# investigate, not a corpse to sweep — so they are KEPT even past MIN_AGE.
-# Everything else in phase=Failed on a Deployment-managed pod is a benign
-# admission-reject / generic terminal corpse the live replica has superseded.
+# A node-pressure eviction or OOM on this memory-constrained GPU node is evidence
+# to investigate, so a Failed pod carrying one of these reasons is KEPT past
+# MIN_AGE. Everything else in phase=Failed is a corpse the live replica replaced.
 PRESERVE_REASONS = frozenset({"Evicted", "OOMKilled"})
 
 API = "https://kubernetes.default.svc"
@@ -57,10 +32,9 @@ SA_DIR = "/var/run/secrets/kubernetes.io/serviceaccount"
 
 class Config(NamedTuple):
     namespace: str
-    # A pod is reaped only once it has been Failed longer than this, so a pod the
-    # ReplicaSet controller is still reconciling in the current instant is left
-    # alone. Admission-rejected pods are terminal the moment they appear, so the
-    # margin is pure conservatism, not correctness.
+    # A pod is reaped only once it has been Failed longer than this, so one the
+    # ReplicaSet controller is still reconciling is left alone. Pure
+    # conservatism: admission-rejected pods are terminal the moment they appear.
     min_age_minutes: int
     # Soft cap < the Job's activeDeadlineSeconds: stop cleanly and let the next
     # run continue instead of a hard deadline-kill -> failed Job.
@@ -132,9 +106,7 @@ class KubeApi:
 def _paged(api, path: str, params: dict, page: int):
     """Yield each list response, following the continue token.
 
-    Paged rather than listed whole so a large backlog cannot exhaust the
-    container's memory limit before anything is deleted. urlencode because the
-    label key's '/' and the field selector's '=' must be encoded.
+    Paged so a large backlog cannot exhaust the container's memory limit.
     """
     params = dict(params, limit=str(page))
     while True:
@@ -160,13 +132,10 @@ def parse_ts(ts: str) -> datetime:
 
 
 def is_replicaset_owned(pod: dict) -> bool:
-    """True if a ReplicaSet owns the pod — i.e. it is a Deployment replica, the
-    only kind this reaper is scoped to.
+    """True if a ReplicaSet owns the pod, i.e. it is a Deployment replica.
 
-    The label + phase selectors already exclude everything but Failed Hindsight
-    pods, but a hand-created/bare pod could carry the app label too; requiring a
-    ReplicaSet owner keeps the sweep to genuine Deployment replicas (which every
-    admission-rejected pod is) and never a standalone pod someone left behind.
+    A hand-created pod can carry the app label too; requiring a ReplicaSet owner
+    keeps the sweep to genuine replicas, which every admission-rejected pod is.
     """
     for owner in pod.get("metadata", {}).get("ownerReferences") or []:
         if owner.get("kind") == "ReplicaSet":
@@ -174,12 +143,27 @@ def is_replicaset_owned(pod: dict) -> bool:
     return False
 
 
+def preserve_reason(pod: dict) -> str:
+    """The PRESERVE_REASONS reason to keep this pod for, or "" if it is sweepable.
+
+    Checked at both levels: Kubernetes sets Evicted on the pod, while OOMKilled
+    only ever appears on a container status.
+    """
+    reason = pod.get("status", {}).get("reason", "")
+    if reason in PRESERVE_REASONS:
+        return reason
+    for status in pod.get("status", {}).get("containerStatuses") or []:
+        terminated = (status.get("state") or {}).get("terminated") or {}
+        if terminated.get("reason") in PRESERVE_REASONS:
+            return terminated["reason"]
+    return ""
+
+
 def creation_age_minutes(pod: dict, now: datetime) -> int | None:
-    """Age from creationTimestamp; unparseable/absent -> None (KEEP).
+    """Age from creationTimestamp; unparseable or absent gives None (keep the pod).
 
     An admission-rejected pod never starts a container, so it has no
-    terminated.finishedAt to age from — creationTimestamp is the only clock, and
-    for a pod that fails at admission it is effectively the failure time.
+    terminated.finishedAt to age from.
     """
     ts = pod.get("metadata", {}).get("creationTimestamp")
     if not ts:
@@ -220,8 +204,9 @@ def reap(api, cfg: Config, now: datetime, over_budget, log=print) -> Outcome:
                 log(f"KEEP   {ns}/{name} (not ReplicaSet-owned)", flush=True)
                 continue
             reason = pod.get("status", {}).get("reason", "")
-            if reason in PRESERVE_REASONS:
-                log(f"KEEP   {ns}/{name} (reason={reason} preserved for investigation)", flush=True)
+            preserved = preserve_reason(pod)
+            if preserved:
+                log(f"KEEP   {ns}/{name} (reason={preserved} preserved for investigation)", flush=True)
                 continue
             age = creation_age_minutes(pod, now)
             if age is None:

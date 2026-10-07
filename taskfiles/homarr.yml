@@ -1,0 +1,33 @@
+# https://taskfile.dev
+# Homarr, the homelab dashboard (docs/41).
+version: '3'
+
+tasks:
+  status:
+    desc: Show Homarr status (pods, service, PVC, ingress, ExternalSecrets)
+    cmds:
+      - task: :_app:status
+        vars:
+          NS: homarr
+          SECTIONS: |
+            Homarr Namespace|pods
+            Service|svc
+            PVC|pvc
+            IngressRoutes|ingressroute
+            ExternalSecrets|externalsecrets
+
+  logs:
+    desc: Tail Homarr logs
+    cmds:
+      - task: :_app:logs
+        vars:
+          NS: homarr
+          TARGET: deploy/homarr
+
+  restart:
+    desc: Restart Homarr (pod delete; Flux-managed, replicas:1 + Recreate)
+    cmds:
+      - task: :_app:restart
+        vars:
+          NS: homarr
+          SELECTOR: -l app.kubernetes.io/name=homarr

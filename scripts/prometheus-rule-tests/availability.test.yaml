@@ -1,26 +1,14 @@
 ---
-# promtool unit tests for the availability alerts added by the observability
-# split: the critical etcd/node pair, the wg-easy WAN endpoint, the *Down
-# deployment/statefulset rules, and PostgresDown. Every one of these is either
-# an `or absent(...)` composition (whose empty-vector arm review cannot check)
-# or a rule the Alertmanager behaviour gate names by hand — EtcdQuorumAtRisk is
-# a ROUTE_CASE in scripts/check-alertmanager-behaviour.py, so a rename here has
-# to break something loudly.
-#
-# A ROUTE_CASE pins the severity->receiver mapping, not the alertname —
-# check_route_case_alertnames() in scripts/check-alertmanager-behaviour.py is
-# what fails when a ROUTE_CASE names a rule the corpus no longer defines.
+# promtool unit tests for the availability alerts: the critical etcd/node pair,
+# the wg-easy WAN endpoint, the *Down deployment/statefulset rules, and
+# PostgresDown. Rules not covered here are single-series thresholds.
 rule_files:
   - rules.yaml
-# 5m, not the 1m the short-horizon files use: the etcd/node cases run to 6-7h of
-# simulated time, and promtool re-evaluates every rule in the corpus once per
-# interval. 5m is still three evaluations inside the shortest `for:` here (15m).
+# 5m interval: the etcd/node cases run to 6-7h of simulated time (README.md).
 evaluation_interval: 5m
 tests:
-  # EtcdQuorumAtRisk — 2 of 3 members up is already "at risk" (one more loss
-  # takes the API server down), so the boundary is <= 2, one member LOOSER than
-  # upstream's etcdInsufficientMembers (see etcd.test.yaml). 6h `for`, so the
-  # evaluation window has to clear it.
+  # EtcdQuorumAtRisk fires at <= 2 members up, one member looser than upstream's
+  # etcdInsufficientMembers. The 6h `for` sets the evaluation window.
   - interval: 1m
     input_series:
       - series: 'up{job="kube-etcd", instance="10.0.10.222:2381"}'
@@ -50,10 +38,9 @@ tests:
         alertname: EtcdQuorumAtRisk
         exp_alerts: []
 
-  # The absent() arm is the one that matters and the one review cannot see:
-  # `count(up == 1)` over an empty vector returns NOTHING, not 0, so without
-  # `or absent(up{job="kube-etcd"} == 1)` a total etcd scrape failure — every
-  # member down, or the ServiceMonitor deleted — would be SILENT.
+  # `count(up == 1)` over an empty vector returns nothing, not 0, so the
+  # `or absent(up{job="kube-etcd"} == 1)` arm is what catches a total etcd
+  # scrape failure.
   - interval: 1m
     input_series:
       - series: 'up{job="kube-etcd", instance="10.0.10.222:2381"}'
@@ -97,18 +84,21 @@ tests:
               status: 'true'
               node: k3s-agt-01
 
-  # NodeOutageStormControl gates the whole inhibit chain, so its shape is
-  # load-bearing: it fires only for a node that WAS Ready inside the last 6h,
-  # and self-clears after that, so a multi-day outage cannot keep suppressing
-  # every per-pod warning in the cluster.
+  # NodeOutageStormControl gates the inhibit chain: it fires only for a node
+  # that was Ready inside the last 7d and self-clears after, so a node that
+  # never comes back cannot suppress every per-pod warning for ever.
   - interval: 5m
     input_series:
-      # Ready for the first hour (samples at 0..60m), then NotReady out past 8h
-      # so the release case is a real release and not just the series ending.
+      # Ready for the first hour (samples at 0..60m), then NotReady out past 8h.
       - series: 'kube_node_status_condition{condition="Ready", status="true", node="k3s-agt-01"}'
         values: '1+0x12 0+0x100'
     alert_rule_test:
-      # 1h into the outage: the 6h lookback still sees the Ready samples.
+      # Inside the 5m hold: the node goes NotReady at 1h5m, the inhibit arrives
+      # at 1h10m.
+      - eval_time: 1h8m
+        alertname: NodeOutageStormControl
+        exp_alerts: []
+      # 1h into the outage.
       - eval_time: 2h
         alertname: NodeOutageStormControl
         exp_alerts:
@@ -117,12 +107,17 @@ tests:
               condition: Ready
               status: 'true'
               node: k3s-agt-01
-      # Past 6h of continuous NotReady, max_over_time no longer sees a 1, so
-      # storm control releases and the individual warnings come back — while
-      # the series is still being scraped (NodeNotReadyProlonged is firing).
+      # Past NodeNotReadyProlonged's 6h boundary the inhibit must still hold:
+      # the per-pod warnings stay suppressed while the node is inside the 7d
+      # window.
       - eval_time: 7h30m
         alertname: NodeOutageStormControl
-        exp_alerts: []
+        exp_alerts:
+          - exp_labels:
+              severity: none
+              condition: Ready
+              status: 'true'
+              node: k3s-agt-01
       - eval_time: 7h30m
         alertname: NodeNotReadyProlonged
         exp_alerts:
@@ -131,6 +126,9 @@ tests:
               condition: Ready
               status: 'true'
               node: k3s-agt-01
+
+  # The 7d release itself runs in node-outage-long-horizon.test.yaml, which
+  # evaluates at 30m steps so a week of simulated time stays affordable.
 
   # A node that has been NotReady since Prometheus started (no prior Ready
   # sample) must NOT trip storm control — otherwise a never-joined node would
@@ -269,9 +267,8 @@ tests:
               namespace: traefik
               service: traefik-internal
               ip: 10.0.10.101
-  # And the mirror image. Without this case TraefikPublicVipMissing was only
-  # ever asserted NOT to fire, so a wrong matcher on its absent() arm — a typo'd
-  # service or ip label — would have satisfied every assertion in the suite.
+  # Mirror image: without it a typo'd service or ip on the absent() arm would
+  # satisfy every assertion in the suite.
   - interval: 1m
     input_series:
       - series: 'kube_service_status_load_balancer_ingress{namespace="traefik", service="traefik-internal", ip="10.0.10.101"}'
@@ -362,12 +359,9 @@ tests:
               namespace: authentik
               deployment: authentik-worker
 
-  # PostgresDown covers all five databases through three discovery shapes
-  # (chart ServiceMonitor for authentik, PodMonitor for mealie, static
-  # EndpointSlice targets for the three VMs). The pg_up==0 arm carries NO job
-  # matcher, so a down database from any job fires, one per instance — the
-  # enumerated absent() arms below are a separate concern. All five jobs are
-  # present here so only the down ones alert.
+  # PostgresDown covers five databases across three discovery shapes. The
+  # pg_up==0 arm carries no job matcher, so a down database from any job fires,
+  # one alert per instance.
   - interval: 1m
     input_series:
       - series: 'pg_up{job="authentik-postgresql-metrics", instance="10.42.3.11:9187"}'
@@ -393,10 +387,9 @@ tests:
               job: gitlab
               instance: 10.0.10.153:9187
 
-  # An exporter dropping out of its ServiceMonitor or pinned Endpoints stops
-  # producing pg_up entirely, which the ==0 arm cannot see. The absent() arm
-  # names each of the five, so one vanishing fires alone with the job label
-  # synthesized from the matcher.
+  # An exporter dropping out of discovery stops producing pg_up, which the ==0
+  # arm cannot see. The absent() arm names each of the five, so one vanishing
+  # fires alone with the job label synthesized from the matcher.
   - interval: 1m
     input_series:
       - series: 'pg_up{job="authentik-postgresql-metrics", instance="10.42.3.11:9187"}'
@@ -440,10 +433,9 @@ tests:
               severity: warning
               job: immich
 
-  # TraefikHighErrorRate: 5xx as a fraction of ALL requests over 5m, summed
-  # across every service. 10 of every 100 requests failing clears the 5%
-  # threshold; the expression aggregates away every label, so the alert carries
-  # only its severity.
+  # TraefikHighErrorRate: 5xx as a fraction of all requests over 5m, summed
+  # across every service. The expression aggregates away every label, so the
+  # alert carries only its severity.
   - interval: 1m
     input_series:
       - series: 'traefik_service_requests_total{code="500", service="tv-esweiss@kubernetes"}'
@@ -472,11 +464,6 @@ tests:
   # The `and sum(rate(...)) > 0` guard: an idle Traefik divides 0 by 0. Flat
   # counters (no requests in the window) are the shape that produces the NaN,
   # and a proxy serving nothing is not a 5xx storm.
-  #
-  # DEFENSIVE, and currently unreachable in production: this ingress always
-  # carries traffic (Homarr, the *arrs and the blackbox probes poll continuously),
-  # so the guard exists for a genuinely idle window — a maintenance freeze, or a
-  # fresh cluster before anything is routed — not for a condition seen live.
   - interval: 1m
     input_series:
       - series: 'traefik_service_requests_total{code="500", service="tv-esweiss@kubernetes"}'
@@ -487,3 +474,249 @@ tests:
       - eval_time: 30m
         alertname: TraefikHighErrorRate
         exp_alerts: []
+
+  # PostgresConnectionsHigh joins two exporter series on instance+job+namespace.
+  # 90 of 100 connections is over the 80% threshold.
+  - interval: 5m
+    input_series:
+      - series: 'pg_stat_activity_count{instance="10.43.0.9:9187", job="authentik-postgres", namespace="authentik", datname="authentik", state="active"}'
+        values: '50+0x20'
+      - series: 'pg_stat_activity_count{instance="10.43.0.9:9187", job="authentik-postgres", namespace="authentik", datname="authentik", state="idle"}'
+        values: '40+0x20'
+      - series: 'pg_settings_max_connections{instance="10.43.0.9:9187", job="authentik-postgres", namespace="authentik"}'
+        values: '100+0x20'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: PostgresConnectionsHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: 10.43.0.9:9187
+              job: authentik-postgres
+              namespace: authentik
+
+  # A max_connections series carrying a different namespace does not join, so
+  # the ratio has no series at all and a saturated database would go unseen.
+  - interval: 5m
+    input_series:
+      - series: 'pg_stat_activity_count{instance="10.43.0.9:9187", job="authentik-postgres", namespace="authentik", state="active"}'
+        values: '90+0x20'
+      - series: 'pg_settings_max_connections{instance="10.43.0.9:9187", job="authentik-postgres", namespace="recipes"}'
+        values: '100+0x20'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: PostgresConnectionsHigh
+        exp_alerts: []
+
+  # ImmichDown: min by (job) over the two scrape targets, so one down target is
+  # enough; absent() covers the target disappearing from the scrape config.
+  - interval: 5m
+    input_series:
+      - series: 'up{job="immich-metrics", instance="10.0.10.157:8081"}'
+        values: '0+0x20'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: ImmichDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: immich-metrics
+
+  - interval: 5m
+    input_series:
+      - series: 'up{job="immich-metrics", instance="10.0.10.157:8081"}'
+        values: '1+0x20'
+      - series: 'up{job="immich-metrics", instance="10.0.10.157:8082"}'
+        values: '1+0x20'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: ImmichDown
+        exp_alerts: []
+
+  # No immich-metrics series at all: the absent() arm fires, carrying the job
+  # label from the selector.
+  - interval: 5m
+    input_series:
+      - series: 'up{job="something-else"}'
+        values: '1+0x20'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: ImmichDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: immich-metrics
+
+  # NextcloudDown: the same shape without a `by`, so neither arm carries labels.
+  - interval: 5m
+    input_series:
+      - series: 'nextcloud_up{instance="10.0.10.156:9205"}'
+        values: '0+0x20'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: NextcloudDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+
+  - interval: 5m
+    input_series:
+      - series: 'nextcloud_up{instance="10.0.10.156:9205"}'
+        values: '1+0x20'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: NextcloudDown
+        exp_alerts: []
+
+  - interval: 5m
+    input_series:
+      - series: 'up{job="something-else"}'
+        values: '1+0x20'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: NextcloudDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+
+  # LokiRequestFailures: 10% of requests 5xx is over the 5% threshold.
+  - interval: 1m
+    input_series:
+      - series: 'loki_request_duration_seconds_count{status_code="500", job="observability/loki", route="push"}'
+        values: '0+60x40'
+      - series: 'loki_request_duration_seconds_count{status_code="200", job="observability/loki", route="push"}'
+        values: '0+540x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: LokiRequestFailures
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+
+  # 2% of the same volume stays under it.
+  - interval: 1m
+    input_series:
+      - series: 'loki_request_duration_seconds_count{status_code="500", job="observability/loki", route="push"}'
+        values: '0+12x40'
+      - series: 'loki_request_duration_seconds_count{status_code="200", job="observability/loki", route="push"}'
+        values: '0+588x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: LokiRequestFailures
+        exp_alerts: []
+
+  # Flat counters: the denominator guard keeps an idle Loki from dividing 0 by 0.
+  - interval: 1m
+    input_series:
+      - series: 'loki_request_duration_seconds_count{status_code="500", job="observability/loki", route="push"}'
+        values: '9+0x40'
+      - series: 'loki_request_duration_seconds_count{status_code="200", job="observability/loki", route="push"}'
+        values: '400+0x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: LokiRequestFailures
+        exp_alerts: []
+
+  # HAInfraGuestDown watches four guest ids by anchored regex. The two decoys
+  # pin that anchoring: lxc/152 is outside the set, and lxc/1500 would match an
+  # unanchored `lxc/150`. max by (id) dedups the per-host scrape targets.
+  - interval: 1m
+    input_series:
+      - series: 'pve_up{id="lxc/150", target="10.0.10.102"}'
+        values: '0+0x20'
+      - series: 'pve_up{id="lxc/150", target="10.0.10.103"}'
+        values: '0+0x20'
+      - series: 'pve_up{id="qemu/154", target="10.0.10.102"}'
+        values: '1+0x20'
+      - series: 'pve_up{id="lxc/152", target="10.0.10.102"}'
+        values: '0+0x20'
+      - series: 'pve_up{id="lxc/1500", target="10.0.10.102"}'
+        values: '0+0x20'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: HAInfraGuestDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              id: lxc/150
+
+  # AuthentikFlowLatencyHigh: p95 flow planning past 1s. The healthy case is the
+  # live baseline (about 10ms), which must stay silent.
+  - interval: 1m
+    input_series:
+      - series: 'authentik_flows_plan_time_bucket{le="0.01"}'
+        values: '0+0x60'
+      - series: 'authentik_flows_plan_time_bucket{le="0.1"}'
+        values: '0+0x60'
+      - series: 'authentik_flows_plan_time_bucket{le="1"}'
+        values: '0+0x60'
+      - series: 'authentik_flows_plan_time_bucket{le="10"}'
+        values: '0+10x60'
+      - series: 'authentik_flows_plan_time_bucket{le="+Inf"}'
+        values: '0+10x60'
+    alert_rule_test:
+      # Inside the 15m hold.
+      - eval_time: 10m
+        alertname: AuthentikFlowLatencyHigh
+        exp_alerts: []
+      - eval_time: 55m
+        alertname: AuthentikFlowLatencyHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+
+  # The healthy arm sits just INSIDE the 1s budget (p95 lands at ~0.95s), so the
+  # threshold is pinned from below as well as above.
+  - interval: 1m
+    input_series:
+      - series: 'authentik_flows_plan_time_bucket{le="0.01"}'
+        values: '0+0x60'
+      - series: 'authentik_flows_plan_time_bucket{le="0.1"}'
+        values: '0+0x60'
+      - series: 'authentik_flows_plan_time_bucket{le="1"}'
+        values: '0+10x60'
+      - series: 'authentik_flows_plan_time_bucket{le="10"}'
+        values: '0+10x60'
+      - series: 'authentik_flows_plan_time_bucket{le="+Inf"}'
+        values: '0+10x60'
+    alert_rule_test:
+      - eval_time: 55m
+        alertname: AuthentikFlowLatencyHigh
+        exp_alerts: []
+
+  # ProxmoxHostDown is the fleet's host-down signal. min by (id) over a 5m
+  # max_over_time dedups the per-host scrape targets, so a host is down only
+  # when every target agrees.
+  - interval: 1m
+    input_series:
+      - series: 'pve_up{id="node/pve-nas-01", target="10.0.10.102"}'
+        values: '0+0x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: ProxmoxHostDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              id: node/pve-nas-01
+
+  - interval: 1m
+    input_series:
+      - series: 'pve_up{id="node/pve-nas-01", target="10.0.10.102"}'
+        values: '1+0x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: ProxmoxHostDown
+        exp_alerts: []
+
+  # The absent() arm: a renamed pve_up label or a dead Proxmox exporter reads as
+  # a healthy fleet without it, and the alert carries no id to name the host.
+  - interval: 1m
+    input_series:
+      - series: 'pve_up{id="node/pve-nas-01", target="10.0.10.102"}'
+        values: '1 stale'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: ProxmoxHostDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical

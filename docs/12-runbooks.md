@@ -1,6 +1,50 @@
 # Operational Runbooks
 
-This document provides step-by-step procedures for common operational tasks.
+This is the file every alert's `runbook_url` points at, so the section headings
+below are load-bearing: renaming one breaks the links baked into
+`cluster_runbook_base_url`. Two gates hold that —
+`scripts/check-runbook-anchors.py` and `scripts/test_runbook_coverage.py`.
+
+`task --list` is the authoritative command reference. A command on this page
+that does not exist is a bug, not a missing feature, and
+`scripts/test_doc_inventories.py` asserts it.
+
+## Where to look first
+
+| Question | Command |
+|---|---|
+| Is the platform healthy? | `task flux:status` |
+| Is Flux itself healthy? | `task flux:verify` |
+| Are the hosts converged? | `task infra:verify` |
+| Are the nodes healthy? | `task k3s:status` |
+| Is the whole fleet reachable? | `task diagnose:network` |
+| What is the current state snapshot? | `task collect-state` |
+| What changed recently? | `git log --oneline -20` |
+| Why is this service down? | its dashboard, then its logs, then its NetworkPolicy |
+
+If `task` itself fails before running anything, the usual causes are a missing
+tool (the precondition message names it), an unauthenticated 1Password CLI, or
+the collection not being installed.
+
+## Alerts that link here
+
+An alert's `runbook_url` carries an `#anchor` when this document owns its
+remediation, and each of those sections carries an alert index. Alerts that link
+here without an anchor land at the top of the page; this table routes them.
+
+| Alerts | Go to |
+|---|---|
+| `ProxmoxHostDown`, `NodeNotReadyProlonged`, `NodeOutageStormControl`, `NodeStuckCordoned`, `NodeMemoryPressure`, `ProxmoxHostIOPressure`, `ProxmoxHostMemoryPressure`, `CorosyncWedged`, `PmxcfsStale`, `CorosyncHealthCollectorStale` | § A Proxmox host or guest went dark, then `task diagnose:network` |
+| `MaintenanceRebootDeferred`, `KuredRebootStuck` | § Maintenance Windows |
+| `NodeSystemdServiceFailed`, `NodeSystemdServiceCrashlooping`, `HostFilesystemReadOnly`, `HostClockNotSynchronising` | the named host: `systemctl --failed`, `journalctl -u <unit>`, `timedatectl` |
+| `HostExporterDown`, `HostTextfileCollectorScrapeError`, `NodeExporterSystemdCollectorFailed` | the host-side exporter and its textfile collectors — [docs/31](31-observability.md) |
+| `DiskUsageWarning`, `DiskUsageCritical`, `InodeUsageWarning`, `InodeUsageCritical`, `PVCUsageWarning`, `PVCUsageCritical` | `df -h` / `df -i` on the named host; for the observability zvols, § Recovering Space on the Prometheus / Loki zvols |
+| `SATADriveTempWarning`, `SATADriveTempCritical`, `NVMeDriveTempWarning`, `NVMeDriveTempCritical`, `CPUTempWarning`, `CPUTempCritical`, `HostGpuTempWarning`, `HostGpuTempCritical`, `NICTempWarning` | the Thermals dashboard in Grafana. Sustained drive over-temperature is a bay-airflow problem, not a disk fault |
+| `FluxReconciliationFailure`, `FluxResourceNotReady` | [docs/29](29-flux-operations.md) |
+| `ExternalSecretSyncFailure`, `OnePasswordConnectDown` | [docs/15](15-credential-rotation.md) and [docs/29](29-flux-operations.md) |
+| `VPARecommendationCapped` | [docs/33](33-autoscaling.md) |
+| `PostgresDown`, `PostgresConnectionsHigh`, `LokiRequestFailures`, `TraefikHighErrorRate`, `TraefikPublicVipMissing`, `TraefikInternalVipMissing` | [docs/31](31-observability.md) § Alert rules |
+| `VPNDown`, `VPNExporterDown` | [docs/21](21-download-clients-deployment.md) |
 
 ---
 
@@ -41,21 +85,31 @@ This document provides step-by-step procedures for common operational tasks.
    # Host-specific overrides
    ```
 
-4. **Deploy Base Configuration**:
+4. **Regenerate the files derived from `hosts.yml`** and commit them with the
+   inventory change. `scripts/hosts.env` and the per-host `HostLogShippingStale`
+   rules are generated, and `task lint` plus the CI lint stage fail until the
+   committed copies match:
    ```bash
-   ansible-playbook ansible/playbooks/base.yml --limit pve-new-01
+   task hosts:sync                     # scripts/hosts.env
+   task flux:sync-host-log-staleness   # loki/host-log-staleness.yaml
    ```
 
-5. **Configure Firewall**:
-   - Add IP to `pve_hosts` IP Set
-   - Attach `sg-host-admin` and `sg-pve-cluster` security groups
-
-6. **Deploy Firewall**:
+5. **Deploy Base Configuration**:
    ```bash
-   ansible-playbook ansible/playbooks/site.yml --tags proxmox_firewall
+   task infra:base -- --limit pve-new-01
    ```
 
-7. **Verify**:
+6. **Declare the firewall metadata in inventory**: add `firewall_ipsets:
+   [pve_hosts]` and the host's security groups to the host entry. `cluster.fw`
+   and each `host.fw` are generated from inventory, so there is nothing to edit
+   on the node ([docs/11](11-firewall.md)).
+
+7. **Deploy Firewall**:
+   ```bash
+   task infra:deploy -- --tags proxmox_firewall
+   ```
+
+8. **Verify**:
    ```bash
    # Check cluster status
    sudo pvecm status
@@ -64,74 +118,78 @@ This document provides step-by-step procedures for common operational tasks.
    sudo pve-firewall status
 
    # Test Ansible
-   ansible pve-new-01 -m ping
+   ansible -i ansible/inventories/prod pve-new-01 -m ping
    ```
 
 ---
 
 ## Deploying a New LXC Container
 
+Containers are provisioned from inventory by `weisssrv.infra.proxmox_lxc`, which
+creates the container, applies the unprivileged idmap, bootstraps the admin user
+and its SSH key, and hands off to `proxmox_firewall` for `<vmid>.fw`. Declare the
+guest first and let the role build it.
+
 ### Prerequisites
 
-- LXC template available in Proxmox
-- IP address allocated
-- Firewall rules planned
+- A free VMID and IP address
+- The security groups the guest needs ([docs/11](11-firewall.md))
+- The template named by `proxmox_lxc_template` in `group_vars/all.yml` (the role
+  downloads it when the host's storage does not have it)
 
 ### Procedure
 
-1. **Create Container**:
-   ```bash
-   # Via Proxmox Web UI or CLI
-   # Note: Use Debian 13 (Trixie) and local-ssd storage. The template name is
-   # pinned as `proxmox_lxc_template` in all.yml — upstream rotates the point release
-   # and a stale name breaks a recreate.
-   sudo pct create 200 \
-     local:vztmpl/debian-13-standard_13.6-1_amd64.tar.zst \
-     --hostname new-service \
-     --net0 name=eth0,bridge=vmbr0,ip=10.0.10.XXX/24,gw=10.0.10.1 \
-     --storage local-ssd \
-     --cores 2 \
-     --memory 2048 \
-     --unprivileged 1
-   ```
-
-2. **Start Container**:
-   ```bash
-   sudo pct start 200
-   ```
-
-3. **Configure SSH Access**:
-   ```bash
-   # Enter container
-   sudo pct enter 200
-
-   # Install SSH
-   apt update && apt install openssh-server
-
-   # Copy SSH key
-   mkdir -p ~/.ssh
-   echo "ssh-ed25519 AAAA..." > ~/.ssh/authorized_keys
-   chmod 600 ~/.ssh/authorized_keys
-   ```
-
-4. **Add to Inventory**:
+1. **Declare the guest in inventory**:
    ```yaml
    # ansible/inventories/prod/hosts.yml
    new_service:
      hosts:
        new-service:
          ansible_host: 10.0.10.XXX
-         ansible_user: eric
+         vmid: 200
+         proxmox_host: pve-opt-01       # the node it lives on
+         proxmox_resource_pool: infra-core
+         proxmox_lxc_cores: 2           # sizing; role defaults otherwise
+         proxmox_lxc_memory: 2048
+         proxmox_lxc_disk_size: 8G
+         firewall_ipsets:
+           - core-cluster
+         guest_security_groups:
+           - sg-vm-admin
+           - sg-metrics
    ```
 
-5. **Configure Firewall**:
-   - Create VM-specific firewall file: `/etc/pve/firewall/200.fw`
-   - Attach appropriate security groups
+   `proxmox_lxc_gateway`, `dns_servers` and `internal_domain` come from
+   `group_vars/all.yml`, and storage is derived from the target host's
+   `proxmox_role` unless `proxmox_lxc_storage` overrides it. The admin user's
+   key comes from the `SSH_PUBLIC_KEY` env var that the `task` wrappers inject
+   via `op run`, which is why the provisioning step below is a task and not a
+   bare `ansible-playbook`.
 
-6. **Deploy Configuration**:
+2. **Add a provisioning play** for the new group, mirroring
+   `ansible/playbooks/plex.yml` (or `dns.yml`): one play over the group running
+   `weisssrv.infra.proxmox_lxc`, delegated to the Proxmox host. Add the
+   service's own roles and any `group_vars`/`host_vars` it needs.
+
+3. **Deploy** with the task that owns the playbook the play went into —
+   `task infra:deploy -- --limit new-service` for `site.yml`, or the service's
+   own task for a dedicated playbook (`task dns:deploy`, `task plex:deploy`):
    ```bash
-   ansible-playbook ansible/playbooks/site.yml --limit new-service
+   task infra:deploy -- --limit new-service
    ```
+
+4. **Verify**:
+   ```bash
+   ansible -i ansible/inventories/prod new-service -m ping
+   ssh pve-opt-01 "sudo pct config 200"
+   task infra:verify
+   ```
+
+**Recovery / out-of-band.** `pct create`, `pct enter` and a hand-written
+`/etc/pve/firewall/200.fw` still work when the Proxmox API path is broken, but
+the next role run overwrites the firewall file and the container's
+`authorized_keys`. Use them only to get back to a state Ansible can converge
+from.
 
 ---
 
@@ -161,6 +219,18 @@ collector; all point here):
   stale or missing, so the alerts above are running on old (or no) data.
   Check the collector timer/service on the affected host before trusting
   disk state.
+
+**Alert index** — the pool-health alerts that anchor here (inputs from the
+`zpool-status-collector` textfile collector):
+
+| Alert | Means | First move |
+|---|---|---|
+| `ZFSPoolNotOnline` | the pool reports DEGRADED or worse | `zpool status -v <pool>`, then the replacement procedure below |
+| `ZFSPoolDataErrors` | `zpool status -v` lists unrecoverable data; a single-vdev pool cannot self-heal it | restore the listed files from the archive tier ([docs/42](42-offsite-backup.md)) |
+| `ZFSPoolDeviceErrors` | read/write/cksum errors while the pool may still read ONLINE — the silent-corruption signature | `zpool status -v <pool>`, fix the cause, then `zpool clear` |
+| `ZFSPoolScrubStale` | no completed scrub in 35 days, so latent corruption surfaces only when something reads it | `zpool scrub <pool>` and check the scrub timer |
+| `ZFSPoolSpaceWarning` / `ZFSPoolSpaceCritical` | the pool is above 80% / 90% capacity | `zfs list -o name,used,avail,usedbysnapshots`; prune snapshots |
+| `ZFSPoolCollectorStale` | the collector is stale or missing, so every alert above is serving old or no data | `systemctl status zpool-status-collector.timer` on the named host |
 
 ### Procedure
 
@@ -217,6 +287,25 @@ collector; all point here):
 
 ## Updating DNS Records
 
+**Related alert**: **DDNSStale** — the `cloudflare-ddns` CronJob (every 5
+minutes) has had no successful run in over an hour, so the public A records go
+stale at the next WAN IP change. Check
+`kubectl -n cloudflare-ddns get cronjob,job`.
+
+Also anchored here, all three about external-dns running `policy: sync` against
+its TXT registry, where a source that stops yielding endpoints becomes a mass
+deletion:
+
+- **ExternalDNSNoSourceEndpoints** — 0 endpoints across every source, or the
+  metric absent.
+- **ExternalDNSRecordsDropped** — the registry lost more than 20% of the records
+  it held over the last 6h.
+- **ExternalDNSSyncStale** — no successful sync in the freshness window.
+
+Start with `kubectl -n external-dns logs deploy/external-dns` and the annotation
+prefix pin ([docs/08](08-dns.md) § Annotation prefix pin), which is the way this
+has actually broken.
+
 ### Internal Records (*.esweiss.com)
 
 Managed via AdGuard Home rewrites.
@@ -233,8 +322,8 @@ Managed via AdGuard Home rewrites.
 
 2. **Deploy**:
    ```bash
-   ansible-playbook ansible/playbooks/site.yml --tags adguard_home
-   # Or: task dns:deploy
+   task infra:deploy -- --tags adguard_home
+   # Or the whole DNS stack: task dns:deploy
    ```
 
 **Via AdGuard UI** (temporary changes only):
@@ -296,6 +385,32 @@ Certificate expired or not renewing automatically.
   `cert_local_expiry_timestamp_seconds`, which the cert-reload script emits from
   the live cert — it replaced the old "time since last renewal > 2 days" proxy
   that false-fired for most of each ~60-day renewal cycle.
+- **CertRenewalFailedProlonged** — renewal/distribution on the named host has
+  failed for 3 days straight. Same procedure, higher urgency.
+- **CertRenewalStale** — no successful renewal or distribution on the named
+  host for 75 days, past the ~60-day acme.sh cycle. This is the arm for a
+  renewal that stopped *running*: a dead acme.sh cron never fails, so
+  **CertRenewalFailed** stays silent while the cert ages out. Check `crontab -l`
+  on the host for the `acme.sh --cron` entry.
+- **CertDistributionTargetFailed** — acme.sh renewed the cert but could not
+  install it on one target host, named in the alert. The other targets are
+  fine, so that host keeps serving its existing cert until it expires. Start
+  with SSH reachability to the named host, then `journalctl -t
+  homelab-cert-reload` on dns-01.
+- **CertExpiringSoonCritical** — the acme.sh-distributed wildcard on the named
+  host expires in under 3 days. NFS-over-TLS (the k3s PV mounts), AdGuard TLS
+  and the Loki ingress all break at expiry.
+- **CertExpiringWarning** / **CertExpiringCritical** — a cert-manager
+  `Certificate` in the cluster is within 14 / 3 days of expiry. Work it with
+  `kubectl get certificate -A` and the cert-manager logs, not acme.sh.
+- **CertificateNotReady** — a cert-manager `Certificate` has been not-Ready for
+  an hour. This is the only arm that covers a `Certificate` that never issued at
+  all: the expiry alerts read a series that appears only after a first
+  successful issuance. Work it with `kubectl describe certificate -n <ns> <name>`
+  and the matching CertificateRequest/Order/Challenge.
+- **BlackboxCertExpiringSoon** — the Cloudflare **edge** cert for the probed
+  host is within 14 days. Neither acme.sh nor cert-manager manages it;
+  Cloudflare normally renews it on its own.
 
 ### Procedure
 
@@ -344,18 +459,50 @@ Certificate expired or not renewing automatically.
 ## Network Connectivity Issues
 
 **Related alerts**: **EndpointDown** (warning, any blackbox probe failing
-5m) and **EndpointDownCritical** (critical — the load-bearing three:
+10m) and **EndpointDownCritical** (critical — the load-bearing three:
 `auth.esweiss.com` (SSO front door), `git.esweiss.com` (GitOps source),
 `home.esweiss.com`; pages email, and inhibits the matching EndpointDown).
 Work the checklist below against the probed URL in the alert's `instance`
 label.
+
+Also anchored here:
+
+- **DNSResolutionDown** — every probed AdGuard resolver (10.0.10.150 and
+  10.0.10.160) has failed for 5 minutes, so resolution is down cluster-wide.
+  Start with § A Proxmox host or guest went dark for the two containers.
+- **DNSResolverProbeMissing** — one resolver has no `probe_success` series, so
+  the aggregate above no longer covers it. Restore the target in
+  `kubernetes/infrastructure/observability/exporters/blackbox-exporter.yaml`.
+- **BlackboxExporterDown** — all endpoint monitoring is blind.
+- **AdGuardSyncFailed** / **AdGuardSyncStale** — `adguardhome-sync` on dns-01
+  is failing, or has not succeeded in 30 minutes, so dns-02's config drifts.
+  Read `journalctl -u adguardhome-sync` on dns-01.
+- **ExternalIngressDown** — the critical tier for three or more public hostnames
+  unreachable at once, distinct from **EndpointDownCritical**, which covers
+  three internal names. Three at once points at the ingress path or the WAN
+  address, not at any one app.
+- **KeyEndpointProbeMissing** — fewer than three `probe_success` series match
+  EndpointDownCritical's regex, so one of auth/git/home stopped being probed.
+  Restore the target in
+  `kubernetes/infrastructure/observability/exporters/blackbox-exporter.yaml`.
+- **InternetProbeMissing** — the 1.1.1.1 WAN witness has no `probe_success`
+  series, so ExternalIngressDown can no longer tell an upstream outage from a
+  public-ingress fault. Restore the target in the same file.
+
+### After an addressing change
+
+Old addresses survive in stored state that nothing reconciles. Sweep 1Password
+item URLs, kubeconfigs, and any daemon still running with the old address in its
+config. Home Assistant is the trap worth naming: its `.storage/http` file
+regenerates on update, so a hand-edit can come back with the old address
+([docs/24](24-home-assistant-deployment.md)).
 
 ### Cannot Reach Service
 
 1. **Verify Service Running**:
    ```bash
    sudo systemctl status <service>
-   sudo netstat -tlnp | grep <port>
+   sudo ss -tlnp | grep <port>
    ```
 
 2. **Check Firewall Rules**:
@@ -399,6 +546,11 @@ the two shapes below you have.
 
 ### A Proxmox host or guest went dark
 
+Alerts: ProxmoxHostDown, NodeNotReadyProlonged, NodeOutageStormControl,
+NodeStuckCordoned, NodeMemoryPressure, ProxmoxHostIOPressure,
+ProxmoxHostMemoryPressure, CorosyncWedged, PmxcfsStale,
+CorosyncHealthCollectorStale.
+
 Two host-level network faults have their own runbook in
 [34-bond-mac-flapping.md](34-bond-mac-flapping.md) — check which shape you have
 before chasing the switch:
@@ -410,8 +562,48 @@ before chasing the switch:
   cluster and needed a power-cycle, with `e1000e 0000:00:19.0 nic0: Detected
   Hardware Unit Hang` in the journal (`00:1f.6` on .107, or in Loki, which
   survives the power-cycle) → the e1000e TX hang; the fix is `tso/gso/gro off`
-  on `nic0`, codified in `host_vars/pve-opt-0{1,2,3}.yml` and
-  `host_vars/pve-prec-01.yml`.
+  on `nic0`, codified once in `group_vars/e1000e_hosts.yml` (a child group of
+  `proxmox`: pve-opt-01/02/03 + pve-prec-01).
+- **A whole host dark with a clean kernel log** — no `Detected Hardware Unit
+  Hang` line, the `tso/gso/gro off` mitigation verifiably applied → a different
+  fault. Check MCE/EDAC counters, the BIOS event log, and the UniFi switch-port
+  log for that minute ([docs/34](34-bond-mac-flapping.md) § Host-dark events
+  without the hang signature).
+
+**Unattributed event**: pve-opt-02 hard froze on 2026-09-09 and stayed down
+until 2026-09-12, with no `e1000e` hang evidence. It came back on a power-cycle
+of its smart outlet and has not repeated.
+
+**Power-cycling a frozen host**: where the host is fed from a Kasa smart outlet
+on the IoT VLAN, a host that answers neither SSH nor the Proxmox web UI can be
+power-cycled from the Kasa app or through Home Assistant, which holds the same
+plugs. Confirm the host is genuinely dark first — power-cycling a live host is
+an unclean shutdown of every guest on it. `ProxmoxHostDown` is the alert: a
+critical tier that fires after 5 minutes of `pve_up == 0`.
+
+### A MetalLB VIP receives nothing while the service looks healthy
+
+A frame destined for a MetalLB VIP (not the node's own address) is FORWARDED to
+the guest and filtered by the per-VM **guest** firewall, after the host bridge
+(`fwpr`/`fwln`). It never reaches `PVEFW-HOST-IN`, so a `cluster.fw [RULES]`
+entry compiles into the wrong chain and does nothing.
+
+The receiver looks healthy throughout: the pod's listener is fine and in-pod
+injection works, so the only symptom is that nothing arrives.
+
+Fix: a per-guest security group in `group_vars/all.yml`, for example
+`sg-syslog-vip` with `IN ACCEPT -source <sender> -dest <vip> -p udp -dport
+<port>`, assigned in `hosts.yml` to **every** node the VIP can be announced
+from. A pod scheduled to a class of nodes but not pinned lets MetalLB announce
+from any of them. See [docs/11](11-firewall.md).
+
+**Related alert**: **MetalLBSpeakerNotScheduled** (critical) — the
+metallb-speaker DaemonSet wants zero pods, or has gone from kube-state-metrics.
+Its `nodeSelector` is `esweiss.com/ingress`, so dropping or renaming that label
+leaves `.99`, `.100`, `.101` and `.162` assigned and unannounced. Check
+`kubectl -n metallb-system get ds metallb-speaker` and
+`kubectl get nodes -l esweiss.com/ingress=true`, then re-run the k3s node-label
+play. The label contract is [docs/25](25-multi-node-expansion.md) § Node Labels and Taints.
 
 ---
 
@@ -450,6 +642,15 @@ target) is stalled.
    kubectl get pods -A -o wide | grep <affected-node-or-app>
    kubectl delete pod -n <namespace> <pod>
    ```
+
+### A deploy that restarts nfsd
+
+A `weisssrv.infra` bump that changes the rendered
+`/etc/systemd/system/nfs-server.service.d/zfs-encrypted.conf` notifies the
+ordering handler, so `task infra:deploy` restarts nfsd on pve-nas-01. That holds
+even when only the drop-in's comment moved. Schedule such a bump as a NAS
+window rather than folding it into a routine run: established k3s NFS mounts go
+stale and their pods need step 3, and a stop-hang needs step 2.
 
 ---
 
@@ -510,13 +711,13 @@ from the postfix-queue textfile collector (smtp_relay role) scraped from
 
 2. **Run in Verbose Mode**:
    ```bash
-   ansible-playbook ansible/playbooks/site.yml -vvv --limit failed-host
+   task infra:deploy -- -vvv --limit failed-host
    ```
 
 3. **Test Connectivity**:
    ```bash
-   ansible failed-host -m ping
-   ansible failed-host -m setup
+   ansible -i ansible/inventories/prod failed-host -m ping
+   ansible -i ansible/inventories/prod failed-host -m setup
    ```
 
 4. **Check Logs on Target**:
@@ -527,8 +728,44 @@ from the postfix-queue textfile collector (smtp_relay role) scraped from
 
 5. **Run Specific Tags**:
    ```bash
-   ansible-playbook ansible/playbooks/site.yml --tags <role-tag> --limit <host>
+   task infra:deploy -- --tags <role-tag> --limit <host>
    ```
+
+### Deploy reachability gate
+
+The multi-host plays in `base.yml` and `site.yml` carry `ignore_unreachable:
+true`, so one down box cannot red the whole fleet run. ansible-core does not
+record such a host as dark: with `ignore_unreachable` set it increments `ok` and
+`ignored`, never adds the host to `_unreachable_hosts`, and the recap prints
+`unreachable=0` with `ansible-playbook` exiting 0. A deploy that configured
+**nothing** on a host would otherwise report success.
+
+- `_reachability-probe.yml` records the misses in the in-memory `deploy_skipped`
+  group. Deploy plays target `<group>:!deploy_skipped`, so a host known absent is
+  not dialled again in every later play and cannot hard-fail on the first task
+  templating a fact it never gathered.
+- `_reachability-gate.yml` carries the probe's host pattern, not
+  `hosts: localhost`. `--limit` applies to every play's host list, implicit
+  localhost included, so a localhost gate matched zero hosts and never ran under
+  exactly the three scoped CI invocations it exists to protect (`site.yml
+  --limit proxmox` / `--limit mail` / `--limit dns`). `tags: always` cannot
+  rescue a play with no hosts.
+- The ledger is a t0 snapshot and this fleet loses hosts mid-run (opt-node
+  e1000e TX hangs, [docs/34](34-bond-mac-flapping.md)), so the gate re-probes
+  whatever is not already on it. `deploy_skipped` converged nothing;
+  `deploy_lost` converged part of the run and is the more dangerous state to
+  report green.
+- A host knowingly out for hardware work is declared in
+  `deploy_expected_absent_hosts` (`group_vars/all.yml`), which downgrades it to
+  a warning. The concession is then recorded in git and expires with a commit.
+
+The plays outside that ledger report their misses differently. Host metrics and
+host log shipping also target the application and k3s guests, so a skip there
+reaches neither the probe nor the gate; each play names what it missed in a
+`post_tasks` step instead — `Host metrics NOT converged on: ...` and
+`Journald shipping NOT converged on: ...`. Read those lines before treating a
+green run as converged, then re-run with `task infra:deploy -- --limit <host>`
+once the host is back.
 
 ---
 
@@ -552,8 +789,26 @@ job itself is managed by the `proxmox_backup` role):
   one. Guest VM/LXC images are the DR path for the compute-node guests — treat
   staleness as a real gap, not noise.
 
-The remaining backup alerts anchor their `runbook_url` here as well; their
-remediation follows.
+**Alert index** — the other alerts that anchor here. The two families with a
+runbook of their own (archive replication, restic offsite) follow below.
+
+| Alert | Means | First move |
+|---|---|---|
+| `VzdumpBackupStaleCritical` | no successful vzdump on the named node in over 3 days | as `VzdumpBackupStale` above, but treat it as a real DR gap |
+| `ArchiveBackupFailedProlonged` | archive replication has failed on every attempt for 24h | `journalctl -u archive-backup.service` on pve-nas-01 |
+| `ArchiveBackupStaleCritical` | no successful archive replication in over 4 days — the offsite chain ages with it | same journal, plus `zpool status archive` |
+| `ArchiveBackupPruneBlocked` | snapshot retention on `archive` has failed for 2 days while replication kept succeeding, so the pool only fills | find the failing `zfs destroy` in the same journal, then re-run `archive-backupctl` |
+| `PveClusterBackupFailed` / `PveClusterBackupStale` | the nightly `/etc/pve` tar (cluster CA, corosync config, guest definitions) failed, or none in 36h | `systemctl status pve-cluster-backup.timer` on pve-nas-01 — [docs/17](17-disaster-recovery.md) restores from this first |
+| `GitLabBackupSecretsMissing` | `gitlab-secrets.json` is missing or 0 bytes in the landing zone, so the tarball alone cannot restore | check the `cp` stage of `gitlab-backup-run.sh` ([docs/27](27-gitlab-deployment.md)) |
+| `ImmichBackupFailed` / `ImmichBackupStale` | the nightly Immich `pg_dumpall` failed, or none in 48h | [docs/36](36-immich.md) § Backups |
+| `AuthentikBackupStale` | the `authentik-pg-dump` CronJob has not succeeded in 26h | `kubectl -n authentik get cronjob,job` |
+| `MealieBackupStale` | the `mealie-pg-dump` CronJob has not succeeded in 26h | `kubectl -n recipes get cronjob,job` |
+| `BackupArtifactStaleCritical` | the newest dump under `tank/backups/apps/<app>` is over 4 days old | work the named app's own dump job |
+| `BackupArtifactNeverLanded` | no dump has ever landed for an app: the job never ran, or it writes outside the collector's glob | that app's dump job, then its `nas_storage_backup_artifact_apps` glob |
+| `BackupArtifactZeroBytes` | the newest artefact is 0 bytes with a recent mtime — the dump ran and wrote nothing | re-run that app's dump by hand and read stderr |
+| `BackupArtifactCollectorStale` | the mtime collector is stale or absent, so the two alerts above run on no data | `systemctl status backup-artifact-mtime-collector.timer` on pve-nas-01 |
+| `LocalPathPVExists` | a claim fell through to the `local-path` default class, which lands on the stateless k3s bootdisk and is in no backup | pin its `storageClassName` and rebind ([docs/29](29-flux-operations.md)) |
+| `VzdumpBackupNoGuests` | a vzdump job finished successfully without starting a single guest backup, so its success metric stays green while nothing lands | check the guest selection on the Proxmox backup schedule, and that the named host still owns guests |
 
 #### ArchiveBackupFailed / ArchiveBackupStale
 
@@ -589,8 +844,9 @@ additionally guards ~2-day staleness.
 #### ResticOffsite* / BackupArtifactStale
 
 Nightly offsite backup to Backblaze B2 via `restic-offsitectl run`
-(`restic_offsite` role), chained `OnSuccess=` after `archive-backup.service`
-(07:15 fallback timer). Full architecture + restore paths: **docs/42**. Operator
+(`restic_offsite` role), on its own 07:15 timer and additionally chained
+`OnSuccess=` after `archive-backup.service` (opt-in, via pve-nas-01 host_vars).
+Full architecture + restore paths: **docs/42**. Operator
 commands (source the env first: `set -a; . /etc/restic-offsite/env; set +a`):
 `restic-offsitectl status|snapshots|verify|restore <name>|prune`.
 
@@ -694,6 +950,40 @@ to `tank/media` (see docs/07).
 - **MediaMoverStale** — no successful move within the freshness window; the
   `absent()` arm also covers the metric never being written.
 
+#### AuthentikBackupStale / MealieBackupStale
+
+Both are logical PostgreSQL dumps from a CronJob in the app's own namespace,
+landing on the NFS backup PV. The window is staggered so they do not collide
+with the block-level jobs: the Mealie dump runs at 02:45 local — after smartd's
+02:00 short tests, before the 03:30-05:45 vzdump window, the 06:00 media-mover
+and the 06:30 archive replication — and fifteen minutes behind the Authentik
+dump.
+
+Restore a Mealie dump from a pod in the `recipes` namespace:
+
+```bash
+gunzip -c <file> | psql -h mealie-postgres -U mealie mealie
+```
+
+### Incomplete offsite run
+
+Alerts: ResticOffsiteIncomplete, ResticOffsiteIncompleteProlonged.
+
+restic exited 3: the snapshot was saved, but some paths could not be read, so
+the backup is not complete. The wrapper records that as
+`restic_offsite_last_run_incomplete=1` rather than failing the run.
+
+1. Find the skipped paths in the wrapper's journal entry:
+   `journalctl -u restic-offsite -n 200` on pve-nas-01.
+2. If they sit under `/mnt/restic-clone-*`, the ext4 clone could not be read.
+   Confirm the clone is mounted plain `ro` (not `ro,noload`) so the journal
+   replays — `noload` makes reads come back EBADMSG.
+3. Re-run `systemctl start restic-offsite.service` and confirm the gauge is
+   back to 0.
+
+Two consecutive incomplete runs (over 36 hours) escalates to critical: whatever
+cannot be read has not reached B2 for more than a day.
+
 ### Full System Backup
 
 1. **ZFS Snapshots**:
@@ -727,7 +1017,7 @@ sudo zfs rollback tank/media@backup-20260101
 
 **Proxmox Restore** (use a ZFS pool actually in use — `ssd` on the NAS,
 `local-ssd` on compute nodes; `local-lvm` exists from the default install and
-holds only the Plex/k3s NAS roots and the immich-ml LXC rootfs, docs/36):
+holds only the two NAS k3s VM roots (202, 222), docs/32):
 ```bash
 sudo qmrestore /path/to/backup.vma.zst 100 --storage local-ssd
 ```
@@ -861,7 +1151,10 @@ After updating versions in `all.yml`, deploy with the appropriate mechanism:
 
 **GitHub API rate limits**: Unauthenticated requests are limited to 60/hour. Set `GITHUB_TOKEN` for 5000/hour:
 ```bash
-export GITHUB_TOKEN=$(op read "op://Homelab/GitHub Token/credential")
+# Assign, then export: `export VAR=$(...)` returns export's status, so a
+# failed vault read would leave the variable empty and pass silently.
+GITHUB_TOKEN=$(op read "op://Homelab/GitHub Token/credential")
+export GITHUB_TOKEN
 task maintenance:check-versions
 ```
 
@@ -869,6 +1162,27 @@ Results are cached for 1 hour in `.version-cache/`. Clear with:
 ```bash
 task maintenance:check-versions -- --clear-cache
 ```
+
+### Checks the version tooling cannot make
+
+Three things `task maintenance:check-versions` will never surface. Walk them on
+the same cycle as a held pin.
+
+- **`"category": "manual"` registry entries.** They report
+  `update_available: false` forever, because there is no upstream tag to compare
+  against. Walk them quarterly: read the source URL in the entry, re-resolve any
+  hand-edited `image:` tag+digest pin, and record what you resolved in that
+  entry's `notes`. No `:latest`-tagged digest pin is allowed back into the tree —
+  the tag is what the registry reads as the current version, so a `latest` pin
+  compares equal to itself and can never go stale.
+- **prometheus-operator-crds.** Its `appVersion` must equal the pinned
+  kube-prometheus-stack's operator `appVersion`. Check both charts before
+  bumping either, or the CRDs and the operator drift apart.
+- **The Cloudflare Terraform provider**, held at `~> 4.52.0`. Each quarter run
+  `gh release list -R cloudflare/terraform-provider-cloudflare | head` and check
+  whether v4 has an announced end-of-support date or an open CVE. If either is
+  true, the v4 → v5 migration in [docs/16](16-next-steps.md) § Terraform and
+  gates stops being deferrable.
 
 ### Recommended Update Workflow
 
@@ -976,7 +1290,7 @@ the HAOS VM will fire **HAInfraGuestDown**. Silence it first:
 task observability:silence ALERT=HAInfraGuestDown DURATION=1H
 ```
 
-(`DURATION` uses BSD `date` units — S/M/H/d; the task runs on macOS.)
+(`DURATION` units are S/M/H/d; the task works with either BSD or GNU `date`.)
 Note that smtp-relay (lxc/151) downtime blinds the **email** leg of critical
 alerts for its duration — the Discord webhook is then the only delivery
 path.
@@ -1078,6 +1392,43 @@ Re-run the verify after kured settles (`kubectl get nodes` shows no
 `weave.works/kured-reboot-in-progress` annotation); the excuse disappears with
 the reboot and any WARN that was real becomes an ERROR.
 
+**Terminating pods are not excused outside the runner namespaces.** A stale NFS
+handle presents exactly as a pod stuck `Terminating`, so the unhealthy-pod check
+treats it as a fault. The excuse is by namespace name prefix only
+(`gitlab-runner*`), where a Terminating CI pod is routine.
+
+**Fixed waits.** The verify waits 20s after a not-ready node, 25s after an
+unhealthy pod and 10s after an under-replicated Deployment before re-reading.
+GitLab gets a 4-minute readiness budget, because its disk sits on an
+encryption-gated zvol and only comes up after the pool is unlocked.
+
+**Sync exercise on dns-01.** `task infra:verify` postflight starts one
+`adguardhome-sync` run, proving the DynamicUser / LoadCredential /
+StateDirectory sandbox can start on the unprivileged dns-01 LXC. An app-level
+failure (unreachable origin) is fine. A systemd exec-class `ExecMainStatus` —
+217 USER, 226 NAMESPACE, 238 STATE_DIRECTORY, 243 CREDENTIALS — means the
+sandbox itself could not be set up, and the assert fires. The run pushes dns-01's
+config to dns-02, which the 5-minute timer does anyway; set
+`postflight_exercise_sync=false` to skip it while investigating a divergence
+between the two resolvers.
+
+### One-time cleanups pending
+
+**fail2ban chains on the GitLab guest (.153).** After the collection bump lands
+and deploys, run once on the guest:
+
+```bash
+ssh gitlab
+sudo iptables -F f2b-gitlab-ssh
+sudo systemctl restart fail2ban
+```
+
+Then drop the `f2b-*` chains, their INPUT jumps and the 13 frozen REJECT rules
+from `/etc/iptables/rules.v4`, or delete the file — the role no longer writes or
+reads it. The role re-applies only its own REDIRECT rules at boot through
+`gitlab-ssh-redirect.service`, so nothing else on the guest depends on
+`rules.v4` unless the site added rules by hand.
+
 ---
 
 ## K3s Cluster Maintenance
@@ -1152,6 +1503,22 @@ synchronously without killing the run).
 > (`concurrency: 1` + the `blockingPodSelector` deferral of any node running a CI
 > job) — just not on a maintenance schedule.
 
+##### Clearing a stuck kured lock
+
+kured runs with `lockTtl: "0"`, so the reboot lock never expires on its own:
+only the holder releases it. A kured pod that dies while holding it blocks every
+further reboot, and no alert distinguishes that from "nothing needs rebooting".
+Confirm no node is mid-reboot, then clear the annotation:
+
+```bash
+kubectl get nodes -o json \
+  | jq -r '.items[] | select(.metadata.annotations["weave.works/kured-reboot-in-progress"]) | .metadata.name'
+kubectl -n kube-system annotate ds/kured weave.works/kured-node-lock-
+```
+
+The next kured period picks up any node still carrying
+`/var/run/reboot-required`.
+
 **Special considerations:**
 - Servers are updated first, then agents
 - If the service restart fails, the always-block uncordons the node
@@ -1207,6 +1574,8 @@ task maintenance:update-cluster     # 4-phase: k3s nodes, check-versions, update
 
 ### Maintenance Windows
 
+Alerts: MaintenanceRebootDeferred, KuredRebootStuck.
+
 **Recommended schedule:**
 - Monthly: OS package updates on all hosts (`task maintenance:update-packages`)
 - Quarterly: Full base infrastructure update (`task maintenance:update-full`)
@@ -1253,6 +1622,48 @@ Leaving `shutdown_policy` at `conditional` is deliberate. Switching it to
 and container migration is stop/start regardless, so you would get the same
 outage on a different host plus needless shuffling on every kernel reboot. The
 redundancy that matters is the dns-01/dns-02 pair plus automatic failover.
+
+Which host homes which guest is the `affinity-*` entries of `proxmox_ha_rules`
+in `group_vars/all.yml`.
+
+#### Maintenance reboot routing
+
+`ansible/playbooks/maintenance/_reboot-if-needed.yml` routes a pending reboot
+three ways, on three inputs:
+
+| Input | Meaning |
+|---|---|
+| `host_runs_etcd_server` | the Proxmox host carries a k3s **server** VM (an etcd member) |
+| `ci_detection_failed` | the play is running inside a CI executor pod but the node lookup never resolved |
+| `proxmox_self_reboot_safe` | per-host, default true; false for pve-nas-01 |
+
+- **Defer** — the operator reboots by hand, and the host publishes
+  `maintenance_reboot_deferred` (alert `MaintenanceRebootDeferred`).
+- **Detached** — a `systemd-run` timer that survives the CI job, armed and
+  disarmed by the job's `after_script`.
+- **Synchronous** — reboot in place.
+
+Why each defer exists:
+
+- A **detached** reboot of an etcd-server host cannot coordinate with kured and
+  could take a second etcd member down. The synchronous path (play 1 `serial: 1`
+  plus the etcd-rejoin wait) stays one member at a time and is fine.
+- `ci_detection_failed` covers a pod name that does not match the executor
+  prefix, a lookup error, an empty `nodeName`, or a node with no `proxmox_host`
+  in inventory. None of those can prove the host is not the self-host, so it
+  fails closed.
+- `proxmox_self_reboot_safe: false` (pve-nas-01) never auto-reboots at all,
+  because of the encrypted pools and the `onboot=0` guests.
+
+**Nested timeout budget on the etcd-rejoin wait.** Rebooting a control-plane
+host fails the kube-vip API VIP (.161) over to another server, and during that
+window a `kubectl wait` against the VIP can block on a dead TCP session far past
+its own `--timeout`. Smallest first: `--timeout=180s` is the logical budget (how
+long the node has to go Ready), `--request-timeout=190s` bounds a hung API call
+and sits **above** `--timeout` so it never cuts the wait's watch short, and
+`timeout --kill-after=10s 200s` is the outer backstop for a socket-level hang.
+180 < 190 < 200, three attempts, about ten minutes worst case, then the run
+fails. Raise them together.
 
 ### Rollback Procedures
 
@@ -1373,6 +1784,10 @@ kubectl uncordon <node-name>
 
 #### Pruning unused container images
 
+Alerts: KubeletImageGCIneffective (k3s node root fs above the kubelet's 70%
+image-gc-high-threshold, so GC runs continuously and never reaches its low
+watermark).
+
 Kubelet's image GC kicks in at the configured threshold (`70/50` cluster-wide
 via `k3s_kubelet_args`); it does not run on demand. To free space without
 waiting for the threshold (e.g. after a large image churn), use crictl
@@ -1459,7 +1874,7 @@ This checks:
 - Certificate SSH
 - AdGuard API health
 - ZFS pool health (tank, ssd, nvme, archive)
-- SMART disk health (17 disks: 6 HDD tank + 3 SSD + 4 NVMe + 4 HDD archive)
+- SMART disk health (every device in the `smartd_*_disks` lists in `host_vars/pve-nas-01.yml`)
 - Disk space
 
 ---
@@ -1663,6 +2078,9 @@ here.
 
 ### Recovering Space on the Prometheus / Loki zvols
 
+Alerts: DiskUsageWarning, DiskUsageCritical, InodeUsageWarning,
+InodeUsageCritical, PVCUsageWarning, PVCUsageCritical, KubeletImageGCIneffective.
+
 The TSDB / Loki chunk stores have their own retention; ext4 frees blocks
 inside the zvol but doesn't issue DISCARD by default, so the parent ZFS
 dataset never reclaims them. Combined with `zfs-auto-snapshot`, a
@@ -1686,20 +2104,26 @@ host pool. Auto-snapshots are now disabled at the dataset level (see
    sudo zfs list -t snapshot -o name,used -s creation \
      | grep -E 'prometheus|loki'
 
-   # ALWAYS dry-run the @% range first — `@%` matches every snapshot on
-   # the dataset, so a typo (e.g. wrong dataset name) can wipe far more
-   # than intended. `-n` plus `-v` prints what would be destroyed without
-   # destroying anything.
-   sudo zfs destroy -n -v ssd/appdata/prometheus@%
-   sudo zfs destroy -n -v ssd/appdata/loki@%
+   # List the auto-snapshots first. Filter by name rather than using an
+   # unbounded `@%` range, which also matches the archsync-* snapshots.
+   for ds in ssd/appdata/prometheus ssd/appdata/loki; do
+     sudo zfs list -t snapshot -H -o name -r "$ds" | grep zfs-auto-snap_
+   done
 
-   # If the dry-run output matches what you intended, re-run without -n.
-   # Prefer narrowing to a specific snapshot range (e.g.
-   # `ssd/appdata/prometheus@auto-2026-01-01_00.00%auto-2026-04-30_23.59`)
-   # over the bare `@%` whenever feasible.
-   sudo zfs destroy -v ssd/appdata/prometheus@%
-   sudo zfs destroy -v ssd/appdata/loki@%
+   # If that list is what you intended, destroy exactly those.
+   for ds in ssd/appdata/prometheus ssd/appdata/loki; do
+     sudo zfs list -t snapshot -H -o name -r "$ds" | grep zfs-auto-snap_ \
+       | xargs -r -n1 sudo zfs destroy -v
+   done
    ```
+
+   `com.sun:auto-snapshot=false` stops creation **and** pruning, so flipping it
+   strands every snapshot that already exists. That is why this sweep exists.
+
+   Never destroy an `archsync-*` snapshot on a dataset under an
+   `nas_storage_archive_backup_sources` root. It is the incremental base for
+   the nightly archive replication, and losing it forces a full re-send of that
+   subtree ([docs/42](42-offsite-backup.md)).
 
 3. **Verify space reclaimed:**
    ```bash
@@ -1709,15 +2133,21 @@ host pool. Auto-snapshots are now disabled at the dataset level (see
 
 ### Loki break-glass NodePort (host log shipping when the ingress is down)
 
-**Symptoms:** host Alloy cannot push (`HostLogsStale` / Alloy `remote_write`
+**Symptoms:** host Alloy cannot push (`HostLogShippingStale` / Alloy `remote_write`
 errors) because Traefik, the `*.esweiss.com` cert, or the basic-auth middleware
 is broken — not Loki itself.
 
 Host Alloy normally ships to `https://loki.esweiss.com/loki/api/v1/push`. There
 is **no NodePort Service in git**: an always-on NodePort is an unauthenticated
-push/read path on every node IP that bypasses the IngressRoute and the
-`allow-loki-ingress` NetworkPolicy, and Flux would keep it alive forever. Apply
-it by hand for the duration of the outage only:
+push/read path on every node IP that bypasses the IngressRoute and its
+basic-auth middleware, and Flux would keep it alive forever. Apply it by hand
+for the duration of the outage only.
+
+**Two objects, not one.** The NodePort skips the IngressRoute but not the pod
+network: `allow-loki-ingress` admits `:3100` from the `traefik` namespace only
+and `netpol-baseline` denies the rest, and NodePort traffic reaches the pod
+SNAT'd to the node IP, so every push is dropped until a temporary `ipBlock`
+allow is in place too.
 
 ```bash
 kubectl apply -f - <<'EOF'
@@ -1735,6 +2165,26 @@ spec:
       port: 3100
       targetPort: 3100
       nodePort: 31100
+---
+# The CIDR is a literal on purpose: kubectl applies this directly and Flux
+# never substitutes ${cluster_lan_cidr} for you.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-loki-nodeport-breakglass
+  namespace: observability
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: loki
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: 10.0.10.0/24
+      ports:
+        - protocol: TCP
+          port: 3100
 EOF
 ```
 
@@ -1743,7 +2193,7 @@ Then point the affected hosts at it and redeploy Alloy:
 ```bash
 # per host, in ansible/inventories/prod/host_vars/<host>.yml
 alloy_host_loki_url: http://10.0.10.161:31100/loki/api/v1/push
-ansible-playbook ansible/playbooks/site.yml --limit <host> --tags alloy_host
+task infra:deploy -- --limit <host> --tags alloy_host
 ```
 
 `31100` is already open in the Proxmox firewall (`sg-metrics`, docs/11), so no
@@ -1751,11 +2201,12 @@ firewall change is needed. **Tear it down as soon as the ingress is back** —
 revert the `alloy_host_loki_url` override, redeploy, then:
 
 ```bash
-kubectl delete service -n observability loki-external
+kubectl -n observability delete networkpolicy allow-loki-nodeport-breakglass
+kubectl -n observability delete service loki-external
 ```
 
-Flux never reconciles this Service (it is in no kustomization), so nothing
-removes it for you.
+Flux reconciles neither object (both are in no kustomization), so nothing
+removes them for you.
 
 ### Traefik dashboard break-glass (Authentik down)
 
@@ -1800,9 +2251,14 @@ header documents the invariant):
 
 | Regular | `--json` | Meaning |
 |---|---|---|
-| `OK` | `healthy: true` | every gate green: all collected hosts reachable, ALL k3s nodes Ready, zero Flux not-ready, zero non-ONLINE ZFS pools (all hosts), GitLab `/-/health` 200 via the internal VIP. Recent Warning events are reported in the header but are **advisory only** — they do not gate OK/healthy |
-| `PARTIAL` | `degraded: true` | any imperfection with core infra still up (e.g. a host unreachable, a k3s node NotReady, a Flux resource not ready, a degraded ZFS pool) while the core plane is up. Warning events do not by themselves downgrade green |
+| `OK` | `healthy: true` | every gate green: all collected hosts reachable, ALL k3s nodes Ready, zero Flux not-ready, zero non-ONLINE ZFS pools (all hosts), GitLab `/-/health` 200 via the internal VIP, and no non-Watchdog, non-InfoInhibitor alert firing. Recent Warning events are reported in the header but are **advisory only** — they do not gate OK/healthy |
+| `PARTIAL` | `degraded: true` | any imperfection with core infra still up (e.g. a host unreachable, a k3s node NotReady, a Flux resource not ready, a degraded ZFS pool, a non-Watchdog alert firing) while the core plane is up. Warning events do not by themselves downgrade green |
 | `FAILED` | neither flag | catastrophic: no Proxmox host reachable, k3s API up with zero Ready nodes, or (regular only) host coverage below the floor — `CLUSTER_STATUS.txt` is not overwritten. In `--json` mode, "neither flag" also occurs when node data is simply unavailable (local kubectl/kubeconfig failure leaves `k3s.nodes_ready: 0` / `k3s.nodes_total: 0`) — check `collector_context` to distinguish collector-side from cluster-side |
+
+An alert count of `unknown` (Alertmanager unreachable from the collector)
+counts as one firing alert, so a snapshot that could not measure alerts reads
+`PARTIAL` / `degraded` rather than green. `--json` emits
+`alerts: { firing: <n|null> }`, null meaning the count could not be obtained.
 
 One intentional asymmetry: the "all collected hosts reachable" gate is
 regular-mode only (it SSHes DNS/mail/k3s VMs/GitLab); `--json` is a fast
@@ -1815,6 +2271,33 @@ addressed by IP, not bare hostname — only the 6 Proxmox hosts use SSH-config
 host aliases. This keeps remote/Tailscale `--json` runs from false-failing the
 coverage gate on DNS resolution (a bare hostname like `gitlab` won't resolve off
 the LAN).
+
+Every timestamp collect-state stamps itself is UTC: the `# Generated:` header
+and each `=== <host> - ... ===` banner. Command output inside a section (systemd
+timers, journal excerpts) stays in the host's local time, so each host banner is
+followed by a `Host timezone:` line. Snapshots taken before this change carry
+collector-local and host-local stamps instead, which is why their headers appear
+hours apart from their banners.
+
+### Warning-event exclusions
+
+The Warning-event count in the artifact header excludes one case:
+`FailedScheduling` in a `gitlab-runner*` namespace whose message cites only
+`Insufficient cpu` or `Insufficient memory`. That is how the CI pool overflows by
+design, and it recurs on every pipeline. A message that also cites a real blocker
+(`persistentvolumeclaim`, `exceeded quota`, `volume node affinity conflict`)
+still counts, as does any `FailedScheduling` outside those namespaces.
+
+Taint and affinity mentions are deliberately not disqualifying: every normal
+overflow message lists the tainted NAS and server nodes, so keying off those
+would void the exclusion. The policy lives in `warning_events_filter`
+(`scripts/collect-state-lib.sh`) and is unit-tested.
+
+**Section caps.** A cap of 5 on `systemctl list-timers <unit> --all` is the
+minimum that does not flag a complete section as truncated: that command renders
+4 lines for one unit (header, timer, blank, "N timers listed."). The truncation
+marker is the artifact's trust signal, so a cap must never fire on complete
+output.
 
 ---
 

@@ -1,10 +1,6 @@
-# SAML provider for GitLab (docs/27). GitLab's side of the trust (IdP cert
-# fingerprint) lives in the "GitLab SSO" 1Password item and gitlab.rb — only
-# the authentik side is managed here.
-#
-# The NameID policy ("default_name_id_policy") has no schema field in the
-# provider. The live value is the server default (…nameid-format:persistent), so
-# nothing drifts — but a UI change to it is invisible to Terraform.
+# SAML provider for GitLab (docs/27). Only the authentik side is managed here;
+# GitLab's IdP cert fingerprint lives in the "GitLab SSO" 1Password item and
+# gitlab.rb. NameID policy has no schema field, so UI edits to it do not drift.
 
 locals {
   # Server-side ordering of the default SAML mappings on the GitLab provider.
@@ -34,7 +30,10 @@ locals {
 
       assertion_valid_not_before      = "minutes=-5"
       assertion_valid_not_on_or_after = "minutes=5"
-      session_valid_not_on_or_after   = "minutes=86400"
+      # 60 days, authentik's default. SessionNotOnOrAfter is advisory and GitLab
+      # does not enforce it, so the real re-auth cadence is authentik's own
+      # session policy; shortening it here would change nothing GitLab honours.
+      session_valid_not_on_or_after = "minutes=86400"
 
       digest_algorithm    = "http://www.w3.org/2001/04/xmlenc#sha256"
       signature_algorithm = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"

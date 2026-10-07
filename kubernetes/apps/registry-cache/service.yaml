@@ -1,9 +1,7 @@
 ---
-# ClusterIP fronting the registry cache. :5000 is the registry API consumed by
-# the DinD daemons in the gitlab-runner-privileged namespace
-# (registry-cache.registry-cache.svc.cluster.local:5000); :5001 is the debug
-# listener scraped by Prometheus (service-monitors/registry-cache.yaml). No
-# LoadBalancer / ingress — the cache is cluster-internal, CI-only.
+# ClusterIP fronting the registry cache. :5000 is the registry API the DinD
+# daemons in gitlab-runner-privileged consume; :5001 is the debug listener
+# Prometheus scrapes. Cluster-internal and CI-only: no LoadBalancer or ingress.
 apiVersion: v1
 kind: Service
 metadata:

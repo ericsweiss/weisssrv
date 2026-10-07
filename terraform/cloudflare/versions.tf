@@ -11,20 +11,9 @@ terraform {
   required_providers {
     cloudflare = {
       source = "cloudflare/cloudflare"
-      # Patch-floating pin (~> 4.52.0 = >= 4.52.0, < 4.53.0): patches float, but a
-      # minor bump must be a deliberate edit here (v4 minors have shipped
-      # schema/deprecation changes). v5 is a breaking rewrite — migrate explicitly.
-      #
-      # KNOWN MIGRATION DEBT (v4 -> v5): the v5 provider removed/renamed the
-      # resources the library `cloudflare-zone` module relies on:
-      #   - cloudflare_zone_settings_override -> per-setting
-      #     cloudflare_zone_setting resources
-      #   - cloudflare_record (every record in dns.tf) -> cloudflare_dns_record
-      #     (different argument schema; `data {}` blocks for CAA become a
-      #     typed `data` object)
-      # Migrating means a module rewrite in weisssrv-lib AND `terraform state mv`
-      # per record here, so the ~> 4.52.0 pin defers it deliberately. Do NOT bump
-      # to v5 incidentally — schedule it as its own change, module first.
+      # Patches float; a minor bump is a deliberate edit (v4 minors ship schema
+      # changes). v5 is a breaking rewrite of every resource here; scope and
+      # sequence are in docs/16-next-steps.md § Terraform and gates.
       version = "~> 4.52.0"
     }
   }

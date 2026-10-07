@@ -1,13 +1,8 @@
 ---
-# Homarr dashboard — external + internal IngressRoutes.
-#
-# SSO model: Homarr runs its OWN Authentik OIDC gate (AUTH_PROVIDERS=oidc,...,
-# deployment.yaml), so — like hermes — there is NO forward-auth middleware here.
-# Traefik passes straight to Homarr, which 302s unauthenticated browsers into
-# the Authentik flow (one login, both hostnames; AUTH_TRUST_HOST builds the
-# per-hostname callback). The default-deny NetworkPolicy admits only the Traefik
-# namespace on :7575. The Authentik objects live in terraform/authentik (docs/40).
-# The internal route additionally scopes to LAN/Tailscale sources.
+# CRITICAL: Homarr runs its own Authentik OIDC gate (AUTH_PROVIDERS in
+# deployment.yaml), so there is no forward-auth middleware here and Traefik
+# passes straight through. The internal route scopes to LAN/Tailscale sources.
+# Authentik objects live in terraform/authentik (docs/40).
 
 # External - dashboard.ericsweiss.com
 apiVersion: traefik.io/v1alpha1

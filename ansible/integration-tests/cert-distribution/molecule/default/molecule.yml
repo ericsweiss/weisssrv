@@ -7,10 +7,7 @@ driver:
 
 platforms:
   - name: dns-01
-    # The systemd-container block is identical for every platform in this
-    # scenario, so it is anchored once and merged into the rest; only name and
-    # groups differ. Anchors are per-file — YAML has no cross-file include — so
-    # each scenario carries its own copy of the shape.
+    # Shared systemd-container shape; only name/groups differ per platform.
     <<: &systemd_platform
       image: "${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:v0.17.1}"
       pre_build_image: true
@@ -45,33 +42,26 @@ platforms:
 dependency:
   name: galaxy
   options:
-    # The single source of truth for the weisssrv.infra pin these
-    # scenarios exercise. Resolved by ansible-galaxy in molecule's CWD,
-    # which is the scenario's stack dir (ansible/integration-tests/<stack>).
+    # Single source of truth for the weisssrv.infra pin, resolved in molecule's
+    # CWD (the stack dir).
     requirements-file: ../../requirements.yml
 provisioner:
   name: ansible
   env:
     # Required for molecule_docker plugin (upstream broken conditional in destroy.yml)
     ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
-    # Provide dummy SSH key for testing (base role expects this via all.yml lookup)
+    # Dummy key: all.yml looks SSH_PUBLIC_KEY up and the base role requires it.
     # yamllint disable-line rule:line-length
     SSH_PUBLIC_KEY: "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC3qctest123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123== test@molecule"
   playbooks:
     prepare: ../../../_shared/prepare.yml
   inventory:
     group_vars:
-      cert_stack:
-        # Common SSH configuration
-        admin_username: eric
-
       cert_servers:
         # acme.sh configuration
         acme_certs_enabled: true
         acme_certs_domain: "{{ internal_domain }}"
         acme_certs_email: test@example.com
-        # The distribution key belongs to the admin user, matching production.
-        acme_certs_ssh_user: eric
         # Test-local list driving the mock cert fixtures in converge/verify —
         # NOT a role knob (acme_certs issues acme_certs_domain + its wildcard
         # and reads no domain-list variable).
@@ -79,18 +69,13 @@ provisioner:
           - domain: "*.esweiss.com"
           - domain: esweiss.com
 
-        # SSH keys (acme_certs_ssh_private_key/_public_key) are generated
-        # at runtime in converge.yml and injected onto dns-01's hostvars via
-        # add_host (host facts override inventory group_vars). They're
-        # intentionally not defined here — the role's assert surfaces a clear
-        # error if the runtime injection ever fails.
+        # SSH keys (acme_certs_ssh_private_key/_public_key) are generated in
+        # converge.yml and injected onto dns-01's hostvars via add_host. The
+        # role's assert surfaces a clear error if that injection fails.
 
-        # Certificate distribution targets — host_key is added at runtime in
-        # converge.yml (slurped from each cert_clients container) and the
-        # whole list is re-injected onto dns-01 via add_host so the role
-        # gets the full structure. We keep a copy of the static fields here
-        # so verify.yml (which runs as a separate ansible-playbook invocation,
-        # without converge's add_host facts) can still read the list shape.
+        # Certificate distribution targets. converge.yml slurps host_key from
+        # each cert_clients container and re-injects the whole list via
+        # add_host; the static fields stay here so verify.yml reads the shape.
         acme_certs_distribution_targets:
           - host: cert-client-01
             ip: cert-client-01

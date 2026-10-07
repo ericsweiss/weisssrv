@@ -9,6 +9,7 @@ resources:
   - deployment.yaml
   - service.yaml
   - networkpolicy.yaml
+  - servicemonitor.yaml
   - vpa.yaml
 
 components:

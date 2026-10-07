@@ -1,8 +1,7 @@
 ---
-# Pins k3s's built-in CoreDNS at 2 replicas for HA. k3s owns the CoreDNS
-# Deployment as a wrangler AddOn and resets replicas on every server
-# restart/upgrade, so this must be an HPA, not a replicas patch — the same
-# ownership makes hard pod-spread unachievable from here (docs/33-autoscaling.md).
+# Pins k3s's built-in CoreDNS at 2 replicas for HA. k3s owns the Deployment as a
+# wrangler AddOn and resets replicas on every server restart, so this must be an
+# HPA, not a replicas patch. Pod-spread is likewise unreachable (docs/33).
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:

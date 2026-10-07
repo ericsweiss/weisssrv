@@ -1,36 +1,17 @@
-# Service CNAMEs (auth, bar, food, plex, home, …) are NOT here — external-dns
-# owns those from the k3s IngressRoutes. This file holds the records external-dns
-# cannot express: the apex, the DDNS-tracked A records, CAA, SPF/DMARC, and the
-# nested wildcards. Contract, token scopes and removal procedure: README.md.
-#
-# These are INPUTS to the library `cloudflare-zone` module (main.tf), not
-# resources. Each map key is the record's state address, and the two flags below
-# select which of the module's four lifecycle classes the record lands in.
-#
-# PREVENT_DESTROY POLICY (`protected = true` on every record here)
-# This module auto-applies on main (`terraform apply -auto-approve`, with no
-# pre-merge plan in CI — see README.md), so deleting or renaming a key would take
-# a record out of DNS unreviewed. `protected` routes the record to a module
-# resource carrying `lifecycle { prevent_destroy = true }`, making removal a
-# deliberate two-step change: clear the flag, then drop the entry. In-place
-# updates and `moved` blocks are unaffected.
-#
-# DDNS OWNERSHIP (`content_managed_externally = true`)
-# The cloudflare-ddns CronJob owns the live IP; the placeholder below only seeds
-# record creation (the module ignores drift on `content`). The CronJob PUTs a
-# full body but preserves the record's existing `proxied`/`ttl`, so those stay
-# Terraform-owned.
+# CRITICAL: record inventory (inputs) for the library `cloudflare-zone` module in
+# main.tf. Every record sets `protected = true`, so the module gives it
+# `prevent_destroy`: deleting or renaming a map key needs a state re-address first
+# or the auto-apply on main fails. `content_managed_externally = true` hands the
+# live IP to the cloudflare-ddns CronJob. Record ownership, the removal procedure
+# and token scopes: README.md.
 locals {
-  # RFC 5737 TEST-NET-1 — deliberately unroutable. A fresh apply resolves these
-  # four records to this address until the DDNS CronJob's next */5 run; seeding
-  # from the real WAN IP instead would rot in git and eventually publish a lease
-  # that belongs to a stranger.
+  # RFC 5737 TEST-NET-1, unroutable: the four DDNS records resolve here until the
+  # CronJob's next */5 run (README.md).
   ddns_placeholder_ip = "192.0.2.1"
 
-  # CAA — issuance is restricted to Let's Encrypt (cert-manager + acme.sh) plus
-  # the Cloudflare Universal SSL partner CAs, so edge-cert renewal isn't blocked.
-  # Cloudflare auto-injects CAA records for its other partner CAs outside this
-  # config; they are intentionally absent here.
+  # Issuance restricted to Let's Encrypt (cert-manager + acme.sh) plus the
+  # Cloudflare Universal SSL partner CAs. Cloudflare auto-injects CAA for its
+  # other partner CAs outside this config.
   caa_records = {
     caa_issue_letsencrypt     = { tag = "issue", value = "letsencrypt.org", comment = "Restrict cert issuance to Let's Encrypt" }
     caa_issuewild_letsencrypt = { tag = "issuewild", value = "letsencrypt.org", comment = "Restrict wildcard cert issuance to Let's Encrypt" }
@@ -45,9 +26,8 @@ locals {
   }
 
   # Nested subdomains/wildcards pointing at `direct` (DNS-only, TLS via Traefik):
-  # Cloudflare Universal SSL covers first-level wildcards only, and external-dns
-  # annotations cannot express wildcards. The ide.git pair is the Web IDE
-  # extension host (CVE-2026-5816 isolation; docs/27 § Web IDE extension host).
+  # Universal SSL covers first-level wildcards only and external-dns annotations
+  # cannot express wildcards. The ide.git pair is the Web IDE extension host (docs/27).
   gitlab_direct_cnames = {
     "registry.git" = "GitLab Container Registry - DNS only, TLS via Traefik"
     "pages.git"    = "GitLab Pages apex - DNS only, TLS via Traefik"
@@ -72,16 +52,15 @@ locals {
         content_managed_externally = true
       }
 
-      # SPF ~all / DMARC p=none: monitoring-first and deliberately parked, not a
-      # pending TODO. The `rua` target is a consumer Gmail on another org domain,
-      # so aggregate reports will not accumulate evidence for tightening — treat
-      # -all / p=reject as its own weighed change.
+      # SPF ~all / DMARC p=none: monitoring-first; -all and p=reject are their own
+      # weighed change. The off-zone rua needs <domain>._report._dmarc.gmail.com
+      # TXT "v=DMARC1" (RFC 7489), not ours to publish, so no reports arrive.
       spf = {
         name      = "@"
         type      = "TXT"
         content   = "v=spf1 ~all"
         ttl       = 1
-        comment   = "SPF - softfail (monitoring); tighten to -all after DMARC reports"
+        comment   = "SPF - softfail; -all is a deliberate separate change (see dns.tf)"
         protected = true
       }
 
@@ -90,14 +69,13 @@ locals {
         type      = "TXT"
         content   = "v=DMARC1; p=none; rua=mailto:ericsweiss1@gmail.com"
         ttl       = 1
-        comment   = "DMARC - monitoring policy (p=none); rua best-effort (cross-domain to consumer Gmail)"
+        comment   = "DMARC - monitoring policy (p=none); off-zone rua unauthorized (RFC 7489), no reports"
         protected = true
       }
 
       # GitLab web UI + SSH on one hostname: DNS-only so SSH works alongside
-      # HTTPS via Traefik. Origin IP is exposed here and on `direct` by design
-      # (see below). Force a DDNS refresh after a fresh apply with
-      # `kubectl -n cloudflare-ddns create job --from=cronjob/cloudflare-ddns …`.
+      # HTTPS via Traefik. Origin IP is exposed here and on `direct`; see
+      # README.md § Who owns which record.
       git = {
         name                       = "git"
         type                       = "A"
@@ -110,10 +88,8 @@ locals {
       }
 
       # Origin-IP record for what the Cloudflare proxy cannot front: GitLab Pages
-      # nested wildcards and the Container Registry (direct TLS termination).
-      # Exposure is intentional and gated by the Proxmox firewall (sg-gitlab,
-      # sg-k3s-ingress-pub), a small open-port set (443, 2222, 5050) and
-      # per-service authentication.
+      # nested wildcards and the Container Registry. Exposure is gated by the WAN
+      # forwards in terraform/unifi, the Proxmox guest firewall and per-service auth.
       direct = {
         name                       = "direct"
         type                       = "A"
@@ -125,11 +101,9 @@ locals {
         content_managed_externally = true
       }
 
-      # wg-easy endpoint (kubernetes/apps/wg-easy). DNS-only: WireGuard is UDP
-      # and cannot be proxied, so this resolves to the origin, where the router
-      # forwards WAN :51820/udp -> MetalLB VIP .99. An exposed endpoint is safe
-      # by design — WireGuard drops any packet without a valid peer key
-      # (docs/38 threat model).
+      # wg-easy endpoint (kubernetes/apps/wg-easy). DNS-only: WireGuard is UDP and
+      # cannot be proxied; the router forwards WAN :51820/udp to MetalLB VIP .99.
+      # WireGuard drops any packet without a valid peer key (docs/38).
       vpn = {
         name                       = "vpn"
         type                       = "A"
@@ -141,10 +115,9 @@ locals {
         content_managed_externally = true
       }
 
-      # Immich: CNAME to `direct` so it bypasses the Cloudflare proxy, whose
-      # 100 MB request-body cap mobile video uploads routinely exceed. This is
-      # why the Immich IngressRoute carries no external-dns annotation — the
-      # record lives here.
+      # Immich: CNAME to `direct`, bypassing the Cloudflare proxy whose 100 MB
+      # request-body cap mobile video uploads exceed. The Immich IngressRoute
+      # therefore carries no external-dns annotation.
       photos = {
         name      = "photos"
         type      = "CNAME"
@@ -183,6 +156,6 @@ locals {
   )
 }
 
-# Two zone records are deliberately dashboard-managed, not codified: the null MX
+# Two zone records are dashboard-managed, not codified: the null MX
 # (0 .) that disables inbound mail, and the google-site-verification apex TXT.
 # Both are set-once and world-readable; `terraform plan` never touches them.

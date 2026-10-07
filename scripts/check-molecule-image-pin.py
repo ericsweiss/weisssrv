@@ -1,23 +1,8 @@
 #!/usr/bin/env python3
 """Assert every hand-written `molecule-test:<tag>` literal equals WEISSSRV_LIB_REF.
 
-The integration scenarios spell the image as
-`${MOLECULE_TEST_IMAGE:-.../molecule-test:vX.Y.Z}`. CI always overrides the
-variable (.gitlab/ci/integration-jobs.yml builds it from $WEISSSRV_LIB_REF), so
-only a LOCAL `task ansible:test-integration-*` reads the literal — which is
-exactly why a stale one is invisible: the pipeline is green while the local run
-tests against an old image.
-
-check-lib-pins.py cannot cover these (it reads the `include:` block and
-ansible/requirements.yml only) and it is vendored byte-identical from
-weisssrv-lib, so this site-local gate carries the same contract for the molecule
-literals: they are copies of one pin, `--fix` rewrites them.
-
-.gitlab-ci.yml is READ-ONLY here — it is the single source of the ref.
-
-Usage:
-  scripts/check-molecule-image-pin.py         # verify (exit 1 on drift)
-  scripts/check-molecule-image-pin.py --fix   # rewrite the literals to the pin
+CI overrides MOLECULE_TEST_IMAGE, so only a local integration run reads the
+literal and a stale one hides behind a green pipeline. `--fix` rewrites them.
 """
 
 from __future__ import annotations
@@ -27,16 +12,20 @@ import re
 import sys
 from pathlib import Path
 
-import yaml
+try:
+    import yaml
+except ImportError:  # pragma: no cover - environment guard
+    print("ERROR: PyYAML required: pip install pyyaml", file=sys.stderr)
+    raise SystemExit(2) from None
 
 REPO = Path(__file__).resolve().parent.parent
 REF_VAR = "WEISSSRV_LIB_REF"
 TAG_RE = re.compile(r"^v\d+\.\d+\.\d+$")
 
-# Files carrying the literal. Globs are resolved relative to the repo root, so a
-# scenario added later is covered without touching this list.
+# Files carrying the literal. Globs resolve relative to the repo root, so a
+# scenario added later under ANY name is covered without touching this list.
 SOURCES = (
-    "ansible/integration-tests/*/molecule/default/molecule.yml",
+    "ansible/integration-tests/*/molecule/*/molecule.yml",
     "ansible/TESTING.md",
 )
 
@@ -53,7 +42,14 @@ _RefTolerantLoader.add_multi_constructor("!reference", lambda loader, suffix, no
 
 
 def declared_ref(ci_file: Path) -> str:
-    doc = yaml.load(ci_file.read_text(encoding="utf-8"), Loader=_RefTolerantLoader) or {}
+    # GitLab's inputs syntax makes a pipeline file two documents, `spec:` then
+    # the jobs, so the last mapping document is the one this gate wants.
+    docs = [
+        d for d in yaml.load_all(ci_file.read_text(encoding="utf-8"),
+                                 Loader=_RefTolerantLoader)
+        if isinstance(d, dict)
+    ]
+    doc = docs[-1] if docs else {}
     want = (doc.get("variables") or {}).get(REF_VAR)
     if not want:
         raise SystemExit(f"{ci_file}: variables.{REF_VAR} is not set (the single source)")
@@ -107,16 +103,23 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("--ci-file", type=Path, default=REPO / ".gitlab-ci.yml")
+    ap.add_argument(
+        "--ci-file",
+        type=Path,
+        default=REPO / ".gitlab-ci.yml",
+        help="read the ref from this file and act on the tree containing it",
+    )
     ap.add_argument(
         "--fix", action="store_true", help="rewrite the literals to variables." + REF_VAR
     )
     args = ap.parse_args(argv)
 
-    want = declared_ref(args.ci_file)
+    ci_file = args.ci_file.resolve()
+    root = ci_file.parent
+    want = declared_ref(ci_file)
     if args.fix:
-        changed = fix(want)
-        problems = check(want)
+        changed = fix(want, root)
+        problems = check(want, root)
         if problems:
             print("check-molecule-image-pin: FAILED after rewrite", file=sys.stderr)
             for problem in problems:
@@ -125,7 +128,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"check-molecule-image-pin: rewrote {changed} file(s) to {want}")
         return 0
 
-    problems = check(want)
+    problems = check(want, root)
     if problems:
         print("check-molecule-image-pin: FAILED", file=sys.stderr)
         for problem in problems:

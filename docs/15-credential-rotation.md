@@ -4,18 +4,25 @@ This document explains how to rotate passwords, API tokens, and SSH keys stored 
 
 ## Overview
 
-All secrets are stored in the 1Password **Homelab** vault and injected at use
-time. **Nothing sensitive is ever committed to git** — only references.
+Secrets live in three 1Password vaults and are injected at use time.
+**Nothing sensitive is ever committed to git** — only references.
 
-### Secrets model: three consumers, one vault
+- **Homelab** — everything the deployment reads at run time: the `op run`
+  consumers and the ESO `ClusterSecretStore`, which reads this vault only.
+- **Homelab-Admin** — admin and CI-only items.
+- **Homelab-Boot** — the two ZFS pool passphrases and nothing else, so the
+  boot-unlock Connect token can be scoped to them alone.
+
+### Secrets model: three consumers
 
 This is the canonical description of the model; other pages (README.md,
 CLAUDE.md, `ansible/README.md`, `docs/29-flux-operations.md`) point here.
 
 1. **Ansible / Terraform / the Task wrapper** — `op run --` resolves
    `op://Homelab/<Item Title>/<field>` references at run time. The reference
-   strings live next to the thing that needs them: each `Taskfile.yml` task's
-   `env:` block, mirrored by the `variables:` of the CI job that runs the same
+   strings live next to the thing that needs them: each Task task's `env:`
+   block, in the root `Taskfile.yml` or the owning `taskfiles/<ns>.yml`,
+   mirrored by the `variables:` of the CI job that runs the same
    playbook. `task secrets:show` prints the set actually in use. Item titles
    with spaces are fine — `op run` parses the full path. Rotate by updating
    1Password, then re-running the relevant playbook (per-credential procedures
@@ -48,17 +55,17 @@ the agent registration in GitLab. It is allowlisted in
 `scripts/check-unmanaged-secrets.py` so its owner is on the record.
 
 **The `weisssrv.infra` collection adds no fourth consumer.** The roles ship no
-credentials and no `op://` references of their own — every secret still arrives
-as an inventory variable resolved by consumer 1 above. The collection only
-*widened* that surface: several roles that used to carry a site default now
-declare the value as a required input (`weisssrv.infra`'s `MIGRATING.md`
-§ "Externalized defaults"), so the reference must exist in this repo's
-inventory. The item inventory below is unchanged by the migration.
+credentials and no `op://` references of their own, so every secret arrives as
+an inventory variable resolved by consumer 1 above. Several roles declare these
+values as required inputs rather than carrying a site default, so the reference
+must exist in this repo's inventory. The collection's migration guide
+§ "Externalized defaults" lists them.
 
 ## Required 1Password Items
 
 This is the canonical, authoritative inventory of every item the deployment
-expects in the **Homelab** vault. CLAUDE.md, `docs/02-install.md`,
+expects. Each subsection names its vault; unless stated otherwise the item lives
+in **Homelab**. CLAUDE.md, `docs/02-install.md`,
 `docs/13-ci-cd.md`, `docs/27-gitlab-deployment.md`, and
 `docs/28-gitlab-migration.md` all point here; update this list (not those files)
 when an item is added or its fields change.
@@ -69,7 +76,13 @@ more than a table cell have a subsection under
 
 Unless a row says otherwise, "rotate" means: update the field in 1Password, then
 re-run the consuming deploy (`task <area>:deploy`) for `op run` consumers, or
-`task flux:rotate-secret -- <app>` for in-cluster ESO consumers.
+`task flux:rotate-secret -- <app>` for in-cluster ESO consumers. That task
+dispatches on a fixed list of apps (`task flux:rotate-secret` with no argument
+prints it). The ExternalSecrets with no written procedure yet are listed in
+`DECLARED_MANUAL` in `scripts/check-secret-rotation-coverage.py`; rotate one by
+hand with `task flux:refresh-secret -- <ns>/<name>`, then
+`kubectl -n <ns> delete pod -l <selector>`. Reloader sets `ignoreSecrets: true`,
+so a refreshed Secret never rolls the pods on its own.
 
 ### Inventory
 
@@ -102,8 +115,17 @@ re-run the consuming deploy (`task <area>:deploy`) for `op run` consumers, or
 |---|---|---|
 | SSH Key | public + private key | `base` role (operator key distribution) |
 | Samba NAS User | nas user password | `nas_storage` role (Samba) |
-| Proxmox API Token | `user`, `token-name`, `token-secret` (PVEAuditor) | Proxmox exporter |
-| ZFS Encryption Connect Token | `credential` | `zfs_encryption` role — boot-time pool passphrase fetch. Create with `op connect token create weisssrv-zfs --server <id> --vaults Homelab` |
+| Proxmox API Token | `user`, `token-name`, `token-secret` (PVEAuditor) | Proxmox exporter and the Homarr Proxmox integration. `proxmox_firewall` creates `monitoring@pve!exporter` only when it is absent, and the secret is printed once at creation — rotating it is `pveum user token remove` then `add`, capturing the printed value into this item |
+| ZFS Encryption Connect Token | `credential` | `zfs_encryption` role — boot-time pool passphrase fetch. Create with `op connect token create weisssrv-zfs --server <id> --vaults Homelab-Boot`; the token reads only the passphrase vault, while the item holding it stays in Homelab |
+
+#### ZFS boot unlock (vault: Homelab-Boot)
+
+This vault holds only these two items. The Connect server must be granted it
+before a token can cover it (`zfs_encryption` role README § Scoping the Connect
+token).
+
+| Item | Fields | Consumed by |
+|---|---|---|
 | ZFS Pool tank Passphrase | `passphrase` (≥32 random chars) | `zfs-load-key@tank.service` on pve-nas-01 |
 | ZFS Pool ssd Passphrase | `passphrase` | `zfs-load-key@ssd.service` on pve-nas-01 |
 
@@ -119,6 +141,10 @@ re-run the consuming deploy (`task <area>:deploy`) for `op run` consumers, or
 | Service Account Auth Token weisssrv | service-account token | `OP_SERVICE_ACCOUNT_TOKEN` in CI |
 | GitHub Token | `credential` | version-checker API rate limits (`task maintenance:check-versions`, the `version-bump-bot` CI job) |
 
+`Flux Webhook Token` and `Service Account Auth Token weisssrv` live in
+**Homelab-Admin**, not `Homelab` — they are CI/admin-only and ESO never reads
+them.
+
 #### GitLab
 
 | Item | Fields | Consumed by |
@@ -130,6 +156,7 @@ re-run the consuming deploy (`task <area>:deploy`) for `op run` consumers, or
 | GitLab Runner | `runner-token` (`glrt-*`) | shared multi-project runner, tags `k8s-deploy`, untagged yes |
 | GitLab Runner Privileged | `runner-token` (`glrt-*`) | infrastructure runner, tags `infrastructure`, untagged no |
 | GitLab Agent Token | `credential` | GitLab Kubernetes Agent registration |
+| CI Cache Garage | `access-key`, `secret-key` (S3 key pair), `rpc-secret`, `admin-token`, `metrics-token` | ESO → `ci-cache-garage-secrets`, the `s3access` Secret in both runner namespaces, and `observability-exporter-secrets` — see [detail](#ci-cache-garage) |
 | GitLab Registry Cache Deploy Token | `username` + `token` (deploy token, `read_registry`) | `registry-cache-secrets` ExternalSecret — see [detail](#gitlab-registry-cache-deploy-token) |
 | GitLab Terraform State Token | `credential` | Terraform HTTP state backend (local use) |
 
@@ -166,10 +193,9 @@ re-run the consuming deploy (`task <area>:deploy`) for `op run` consumers, or
 | Home Assistant API Token | `token`, `backup_encryption_key` | HA Prometheus endpoint + offsite backup decryption — see [detail](#home-assistant-api-token) |
 | Nextcloud Secrets | `admin-password`, `postgres-password`, `serverinfo-token` | Nextcloud break-glass admin, DB role, exporter — see [detail](#nextcloud-secrets) |
 | Immich Secrets | `postgres-password`, `admin-bootstrap-password` | Immich compose DB; the bootstrap password is operator-only |
-| Homarr Proxmox Token | `token-id`, `token-secret` (PVEAuditor) | entered in the Homarr UI, not ESO-consumed (docs/41) |
+| Homarr Proxmox Token | `token-id`, `token-secret` (PVEAuditor) | the same `monitoring@pve!exporter` pair as the exporter, entered in the Homarr UI rather than ESO-consumed (docs/41) |
 | Homarr Integrations | per-integration API keys | DR-convenience record of UI-entered credentials, not ESO-consumed |
 | Uptime Kuma | `admin-username`, `admin-password` | Kuma's single admin account **and** its `/metrics` scrape — see [detail](#uptime-kuma) |
-| Plex Token | `token` | Plex exporter metrics |
 
 #### Observability and backups
 
@@ -216,9 +242,11 @@ with no 2FA, because the provider cannot satisfy an MFA prompt. `username` /
 key is revoked or the API is unreachable, never read by Terraform. Two other
 console admins exist and are **not** in this vault by design: the ui.com
 **Owner** (`ericsweiss1@gmail.com`, an SSO account whose credentials and MFA
-live at account.ui.com, not here), and a local **`homeassistant`** Super Admin
-kept deliberately for a few Home Assistant write actions and left unvaulted to
-avoid a rotation burden it does not earn. Neither is read by any tooling. `url`
+live at account.ui.com, not here), and a local **`homeassistant`** admin with
+full rights inside the UniFi Network application — the same reach as the
+`terraform` admin, no 2FA, no cloud access — kept deliberately for a few Home
+Assistant write actions and left unvaulted to avoid a rotation burden it does
+not earn. Neither is read by any tooling. `url`
 is the **production** gateway address (`https://10.0.10.1`); while the gateway is on
 a bench, override `TF_VAR_unifi_api_url` per invocation instead of editing the
 item (docs/46).
@@ -231,14 +259,11 @@ bump and the first supervised apply the plan is legitimately non-empty — the
 enumerable set in `terraform/unifi/README.md` — and what proves the key there
 is that the plan *renders* rather than failing to read. Once that apply has
 converged the root, the empty plan is again the pass condition and any diff
-during a rotation is real drift, not an accepted exception. The key is also
-read by `unifi-drift-plan`, but that job
-carries a blanket `allow_failure: true` over `plan -detailed-exitcode`, so a
-renamed field (empty string → `unifi_api_key` length validation), a revoked key
-(401, no validation message at all) and genuine drift all render as the same
-yellow badge — see docs/46 § Expected breakage for the "must be green after the
-first apply" rule, and docs/16 for the follow-up that would make a broken plan
-red.
+during a rotation is real drift, not an accepted exception. The key is also read by `unifi-drift-plan`. That job's `allow_failure` is scoped
+to `exit_codes: [2]`, so only real drift renders yellow — a revoked key (401) or
+a renamed field fails the job red and is visible on the next scheduled pipeline.
+See docs/48 § Expected breakage (all closed) for the "must be green after the
+first apply" rule.
 
 #### WiFi SSID pre-shared keys
 
@@ -254,6 +279,13 @@ is **disruptive by design** — every device on that VLAN drops off the moment t
 apply lands and has to be re-joined with the new key, which for the IoT SSID
 means re-onboarding each device. Rotate one SSID at a time, and never rotate
 `WiFi TheRevengers` remotely: the admin workstation is on it.
+
+Rotating the PSK does **not** scrub the old one. `terraform/unifi` stores every
+WLAN passphrase in its GitLab-managed state in the clear, and GitLab retains
+previous state versions, so the superseded key stays readable to anyone who can
+read `terraform/state/unifi` — any project Maintainer with an `api`-scoped
+token. A routine rotation can accept that. A rotation prompted by a
+*compromised* key also needs the retained state versions purged.
 
 #### Authentik Terraform Token
 
@@ -286,6 +318,36 @@ registry cache (`kubernetes/apps/registry-cache`, docs/27). `read_registry` is
 least privilege — the cache only pulls upstream blobs. Rotate: create a new
 deploy token, update both fields, then `task flux:rotate-secret -- registry-cache`.
 
+A missing or revoked item is not silent. Both fields land in the Deployment as
+`secretKeyRef` env vars, so the pod never starts and `RegistryCacheDown` fires
+15 minutes later and keeps firing. If the credential has to be away for a while,
+silence that alert or drop `- registry-cache` from
+`kubernetes/apps/kustomization.yaml` until the item is back.
+
+#### CI Cache Garage
+
+The Garage S3 backend for the GitLab runner cache
+(`kubernetes/apps/ci-cache`). Garage imports the `access-key` / `secret-key`
+pair from `GARAGE_DEFAULT_*` on **first boot**, so this item is the single
+source for the server and for the runner-side `s3access` copies in both runner
+namespaces. `rpc-secret` is the loopback RPC secret, `admin-token` the admin
+API, and `metrics-token` the bearer the ci-cache ServiceMonitor uses — that last
+one also lands in `observability-exporter-secrets`, where a missing property
+fails the whole Secret sync and takes every other exporter credential with it.
+
+Rotate: update all five fields, then run the task. It force-syncs the four
+ExternalSecrets and replaces the consuming pods.
+
+```bash
+task flux:rotate-secret -- ci-cache
+```
+
+Replacing the ci-cache pod is what re-imports the rotated key pair: `Recreate`
+plus an emptyDir gives the new pod an empty metadata dir. The cached artifacts
+are lost and the next pipeline runs cold, by design. Prometheus reads the
+metrics bearer from its mounted Secret via the config-reloader, so nothing there
+is restarted.
+
 #### Homarr SSO
 
 `client-secret` is read by **both** ESO (the `homarr-secrets` ExternalSecret →
@@ -311,16 +373,15 @@ terraform apply (docs/40).
 
 #### VPN Unlimited Credentials
 
-Gluetun needs **all four** of `openvpn-user`, `openvpn-password`,
-`openvpn-clientcrt` and `openvpn-clientkey`: its generated OpenVPN config is
-cert/key-based (auth-user-pass off), but its settings validation still requires a
-non-empty user and password for the provider.
+The item holds four fields: `openvpn-user`, `openvpn-password`,
+`openvpn-clientcrt` and `openvpn-clientkey`. Gluetun's generated OpenVPN config
+is cert/key-based (auth-user-pass off), but its settings validation still
+requires a non-empty user and password for the provider.
 
-To enable `task downloads:vpn-provider -- PROVIDER=vpnunlimited`, generate a
-Manual/OpenVPN config for one device in the VPN Unlimited portal, add the four
-fields (the two PEM fields take the full `<cert>` / `<key>` blocks), then
-uncomment the `vpnunlimited-*` entries in
-`kubernetes/apps/download-clients/externalsecret.yaml` (docs/21).
+This item is an unwired spare. Privado is the only provider the download clients
+can select today, so nothing reads these four fields. Wiring a second provider
+takes the five edits listed in
+[docs/16](16-next-steps.md) § Open work, "A second download-client VPN provider".
 
 #### Download Client API Keys
 
@@ -335,7 +396,7 @@ ExternalSecret **and then** restarting the pods: ESO only re-fetches on its 24h
 a bare pod restart would re-read the stale key and the rotation would silently
 no-op. Use `task flux:rotate-secret -- downloads` (force-syncs both
 `gluetun-control-auth` and `vpn-credentials`, then restarts nzbget/qbittorrent).
-See docs/21 § Control-Server Auth.
+See `kubernetes/apps/download-clients/README.md` § Control-Server Auth.
 
 #### Hermes Secrets
 
@@ -460,8 +521,9 @@ eval $(op signin)   # if needed
 # 2. Refresh ExternalSecret + restart consuming pods in one go.
 #    Known apps (the task's own `--` dispatch; run it with no argument to have
 #    it print the current list):
-#      authentik, downloads, recipes, gitlab-runner, gitlab-runner-privileged,
-#      gitlab-agent, registry-cache, observability-exporters
+#      authentik, ci-cache, downloads, hermes, homarr, recipes, gitlab-runner,
+#      gitlab-runner-privileged, gitlab-agent, registry-cache, wg-easy,
+#      observability-exporters
 task flux:rotate-secret -- authentik
 
 # 3. (Optional) Refresh an ExternalSecret without restarting pods — useful
@@ -473,9 +535,9 @@ The `task flux:rotate-secret -- <app>` command annotates the ExternalSecret
 with a force-sync timestamp, waits for ESO to re-fetch from 1Password, then
 restarts the Deployments/StatefulSets that consume the produced Secret. The
 per-app dispatch (which ExternalSecrets it force-syncs and which workloads it
-rolls) lives in the task itself — `Taskfile.yml`, `flux:rotate-secret` — and is
-the source of truth; running the task with no argument prints the current app
-list. See `docs/29-flux-operations.md` § Rotating a Secret for the surrounding
+rolls) lives in `scripts/flux-rotate-secret.sh`, which the task runs, and that
+script is the source of truth; running the task with no argument prints the
+current app list. See `docs/29-flux-operations.md` § Rotating a Secret for the surrounding
 procedure and § Rate Limits for the 1Password read budget.
 
 The single exception is the Connect bootstrap secrets
@@ -607,14 +669,18 @@ kubectl -n <ns> delete pod -l <selector>   # delete, not `rollout restart`:
 # 1. Generate new key pair
 ssh-keygen -t ed25519 -C "eric@MacBookPro.esweiss.com" -f ~/.ssh/id_ed25519_new
 
-# 2. Update public key in 1Password
-# Copy contents of ~/.ssh/id_ed25519_new.pub to 1Password
+# 2. Update BOTH halves in 1Password
+#    public key  <- ~/.ssh/id_ed25519_new.pub
+#    private key <- ~/.ssh/id_ed25519_new
+#    fingerprint <- ssh-keygen -lf ~/.ssh/id_ed25519_new.pub
 
-# 3. Verify new key is readable
+# 3. Verify the item holds a matching pair
 op read "op://Homelab/SSH Key/public key"
+op read "op://Homelab/SSH Key/private key" | ssh-keygen -y -f /dev/stdin
+#    ^ must print the same public key as the line above
 
 # 4. Deploy new key to all hosts
-ansible-playbook ansible/playbooks/base.yml --tags ssh
+task infra:base -- --tags ssh
 
 # 5. Test SSH with new key (before removing old one!)
 ssh -i ~/.ssh/id_ed25519_new eric@10.0.10.102
@@ -626,11 +692,41 @@ mv ~/.ssh/id_ed25519_new.pub ~/.ssh/id_ed25519.pub
 # 7. Update SSH agent
 ssh-add -D
 ssh-add ~/.ssh/id_ed25519
+
+# 8. Revoke the old key — the additive deploy in step 4 never removes it
+ansible -i ansible/inventories/prod 'all:!home:!windows' -b -m ansible.posix.authorized_key \
+  -a "user=eric key='ssh-ed25519 <OLD-PUBKEY>' state=absent"
 ```
 
 **What Happens**:
-- `authorized_keys` updated on all managed hosts
-- Old key still works until you remove it from 1Password and redeploy
+- `authorized_keys` is deployed **additively**
+  (`base_ssh_authorized_keys_exclusive` defaults to `false`). Updating the
+  1Password item and redeploying ADDS the new key and revokes nothing — the old
+  key keeps working on every host until step 8 removes it.
+- CI deploy jobs read `op://Homelab/SSH Key/private key` (the shared
+  Ansible-deploy `before_script`). Confirm the next `main` pipeline's deploy
+  stage is green before running step 8.
+
+**Do not** set `base_ssh_authorized_keys_exclusive: true` to force revocation.
+The `acme_certs` cert-distribution key lives in the same `eric`
+`authorized_keys` on every distribution target, and exclusive mode strips it,
+breaking cert pushes until `acme_certs` re-seeds it.
+
+Re-provisioning a guest strands the same key for the same reason: the guest
+playbook runs `weisssrv.infra.base`, which rewrites `authorized_keys`. Each
+cert-target guest playbook (`plex.yml`, `immich.yml`, `nextcloud.yml`,
+`gitlab.yml`) therefore ends with a play on the `dns` group that includes
+`tasks/_reseed-cert-target.yml`, re-pinning that one target from the cert
+authority. A guest that was down at re-seed time is named in the playbook
+output; re-run it, or `task infra:deploy -- --tags acme_certs`, once it is back.
+Without the re-seed the loss is invisible until the next renewal fails.
+
+**Surfaces step 8 does not reach**: HAOS (.154) keeps the key in
+`/root/.ssh/authorized_keys` over port 22222 — remove it through the Files
+add-on (docs/24). The LXC guests' file is additionally rewritten wholesale by
+`proxmox_lxc` on the next deploy. The `!home:!windows` exclusion is load-bearing:
+both are `ansible_connection: local`, so a bare `ansible all` would edit the
+control laptop's own file.
 
 **Affected Hosts**: All (proxmox, dns, mail)
 
@@ -663,7 +759,10 @@ op read "op://Homelab/Cloudflare DNS Token/credential"
   task flux:refresh-secret -- external-dns/cloudflare-api-token
   task flux:refresh-secret -- cloudflare-ddns/cloudflare-api-token
   ```
-- acme.sh on dns-01 reads it at issue/renew time (`CF_Token`).
+- acme.sh on dns-01 renews from the copy it saved at first issuance
+  (`SAVED_CF_Token` in `/root/.acme.sh/account.conf`), so a rotation must
+  re-run the issuance command in [docs/09](09-certs.md) with the new values
+  or the next renewal fails.
 - Old token can be revoked in Cloudflare after verification.
 
 **Affected Systems**: cert-manager, external-dns, cloudflare-ddns (all three
@@ -689,7 +788,7 @@ read it via ESO from 1Password), plus acme_certs on dns-01. Terraform is
 op read "op://Homelab/Cloudflare Terraform Token/credential"
 
 # 4. Test with Terraform
-task terraform:plan
+task terraform:cloudflare-plan
 
 # 5. If plan succeeds, token is valid
 # No deployment needed - Terraform reads at runtime
@@ -698,6 +797,11 @@ task terraform:plan
 **Affected Systems**: Terraform only — the Taskfile `terraform:*` wrappers
 and the `terraform-plan` / `deploy-terraform` CI jobs. No in-cluster or
 host-side consumer reads this item.
+
+**Artifact exposure**: the `terraform-plan` job artifact
+(`terraform/cloudflare/tfplan`) stores every `TF_VAR` value in the clear, so
+read access to it is token-equivalent. The artifact is `access: none`, so only
+the pipeline itself can read it — `deploy-terraform` via `needs:artifacts`.
 
 ---
 
@@ -727,18 +831,11 @@ op read "op://Homelab/AdGuard Home/password"   # verify the new value reads back
 task dns:deploy
 
 # 3. Verify deployment
-ansible-playbook ansible/playbooks/postflight.yml --limit dns-01,dns-02
+task infra:verify -- --limit dns-01,dns-02
 
 # 4. Test login with new password
 open http://10.0.10.150:3000
 # Login with username: eric, new password from step 1
-```
-
-**Alternative: Python bcrypt generation**:
-
-```bash
-# If htpasswd is not available, use Python
-python3 -c "import bcrypt; print(bcrypt.hashpw(b'your-password', bcrypt.gensalt(rounds=10)).decode())"
 ```
 
 **What Happens**:
@@ -749,10 +846,11 @@ python3 -c "import bcrypt; print(bcrypt.hashpw(b'your-password', bcrypt.gensalt(
 **Affected Hosts**: `dns-01`, `dns-02`
 
 **Security Notes**:
-- The bcrypt hash uses a random salt generated by htpasswd/bcrypt
-- Each password rotation generates a new unique hash
-- Plaintext password never touches production servers
-- Hash is validated (must start with `$2a$`, `$2b$`, or `$2y$`) before deployment
+- Each rotation generates a new unique hash, salted by bcrypt
+- The role hashes on the target host, so the plaintext reaches it through the
+  `op run` env and is never written to disk
+- The hash is validated (must start with `$2a$`, `$2b$`, or `$2y$`) before
+  deployment
 
 ---
 
@@ -810,7 +908,7 @@ smbclient //10.0.10.102/share -U nas
 op read "op://Homelab/Tailscale Auth Key/credential"
 
 # 4. New nodes will automatically use new key on deployment
-ansible-playbook ansible/playbooks/site.yml --tags tailscale --limit new-host
+task infra:deploy -- --tags tailscale --limit <new-host>
 ```
 
 **Affected Hosts**: Only new hosts being provisioned
@@ -829,10 +927,10 @@ If a credential is compromised, rotate immediately:
 eval $(op signin)
 
 # 3. Deploy to all affected hosts
-ansible-playbook ansible/playbooks/site.yml --limit affected-hosts
+task infra:deploy -- --limit <affected-hosts>
 
 # 4. For Proxmox firewall or network-level security:
-ansible-playbook ansible/playbooks/site.yml --tags proxmox_firewall
+task infra:deploy -- --tags proxmox_firewall
 
 # 5. Revoke old credential at source (Cloudflare, Tailscale, Gmail, etc.)
 ```
@@ -846,15 +944,25 @@ ssh-keygen -t ed25519 -C "eric@MacBookPro.esweiss.com" -f ~/.ssh/id_ed25519_emer
 # 2. Update in 1Password
 
 # 3. Deploy to ALL hosts immediately
-ansible-playbook ansible/playbooks/base.yml --tags ssh
+task infra:base -- --tags ssh
 
 # 4. Verify emergency key works
 ssh -i ~/.ssh/id_ed25519_emergency eric@10.0.10.102
 
-# 5. Remove compromised key from laptop and 1Password
-# 6. Check all hosts for unauthorized access:
-ansible all -m shell -a "last -20"
+# 5. Remove compromised key from the laptop and 1Password (this does not touch
+#    the hosts — step 6 is what revokes it there)
+
+# 6. Revoke the compromised key on every managed host
+ansible -i ansible/inventories/prod 'all:!home:!windows' -b -m ansible.posix.authorized_key \
+  -a "user=eric key='ssh-ed25519 <COMPROMISED-PUBKEY>' state=absent"
+
+# 7. Check all hosts for unauthorized access
+ansible -i ansible/inventories/prod 'all:!home:!windows' -m shell -a "last -20"
 ```
+
+A host that is unreachable for step 6 is not revoked. Remove the key from its
+console before treating the incident as closed, and remove it from HAOS through
+the Files add-on (docs/24).
 
 ---
 
@@ -877,10 +985,11 @@ ssh eric@10.0.10.151 "sudo grep sasl /var/log/mail.log | tail -20"
 
 ```bash
 # Test all hosts
-ansible all -m ping
+ansible -i ansible/inventories/prod all -m ping
 
-# Check authorized_keys was updated
-ansible all -m shell -a "wc -l ~/.ssh/authorized_keys"
+# List the key fingerprints each host accepts — confirm the new one is present
+# and the revoked one is gone (a line count proves neither)
+ansible -i ansible/inventories/prod 'all:!home:!windows' -b -m shell -a "ssh-keygen -lf ~eric/.ssh/authorized_keys"
 ```
 
 ### DNS/AdGuard
@@ -920,6 +1029,8 @@ ssh eric@10.0.10.150 "sudo systemctl status adguardhome-sync"
 
 ## Troubleshooting
 
+Alerts: ExternalSecretSyncFailure, OnePasswordConnectDown.
+
 ### "Permission denied" after rotation
 
 **Cause**: New credential not deployed or wrong format
@@ -930,10 +1041,10 @@ ssh eric@10.0.10.150 "sudo systemctl status adguardhome-sync"
 op read "op://Homelab/Item/field"
 
 # Re-run deployment with verbose output
-ansible-playbook playbook.yml -vv
+task infra:deploy -- -vv
 
 # Check specific host
-ansible host -m setup
+ansible -i ansible/inventories/prod host -m setup
 ```
 
 ### Mail stops working after SMTP rotation
@@ -966,10 +1077,11 @@ unset CLOUDFLARE_ACCOUNT_ID
 eval $(op signin)
 
 # Retry using Taskfile (preferred - handles all env vars)
-task terraform:plan
+task terraform:cloudflare-plan
 
 # Or manually export and retry
-# export CLOUDFLARE_API_TOKEN=$(op read "op://Homelab/Cloudflare Terraform Token/credential")
+# CLOUDFLARE_API_TOKEN=$(op read "op://Homelab/Cloudflare Terraform Token/credential")
+# export CLOUDFLARE_API_TOKEN
 # cd terraform/cloudflare && terraform plan
 ```
 
@@ -1000,15 +1112,21 @@ encrypted at the time the drive held data.
 sudo zfs get encryption,creation <pool>
 # encryption should be aes-256-gcm; creation should pre-date drive insertion
 
-# 2. Rotate the passphrase BEFORE the drive leaves. Each dataset is its own
-#    encryption root (Model B) and the plaintext pool root is NOT a key holder,
-#    so change-key every encryption root in the pool — `zfs change-key <pool>`
-#    alone fails ("not an encryption root"). See docs/32-zfs-encryption.md §4.
+# 2. Rotate the passphrase BEFORE the drive leaves. Generate it in 1Password
+#    first, then read it back to paste at the prompts — the passphrase must
+#    never appear on a command line or in shell history on the NAS.
+op item edit --vault Homelab-Boot "ZFS Pool <pool> Passphrase" \
+  --generate-password='letters,digits,symbols,48'
+op read "op://Homelab-Boot/ZFS Pool <pool> Passphrase/passphrase"
+
+#    Each dataset is its own encryption root (Model B) and the plaintext pool
+#    root is NOT a key holder, so change-key every encryption root in the pool —
+#    `zfs change-key <pool>` alone fails ("not an encryption root"). See
+#    docs/32-zfs-encryption.md §4.
 for root in $(zfs get -H -t filesystem,volume -o name,value -r encryptionroot <pool> \
                 | awk -F'\t' '$1==$2{print $1}'); do
   sudo zfs change-key -o keyformat=passphrase -o keylocation=prompt "$root"  # paste new passphrase
 done
-op item edit "ZFS Pool <pool> Passphrase" 'passphrase=<new value>'
 
 # 3. Issue ATA Secure Erase (SATA SSD/HDD) or NVMe sanitize
 #    Pick the right command for the device class:

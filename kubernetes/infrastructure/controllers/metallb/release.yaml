@@ -21,8 +21,8 @@ spec:
       interval: 12h
   install:
     # RetryOnFailure, not the default RemediateOnFailure: install remediation
-    # always remediates by uninstalling, which would delete the Helm-owned CRDs
-    # and flip .99/.100/.101 to <pending>. Retrying in place cannot.
+    # uninstalls the release, tearing down the speaker and controller. Retrying
+    # in place does not; the CRDs are pinned by the keep policy below.
     strategy:
       name: RetryOnFailure
       retryInterval: 5m
@@ -31,10 +31,9 @@ spec:
       retries: 3
       remediateLastFailure: true
   values:
-    # Held at 0.15.x (metallb#3063 apiserver-flood regression in 0.16).
-    # The chart must own the CRDs: with crds.enabled false, a chart-version
-    # switch renders the CRD templates as deletions and takes every
-    # IPAddressPool/L2Advertisement — and so every VIP — with them.
+    # CRITICAL: held at 0.15.x for the 0.16 apiserver-flood regression. The
+    # chart must own the CRDs: with crds.enabled false a version switch renders
+    # them as deletions and takes every IPAddressPool and VIP with them.
     crds:
       enabled: true
     prometheus:
@@ -77,11 +76,9 @@ spec:
           memory: 64Mi
         limits:
           memory: 256Mi
-  # The chart owns the metallb.io CRDs (crds.enabled above), so a helm uninstall
-  # would delete them and cascade-delete every IPAddressPool + L2Advertisement.
-  # The chart exposes no crds.annotations hook, so stamp the keep policy on the
-  # rendered CRDs here. Strategic merge, not a JSON patch: it creates
-  # metadata.annotations when a chart bump renders a CRD without one.
+  # CRITICAL: the chart owns the metallb.io CRDs, so a helm uninstall
+  # cascade-deletes every IPAddressPool and L2Advertisement. The keep policy
+  # stops that; a strategic merge creates metadata.annotations.
   postRenderers:
     - kustomize:
         patches:
@@ -96,3 +93,29 @@ spec:
                 name: placeholder
                 annotations:
                   helm.sh/resource-policy: keep
+          # The chart exposes no values key for the speaker's reloader and
+          # frr-metrics sidecars, so bound them here (7d peaks 8Mi and 47Mi).
+          - target:
+              group: apps
+              version: v1
+              kind: DaemonSet
+              name: metallb-speaker
+            patch: |
+              apiVersion: apps/v1
+              kind: DaemonSet
+              metadata:
+                name: metallb-speaker
+              spec:
+                template:
+                  spec:
+                    containers:
+                      - name: reloader
+                        resources:
+                          limits:
+                            memory: 64Mi
+                      - name: frr-metrics
+                        resources:
+                          requests:
+                            memory: 64Mi
+                          limits:
+                            memory: 128Mi

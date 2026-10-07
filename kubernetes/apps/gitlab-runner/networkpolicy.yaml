@@ -1,19 +1,10 @@
-# NetworkPolicies for the gitlab-runner namespace (the shared, non-privileged
-# runner + its job pods). The privileged/infrastructure runner now lives in the
-# gitlab-runner-privileged namespace with its own policies. Shared job pods are
-# classed esweiss.com/runner-class=shared and get internet-only egress (RFC1918
-# blocked) + DNS + kube-API + the internal Traefik VIP. Nothing here serves
-# traffic, so ingress is denied outright via the shared default-deny-ingress
-# (components/netpol-baseline, wired in kustomization.yaml).
+# NetworkPolicies for the gitlab-runner namespace: the shared runner and its job
+# pods. Job pods carry esweiss.com/runner-class=shared: internet-only egress,
+# DNS, kube-API and the internal Traefik VIP. Nothing here serves traffic.
 ---
-# Namespace-wide default-deny EGRESS. The label-scoped allow rules below
-# (managers-egress for app=gitlab-runner, shared-jobs-egress for
-# esweiss.com/runner-class=shared) are additive; this policy makes any pod that
-# does NOT carry one of those labels fail closed. Without it, a CI job could use
-# its namespace-scoped RBAC (pods:create) to spawn an auxiliary pod WITHOUT the
-# runner-class label and that pod would get unrestricted egress (RFC1918/LAN
-# included), defeating the documented internet-only containment of shared job
-# pods. Egress is denied by default; only the labelled selectors below open it.
+# Namespace-wide default-deny EGRESS: any pod here without one of the labels
+# the allow rules below select (app=gitlab-runner, esweiss.com/runner-class=
+# shared) fails closed instead of inheriting unrestricted egress.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -24,13 +15,9 @@ spec:
   policyTypes:
     - Egress
 ---
-# The shared runner manager long-polls GitLab (git.esweiss.com, which AdGuard
-# rewrites to the internal Traefik VIP 10.0.10.101) and talks to the kube-API
-# to spawn job pods. The VIP is allowed both as an ipBlock and via the traefik
-# namespace pods: kube-proxy may DNAT the LoadBalancer VIP to a Traefik pod IP
-# before policy evaluation (same reason the kube-API rules below target node
-# IPs), so neither form alone is guaranteed to match. Public 443 is retained
-# for registry/object-storage style callbacks GitLab may redirect to.
+# The shared runner manager long-polls GitLab and talks to the kube-API. The
+# Traefik VIP needs both an ipBlock (pre-DNAT) and the traefik namespace pods
+# (post-DNAT); public 443 covers the callbacks GitLab redirects to.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -55,13 +42,9 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
-    # kube-apiserver access. kube-proxy DNATs the in-cluster VIP
-    # (10.43.0.1:443) to the real endpoints BEFORE NetworkPolicy
-    # evaluation, so the policy must allowlist the server node IPs on
-    # 6443 — a 10.43.0.1/32 rule never matches the post-DNAT packet.
-    # The API VIP (10.0.10.161) is a REAL packet destination, unlike 10.43.0.1:
-    # kube-vip answers it on a server node with no DNAT, and the CI verify jobs
-    # dial it by name (k3s.esweiss.com -> the VIP). It joins the server /32s.
+    # Server node /32s on 6443 — a 10.43.0.1 rule never matches post-DNAT
+    # (components/netpol-egress-apiserver). The API VIP 10.0.10.161 is a real
+    # destination (kube-vip, no DNAT) and joins the list.
     - to:
         - ipBlock:
             cidr: 10.0.10.222/32
@@ -97,12 +80,9 @@ spec:
         - protocol: TCP
           port: 443
 ---
-# Shared-runner job pods run untrusted project code: full internet for
-# package pulls, but nothing on the LAN/cluster networks beyond DNS, the
-# kube-API (for jobs bringing their own kubeconfig — the job SA itself is
-# token-less), and GitLab via the internal Traefik VIP (clone_url) — allowed
-# as both the VIP ipBlock and the traefik namespace pods for the same
-# pre/post-DNAT reason as managers-egress above.
+# Shared-runner job pods run untrusted project code: full internet for package
+# pulls, nothing on LAN/cluster beyond DNS, the kube-API (jobs bringing their
+# own kubeconfig; the job SA is token-less) and GitLab via the Traefik VIP.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -127,13 +107,7 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
-    # kube-apiserver access. kube-proxy DNATs the in-cluster VIP
-    # (10.43.0.1:443) to the real endpoints BEFORE NetworkPolicy
-    # evaluation, so the policy must allowlist the server node IPs on
-    # 6443 — a 10.43.0.1/32 rule never matches the post-DNAT packet.
-    # The API VIP (10.0.10.161) is a REAL packet destination, unlike 10.43.0.1:
-    # kube-vip answers it on a server node with no DNAT, and the CI verify jobs
-    # dial it by name (k3s.esweiss.com -> the VIP). It joins the server /32s.
+    # Same post-DNAT reasoning as managers-egress above.
     - to:
         - ipBlock:
             cidr: 10.0.10.222/32

@@ -1,9 +1,7 @@
 ---
-# NZBGet overlay: NZBGet's own resources + the shared _vpn-sidecar component.
-# The JSON6902 patches below edit the injected fields IN PLACE at the indices
-# the component fixes — gluetun=containers[0], VPN_SERVICE_PROVIDER=env[0],
-# SERVER_COUNTRIES=env[1], vpn-config=volumes[1] — to set the per-app ConfigMap
-# name and append NZBGet's port to gluetun, which owns the pod netns.
+# NZBGet overlay: NZBGet's own resources plus the shared _vpn-sidecar component.
+# The JSON6902 patches edit the injected fields in place at the indices the
+# component fixes, setting the per-app ConfigMap and NZBGet's port on gluetun.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: downloads

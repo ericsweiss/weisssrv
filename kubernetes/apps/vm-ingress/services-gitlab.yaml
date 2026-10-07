@@ -2,11 +2,8 @@
 # Services and EndpointSlices for GitLab VM (10.0.10.153)
 # GitLab runs outside the cluster; Traefik routes to it via these services
 
-# GitLab Web UI (HTTPS on 443)
-# GitLab Omnibus nginx now listens on 443 with the cert distributed by
-# acme_certs (see host_vars/dns-01.yml). Traefik connects with
-# scheme: https + the vm-tls-wildcard ServersTransport so the
-# Traefik->GitLab hop is encrypted. Plain port 80 listener is disabled.
+# GitLab Web UI. Omnibus nginx listens on 443 only, with the acme_certs cert;
+# Traefik connects scheme: https through the vm-tls-wildcard ServersTransport.
 apiVersion: v1
 kind: Service
 metadata:
@@ -38,11 +35,9 @@ endpoints:
       ready: true
 
 ---
-# GitLab SSH (sshd on the VM, port 22). Backend for the gitssh TCP entrypoint
-# (traefik release.yaml): LAN clients reach ssh://git@git.ericsweiss.com:2222
-# via the internal VIP, because the internal rewrite of that name points at
-# Traefik and the homelab VLAN cannot hairpin the WAN forward. External
-# clients keep the WAN forward straight to the VM.
+# GitLab SSH (sshd on the VM, port 22), backend for the gitssh TCP entrypoint.
+# LAN clients reach ssh://git@git.ericsweiss.com:2222 on the internal VIP; the
+# VLAN cannot hairpin the WAN forward, which is what external clients use.
 apiVersion: v1
 kind: Service
 metadata:

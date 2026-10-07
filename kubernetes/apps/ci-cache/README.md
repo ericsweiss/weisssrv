@@ -2,8 +2,8 @@
 
 Single-node [Garage](https://garagehq.deuxfleurs.fr) serving one bucket
 (`runner-cache`) to both GitLab runners, so the `cache:` blocks in every
-pipeline stop being inert (docs/13 § Runner cache backend). Garage over MinIO
-because MinIO's upstream was archived in 2026-04.
+pipeline stop being inert (docs/13-ci-cd.md). Garage over MinIO because
+MinIO's upstream is archived.
 
 Design decisions, and why:
 
@@ -15,8 +15,8 @@ Design decisions, and why:
   the bucket and imports the key pair from `GARAGE_DEFAULT_*` env on first
   boot — no init Job, and the 1Password item **CI Cache Garage** stays the
   single source (server + both runner namespaces read the same item).
-- **No egress at all** — the policy declares `Egress` with no rules. RPC is
-  loopback; a single-node garage talks to nobody.
+- **No egress at all** — a namespace-wide `default-deny-egress` with no allow
+  rule anywhere. RPC is loopback; a single-node garage talks to nobody.
 - **HTTP in-cluster**: the S3 port is plaintext, fenced to exactly the two
   runner namespaces by NetworkPolicy. Content is public build artifacts
   (pip wheels, galaxy collections); poisoning would require a foothold in a
