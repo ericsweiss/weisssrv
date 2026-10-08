@@ -383,7 +383,7 @@ dependencies — nothing fails.
 >   needed the vault, and gating on a variable that no longer exists on MR refs
 >   would have silently deleted the job.
 >
-> The four advisory drift plans do not run on MRs at all: their real detector is
+> The six advisory drift plans do not run on MRs at all: their real detector is
 > the schedule and their applies are supervised, so the MR run bought nothing
 > against the exposure (`authentik-drift-plan` alone read ~13 vault secrets,
 > every OIDC client secret among them, and `unifi-drift-plan` reads the gateway
@@ -848,8 +848,8 @@ The project has two schedules, both on `main`:
 | Nightly integration canary (full-test) | `47 2 * * *` | UTC | `SCHEDULE_TYPE=full-test` — also runs `integration-tests` as an external-dependency canary |
 | Weekly version bump MR | `0 10 * * 1` | America/Los_Angeles | `SCHEDULE_TYPE=version-bump` — also runs `version-bump-bot` |
 
-Both also run `version-check`, secret detection and the four advisory drift
-plans.
+Both also run `version-check`, secret detection and the six advisory drift
+plans (the three Terraform plans, B2, UniFi settings and the cluster).
 
 A drift exit 2 leaves the pipeline **passed with warnings**, and GitLab sends no
 mail for a warned pipeline. Nothing tells you about drift unless you watch the
