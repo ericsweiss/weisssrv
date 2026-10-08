@@ -15,3 +15,10 @@ that points at this Service) is policy-as-code in `terraform/tailscale`.
 - **Observability**: `podmonitor.yaml` scrapes CoreDNS `:9153`.
 - **Image**: pinned to the CoreDNS build k3s already caches on every node, so
   there is no new pull.
+
+## Disable
+
+Drop `- tailnet-dns` from `kubernetes/apps/kustomization.yaml`; Flux prunes the
+namespace. Drop the Split-DNS nameserver pointing at this Service from
+`terraform/tailscale` in the same change, or tailnet clients keep sending
+`*.esweiss.com` queries to an address that no longer answers.

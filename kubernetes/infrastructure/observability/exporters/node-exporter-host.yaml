@@ -1,16 +1,7 @@
 ---
-# Host-level node_exporter (:9101), scraped remotely from the six bare-metal
-# Proxmox hosts, the dns-01/dns-02 and smtp-relay LXCs, the GitLab/Nextcloud/
-# Immich VMs and the three k3s server VMs. Port 9101 avoids the k3s DaemonSet on
-# 9100. The bare-metal hosts contribute hardware metrics (hwmon thermals, SMART,
-# NIC detail, disk I/O) that VMs cannot see; the LXCs and VMs contribute
-# filesystem and textfile-collector metrics (backup freshness, etcd snapshot
-# copies).
-#
-# One selectorless headless Service + one hand-written EndpointSlice. The
-# ServiceMonitor sets job=node-exporter-host (jobLabel from
-# app.kubernetes.io/name) and Prometheus derives instance=<ip>:9101 per address,
-# which is what every thermal/PSI/backup alert selector keys on.
+# Host-level node_exporter (:9101 — 9100 is the k3s DaemonSet), scraped remotely
+# from every host the node_exporter_host play covers. One selectorless headless
+# Service and one EndpointSlice; the roster below must track that play's groups.
 apiVersion: v1
 kind: Service
 metadata:
@@ -26,11 +17,8 @@ spec:
       targetPort: 9101
 
 ---
-# discovery.k8s.io/v1, not the deprecated core/v1 Endpoints. The Service is
-# selectorless, so nothing controls this slice but this file; the
-# kubernetes.io/service-name label is what binds it to the Service above, and
-# conditions.ready is set explicitly because a hand-written slice has no
-# controller to fill it in.
+# discovery.k8s.io/v1, not the deprecated core/v1 Endpoints. Nothing controls this
+# slice but this file, so conditions.ready is set explicitly per address.
 apiVersion: discovery.k8s.io/v1
 kind: EndpointSlice
 metadata:
@@ -82,9 +70,8 @@ metadata:
   name: node-exporter-host
   namespace: observability
 spec:
-  # Set the Prometheus `job` label from `app.kubernetes.io/name`. Without it the
-  # operator defaults `job` to the Service name, and every thermal/PSI/SMART/ZFS
-  # alert and the thermals dashboard select on job="node-exporter-host".
+  # job comes from app.kubernetes.io/name; every thermal/PSI/SMART/ZFS alert and
+  # the thermals dashboard select on job="node-exporter-host".
   jobLabel: app.kubernetes.io/name
   selector:
     matchLabels:

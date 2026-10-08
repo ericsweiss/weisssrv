@@ -1,20 +1,7 @@
 ---
-# promtool unit tests for the collector/shipper staleness arms.
-# rule_files resolves relative to this file's runtime location; the lint script
-# copies the tests next to the extracted rules.yaml before running them.
-#
-# These are the alerts whose failure mode is SILENCE: each watches a
-# last-success timestamp or an absent() of a series that only exists while the
-# producer is healthy. If the metric name drifts, an absent()-shaped rule fires
-# forever (visible) but a `time() - <gauge> > N` rule goes quiet forever
-# (invisible) — so both directions are pinned here.
-#
-# Every "fresh" fixture below carries a REALISTIC LAG rather than tracking
-# time() exactly (`-<lag>+60x...`, the harness clock starting at 0). A gauge
-# that equals time() is silent under any threshold down to 1, so a zero-lag
-# fixture pins a staleness threshold from above only; one that sits just inside
-# the budget pins it from below too — lowering the threshold past the realistic
-# lag turns that arm red.
+# promtool unit tests for the collector/shipper staleness arms: alerts whose
+# failure mode is silence, so both the absent() and the `time() - <gauge> > N`
+# directions are pinned. Fixture-lag convention is in README.md.
 rule_files:
   - rules.yaml
 evaluation_interval: 1m
@@ -94,6 +81,35 @@ tests:
         alertname: ZFSPoolCollectorStale
         exp_alerts: []
 
+  # The success arm: a fresh timestamp with zfs_pool_status_collector_success 0
+  # is the "pools vanished" state the staleness arms alone read as healthy.
+  - interval: 1m
+    input_series:
+      - series: 'zfs_pool_status_collector_last_success_seconds{instance="10.0.10.102:9101"}'
+        values: '-600+60x60'
+      - series: 'zfs_pool_status_collector_success{instance="10.0.10.102:9101"}'
+        values: '1+0x5 0+0x55'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: ZFSPoolCollectorStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: 10.0.10.102:9101
+
+  # A host whose collector has only ever reported 0 has no pools to lose, so the
+  # max_over_time guard keeps it quiet.
+  - interval: 1m
+    input_series:
+      - series: 'zfs_pool_status_collector_last_success_seconds{instance="10.0.10.151:9101"}'
+        values: '-600+60x60'
+      - series: 'zfs_pool_status_collector_success{instance="10.0.10.151:9101"}'
+        values: '0+0x60'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: ZFSPoolCollectorStale
+        exp_alerts: []
+
   # wg-easy: an absent() arm. Present -> silent; gone -> fires after 30m.
   - interval: 1m
     input_series:
@@ -152,11 +168,8 @@ tests:
         exp_alerts: []
 
   # DDNSStale: the every-5m cloudflare-ddns CronJob's last success older than 1h.
-  # The fixture carries kube-state-metrics' scrape labels the way the live series
-  # does and exp_labels pins the REDUCED set, so the rule's `max by (namespace,
-  # cronjob)` has to strip them — Alertmanager groups on `instance`, and without
-  # the reduction one stalled DDNS re-notifies as a new group on every KSM
-  # reschedule, while the staleness arm's labels stop matching the absent() arm's.
+  # The fixture carries kube-state-metrics' scrape labels and exp_labels pins the
+  # reduced set, so the rule's `max by (namespace, cronjob)` has to strip them.
   - interval: 1m
     input_series:
       - series: 'kube_cronjob_status_last_successful_time{namespace="cloudflare-ddns", cronjob="cloudflare-ddns", job="kube-state-metrics", instance="10.42.3.7:8080", pod="kube-prometheus-stack-kube-state-metrics-6d9c", endpoint="http", service="kube-prometheus-stack-kube-state-metrics"}'

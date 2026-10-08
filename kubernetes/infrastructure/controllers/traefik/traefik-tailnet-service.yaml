@@ -1,11 +1,7 @@
 ---
-# Traefik exposed as a tailnet L3 device via the Tailscale operator.
-#
-# A second Service over the SAME Traefik pods (a Service cannot be both MetalLB
-# and tailscale). loadBalancerClass: tailscale makes the operator register a
-# tailnet device that TCP-passthrough-forwards 80/443, so SNI/Host survive and
-# Traefik routes as it does for a LAN client. tailnet-dns CNAMEs the internal
-# *.esweiss.com names at that device. See docs/05-tailscale.md.
+# Traefik exposed as a tailnet L3 device: a second Service over the same pods,
+# since one Service cannot be both MetalLB and tailscale. The operator
+# TCP-passthrough-forwards 80/443, so SNI and Host survive. See docs/05.
 apiVersion: v1
 kind: Service
 metadata:

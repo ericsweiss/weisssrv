@@ -6,11 +6,11 @@ resources:
   - namespace.yaml
   - release.yaml
   - networkpolicy.yaml
+  - pdb.yaml
 
-# Every cert-manager pod needs the same three egress paths, so all three are the
-# shared namespace-wide components rather than a local policy: kube-dns, the
-# kube-apiserver (order/challenge reconciliation) and public HTTPS (the ACME
-# directory + the Cloudflare API for DNS-01).
+# Every cert-manager pod needs the same three egress paths, so they come from
+# the shared components: kube-dns, the kube-apiserver, and public HTTPS for the
+# ACME directory and the Cloudflare DNS-01 API.
 components:
   - ../../../components/netpol-baseline
   - ../../../components/netpol-egress-dns
@@ -18,10 +18,9 @@ components:
   - ../../../components/netpol-egress-public
 
 patches:
-  # cert-manager is the one namespace that also needs PUBLIC DNS: the DNS-01
-  # solver's self-check queries the zone's authoritative nameservers directly,
-  # and without :53 outbound every challenge stalls and renewal fails silently.
-  # Appended here instead of in the component so no other namespace gets it.
+  # CRITICAL: cert-manager also needs public DNS. The DNS-01 self-check queries
+  # the zone's authoritative nameservers directly, so without :53 outbound every
+  # challenge stalls and renewal fails silently. Kept here, not in the component.
   - target:
       kind: NetworkPolicy
       name: allow-egress-public

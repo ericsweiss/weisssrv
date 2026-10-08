@@ -1,5 +1,4 @@
 {
-  "__elements": {},
   "annotations": {
     "list": [
       {
@@ -17,11 +16,11 @@
       }
     ]
   },
-  "description": "This is a AdGuard Home dashboard when using the https://github.com/henrywhitaker3/adguard-exporter Prometheus exporter",
+  "description": "AdGuard Home query, blocking, client and upstream metrics for dns-01 and dns-02 (adguard-exporter).",
   "editable": true,
   "fiscalYearStartMonth": 0,
+  "gnetId": 20799,
   "graphTooltip": 1,
-  "id": null,
   "links": [],
   "panels": [
     {
@@ -65,10 +64,6 @@
             "steps": [
               {
                 "color": "#d44a3a",
-                "value": 0
-              },
-              {
-                "color": "rgba(237, 129, 40, 0.89)",
                 "value": 0
               },
               {
@@ -152,10 +147,6 @@
             "steps": [
               {
                 "color": "#d44a3a",
-                "value": 0
-              },
-              {
-                "color": "rgba(237, 129, 40, 0.89)",
                 "value": 0
               },
               {
@@ -508,7 +499,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "topk(10, increase(adguard_top_queried_domains{server=\"$server\"}[$__range]))",
+          "expr": "topk(10, max_over_time(adguard_top_queried_domains{server=\"$server\"}[$__range]))",
           "instant": true,
           "interval": "",
           "legendFormat": "{{domain}}",
@@ -582,7 +573,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "topk(10, increase(adguard_top_clients{server=\"$server\"}[$__range]))",
+          "expr": "topk(10, max_over_time(adguard_top_clients{server=\"$server\"}[$__range]))",
           "instant": true,
           "interval": "",
           "legendFormat": "{{name}}",
@@ -752,7 +743,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "increase(adguard_query_types{server=\"$server\"}[$__range])",
+          "expr": "topk(15, sum by (type) (max_over_time(adguard_query_types{server=\"$server\"}[$__range])))",
           "instant": false,
           "interval": "",
           "legendFormat": "{{type}}",
@@ -962,7 +953,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "rate(adguard_replaced_safesearch{server=\"$server\"}[$__rate_interval])",
+          "expr": "clamp_min(delta(adguard_replaced_safesearch{server=\"$server\"}[5m]), 0) / 300",
           "hide": false,
           "instant": false,
           "interval": "",
@@ -975,7 +966,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "rate(adguard_replaced_safebrowsing{server=\"$server\"}[$__rate_interval])",
+          "expr": "clamp_min(delta(adguard_replaced_safebrowsing{server=\"$server\"}[5m]), 0) / 300",
           "hide": false,
           "instant": false,
           "interval": "",
@@ -988,7 +979,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum(adguard_replaced_parental{server=\"$server\"})",
+          "expr": "clamp_min(delta(adguard_replaced_parental{server=\"$server\"}[5m]), 0) / 300",
           "hide": false,
           "instant": false,
           "interval": "",
@@ -1088,7 +1079,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (name) (rate(adguard_top_clients{server=\"$server\"}[$__rate_interval]))",
+          "expr": "sum by (name) (clamp_min(delta(adguard_top_clients{server=\"$server\"}[5m]), 0)) / 300",
           "instant": false,
           "legendFormat": "{{name}}",
           "range": true,
@@ -1200,7 +1191,7 @@
           },
           "editorMode": "code",
           "exemplar": false,
-          "expr": "topk(15, sum by (client, name) (increase(adguard_top_clients{server=\"$server\"}[$__range])))",
+          "expr": "topk(15, sum by (client, name) (max_over_time(adguard_top_clients{server=\"$server\"}[$__range])))",
           "format": "table",
           "hide": false,
           "instant": true,
@@ -1215,7 +1206,7 @@
           },
           "editorMode": "code",
           "exemplar": false,
-          "expr": "sum by (client, name) (rate(adguard_processing_time_milliseconds_sum[$__rate_interval]))  / sum by (client, name) (rate(adguard_processing_time_milliseconds_count[$__rate_interval]) > 0)",
+          "expr": "sum by (client) (rate(adguard_processing_time_milliseconds_sum{server=\"$server\"}[$__rate_interval])) / sum by (client) (rate(adguard_processing_time_milliseconds_count{server=\"$server\"}[$__rate_interval]) > 0)",
           "format": "time_series",
           "hide": false,
           "instant": false,
@@ -1348,7 +1339,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "topk(15, sum by (domain) (increase(adguard_top_blocked_domains{server=\"$server\"}[$__range])))",
+          "expr": "topk(15, sum by (domain) (max_over_time(adguard_top_blocked_domains{server=\"$server\"}[$__range])))",
           "format": "table",
           "instant": true,
           "interval": "",
@@ -1437,7 +1428,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "topk(15, sum by (domain) (increase(adguard_top_queried_domains{server=\"$server\"}[$__range])))",
+          "expr": "topk(15, sum by (domain) (max_over_time(adguard_top_queried_domains{server=\"$server\"}[$__range])))",
           "format": "table",
           "instant": true,
           "interval": "30s",
@@ -1512,8 +1503,8 @@
       },
       "gridPos": {
         "h": 6,
-        "w": 11,
-        "x": 13,
+        "w": 24,
+        "x": 0,
         "y": 30
       },
       "id": 94,
@@ -1538,7 +1529,7 @@
           },
           "editorMode": "code",
           "exemplar": false,
-          "expr": "topk(15, sum by (upstream) (increase(adguard_top_upstreams{server=\"$server\"}[$__range])))",
+          "expr": "topk(15, sum by (upstream) (max_over_time(adguard_top_upstreams{server=\"$server\"}[$__range])))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -1603,10 +1594,9 @@
   "timepicker": {
     "nowDelay": ""
   },
-  "timezone": "",
+  "timezone": "browser",
   "title": "AdGuard Home",
   "uid": "adguard-weisssrv",
-  "version": 9,
-  "weekStart": "",
-  "gnetId": 20799
+  "version": 10,
+  "weekStart": ""
 }

@@ -2,7 +2,7 @@
   "annotations": {
     "list": []
   },
-  "description": "The whole nightly backup chain: vzdump, media-mover, archive replication, adguard-sync, swap-clean, pg-dump CronJobs, per-app DB dumps, and restic offsite to B2. Panels for post-deploy metrics (restic_offsite_*, backup_artifact_*, swap_clean_*) show No data until those collectors ship.",
+  "description": "The whole nightly backup chain: vzdump, Proxmox cluster config, media-mover, archive replication, adguard-sync, swap-clean, pg-dump CronJobs, per-app DB dumps, restic offsite to B2, and the restore drill.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -742,6 +742,79 @@
       ]
     },
     {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Proxmox cluster config dump, watched by PveClusterBackupFailed.",
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "options": {
+                "0": {
+                  "color": "red",
+                  "text": "FAIL"
+                },
+                "1": {
+                  "color": "green",
+                  "text": "OK"
+                }
+              },
+              "type": "value"
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 16,
+        "y": 5
+      },
+      "id": 30,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "title": "PVE Cluster Config",
+      "type": "stat",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(pve_cluster_backup_last_run_success)",
+          "refId": "A"
+        }
+      ]
+    },
+    {
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -771,11 +844,11 @@
               },
               {
                 "color": "yellow",
-                "value": 93600
+                "value": 172800
               },
               {
                 "color": "red",
-                "value": 180000
+                "value": 345600
               }
             ]
           }
@@ -814,7 +887,8 @@
           "expr": "time() - max(archive_backup_last_success_timestamp_seconds)",
           "refId": "A"
         }
-      ]
+      ],
+      "description": "Yellow at ArchiveBackupStale (48h), red at ArchiveBackupStaleCritical (96h)."
     },
     {
       "datasource": {
@@ -833,11 +907,11 @@
               },
               {
                 "color": "yellow",
-                "value": 93600
+                "value": 172800
               },
               {
                 "color": "red",
-                "value": 180000
+                "value": 345600
               }
             ]
           }
@@ -876,7 +950,8 @@
           "expr": "time() - max(media_mover_last_success_timestamp_seconds)",
           "refId": "A"
         }
-      ]
+      ],
+      "description": "Yellow at MediaMoverStale (48h); no critical alert, red at twice that."
     },
     {
       "datasource": {
@@ -895,11 +970,11 @@
               },
               {
                 "color": "yellow",
-                "value": 93600
+                "value": 129600
               },
               {
                 "color": "red",
-                "value": 180000
+                "value": 259200
               }
             ]
           }
@@ -938,7 +1013,8 @@
           "expr": "time() - min(vzdump_backup_last_success_timestamp_seconds)",
           "refId": "A"
         }
-      ]
+      ],
+      "description": "Yellow at VzdumpBackupStale (36h), red at VzdumpBackupStaleCritical (72h)."
     },
     {
       "datasource": {
@@ -957,11 +1033,11 @@
               },
               {
                 "color": "yellow",
-                "value": 93600
+                "value": 172800
               },
               {
                 "color": "red",
-                "value": 180000
+                "value": 345600
               }
             ]
           }
@@ -1000,7 +1076,8 @@
           "expr": "time() - max(gitlab_backup_last_success_timestamp_seconds)",
           "refId": "A"
         }
-      ]
+      ],
+      "description": "Yellow at GitLabBackupStale (48h), red at GitLabBackupStaleCritical (96h)."
     },
     {
       "datasource": {
@@ -1019,11 +1096,11 @@
               },
               {
                 "color": "yellow",
-                "value": 93600
+                "value": 172800
               },
               {
                 "color": "red",
-                "value": 180000
+                "value": 345600
               }
             ]
           }
@@ -1062,7 +1139,8 @@
           "expr": "time() - max(immich_backup_last_success_timestamp_seconds)",
           "refId": "A"
         }
-      ]
+      ],
+      "description": "Yellow at ImmichBackupStale (48h); no critical alert, red at twice that."
     },
     {
       "datasource": {
@@ -1081,11 +1159,11 @@
               },
               {
                 "color": "yellow",
-                "value": 93600
+                "value": 172800
               },
               {
                 "color": "red",
-                "value": 180000
+                "value": 345600
               }
             ]
           }
@@ -1124,7 +1202,8 @@
           "expr": "time() - max(nextcloud_backup_last_success_timestamp_seconds)",
           "refId": "A"
         }
-      ]
+      ],
+      "description": "Yellow at NextcloudBackupStale (48h); no critical alert, red at twice that."
     },
     {
       "datasource": {
@@ -1143,11 +1222,11 @@
               },
               {
                 "color": "yellow",
-                "value": 93600
+                "value": 1800
               },
               {
                 "color": "red",
-                "value": 180000
+                "value": 3600
               }
             ]
           }
@@ -1186,7 +1265,8 @@
           "expr": "time() - max(adguardhome_sync_last_success_timestamp_seconds)",
           "refId": "A"
         }
-      ]
+      ],
+      "description": "Yellow at AdGuardSyncStale (30m); no critical alert, red at twice that."
     },
     {
       "datasource": {
@@ -1205,11 +1285,11 @@
               },
               {
                 "color": "yellow",
-                "value": 93600
+                "value": 129600
               },
               {
                 "color": "red",
-                "value": 180000
+                "value": 259200
               }
             ]
           }
@@ -1248,7 +1328,8 @@
           "expr": "time() - min(etcd_snapshot_last_copy_timestamp_seconds)",
           "refId": "A"
         }
-      ]
+      ],
+      "description": "Yellow at EtcdSnapshotStale (36h); no critical alert, red at twice that."
     },
     {
       "datasource": {
@@ -1271,7 +1352,7 @@
               },
               {
                 "color": "red",
-                "value": 180000
+                "value": 187200
               }
             ]
           }
@@ -1310,7 +1391,8 @@
           "expr": "time() - kube_cronjob_status_last_successful_time{namespace=\"authentik\", cronjob=\"authentik-pg-dump\"}",
           "refId": "A"
         }
-      ]
+      ],
+      "description": "Yellow at AuthentikBackupStale (26h); no critical alert, red at twice that."
     },
     {
       "datasource": {
@@ -1333,7 +1415,7 @@
               },
               {
                 "color": "red",
-                "value": 180000
+                "value": 187200
               }
             ]
           }
@@ -1372,7 +1454,8 @@
           "expr": "time() - kube_cronjob_status_last_successful_time{namespace=\"recipes\", cronjob=\"mealie-pg-dump\"}",
           "refId": "A"
         }
-      ]
+      ],
+      "description": "Yellow at MealieBackupStale (26h); no critical alert, red at twice that."
     },
     {
       "datasource": {
@@ -1391,11 +1474,11 @@
               },
               {
                 "color": "yellow",
-                "value": 93600
+                "value": 180000
               },
               {
                 "color": "red",
-                "value": 180000
+                "value": 345600
               }
             ]
           }
@@ -1434,6 +1517,259 @@
           "expr": "time() - max(restic_offsite_last_success_timestamp_seconds)",
           "refId": "A"
         }
+      ],
+      "description": "Yellow at ResticOffsiteStale (50h), red at ResticOffsiteStaleCritical (96h)."
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Yellow at PveClusterBackupStale (36h); no critical alert, red at twice that.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 129600
+              },
+              {
+                "color": "red",
+                "value": 259200
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 20,
+        "y": 14
+      },
+      "id": 31,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "title": "PVE Cluster Config",
+      "type": "stat",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "time() - max(pve_cluster_backup_last_success_timestamp_seconds)",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "No staleness alert watches swap-clean; the generic nightly pair applies.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 172800
+              },
+              {
+                "color": "red",
+                "value": 345600
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 18
+      },
+      "id": 32,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "title": "Swap Clean",
+      "type": "stat",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "time() - max(swap_clean_last_success_timestamp_seconds)",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Yellow at ResticOffsiteVerifyStale (8d), red at ResticOffsiteVerifyStaleCritical (14d).",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 691200
+              },
+              {
+                "color": "red",
+                "value": 1209600
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 18
+      },
+      "id": 33,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "title": "Restic Verify Age",
+      "type": "stat",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "time() - max(restic_offsite_last_verify_timestamp_seconds)",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Red at 100d, the BackupRestoreDrillStale critical threshold; yellow from 90d as warning of it.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 7776000
+              },
+              {
+                "color": "red",
+                "value": 8640000
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 18
+      },
+      "id": 34,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "title": "Restore Drill Age",
+      "type": "stat",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "time() - max(backup_restore_drill_last_success_seconds)",
+          "refId": "A"
+        }
       ]
     },
     {
@@ -1442,7 +1778,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 18
+        "y": 22
       },
       "id": 102,
       "panels": [],
@@ -1487,7 +1823,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 19
+        "y": 23
       },
       "id": 22,
       "options": {
@@ -1601,7 +1937,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 19
+        "y": 23
       },
       "id": 23,
       "options": {
@@ -1683,7 +2019,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 27
+        "y": 31
       },
       "id": 103,
       "panels": [],
@@ -1728,7 +2064,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 28
+        "y": 32
       },
       "id": 24,
       "options": {
@@ -1797,7 +2133,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 28
+        "y": 32
       },
       "id": 25,
       "options": {
@@ -1834,7 +2170,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 36
+        "y": 40
       },
       "id": 104,
       "panels": [],
@@ -1865,7 +2201,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 37
+        "y": 41
       },
       "id": 26,
       "options": {
@@ -1938,7 +2274,7 @@
         "h": 4,
         "w": 6,
         "x": 6,
-        "y": 37
+        "y": 41
       },
       "id": 27,
       "options": {
@@ -2006,7 +2342,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 37
+        "y": 41
       },
       "id": 28,
       "options": {
@@ -2043,7 +2379,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 45
+        "y": 49
       },
       "id": 105,
       "panels": [],
@@ -2088,7 +2424,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 46
+        "y": 50
       },
       "id": 29,
       "options": {
@@ -2137,5 +2473,6 @@
   "timezone": "browser",
   "title": "Backup \u2014 Nightly Jobs",
   "uid": "backup-nightly-weisssrv",
-  "version": 1
+  "version": 1,
+  "refresh": "5m"
 }

@@ -23,18 +23,10 @@ spec:
       - X-authentik-meta-app
 
 ---
-# ForwardAuth middleware WITH basic-auth credential injection: identical to
-# authentik-auth above, plus `Authorization` in authResponseHeaders. Traefik
-# DELETES every listed header from the client request and re-adds it only if
-# the outpost's auth response carries it (source-verified against traefik's
-# forward.go and authentik's mode_forward.go) — so adding Authorization
-# to the SHARED middleware above would strip client-sent credentials (API
-# keys, basic auth) on every route that uses it. This dedicated variant is
-# attached ONLY to routes whose upstream expects the authentik-injected
-# credentials (proxy providers with basic_auth_enabled — terraform/authentik):
-# nzbget + the AdGuard dashboards. Their upstreams validate the injected
-# Authorization against their own local users, so the double-login disappears
-# while direct/raw access still requires the app's real credentials.
+# CRITICAL: Traefik deletes every authResponseHeaders entry from the client
+# request and re-adds it only from the outpost response. Adding Authorization to
+# the shared authentik-auth middleware strips client credentials on every route
+# using it. Attach this variant only to providers with basic_auth_enabled.
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:

@@ -1,15 +1,8 @@
 ---
-# metrics-server — the Resource Metrics API behind every HPA and the VPA
-# recommender. Flux-owned rather than k3s-owned: `metrics-server` is listed in
-# `k3s_disable` (group_vars/k3s.yml), so the servers never bring up their own.
-# That entry and this release are ONE UNIT — either alone leaves every HPA and
-# the VPA recommender without metrics.
-#
-# `install.remediation.retries: -1` below is what makes the ordering
-# self-healing: if this release ever reconciles before the Ansible side has
-# applied `k3s_disable`, it retries until it can own the APIService instead of
-# needing an operator step.
-# Full rationale: clusters/weisssrv/infrastructure-metrics-server.yaml, docs/33.
+# CRITICAL: metrics-server is the Resource Metrics API behind every HPA and the
+# VPA recommender. Its k3s_disable entry (group_vars/k3s.yml) and this release
+# are one unit; either alone leaves the cluster with no metrics at all.
+# docs/33, clusters/weisssrv/infrastructure-metrics-server.yaml.
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -33,21 +26,17 @@ spec:
       interval: 12h
   install:
     remediation:
-      # -1 = unlimited, permanently rather than for one rebuild: the deploy that
-      # frees the objects is operator-paced, and a bounded count would exhaust,
-      # stall the release and need a manual failure-counter reset. Safe to loop
-      # — Helm's ownership check runs before the release is written to storage,
-      # so a conflicted install creates and records nothing.
+      # -1: a conflicted install records nothing (Helm checks ownership before
+      # writing the release), so retrying until it can own the APIService is safe.
       retries: -1
   upgrade:
     remediation:
       retries: 3
       remediateLastFailure: true
   values:
-    # 2 replicas + a PDB: metrics-server is the sole metric source for every HPA
-    # and the VPA recommender, so losing the one pod blinds both at once. The
-    # replicas are stateless and idempotent scrapers — a second one costs a
-    # duplicate kubelet scrape, nothing else.
+    # 2 replicas + a PDB: the sole metric source for every HPA and the VPA
+    # recommender, so one pod blinds both. The replicas are stateless scrapers —
+    # a second costs a duplicate kubelet scrape, nothing else.
     replicas: 2
     podDisruptionBudget:
       enabled: true
@@ -74,7 +63,7 @@ spec:
                 - key: ${cluster_node_label_domain}/cpu
                   operator: NotIn
                   values: ["legacy"]
-    # Same tolerations the k3s AddOn carried, so the server nodes stay eligible.
+    # Tolerations that keep the server nodes eligible.
     tolerations:
       - key: CriticalAddonsOnly
         operator: Exists
@@ -87,19 +76,17 @@ spec:
       - key: ${cluster_node_label_domain}/compute
         operator: Exists
         effect: PreferNoSchedule
-    # Sized off the 30d working-set peak (~88Mi); the AddOn ran a 70Mi request
-    # with no limit at all. Keep in lockstep with the metrics-server VPA
-    # maxAllowed in configs/vpa/platform.yaml.
+    # Sized off the 30d working-set peak (~88Mi). Keep in lockstep with the
+    # metrics-server VPA maxAllowed in configs/vpa/platform.yaml.
     resources:
       requests:
         cpu: 100m
         memory: 96Mi
       limits:
         memory: 192Mi
-    # defaultArgs match what the k3s AddOn passed, so the kubelet connection
-    # keeps verifying against the cluster CA (no --kubelet-insecure-tls) and the
-    # serving side keeps k3s's cipher-suite restriction rather than the chart's
-    # unrestricted Go default.
+    # defaultArgs: verify the kubelet connection against the cluster CA (no
+    # --kubelet-insecure-tls) and restrict the serving cipher suites instead of
+    # taking the chart's unrestricted Go default.
     defaultArgs:
       - --cert-dir=/tmp
       - --kubelet-preferred-address-types=InternalIP,ExternalIP,Hostname

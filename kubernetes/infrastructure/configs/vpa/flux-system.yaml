@@ -16,9 +16,11 @@ spec:
     updateMode: Initial
   resourcePolicy:
     containerPolicies:
+      # Limit-controlling (the default RequestsAndLimits), so docs/33 caps
+      # the request at 0.8x the upstream gotk 1Gi limit, never at it.
       - containerName: "*"
         minAllowed: {cpu: 25m, memory: 64Mi}
-        maxAllowed: {cpu: 1, memory: 1Gi}
+        maxAllowed: {cpu: 1, memory: 819Mi}
         controlledResources: [cpu, memory]
 ---
 apiVersion: autoscaling.k8s.io/v1
@@ -35,9 +37,11 @@ spec:
     updateMode: Initial
   resourcePolicy:
     containerPolicies:
+      # Limit-controlling (the default RequestsAndLimits), so docs/33 caps
+      # the request at 0.8x the upstream gotk 1Gi limit, never at it.
       - containerName: "*"
         minAllowed: {cpu: 25m, memory: 64Mi}
-        maxAllowed: {cpu: 1, memory: 1Gi}
+        maxAllowed: {cpu: 1, memory: 819Mi}
         controlledResources: [cpu, memory]
 ---
 apiVersion: autoscaling.k8s.io/v1
@@ -54,9 +58,11 @@ spec:
     updateMode: Initial
   resourcePolicy:
     containerPolicies:
+      # Limit-controlling (the default RequestsAndLimits), so docs/33 caps
+      # the request at 0.8x the upstream gotk 1Gi limit, never at it.
       - containerName: "*"
         minAllowed: {cpu: 25m, memory: 64Mi}
-        maxAllowed: {cpu: 1, memory: 1Gi}
+        maxAllowed: {cpu: 1, memory: 819Mi}
         controlledResources: [cpu, memory]
 ---
 apiVersion: autoscaling.k8s.io/v1

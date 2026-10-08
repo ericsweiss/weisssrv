@@ -1,13 +1,7 @@
 ---
-# Uptime Kuma (louislam) — a single-container Node.js app serving the monitor
-# dashboard, the public status pages and its own Prometheus /metrics endpoint on
-# :3001. All runtime state is the SQLite DB on the NFS volume (populated through
-# the UI); there is no HelmRelease because no upstream chart is maintained and
-# raw manifests carry the whole app (docs/45).
-#
-# strategy: Recreate + replicas: 1 — the single RWO NFS volume backing the
-# SQLite DB must never be dual-mounted across a rolling update (SQLite is a
-# single-writer store; see storage.yaml).
+# Uptime Kuma: one Node.js container serving the dashboard, the public status
+# pages and /metrics on :3001. State is the SQLite DB on the NFS volume, and
+# raw manifests carry the whole app because no chart is maintained (docs/45).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -17,6 +11,9 @@ metadata:
     app.kubernetes.io/name: uptime-kuma
     app.kubernetes.io/part-of: uptime-kuma
 spec:
+  # CRITICAL: replicas 1 and Recreate keep the RWO NFS volume from being
+  # dual-mounted. SQLite is a single-writer store, so a rolling update would
+  # corrupt the DB.
   replicas: 1
   strategy:
     type: Recreate
@@ -45,11 +42,9 @@ spec:
         ${cluster_node_label_domain}/cpu: "modern"
       # No in-cluster API access — Kuma probes endpoints, it never reads k8s.
       automountServiceAccountToken: false
-      # PSA `restricted` needs runAsNonRoot declared here, not merely baked into
-      # the image: admission cannot introspect the image's USER. UID/GID 1000 is
-      # what the `-rootless` variant runs as, and 1000:2000 is exactly what the
-      # NFS export all_squashes every write to (storage.yaml), so the DB files
-      # stay readable by the same identity that wrote them.
+      # PSA `restricted` needs runAsNonRoot declared here; admission cannot
+      # read the image's USER. 1000:2000 matches both the `-rootless` image and
+      # the NFS export's all_squash target (storage.yaml).
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -61,24 +56,19 @@ spec:
         options:
           - name: ndots
             value: "1"
-          # ClusterFirst pods resolve via the DNAT'd kube-dns ClusterIP; force a
-          # fresh socket for glibc's parallel A/AAAA queries so the conntrack
-          # DNAT-insert race can't cost a ~5s resolver stall. This pod resolves
-          # constantly (every HTTP/TCP monitor target) — kept in sync with
-          # homarr/hermes/mealie.
+          # A fresh socket per glibc A/AAAA pair: the conntrack DNAT-insert
+          # race otherwise costs a ~5s resolver stall on every monitor target.
           - name: single-request-reopen
       containers:
         - name: uptime-kuma
-          # Public image (no imagePullSecret). The `-rootless` variant is the
-          # SAME release built with `USER node`, which is what lets the
-          # namespace enforce PSA restricted (namespace.yaml). Keep the suffix
-          # when bumping uptime_kuma_version — the bare tag runs as root and
-          # would be rejected at admission.
+          # Public image, no imagePullSecret. The `-rootless` variant runs as
+          # USER node, which PSA restricted requires. `uptime_kuma_version` is
+          # the bare tag and the suffix is appended here.
           image: louislam/uptime-kuma:${uptime_kuma_version}-rootless
           imagePullPolicy: IfNotPresent
           env:
             - name: TZ
-              value: America/Los_Angeles
+              value: ${cluster_timezone}
             # Explicit, so a future upstream default change cannot move the
             # port out from under the Service/probes/NetworkPolicy.
             - name: UPTIME_KUMA_PORT
@@ -92,10 +82,8 @@ spec:
               containerPort: 3001
               protocol: TCP
           # tcpSocket, not httpGet: `/` is a 302 whose target depends on a
-          # UI-set option (entry page / status-page domain mapping — docs/45),
-          # so a listener-up check is the honest health signal without coupling
-          # pod health to a runtime setting. startupProbe covers the first boot
-          # (SQLite schema migration on the NFS volume).
+          # UI-set option (docs/45), so a listener-up check is the honest
+          # signal. startupProbe covers the first-boot schema migration.
           startupProbe:
             tcpSocket:
               port: http
@@ -113,11 +101,8 @@ spec:
             periodSeconds: 30
             timeoutSeconds: 10
             failureThreshold: 5
-          # Hand-set limit (the VPA is RequestsOnly — docs/33 § Limit
-          # oscillation): 512Mi is a starting ceiling for a Node app whose
-          # footprint scales with monitor count and heartbeat retention, to be
-          # re-derived from the 30d working-set peak once the monitor set
-          # settles. No CPU limit (repo policy — docs/33); memory capped.
+          # Hand-set memory ceiling because the VPA is RequestsOnly (docs/33).
+          # No CPU limit, per repo policy.
           resources:
             requests:
               cpu: 50m
@@ -127,14 +112,12 @@ spec:
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
-              # ALL, with nothing added back: the rootless image needs no
-              # capability. NET_RAW is the one an ICMP ("ping") monitor would
-              # need — deliberately absent, so use TCP-port/HTTP monitors
-              # instead (docs/45 § Monitor types).
+              # Nothing added back: the rootless image needs no capability.
+              # Without NET_RAW, ICMP monitors are unavailable; use TCP or HTTP
+              # monitors instead (docs/45).
               drop: ["ALL"]
-            # Node writes its own cache/tmp under the app tree in addition to
-            # the mounted /app/data, so the rootfs stays writable (same as the
-            # other non-s6 Node/web apps here).
+            # Node writes cache and tmp under the app tree as well as the
+            # mounted /app/data, so the rootfs stays writable.
             readOnlyRootFilesystem: false
           volumeMounts:
             - name: data

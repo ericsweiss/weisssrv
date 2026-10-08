@@ -33,3 +33,34 @@ tests:
       - eval_time: 20m
         alertname: LocalPathPVExists
         exp_alerts: []
+
+  # KubeletImageGCIneffective is scoped to the in-cluster DaemonSet: a host
+  # exporter target (job="node-exporter-host", :9101) at the same fill level
+  # must not fire, and a node under the 70% watermark must not either.
+  - interval: 1m
+    input_series:
+      - series: 'node_filesystem_avail_bytes{job="node-exporter", instance="10.42.1.7:9100", mountpoint="/"}'
+        values: '20+0x60'
+      - series: 'node_filesystem_size_bytes{job="node-exporter", instance="10.42.1.7:9100", mountpoint="/"}'
+        values: '100+0x60'
+      - series: 'node_filesystem_avail_bytes{job="node-exporter", instance="10.42.1.8:9100", mountpoint="/"}'
+        values: '40+0x60'
+      - series: 'node_filesystem_size_bytes{job="node-exporter", instance="10.42.1.8:9100", mountpoint="/"}'
+        values: '100+0x60'
+      - series: 'node_filesystem_avail_bytes{job="node-exporter-host", instance="10.0.10.102:9101", mountpoint="/"}'
+        values: '20+0x60'
+      - series: 'node_filesystem_size_bytes{job="node-exporter-host", instance="10.0.10.102:9101", mountpoint="/"}'
+        values: '100+0x60'
+    alert_rule_test:
+      # Inside the 30m hold.
+      - eval_time: 20m
+        alertname: KubeletImageGCIneffective
+        exp_alerts: []
+      - eval_time: 45m
+        alertname: KubeletImageGCIneffective
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: node-exporter
+              instance: '10.42.1.7:9100'
+              mountpoint: /

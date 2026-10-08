@@ -1,0 +1,45 @@
+# https://taskfile.dev
+# Windows 11 VM. Provisions the VM shell only; Windows is installed
+# interactively via the Proxmox console and created stopped (docs/39).
+version: '3'
+
+tasks:
+  # Provisions the VM shell only: OVMF/TPM/q35, VirtIO, install + driver ISOs.
+  provision:
+    desc: Provision the Windows 11 VM shell + guest firewall (VM created stopped)
+    dir: "{{.ANSIBLE_DIR}}"
+    # SSH_PUBLIC_KEY resolves the lazy ssh_authorized_keys lookup in all.yml even
+    # though the windows path never consumes it (no cloud-init). op run keeps the
+    # wrapper consistent with the other provisioning tasks.
+    env: &windows_env
+      SSH_PUBLIC_KEY: op://Homelab/SSH Key/public key
+    preconditions: &windows_preconditions
+      - sh: command -v ansible-playbook
+        msg: "ansible-playbook is not installed"
+      # `op account list`, not `op whoami` — see the note on infra:deploy's preconditions.
+      - sh: op account list 2>/dev/null
+        msg: "1Password CLI not authenticated. Run: eval $(op signin)"
+    cmds:
+      - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/windows.yml {{.CLI_ARGS}}
+
+  provision-check:
+    desc: Check mode - show what Windows VM provisioning would change
+    dir: "{{.ANSIBLE_DIR}}"
+    env: *windows_env
+    preconditions: *windows_preconditions
+    cmds:
+      - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/windows.yml --check --diff {{.CLI_ARGS}}
+
+  status:
+    desc: Show the Windows VM status (qm status + config) on pve-nas-01
+    cmds:
+      - echo "=== Windows VM ({{.WINDOWS_VM_ID}}) status ==="
+      - ssh eric@pve-nas-01 "sudo qm status {{.WINDOWS_VM_ID}}" || echo "VM not found — run 'task windows:provision'"
+      - echo ""
+      - echo "=== Windows VM config ==="
+      - ssh eric@pve-nas-01 "sudo qm config {{.WINDOWS_VM_ID}}" || true
+
+  verify:
+    desc: Verify Windows RDP reachability (fails until Windows is installed + running)
+    cmds:
+      - bash scripts/verify-windows.sh

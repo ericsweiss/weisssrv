@@ -10,6 +10,17 @@
     - ../../../../inventories/prod/group_vars/all.yml
 
   pre_tasks:
+    # molecule.yml platforms[].groups drive the qol guard below; an empty group
+    # would skip the qol role and still report a pass.
+    - name: Assert the molecule roster resolved
+      ansible.builtin.assert:
+        that:
+          - groups['qol_enabled'] | default([]) | length == 2
+        fail_msg: >-
+          molecule.yml no longer produces qol_enabled, so the qol role is never
+          applied in this scenario.
+      run_once: true
+
     - name: Container warm-up (apt locks, dpkg state, cache, systemd)
       ansible.builtin.include_tasks: ../../../../molecule/tasks/container-warmup.yml
 
@@ -27,3 +38,7 @@
     - name: Apply tailscale role
       ansible.builtin.include_role:
         name: weisssrv.infra.tailscale
+      # all.yml demands an auth key for a node that still has to join; the
+      # container never joins (no TAILSCALE_AUTH_KEY), so that guard is off here.
+      vars:
+        tailscale_require_authkey: false

@@ -1,0 +1,6 @@
+# Build context for the build-hermes-agent CI job. Deny-all plus this build's
+# own inputs, so a stray local file (kubeconfig, .env, scratch output) never
+# reaches the daemon or a future COPY.
+*
+!Dockerfile.codex
+!patches/

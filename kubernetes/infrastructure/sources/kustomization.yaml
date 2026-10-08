@@ -1,36 +1,28 @@
 ---
-# The earliest-reconciling layer: everything every later stage needs before it
-# can render or schedule. HelmRepository sources; the two substitution
-# ConfigMaps — cluster-versions (pins) and cluster-config (domains, CIDRs, VIPs)
-# — which must exist before controllers/ renders any `${...}` placeholder; and
-# the PriorityClasses, which must exist before controllers/ creates the first
-# pod that names one (the Priority admission plugin REJECTS a pod whose class is
-# missing, so a class defined any later than this deadlocks a cold bootstrap:
-# controllers is `wait: true`, so it would never go Ready and the stage defining
-# the class would never reconcile).
-#
-# This stage is also the one Flux Kustomization with no substituteFrom of its
-# own — nothing here may contain a `${...}` placeholder.
+# First stage, no dependencies: HelmRepository sources, the cluster-versions and
+# cluster-config substitution ConfigMaps, and the PriorityClasses (Priority admission
+# rejects a pod naming a missing class). Nothing here may contain a ${...} placeholder.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
-  - external-secrets.yaml
-  - metallb.yaml
-  - jetstack.yaml
-  - traefik.yaml
-  - external-dns.yaml
   - authentik.yaml
+  - external-dns.yaml
+  - external-secrets.yaml
+  - fairwinds-stable.yaml
   - gitlab.yaml
-  - prometheus-community.yaml
-  - grafana.yaml
   - grafana-community.yaml
-  - onepassword-connect.yaml
-  - fairwinds.yaml
+  - grafana.yaml
+  - jetstack.yaml
   - kured.yaml
-  - stakater.yaml
-  - tailscale-operator.yaml
-  - nvidia.yaml
+  - metallb.yaml
   - metrics-server.yaml
-  - versions-configmap.yaml
+  - nvidia.yaml
+  - onepassword-connect.yaml
+  - prometheus-community.yaml
+  - stakater.yaml
+  - tailscale.yaml
+  - traefik.yaml
+  # Not HelmRepositories.
   - cluster-config.yaml
   - priorityclasses.yaml
+  - versions-configmap.yaml

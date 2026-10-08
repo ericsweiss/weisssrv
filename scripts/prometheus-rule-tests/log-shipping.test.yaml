@@ -1,25 +1,19 @@
 ---
-# promtool unit tests for PodLogShippingStale — the in-cluster container-log
-# path. Its host-journald twin (HostLogShippingStale) is evaluated by the LOKI
-# ruler from loki/host-log-staleness.yaml and is covered by
-# scripts/test_host_log_staleness.py instead, so only this rule is here.
-#
-# The rule pairs "no entries in 45m" with "the pod has been up over an hour".
-# The uptime arm is load-bearing: a freshly-started Alloy pod legitimately
-# reports zero for its first minutes, and that startup window was the only thing
-# that drove the counter to zero anywhere in the last 7 days.
+# promtool unit tests for PodLogShippingStale, the in-cluster container-log
+# path. The host-journald twin is covered by test_host_log_staleness.py.
+# The uptime arm keeps a freshly-started Alloy pod from firing the rule.
 rule_files:
   - rules.yaml
 evaluation_interval: 5m
 tests:
-  # A long-lived pod that stops shipping: the counter flatlines while the
-  # process start time stays far in the past. Must fire once past the 15m hold.
+  # A pod that stops shipping, up just past the 1h grace. The uptime sits close
+  # to the threshold so raising the grace breaks this case, not only lowering it.
   - interval: 5m
     input_series:
       - series: 'loki_write_sent_entries_total{namespace="observability", pod="alloy-x7k2p", instance="10.42.0.56:12345"}'
         values: '1000+0x60'
       - series: 'process_start_time_seconds{namespace="observability", pod="alloy-x7k2p", instance="10.42.0.56:12345"}'
-        values: '-100000+0x60'
+        values: '-1200+0x60'
     alert_rule_test:
       # 45m of flat counter plus the 15m hold.
       - eval_time: 65m
@@ -35,14 +29,15 @@ tests:
         alertname: PodLogShippingStale
         exp_alerts: []
 
-  # The same flat counter on a pod that started 10 minutes ago. This is the
-  # shape that made a bare `== 0` unusable; the uptime arm must suppress it.
+  # The same flat counter on a pod that is still inside the 1h grace, at ~55m.
+  # This is the shape that made a bare `== 0` unusable; the uptime arm suppresses
+  # it, and sitting just inside the grace pins the threshold from below.
   - interval: 5m
     input_series:
       - series: 'loki_write_sent_entries_total{namespace="observability", pod="alloy-x7k2p", instance="10.42.0.56:12345"}'
         values: '0+0x60'
       - series: 'process_start_time_seconds{namespace="observability", pod="alloy-x7k2p", instance="10.42.0.56:12345"}'
-        values: '2400+0x60'
+        values: '600+0x60'
     alert_rule_test:
       - eval_time: 65m
         alertname: PodLogShippingStale
@@ -81,6 +76,26 @@ tests:
       - series: 'loki_write_sent_entries_total{namespace="observability", pod="alloy-m4q9r", instance="10.42.8.54:12345"}'
         values: '0+500x60'
       - series: 'process_start_time_seconds{namespace="observability", pod="alloy-m4q9r", instance="10.42.8.54:12345"}'
+        values: '-100000+0x60'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: PodLogShippingStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: 10.42.0.56:12345
+
+  # alloy-syslog is the UniFi receiver Deployment, not the container-log
+  # DaemonSet: its quiet counter is UnifiSyslogStale's signal, not this one's.
+  - interval: 5m
+    input_series:
+      - series: 'loki_write_sent_entries_total{namespace="observability", pod="alloy-syslog-db5ff859b-cjxgz", instance="10.42.3.11:12345"}'
+        values: '1000+0x60'
+      - series: 'process_start_time_seconds{namespace="observability", pod="alloy-syslog-db5ff859b-cjxgz", instance="10.42.3.11:12345"}'
+        values: '-100000+0x60'
+      - series: 'loki_write_sent_entries_total{namespace="observability", pod="alloy-x7k2p", instance="10.42.0.56:12345"}'
+        values: '1000+0x60'
+      - series: 'process_start_time_seconds{namespace="observability", pod="alloy-x7k2p", instance="10.42.0.56:12345"}'
         values: '-100000+0x60'
     alert_rule_test:
       - eval_time: 65m

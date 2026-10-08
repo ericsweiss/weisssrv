@@ -7,12 +7,9 @@ driver:
 
 platforms:
   - name: dns-01
-    # The systemd-container block is identical for both resolvers, so it is
-    # anchored once and merged into the second; only name and groups differ.
-    # Anchors are per-file — YAML has no cross-file include — so each scenario
-    # carries its own copy of the shape.
+    # Shared systemd-container shape; only name/groups differ per platform.
     <<: &systemd_platform
-      image: "${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:v0.17.1}"
+      image: "${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:v0.18.0}"
       pre_build_image: true
       privileged: true
       cgroupns_mode: host
@@ -43,16 +40,15 @@ platforms:
 dependency:
   name: galaxy
   options:
-    # The single source of truth for the weisssrv.infra pin these
-    # scenarios exercise. Resolved by ansible-galaxy in molecule's CWD,
-    # which is the scenario's stack dir (ansible/integration-tests/<stack>).
+    # Single source of truth for the weisssrv.infra pin, resolved in molecule's
+    # CWD (the stack dir).
     requirements-file: ../../requirements.yml
 provisioner:
   name: ansible
   env:
     # Required for molecule_docker plugin (upstream broken conditional in destroy.yml)
     ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
-    # Provide dummy SSH key for testing (base role expects this via all.yml lookup)
+    # Dummy key: all.yml looks SSH_PUBLIC_KEY up and the base role requires it.
     # yamllint disable-line rule:line-length
     SSH_PUBLIC_KEY: "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC3qctest123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123== test@molecule"
   config_options:
@@ -63,8 +59,6 @@ provisioner:
   inventory:
     group_vars:
       dns:
-        # Common DNS configuration
-        timezone: "America/Chicago"
         # Docker containers have /etc/resolv.conf as a bind mount that can't be replaced
         adguard_home_skip_resolv_conf_update: true
         # Disable PrivateTmp in systemd service for Docker container compatibility
@@ -73,12 +67,9 @@ provisioner:
         # Disable ProtectSystem in systemd service for Docker container compatibility
         # ProtectSystem=strict can crash containers when systemd creates private mounts over system directories
         adguard_home_use_protect_system: false
-        # No real certificates exist in these containers, so DoT/DoH/DoQ is off
-        # on BOTH servers. The role defaults this to true and asserts
-        # adguard_home_tls_server_name is non-empty when it is, so setting it
-        # per-host (dns_primary only) leaves the replica failing that assert —
-        # it belongs to the whole `dns` group. The TLS path itself is covered by
-        # the collection's own adguard_home `tls` molecule scenario.
+        # No certificates in these containers, so DoT/DoH/DoQ is off for the
+        # WHOLE dns group: setting it per-host leaves the replica failing the
+        # role's tls_server_name assert. The TLS path has its own lib scenario.
         adguard_home_tls_enabled: false
         # AdGuard Home API configuration (required for full initialization)
         adguard_home_protection_enabled: true
@@ -94,30 +85,25 @@ provisioner:
         adguard_home_cache_ttl_max: 0
         adguard_home_cache_optimistic: false
         adguard_home_ratelimit: 20
-        adguard_home_ratelimit_whitelist: []
+        # Non-empty, so the idempotence step exercises the role's
+        # order-sensitive whitelist drift check.
+        adguard_home_ratelimit_whitelist: ['192.0.2.20', '192.0.2.21']
         adguard_home_dhcp_enabled: false
-        # Codified DNS rewrites (TEST-NET-1, RFC 5737). api_config.yml runs on
-        # dns-01 only and reconciles the live rewrite list to exactly this set;
-        # verify.yml asserts both landed. Empty user_rules leaves filtering
-        # untouched (set_rules only fires on drift).
+        # Codified DNS rewrites (TEST-NET-1, RFC 5737), reconciled onto dns-01
+        # only and asserted by verify.yml.
         adguard_home_rewrites:
           - domain: "test-a.molecule.local"
             answer: "192.0.2.10"
           - domain: "test-b.molecule.local"
             answer: "192.0.2.11"
         adguard_home_user_rules: []
-        # Unbound upstream forwarders (DoT), set at the GROUP level so BOTH the
-        # explicit "Apply unbound role" task AND adguard_home's own
-        # `dependencies: [unbound]` re-apply resolve the SAME list. Passing this
-        # via converge's include_role `vars:` instead is include-scoped — it does
-        # not reach the adguard dependency, so the two unbound applications
-        # flip-flop the config (2-item override vs the role's 6-item default)
-        # every converge and idempotence never settles. verify.yml asserts
-        # exactly these two render (and the defaults, e.g. 9.9.9.9, do not).
+        # TRAP: must stay at GROUP level so the explicit unbound apply and
+        # adguard_home's `dependencies: [unbound]` re-apply see the same list.
+        # An include_role `vars:` block reaches only the first.
         unbound_forwarders:
           - {addr: "1.1.1.1", port: 853, name: "cloudflare-dns.com"}
           - {addr: "8.8.8.8", port: 853, name: "dns.google"}
-        # Note: Versions loaded from production group_vars via vars_files in converge.yml
+        # Versions come from production group_vars via converge.yml vars_files.
 
       dns_primary:
         # Primary DNS server (dns-01)
@@ -128,14 +114,11 @@ provisioner:
         adguard_home_admin_password: password
         unbound_port: 5335
         unbound_interface: 127.0.0.1
-        # This host runs the rewrite/filtering API pass (was an
-        # inventory_hostname == 'dns-01' check inside the role).
+        # Runs the rewrite/filtering API pass.
         adguard_home_is_primary: true
         # AdGuard Sync configuration (sync FROM dns-01 TO dns-02)
         adguard_sync_enabled: true
-        adguard_sync_version: "0.9.2"
-        # The sync role owns its API credentials now — it no longer borrows the
-        # adguard_home pair.
+        # The sync role owns its own API credentials.
         adguard_sync_admin_user: admin
         adguard_sync_admin_password: password
         adguard_sync_origin: "http://dns-01:3000"

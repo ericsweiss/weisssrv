@@ -1,30 +1,17 @@
 #!/usr/bin/env bash
-# Pins that an `include:` input must repeat.
-#
-# GitLab resolves `include:` at pipeline-CREATION time, before this file's
-# `variables:` block exists, so an input cannot read $KUSTOMIZE_VERSION and
-# friends — the literal has to be written out again next to every include that
-# needs it. This is what keeps those copies equal to their single source.
-#
-# The pin list is DERIVED, not written here: every `name: "value"` under an
-# `inputs:` block whose upper-cased name also exists as a `variables:` key is a
-# copy of that variable and is compared. A new pin duplicated into an include is
-# therefore covered the moment it is added. FLOOR_PINS is a floor assertion on
-# the derivation itself — if a parser regression reduced the derived set to
-# nothing, the gate would otherwise pass by inspecting zero pins.
-#
-# Each input's values are `sort -u`'d, so a pin equals its variable only when
-# EVERY copy matches.
-#
-# Run from the repo root. Exit 0 clean, 1 on drift.
+# Assert each pin written twice holds one value: an `include:` input against its
+# `variables:` counterpart, and a pin copied into several script: blocks.
+# Usage: scripts/check-ci-pin-parity.sh [CI_FILE]   (repo root; 1 on drift).
 set -uo pipefail
 
 CI_FILE="${1:-.gitlab-ci.yml}"
 rc=0
 
-# Pins that must always be derivable. Not the list being checked — the proof
-# that the derivation still works.
+# Floor assertion on the derivation itself: a parser regression that derived
+# nothing would otherwise pass by inspecting zero pins.
 FLOOR_PINS="kustomize_version kustomize_sha256 pyyaml_version pytest_version"
+# The same floor for the script:-block arm, whose pins no `variables:` key backs.
+SHELL_FLOOR_PINS="TASK_VERSION TASK_SHA256"
 
 var() { sed -n "s/^  $1: \"\(.*\)\"\$/\1/p" "$CI_FILE" | head -1; }
 inp() { sed -n "s/^      $1: \"\(.*\)\"\$/\1/p" "$CI_FILE" | sort -u; }
@@ -38,6 +25,11 @@ derive_pins() {
         [ -n "$(var "$upper")" ] && echo "$key"
     done
 }
+
+# Shell pins: `NAME="value"` inside a script: block. Names, then the distinct
+# values one name carries across the file.
+shell_pin_names() { sed -n 's/^[[:space:]]*\([A-Z][A-Z0-9_]*\)="[^"]*"$/\1/p' "$CI_FILE" | sort -u; }
+shell_pin_values() { sed -n "s/^[[:space:]]*$1=\"\([^\"]*\)\"\$/\1/p" "$CI_FILE" | sort -u; }
 
 cmp_pin() {
     echo "$1: variables=${2:-<none>} include-input(s)=$(echo "$3" | tr '\n' ' ')"
@@ -66,6 +58,23 @@ done
 for key in $pins; do
     upper=$(echo "$key" | tr '[:lower:]' '[:upper:]')
     cmp_pin "$key" "$(var "$upper")" "$(inp "$key")"
+done
+
+shell_pins=$(shell_pin_names)
+for floor in $SHELL_FLOOR_PINS; do
+    if ! echo "$shell_pins" | grep -qx "$floor"; then
+        echo "$floor: no shell assignment found — the script:-block parser no longer sees it"
+        rc=1
+    fi
+done
+
+for name in $shell_pins; do
+    values=$(shell_pin_values "$name")
+    if [ "$(echo "$values" | wc -l | tr -d ' ')" -ne 1 ]; then
+        echo "$name: script-block copies=$(echo "$values" | tr '\n' ' ')"
+        echo "  DRIFT — bump every copy, they are one pin"
+        rc=1
+    fi
 done
 
 exit "$rc"

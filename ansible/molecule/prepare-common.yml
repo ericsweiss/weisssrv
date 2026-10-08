@@ -1,7 +1,6 @@
 ---
-# Shared Molecule prepare playbook: initialize the container for reliable
-# testing. Imported by integration-tests/_shared/prepare.yml, which every
-# integration-test scenario wires as provisioner.playbooks.prepare.
+# Molecule prepare playbook: the shared container initialization every
+# scenario needs before its role runs.
 - name: Prepare
   hosts: all
   gather_facts: false

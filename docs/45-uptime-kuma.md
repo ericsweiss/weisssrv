@@ -42,8 +42,10 @@ The image is the upstream **`-rootless`** tag: the same release built with
 `USER node` (UID 1000). That is what lets the namespace enforce Pod Security
 `restricted` rather than `baseline` — the pod declares `runAsNonRoot`,
 `runAsUser: 1000`, drops **ALL** capabilities, `allowPrivilegeEscalation: false`
-and seccomp `RuntimeDefault`. Keep the suffix when bumping the pin: the bare tag
-runs as root and is rejected at admission.
+and seccomp `RuntimeDefault`. The suffix is appended by `deployment.yaml`;
+`uptime_kuma_version` holds the bare semver tag. Do not add `-rootless` to the
+pin and do not drop it from the manifest — the bare tag runs as root and is
+rejected by the namespace's PSA `restricted` enforcement.
 
 ## Routing split — public status page vs. admin UI
 
@@ -55,10 +57,31 @@ identity gate — the same posture as the Traefik dashboard.
 
 The split is by authentication, not by hostname:
 
-| Surface | Paths | External `status.ericsweiss.com` | Internal `status.esweiss.com` |
-|---|---|---|---|
-| Public status page (`services` slug ONLY, external) | external: `/`, `/status/services[/…]`, `/api/status-page/services[/…]`, `/api/status-page/heartbeat/services`, `/api/entry-page`, `/assets/…`, `/upload/…`, `/favicon.ico`, `/icon.svg`, `/manifest.json`, `/apple-touch-icon.png`, `/robots.txt`; internal: the same shape but with `/status[/…]` + `/api/status-page[/…]` prefix-wide (every slug) — all prefixes segment-boundary-safe | served, unauthenticated, **slug-fenced** | served, `lan-tailscale-only`, every slug |
-| Admin (dashboard, `/socket.io`, `/metrics`, everything else) | the catch-all | **no router — Traefik 404** | `lan-tailscale-only` + `authentik-auth` |
+| Surface | External `status.ericsweiss.com` | Internal `status.esweiss.com` |
+|---|---|---|
+| Public status page (`services` slug ONLY, external) | served, unauthenticated, **slug-fenced** | served, `lan-tailscale-only`, every slug |
+| Admin (dashboard, `/socket.io`, `/metrics`, everything else) | **no router — Traefik 404** | `lan-tailscale-only` + `authentik-auth` |
+
+External allowlist (slug-fenced), in the order `ingress-routes.yaml` declares it:
+
+- `/`
+- `/status/services[/…]`
+- `/api/status-page/services[/…]`
+- `/api/status-page/heartbeat/services`
+- `/api/entry-page`
+- `/assets/…`
+- `/upload/…`
+- `/favicon.ico`
+- `/icon.svg`
+- `/manifest.json`
+- `/apple-touch-icon.png`
+- `/robots.txt`
+
+Internal allowlist: the same shape, but slug-wide — `/status[/…]`,
+`/status-page[/…]`, `/api/status-page[/…]` and `/api/entry-page[/…]` are all
+prefix matches, so every slug is served.
+
+All prefixes are segment-boundary-safe.
 
 ### Alerting boundary
 
@@ -167,7 +190,7 @@ change that adds the monitor.
 | 4c | `.102`–`.107` :8006 | Proxmox API liveness (TCP-port monitors) |
 | 4d | `.161:6443` | the kube-apiserver VIP (TCP-port monitor) |
 
-Two constraints follow from the manifests rather than from Kuma:
+Three constraints follow from the manifests rather than from Kuma:
 
 - **No ICMP.** "Ping" monitors need `CAP_NET_RAW`, which the pod drops, and
   NetworkPolicy cannot express ICMP anyway. Use a TCP-port or HTTP monitor
@@ -177,15 +200,19 @@ Two constraints follow from the manifests rather than from Kuma:
   (chosen) or mounting the CA the way Homarr does. Toggling Kuma's "Ignore
   TLS/SSL error" is an un-codified verification downgrade — invisible to git
   review — and must be avoided, exactly as in docs/41.
-- Rule 2 is `:443` only. A monitor that must check a plaintext `:80` redirect
-  needs a deliberate edit.
+- **No plaintext `:80`.** Rule 2 is `:443` only; a monitor that must check a
+  `:80` redirect needs a deliberate edit to `networkpolicy.yaml`.
 
 The internal endpoints are monitored through Traefik (`https://<app>.esweiss.com`)
 rather than on backend ports, deliberately: that is the path a user takes, so it
-covers the router, the certificate and the backend in one probe. Anything behind
-Authentik forward-auth answers `302` to a non-browser client — set those
-monitors to accept `200-299, 302` (Kuma's "Accepted Status Codes"), which is the
-same trade the blackbox `http_sso` module makes.
+covers the router, the certificate and the backend in one probe.
+
+**Every monitor whose target sits behind Authentik takes the `http_sso` code
+set** — `200-299, 301-302, 401, 403` in Kuma's "Accepted Status Codes" — and
+that includes the external hostnames, not just the internal list. An SSO-fronted
+target answers `302` to a non-browser client, so a monitor left on the default
+`200-299` publishes a false red on the public status page. The `Hermes Agent`
+monitor is the current violation and is red for this reason.
 
 ## Observability
 
@@ -213,6 +240,11 @@ same trade the blackbox `http_sso` module makes.
   critical: Prometheus is what evaluates the rule, so the primary alerting path
   is by definition still up — what is lost is the second opinion and the status
   page.
+- **Alert.** `UptimeKumaMonitorPersistentlyDown` (`homelab.monitoring`, warning,
+  15m) on a Kuma monitor reporting DOWN for 24 hours. That is either an outage
+  the blackbox fleet is blind to, or a mis-set monitor publishing a false red on
+  the public status page — check the monitor's Accepted Status Codes against the
+  `http_sso` set first.
 - **Blackbox probes.** Three targets (`uptime-kuma`, `uptime-kuma-admin`,
   `uptime-kuma-external`), all `http_sso`, feeding the generic `EndpointDown`
   alert. They are three because they are three distinct Traefik routers: the
@@ -225,19 +257,18 @@ same trade the blackbox `http_sso` module makes.
   annotation. Autoscaling is `vpa.yaml` (`updateMode: Initial`, `RequestsOnly`;
   docs/33).
 
-## Secrets / 1Password prerequisites
+## 1Password item
 
-Create this **before** the MR merges:
-
-- **`Uptime Kuma`** (new): `admin-username`, `admin-password` — operator-chosen
+- **`Uptime Kuma`**: `admin-username`, `admin-password` — operator-chosen
   (e.g. `openssl rand -base64 24` for the password). They are the credentials
   entered in Kuma's first-run setup form, and the same pair ESO syncs into the
   observability namespace (`observability-exporter-secrets` →
   `uptime-kuma-username` / `uptime-kuma-password`) for the `/metrics` scrape.
 
-Both fields must exist before the reconcile: they join the **shared**
-`observability-exporter-secrets` ExternalSecret, and a missing property fails
-that whole Secret sync — taking every other exporter credential with it.
+Both fields must exist before the app reconciles on a rebuild: they join the
+**shared** `observability-exporter-secrets` ExternalSecret, and a missing
+property fails that whole Secret sync — taking every other exporter credential
+with it.
 
 Nothing else is needed. The app pod itself holds no secret (`uptime-kuma` is
 deliberately absent from the `ClusterSecretStore` namespace list in
@@ -279,8 +310,10 @@ Runs after the MR merges, Flux reconciles the app, and the supervised
      the blackbox exporter probes externally, so a disagreement between the two
      is meaningful;
    - internal HTTPS through Traefik: `https://grafana.esweiss.com`,
-     `auth.esweiss.com`, `traefik.esweiss.com` (accept `302` for the
-     forward-auth-fronted ones);
+     `auth.esweiss.com`, `traefik.esweiss.com`;
+
+   Give every SSO-fronted monitor the `http_sso` code set (§ Monitor types),
+   external hostnames included.
    - DNS: `esweiss.com` A against `10.0.10.150` and `10.0.10.160`;
    - TCP port: `10.0.10.151:587`, `10.0.10.161:6443`, and
      `10.0.10.102–107:8006`.
@@ -305,7 +338,7 @@ Runs after the MR merges, Flux reconciles the app, and the supervised
 | A monitor times out while the endpoint is fine from a laptop | its target is outside the egress allowlist — add it to `networkpolicy.yaml` |
 | Status page renders but a panel is empty | an upstream release added a status-page endpoint the ingress allowlist does not carry (§ Routing split) |
 | `/` externally shows the login SPA instead of the status page | step 3/4 not done: no domain mapping and no entry page, so Kuma falls back to `302 /dashboard`, which has no external router |
-| Pod rejected at admission | the image pin lost its `-rootless` suffix; the bare tag runs as root and the namespace enforces PSA `restricted` |
+| Pod rejected at admission | `deployment.yaml` lost its `-rootless` suffix, or the pin gained one; the bare tag runs as root and the namespace enforces PSA `restricted` |
 | DB errors after a node failure | SQLite-on-NFS single-writer assumption broken — confirm `replicas: 1` and `strategy: Recreate`, then consider the zvol fallback (§ Storage) |
 
 ## Related documentation

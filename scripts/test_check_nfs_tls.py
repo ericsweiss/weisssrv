@@ -1,28 +1,20 @@
-"""Failure-path tests for scripts/check-nfs-tls.py.
-
-The two failures it exists to catch look identical in git — a PV that mounts —
-and only show up as a mount error on a scheduled pod, so what needs proving is
-that the gate FAILS on each, and that it refuses to pass vacuously.
-"""
+"""Tests that check-nfs-tls.py fails on a plaintext or IP-mounted NFS PV, and never passes vacuously."""
 from __future__ import annotations
 
-import importlib.util
 import subprocess
 import sys
 import textwrap
 from pathlib import Path
 
 import pytest
+from script_loader import load_path
 
 SCRIPT = Path(__file__).resolve().parent / "check-nfs-tls.py"
 REPO = SCRIPT.parent.parent
 
 
 def _load():
-    spec = importlib.util.spec_from_file_location("check_nfs_tls", SCRIPT)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return load_path(SCRIPT)
 
 
 @pytest.fixture(scope="module")
@@ -30,9 +22,9 @@ def gate():
     return _load()
 
 
-def _run(corpus: str) -> subprocess.CompletedProcess:
+def _run(corpus: str, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [sys.executable, str(SCRIPT)],
+        [sys.executable, str(SCRIPT), *args],
         input=textwrap.dedent(corpus), capture_output=True, text=True, cwd=REPO,
     )
 
@@ -59,6 +51,24 @@ def test_a_compliant_pv_passes():
     assert "1 NFS PersistentVolume" in result.stdout
 
 
+def test_a_comma_joined_mount_option_passes():
+    """Kubernetes comma-joins mountOptions, so one element may carry several."""
+    result = _run(GOOD.replace(
+        "        - nfsvers=4.2\n        - hard\n        - xprtsec=tls\n",
+        "        - nfsvers=4.2,hard,xprtsec=tls\n",
+    ))
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_a_comma_joined_element_without_tls_still_fails():
+    result = _run(GOOD.replace(
+        "        - nfsvers=4.2\n        - hard\n        - xprtsec=tls\n",
+        "        - nfsvers=4.2,hard\n",
+    ))
+    assert result.returncode == 1
+    assert "xprtsec=tls" in result.stderr
+
+
 def test_a_plaintext_pv_fails():
     result = _run(GOOD.replace("        - xprtsec=tls\n", ""))
     assert result.returncode == 1
@@ -71,6 +81,22 @@ def test_an_ip_server_fails():
     assert "no IP SAN" in result.stderr
 
 
+def test_allow_ip_server_passes_an_ip_this_cluster_rejects():
+    """The seam exists for a cert with an IP SAN. Off, the same corpus fails, so
+    this cluster keeps the hostname invariant."""
+    corpus = GOOD.replace("pve-nas-01.esweiss.com", "10.0.10.102")
+    allowed = _run(corpus, "--allow-ip-server")
+    assert allowed.returncode == 0, allowed.stdout + allowed.stderr
+    assert "by hostname" not in allowed.stdout
+    assert _run(corpus).returncode == 1
+
+
+def test_allow_ip_server_still_fails_an_empty_server():
+    result = _run(GOOD.replace("pve-nas-01.esweiss.com", '""'), "--allow-ip-server")
+    assert result.returncode == 1
+    assert "spec.nfs.server is empty" in result.stderr
+
+
 def test_a_non_nfs_pv_is_ignored(gate):
     docs = [{
         "kind": "PersistentVolume",
@@ -81,11 +107,51 @@ def test_a_non_nfs_pv_is_ignored(gate):
 
 
 def test_an_empty_server_fails():
-    # ip_address("") raises ValueError, so an empty server falls out of the IP
-    # arm; without the explicit elif it would read as a compliant hostname.
+    # ip_address("") raises ValueError, so an empty server needs the explicit
+    # elif or it reads as a compliant hostname.
     result = _run(GOOD.replace("pve-nas-01.esweiss.com", '""'))
     assert result.returncode == 1
     assert "spec.nfs.server is empty" in result.stderr
+
+
+def test_a_pv_inside_a_kind_list_is_still_inspected():
+    """A `kind: List` wrapper must not hide the PVs inside it from the gate."""
+    listed = textwrap.dedent("""\
+        apiVersion: v1
+        kind: List
+        items:
+          - apiVersion: v1
+            kind: PersistentVolume
+            metadata:
+              name: appdata-plaintext
+            spec:
+              mountOptions:
+                - nfsvers=4.2
+              nfs:
+                server: pve-nas-01.esweiss.com
+                path: /appdata/plaintext
+        """)
+    result = _run(listed)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "appdata-plaintext" in result.stderr
+
+
+def test_a_bare_list_document_is_flattened():
+    import io
+
+    import yaml
+
+    shared = load_path(SCRIPT.parent / "gate_common.py")
+    nested = {
+        "kind": "PersistentVolume",
+        "metadata": {"name": "appdata-ip"},
+        "spec": {"mountOptions": ["xprtsec=tls"], "nfs": {"server": "10.0.10.102"}},
+    }
+    assert shared.load_docs(io.StringIO(yaml.safe_dump([nested]))) == [nested]
+    assert shared.load_docs(
+        io.StringIO(yaml.safe_dump({"kind": "List", "items": [nested]}))
+    ) == [nested]
+    assert shared.load_docs(io.StringIO("not a document")) == []
 
 
 def test_an_empty_corpus_is_an_error_not_a_pass():
@@ -93,11 +159,11 @@ def test_an_empty_corpus_is_an_error_not_a_pass():
 
 
 def test_unparseable_yaml_is_an_error_not_a_pass():
-    # A corpus the render step truncated must not read as "nothing to check".
-    # Exit 2, never 0 — a swallowed parse error retires the gate silently.
+    # A truncated corpus must exit 2, never 0 - a swallowed parse error retires
+    # the gate silently.
     result = _run("kind: PersistentVolume\nspec: [unclosed\n")
     assert result.returncode == 2
-    assert "could not parse the corpus" in result.stderr
+    assert "failed to parse YAML input" in result.stderr
 
 
 def test_a_corpus_with_no_nfs_pv_is_an_error_not_a_pass():
@@ -107,17 +173,10 @@ def test_a_corpus_with_no_nfs_pv_is_an_error_not_a_pass():
 
 
 def test_the_repo_manifests_are_clean():
-    """The gate over this repo's real PVs, not a fixture.
+    """Run the gate over this repo's real PVs, read straight from git.
 
-    `task flux:lint` runs it over the rendered corpus (and the CI job's
-    extra_validation input is byte-compared against that block, so both sides
-    move in one commit), but that needs kustomize + envsubst. This runs in the
-    python-tests job, which triggers on kubernetes/apps + infrastructure, so a
-    PV edit meets the gate even when the flux-lint job is not in the pipeline.
-
-    Reads the PV manifests straight from git rather than a rendered corpus:
-    `spec.nfs.server` and the mountOptions are literals there — check-cluster-
-    literals.py exempts per-guest addresses — so nothing needs substituting.
+    spec.nfs.server and the mountOptions are literals there by design, so
+    nothing needs substituting.
     """
     import yaml
 

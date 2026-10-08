@@ -3,12 +3,11 @@
 VPN-protected download clients and media management applications with
 per-app VPN control (Gluetun sidecar killswitch).
 
-**`docs/21-download-clients-deployment.md` is the source of truth** for the
-architecture diagram, component deep-dives, VPN/killswitch design, storage
-layout and hard-linking, per-app configuration, SSO integration, maintenance
-commands, and troubleshooting. This README covers only what lives in this
-folder: the manifest layout, how the overlays wire together, and the VPN
-toggle knobs.
+[`docs/21-download-clients-deployment.md`](../../../docs/21-download-clients-deployment.md)
+owns the architecture, the storage layout and hard-linking, the 1Password
+prerequisites, per-app configuration, SSO integration and troubleshooting.
+This README owns what lives next to the manifests: the folder layout, how the
+overlays wire together, and day-2 VPN operations.
 
 ## Deployment
 
@@ -19,32 +18,20 @@ top-level `apps` Kustomization.
 - **Secrets**: `externalsecret.yaml` — ExternalSecret `vpn-credentials` (provider OpenVPN creds under provider-prefixed keys, mounted at `/vpn-secrets`) + `gluetun-control-auth` (control-server roles `config.toml` + exporter apikey), both from 1Password via ESO
 - **Workloads**: `prowlarr.yaml` and `pulsarr.yaml` are standalone manifests; `nzbget/` and `qbittorrent/` are overlays over the shared Gluetun VPN sidecar component (`_vpn-sidecar/`); `sonarr/`, `radarr/`, and `lidarr/` are overlays over the shared `_arr` component (`_arr/`). Each overlay's `resources.yaml` holds its app-specific resources (incl. the per-app VPN ConfigMap for nzbget/qbittorrent). Image tags use `${<app>_version}` placeholders substituted from the `cluster-versions` ConfigMap at reconcile time.
 - **Storage**: `storage/` — per-app NFS PV/PVC overlays over the shared `_nfs-pv/` component (TLS mountOptions defined once), plus `storage/shared.yaml` for the RWX media PV
-- **Ingress**: per-app IngressRoute overlays under `ingress-routes/` over the shared `_ingressroute/` component (middleware chain + TLS defined once) + `ingress-routes-ha-bypass.yaml` (full-host SSO bypass routes scoped to Home Assistant's IP, 10.0.10.154 — see docs/24)
+- **Ingress**: per-app IngressRoute overlays under `ingress-routes/` over the shared `_ingressroute/` component (middleware chain + TLS defined once) + `ingress-routes-ha-bypass.yaml` (API-path SSO bypass routes scoped to Home Assistant's IP, 10.0.10.154 — see docs/24)
 - **Single sign-on**: every UI is behind Authentik forward-auth (the shared `authentik-auth` middleware). Two clients avoid a redundant *second* login: **NZBGet** speaks HTTP Basic, so its `ingress-routes/nzbget/` overlay swaps in `authentik-auth-basic` (the proxy provider injects credentials); **qBittorrent** is form/cookie-based (can't take injected headers), so its `seed-webui-bypass` init-container declaratively whitelists the pod, LAN and tailnet CIDRs in `WebUI\AuthSubnetWhitelist` — the NetworkPolicy bounds who can reach `:8080` (Traefik, Homarr and the *arrs; docs/21 § qBittorrent has the trust model). The *arr apps keep the plain forward-auth prompt.
 - **NetworkPolicy**: `networkpolicy.yaml` (default-deny ingress + Traefik/observability allows, incl. the VPN-exporter scrape exception)
 - **Certificate**: `certificate.yaml` (single wildcard cert for `*.esweiss.com`)
 - **Autoscaling**: `vpa.yaml` (VPA recommendations for the stack — see docs/33)
 
-Deploy workflow (edit + commit + push):
+Ship a manifest change the normal way: feature branch + merge request, never a
+commit on `main` (docs/29-flux-operations.md § Deploying a Change). Flux
+reconciles `main` after the merge; `task flux:reconcile` forces it. Ops checks:
+`task downloads:status`, `task downloads:vpn-status`.
 
-```bash
-vim kubernetes/apps/download-clients/qbittorrent/resources.yaml  # or any file
-git add kubernetes/apps/download-clients/
-git commit -m "..."
-git push
-
-# Push triggers reconciliation via the GitLab agent's Flux Receiver
-# (poll is the fallback); force it manually with:
-task flux:reconcile
-
-# Ops checks (unchanged)
-task downloads:status
-task downloads:vpn-status
-```
-
-Default VPN state: NZBGet sidecar VPN disabled, qBittorrent VPN enabled.
-Toggle by editing `vpn_enabled` in the app's VPN ConfigMap (see VPN
-Management below) and pushing.
+Default VPN state: NZBGet sidecar VPN disabled, qBittorrent VPN enabled. On a
+running cluster the toggle is a live `task downloads:vpn` (see VPN Management
+below), not a git edit.
 
 ## VPN Management
 
@@ -96,7 +83,7 @@ the divergence note above); the live tasks are what you use for ongoing ops.
 # nzbget-vpn-config / qbittorrent-vpn-config
 data:
   vpn_enabled: "true"           # "true" or "false"
-  vpn_provider: "privado"       # or "vpn unlimited" (Gluetun wants the space, not a hyphen)
+  vpn_provider: "privado"       # the only wired provider
   server_countries: "Netherlands"
 ```
 
@@ -113,14 +100,9 @@ Editing the committed default in git only matters for a **fresh cluster** (or
 after a `kubectl delete configmap <app>-vpn-config -n downloads && task
 flux:reconcile` resync — see the divergence note above):
 
-```bash
-vim kubernetes/apps/download-clients/qbittorrent/resources.yaml
-# Find the ConfigMap section and edit vpn_enabled / vpn_provider
-
-git add kubernetes/apps/download-clients/qbittorrent/resources.yaml
-git commit -m "Disable VPN on qbittorrent" # or similar
-git push
-```
+Edit the ConfigMap section of
+`kubernetes/apps/download-clients/qbittorrent/resources.yaml`
+(`vpn_enabled` / `vpn_provider`) and ship it on a feature branch + MR.
 
 On a cluster where the ConfigMap does **not** yet exist, Flux creates it and —
 because the nzbget/qbittorrent Deployments carry the
@@ -153,7 +135,7 @@ and public IP (to verify VPN is working).
 
 ### Provider Switching
 
-Both providers' credentials live in the single `vpn-credentials` Secret under
+Provider credentials live in the single `vpn-credentials` Secret under
 **provider-prefixed keys** (mounted read-only at `/vpn-secrets`). The gluetun
 command wrapper reads `vpn_provider` from the mounted VPN ConfigMap and exports
 the matching `OPENVPN_*_SECRETFILE` paths, so switching provider is just a
@@ -163,32 +145,26 @@ churn, and credentials never touch git or `kubectl describe`.
 | `PROVIDER=` | gluetun `VPN_SERVICE_PROVIDER` | Auth | `vpn-credentials` keys | Status |
 |---|---|---|---|---|
 | `privadovpn` | `privado` | OpenVPN user/pass | `privadovpn-user`, `privadovpn-password` | Wired (default) |
-| `vpnunlimited` | `vpn unlimited` | OpenVPN user/pass **and** client cert/key | `vpnunlimited-user`, `vpnunlimited-password`, `vpnunlimited-clientcrt`, `vpnunlimited-clientkey` | Mechanism wired; needs all four in 1P (see below) |
 
-**VPN Unlimited (KeepSolid) needs all four of user, password, cert and key.**
-gluetun's generated OpenVPN config is cert/key-based (`AuthUserPass=false`, so
-the tunnel authenticates with an OpenVPN **client certificate + key**), but its
-settings validation still requires a non-empty **user + password** for the
-provider — supply only cert/key and the sidecar fails validation and
-crash-loops. To enable `PROVIDER=vpnunlimited`:
-
-1. In the VPN Unlimited portal, generate a Manual/OpenVPN config for one device;
-   note the login user/password it issues.
-2. On the **VPN Unlimited Credentials** 1Password item (docs/15) add
-   `openvpn-user`, `openvpn-password`, `openvpn-clientcrt` (full PEM
-   `<cert>...</cert>` block) and `openvpn-clientkey` (full PEM `<key>...</key>`
-   block).
-3. Uncomment the four `vpnunlimited-*` entries in `externalsecret.yaml`, commit,
-   push (Flux syncs the Secret), then `task downloads:vpn-provider -- APP=... PROVIDER=vpnunlimited`.
+Privado is the only provider wired today. A second one is planned work
+(docs/16 § Open work) and needs three things in one MR: its credential fields
+on a 1Password item, the matching `secretKey` entries in `externalsecret.yaml`,
+and a `case` arm in `_vpn-sidecar/vpn-sidecar.yaml` exporting that provider's
+`OPENVPN_*_SECRETFILE` paths. The sidecar exits with an error on any other
+`vpn_provider`, so a half-wired provider fails loudly rather than leaking
+traffic. The 1Password fields each provider needs are in docs/21
+§ Prerequisites 1.
 
 ### Control-Server Auth
 
 Gluetun's HTTP control server (loopback `127.0.0.1:8001`) is role-authenticated
 via a `config.toml` rendered by ESO (`gluetun-control-auth` Secret) and mounted
 at `/gluetun-auth/config.toml`. A single `exporter` role grants an **API key**
-to exactly the three routes the `gluetun-exporter` sidecar polls
-(`GET /v1/vpn/status`, `/v1/publicip/ip`, `/v1/openvpn/portforwarded`); every
-other control route returns 401. The exporter authenticates with the same key
+to exactly the four routes the `gluetun-exporter` sidecar polls
+(`GET /v1/vpn/status`, `/v1/publicip/ip`, `/v1/openvpn/portforwarded`,
+`/v1/portforward`); every other control route returns 401. Dropping
+`/v1/portforward` 401s the scrape, so `gluetun_vpn_status` reads 0 and VPNDown
+pages on a healthy tunnel. The exporter authenticates with the same key
 via `GLUETUN_APIKEY` (X-API-Key header), sourced from the same Secret so the two
 can never drift. This both locks the control API down and silences gluetun's
 per-request "route ... is unprotected by default" WARN spam (a **named** role
@@ -213,7 +189,7 @@ task flux:rotate-secret -- downloads   # re-fetch + restart nzbget/qbittorrent
 
 - `namespace.yaml` - Downloads namespace (privileged PSS label for Gluetun CAP_NET_ADMIN)
 - `_nfs-pv/` - shared NFS PV+PVC Kustomize component (TLS mountOptions defined once)
-- `_nfs-pv-arr/` - *arr variant extending `_nfs-pv` (10Gi + actimeo/lookupcache), used by sonarr/radarr/lidarr
+- `_nfs-pv-arr/` - *arr variant extending `_nfs-pv` (10Gi + actimeo/lookupcache/local_lock=all), used by sonarr/radarr/lidarr/prowlarr
 - `_vpn-sidecar/` - shared Gluetun VPN sidecar Kustomize component (killswitch defined once)
 - `storage/` - per-app NFS PV/PVC overlays over `_nfs-pv/` + `storage/shared.yaml` (RWX media PV)
 - `externalsecret.yaml` - ExternalSecrets `vpn-credentials` (provider OpenVPN creds) + `gluetun-control-auth` (control-server `config.toml` roles + exporter apikey), from 1Password via ESO
@@ -225,7 +201,7 @@ task flux:rotate-secret -- downloads   # re-fetch + restart nzbget/qbittorrent
 - `sonarr/`, `radarr/`, `lidarr/` - per-app overlays over the `_arr` component
 - `pulsarr.yaml` - Pulsarr deployment
 - `_ingressroute/`, `ingress-routes/` - shared IngressRoute component + per-app overlays (SSO middleware chain defined once)
-- `ingress-routes-ha-bypass.yaml` - *arr API bypass routes for Home Assistant (docs/24)
+- `ingress-routes-ha-bypass.yaml` - API-path SSO bypass routes for Home Assistant (docs/24)
 - `networkpolicy.yaml` - default-deny ingress + Traefik/observability allows (incl. VPN-exporter scrape)
 - `vpa.yaml` - VPA resources for the stack (docs/33)
 - `kustomization.yaml` - Kustomize configuration

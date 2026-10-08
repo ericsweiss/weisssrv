@@ -1,18 +1,9 @@
-# OAuth2/OIDC providers. client_id values are public identifiers (they appear
-# in every authorize redirect) and are pinned literally; client secrets are
-# injected per provider from the SAME 1Password items the applications consume
-# (see variables.tf), so Terraform and the app can never disagree.
-#
-# Two rules hold for every provider here:
-# - grant_types: authorization_code + refresh_token ONLY. If one client truly
-#   needs more, override it on that provider, never widen the shared list.
-# - every allowed_redirect_uris entry is matching_mode "strict". A "regex" mode
-#   full-matches, and an unescaped `.` matches any character — a plain URL as
-#   the pattern also accepts look-alike registrable domains. (The module rejects
-#   a regex URI with an unescaped dot; strict is what this site uses anyway.)
-#
-# Every provider carries the module's prevent_destroy — a renamed map key plans
-# as destroy+create and breaks that app's login (README § Guardrails).
+# CRITICAL: OAuth2/OIDC providers. client_id values are public and pinned
+# literally; secrets are injected from the 1Password items the apps consume.
+# grant_types stay authorization_code + refresh_token only, overridden per
+# provider if one client needs more. Every allowed_redirect_uris entry is
+# matching_mode "strict": a "regex" URI with an unescaped dot matches any
+# character and accepts look-alike domains. README § Guardrails.
 
 locals {
   oauth2_grant_types = [
@@ -20,23 +11,18 @@ locals {
     "refresh_token",
   ]
 
-  # Server-side ordering of the default scope mappings on every OAuth2 provider.
-  # Pinned here rather than inherited from the module default: the list IS
-  # provider state, and a library default change must not reorder it on a ref
-  # bump. Entries are managed ids; `custom:<key>` names an entry of
-  # local.custom_scope_mappings below.
+  # Server-side ordering of the default scope mappings on every OAuth2 provider,
+  # pinned here because the list is provider state. Entries are managed ids;
+  # `custom:<key>` names an entry of local.custom_scope_mappings below.
   oauth2_scope_mappings = [
     "goauthentik.io/providers/oauth2/scope-openid",
     "goauthentik.io/providers/oauth2/scope-email",
     "goauthentik.io/providers/oauth2/scope-profile",
   ]
 
-  # The ONE user-authored property mapping. authentik's built-in email scope
-  # hardcodes `email_verified: False` and is a managed blueprint object (restored
-  # on upgrade), while Mealie 401s any login without a true claim — so Mealie gets
-  # this replacement (see its scope_mappings below) and every other provider keeps
-  # the built-in. Asserting true is sound here: no self-registration exists, every
-  # account is admin-created.
+  # The one user-authored property mapping. authentik's built-in email scope
+  # hardcodes `email_verified: False` and Mealie 401s without a true claim, so
+  # Mealie alone uses this replacement. Every account here is admin-created.
   custom_scope_mappings = {
     email_verified = {
       name        = "OIDC email (asserted verified)"
@@ -53,9 +39,8 @@ locals {
   }
 
   # Shared provider posture, pinned here so a library default change cannot
-  # rewrite live token/session behaviour on a ref bump. Per-provider entries
-  # override what they must (Bar Assistant's sub_mode; Mealie's scope list).
-  # scope_mappings = null means "use local.oauth2_scope_mappings".
+  # rewrite live token or session behaviour. Per-provider entries override what
+  # they must. scope_mappings = null means use local.oauth2_scope_mappings.
   oauth2_provider_defaults = {
     client_type                = "confidential"
     scope_mappings             = null
@@ -167,17 +152,15 @@ locals {
       ]
     }
 
-    # Hermes dashboard OIDC provider (docs/37 §SSO). Terraform-authored, hence a
-    # human-readable client_id. Bound to the `agent` tile (issuer path
-    # /application/o/agent/) — the sole auth layer; there is no forward-auth
-    # perimeter in front of it.
+    # Hermes dashboard OIDC provider, bound to the `agent` tile (issuer path
+    # /application/o/agent/). It is the sole auth layer; there is no
+    # forward-auth perimeter in front of it (docs/37).
     hermes_dashboard = {
       name      = "Hermes Dashboard"
       client_id = "hermes-dashboard"
 
-      # Both hostnames, like the other dual-host OIDC apps (immich/nextcloud):
-      # the dashboard reconstructs its redirect_uri per-request from Traefik's
-      # X-Forwarded-Host/-Proto (kubernetes/apps/hermes/deployment.yaml).
+      # Both hostnames: the dashboard reconstructs its redirect_uri per request
+      # from Traefik's X-Forwarded-Host and -Proto.
       redirect_uris = [
         {
           matching_mode     = "strict"
@@ -192,17 +175,15 @@ locals {
       ]
     }
 
-    # Homarr dashboard OIDC provider (docs/41). Bound to the `dashboard` tile
-    # (issuer path /application/o/dashboard/, which homarr's AUTH_OIDC_ISSUER
-    # points at). Homarr syncs the `groups` claim to same-named Homarr groups, so
-    # `homarr-admins` both gates the app and grants Homarr admin.
+    # Homarr dashboard OIDC provider, bound to the `dashboard` tile that
+    # AUTH_OIDC_ISSUER points at. Homarr syncs the `groups` claim to same-named
+    # groups, so `homarr-admins` gates the app and grants Homarr admin (docs/41).
     homarr = {
       name      = "Homarr"
       client_id = "homarr"
 
-      # Both hostnames, like the other dual-host OIDC apps (immich/nextcloud/
-      # hermes): NextAuth reconstructs the redirect_uri per-request from Traefik's
-      # forwarded Host (homarr AUTH_TRUST_HOST=true). Callback path is
+      # Both hostnames: NextAuth reconstructs the redirect_uri per request from
+      # Traefik's forwarded Host (AUTH_TRUST_HOST=true). Callback path is
       # /api/auth/callback/oidc.
       redirect_uris = [
         {

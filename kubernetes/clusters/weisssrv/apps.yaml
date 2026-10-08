@@ -1,15 +1,7 @@
 ---
-# Flux Kustomization for application workloads.
-# Reconciles kubernetes/apps/ (one folder per app; see apps/kustomization.yaml).
-#
-# dependsOn infrastructure-configs (sources → crds → controllers → configs), so
-# the monitoring.coreos.com CRDs are two stages old by the time an app renders a
-# ServiceMonitor/PodMonitor. Deliberately NOT dependent on observability health:
-# a failed observability chart upgrade must not freeze every business app.
-#
-# optional: false on both — cluster-versions and cluster-config come from
-# infrastructure-sources, so a missing ConfigMap here is a real fault and must
-# fail loudly rather than render empty chart/image versions or empty hostnames.
+# Flux Kustomization: application workloads (./kubernetes/apps, one folder per app).
+# dependsOn infrastructure-configs, deliberately NOT observability: a failed
+# observability chart upgrade must not freeze every business app.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:

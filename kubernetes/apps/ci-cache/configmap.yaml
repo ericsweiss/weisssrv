@@ -1,9 +1,6 @@
 ---
-# Garage config. Every SECRET (rpc_secret, admin/metrics tokens, the default
-# S3 key pair) arrives via GARAGE_* env from the ExternalSecret — this file
-# holds only topology. replication_factor 1 + sqlite: this is a CACHE (the
-# runners re-derive anything lost), same durability posture as
-# registry-cache's emptyDir blob store.
+# Garage topology only - every secret (rpc_secret, admin/metrics tokens, the
+# default S3 key pair) arrives via GARAGE_* env from the ExternalSecret.
 apiVersion: v1
 kind: ConfigMap
 metadata:

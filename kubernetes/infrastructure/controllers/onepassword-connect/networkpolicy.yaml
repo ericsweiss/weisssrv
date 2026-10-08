@@ -1,8 +1,7 @@
 ---
-# Restrict ingress to Connect API (port 8080) to pods in this namespace only.
-# ESO controller pods run in external-secrets and are the sole consumer.
-# Kubelet health probes (liveness/readiness) originate from the host network
-# and are not subject to NetworkPolicy.
+# Ingress to the Connect API is limited to pods in this namespace; the ESO
+# controller is the sole in-cluster consumer. Kubelet probes come from the host
+# network and are not subject to NetworkPolicy.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -23,10 +22,9 @@ spec:
           port: 8080
         - protocol: TCP
           port: 8081
-    # Traefik fronts Connect at connect.esweiss.com (internal-only via
-    # the lan-tailscale-strict middleware) so bare-metal Proxmox hosts can
-    # fetch ZFS-encryption passphrases at boot. Only the API port (8080)
-    # is exposed; the sync sidecar (8081) stays in-namespace.
+    # Traefik fronts Connect at connect.esweiss.com, internal-only, so Proxmox
+    # hosts can fetch ZFS-encryption passphrases at boot. Only the API port is
+    # exposed; the sync sidecar stays in-namespace.
     - from:
         - namespaceSelector:
             matchLabels:

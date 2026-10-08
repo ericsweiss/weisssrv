@@ -1,6 +1,8 @@
 # Multi-Node Expansion and Proxmox HA Guide
 
-This document covers the architecture and procedures for the 6-node Proxmox HA cluster with k3s running across all hosts. It includes reference material for storage configuration, host setup procedures, and HA management.
+This document covers the architecture and procedures for the 6-node Proxmox HA cluster with k3s
+running across all hosts. It includes reference material for storage configuration, host setup
+procedures, and HA management.
 
 ## Current State
 
@@ -11,7 +13,10 @@ topology (IPs, VMIDs, placement, roles) lives in `docs/01-overview.md`;
 
 **Infrastructure Services (HA-managed)**:
 
-Each service has a **home node** (node-affinity priority 2 — it fails back there when the home is available) and fallback nodes (priority 1); see the per-service `proxmox_ha_rules` in `group_vars/all.yml` for the current homes. To check actual runtime locations, run `task proxmox:ha-status` or `ha-manager status` on any cluster node.
+Each service has a **home node** (node-affinity priority 2 — it fails back there when the home is
+available) and fallback nodes (priority 1); see the per-service `proxmox_ha_rules` in
+`group_vars/all.yml` for the current homes. To check actual runtime locations, run `task
+proxmox:ha-status` or `ha-manager status` on any cluster node.
 
 | Service | VMID | Type | HA State | Eligible Hosts (have replicated data) |
 |---------|------|------|----------|---------------------------------------|
@@ -48,41 +53,16 @@ radius of a pve-nas-01 outage. `docs/01-overview.md` is canonical for topology.
 
 ### Design Principles
 
-- **Servers (.22X range)**: Control plane nodes in 10.0.10.220/29, VMIDs match last octet
-- **Agents (.20X range)**: Worker nodes in 10.0.10.200/29, VMIDs match last octet
-- **Proxmox hosts (.10X range)**: Physical hosts use 10.0.10.102-109
+- **Servers**: control-plane nodes take the server band, VMIDs match the last octet
+- **Agents**: worker nodes take the agent band, VMIDs match the last octet
+- **Proxmox hosts**: physical hosts take the host band
+- **Reserved**: .224/.225 and VMIDs 224/225 are held for a 5-node control plane
 
-### Proxmox Host Allocation
-
-| Host | IP | Status | Hardware | K3s VMs |
-|------|-----|--------|----------|---------|
-| pve-nas-01 | .102 | Active | NAS + Storage | srv-nas-01 (.222), agt-nas-01 (.202) |
-| pve-laptop-01 | .103 | Active | MSI GS60 2QD | srv-laptop-01 (.223), agt-laptop-01 (.203) |
-| pve-opt-01 | .104 | Active | Dell OptiPlex 780 | agt-opt-01 (.204) -- agent only |
-| pve-opt-02 | .105 | Active | Dell OptiPlex 780 | agt-opt-02 (.205) -- agent only |
-| pve-opt-03 | .106 | Active | Dell OptiPlex 780 | agt-opt-03 (.206) |
-| pve-prec-01 | .107 | Active | Dell Precision 3630 | srv-prec-01 (.227), agt-prec-01 (.207) |
-
-### K3s Server Nodes (.22X -- Control Plane)
-
-| Node | IP | VMID | Host | Storage | Status |
-|------|-----|------|------|---------|--------|
-| k3s-srv-nas-01 | .222 | 222 | pve-nas-01 | local-lvm | Active |
-| k3s-srv-laptop-01 | .223 | 223 | pve-laptop-01 | local-ssd | Active |
-| k3s-srv-prec-01 | .227 | 227 | pve-prec-01 | local-ssd | Active |
-| (reserved) | .224 | 224 | - | - | Reserved for 5-node HA |
-| (reserved) | .225 | 225 | - | - | Reserved for 5-node HA |
-
-### K3s Agent Nodes (.20X -- Workers)
-
-| Node | IP | VMID | Host | Role | Status |
-|------|-----|------|------|------|--------|
-| k3s-agt-nas-01 | .202 | 202 | pve-nas-01 | NAS workloads | Active |
-| k3s-agt-laptop-01 | .203 | 203 | pve-laptop-01 | Ingress + general | Active |
-| k3s-agt-opt-01 | .204 | 204 | pve-opt-01 | Ingress + general | Active |
-| k3s-agt-opt-02 | .205 | 205 | pve-opt-02 | Ingress + general | Active |
-| k3s-agt-opt-03 | .206 | 206 | pve-opt-03 | Ingress + general | Active |
-| k3s-agt-prec-01 | .207 | 207 | pve-prec-01 | General + compute | Active |
+The bands themselves are spelled once, in `docs/01-overview.md`
+§ IP Allocation Strategy. Current allocation: `docs/01-overview.md`
+§ Network Topology (canonical) and `ansible/inventories/prod/hosts.yml`
+(machine-readable; per-node `proxmox_storage`, VMID and host placement live
+there).
 
 ---
 
@@ -96,11 +76,16 @@ All labels use the `esweiss.com/` prefix:
 |-------|---------|-------|
 | `esweiss.com/nas=true` | Fast NAS storage access (local NFS) | k3s-agt-nas-01 |
 | `esweiss.com/general=true` | General workloads | All agents |
-| `esweiss.com/ingress=true` | Ingress controller eligible | k3s-agt-laptop-01, k3s-agt-opt-01, k3s-agt-opt-02, k3s-agt-opt-03, k3s-agt-prec-01 |
+| `esweiss.com/ingress=true` | **Required.** Hard `nodeSelector` on both Traefik (`controllers/traefik/release.yaml`) and the MetalLB speaker DaemonSet (`controllers/metallb/release.yaml`); drop or rename it and Traefik stays `Pending` forever while the speaker goes to `desiredNumberScheduled: 0` and every LoadBalancer Service still shows an EXTERNAL-IP nothing announces | k3s-agt-laptop-01, k3s-agt-opt-01, k3s-agt-opt-02, k3s-agt-opt-03, k3s-agt-prec-01 |
 | `esweiss.com/compute=true` | High-computation tasks (ML, transcoding) | k3s-agt-prec-01 |
 | `esweiss.com/control-plane=true` | Informational: control plane node | All servers |
 | `esweiss.com/cpu=modern\|legacy` | CPU instruction-set tier. `legacy` = the Core 2 Quad OptiPlex agents, which lack the AVX/SSE4 baseline several Go/Bun/Rust images assume — anything that SIGILLs there selects `modern` (docs/33) | modern: k3s-agt-nas-01, -laptop-01, -prec-01; legacy: the three k3s-agt-opt-* |
 | `esweiss.com/gpu=nvidia` | Node with the VFIO-passed GTX 1660 Ti; gates the device plugin, DCGM and Hindsight's llama.cpp (docs/43) | k3s-agt-prec-01 |
+
+At least two nodes must carry `esweiss.com/ingress=true`. Traefik runs two
+replicas behind a `minAvailable: 1` PodDisruptionBudget, so with a single
+labeled node a drain evicts the first replica and then blocks. Drain mechanics
+are in [docs/12-runbooks.md](12-runbooks.md).
 
 ### Taints
 
@@ -113,7 +98,9 @@ All labels use the `esweiss.com/` prefix:
 
 ### Using the "compute" Label
 
-The `esweiss.com/compute=true` label on k3s-agt-prec-01 is for workloads that benefit from higher CPU/RAM. Because the node has a `PreferNoSchedule` taint, compute workloads should include a toleration:
+The `esweiss.com/compute=true` label on k3s-agt-prec-01 is for workloads that benefit from higher
+CPU/RAM. Because the node has a `PreferNoSchedule` taint, compute workloads should include a
+toleration:
 
 ```yaml
 # Hard requirement: must run on compute node
@@ -151,9 +138,12 @@ spec:
           effect: PreferNoSchedule
 ```
 
-**Candidate compute workloads**: Immich ML/face recognition, video transcoding jobs, database-intensive operations, CI/CD runners, batch processing, ML inference.
+**Candidate compute workloads**: Immich ML/face recognition, video transcoding jobs,
+database-intensive operations, CI/CD runners, batch processing, ML inference.
 
-General workloads without the toleration will still schedule on prec-01 because the taint is `PreferNoSchedule` (soft), not `NoSchedule` (hard). The scheduler will prefer other nodes first but will use prec-01 as overflow when other agents are full.
+General workloads without the toleration will still schedule on prec-01 because the taint is
+`PreferNoSchedule` (soft), not `NoSchedule` (hard). The scheduler will prefer other nodes first but
+will use prec-01 as overflow when other agents are full.
 
 ---
 
@@ -161,28 +151,36 @@ General workloads without the toleration will still schedule on prec-01 because 
 
 **Status**: **Complete** - All compute nodes now have local-ssd configured.
 
-This section documents the setup of a 1TB SSD with a `local-ssd` ZFS pool, which provides snapshots, compression, and enables Proxmox HA replication. Use this as a reference when adding new compute nodes.
+This section documents the setup of a 1TB SSD with a `local-ssd` ZFS pool, which provides snapshots,
+compression, and enables Proxmox HA replication. Use this as a reference when adding new compute
+nodes.
 
 ### Storage Strategy for Multi-Node Setup
 
-**Automated Storage Selection**: The `proxmox_vm` and `proxmox_lxc` Ansible roles now automatically select storage based on the Proxmox host's role:
+**Automated Storage Selection**: The `proxmox_vm` and `proxmox_lxc` Ansible roles now automatically
+select storage based on the Proxmox host's role:
 
 | Proxmox Host Role | Default Storage | Details |
 |-------------------|-----------------|---------|
 | `nas` (pve-nas-01) | `ssd` | 3x 4TB Samsung SSDs (raidz1) - App data and databases |
 | `compute` / `general` (all others) | `local-ssd` | 1TB Samsung 870 EVO per host - VM/container workloads |
 
-Storage can be overridden per-VM/container by setting `proxmox_storage` or `proxmox_lxc_storage` in the inventory.
+Storage can be overridden per-VM/container by setting `proxmox_storage` or `proxmox_lxc_storage` in
+the inventory.
 
 **Why local-ssd for compute nodes?**
 1. **Proxmox HA**: ZFS pools required on all nodes for replication and failover
 2. **Stateless workloads**: K3s agents, DNS, SMTP have redundancy via k8s or multiple instances
 3. **ZFS benefits**: Compression (lz4), snapshots, checksumming, atomic operations
-4. **lz4 for VMs**: Low-latency compression (~10x faster decompression than zstd, near-zero CPU overhead)
+4. **lz4 for VMs**: Low-latency compression (~10x faster decompression than zstd, near-zero CPU
+   overhead)
 
 **Current Storage Layout**:
-- pve-nas-01: `local-lvm` holds the Plex container root and the k3s VM roots (server/agent); the `ssd` pool holds the GitLab VM root, the k3s-agt-nas-01 passthrough zvols (postgres/mealie/prometheus/loki), and the Plex `/config` bind mount
-- All compute nodes (pve-laptop-01, pve-opt-01, pve-opt-02, pve-opt-03, pve-prec-01): Use `local-ssd` for all VM/container workloads
+- pve-nas-01: `local-lvm` holds the k3s VM roots (server/agent); the `ssd` pool holds the Plex and
+  immich-ml container roots, the GitLab VM root, the k3s-agt-nas-01 passthrough zvols
+  (postgres/mealie/prometheus/loki), and the Plex `/config` bind mount
+- All compute nodes (pve-laptop-01, pve-opt-01, pve-opt-02, pve-opt-03, pve-prec-01): Use
+  `local-ssd` for all VM/container workloads
 
 ### Prerequisites
 
@@ -204,11 +202,13 @@ ls -la /dev/disk/by-id/ | grep -i samsung
 # Example output: ata-Samsung_SSD_870_EVO_1TB_S6PENX0T123456A -> ../../sdb
 ```
 
-**IMPORTANT**: Note the full `/dev/disk/by-id/` path. Never use `/dev/sdX` names directly -- they can change between reboots.
+**IMPORTANT**: Note the full `/dev/disk/by-id/` path. Never use `/dev/sdX` names directly -- they
+can change between reboots.
 
 ### Step 2: Create the ZFS Pool
 
-See `docs/06-zfs.md` for complete details. **Key difference from NAS pools**: Use `lz4` compression instead of `zstd` for VM workloads (lower latency).
+See `docs/06-zfs.md` for complete details. **Key difference from NAS pools**: Use `lz4` compression
+instead of `zstd` for VM workloads (lower latency).
 
 ```bash
 # Create local-ssd pool (single device, no redundancy)
@@ -237,7 +237,9 @@ sudo zfs list local-ssd
 - `autotrim=on`: SSD longevity and performance
 - `xattr=sa`: Extended attributes in system attribute table (shows as "on" in ZFS 2.3+)
 
-**WARNING**: Single device pool has no redundancy. This is acceptable for compute nodes because VM data is replicated via Proxmox HA and k3s workloads are stateless or use NFS-backed PVs from the NAS.
+**WARNING**: Single device pool has no redundancy. This is acceptable for compute nodes because VM
+data is replicated via Proxmox HA and k3s workloads are stateless or use NFS-backed PVs from the
+NAS.
 
 ### Step 3: Register as Proxmox Storage
 
@@ -249,7 +251,8 @@ sudo pvesm add zfspool local-ssd --pool local-ssd --content images,rootdir
 sudo pvesm status
 ```
 
-You can also verify in the Proxmox web UI: **Datacenter > Storage** -- `local-ssd` should appear with content types "Disk image, Container".
+You can also verify in the Proxmox web UI: **Datacenter > Storage** -- `local-ssd` should appear
+with content types "Disk image, Container".
 
 ### Step 4: Test the Pool
 
@@ -267,34 +270,28 @@ sudo rm /mnt/local-ssd/testfile
 sudo zfs get compression,compressratio local-ssd
 ```
 
-### Step 5: Migrate Existing VMs (Optional)
-
-If you want to move k3s-agt-opt-03 from `local-lvm` to `local-ssd`:
+### Step 5: Move an Existing Guest onto local-ssd (Optional)
 
 ```bash
 # From the Proxmox web UI:
-# 1. Select VM 206 (k3s-agt-opt-03)
+# 1. Select the guest
 # 2. Hardware > Hard Disk > Disk Action > Move Storage
 # 3. Target Storage: local-ssd
 # 4. Check "Delete Source"
 
 # Or via CLI:
-sudo qm move-disk 206 scsi0 local-ssd --delete
+sudo qm move-disk <vmid> scsi0 local-ssd --delete
 ```
 
-After migration, update the inventory to reflect the new storage:
-
-```yaml
-# ansible/inventories/prod/hosts.yml
-k3s-agt-opt-03:
-  proxmox_storage: local-ssd  # was: local-lvm
-```
+After the move, set `proxmox_storage: local-ssd` on that guest's block in
+`ansible/inventories/prod/hosts.yml`.
 
 ---
 
 ## Section 2: Setting Up Proxmox Hosts (Reference)
 
-This section documents the procedure for bringing a host from bare hardware to a fully integrated Proxmox cluster member with k3s nodes. Use this as a reference when adding new hosts in the future.
+This section documents the procedure for bringing a host from bare hardware to a fully integrated
+Proxmox cluster member with k3s nodes. Use this as a reference when adding new hosts in the future.
 
 ### General Procedure (All Hosts)
 
@@ -339,7 +336,8 @@ sudo pvesm status
 
 #### Step 3: Join the Proxmox Cluster
 
-**IMPORTANT**: Join the cluster BEFORE deploying any VMs. Cluster join requires a fresh node with no VMs/containers.
+**IMPORTANT**: Join the cluster BEFORE deploying any VMs. Cluster join requires a fresh node with no
+VMs/containers.
 
 ```bash
 # On the NEW node, join the existing cluster
@@ -370,13 +368,17 @@ The new node should appear in the Proxmox web UI under **Datacenter > Cluster**.
 # 1. Move the host from proxmox_unmanaged to proxmox group in hosts.yml
 # Edit ansible/inventories/prod/hosts.yml
 
-# 2. Deploy base configuration
+# 2. Regenerate the files derived from hosts.yml and commit them alongside
+task hosts:sync                     # scripts/hosts.env
+task flux:sync-host-log-staleness   # loki/host-log-staleness.yaml
+
+# 3. Deploy base configuration
 task infra:base -- --limit pve-laptop-01
 
-# 3. Deploy full stack (firewall, tailscale, etc.)
+# 4. Deploy full stack (firewall, tailscale, etc.)
 task infra:deploy -- --limit pve-laptop-01
 
-# 4. Verify
+# 5. Verify
 task ansible:ping
 ssh eric@<host-ip> "systemctl status tailscaled"
 ```
@@ -386,13 +388,19 @@ ssh eric@<host-ip> "systemctl status tailscaled"
 ```bash
 # 1. Uncomment the k3s nodes in hosts.yml for this host
 
-# 2. Provision VMs
+# 2. Regenerate the files derived from hosts.yml and commit them alongside.
+#    Without the second one the new node ships no HostLogShippingStale rule and
+#    the lint stage reds on the stale generated file.
+task hosts:sync
+task flux:sync-host-log-staleness
+
+# 3. Provision VMs
 task k3s:provision-vms -- --limit k3s-srv-laptop-01,k3s-agt-laptop-01
 
-# 3. Deploy k3s (joins existing cluster)
+# 4. Deploy k3s (joins existing cluster)
 task k3s:deploy -- --limit k3s-srv-laptop-01,k3s-agt-laptop-01
 
-# 4. Verify
+# 5. Verify
 kubectl get nodes
 kubectl get nodes --show-labels
 kubectl describe node k3s-agt-laptop-01 | grep -A 5 Taints
@@ -407,8 +415,8 @@ task k3s:status
 # Verify the new node is scheduling pods
 kubectl get pods -A -o wide | grep <new-node>
 
-# Check etcd health (if server node was added)
-kubectl get pods -n kube-system -l component=etcd
+# Check embedded etcd health (k3s runs etcd in-process; there is no etcd pod)
+kubectl get --raw /healthz/etcd   # expects: ok — anything else means etcd is unhealthy
 
 # Test API VIP is still working
 curl -sk https://10.0.10.161:6443/healthz
@@ -433,7 +441,8 @@ curl -sk https://10.0.10.161:6443/healthz
 - **IPs**: .104 and .105
 - **K3s nodes**: Agent only (k3s-agt-opt-01 at .204/204, k3s-agt-opt-02 at .205/205)
 - **Storage**: 1TB SSD as `local-ssd`
-- **Agent role**: General workloads (no ingress, no NAS, no compute)
+- **Agent role**: Ingress + general (`esweiss.com/ingress=true` label and the matching
+  `PreferNoSchedule` taint)
 - **Notes**:
   - No server VM on these hosts -- too resource-constrained for etcd overhead
   - 16GB DDR3 RAM limits VM sizes; allocate conservatively
@@ -445,10 +454,12 @@ curl -sk https://10.0.10.161:6443/healthz
 - **K3s nodes**: k3s-srv-prec-01 (.227/227) + k3s-agt-prec-01 (.207/207)
 - **Storage**: 1TB Samsung 870 EVO as `local-ssd`
 - **Agent role**: General + compute with `PreferNoSchedule` taint
-- **Agent specs**: see the `k3s-agt-prec-01` block in `hosts.yml` — the source of truth (its memory is a hard reservation for the GPU workload; docs/43)
+- **Agent specs**: see the `k3s-agt-prec-01` block in `hosts.yml` — the source of truth (its memory
+  is a hard reservation for the GPU workload; docs/43)
 - **Notes**:
   - Workstation-class hardware with more capable CPU than the OptiPlex nodes
-  - Good candidate for GPU passthrough if the Precision has a discrete GPU
+  - The GTX 1660 Ti is VFIO-passed to k3s-agt-prec-01 (`esweiss.com/gpu=nvidia`) — see
+    [docs/43](43-gpu-passthrough.md)
   - The compute taint means general workloads will prefer other agents first
 
 ### Expansion History
@@ -463,7 +474,8 @@ The cluster was expanded in the following order (all complete):
 
 **Current state**: 3 etcd servers (tolerates 1 server failure), 6 agents for workloads.
 
-**Future expansion**: Consider adding 2 more servers at .224/.225 for 5-node HA (tolerates 2 server failures).
+**Future expansion**: Consider adding 2 more servers at .224/.225 for 5-node HA (tolerates 2 server
+failures).
 
 ---
 
@@ -471,46 +483,62 @@ The cluster was expanded in the following order (all complete):
 
 **Status**: **Complete** - HA is fully configured and active on the 6-node cluster.
 
-Proxmox HA (High Availability) automatically restarts VMs/CTs on surviving nodes when a host fails. This section documents the HA architecture and procedures for reference.
+Proxmox HA (High Availability) automatically restarts VMs/CTs on surviving nodes when a host fails.
+This section documents the HA architecture and procedures for reference.
 
 ### Prerequisites
 
-- **Minimum 3 Proxmox hosts** in the cluster (for quorum). With 2 hosts, a single failure loses quorum and HA cannot function.
+- **Minimum 3 Proxmox hosts** in the cluster (for quorum). With 2 hosts, a single failure loses
+  quorum and HA cannot function.
 - **Shared or replicated storage**: VMs must be on storage accessible from multiple nodes. Options:
   - ZFS replication between `local-ssd` pools (preferred for this homelab)
   - Shared NFS from pve-nas-01 (already available but NAS is a single point of failure)
   - Ceph (overkill for this setup)
-- **Fencing configured**: Proxmox uses corosync for fencing. With 3+ nodes, the surviving majority forms quorum and can fence the failed node.
+- **Fencing configured**: Proxmox uses corosync for fencing. With 3+ nodes, the surviving majority
+  forms quorum and can fence the failed node.
 
 ### Important Limitation: LXC Containers and HA
 
 **Proxmox HA works with VMs, but LXC containers require special consideration.**
 
 LXC containers CAN be configured as HA resources in Proxmox, but with significant limitations:
-- **Live migration is not supported** for LXC -- only offline migration (stop on source, start on target)
-- LXC migration requires the container rootfs to be on **shared storage** (NFS, Ceph) or **ZFS replication** must be configured
-- During HA failover, LXC containers are stopped on the failed node and started on the surviving node, resulting in brief downtime
+- **Live migration is not supported** for LXC -- only offline migration (stop on source, start on
+  target)
+- LXC migration requires the container rootfs to be on **shared storage** (NFS, Ceph) or **ZFS
+  replication** must be configured
+- During HA failover, LXC containers are stopped on the failed node and started on the surviving
+  node, resulting in brief downtime
 
-For this homelab, the brief downtime of LXC migration during failover is acceptable. The services (DNS, SMTP, Plex) are not latency-critical enough to require live migration, and redundancy is handled at the application layer (dns-01/dns-02, clients retry SMTP).
+For this homelab, the brief downtime of LXC migration during failover is acceptable. The services
+(DNS, SMTP, Plex) are not latency-critical enough to require live migration, and redundancy is
+handled at the application layer (dns-01/dns-02, clients retry SMTP).
 
-**Decision**: Keep dns-01, dns-02, smtp-relay, and plex as LXC containers. Converting to VMs adds complexity (higher resource overhead, loss of bind mount simplicity for Plex) without meaningful benefit since:
+**Decision**: Keep dns-01, dns-02, smtp-relay, and plex as LXC containers. Converting to VMs adds
+complexity (higher resource overhead, loss of bind mount simplicity for Plex) without meaningful
+benefit since:
 - DNS already has 2 instances (dns-01 + dns-02) -- application-level redundancy
 - SMTP relay has retry queues built into the protocol
 - Plex tolerates brief outages (clients reconnect automatically)
 
-If you later decide VMs are needed (e.g., for live migration), the conversion procedure is in the appendix at the end of this section.
+If you later decide VMs are needed (e.g., for live migration), the conversion procedure is in the
+appendix at the end of this section.
 
 ### Step 1: Configure ZFS Replication
 
-ZFS replication copies VM/CT disk data between hosts, enabling HA failover to a node that already has the data.
+ZFS replication copies VM/CT disk data between hosts, enabling HA failover to a node that already
+has the data.
 
 **Best Practice: Multi-Target Replication**
 
-Proxmox supports replicating a VM/CT to MULTIPLE target nodes (but not twice to the same node). This allows services to failover to ANY available node, not just a single backup. This is the recommended approach for true high availability.
+Proxmox supports replicating a VM/CT to MULTIPLE target nodes (but not twice to the same node). This
+allows services to failover to ANY available node, not just a single backup. This is the recommended
+approach for true high availability.
 
 **Current Configuration** (managed by Ansible):
 
-Services are distributed across 5 nodes with `local-ssd` storage (excluding pve-nas-01 which has no local-ssd). Services have been migrated OFF pve-nas-01 to nodes with local-ssd pools to enable HA replication.
+Services are distributed across 5 nodes with `local-ssd` storage (excluding pve-nas-01 which has no
+local-ssd). Services have been migrated OFF pve-nas-01 to nodes with local-ssd pools to enable HA
+replication.
 
 | Service | VMID | Primary Node | Replication Targets |
 |---------|------|---------------------|---------------------|
@@ -525,7 +553,8 @@ A service's primary node is one unit spanning three places:
 `hosts.yml`. All three live in `ansible/inventories/prod/` and are the source of
 truth — move them together or the role cannot manage the replication jobs.
 
-Each service replicates every 15 minutes to ALL 4 other nodes. When any node fails, HA can restart the service on ANY surviving node that has replicated data.
+Each service replicates every 15 minutes to ALL 4 other nodes. When any node fails, HA can restart
+the service on ANY surviving node that has replicated data.
 
 **Why pve-nas-01 is excluded**:
 - No `local-ssd` storage (services were migrated OFF to avoid I/O contention with NAS workloads)
@@ -574,7 +603,8 @@ sudo journalctl -u pvesr -n 50
 
 ### Step 2: Enable HA on the Cluster
 
-HA is enabled at the Proxmox cluster level and requires no additional software -- it is built into Proxmox VE.
+HA is enabled at the Proxmox cluster level and requires no additional software -- it is built into
+Proxmox VE.
 
 ```bash
 # Verify cluster has quorum (need 3+ nodes)
@@ -649,7 +679,8 @@ sudo ha-manager rules set node-affinity affinity-smtp-relay \
 
 ### Step 4: Add HA Resources
 
-Configure each VM/CT as an HA-managed resource. When using node-affinity rules (Step 3), you don't need to specify a `--group` -- the rules control placement.
+Configure each VM/CT as an HA-managed resource. When using node-affinity rules (Step 3), you don't
+need to specify a `--group` -- the rules control placement.
 
 **Current Configuration** (managed by Ansible):
 
@@ -698,30 +729,40 @@ sudo ha-manager set ct:150 --state started
 ```
 
 **Parameter explanation**:
-- `--state started` -- HA manager ensures this resource is running. If it stops unexpectedly, HA restarts it.
+- `--state started` -- HA manager ensures this resource is running. If it stops unexpectedly, HA
+  restarts it.
 - `ct:150` vs `vm:154` -- Use `ct:` prefix for LXC containers, `vm:` for VMs.
 
 **Resources NOT to add to HA**:
 - `plex` (VMID 152) -- Depends on NAS bind mounts, cannot run elsewhere
 - `k3s-agt-nas-01` (VMID 202) -- Depends on NFS from NAS, pointless to migrate
-- k3s agents on other nodes -- k3s handles agent failure at the application layer; pods reschedule automatically
+- k3s agents on other nodes -- k3s handles agent failure at the application layer; pods reschedule
+  automatically
 
 ### Step 5: Floating VIPs
 
-The key requirement for HA is that services maintain their IP addresses during migration. Proxmox handles this automatically -- when a VM/CT is migrated to another node, it retains its network configuration including its static IP.
+The key requirement for HA is that services maintain their IP addresses during migration. Proxmox
+handles this automatically -- when a VM/CT is migrated to another node, it retains its network
+configuration including its static IP.
 
 **How it works**:
 - Each VM/CT has its IP configured via cloud-init (VMs) or static config (LXCs)
 - The IP is part of the VM/CT configuration, not the host configuration
 - When Proxmox migrates the resource, it starts on the new host with the same network config
 - The LAN switch learns the new MAC-to-port mapping via gratuitous ARP
-- Clients see a brief outage (seconds for VMs, potentially longer for LXC offline migration) then reconnect to the same IP
+- Clients see a brief outage (seconds for VMs, potentially longer for LXC offline migration) then
+  reconnect to the same IP
 
-**No additional VIP configuration is needed.** The IPs .150, .151, .154, .160 will follow their respective containers/VMs to whichever host they are running on.
+**No additional VIP configuration is needed.** The IPs .150, .151, .154, .160 will follow their
+respective containers/VMs to whichever host they are running on.
 
-**For kube-vip (.161)**: The k3s API VIP is managed by kube-vip inside the cluster, not by Proxmox HA. If a k3s server node fails, kube-vip reassigns the VIP to another server node. This is independent of Proxmox HA.
+**For kube-vip (.161)**: The k3s API VIP is managed by kube-vip inside the cluster, not by Proxmox
+HA. If a k3s server node fails, kube-vip reassigns the VIP to another server node. This is
+independent of Proxmox HA.
 
-**For MetalLB (.100, .101)**: MetalLB VIPs are managed by MetalLB inside k3s. If an agent node running the MetalLB speaker fails, MetalLB moves the VIP to another agent. This is also independent of Proxmox HA.
+**For MetalLB (.100, .101)**: MetalLB VIPs are managed by MetalLB inside k3s. If an agent node
+running the MetalLB speaker fails, MetalLB moves the VIP to another agent. This is also independent
+of Proxmox HA.
 
 ### Step 6: Testing HA Failover
 
@@ -800,7 +841,8 @@ sudo systemctl start corosync pve-cluster
 ### Firewall Considerations
 
 When VMs/CTs migrate between hosts, firewall rules follow them because:
-- Guest firewall rules are stored in `/etc/pve/firewall/<VMID>.fw` on the cluster filesystem (pmxcfs)
+- Guest firewall rules are stored in `/etc/pve/firewall/<VMID>.fw` on the cluster filesystem
+  (pmxcfs)
 - IPSets are stored in `/etc/pve/firewall/cluster.fw`
 - Both are shared across all cluster nodes automatically
 
@@ -809,11 +851,13 @@ When VMs/CTs migrate between hosts, firewall rules follow them because:
 However, ensure that:
 - All potential target hosts have the bridge interface (`vmbr0`) configured
 - The hosts are on the same broadcast domain (same switch/VLAN)
-- NFS client access from the new host IPs is in the export list (already handled by CIDR subnets .102-.107)
+- NFS client access from the new host IPs is in the export list (already handled by CIDR subnets
+  .102-.107)
 
 ### Appendix: Converting LXC to VM (If Needed Later)
 
-If you decide to convert an LXC container to a VM for live migration support, here is the procedure. **This is NOT recommended for the current setup** -- LXC with offline HA migration is sufficient.
+If you decide to convert an LXC container to a VM for live migration support, here is the procedure.
+**This is NOT recommended for the current setup** -- LXC with offline HA migration is sufficient.
 
 ```bash
 # 1. Stop the container
@@ -897,6 +941,9 @@ Internet
 - `docs/17-disaster-recovery.md` -- Storage bootstrap and disaster recovery
 - `docs/18-bootstrap-new-systems.md` -- Bootstrapping new LXC/VM systems
 - `docs/19-k3s-deployment.md` -- K3s cluster deployment workflow
-- [Proxmox HA Manager](https://pve.proxmox.com/wiki/High_Availability) -- Official Proxmox HA documentation
-- [Proxmox ZFS Replication](https://pve.proxmox.com/wiki/Storage_Replication) -- ZFS replication between cluster nodes
-- [Proxmox Cluster Manager](https://pve.proxmox.com/wiki/Cluster_Manager) -- Corosync and cluster setup
+- [Proxmox HA Manager](https://pve.proxmox.com/wiki/High_Availability) -- Official Proxmox HA
+  documentation
+- [Proxmox ZFS Replication](https://pve.proxmox.com/wiki/Storage_Replication) -- ZFS replication
+  between cluster nodes
+- [Proxmox Cluster Manager](https://pve.proxmox.com/wiki/Cluster_Manager) -- Corosync and cluster
+  setup

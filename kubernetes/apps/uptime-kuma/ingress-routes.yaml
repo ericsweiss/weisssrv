@@ -1,45 +1,7 @@
 ---
-# Uptime Kuma — three routes across two hostnames, split by AUTHENTICATION, not
-# by host (docs/45 § Routing split):
-#
-#   * the PUBLIC status-page surface (read-only: the rendered page, its JSON
-#     heartbeat/incident endpoints, the SPA bundle and the uploaded logo) is
-#     served unauthenticated on BOTH hostnames;
-#   * EVERYTHING ELSE — the dashboard, the socket.io control channel Kuma logs
-#     in over, /metrics — is admin surface and exists ONLY on the internal
-#     hostname, behind lan-tailscale-only + Authentik forward-auth.
-#
-# So the external hostname has no catch-all: a request outside the allowlist
-# below (e.g. https://status.ericsweiss.com/dashboard) matches no router and
-# Traefik answers 404. That is the fence — the admin UI is never published to
-# the internet, and Kuma has no OIDC support of its own to fall back on
-# (single local account; forward-auth IS its identity gate, same as the Traefik
-# dashboard).
-#
-# TWO status pages exist (docs/45 § Status pages), and the split is enforced
-# HERE, not in Kuma: page slugs are unauthenticated by construction, so the
-# private page is private only because the external router never matches its
-# paths.
-#
-#   services  — public services only, domain-mapped to the external host so
-#               `/` serves it directly (no redirect)
-#   internal  — public + private services, domain-mapped to the internal host;
-#               must NEVER be reachable externally (it names internal-only
-#               services), which is why the external allowlist below is
-#               SLUG-FENCED to `services` rather than a /status/ prefix
-#
-# The external path allowlist is Kuma 2.x's status-page surface for ONE slug,
-# verified against server/routers/status-page-router.js + api-router.js:
-#   /status/services[/rss]                    rendered page (canonical URL)
-#   /api/status-page/services[/*]             page config, manifest.json
-#   /api/status-page/heartbeat/services       heartbeat JSON (slug LAST here)
-#   /api/entry-page                           what `/` calls as fallback
-#   /assets, the icon/manifest/robots files   the Vite bundle served from dist/
-#   /upload/*                                 status-page logo uploads
-#   Path(`/`)                                 the domain-mapped page itself
-# /api/badge/<id>/* is deliberately NOT here: it answers for ANY monitor id.
-# A new status page is EXTERNAL-INVISIBLE until its slug is added here — that
-# is the safe default, not an oversight.
+# Split by AUTHENTICATION, not by host: the public status-page surface is
+# unauthenticated on both names; dashboard, socket.io and /metrics exist only on the
+# internal name behind lan-tailscale-only + forward-auth. No external catch-all (docs/45).
 
 # External - status.ericsweiss.com (public status page only, slug-fenced)
 apiVersion: traefik.io/v1alpha1
@@ -56,6 +18,8 @@ spec:
   entryPoints:
     - websecure
   routes:
+    # Slug-fenced allowlist: a new status page is external-invisible until its
+    # slug is added. /api/badge/* stays out - it answers for ANY monitor id.
     - match: >-
         Host(`status.${cluster_external_domain}`) && (Path(`/`)
         || Path(`/status/services`) || PathPrefix(`/status/services/`)
@@ -80,13 +44,9 @@ spec:
     secretName: uptime-kuma-ericsweiss-tls
 
 ---
-# Internal - status.esweiss.com, status-page surface. Deliberately BROADER
-# than the external route: every slug (including `internal`, which is
-# domain-mapped to this host) is readable by a LAN/tailnet reader without a
-# WAN hairpin and without holding an Authentik session — the lan-tailscale
-# middleware is the fence at this tier. Higher priority than the admin
-# catch-all below (Traefik picks the highest priority, and relying on the
-# implicit rule-length ordering here would be fragile).
+# Internal - status.esweiss.com, status-page surface. Broader than the external
+# route: every slug is readable unauthenticated here, fenced by lan-tailscale-only.
+# Explicit priority so it beats the admin catch-all below.
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:
@@ -123,11 +83,9 @@ spec:
     secretName: uptime-kuma-esweiss-tls
 
 ---
-# Internal - status.esweiss.com, ADMIN catch-all (everything the route above
-# does not claim: /dashboard, /add, /settings, /socket.io, /metrics).
-# lan-tailscale-only bounds it to the LAN/tailnet; authentik-auth is the login
-# (Kuma's own single-account login stays underneath as a second factor — the
-# forward-auth outpost injects no credentials into it).
+# Internal - status.esweiss.com, ADMIN catch-all (/dashboard, /socket.io,
+# /metrics, ...). lan-tailscale-only bounds it to the LAN/tailnet; authentik-auth
+# is the login, with Kuma's own account underneath.
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:

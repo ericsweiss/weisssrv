@@ -1,24 +1,17 @@
 ---
-# Recover nfsd if a package upgrade left it down: `apt upgrade` restarts
-# nfs-server and its *stop* can hang, leaving 2049 dead and every NFS-over-TLS
-# pod in ContainerCreating.
-#
-# Health is the TCP listener on 2049, NOT the unit state: nfs-server is
-# Type=oneshot, so service_facts reports "stopped" for a healthy nfsd.
-# Recovery is reset-failed + a bounded START (restart re-enters the hanging stop
-# path) + re-export. No-op where nfs-server is not enabled. Include AFTER the
-# upgrade + reboot check. Runbook: docs/12.
+# CRITICAL: health is the TCP listener on 2049, not the unit state. nfs-server is
+# Type=oneshot, so service_facts reports "stopped" for a healthy nfsd, and recovery is
+# reset-failed plus a bounded start because restart re-enters the hanging stop path.
+# No-op where nfs-server is not enabled. Include after the upgrade and reboot check.
+# Runbook: docs/12.
 
 - name: Gather service facts (to detect whether this host runs nfs-server)
   ansible.builtin.service_facts:
 
 - name: Ensure the NFS server is serving after the package upgrade
-  # Gate on the nfsd unit being ENABLED (not merely present, and NOT `static` —
-  # static means "no [Install]", i.e. not something the operator enabled, so we
-  # must not start it on a host where NFS serving was intentionally left off).
-  # Accept either the canonical `nfs-server.service` (what service_facts reports
-  # on this NAS) or its `nfs-kernel-server.service` alias, for portability.
-  # We deliberately do NOT gate on `.state` — see the oneshot note above.
+  # Gate on the unit being enabled, under either the canonical name or the
+  # nfs-kernel-server alias. `static` means no [Install], so NFS serving was never
+  # enabled here and must not be started.
   when:
     - >-
       ('nfs-server.service' in ansible_facts.services
@@ -64,7 +57,5 @@
         state: started
         timeout: 20
       changed_when: false
-      # On timeout this fails the play with a clear "Timeout waiting for
-      # 127.0.0.1:2049" — every NFS-over-TLS client (downloads, recipes,
-      # grafana, ...) would fail to mount. Investigate:
-      #   systemctl status nfs-server ; journalctl -u nfs-server ; exportfs -v
+      # A timeout here means every NFS-over-TLS client fails to mount. Investigate with
+      # systemctl status nfs-server, journalctl -u nfs-server, exportfs -v.

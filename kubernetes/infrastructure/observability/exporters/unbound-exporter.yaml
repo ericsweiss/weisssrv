@@ -1,16 +1,15 @@
 ---
-# Unbound Exporter — remote scrape of unbound_exporter running on dns-01 and dns-02.
-# The exporter binaries run on the hosts (not in-cluster).
-
-# dns-01 (10.0.10.150)
+# Recursive-resolver metrics — remote scrape of unbound_exporter (:9167) on the DNS
+# LXCs: the same selectorless-Service + EndpointSlice shape as node-exporter-host.
+# ONE Service for every resolver — Prometheus derives instance=<ip>:9167.
 apiVersion: v1
 kind: Service
 metadata:
-  name: unbound-exporter-dns-01
+  name: unbound-exporter
   namespace: observability
   labels:
     app.kubernetes.io/name: unbound-exporter
-    app.kubernetes.io/instance: dns-01
+    app.kubernetes.io/part-of: observability
 spec:
   clusterIP: None
   ports:
@@ -19,57 +18,25 @@ spec:
       targetPort: 9167
 
 ---
-# Hand-written EndpointSlice for a selectorless Service — see
-# exporters/node-exporter-host.yaml.
+# discovery.k8s.io/v1, not the deprecated core/v1 Endpoints. Nothing controls
+# this slice but this file, so conditions.ready is set explicitly per address.
 apiVersion: discovery.k8s.io/v1
 kind: EndpointSlice
 metadata:
-  name: unbound-exporter-dns-01
+  name: unbound-exporter
   namespace: observability
   labels:
-    kubernetes.io/service-name: unbound-exporter-dns-01
+    kubernetes.io/service-name: unbound-exporter
 addressType: IPv4
 ports:
   - name: metrics
     port: 9167
     protocol: TCP
 endpoints:
+  # dns-01
   - addresses: ["10.0.10.150"]
     conditions: {ready: true}
-
----
-# dns-02 (10.0.10.160)
-apiVersion: v1
-kind: Service
-metadata:
-  name: unbound-exporter-dns-02
-  namespace: observability
-  labels:
-    app.kubernetes.io/name: unbound-exporter
-    app.kubernetes.io/instance: dns-02
-spec:
-  clusterIP: None
-  ports:
-    - name: metrics
-      port: 9167
-      targetPort: 9167
-
----
-# Hand-written EndpointSlice for a selectorless Service — see
-# exporters/node-exporter-host.yaml.
-apiVersion: discovery.k8s.io/v1
-kind: EndpointSlice
-metadata:
-  name: unbound-exporter-dns-02
-  namespace: observability
-  labels:
-    kubernetes.io/service-name: unbound-exporter-dns-02
-addressType: IPv4
-ports:
-  - name: metrics
-    port: 9167
-    protocol: TCP
-endpoints:
+  # dns-02
   - addresses: ["10.0.10.160"]
     conditions: {ready: true}
 
@@ -79,7 +46,10 @@ kind: ServiceMonitor
 metadata:
   name: unbound-exporter
   namespace: observability
+  labels:
+    app.kubernetes.io/name: unbound-exporter
 spec:
+  jobLabel: app.kubernetes.io/name
   selector:
     matchLabels:
       app.kubernetes.io/name: unbound-exporter

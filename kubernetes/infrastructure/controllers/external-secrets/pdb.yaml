@@ -1,11 +1,7 @@
 ---
-# Keep at least one ESO controller replica during voluntary disruption so the
-# secrets reconcile path is never fully offline during node drains/upgrades.
-# The controller runs a static 2 replicas (release.yaml replicaCount: 2) with
-# leader election enabled (leaderElect: true) — one active reconciler plus a
-# warm standby. There is no HPA: ESO does not shard ExternalSecrets across
-# replicas, so horizontal scaling only duplicates full reconciles; HA, not
-# throughput, is the reason for the second replica. See docs/33-autoscaling.md.
+# Keep one ESO controller replica up through drains so the reconcile path never
+# goes fully offline. The controller runs a static 2 replicas with leader
+# election: HA, not throughput. See docs/33-autoscaling.md.
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
@@ -17,10 +13,9 @@ spec:
     matchLabels:
       app.kubernetes.io/name: external-secrets
 ---
-# The validating/conversion webhook runs 2 replicas (release.yaml
-# webhook.replicaCount: 2) on the synchronous admission path for ExternalSecret/
-# SecretStore CR writes. Keep one replica up during drains so those writes never
-# briefly fail-closed when both replicas would otherwise evict together.
+# The webhook's 2 replicas sit on the synchronous admission path for
+# ExternalSecret/SecretStore writes. Keeping one up through drains stops those
+# writes fail-closing when both replicas would evict together.
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:

@@ -1,23 +1,22 @@
 ---
 # Apps top-level Kustomization. Each app lives in its own folder holding its
-# complete resource set. Every folder carries a README except the four
-# gitlab-* ones, which are documented by docs/13-ci-cd.md (runners, agent) and
-# docs/27-gitlab-deployment.md (the GitLab instance itself).
+# complete resource set and a README. Removing a line makes Flux prune that
+# module and its namespace — the documented way to disable one (README.md).
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - authentik
   - ci-cache
   - download-clients
-  - hermes
-  - homarr
-  - hindsight
-  - hindsight-reaper
-  - recipes
+  - gitlab-agent
   - gitlab-runner
   - gitlab-runner-privileged
   - gitlab-runner-reaper
-  - gitlab-agent
+  - hermes
+  - hindsight
+  - hindsight-reaper
+  - homarr
+  - recipes
   - registry-cache
   - tailnet-dns
   - uptime-kuma

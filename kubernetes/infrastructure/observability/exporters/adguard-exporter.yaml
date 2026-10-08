@@ -1,19 +1,7 @@
 ---
-# One exporter per DNS instance (distroless, no shell): dns-01 and dns-02 have
-# independent metrics even though adguard_sync replicates their config.
-#
-# Each sends the AdGuard admin credential as HTTP Basic, so the hop is HTTPS to
-# AdGuard's own TLS listener on :443 (AdGuardHome.yaml tls.enabled, the
-# distributed *.esweiss.com wildcard). There is still no read-only role, so the
-# credential is the full admin one — encrypting the hop is the mitigation.
-#
-# hostAliases, not DNS: the AdGuard rewrite points dns-0X.esweiss.com at the
-# Traefik internal VIP, whose route chains lan-tailscale-strict and deliberately
-# drops the pod CIDR (apps/vm-ingress/adguard-home.yaml). Pinning the name to the
-# host IP in /etc/hosts reaches AdGuard directly while still presenting a name
-# the wildcard cert covers — the bare IP cannot be used, the cert has no IP SAN.
-# The image is FROM scratch with ca-certificates.crt baked in, so the public
-# Let's Encrypt chain validates without a mounted CA bundle.
+# One exporter per AdGuard instance (dns-01, dns-02). HTTPS to AdGuard's own :443
+# because the credential is the full admin one (no read-only role upstream);
+# hostAliases pin the name to the host IP — the wildcard cert has no IP SAN. docs/31.
 
 # ── dns-01 ──────────────────────────────────────────────────────────────
 apiVersion: apps/v1

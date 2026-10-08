@@ -1,22 +1,8 @@
 #!/usr/bin/env python3
 """Assert every live Secret is owned by something (ESO, Flux, Helm, a controller).
 
-A Secret that nothing declares is a Secret nothing rotates: `task
-flux:rotate-secret` and docs/15-credential-rotation.md walk the ExternalSecrets,
-so a hand-applied leftover keeps serving a credential value long after that
-credential was rotated everywhere else — readable by anyone with `secrets get` in
-the namespace and by every cluster-wide secret reader. Flux never prunes them
-either, because no manifest claims them.
-
-This is deliberately a LIVE check (like check-live-cpu-limits.py): git cannot see
-a Secret that git does not contain. Everything ESO/Flux/Helm/cert-manager creates
-carries an ownership marker, so the residue is exactly the hand-applied set.
-
-Input: `kubectl get secrets -A -o json` on stdin (keeps the logic unit-testable
-with no cluster). Exit 1 and list the offenders.
-
-Usage:
-  kubectl get secrets -A -o json | python3 scripts/check-unmanaged-secrets.py
+Reads `kubectl get secrets -A -o json` on stdin; an unowned Secret was
+hand-applied. Exits 1 on a finding, 2 on an operator error or an empty corpus.
 """
 from __future__ import annotations
 
@@ -33,10 +19,7 @@ ALLOWLIST: dict[str, str] = {
     "external-secrets/onepassword-connect-token": "ESO bootstrap (docs/29)",
     # Written by `flux bootstrap`; holds the git deploy key.
     "flux-system/flux-system": "flux bootstrap git credentials",
-    # Created out-of-band by the GitLab agent's Flux module alongside its
-    # Receiver; the HMAC trigger token is minted by KAS, not by us (docs/29).
-    # Inert today (the Secret also carries ownerReferences) — it is here so the
-    # owner is on the record rather than inferred.
+    # Minted by the GitLab agent's Flux module alongside its Receiver (docs/29).
     "flux-system/gitlab-receiver-flux-system": "GitLab agent Flux module (docs/29)",
     # Controller-generated state, not credentials we mint.
     "tailscale/operator": "tailscale operator device state",
@@ -106,10 +89,26 @@ def main() -> int:
     try:
         payload = json.load(sys.stdin)
     except json.JSONDecodeError as exc:
-        sys.exit(f"Failed to parse `kubectl get secrets -o json` input: {exc}")
+        print(
+            f"ERROR: cannot parse stdin as JSON: {exc}. Empty input usually means "
+            "the kubectl on the left of the pipe failed.",
+            file=sys.stderr,
+        )
+        return 2
     items = payload.get("items") if isinstance(payload, dict) else payload
     if not isinstance(items, list):
-        sys.exit("Input is not a secret list (expected `kubectl get secrets -A -o json`)")
+        print(
+            "ERROR: stdin is not a Secret list (expected `kubectl get secrets -A -o json`)",
+            file=sys.stderr,
+        )
+        return 2
+    if not items:
+        print(
+            "ERROR: no Secrets on stdin — a gate that checks nothing is not a gate; "
+            "check the kubectl on the left of the pipe.",
+            file=sys.stderr,
+        )
+        return 2
 
     violations = unmanaged_secrets([s for s in items if isinstance(s, dict)])
     if violations:

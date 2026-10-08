@@ -1,23 +1,7 @@
 ---
-# External Secrets Operator.
-# Chart version substituted from cluster-versions ConfigMap (from all.yml).
-# The onepassword (Connect) provider (used by our ClusterSecretStore) is part of the
-# core ESO image in 2.x; no extra feature flag needed.
-#
-# Scheduling (controller, webhook and certController alike; crds-operator would
-# need the same if ever enabled):
-# - nodeSelector esweiss.com/cpu: modern — the Go binary SIGILLs on the Core 2
-#   Quad opt nodes (needs POPCNT/SSE4.2).
-# - tolerations for the soft nas/compute taints, so replicas are not all pushed
-#   onto one node.
-# - topologySpreadConstraints hard-spread each pair across the three modern-CPU
-#   hosts, so no single node drain can take a component fully offline.
-#
-# CRDs: ESO ships CRDs as chart templates gated by values.installCRDs (NOT a
-# crds/ directory), so Flux's install/upgrade crds policy has no effect here —
-# installCRDs below is what manages them. crds.annotations stamps a
-# helm.sh/resource-policy=keep so an uninstall/rollback cannot cascade-delete
-# the CRDs (and every ExternalSecret/ClusterSecretStore with them).
+# External Secrets Operator; chart version from cluster-versions (all.yml).
+# nodeSelector ${cluster_node_label_domain}/cpu: modern — the Go binary SIGILLs on
+# the Core 2 Quad opt nodes. CRDs are chart templates, stamped resource-policy: keep.
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -35,8 +19,11 @@ spec:
         namespace: flux-system
       interval: 12h
   install:
-    remediation:
-      retries: 3
+    # RetryOnFailure, not the default RemediateOnFailure: install remediation
+    # remediates by uninstalling, which cascade-deletes the ESO CRDs and CRs.
+    strategy:
+      name: RetryOnFailure
+      retryInterval: 5m
   upgrade:
     remediation:
       retries: 3
@@ -52,12 +39,9 @@ spec:
     crds:
       annotations:
         helm.sh/resource-policy: keep
-    # 2 replicas for HA, NOT throughput: ESO does not shard ExternalSecrets
-    # across replicas, so a second active reconciler would only duplicate full
-    # reconciles (and race on status writes). leaderElect makes exactly one
-    # replica reconcile while the other is a warm standby for instant failover.
-    # This is why there is no HPA — horizontal scaling buys nothing for a
-    # non-sharding controller (see docs/33-autoscaling.md).
+    # 2 replicas for HA, not throughput: ESO does not shard ExternalSecrets, so
+    # leaderElect keeps one replica reconciling and one a warm standby. Same
+    # reason there is no HPA (docs/33-autoscaling.md).
     replicaCount: 2
     leaderElect: true
     nodeSelector:
@@ -81,10 +65,9 @@ spec:
     webhook:
       replicaCount: 2
       priorityClassName: platform
-      # Memory limits across the three ESO components are hand-set at the 30d
-      # working-set peak +60% and matched by the paired VPAs' maxAllowed; the
-      # VPAs are RequestsOnly, so nothing rewrites them at runtime. Peaks:
-      # webhook ~152Mi, certController ~193Mi, controller ~148Mi.
+      # Memory limits for all three components are hand-set at the 30d working-set
+      # peak +60% and matched by the paired RequestsOnly VPAs' maxAllowed.
+      # Peaks: webhook ~152Mi, certController ~193Mi, controller ~148Mi.
       resources:
         requests:
           cpu: 25m

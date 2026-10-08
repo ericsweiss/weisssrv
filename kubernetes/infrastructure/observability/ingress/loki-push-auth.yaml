@@ -1,8 +1,7 @@
 ---
 # Basic auth for the Loki push IngressRoute. Loki runs auth_enabled=false, so
-# without this gate anything on the LAN could write logs. Host-side Alloy sends
-# the matching credentials (alloy_host role); the in-cluster DaemonSet pushes via
-# the ClusterIP and is unaffected.
+# this gate is what stops anything on the LAN writing logs. Host-side Alloy sends
+# the credentials; the in-cluster DaemonSet pushes via the ClusterIP instead.
 apiVersion: external-secrets.io/v1
 kind: ExternalSecret
 metadata:

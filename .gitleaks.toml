@@ -1,20 +1,6 @@
-# gitleaks allowlist for the weisssrv homelab repo.
-#
-# This is consumed by GitLab's secret_detection job (which uses gitleaks under
-# the hood) via the passthrough in `.gitlab/secret-detection-ruleset.toml`.
-#
-# A declared fork of weisssrv-lib's `lint/gitleaks.toml` (declared in this
-# repo's `scripts/vendored-manifest.yml`, which is what gates the divergence):
-# the shared rules and the shared false-positive shapes come from there, the
-# path exclusions and the fixture anchors below are this repo's.
-#
-# Exclusion policy: nothing is excluded by PATH except generated/third-party
-# trees. Docs and test fixtures stay fully in scope and are allowlisted by
-# CONTENT, anchored on each shape's own body, so a real secret added to one is
-# still caught.
-#
-# `useDefault = true` is REQUIRED — without it gitleaks loads only the rules
-# defined in this file (which has none), disabling all detection.
+# gitleaks allowlist for this repo, a declared fork of weisssrv-lib's
+# lint/gitleaks.toml. `useDefault = true` is REQUIRED: without it gitleaks
+# loads only this file's rules, of which there are none, and detects nothing.
 
 title = "weisssrv allowlist"
 
@@ -25,9 +11,10 @@ useDefault = true
 description = "weisssrv homelab false positives"
 regexes = [
   # 1Password reference URIs — not secrets, just pointers to vault items.
-  '''op://[A-Za-z0-9_ /-]+''',
-  # Documentation placeholders like [your-cloudflare-api-token].
-  '''\[your-[a-z0-9-]+\]''',
+  '''^op://[A-Za-z0-9_ /-]+''',
+  # Documentation placeholders like [your-cloudflare-api-token] and <api-token>.
+  '''^\[your-[a-z0-9-]+\]''',
+  '''<[a-z][a-z0-9_-]*>''',
   # Test/fixture tokens — anchored at start of token so a real secret prefixed
   # with "prodtestkey_…" or similar can't be silenced.
   '''^(test|fake|dummy|example)[-_]?(password|token|key|secret)[A-Za-z0-9_-]*''',
@@ -42,7 +29,9 @@ paths = [
   '''CLUSTER_STATUS\.txt''',
   '''cluster-state-.*\.txt''',
   # Vendored galaxy collections (gitignored) — third-party, not ours to scan.
+  # All three galaxy install targets: ansible-lint picks one by its caller's CWD.
   '''\.ansible-home/''',
+  '''ansible_collections/''',
   # Terraform module/provider cache (gitignored) — third-party.
   '''\.terraform/''',
   # Byte-compiled fixtures: the compiled form loses the shape the anchors match.

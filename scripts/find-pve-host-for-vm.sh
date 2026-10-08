@@ -1,21 +1,7 @@
 #!/usr/bin/env bash
-# Locate which Proxmox host currently runs a given VM ID, printing the host
-# name to stdout. For task wrappers that act on a VM without pinning its node.
-#
-# Usage: find-pve-host-for-vm.sh <vmid> <host1> [host2 ...]
-# Exit 0 with host on stdout if found; exit 1 with diagnostics on stderr.
-#
-# Environment:
-#   PVE_NODE_PREFIX  prefix this site's SSH targets carry that the Proxmox node
-#                    names do not (default "pve-"). Applied to both API-derived
-#                    answers (steps 2 and 3); step 4 already yields an SSH
-#                    target. Set to "" for a site whose names need no rewrite.
-#
-# Resolution strategy (HA-resilient):
-#   1. Find the first reachable host from the provided list.
-#   2. Try ha-manager status on that host (for HA-managed services).
-#   3. Fall back to pvesh /cluster/resources for any cluster-known VM.
-#   4. Fall back to scanning each host with qm status (works without cluster).
+# Print which Proxmox host runs a VM ID: exit 0 with the host on stdout, exit 1
+# with diagnostics on stderr. Usage: find-pve-host-for-vm.sh <vmid> <host>...
+# Contract + env: weisssrv-lib docs/SCRIPTS.md - find-pve-host-for-vm.sh.
 
 set -euo pipefail
 
@@ -57,11 +43,9 @@ if [ -z "$REACHABLE" ]; then
     exit 1
 fi
 
-# Step 2: ha-manager (preferred when the service is HA-managed). `|| true`
-# swallows the grep miss for a non-HA VM so steps 3/4 still run. The
-# `([[:space:]]|$)` boundary keeps vm:154 from matching vm:1540, and `sed -n
-# …p` prints only lines the substitution matched, so an unparseable status
-# line falls through instead of landing verbatim in $NODE.
+# Step 2: ha-manager, for HA-managed services. `|| true` swallows the grep miss
+# for a non-HA VM so steps 3/4 still run; the `([[:space:]]|$)` boundary keeps
+# vm:154 from matching vm:1540, and `sed -n …p` drops unparseable status lines.
 NODE=$(ssh_probe "$REACHABLE" "sudo ha-manager status 2>/dev/null | grep -E 'service vm:${VMID}([[:space:]]|\$)'" 2>/dev/null \
     | sed -n 's/.*(\([^,]*\),.*/\1/p' || true)
 
@@ -81,15 +65,17 @@ if [ -n "$NODE" ] && [ -n "$PVE_NODE_PREFIX" ]; then
 fi
 
 # Step 4: per-host scan (fallback when cluster API unavailable)
-# Capture then test, not `ssh | grep -q`: under pipefail an early pipe close can
-# SIGPIPE ssh and false-report not-found.
+# `case`, not `| grep -q`: grep exits on the first match and pipefail turns the
+# producer's SIGPIPE into a false not-found.
 if [ -z "$NODE" ]; then
     for host in "${HOSTS[@]}"; do
         qm_status=$(ssh_probe "$host" "sudo qm status ${VMID}" 2>/dev/null || true)
-        if printf '%s' "$qm_status" | grep -q "status:"; then
-            NODE="$host"
-            break
-        fi
+        case "$qm_status" in
+            *status:*)
+                NODE="$host"
+                break
+                ;;
+        esac
     done
 fi
 

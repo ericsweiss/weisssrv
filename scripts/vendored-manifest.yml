@@ -1,78 +1,165 @@
 ---
-# This repo's vendored copies of weisssrv-lib files — the consumer-owned half
-# of the vendored-copy contract (the library's half is its offer list,
-# scripts/vendorable-paths.yml, which bounds what may be listed here).
-#
-# Read by the library's scripts/check-vendored-copies.py, driven here by
-# scripts/test_vendored_byte_identity.py under `task lint` at the pinned
-# WEISSSRV_LIB_REF. Two relationships:
-#
-#   vendored — byte-identical to the library at the pin. Drift in either
-#              direction fails; fix upstream and re-vendor, never edit a copy.
-#   forked   — deliberately divergent. Must still differ, and
-#              `reconciled_sha256` (the library blob last absorbed) fails the
-#              fork when the library side moves — re-take it here after
-#              absorbing the change. `reason:` is mandatory.
-#
-# Entry forms: a bare string when both repos use the same path, or a mapping
-# with `lib:` and `consumer:` when they differ. Moving a copy inside this repo
-# is an edit to THIS file in the same commit — no library release involved.
+# This repo's vendored copies of weisssrv-lib files, checked by the library's
+# check-vendored-copies.py via scripts/test_vendored_byte_identity.py under
+# `task lint` at the pinned WEISSSRV_LIB_REF.
+
+# `vendored:` entries are byte-identical to the library: drift in either
+# direction fails, so fix upstream and re-vendor, never edit a copy here.
+
+# `forked:` entries must still differ, carry a mandatory `reason:`, and their
+# `reconciled_sha256` fails when the library blob moves until it is re-taken.
+
+# An entry is a bare string, or a mapping with `lib:` and `consumer:` when the
+# paths differ. Moving a copy inside this repo is an edit to this file alone.
 
 vendored:
   - scripts/b2-bucket-drift.py
   - scripts/check-alertmanager-behaviour.py
   - scripts/check-backup-artifact-apps.py
+  # Reads the inventory through inventory_tree.py, registered below.
+  - scripts/check-cluster-invariants.py
+  - scripts/check-comment-length.py
+  - scripts/check-dashboards.py
   - scripts/check-default-deny-coverage.py
   - scripts/check-deploy-coverage.sh
+  # Imports ci_yaml.py and ci_playbook_invocations.py from its own directory,
+  # both registered below.
+  - scripts/check-deploy-preflight.py
   - scripts/check-doc-links.py
+  - scripts/check-ephemeral-storage-cap.py
+  - scripts/check-helm-repo-parity.py
   - scripts/check-hpa-vpa-invariant.py
   - scripts/check-kubectl-version-pin.py
   - scripts/check-lib-pins.py
+  # The gate's canonical suite travels with it, as in both templates.
+  - lib: tests/test_check_lib_pins.py
+    consumer: scripts/test_check_lib_pins.py
+  - scripts/check-live-cpu-limits.py
+  - scripts/check-molecule-image-pin.py
   - scripts/check-netpol-except-parity.py
+  # The gate's canonical suite travels with it; scripts/test_netpol_except_gate.py
+  # keeps the cases that run it over this repo's own policies.
+  - lib: tests/test_check_netpol_except_parity.py
+    consumer: scripts/test_check_netpol_except_parity.py
+  - scripts/check-nfs-tls.py
   - scripts/check-pvc-storageclass.py
+  - scripts/check-role-inputs.py
+  - scripts/check-runbook-anchors.py
   - scripts/check-scrape-netpol.py
   - scripts/check-secretstore-scope.py
   - scripts/check-taskfile.sh
+  - scripts/check-version-checksums.py
   - scripts/check-versions.py
+  # The jobs that call it run before any library checkout exists, which is the
+  # download block it replaces.
+  - scripts/ci-fetch-tools.py
+  - scripts/ci_playbook_invocations.py
+  - scripts/ci_yaml.py
+  - scripts/cluster-config-value.sh
+  - scripts/extract-prometheus-config.py
   - scripts/find-pve-host-for-vm.sh
   - scripts/find-reachable-host.sh
   - scripts/flux-env.sh
   - scripts/flux-render.sh
+  - scripts/gate_common.py
   - scripts/generate-hosts-env.py
   - scripts/generate-versions-configmap.py
+  - scripts/inventory_tree.py
   - scripts/kubeconform-skipped.py
   - scripts/lint-prometheus-config.sh
+  - scripts/maintenance-run-with-verify.sh
   - scripts/molecule-retry.sh
   - scripts/resolve-tool.sh
   - scripts/sanitize-junit-expected-failures.py
+  # Imported by the vendored suites from their own directory.
+  - lib: tests/script_loader.py
+    consumer: scripts/script_loader.py
   - scripts/shell-lib.sh
+  - scripts/smoke-lib.sh
+  - scripts/supervised-apply-guard.sh
+  - scripts/unifi-settings-drift.py
   - scripts/validate-helm-values.py
   - scripts/version-bump-mr.py
   - scripts/version-check-ci.py
+  - scripts/wait-for-reloader-roll.sh
   # Discovered by the tool at its conventional root name.
   - lib: lint/ruff.toml
     consumer: ruff.toml
+  # Kept out of ansible-lint's discovery path: a repo-root `.yamllint` replaces
+  # its yaml rule and disables fix mode. Callers pass `-c` at this path.
+  - lint/yamllint-relaxed.yml
+  - lib: lint/gitattributes
+    consumer: .gitattributes
+  # Molecule scaffolding the integration scenarios include from here, so a
+  # checkout runs them without the collection's own tree.
+  - lib: ansible_collections/weisssrv/infra/molecule-shared/prepare-common.yml
+    consumer: ansible/molecule/prepare-common.yml
+  - lib: ansible_collections/weisssrv/infra/molecule-shared/tasks/container-warmup.yml
+    consumer: ansible/molecule/tasks/container-warmup.yml
+  - lib: ansible_collections/weisssrv/infra/molecule-shared/tasks/prepare-apt-disable.yml
+    consumer: ansible/molecule/tasks/prepare-apt-disable.yml
+  - lib: ansible_collections/weisssrv/infra/molecule-shared/tasks/prepare-base.yml
+    consumer: ansible/molecule/tasks/prepare-base.yml
+
+  # CRITICAL: gate_common.py is imported from its own directory by the corpus
+  # gates registered above (default-deny, scrape-netpol, secretstore-scope,
+  # pvc-storageclass, hpa-vpa-invariant, netpol-except-parity, nfs-tls,
+  # live-cpu-limits). ci_yaml.py and inventory_tree.py pair the same way with
+  # the CI gates and the inventory generators. Re-vendoring any of them without
+  # its companion makes all of them exit 2 on import at `task lint`.
 
 forked:
-  - lib: scripts/extract-prometheus-config.py
-    reason: >-
-      Rules extraction unions the HelmRelease with the standalone
-      PrometheusRule manifests under observability/rules/; the library copy
-      reads the HelmRelease alone.
-    reconciled_sha256: 294bcbf560adf90c9318c10c10d5da9c33e96b0043498e55e11616a20b03adf9
   - lib: lint/gitleaks.toml
     consumer: .gitleaks.toml
     reason: Allowlist paths and fixture anchors are per-repo.
-    reconciled_sha256: bffbe70c94436f4442aaeecc1f1f5715315fc5908b1486b2198796b9e097ff0d
+    reconciled_sha256: a70051101f8045b94172594a0a89c5cf7e17aa6ad56c184843ffc5eac29891ec
   - lib: lint/secret-detection-ruleset.toml
     consumer: .gitlab/secret-detection-ruleset.toml
-    reason: Ruleset overrides name this repo's scanned paths.
-    reconciled_sha256: d6413e69a2d8a6f7d0c468d4370a406299894ad9e3fe274eb7f69eb30a7c936d
+    reason: The header and ruleset description name this repo.
+    reconciled_sha256: 778c939138d015867a1d0e42846994bd03a127c1ded1616eee7136b7e2ecfc75
   - lib: lint/editorconfig
     consumer: .editorconfig
-    reason: Per-repo file-type sections on a shared base.
-    reconciled_sha256: 911171d9f26ba0bb47300c97a9e46b078d48eb852dfe9a050fbc3c8e41cc2944
+    reason: >-
+      The header names this repo's own linters, and `[Dockerfile*]` covers the
+      per-app Dockerfile suffixes under docker/. Nothing else differs.
+    reconciled_sha256: 9873966d0ce8a80d7ed84ecce449107b2a20387a146692ffb9aec28dd505fe02
   - lib: lint/pre-commit-config.yaml
     consumer: .pre-commit-config.yaml
     reason: Per-repo hook set on a shared base.
-    reconciled_sha256: 39e7c3a5fbc7d2185ad73c436cbba736cae1e2b2b88f7f50387f041cbd87323c
+    reconciled_sha256: f7e2dff0acee6c4787e1d89311fa72e5d089b13681ed9cd94e8b92bdcada519c
+  - lib: docker/molecule-ci/requirements.txt
+    consumer: requirements.txt
+    reason: >-
+      Host-side toolchain for this repo's own gates: it carries pytest and
+      ruff, which the library image does not, and its own ansible-lint pin.
+    reconciled_sha256: 418c11f6f30e046148ddcbccc9e8f50f6ed5496164e25cc30ef0428e3375fac7
+  - lib: scripts/check-flux-version-pin.py
+    consumer: scripts/check-flux-version-pin.py
+    reason: >-
+      Reports every disagreeing pin rather than the first, and treats a
+      subject it cannot decode as an operator error.
+    reconciled_sha256: 5353b33732feddc81d617138783f5fc65f09b13efc35a2f0dc0b878932e9d51c
+  - lib: scripts/flux-child-kustomizations.py
+    consumer: scripts/flux-child-kustomizations.py
+    reason: >-
+      A cluster directory holding no Kustomization, and a stage set declaring
+      no path, are operator errors here, and a printed path loses its `./`.
+    reconciled_sha256: 965d08702267f3f03d3213fdb623038178d874f89ef0486fe8b03fe2a37ded4b
+  - lib: scripts/check-secret-rotation-coverage.py
+    consumer: scripts/check-secret-rotation-coverage.py
+    reason: >-
+      Carries this cluster's manual-rotation declarations, and scopes each
+      claim to the owning section of the rotation document.
+    reconciled_sha256: 12e1a976a246b8067aea3da8441dec1c2c0be18604fb9b585a72030bb24931c7
+  - lib: scripts/collect-state-lib.sh
+    consumer: scripts/collect-state-lib.sh
+    reason: >-
+      The warning-event policy excludes this cluster's CI-pool FailedScheduling
+      overflow, and the regular verdict takes a GitLab health predicate.
+    reconciled_sha256: df2a4ff2b0d2970a1de58dbda6de8da98bfae8371c3c2b3e460e0d855e9e9302
+  - lib: scripts/deploy-verify-lib.sh
+    consumer: scripts/deploy-verify-lib.sh
+    reason: >-
+      Carries gitlab_health_code, the curl-only GitLab probe this cluster's
+      post-maintenance verify sources.
+    reconciled_sha256: 58c27c6af182fd5c76d8e020911135100d1ee71c1a9346681651234414b952b3

@@ -1,22 +1,7 @@
 ---
-# VPA policies for the observability stack (tiers: docs/33-autoscaling.md).
-#   Auto    — exporters and stack components that tolerate eviction.
-#   Initial — Grafana (single replica; resize on natural restarts).
-#   Off     — Prometheus / Alertmanager / Loki (operator- or chart-managed
-#             stateful sets with hand-tuned requests in their HelmReleases;
-#             VPA records recommendations without acting).
-#
-# containerPolicies are matched first-exact-name, then "*", so a pod whose main
-# container needs a large minAllowed lists that container by name and gives the
-# sidecars a small catch-all — a single wildcard sized for the main container
-# publishes ~10x-inflated sidecar recommendations that the Off-tier
-# apply-by-hand workflow would then act on.
-#
-# The small exporters below (adguard, exportarr, plex, redis, proxmox) are
-# limit-controlling — controlledValues unset — so each maxAllowed.memory sits
-# at 0.8x the container's declared limit in exporters/ (64Mi, 256Mi for
-# pve-exporter). At or above the limit the updater just rescales the limit with
-# the request and the declared ceiling never binds (docs/33).
+# VPA policies for the observability stack. Tiers (Auto / Initial / Off), the
+# first-exact-name-then-"*" containerPolicy matching rule, and the 0.8x-of-limit
+# maxAllowed rule for limit-controlling policies: docs/33-autoscaling.md.
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
 metadata:
@@ -104,20 +89,6 @@ spec:
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
 metadata:
-  name: plex-exporter
-spec:
-  targetRef: {apiVersion: apps/v1, kind: Deployment, name: plex-exporter}
-  updatePolicy: {updateMode: Auto}
-  resourcePolicy:
-    containerPolicies:
-      - containerName: "*"
-        minAllowed: {cpu: 10m, memory: 32Mi}
-        maxAllowed: {cpu: 200m, memory: 51Mi}
-        controlledResources: [cpu, memory]
----
-apiVersion: autoscaling.k8s.io/v1
-kind: VerticalPodAutoscaler
-metadata:
   name: proxmox-exporter
 spec:
   targetRef: {apiVersion: apps/v1, kind: Deployment, name: proxmox-exporter}
@@ -152,10 +123,14 @@ spec:
   updatePolicy: {updateMode: Auto}
   resourcePolicy:
     containerPolicies:
+      # RequestsOnly with maxAllowed == the 128Mi limit in
+      # exporters/blackbox-exporter.yaml, so that limit stays the OOM ceiling
+      # instead of being rescaled with the request.
       - containerName: "*"
         minAllowed: {cpu: 10m, memory: 32Mi}
-        maxAllowed: {cpu: 200m, memory: 256Mi}
+        maxAllowed: {cpu: 200m, memory: 128Mi}
         controlledResources: [cpu, memory]
+        controlledValues: RequestsOnly
 ---
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
@@ -166,10 +141,14 @@ spec:
   updatePolicy: {updateMode: Auto}
   resourcePolicy:
     containerPolicies:
+      # RequestsOnly with maxAllowed == the 384Mi limit in
+      # kube-prometheus-stack/release.yaml, so that limit stays the OOM ceiling
+      # instead of being rescaled with the request.
       - containerName: "*"
         minAllowed: {cpu: 10m, memory: 64Mi}
-        maxAllowed: {cpu: 500m, memory: 512Mi}
+        maxAllowed: {cpu: 500m, memory: 384Mi}
         controlledResources: [cpu, memory]
+        controlledValues: RequestsOnly
 ---
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
@@ -181,10 +160,8 @@ spec:
   resourcePolicy:
     containerPolicies:
       # RequestsOnly with maxAllowed == the 384Mi limit in
-      # kube-prometheus-stack/release.yaml — the shape its sibling exporter
-      # policies here use (alloy, node-exporter, dcgm-exporter). Its working set
-      # scales with object count, so leaving the updater to rescale the limit
-      # would move the ceiling this file reviews; only the request moves.
+      # kube-prometheus-stack/release.yaml: its working set scales with object
+      # count, so only the request moves and that limit stays the ceiling.
       - containerName: "*"
         minAllowed: {cpu: 10m, memory: 64Mi}
         maxAllowed: {cpu: 300m, memory: 384Mi}
@@ -200,14 +177,17 @@ spec:
   updatePolicy: {updateMode: Auto}
   resourcePolicy:
     containerPolicies:
-      # RequestsOnly: on the default RequestsAndLimits the updater rescales the
-      # LIVE limit away from the declared one, so a pod admitted while the
-      # mutating webhook is down runs under its own peak. The 640Mi limit is
-      # hand-set in alloy/release.yaml and stays the OOM ceiling; maxAllowed
-      # sits under it at the measured working set (docs/33).
-      - containerName: "*"
+      # PER-CONTAINER bounds, not a "*" catch-all: RequestsOnly moves the
+      # REQUEST, and a request above a container's fixed limit is an invalid pod.
+      # maxAllowed.memory is each alloy/release.yaml limit; its CPU caps are headroom.
+      - containerName: alloy
         minAllowed: {cpu: 25m, memory: 64Mi}
-        maxAllowed: {cpu: 500m, memory: 512Mi}
+        maxAllowed: {cpu: 500m, memory: 640Mi}
+        controlledResources: [cpu, memory]
+        controlledValues: RequestsOnly
+      - containerName: config-reloader
+        minAllowed: {cpu: 10m, memory: 32Mi}
+        maxAllowed: {cpu: 50m, memory: 128Mi}
         controlledResources: [cpu, memory]
         controlledValues: RequestsOnly
 ---
@@ -220,20 +200,17 @@ spec:
   updatePolicy: {updateMode: Auto}
   resourcePolicy:
     containerPolicies:
-      # PER-CONTAINER bounds, not a "*" catch-all: RequestsOnly rescales the
-      # REQUEST, and a request above the container's fixed limit is an invalid
-      # pod. The two containers have different hand-set limits (release.yaml) —
-      # alloy 256Mi, config-reloader 64Mi — so each maxAllowed.memory must sit
-      # under ITS OWN limit (docs/33). A shared "*" at 224Mi would let a
-      # config-reloader spike push its request past 64Mi and reject the pod.
+      # PER-CONTAINER bounds, not a "*" catch-all: RequestsOnly moves the
+      # REQUEST, and a request above the container's own fixed limit is an
+      # invalid pod. alloy is 256Mi and config-reloader 64Mi in release.yaml.
       - containerName: alloy
         minAllowed: {cpu: 25m, memory: 64Mi}
-        maxAllowed: {cpu: 300m, memory: 224Mi}
+        maxAllowed: {cpu: 300m, memory: 256Mi}
         controlledResources: [cpu, memory]
         controlledValues: RequestsOnly
       - containerName: config-reloader
         minAllowed: {cpu: 10m, memory: 32Mi}
-        maxAllowed: {cpu: 50m, memory: 56Mi}
+        maxAllowed: {cpu: 50m, memory: 64Mi}
         controlledResources: [cpu, memory]
         controlledValues: RequestsOnly
 ---
@@ -246,9 +223,8 @@ spec:
   updatePolicy: {updateMode: Auto}
   resourcePolicy:
     containerPolicies:
-      # RequestsOnly: right-size requests but NEVER set limits — the default
-      # RequestsAndLimits re-imposes a proportional CPU limit even when the
-      # chart values carry none.
+      # RequestsOnly: only the request moves. The chart's 128Mi memory limit
+      # stays the OOM ceiling and node-exporter keeps no CPU limit.
       - containerName: "*"
         controlledValues: RequestsOnly
         minAllowed: {cpu: 10m, memory: 32Mi}
@@ -258,10 +234,9 @@ spec:
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
 metadata:
-  # GPU-telemetry DaemonSet (one pod, on the GPU node only). maxAllowed.memory
-  # sits above DCGM's working set and below the limit in
-  # exporters/dcgm-exporter.yaml, which is the hand-set OOM ceiling —
-  # RequestsOnly so only the request moves.
+  # GPU-telemetry DaemonSet (one pod, GPU node only). RequestsOnly, with
+  # maxAllowed.memory above DCGM's working set and below the OOM ceiling limit
+  # in exporters/dcgm-exporter.yaml.
   name: dcgm-exporter
 spec:
   targetRef: {apiVersion: apps/v1, kind: DaemonSet, name: dcgm-exporter}
@@ -283,14 +258,19 @@ spec:
   updatePolicy: {updateMode: Initial}
   resourcePolicy:
     containerPolicies:
-      - containerName: "*"
+      # RequestsOnly with maxAllowed.memory == the declared 1Gi limit (docs/33): only
+      # the request moves, so the limit stays the ceiling. Grafana sits capped
+      # here by design and is excluded from the VPA clamp alerts.
+      - containerName: grafana
         minAllowed: {cpu: 25m, memory: 64Mi}
-        # RequestsOnly with cap == the declared 1Gi limit (docs/33 rule): the
-        # limit-controlling shape let admission scale the limit DOWN with the
-        # request (pod landed at ~783Mi), and the 88.5.0-era recommendation
-        # (~933Mi) then tripped VPARecommendationExceedsLimit — the next
-        # admission would have ballooned the limit to ~1.9Gi instead.
         maxAllowed: {cpu: 1, memory: 1Gi}
+        controlledResources: [cpu, memory]
+        controlledValues: RequestsOnly
+      # The dashboard/datasource sidecars carry their own 256Mi limit, and a
+      # request above a container's limit is an invalid pod.
+      - containerName: "*"
+        minAllowed: {cpu: 10m, memory: 32Mi}
+        maxAllowed: {cpu: 100m, memory: 256Mi}
         controlledResources: [cpu, memory]
         controlledValues: RequestsOnly
 ---
@@ -299,17 +279,13 @@ kind: VerticalPodAutoscaler
 metadata:
   name: prometheus
 spec:
-  # Target the Prometheus CR, not the operator-owned StatefulSet: the VPA
-  # requires a topmost scalable controller (the CRD exposes /scale), and
-  # targeting the StatefulSet leaves the VPA ConfigUnsupported with no
-  # recommendations recorded.
+  # Target the Prometheus CR, not the operator-owned StatefulSet: the VPA needs
+  # a topmost controller exposing /scale, or it sits ConfigUnsupported.
   targetRef: {apiVersion: monitoring.coreos.com/v1, kind: Prometheus, name: kube-prometheus-stack-prometheus}
   updatePolicy: {updateMode: "Off"}
-  # maxAllowed.memory matches the pod's 6Gi limit in release.yaml, so the
-  # recording-only recommendation is never clamped and
-  # VPARecommendationExceedsLimit stays the honest signal that Prometheus has
-  # outgrown its hand-set size. Re-read the recorded target before acting on it;
-  # it decays (docs/33 §Applying an Off-tier recommendation).
+  # maxAllowed.memory tracks the pod's 6Gi limit in release.yaml.
+  # VPARecommendationExceedsLimit reads the larger of the capped and uncapped
+  # target, so the clamp cannot hide an outgrown size (docs/33).
   resourcePolicy:
     containerPolicies:
       - containerName: prometheus
@@ -317,10 +293,10 @@ spec:
         maxAllowed: {cpu: 2, memory: 6Gi}
         controlledResources: [cpu, memory]
       # config-reloader and any future sidecar must not inherit the main
-      # container's floor.
+      # container's floor; the cap is the reloader's 96Mi limit (release.yaml).
       - containerName: "*"
         minAllowed: {cpu: 10m, memory: 32Mi}
-        maxAllowed: {cpu: 200m, memory: 256Mi}
+        maxAllowed: {cpu: 100m, memory: 96Mi}
         controlledResources: [cpu, memory]
 ---
 apiVersion: autoscaling.k8s.io/v1
@@ -333,9 +309,15 @@ spec:
   updatePolicy: {updateMode: "Off"}
   resourcePolicy:
     containerPolicies:
+      # maxAllowed.memory == each container's declared limit in release.yaml, so
+      # the recommendation cannot exceed its ceiling; the CPU caps are headroom.
+      - containerName: alertmanager
+        minAllowed: {cpu: 25m, memory: 64Mi}
+        maxAllowed: {cpu: 200m, memory: 192Mi}
+        controlledResources: [cpu, memory]
       - containerName: "*"
         minAllowed: {cpu: 10m, memory: 32Mi}
-        maxAllowed: {cpu: 200m, memory: 256Mi}
+        maxAllowed: {cpu: 100m, memory: 96Mi}
         controlledResources: [cpu, memory]
 ---
 apiVersion: autoscaling.k8s.io/v1
@@ -347,9 +329,12 @@ spec:
   updatePolicy: {updateMode: "Off"}
   resourcePolicy:
     containerPolicies:
+      # maxAllowed.memory == each container's declared limit in loki/release.yaml;
+      # the CPU caps are headroom. Loki sits capped by design (page cache) and is
+      # excluded from the VPA clamp alerts.
       - containerName: loki
         minAllowed: {cpu: 50m, memory: 128Mi}
-        maxAllowed: {cpu: 1, memory: 2Gi}
+        maxAllowed: {cpu: 1, memory: 1Gi}
         controlledResources: [cpu, memory]
       # loki-sc-rules (the rules sidecar) and anything else in the pod.
       - containerName: "*"

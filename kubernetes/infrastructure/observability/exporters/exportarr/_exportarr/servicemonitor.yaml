@@ -1,13 +1,7 @@
 ---
-# Shared component: all four overlays (sonarr/radarr/lidarr/prowlarr) patch only
-# this ServiceMonitor's name and selector, so both fields below apply to every
-# exportarr target.
-#
-# scrapeTimeout is explicit because Prometheus' 10s global was the binding
-# constraint: exportarr walks the *arr APIs on each scrape and sonarr hit the
-# timeout exactly (10.001s), making it the noisiest TargetDown source in the
-# estate. The other three have recorded 10.0s+ scrapes too (lidarr once 24.3s).
-# 45s < the 60s interval, which Prometheus requires.
+# Shared component: the four overlays (sonarr/radarr/lidarr/prowlarr) patch only
+# name and selector. scrapeTimeout is explicit because exportarr walks the *arr
+# APIs and can exceed Prometheus' 10s global; 45s stays under the 60s interval.
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:

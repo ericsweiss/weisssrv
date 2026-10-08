@@ -1,11 +1,20 @@
 ---
-# Storage Stack Integration Test - Converge
-# Deploys nas_storage role and sets up Samba client for connectivity testing
-#
-# What this test validates:
-# - nas_storage role deploys configuration correctly
-# - Samba service starts and is accessible
-# - NFS configuration files are generated (service won't fully work in Docker)
+# Both plays below select hosts by group, and an unmatched group pattern is a
+# warning, not an error, so a renamed group would skip the whole scenario green.
+- name: Converge - Molecule roster guard
+  hosts: all
+  gather_facts: false
+
+  tasks:
+    - name: Assert the molecule roster resolved
+      ansible.builtin.assert:
+        that:
+          - groups['nas_servers'] | default([]) | length == 1
+          - groups['smb_clients'] | default([]) | length == 1
+        fail_msg: >-
+          molecule.yml no longer produces nas_servers and smb_clients, so the
+          plays in this scenario match no hosts.
+      run_once: true
 
 - name: Converge - Storage Stack (NAS Server)
   hosts: nas_servers
@@ -28,10 +37,9 @@
           - smartmontools
         state: present
 
-    # Create mock ZFS mount points (since ZFS doesn't work in containers).
-    # Mode matches the nas_storage_exports entries for these paths: the role
-    # asserts that mode on the same dirs, so any other value here flip-flops
-    # ownership of it between converge and the role and fails idempotence.
+    # Mock ZFS mount points; ZFS does not work in containers. Mode matches the
+    # nas_storage_exports entries for these paths — the role asserts that mode,
+    # so any other value flip-flops between converge and the role.
     - name: Create mock ZFS mount points
       ansible.builtin.file:
         path: "{{ item }}"

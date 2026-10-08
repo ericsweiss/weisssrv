@@ -1,35 +1,14 @@
 ---
-# promtool unit tests for the backup escalations that measure a DAY or more
-# (ResticOffsiteFailedProlonged, PruneFailed, PruneBlocked, RepoShrank's 2d
-# delta window).
-#
-# None of them use a multi-day `for:` any more: a pending-alert timer lives in
-# Prometheus' memory and is discarded on restart, and this Prometheus is
-# NAS-pinned, so the escalation would reset during exactly the multi-day outage
-# it exists for. They read the elapsed time out of the TSDB instead — a metric
-# timestamp where one exists, min/max_over_time plus an `offset` history guard
-# where it does not — behind a short `for:`. The tests below therefore pin two
-# things per alert: that the escalation fires once the window is genuinely
-# covered, and that it does NOT fire on a freshly-deployed collector whose
-# history is shorter than the window.
-#
-# Split out of backup.test.yaml for cost: promtool re-evaluates EVERY rule in
-# the corpus once per evaluation_interval for the whole eval_time horizon, so a
-# 73h test at the 1m interval the other files use costs ~4400 evaluations of
-# 150+ rules. A 30m interval still lands two evaluations inside the shortest
-# `for:` here (1h) and runs two orders of magnitude cheaper. Input series stay
-# at 5m so they never go stale between evaluations (the 5m lookback delta).
+# Backup escalations measuring a day or more: ResticOffsiteFailedProlonged,
+# PruneFailed, PruneBlocked, RepoShrank. 30m interval; see README.md for the
+# cost model and why these read elapsed time from the TSDB, not a long `for:`.
 rule_files:
   - rules.yaml
 evaluation_interval: 30m
 tests:
   # ResticOffsiteFailedProlonged: `last_backup_success == 0` OR a failed run
-  # with NO backup metric at all (the pre-split emitter, or an abort before the
-  # backup stage). The `unless on (instance)` arm is what makes the second case
-  # work and is invisible to review — pinned in all three states below. Each
-  # arm now also requires its timestamp gauge to be more than a day stale;
-  # promtool starts at unix 0, so a timestamp of 0 is "more than a day ago" for
-  # every eval_time past 24h.
+  # with NO backup metric at all, each gated on a timestamp gauge more than a
+  # day stale. promtool starts at unix 0, so a 0 timestamp is stale past 24h.
   - interval: 5m
     input_series:
       - series: 'restic_offsite_last_backup_success{instance="10.0.10.102:9101"}'
@@ -45,10 +24,8 @@ tests:
           - exp_labels:
               severity: critical
               instance: 10.0.10.102:9101
-  # RESTART PROOF. The same 26h of failure with the series only starting at
-  # hour 20 — the shape a Prometheus restart leaves behind. Under the old 24h
-  # `for:` the pending timer restarted with the process and the escalation
-  # never elapsed; the metric's own timestamp is unaffected, so it still fires.
+  # Series starting mid-window (a Prometheus restart): the metric timestamp
+  # carries the age, so the escalation still fires.
   - interval: 5m
     input_series:
       - series: 'restic_offsite_last_backup_success{instance="10.0.10.102:9101"}'
@@ -93,9 +70,8 @@ tests:
           - exp_labels:
               severity: critical
               instance: 10.0.10.102:9101
-  # The backup landed but the RUN failed later (a crashed prune). The `unless`
-  # suppresses the run arm and last_backup_success==0 does not match, so this
-  # is deliberately NOT the prolonged-offsite-loss alert — ResticOffsiteFailed
+  # Backup landed, run failed later (a crashed prune): the `unless` suppresses
+  # the run arm, so the prolonged alert stays silent and ResticOffsiteFailed
   # covers the run.
   - interval: 5m
     input_series:
@@ -123,10 +99,8 @@ tests:
         alertname: ResticOffsiteFailedProlonged
         exp_alerts: []
 
-  # The retention pair. A ceiling refusal sets retention_blocked=1 and
-  # last_prune_success=0: ONLY ResticOffsitePruneBlocked may fire, with its
-  # own 48h window. Before the `unless`, PruneFailed announced the same state
-  # 24h earlier under "usually a stale repository lock".
+  # Retention pair: retention_blocked=1 with last_prune_success=0 may fire ONLY
+  # PruneBlocked (48h window), never PruneFailed.
   - interval: 5m
     input_series:
       - series: 'restic_offsite_last_prune_success{instance="10.0.10.102:9101"}'
@@ -200,12 +174,8 @@ tests:
         exp_alerts: []
 
   # ResticOffsiteRepoShrank must ignore the emitter's "0 = unknown" sentinel,
-  # which the EXIT trap writes on EVERY aborted run. Unguarded, the delta is
-  # hugely negative against a right-hand side of -0.2*0 = 0, so the comparison
-  # is trivially true and pages CRITICAL for a repo that never shrank.
-  # (5m sample interval throughout: `for: 1h` is evaluated at 1m resolution, so
-  # a 1h input interval would leave the series stale between samples and the
-  # alert could never reach firing.)
+  # written by the EXIT trap on every aborted run: unguarded, the delta is
+  # trivially negative and pages critical for a repo that never shrank.
   - interval: 5m
     input_series:
       - series: 'restic_offsite_repo_size_bytes{instance="10.0.10.102:9101"}'
@@ -298,4 +268,57 @@ tests:
         exp_alerts: []
       - eval_time: 50h
         alertname: ArchiveBackupFailed
+        exp_alerts: []
+
+  # ResticOffsitePruneNeverRan: a host uploading to B2 that has published no
+  # prune result at all. Its healthy peer, which has one, must not fire.
+  - interval: 5m
+    input_series:
+      - series: 'restic_offsite_last_success_timestamp_seconds{instance="10.0.10.102:9101"}'
+        values: '0+300x1200'
+      - series: 'restic_offsite_last_success_timestamp_seconds{instance="10.0.10.103:9101"}'
+        values: '0+300x1200'
+      - series: 'restic_offsite_last_prune_success{instance="10.0.10.103:9101"}'
+        values: '1+0x1200'
+    alert_rule_test:
+      # Inside the 3d window: the offset witness has no data yet.
+      - eval_time: 40h
+        alertname: ResticOffsitePruneNeverRan
+        exp_alerts: []
+      # Past the 71h offset witness but inside the 1h hold.
+      - eval_time: 71h30m
+        alertname: ResticOffsitePruneNeverRan
+        exp_alerts: []
+      - eval_time: 80h
+        alertname: ResticOffsitePruneNeverRan
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: 10.0.10.102:9101
+
+  # A host that pruned once and then went quiet is not "never pruned": the 3d
+  # lookback still sees that sample, so the alert stays silent.
+  - interval: 5m
+    input_series:
+      - series: 'restic_offsite_last_success_timestamp_seconds{instance="10.0.10.104:9101"}'
+        values: '0+300x1200'
+      - series: 'restic_offsite_last_prune_success{instance="10.0.10.104:9101"}'
+        values: '1+0x288'
+    alert_rule_test:
+      - eval_time: 80h
+        alertname: ResticOffsitePruneNeverRan
+        exp_alerts: []
+
+  # No prune series at all: neither prune-outcome rule may fire on an absent
+  # metric. ResticOffsitePruneNeverRan is the one that owns that state.
+  - interval: 5m
+    input_series:
+      - series: 'restic_offsite_last_success_timestamp_seconds{instance="10.0.10.102:9101"}'
+        values: '0+300x1200'
+    alert_rule_test:
+      - eval_time: 80h
+        alertname: ResticOffsitePruneFailed
+        exp_alerts: []
+      - eval_time: 80h
+        alertname: ResticOffsitePruneBlocked
         exp_alerts: []

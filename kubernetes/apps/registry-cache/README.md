@@ -36,11 +36,24 @@ warm LAN hit. Design + deploy-token runbook: **[`docs/27-gitlab-deployment.md`](
   back up. Bounded because CI only ever pulls the one `molecule-test` image.
 - **Scheduling**: general nodes, NAS-avoid preferred (disposable node-local
   cache; no cpu-class pin — the registry is a static Go binary).
-- **Observability**: native `/metrics` on `:5001`
-  (`observability/service-monitors/registry-cache.yaml`) + the
-  `RegistryCacheDown` alert (kube-state deployment availability). A cache outage
-  is degraded (slower CI cold pulls), not an outage — CI's `before_script` falls
-  back to a direct-registry pull — so the alert is `warning`, not `critical`.
+- **Observability**: native `/metrics` on `:5001`, scraped through
+  `servicemonitor.yaml` beside this app; the scrape allow is the second ingress
+  rule in `networkpolicy.yaml`. `RegistryCacheDown` fires when the Deployment has
+  no available replica or the scrape target is down. A cache outage is degraded
+  (slower CI cold pulls), not an outage — CI's `before_script` falls back to a
+  direct-registry pull — so the alert is `warning`, not `critical`.
+- **Missing credential**: both proxy fields are `secretKeyRef` env vars, so
+  without the `GitLab Registry Cache Deploy Token` item the pod never starts and
+  `RegistryCacheDown` fires 15 minutes later and keeps firing. Silence the alert
+  or drop `- registry-cache` from `kubernetes/apps/kustomization.yaml` while the
+  credential is away (docs/15).
 - **Version**: `registry_cache_version` in
   `ansible/inventories/prod/group_vars/all.yml` (`${registry_cache_version}`
   placeholder, resolved by Flux from the `cluster-versions` ConfigMap).
+
+## Disable
+
+Drop `- registry-cache` from `kubernetes/apps/kustomization.yaml`; Flux prunes
+the namespace. Molecule jobs then cold-pull the `molecule-test` image from the
+GitLab registry on every run, which is slower, not broken. Nothing else
+references it.

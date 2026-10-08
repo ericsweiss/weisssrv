@@ -23,15 +23,11 @@ variable "authentik_token" {
   }
 }
 
-# OAuth2 client secrets
-# One sensitive variable per OAuth2 provider, injected by the Taskfile / CI via
-# `op run` from the SAME 1Password items the applications themselves consume
-# (docs/15-credential-rotation.md "Required 1Password Items"), so Terraform and
-# the app can never disagree about a secret. Never committed, never defaulted.
-#
-# Length floor: a renamed 1Password field yields an empty string, and a
-# sensitive value's plan diff hides it — applying that desynchronises authentik
-# from the app and locks users out.
+# CRITICAL: OAuth2 client secrets, one sensitive variable per provider, injected via
+# `op run` from the same 1Password items the applications consume (docs/15). Never
+# committed, never defaulted. Each carries a length floor because a renamed 1Password
+# field yields an empty string that a sensitive plan diff hides, and applying that
+# desynchronises authentik from the app and locks users out.
 
 variable "oauth2_client_secret_mealie" {
   description = "Mealie OIDC client secret (1Password item 'Mealie SSO', field 'oidc-client-secret')"
@@ -121,15 +117,9 @@ variable "oauth2_client_secret_homarr" {
   }
 }
 
-# Basic-auth injection credentials: per-app upstream credentials stored as GROUP
-# attributes (groups.tf) and injected by the basic_auth_enabled proxy providers
-# (providers_proxy.tf). Values come from the SAME 1Password items as the apps'
-# real credentials, so authentik cannot inject a stale pair; usernames are
-# marked sensitive because the pairs travel as a unit.
-#
-# Non-empty only, no length floor — usernames are legitimately short. An empty
-# value silently disables injection, leaving the app's own login prompt behind
-# the SSO gate.
+# Basic-auth injection credentials: group attributes (groups.tf) injected by the
+# basic_auth_enabled proxy providers, from the same 1Password items as the apps' own
+# credentials. Validated non-empty only; an empty value silently disables injection.
 
 variable "basic_auth_nzbget_username" {
   description = "NZBGet ControlUsername (1Password item 'NZBGet', field 'username' — must match nzbget.conf)"

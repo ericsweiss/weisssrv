@@ -1,0 +1,17 @@
+---
+# Hindsight's native OpenTelemetry/Prometheus metrics. The API initializes its
+# Prometheus reader unconditionally and serves /metrics on the API port (:8888),
+# no auth. The scrape allow is allow-hindsight-ingress in networkpolicy.yaml.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: hindsight
+  namespace: hindsight
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hindsight
+  endpoints:
+    - port: api
+      interval: 30s
+      path: /metrics

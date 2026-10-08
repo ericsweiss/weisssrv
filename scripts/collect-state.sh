@@ -1,17 +1,13 @@
 #!/usr/bin/env bash
-# collect-state.sh - Collect cluster state with automatic secret redaction
-# Usage: ./scripts/collect-state.sh [--json] [output_file]
-#   --json: Output machine-readable JSON health summary to stdout (no file written)
+# collect-state.sh - Collect cluster state with automatic secret redaction.
+# Usage: ./scripts/collect-state.sh [--json] [output_file]; --json writes a JSON
+# health summary to stdout. Exit codes: 0 healthy or degraded, 2 catastrophic.
 
 set -euo pipefail
 
-# Both modes run the same probes into the same tri-state classifier; the
-# verdict logic and the redaction patterns live in collect-state-lib.sh so they
-# are unit-tested (scripts/test_collect_state_lib.py). Regular mode is strictly
-# stricter than --json: it adds the host-coverage floor, the ALL-collected-hosts
-# requirement and the section/firing-alert gates, all of which only demote.
-# Warning events are reported but advisory — they never gate a green verdict.
-# When adding a signal to one mode, mirror it in the other.
+# Both modes run the same probes into the same tri-state classifier; the verdict
+# logic and the redaction patterns live in collect-state-lib.sh (unit-tested).
+# Regular mode adds gates that only demote. Collector timestamps are UTC.
 
 _SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=scripts/collect-state-lib.sh
@@ -19,13 +15,55 @@ _SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # timeout_cmd (wall-clock backstop for every ssh below).
 # shellcheck source=scripts/shell-lib.sh
 . "$_SCRIPT_DIR/shell-lib.sh"
+# gitlab_health_code — shared with deploy-verify.sh and post-maintenance-verify.sh
+# so the three GitLab probes cannot drift. Function-only, nothing runs at source.
+# shellcheck source=scripts/deploy-verify-lib.sh
+. "$_SCRIPT_DIR/deploy-verify-lib.sh"
 # Host/IP roster, generated from ansible/inventories/prod/hosts.yml.
 # shellcheck source=scripts/hosts.env
 . "$_SCRIPT_DIR/hosts.env"
 
+# Site domains from cluster-config.yaml, the single source. The remote heredocs
+# are quoted, so remote_prelude exports these into each one.
+if _domains=$("$_SCRIPT_DIR/cluster-config-value.sh" \
+        cluster_internal_domain cluster_external_domain \
+        cluster_node_label_domain 2>&1); then
+    read -r CS_INTERNAL_DOMAIN CS_EXTERNAL_DOMAIN CS_NODE_LABEL_DOMAIN <<< "$_domains"
+else
+    echo "collect-state: cannot resolve the site domains: $_domains" >&2
+    CS_INTERNAL_DOMAIN=""
+    CS_EXTERNAL_DOMAIN=""
+    CS_NODE_LABEL_DOMAIN=""
+fi
+
 # Proxmox hosts by Tailscale/LAN hostname (PVE_HOSTS in hosts.env); split the
-# sourced space-joined scalar into the array this script uses.
+# sourced space-joined scalar into the array this script uses. Rosters expand as
+# ${ARR[@]+"${ARR[@]}"}: under set -u a bare one aborts on bash before 4.4.
 read -ra PVE_HOSTS <<< "$PVE_HOSTS"
+
+# The account every managed host grants key-based SSH to.
+SSH_USER="${SSH_USER:-eric}"
+
+# The one spelling of the vzdump directory: the backup-freshness block skipping
+# a host that lacks it is how "not the NAS" is detected.
+PVE_DUMP_DIR="${PVE_DUMP_DIR:-/mnt/tank/proxmox/dump}"
+
+# NAS_HOSTS comes from hosts.env. The expected pool names are read from
+# nas_storage_zfs_pools at run time so a rename cannot go stale; absence counts,
+# because a pool that failed to import has no `zpool list` row at all.
+NAS_ZFS_POOLS="${NAS_ZFS_POOLS:-$(awk '
+    FNR == 1 { inpools = 0 }
+    /^nas_storage_zfs_pools:/ { inpools = 1; next }
+    inpools && /^[^[:space:]#]/ { inpools = 0 }
+    inpools && /^  - name:/ { printf "%s ", $3 }
+' "$_SCRIPT_DIR/../ansible/inventories/prod/host_vars/"*.yml 2>/dev/null || true)}"
+# An empty roster would relax the absence check to "no pool at all", so a roster
+# that could not be read is recorded as unknown and counted, never passed.
+NAS_ZFS_POOLS_UNKNOWN=false
+if [ -z "${NAS_ZFS_POOLS// /}" ]; then
+    NAS_ZFS_POOLS_UNKNOWN=true
+    echo "collect-state: no nas_storage_zfs_pools in ansible/inventories/prod/host_vars; storage pool expectations are unknown" >&2
+fi
 
 # SSH option sets, defined once. ConnectTimeout bounds the TCP connect and
 # ServerAlive* a dead post-connect channel; ssh_collect/ssh_probe_cmd add the
@@ -42,71 +80,88 @@ SSH_PROBE_TIMEOUT=10
 ssh_collect() { timeout_cmd "$SSH_COLLECT_TIMEOUT" ssh "${SSH_OPTS[@]}" "$@"; }
 ssh_probe_cmd() { timeout_cmd "$SSH_PROBE_TIMEOUT" ssh "${SSH_OPTS_PROBE[@]}" "$@"; }
 
-# Shared health probes. Each is defined ONCE and called from BOTH the --json
-# branch and regular mode so the two classifiers see identical signals;
-# per-call-site differences are arguments (extra kubectl args via "$@";
-# probe_zfs_degraded's optional "detail" for the --json pool list). Probes
-# tolerate failure and degrade to 0 / false / "unknown" so an operator-side
-# problem never promotes a verdict.
+# Shared health probes, defined once and called from both modes so the two
+# classifiers see identical signals. Each degrades to 0 / false / "unknown" so an
+# operator-side problem never promotes a verdict.
 
 # Proxmox reachability. Echoes "<reachable> <total>".
 probe_pve_reachable() {
     local up=0 total=0 host
-    for host in "${PVE_HOSTS[@]}"; do
+    for host in ${PVE_HOSTS[@]+"${PVE_HOSTS[@]}"}; do
         total=$((total + 1))
-        if ssh_probe_cmd "eric@${host}" "true" 2>/dev/null; then
+        if ssh_probe_cmd "${SSH_USER}@${host}" "true" 2>/dev/null; then
             up=$((up + 1))
         fi
     done
     echo "$up $total"
 }
 
-# ZFS pool health aggregated across ALL reachable Proxmox hosts (a degraded
-# local-ssd on a compute node must not hide behind a healthy NAS). Sets:
-#   ZFS_DEGRADED_RESULT  count of non-ONLINE pools
-#   ZFS_POOLS_RESULT     JSON array of the first reachable host's pools, built
-#                        only when called with "detail" (otherwise stays "[]")
-# The degraded count inspects only column 2 (health), so the name,health and
-# name,health,size,alloc,free column sets yield identical counts.
+# ZFS pool health aggregated across all reachable Proxmox hosts. Sets
+# ZFS_DEGRADED_RESULT (non-ONLINE pools, plus pools a storage host should list and
+# does not), ZFS_MISSING_RESULT (those pools, named) and ZFS_POOLS_RESULT under "detail".
 probe_zfs_degraded() {
     local want_detail="${1:-}"
     local cols="name,health"
     [ "$want_detail" = "detail" ] && cols="name,health,size,alloc,free"
     ZFS_DEGRADED_RESULT=0
     ZFS_POOLS_RESULT="[]"
-    local host pools host_degraded
-    for host in "${PVE_HOSTS[@]}"; do
+    ZFS_MISSING_RESULT=""
+    local host pools listed host_degraded seen want absent
+    local -a expect_pools=()
+    for host in ${PVE_HOSTS[@]+"${PVE_HOSTS[@]}"}; do
+        listed=false
+        pools=""
         # shellcheck disable=SC2029 # $cols is a trusted constant; expanding it
         # client-side is intended (the remote gets the same literal column list).
-        if pools=$(ssh_probe_cmd "eric@${host}" "zpool list -H -o ${cols} 2>/dev/null" 2>/dev/null); then
+        if pools=$(ssh_probe_cmd "${SSH_USER}@${host}" "zpool list -H -o ${cols} 2>/dev/null" 2>/dev/null); then
+            listed=true
             host_degraded=$(echo "$pools" | awk -F'\t' 'NF>=2 && $2 != "ONLINE" {c++} END{print c+0}')
             ZFS_DEGRADED_RESULT=$((ZFS_DEGRADED_RESULT + host_degraded))
             if [ "$want_detail" = "detail" ] && [ "$ZFS_POOLS_RESULT" = "[]" ]; then
                 ZFS_POOLS_RESULT=$(echo "$pools" | jq -R -s '[split("\n")[] | select(length>0) | split("\t") | {name:.[0], health:.[1], size:.[2], alloc:.[3], free:.[4]}]' 2>/dev/null || echo "[]")
             fi
         fi
+        # A pool that failed to import has no `zpool list` row at all, so on the
+        # storage hosts absence is counted: 0 degraded must not mean "gone".
+        case " ${NAS_HOSTS:-} " in *" $host "*) ;; *) continue ;; esac
+        seen=" $(echo "$pools" | awk -F'\t' '$1 != "" {printf "%s ", $1}') "
+        absent="is NOT IMPORTED on"
+        [ "$listed" = true ] || absent="could not be listed on"
+        if [ "${NAS_ZFS_POOLS_UNKNOWN:-false}" = true ]; then
+            ZFS_DEGRADED_RESULT=$((ZFS_DEGRADED_RESULT + 1))
+            ZFS_MISSING_RESULT="${ZFS_MISSING_RESULT}${ZFS_MISSING_RESULT:+, }could not read the expected pool list from host_vars, so pools on $host are unchecked"
+        elif [ -n "${NAS_ZFS_POOLS:-}" ]; then
+            read -ra expect_pools <<< "$NAS_ZFS_POOLS"
+            for want in "${expect_pools[@]}"; do
+                case "$seen" in
+                    *" $want "*) ;;
+                    *)
+                        ZFS_DEGRADED_RESULT=$((ZFS_DEGRADED_RESULT + 1))
+                        ZFS_MISSING_RESULT="${ZFS_MISSING_RESULT}${ZFS_MISSING_RESULT:+, }pool $want $absent $host"
+                        ;;
+                esac
+            done
+        elif [ "$listed" = true ] && [ -z "${seen// /}" ]; then
+            ZFS_DEGRADED_RESULT=$((ZFS_DEGRADED_RESULT + 1))
+            ZFS_MISSING_RESULT="${ZFS_MISSING_RESULT}${ZFS_MISSING_RESULT:+, }no pool is imported on $host"
+        fi
     done
 }
 
-# Flux readiness — count Kustomizations and HelmReleases that are NOT
-# reconciling: Ready!=True OR spec.suspend=true. Suspended resources report
-# their last (stale) Ready=True condition forever, so counting readiness alone
-# let a cluster frozen weeks ago classify as OK. Extra kubectl args (e.g.
-# --request-timeout=5s) pass through via "$@". Echoes the count (0 on failure).
+# Flux readiness — Kustomizations and HelmReleases that are NOT reconciling:
+# Ready!=True OR suspended (a suspended object keeps a stale Ready=True forever).
+# Extra kubectl args pass through; the count, else "unknown" — never a false 0.
 probe_flux_not_ready() {
-    local out=0 json
+    local out=unknown json
     if json=$(kubectl "$@" get kustomizations.kustomize.toolkit.fluxcd.io,helmreleases.helm.toolkit.fluxcd.io -A -o json 2>/dev/null); then
-        out=$(echo "$json" | jq '[.items[] | select((.spec.suspend == true) or any(.status.conditions[]?; .type=="Ready" and .status!="True"))] | length' 2>/dev/null || echo 0)
+        out=$(echo "$json" | jq '[.items[] | select((.spec.suspend == true) or any(.status.conditions[]?; .type=="Ready" and .status!="True"))] | length' 2>/dev/null || echo unknown)
     fi
     echo "$out"
 }
 
-# Firing Alertmanager alerts, excluding the two always-on by-design alerts
-# (Watchdog, and kube-prometheus-stack's InfoInhibitor) — the strongest
-# health signal here, and one that DOES gate the regular verdict. The pod is
-# resolved by label (not the StatefulSet ordinal) so a rename degrades to
-# "unknown" rather than a false zero. Extra kubectl args pass through via "$@".
-# Echoes the count, or "unknown"; "unknown" never promotes or demotes a run.
+# Firing Alertmanager alerts, excluding Watchdog and InfoInhibitor. The pod is
+# resolved by label, so a rename degrades to "unknown"; extra kubectl args pass
+# through via "$@". The caller coerces "unknown" to 1, so it degrades the verdict.
 probe_firing_alerts() {
     local pod out
     pod=$(kubectl "$@" -n observability get pods -l app.kubernetes.io/name=alertmanager \
@@ -125,36 +180,23 @@ probe_firing_alerts() {
     fi
 }
 
-# Recent Warning events (last hour). Extra kubectl args pass through via "$@".
-# Echoes the count, or "unknown" when the query could not run (mirroring
-# probe_firing_alerts, so the header distinguishes "no warnings" from "could not
-# ask"). Advisory only — it never gates the verdict.
-# One exclusion: FailedScheduling in gitlab-runner* namespaces citing
-# "Insufficient cpu/memory" is the CI pool's designed capacity overflow and
-# recurs on every pipeline. A message that ALSO cites a real blocker (PVC /
-# exceeded quota / volume node affinity) still counts, as does any non-capacity
-# or non-runner FailedScheduling. Taint/affinity mentions are deliberately not
-# disqualifying — every normal overflow message lists the tainted NAS/server
-# nodes, so keying off those would void the exclusion.
+# Recent Warning events (last hour), advisory only: they never gate the verdict.
+# Extra kubectl args pass through via "$@"; echoes the count or "unknown".
+# The exclusion policy is warning_events_filter in collect-state-lib.sh.
 probe_warning_events() {
-    local out json
-    # The timestamp is coalesced: Events-API events often carry only eventTime
-    # (lastTimestamp null), and jq's `null >= $cutoff` is false.
+    local json cutoff
     if ! json=$(kubectl "$@" get events -A --field-selector type=Warning -o json 2>/dev/null); then
         echo "unknown"
         return
     fi
-    out=$(echo "$json" | jq --arg cutoff "$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-1H +%Y-%m-%dT%H:%M:%SZ)" '[.items[] | select(((.lastTimestamp // .eventTime // .metadata.creationTimestamp) // "") >= $cutoff) | select((.reason == "FailedScheduling" and ((.metadata.namespace // "") | test("^gitlab-runner")) and ((.message // "") | test("Insufficient (cpu|memory)"; "i")) and (((.message // "") | test("persistentvolumeclaim|exceeded quota|volume node affinity conflict"; "i")) | not)) | not)] | length' 2>/dev/null) || out="unknown"
-    echo "${out:-unknown}"
+    cutoff=$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+        || date -u -v-1H +%Y-%m-%dT%H:%M:%SZ)
+    echo "$json" | warning_events_filter "$cutoff"
 }
 
-# K3s nodes: fetch node JSON and compute readiness. Extra kubectl args pass
-# through via "$@". Sets:
-#   K3S_API_OK_RESULT   true/false (API responded with a non-empty node list)
-#   K3S_TOTAL_RESULT    node count
-#   K3S_READY_RESULT    nodes with Ready=True
-#   K3S_VERSION_RESULT  first node's kubelet version ("unknown" on failure)
-# All jq parses use fallbacks so malformed/partial JSON won't abort under set -e.
+# K3s nodes: fetch node JSON and compute readiness, with kubectl args via "$@".
+# Sets K3S_API_OK_RESULT, K3S_TOTAL_RESULT, K3S_READY_RESULT, K3S_VERSION_RESULT.
+# Every jq parse has a fallback so partial JSON does not abort under set -e.
 probe_k3s_ready() {
     K3S_API_OK_RESULT=false
     K3S_TOTAL_RESULT=0
@@ -170,30 +212,15 @@ probe_k3s_ready() {
     fi
 }
 
-# GitLab application health, TLS verified (no -k); 200 == healthy. Internal
-# first, external only on a connection-level 000 — see gitlab_health_code in
-# deploy-verify-lib.sh, which this script cannot source (it runs on hosts with
-# no kubectl/jq).
-probe_gitlab_http() {
-    local code
-    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 https://git.esweiss.com/-/health 2>/dev/null || true)
-    if [ -z "$code" ] || [ "$code" = "000" ]; then
-        code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 https://git.ericsweiss.com/-/health 2>/dev/null || true)
-    fi
-    echo "$code"
-}
-
 if [ "${1:-}" = "--json" ]; then
     # Quick health check mode - outputs JSON summary to stdout (built via jq -n at end)
 
     # Proxmox nodes reachability
     read -r PVE_UP PVE_TOTAL <<< "$(probe_pve_reachable)"
 
-    # K3s nodes. K3S_API_OK distinguishes "local kubectl can't reach the
-    # cluster" (collector-side) from "cluster has zero Ready nodes"
-    # (catastrophic) in the verdict below — mirroring regular mode's
-    # $K3S_API_OK gate. The pods temp file (mktemp to avoid /tmp
-    # collision/symlink issues) is consumed by the pod probe just below.
+    # K3s nodes. K3S_API_OK distinguishes "local kubectl cannot reach the
+    # cluster" from "cluster has zero Ready nodes" in the verdict below. The
+    # mktemp pods file is consumed by the pod probe just below.
     K3S_PODS_JSON=$(mktemp)
     trap 'rm -f "$K3S_PODS_JSON"' EXIT
     probe_k3s_ready
@@ -215,18 +242,28 @@ if [ "${1:-}" = "--json" ]; then
     ZFS_POOLS=$ZFS_POOLS_RESULT
 
     # Flux readiness — count Kustomizations and HelmReleases that are NOT Ready=True.
+    # "unknown" (the query could not run) demotes the verdict via 1 and is
+    # emitted as JSON null, so a consumer can tell it from "all reconciling".
     FLUX_NOT_READY=$(probe_flux_not_ready)
+    FLUX_NOT_READY_NUM=$(coerce_int "$FLUX_NOT_READY" 1)
+    FLUX_NOT_READY=$(coerce_int "$FLUX_NOT_READY" null)
 
     # Recent warning events (last hour). Spikes here often surface Flux/HelmRelease
     # / scheduling issues before the explicit Ready=False alerts trip. "unknown"
     # (query could not run) is emitted as JSON null, never as a false 0.
-    WARNING_EVENTS=$(probe_warning_events)
-    case "$WARNING_EVENTS" in ''|*[!0-9]*) WARNING_EVENTS=null ;; esac
+    WARNING_EVENTS=$(coerce_int "$(probe_warning_events)" null)
+
+    # Firing alerts — see probe_firing_alerts. An unaskable Alertmanager must
+    # not read as healthy, so the verdict input coerces to 1 while the JSON
+    # carries null (coerce_int, collect-state-lib.sh).
+    ALERTS_FIRING=$(probe_firing_alerts)
+    ALERTS_FIRING_NUM=$(coerce_int "$ALERTS_FIRING" 1)
+    ALERTS_FIRING=$(coerce_int "$ALERTS_FIRING" null)
 
     # GitLab is the GitOps source of truth, so its health degrades the verdict
-    # (never catastrophic) — see probe_gitlab_http.
+    # (never catastrophic) — see gitlab_health_code.
     GITLAB_OK=0
-    GITLAB_HTTP=$(probe_gitlab_http)
+    GITLAB_HTTP=$(gitlab_health_code /-/health)
     [ "$GITLAB_HTTP" = "200" ] && GITLAB_OK=1
 
     # Collector context separates "cluster unhealthy" from "collector
@@ -249,7 +286,8 @@ if [ "${1:-}" = "--json" ]; then
     # decided by classify_json (collect-state-lib.sh, unit-tested); Warning
     # events are advisory and do not gate green.
     JSON_VERDICT=$(classify_json "$PVE_UP" "$PVE_TOTAL" "$K3S_API_OK" \
-        "$K3S_READY" "$K3S_TOTAL" "$FLUX_NOT_READY" "$ZFS_DEGRADED" "$GITLAB_OK")
+        "$K3S_READY" "$K3S_TOTAL" "$FLUX_NOT_READY_NUM" "$ZFS_DEGRADED" "$GITLAB_OK" \
+        "$ALERTS_FIRING_NUM")
     jq -n \
         --arg verdict "$JSON_VERDICT" \
         --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
@@ -265,6 +303,7 @@ if [ "${1:-}" = "--json" ]; then
         --argjson zfs_degraded "$ZFS_DEGRADED" \
         --argjson flux_not_ready "$FLUX_NOT_READY" \
         --argjson warning_events "$WARNING_EVENTS" \
+        --argjson alerts_firing "$ALERTS_FIRING" \
         --argjson gitlab_ok "$GITLAB_OK" \
         --arg ctx_host "$CTX_HOST" \
         --arg ctx_user "$CTX_USER" \
@@ -282,6 +321,7 @@ if [ "${1:-}" = "--json" ]; then
             flux: { not_ready_count: $flux_not_ready },
             gitlab: { healthy: ($gitlab_ok == 1) },
             events: { warnings_last_hour: $warning_events },
+            alerts: { firing: $alerts_firing },
             collector_context: {
                 host: $ctx_host,
                 user: $ctx_user,
@@ -293,10 +333,9 @@ if [ "${1:-}" = "--json" ]; then
             }
         }'
 
-    # Exit non-zero if no infrastructure is reachable
-    if [ "$PVE_UP" -eq 0 ] && [ "$K3S_TOTAL" -eq 0 ]; then
-        exit 1
-    fi
+    # Mode-symmetric exit codes: catastrophic is rc=2 in both modes, degraded
+    # is rc=0 — a degraded cluster is still a readable answer.
+    [ "$JSON_VERDICT" = "catastrophic" ] && exit 2
     exit 0
 fi
 
@@ -305,12 +344,10 @@ TEMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TEMP_DIR"' EXIT
 
 # Hosts to collect from
-PROXMOX_HOSTS=("${PVE_HOSTS[@]}")
-# Non-Proxmox hosts are addressed by IP, not bare hostname: only the 6 Proxmox
-# hosts are on Tailscale (MagicDNS), so bare k3s/smtp/gitlab names resolve only
-# on-LAN. Using IPs lets a remote/--json run reach them over the tailnet subnet
-# route instead of false-failing the coverage gate on "could not resolve host".
-# All rosters below are sourced from hosts.env (generated from hosts.yml).
+PROXMOX_HOSTS=(${PVE_HOSTS[@]+"${PVE_HOSTS[@]}"})
+# Non-Proxmox hosts are addressed by IP: only the 6 Proxmox hosts are on
+# Tailscale MagicDNS, so a bare name false-fails the coverage gate off-LAN.
+# All rosters below come from hosts.env (generated from hosts.yml).
 read -ra DNS_HOSTS <<< "$DNS_IPS"   # dns-01, dns-02
 read -ra MAIL_HOSTS <<< "$MAIL_IPS"  # smtp-relay
 GITLAB_HOST="$GITLAB_IP"  # gitlab VM on pve-nas-01
@@ -325,18 +362,15 @@ HOME_ASSISTANT_HOST="$HOME_ASSISTANT_IP"  # home (HAOS VM)
 # Flag to avoid collecting cluster-wide k3s data multiple times (runs on first server node only)
 K3S_CLUSTER_COLLECTED=false
 
-# Run-quality tracking
-# Counters are incremented during collection; a status header is
-# rendered at the end of the run and the script exits non-zero when
-# coverage falls below the floor (see status logic at end of script).
+# Run-quality tracking. The counters feed the status header and the exit code
+# at the end of the run.
 HOSTS_TOTAL=0     # number of host SSHes attempted across all sections
 HOSTS_OK=0        # number of host SSHes that returned rc=0
 K3S_API_OK=false  # set true if `kubectl get nodes` succeeds locally
 COVERAGE_FLOOR_PCT=50  # below this, the run is FAILED and CLUSTER_STATUS.txt is NOT overwritten
-# Specialised collectors (Proxmox/DNS/mail/k3s/GitLab/compose/HAOS) open a
-# SECOND ssh session per host that the host counters never see. run_section
-# wraps every one of them so a failed specialised collector reaches the verdict
-# instead of leaving a bare "Failed (rc=N)" under an OK header.
+# Specialised collectors open a SECOND ssh session per host that the host
+# counters never see. run_section wraps every one of them so a failed collector
+# reaches the verdict instead of a bare "Failed (rc=N)" under an OK header.
 SECTIONS_TOTAL=0
 SECTIONS_OK=0
 
@@ -344,6 +378,9 @@ SECTIONS_OK=0
 # remote shell via `declare -f` so `cs_emit` / `cs_capped` are defined host-side.
 remote_prelude() {
     declare -f cs_capped cs_emit
+    printf 'CS_INTERNAL_DOMAIN=%q\nCS_EXTERNAL_DOMAIN=%q\nCS_NODE_LABEL_DOMAIN=%q\n' \
+        "$CS_INTERNAL_DOMAIN" "$CS_EXTERNAL_DOMAIN" "$CS_NODE_LABEL_DOMAIN"
+    printf 'PVE_DUMP_DIR=%q\n' "$PVE_DUMP_DIR"
 }
 
 # run_section <label> <command...> — run a specialised collector, record
@@ -368,16 +405,19 @@ run_section() {
 
 collect_host() {
     local host=$1
-    local user=${2:-eric}
+    local user=${2:-$SSH_USER}
     echo "=== Collecting from $host ==="
 
-    # Capture both stdout and stderr, show errors on failure
-    # Temporarily disable errexit to capture exit code before it triggers script exit
-    local ssh_output
-    local ssh_rc
+    local ssh_output ssh_rc ssh_err
+    # Remote stderr goes to a file, not into the artifact: merged in, a local
+    # warning reads as this host's output.
+    ssh_err=$(mktemp)
     set +e
     ssh_output=$( { remote_prelude; cat << 'REMOTE_EOF'
-echo "=== $HOSTNAME - $(date -Iseconds) ==="
+echo "=== $HOSTNAME - $(date -u -Iseconds) ==="
+# Banner and header stamps are UTC so blocks from different hosts line up; the
+# host zone is named because the bodies below (timers, journals) stay host-local.
+echo "Host timezone: $(timedatectl show -p Timezone --value 2>/dev/null || echo unknown)"
 echo ""
 echo "--- System Info ---"
 uname -a
@@ -406,9 +446,8 @@ systemctl list-timers --all --no-pager 2>/dev/null | cs_emit "none"
 echo ""
 echo "--- Recent Error Sources (journalctl -p err, last 1 day; counts only) ---"
 # Identifier + count ONLY — never message bodies: raw journal errors can carry
-# tokens/URLs/PII the generic redaction doesn't key on (same policy as the
-# GitLab/HA log exclusions). Enough to see WHICH service is erroring and how
-# loudly; read the messages on the host when needed.
+# tokens/URLs/PII the generic redaction does not key on. Read the messages on
+# the host when needed.
 _err_sources=$(journalctl -p err -b --since '-1 day' --no-pager -o short 2>/dev/null \
     | grep -v '^--' | awk '{print $5}' | sed 's/\[[0-9]*\]:*$//;s/:$//' \
     | sort | uniq -c | sort -rn | head -15 || true)
@@ -433,30 +472,27 @@ else
 fi
 echo ""
 REMOTE_EOF
-    } | ssh_collect "${user}@${host}" bash 2>&1 )
+    } | ssh_collect "${user}@${host}" bash 2>"$ssh_err" )
     ssh_rc=$?
     set -e
 
     HOSTS_TOTAL=$((HOSTS_TOTAL + 1))
     if [ $ssh_rc -ne 0 ]; then
         echo "Failed to connect to $host (exit code: $ssh_rc)"
-        # Show first few lines of error output for diagnostics
-        echo "Error details: $(echo "$ssh_output" | head -3)"
+        echo "Error details: $(head -3 "$ssh_err" | tr '\n' ' ')"
     else
         HOSTS_OK=$((HOSTS_OK + 1))
         echo "$ssh_output"
     fi
+    rm -f "$ssh_err"
 }
 
 collect_proxmox() {
     local host=$1
     echo "=== Proxmox-specific: $host ==="
 
-    # Inject the pure firewall-enumeration helper (collect-state-lib.sh, unit-
-    # tested) ahead of the remote body via `declare -f`, then stream the quoted
-    # body (remote vars intact) so the host runs the same tested code.
     local rc=0
-    { remote_prelude; declare -f firewall_guest_fw_list; cat << 'EOF'
+    { remote_prelude; cat << 'EOF'
 echo "--- Proxmox Version ---"
 pveversion 2>/dev/null || echo "Not a Proxmox host"
 echo ""
@@ -465,20 +501,6 @@ sudo pvecm status 2>/dev/null | grep -E 'Name:|Nodes:|Quorate:' || echo "No clus
 echo ""
 echo "--- Firewall Status ---"
 sudo pve-firewall status 2>/dev/null || echo "No firewall"
-echo ""
-echo "--- Firewall IP Sets ---"
-sudo cat /etc/pve/firewall/cluster.fw 2>/dev/null | grep --no-group-separator -A 20 '\[IPSET' | cs_capped 200 "No firewall config"
-echo ""
-echo "--- Firewall Guest Rules ---"
-# Enumerate every per-guest firewall config on this host (a hand-maintained
-# VMID list drops new guests). cluster.fw is dumped above; sudo find because
-# /etc/pve/firewall/*.fw is root:www-data 0640.
-while IFS= read -r fw; do
-    [ -n "$fw" ] || continue
-    vmid=$(basename "$fw" .fw)
-    echo "Guest ${vmid}:"
-    sudo cat "$fw" 2>/dev/null || echo "  Cannot read"
-done < <(sudo find /etc/pve/firewall -maxdepth 1 -name '*.fw' 2>/dev/null | firewall_guest_fw_list)
 echo ""
 echo "--- Bond Interfaces ---"
 # active-backup bond MAC-flap guard: all_slaves_active must stay 0
@@ -712,37 +734,24 @@ else
     echo "Tailscale not installed"
 fi
 echo ""
-echo "--- Oh My Zsh Plugins ---"
-# Plugins span multiple lines in .zshrc, extract the entire block
-if [ -f ~/.zshrc ]; then
-    # Use sed to extract plugins=( ... ) block (handles multi-line)
-    grep --no-group-separator -A 50 '^plugins=(' ~/.zshrc 2>/dev/null | sed -n '/^plugins=(/,/)/p' | cs_capped 20 "Not found"
-else
-    echo "No zsh config"
-fi
-echo ""
 echo "--- Proxmox HA Status ---"
 sudo ha-manager status 2>/dev/null || echo "HA not configured"
 echo ""
 echo "--- HA Resources ---"
 sudo ha-manager config 2>/dev/null | grep -E '^(ct|vm):' || echo "No HA resources"
 echo ""
-echo "--- HA Rules ---"
-sudo ha-manager rules list 2>/dev/null || echo "No HA rules (Proxmox 9+ feature)"
-echo ""
 echo "--- Storage Replication ---"
 sudo pvesr list 2>/dev/null || echo "No replication jobs"
 sudo pvesr status 2>/dev/null | head -10 || true
 echo ""
 echo "--- Backup Freshness (NAS only: vzdump + archive replication + offsite) ---"
-if [ -d /mnt/tank/proxmox/dump ]; then
+if [ -d "$PVE_DUMP_DIR" ]; then
     echo "Newest vzdump archives:"
     # Glob must expand under root (the dump dir is not eric-readable).
-    sudo sh -c 'ls -lt /mnt/tank/proxmox/dump/*.zst 2>/dev/null' | cs_capped 5 "  No vzdump archives found"
+    sudo sh -c "ls -lt '$PVE_DUMP_DIR'/*.zst 2>/dev/null" | cs_capped 5 "  No vzdump archives found"
     echo "archive-backup timer:"
-    # Cap 5: `systemctl list-timers <unit> --all` renders 4 lines (header, timer,
-    # blank, "N timers listed."), so a lower cap flags a complete section as
-    # truncated — and the truncation marker is this artifact's trust signal.
+    # Cap 5: `systemctl list-timers` for one unit renders 4 lines, so a lower cap
+    # would flag a complete section as truncated.
     systemctl list-timers archive-backup.timer --all --no-pager 2>/dev/null | cs_capped 5 "  No archive-backup timer"
     echo "archive-backup metrics:"
     cat /var/lib/node_exporter/archive_backup.prom 2>/dev/null | cs_emit "  No archive-backup metrics"
@@ -786,11 +795,9 @@ if [ -d /mnt/tank/proxmox/dump ]; then
         app=$(basename "$d")
         pat=$(echo "$pats" | awk -F"\t" -v a="$app" "\$1==a{print \$2}")
         if [ -n "$pat" ]; then
-          # The collector walk, reproduced exactly: recursive, three temp-file
-          # exclusions. A narrower walk here would report NO ARTIFACT for a dump
-          # that lands one directory deeper while
-          # backup_artifact_last_mtime_seconds reads fresh — the metric-vs-truth
-          # disagreement this block exists to expose, inverted.
+          # The collector walk, reproduced exactly (recursive, three temp-file
+          # exclusions) so this block and backup_artifact_last_mtime_seconds see
+          # the same files.
           newest=$(find "$d" -type f -name "$pat" ! -name "*.tmp" ! -name "*.partial" ! -name "*.part" -printf "%T@\t%s\t%f\n" 2>/dev/null | sort -n | tail -1)
         else
           newest=$(find "$d" -maxdepth 1 -type f -printf "%T@\t%s\t%f\n" 2>/dev/null | sort -n | tail -1)
@@ -809,16 +816,13 @@ if [ -d /mnt/tank/proxmox/dump ]; then
         done
       done' 2>/dev/null \
         | cs_emit "  No per-app backup landing dirs"
-    # Recovery depth: the retention policy states the INTENT, this states the
-    # truth (docs/42 § Effective restore depth). Read-only (restic_ro passes
-    # --no-lock) but it reaches B2, so a slow or failed list must degrade to a
-    # marker rather than hang the unattended run.
+    # Recovery depth: retention states the INTENT, this states the truth
+    # (docs/42 § Effective restore depth). Read-only, but it reaches B2, so a
+    # slow or failed list degrades to a marker rather than hanging the run.
     echo "restic recovery points (oldest/newest of the offsite repo):"
-    # Capture-and-test rather than piping straight into cs_capped: the fallback
-    # must describe the EMPTY case only (collect-state-lib.sh), and an offsite
-    # repo holding ZERO snapshots is a DR emergency that must not read the same
-    # as a B2 blip or a missing binary. The timeout still bounds an unattended
-    # run; it just gets its own wording now.
+    # Capture and test rather than piping into cs_capped: a repo holding ZERO
+    # snapshots is a DR emergency and must not read like a B2 blip or a missing
+    # binary.
     snaps=$(sudo timeout 90 restic-offsitectl snapshots 2>&1); rc=$?
     if [ "$rc" -eq 124 ]; then
       echo "  Snapshot listing TIMED OUT after 90s (B2 slow or unreachable) — repository state UNKNOWN"
@@ -829,13 +833,48 @@ if [ -d /mnt/tank/proxmox/dump ]; then
       printf '%s\n' "$snaps" | cs_capped 12 "  Repository holds NO snapshots — nothing is restorable"
     fi
 else
-    echo "Not the NAS (no /mnt/tank/proxmox/dump); skipped"
+    echo "Not the NAS (no $PVE_DUMP_DIR); skipped"
 fi
 echo ""
 EOF
-    } | ssh_collect "eric@${host}" bash 2>/dev/null || rc=$?
+    } | ssh_collect "${SSH_USER}@${host}" bash 2>/dev/null || rc=$?
     [ "$rc" -eq 0 ] || echo "Failed (rc=$rc)"
     return "$rc"
+}
+
+# The /etc/pve-backed sections, collected once: /etc/pve is shared cluster
+# storage, so these are identical on every node and each host is attempted until
+# one answers. `declare -f` injects the tested firewall-enumeration helper.
+collect_proxmox_cluster() {
+    local host rc
+    for host in ${PVE_HOSTS[@]+"${PVE_HOSTS[@]}"}; do
+        rc=0
+        { remote_prelude; declare -f firewall_guest_fw_list; cat << 'EOF'
+echo "=== Proxmox cluster-wide (collected once from $HOSTNAME) ==="
+echo ""
+echo "--- Firewall IP Sets ---"
+sudo cat /etc/pve/firewall/cluster.fw 2>/dev/null | grep --no-group-separator -A 20 '\[IPSET' | cs_capped 200 "No firewall config"
+echo ""
+echo "--- Firewall Guest Rules ---"
+# Enumerate every per-guest firewall config (a hand-maintained VMID list drops
+# new guests). cluster.fw is dumped above; sudo find because
+# /etc/pve/firewall/*.fw is root:www-data 0640.
+while IFS= read -r fw; do
+    [ -n "$fw" ] || continue
+    vmid=$(basename "$fw" .fw)
+    echo "Guest ${vmid}:"
+    sudo cat "$fw" 2>/dev/null || echo "  Cannot read"
+done < <(sudo find /etc/pve/firewall -maxdepth 1 -name '*.fw' 2>/dev/null | firewall_guest_fw_list)
+echo ""
+echo "--- HA Rules ---"
+sudo ha-manager rules list 2>/dev/null || echo "No HA rules (Proxmox 9+ feature)"
+echo ""
+EOF
+        } | ssh_collect "${SSH_USER}@${host}" bash 2>/dev/null || rc=$?
+        [ "$rc" -eq 0 ] && return 0
+        echo "Cluster-wide Proxmox collection failed on $host (rc=$rc), will try the next host"
+    done
+    return 1
 }
 
 collect_dns() {
@@ -885,13 +924,13 @@ fi
 echo ""
 echo "--- DNS Resolution Test ---"
 dig +short google.com @127.0.0.1 2>/dev/null || echo 'DNS resolution failed'
-dig +short esweiss.com @127.0.0.1 2>/dev/null || echo 'Internal DNS resolution failed'
+dig +short "$CS_INTERNAL_DOMAIN" @127.0.0.1 2>/dev/null || echo 'Internal DNS resolution failed'
 echo ""
 echo "--- AdGuard Sync Timer ---"
 systemctl list-timers 'adguardhome-sync*' --all --no-pager 2>/dev/null | cs_emit 'No sync timer found'
 echo ""
 EOF
-    } | ssh_collect "eric@${host}" bash 2>/dev/null || rc=$?
+    } | ssh_collect "${SSH_USER}@${host}" bash 2>/dev/null || rc=$?
     [ "$rc" -eq 0 ] || echo "Failed (rc=$rc)"
     return "$rc"
 }
@@ -917,7 +956,7 @@ echo "--- Mail Queue ---"
 sudo postqueue -p 2>/dev/null | tail -1 | cs_emit 'Cannot check mail queue'
 echo ""
 EOF
-    } | ssh_collect "eric@${host}" bash 2>/dev/null || rc=$?
+    } | ssh_collect "${SSH_USER}@${host}" bash 2>/dev/null || rc=$?
     [ "$rc" -eq 0 ] || echo "Failed (rc=$rc)"
     return "$rc"
 }
@@ -945,7 +984,7 @@ echo "--- Transcode Device (GPU) ---"
 ls -la /dev/dri 2>/dev/null || echo "  /dev/dri not present"
 echo ""
 EOF
-    } | ssh_collect "eric@${host}" bash 2>/dev/null || rc=$?
+    } | ssh_collect "${SSH_USER}@${host}" bash 2>/dev/null || rc=$?
     [ "$rc" -eq 0 ] || echo "Failed (rc=$rc)"
     return "$rc"
 }
@@ -1000,21 +1039,19 @@ else
 fi
 echo ""
 EOF
-    } | ssh_collect "eric@${host}" bash 2>/dev/null || rc=$?
+    } | ssh_collect "${SSH_USER}@${host}" bash 2>/dev/null || rc=$?
     [ "$rc" -eq 0 ] || echo "Failed (rc=$rc)"
 
     # Cluster-wide data (collected once from the first server node)
     # Uses exit codes: 0 = collected, 2 = not a server (try next), other = SSH/remote failure
     local cluster_rc
     if [ "$K3S_CLUSTER_COLLECTED" = "false" ]; then
-        # Temporarily disable set -e so we can check the exit code
         set +e
         { remote_prelude; cat << 'EOF'
 if systemctl is-active k3s &>/dev/null; then
-    # Readiness probe: verify the kubectl API actually responds before
-    # proceeding. Without this, downstream failures are masked by || echo
-    # and K3S_CLUSTER_COLLECTED=true would be set with no actual data.
-    # rc=3 triggers retry on the next server node.
+    # Readiness probe: without it, downstream failures are masked by || echo
+    # and K3S_CLUSTER_COLLECTED=true would be set with no data. rc=3 retries
+    # on the next server node.
     sudo k3s kubectl get nodes -o wide >/dev/null 2>&1 || exit 3
     echo "--- Node Info (cluster-wide, collected once) ---"
     sudo k3s kubectl get nodes -o wide 2>/dev/null || echo "Cannot get nodes"
@@ -1144,10 +1181,8 @@ if systemctl is-active k3s &>/dev/null; then
     sudo k3s kubectl get l2advertisement -n metallb-system 2>/dev/null || echo "Cannot get L2 advertisements"
     echo ""
     echo "--- Flux Kustomizations ---"
-    # SUSPENDED is not in the default columns: a suspended Kustomization keeps
-    # reporting its last Ready=True forever, so a cluster frozen weeks ago read
-    # as healthy here. Custom columns make the freeze visible in the artifact
-    # (probe_flux_not_ready counts it toward the verdict).
+    # SUSPENDED is not a default column, and a suspended Kustomization keeps
+    # reporting Ready=True — show it so the freeze is visible in the artifact.
     sudo k3s kubectl get kustomizations.kustomize.toolkit.fluxcd.io -A \
         -o custom-columns='NS:.metadata.namespace,NAME:.metadata.name,SUSPENDED:.spec.suspend,READY:.status.conditions[?(@.type=="Ready")].status,MESSAGE:.status.conditions[?(@.type=="Ready")].message' \
         2>/dev/null || echo "Cannot get Flux Kustomizations"
@@ -1190,6 +1225,13 @@ if systemctl is-active k3s &>/dev/null; then
     echo "--- Autoscaling (HPA / VPA) ---"
     sudo k3s kubectl get hpa -A 2>/dev/null || echo "Cannot get HPAs"
     sudo k3s kubectl get vpa -A 2>/dev/null || echo "Cannot get VPAs (CRD absent?)"
+    echo ""
+    echo "--- CronJobs (all namespaces) ---"
+    # SUSPEND and LAST are the only in-cluster evidence that the pg-dump
+    # producers behind the backup-artifact metrics still run.
+    sudo k3s kubectl get cronjobs -A \
+        -o custom-columns='NS:.metadata.namespace,NAME:.metadata.name,SCHEDULE:.spec.schedule,SUSPEND:.spec.suspend,LAST:.status.lastSuccessfulTime,ACTIVE:.status.active[*].name' \
+        2>/dev/null | cs_emit "Cannot get CronJobs"
     echo ""
     echo "--- NetworkPolicies (all namespaces) ---"
     sudo k3s kubectl get networkpolicies -A 2>/dev/null || echo "Cannot get NetworkPolicies"
@@ -1245,18 +1287,18 @@ if systemctl is-active k3s &>/dev/null; then
     fi
     echo ""
     echo "--- Node Labels + Taints ---"
-    # Placement inputs for every workload: the NAS/server taints and
-    # esweiss.com/gpu=nvidia decide where pinned pods can land.
+    # Placement inputs for every workload: the NAS/server taints and the
+    # <node label domain>/gpu label decide where pinned pods can land.
     sudo k3s kubectl get nodes --show-labels 2>/dev/null | cs_emit "Cannot get node labels"
     sudo k3s kubectl get nodes \
         -o custom-columns='NAME:.metadata.name,TAINTS:.spec.taints[*].key,EFFECTS:.spec.taints[*].effect' \
         2>/dev/null | cs_emit "Cannot get node taints"
     echo ""
     echo "--- GPU (device plugin, DCGM, allocatable) ---"
-    # pve-prec-01's GTX 1660 Ti is VFIO-passed to the GPU agent (docs/43).
-    sudo k3s kubectl get nodes -l esweiss.com/gpu=nvidia \
+    # Label prefix is cluster_node_label_domain from cluster-config.yaml.
+    sudo k3s kubectl get nodes -l "${CS_NODE_LABEL_DOMAIN}/gpu=nvidia" \
         -o custom-columns='NAME:.metadata.name,GPUS:.status.allocatable.nvidia\.com/gpu' \
-        2>/dev/null | cs_emit "No nodes labelled esweiss.com/gpu=nvidia"
+        2>/dev/null | cs_emit "No nodes labelled ${CS_NODE_LABEL_DOMAIN}/gpu=nvidia"
     sudo k3s kubectl get pods -A -o wide 2>/dev/null \
         | grep -E 'nvidia-device-plugin|dcgm' | cs_emit "No nvidia-device-plugin / DCGM pods"
 else
@@ -1265,7 +1307,7 @@ else
 fi
 echo ""
 EOF
-        } | ssh_collect "eric@${host}" bash 2>/dev/null
+        } | ssh_collect "${SSH_USER}@${host}" bash 2>/dev/null
         cluster_rc=$?
         set -e
         if [ "$cluster_rc" -eq 0 ]; then
@@ -1291,9 +1333,12 @@ collect_alloy_status() {
     echo "=== Alloy host log shippers ==="
     # plex by IP: the short name resolves through the AdGuard rewrite to the
     # Traefik VIP, not the LXC (same trap as DNS_HOSTS).
-    for host in "${PVE_HOSTS[@]}" "${DNS_HOSTS[@]}" "${MAIL_HOSTS[@]}" "$GITLAB_HOST" "$NEXTCLOUD_HOST" "$IMMICH_HOST" "$IMMICH_ML_HOST" "$PLEX_HOST" "${K3S_HOSTS[@]}"; do
+    for host in ${PVE_HOSTS[@]+"${PVE_HOSTS[@]}"} ${DNS_HOSTS[@]+"${DNS_HOSTS[@]}"} \
+            ${MAIL_HOSTS[@]+"${MAIL_HOSTS[@]}"} "$GITLAB_HOST" "$NEXTCLOUD_HOST" \
+            "$IMMICH_HOST" "$IMMICH_ML_HOST" "$PLEX_HOST" \
+            ${K3S_HOSTS[@]+"${K3S_HOSTS[@]}"}; do
         local status
-        status=$(ssh_probe_cmd "eric@${host}" 'systemctl is-active alloy 2>/dev/null' 2>/dev/null) || true
+        status=$(ssh_probe_cmd "${SSH_USER}@${host}" 'systemctl is-active alloy 2>/dev/null' 2>/dev/null) || true
         echo "  $host: ${status:-unreachable}"
     done
     echo ""
@@ -1306,10 +1351,9 @@ collect_home_assistant() {
     # Note: Home Assistant OS VM status collected from Proxmox host
     # Configuration files collected via SSH if SSH add-on is configured
 
-    # Check if SSH is accessible (requires SSH add-on on port 22222).
-    # The reachability probe keeps its own shorter ConnectTimeout=5 (distinct
-    # from SSH_OPTS_PROBE's 3s and SSH_OPTS's 10s); the collection session
-    # reuses SSH_OPTS plus the non-standard HAOS SSH add-on port.
+    # SSH reachability through the HAOS SSH add-on on port 22222. The probe
+    # keeps its own ConnectTimeout=5; the collection session reuses SSH_OPTS
+    # plus that port.
     local rc=0
     if ssh -o ConnectTimeout=5 -o BatchMode=yes -p 22222 "root@${host}" "echo test" &>/dev/null; then
         { remote_prelude; cat << 'EOF'
@@ -1335,18 +1379,16 @@ echo "--- Custom Components ---"
 ls -la /config/custom_components/ 2>/dev/null || echo "No custom components or directory inaccessible"
 echo ""
 echo "--- Recent Logs ---"
-# HA core logs are NOT collected: integration tracebacks/warnings can carry
-# API keys, OAuth tokens, and entity/PII data that the generic redaction
-# patterns don't key on — same policy as the GitLab log exclusion (collect_gitlab).
-# To view manually, run on the HAOS host: tail -100 /config/home-assistant.log
+# HA core logs are NOT collected: integration tracebacks can carry API keys,
+# OAuth tokens and PII the generic redaction patterns do not key on. To read
+# them, run `tail -100 /config/home-assistant.log` on the HAOS host.
 echo "HA core logs excluded from state collection (may contain tokens/PII)"
 echo ""
 echo "--- Network Info ---"
 ha network info 2>/dev/null || echo "Network info unavailable"
 echo ""
 echo "--- HA Native Backups (the artifacts that ride into B2) ---"
-# The HA tars are the only backup of the HAOS VM's state; without this the
-# artifact showed HA config but never whether a backup exists or how old it is.
+# The HA tars are the only backup of the HAOS VM's state.
 ha backups 2>/dev/null | cs_capped 30 "Backup list unavailable"
 echo ""
 EOF
@@ -1386,10 +1428,11 @@ fi
 echo ""
 echo "--- GitLab Health Check ---"
 if command -v curl &>/dev/null; then
-    # nginx serves the git.esweiss.com cert; --resolve pins that name to
-    # loopback so the probe stays local AND validates the chain (no -k).
-    code=$(curl -s --resolve git.esweiss.com:443:127.0.0.1 -o /dev/null -w '%{http_code}' --connect-timeout 5 https://git.esweiss.com/-/health 2>/dev/null)
-    echo "Health endpoint (https://git.esweiss.com/-/health via 127.0.0.1): HTTP ${code:-unreachable}"
+    # nginx serves the git.$CS_INTERNAL_DOMAIN cert; --resolve pins that name
+    # to loopback so the probe stays local AND validates the chain (no -k).
+    gitlab_url="https://git.${CS_INTERNAL_DOMAIN}/-/health"
+    code=$(curl -s --resolve "git.${CS_INTERNAL_DOMAIN}:443:127.0.0.1" -o /dev/null -w '%{http_code}' --connect-timeout 5 "$gitlab_url" 2>/dev/null)
+    echo "Health endpoint (${gitlab_url} via 127.0.0.1): HTTP ${code:-unreachable}"
 fi
 sudo openssl x509 -enddate -noout -in /etc/gitlab/ssl/fullchain.pem 2>/dev/null || echo "Cannot read cert notAfter"
 echo ""
@@ -1398,10 +1441,8 @@ echo "Repository storage:"
 sudo du -sh /mnt/gitlab-repos/git-data 2>/dev/null || echo "  External storage not configured or inaccessible"
 echo "Backups:"
 sudo du -sh /var/opt/gitlab/backups 2>/dev/null || echo "  Backup dir inaccessible"
-# The backups dir is 0700 git:git, so both the glob expansion and the ls must
-# run under root (an unprivileged glob passes the literal pattern through and
-# ls fails); capture-and-test because a `|| echo` after a pipeline ending in
-# head never fires (the pipeline exits with head's 0).
+# Backups dir is 0700 git:git, so the glob and ls must run under root. Capture
+# and test: a `|| echo` after a head pipeline never fires.
 backup_list=$(sudo sh -c 'ls -lt /var/opt/gitlab/backups/*_gitlab_backup.tar 2>/dev/null' | head -3)
 if [ -n "$backup_list" ]; then
     echo "$backup_list"
@@ -1453,9 +1494,9 @@ else
 fi
 echo ""
 echo "--- Recent GitLab Logs ---"
-# GitLab logs are deliberately excluded: they carry user PII, session/API
-# tokens and OAuth callback URLs the generic redaction does not key on. Read
-# them on the host (`sudo gitlab-ctl tail`) when needed.
+# GitLab logs are excluded: they carry user PII, session and API tokens and
+# OAuth callback URLs the generic redaction does not key on. Read them with
+# `sudo gitlab-ctl tail` on the host when needed.
 echo "GitLab logs excluded from state collection (may contain PII/tokens)"
 echo "Run 'sudo gitlab-ctl tail' on gitlab host for live logs"
 echo ""
@@ -1471,20 +1512,14 @@ if [ -f /etc/gitlab/gitlab.rb ]; then
 fi
 echo ""
 EOF
-    } | ssh_collect "eric@${host}" bash 2>/dev/null || rc=$?
+    } | ssh_collect "${SSH_USER}@${host}" bash 2>/dev/null || rc=$?
     [ "$rc" -eq 0 ] || echo "Failed (rc=$rc)"
     return "$rc"
 }
 
-# NAS-pinned single-VM docker-compose apps (Nextcloud .156, Immich .157,
-# Immich-ML .158). collect_host (in the main loop) captures base host stats;
-# this adds the app block — compose project status, host-nginx TLS cert expiry,
-# and pg_dump/backup freshness — mirroring collect_gitlab. Values pass as env
-# over ssh (simple paths, no quoting hazard); "-" skips a section an app lacks
-# (Immich-ML has no nginx front end and no backup timer, but does have a health
-# endpoint).
-#   $1 host  $2 label  $3 compose_dir  $4 nginx_cert  $5 backup_glob
-#   $6 backup_timer  $7 backup_prom  $8 health_url        (- to skip a section)
+# NAS-pinned single-VM docker-compose apps, mirroring collect_gitlab: compose
+# status, nginx TLS and backup freshness on top of collect_host. Arguments:
+# host, label, compose_dir, nginx_cert, backup_glob, backup_timer, backup_prom, health_url ("-" skips).
 collect_compose_app() {
     local host=$1 label=$2 compose_dir=$3 nginx_cert=$4 backup_glob=$5
     local backup_timer=$6 backup_prom=$7 health_url=$8
@@ -1497,10 +1532,20 @@ collect_compose_app() {
     compose_sections=$(compose_active_sections "$health_url" "$nginx_cert" "$backup_timer" "$backup_prom")
 
     local rc=0
-    { remote_prelude; cat << 'EOF'
+    # ssh joins its argv with spaces and the REMOTE shell re-parses it, so the
+    # eight facts go through %q in the prelude rather than as bare VAR=value words.
+    { remote_prelude
+      printf 'APP_LABEL=%q\nCOMPOSE_DIR=%q\nNGINX_CERT=%q\nBACKUP_GLOB=%q\nBACKUP_TIMER=%q\nBACKUP_PROM=%q\nHEALTH_URL=%q\nCOMPOSE_SECTIONS=%q\n' \
+        "$label" "$compose_dir" "$nginx_cert" "$backup_glob" "$backup_timer" \
+        "$backup_prom" "$health_url" "$compose_sections"
+      cat << 'EOF'
 echo "--- ${APP_LABEL} Compose Project Status ---"
-if [ -f "${COMPOSE_DIR}/docker-compose.yml" ]; then
+# `sudo test`, not `[ -f ]`: two of the three compose dirs are root-only, so an
+# unprivileged probe reports a healthy stack as a missing project.
+if sudo test -f "${COMPOSE_DIR}/docker-compose.yml"; then
     sudo sh -c "cd '${COMPOSE_DIR}' && docker compose ps" 2>/dev/null || echo "  docker compose ps failed"
+elif sudo test -d "${COMPOSE_DIR}"; then
+    echo "  ${COMPOSE_DIR} exists but holds no docker-compose.yml"
 else
     echo "  Compose project not found at ${COMPOSE_DIR}"
 fi
@@ -1526,9 +1571,16 @@ if [[ ",${COMPOSE_SECTIONS}," == *,backup,* ]]; then
     # Cap 5: list-timers for one unit renders 4 lines (see the archive-backup
     # timer above).
     systemctl list-timers "${BACKUP_TIMER}" --all --no-pager 2>/dev/null | cs_capped 5 "  No ${BACKUP_TIMER}"
-    # Dump dir is root-owned; the glob + ls must run under root (an unprivileged
-    # glob passes the literal pattern through). Capture-and-test because a
-    # `|| echo` after a head pipeline never fires (same pattern as collect_gitlab).
+    # Landing-zone state first: an unmounted NFS export otherwise reads the same
+    # as "no backup files found".
+    echo "Landing zone (${BACKUP_GLOB%/*}):"
+    if sudo mountpoint -q "${BACKUP_GLOB%/*}" 2>/dev/null; then
+        echo "  mounted"
+    else
+        echo "  NOT MOUNTED"
+    fi
+    # Dump dir is root-owned; glob and ls run under root. Capture and test (same
+    # pattern as collect_gitlab).
     backup_list=$(sudo sh -c "ls -lt ${BACKUP_GLOB} 2>/dev/null" | head -3)
     if [ -n "$backup_list" ]; then
         echo "$backup_list"
@@ -1542,12 +1594,7 @@ if [[ ",${COMPOSE_SECTIONS}," == *,backup,* ]]; then
     echo ""
 fi
 EOF
-    } | ssh_collect "eric@${host}" \
-        "APP_LABEL=$label" "COMPOSE_DIR=$compose_dir" "NGINX_CERT=$nginx_cert" \
-        "BACKUP_GLOB=$backup_glob" "BACKUP_TIMER=$backup_timer" \
-        "BACKUP_PROM=$backup_prom" "HEALTH_URL=$health_url" \
-        "COMPOSE_SECTIONS=$compose_sections" \
-        bash 2>/dev/null || rc=$?
+    } | ssh_collect "${SSH_USER}@${host}" bash 2>/dev/null || rc=$?
     [ "$rc" -eq 0 ] || echo "Failed (rc=$rc)"
     return "$rc"
 }
@@ -1563,18 +1610,16 @@ if kubectl --request-timeout=5s get nodes >/dev/null 2>&1; then
     K3S_API_OK=true
 fi
 
-# Additional health probes that mirror the --json branch's signals.
-# Each probe tolerates failure (kubectl unreachable, ssh unreachable,
-# malformed output) and falls back to "0" so an operator-side issue
-# never falsely promotes a regular-mode run from PARTIAL to OK.
-# Defaults pre-set so set -u doesn't trip if probes are skipped.
-FLUX_NOT_READY_REG=0
+# Health probes mirroring the --json branch's signals. Each degrades to a value
+# that never promotes a run ("unknown" coerces to 1 in the verdict), and the
+# defaults below keep set -u quiet if a probe is skipped.
+FLUX_NOT_READY_REG=unknown
 ZFS_DEGRADED_REG=0
+ZFS_MISSING_REG=""
 WARNING_EVENTS_REG=0
-# Catastrophic-state probes, mirroring --json's `pve_up` / `k3s_ready` so both
-# modes decide FAILED from the same inputs. PVE_REACHABLE_REG counts Proxmox
-# hosts only (narrower than HOSTS_OK); K3S_NODES_READY_REG counts nodes
-# Ready=True (stricter than K3S_API_OK, which only needs the API to answer).
+# Catastrophic-state probes, so both modes decide FAILED from the same inputs.
+# PVE_REACHABLE_REG counts Proxmox hosts only (narrower than HOSTS_OK);
+# K3S_NODES_READY_REG counts nodes Ready=True (stricter than K3S_API_OK).
 PVE_REACHABLE_REG=0
 PVE_TOTAL_REG=0
 K3S_NODES_READY_REG=0
@@ -1591,10 +1636,12 @@ K3S_NODES_READY_REG=$K3S_READY_RESULT
 
 # Flux readiness — count Kustomizations and HelmReleases NOT Ready=True.
 FLUX_NOT_READY_REG=$(probe_flux_not_ready --request-timeout=5s)
+FLUX_NOT_READY_NUM=$(coerce_int "$FLUX_NOT_READY_REG" 1)
 
 # ZFS pool health — see probe_zfs_degraded (count only; no pool detail here).
 probe_zfs_degraded
 ZFS_DEGRADED_REG=$ZFS_DEGRADED_RESULT
+ZFS_MISSING_REG=$ZFS_MISSING_RESULT
 
 # Recent warning events — see probe_warning_events.
 WARNING_EVENTS_REG=$(probe_warning_events --request-timeout=5s)
@@ -1604,32 +1651,35 @@ WARNING_EVENTS_REG=$(probe_warning_events --request-timeout=5s)
 # exact lie this collector exists to prevent.
 ALERTS_FIRING_REG=$(probe_firing_alerts --request-timeout=5s)
 
-# GitLab application health — see probe_gitlab_http. Unhealthy downgrades OK to
+# GitLab application health — see gitlab_health_code. Unhealthy downgrades OK to
 # PARTIAL.
 GITLAB_OK_REG=0
-GITLAB_HTTP_REG=$(probe_gitlab_http)
+GITLAB_HTTP_REG=$(gitlab_health_code /-/health)
 [ "$GITLAB_HTTP_REG" = "200" ] && GITLAB_OK_REG=1
 
 {
-    for host in "${PROXMOX_HOSTS[@]}"; do
+    for host in ${PROXMOX_HOSTS[@]+"${PROXMOX_HOSTS[@]}"}; do
         collect_host "$host"
         run_section "proxmox:$host" collect_proxmox "$host"
         echo ""
     done
 
-    for host in "${DNS_HOSTS[@]}"; do
-        collect_host "$host" "eric"
+    run_section "proxmox-cluster" collect_proxmox_cluster
+    echo ""
+
+    for host in ${DNS_HOSTS[@]+"${DNS_HOSTS[@]}"}; do
+        collect_host "$host" "$SSH_USER"
         run_section "dns:$host" collect_dns "$host"
         echo ""
     done
 
-    for host in "${MAIL_HOSTS[@]}"; do
-        collect_host "$host" "eric"
+    for host in ${MAIL_HOSTS[@]+"${MAIL_HOSTS[@]}"}; do
+        collect_host "$host" "$SSH_USER"
         run_section "mail:$host" collect_mail "$host"
         echo ""
     done
 
-    for host in "${K3S_HOSTS[@]}"; do
+    for host in ${K3S_HOSTS[@]+"${K3S_HOSTS[@]}"}; do
         collect_host "$host"
         run_section "k3s:$host" collect_k3s "$host"
         echo ""
@@ -1665,7 +1715,7 @@ GITLAB_HTTP_REG=$(probe_gitlab_http)
     collect_host "$NEXTCLOUD_HOST"
     run_section "nextcloud:$NEXTCLOUD_HOST" collect_compose_app "$NEXTCLOUD_HOST" nextcloud \
         /mnt/nextcloud-app/compose /etc/ssl/nextcloud/fullchain.pem \
-        '/mnt/nextcloud-app/backups/nextcloud-db-*.sql.gz' nextcloud-backup.timer \
+        '/mnt/backups-offsite/nextcloud-db-*.sql.gz' nextcloud-backup.timer \
         /var/lib/node_exporter/nextcloud_backup.prom -
     echo ""
 
@@ -1673,7 +1723,7 @@ GITLAB_HTTP_REG=$(probe_gitlab_http)
     collect_host "$IMMICH_HOST"
     run_section "immich:$IMMICH_HOST" collect_compose_app "$IMMICH_HOST" immich \
         /mnt/immich-app/compose /etc/nginx/ssl/fullchain.pem \
-        '/mnt/immich-app/backups/immich-*.sql.gz' immich-backup.timer \
+        '/mnt/backups-offsite/immich-*.sql.gz' immich-backup.timer \
         /var/lib/node_exporter/immich_backup.prom -
     echo ""
 
@@ -1694,16 +1744,14 @@ else
     HOST_COVERAGE_PCT=0
 fi
 
-# "unknown" (kubectl/amtool unavailable) maps to 0 for the verdict so a
-# collector-side problem neither promotes nor demotes a run; the header still
-# prints the raw value.
-ALERTS_FIRING_NUM=$ALERTS_FIRING_REG
-case "$ALERTS_FIRING_NUM" in ''|*[!0-9]*) ALERTS_FIRING_NUM=0 ;; esac
+# An unaskable Alertmanager must not read as OK, so the verdict input coerces
+# to 1; the header still prints the raw value.
+ALERTS_FIRING_NUM=$(coerce_int "$ALERTS_FIRING_REG" 1)
 
 STATUS=$(classify_regular "$PVE_REACHABLE_REG" "$K3S_API_OK" \
     "$K3S_NODES_READY_REG" "$K3S_NODES_TOTAL_REG" \
     "$HOSTS_OK" "$HOSTS_TOTAL" "$HOST_COVERAGE_PCT" "$COVERAGE_FLOOR_PCT" \
-    "$FLUX_NOT_READY_REG" "$ZFS_DEGRADED_REG" "$GITLAB_OK_REG" \
+    "$FLUX_NOT_READY_NUM" "$ZFS_DEGRADED_REG" "$GITLAB_OK_REG" \
     "$SECTIONS_OK" "$SECTIONS_TOTAL" "$ALERTS_FIRING_NUM")
 
 # Name the predicates that cost the run its OK, so a PARTIAL is actionable from
@@ -1711,14 +1759,14 @@ STATUS=$(classify_regular "$PVE_REACHABLE_REG" "$K3S_API_OK" \
 FAILING_PREDICATES=$(regular_failing_predicates "$PVE_REACHABLE_REG" "$K3S_API_OK" \
     "$K3S_NODES_READY_REG" "$K3S_NODES_TOTAL_REG" \
     "$HOSTS_OK" "$HOSTS_TOTAL" "$HOST_COVERAGE_PCT" "$COVERAGE_FLOOR_PCT" \
-    "$FLUX_NOT_READY_REG" "$ZFS_DEGRADED_REG" "$GITLAB_OK_REG" \
+    "$FLUX_NOT_READY_NUM" "$ZFS_DEGRADED_REG" "$GITLAB_OK_REG" \
     "$SECTIONS_OK" "$SECTIONS_TOTAL" "$ALERTS_FIRING_NUM")
 
 # Render final output: status header + raw collection, redaction
 # applied to the combined stream.
 {
     echo "# Cluster State Collection"
-    echo "# Generated: $(date -Iseconds)"
+    echo "# Generated: $(date -u -Iseconds)"
     echo "# Status: $STATUS"
     echo "# Failing predicates: ${FAILING_PREDICATES:-none}"
     echo "# Proxmox reachable: $PVE_REACHABLE_REG / $PVE_TOTAL_REG"
@@ -1728,6 +1776,7 @@ FAILING_PREDICATES=$(regular_failing_predicates "$PVE_REACHABLE_REG" "$K3S_API_O
     echo "# K3s API reachable: $K3S_API_OK"
     echo "# Flux not reconciling (not-Ready or suspended): $FLUX_NOT_READY_REG"
     echo "# ZFS degraded pools: $ZFS_DEGRADED_REG"
+    [ -z "$ZFS_MISSING_REG" ] || echo "# ZFS pools not imported: $ZFS_MISSING_REG"
     echo "# GitLab health (/-/health, internal then external): HTTP ${GITLAB_HTTP_REG:-unreachable}"
     echo "# Firing alerts (Watchdog/InfoInhibitor exempt): $ALERTS_FIRING_REG"
     echo "# Warning events (last hour): $WARNING_EVENTS_REG"
@@ -1746,10 +1795,9 @@ echo "Status: $STATUS${FAILING_PREDICATES:+ [$FAILING_PREDICATES]} — $HOSTS_OK
 echo "File size: $(wc -c < "$OUTPUT_FILE") bytes"
 
 if [ "$STATUS" = "FAILED" ]; then
-    # The artifact stays on disk for inspection so the operator can see
-    # which hosts failed, but we deliberately don't overwrite
-    # CLUSTER_STATUS.txt with sparse/misleading data — better to leave
-    # the previous good snapshot in place. Caller sees rc=2 and decides.
+    # The artifact stays on disk for inspection, but CLUSTER_STATUS.txt is not
+    # overwritten with sparse data: the previous good snapshot stays in place.
+    # The caller sees rc=2 and decides.
     echo "ERROR: FAILED status — no Proxmox host reachable, K3s API reachable with zero nodes Ready, or coverage below ${COVERAGE_FLOOR_PCT}%." >&2
     echo "       Proxmox reachable: $PVE_REACHABLE_REG/$PVE_TOTAL_REG; K3s API: $K3S_API_OK; K3s nodes ready: $K3S_NODES_READY_REG/$K3S_NODES_TOTAL_REG." >&2
     echo "       CLUSTER_STATUS.txt left untouched; raw artifact at $OUTPUT_FILE for inspection." >&2
@@ -1777,9 +1825,8 @@ while IFS= read -r file; do
     [ -z "$file" ] && continue
     # Never delete the file we just created
     [ "$file" = "$CURRENT_OUTPUT" ] && continue
-    # Only remove regular files: `rm -f` on a directory (or other non-regular
-    # match) returns non-zero and would abort under set -e (restores the old
-    # `find -type f` type-safety the single-ls rewrite dropped).
+    # Regular files only: `rm -f` on a non-regular match returns non-zero and
+    # would abort under set -e.
     [ -f "$file" ] || continue
     rm -f -- "$file"
     COUNT=$((COUNT + 1))

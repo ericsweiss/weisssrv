@@ -1,8 +1,7 @@
 ---
-# VPA: Initial for the tailnet-dns CoreDNS Deployment — right-size cpu+memory
-# on natural pod restarts (no proactive eviction of a live resolver). CoreDNS is
-# lightweight; small caps keep a runaway estimate from over-requesting. Matches
-# the per-app apps/<app>/vpa.yaml convention (docs/33).
+# VPA Initial for the tailnet-dns CoreDNS Deployment: cpu+memory resize on
+# natural restarts, never eviction of a live resolver. Small caps bound a
+# runaway estimate. Tier convention: docs/33.
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
 metadata:
@@ -16,10 +15,10 @@ spec:
     updateMode: Initial
   resourcePolicy:
     containerPolicies:
-      # 0.8x the container's 128Mi memory limit (deployment.yaml): the policy
-      # also controls limits, so a cap at the limit would leave no ceiling that
-      # ever binds (docs/33 § Limit oscillation).
+      # RequestsOnly; cap == the 160Mi limit in deployment.yaml, comfortably
+      # over the ~85Mi 30d working-set peak (docs/33 § Limit oscillation).
       - containerName: coredns
         minAllowed: {cpu: 25m, memory: 32Mi}
-        maxAllowed: {cpu: 200m, memory: 102Mi}
+        maxAllowed: {cpu: 200m, memory: 160Mi}
         controlledResources: [cpu, memory]
+        controlledValues: RequestsOnly

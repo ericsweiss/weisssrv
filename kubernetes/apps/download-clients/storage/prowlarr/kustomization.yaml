@@ -3,7 +3,7 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: downloads
 components:
-  - ../../_nfs-pv
+  - ../../_nfs-pv-arr
 patches:
   - target:
       kind: PersistentVolume
@@ -16,11 +16,17 @@ patches:
         path: /metadata/labels/app
         value: prowlarr
       - op: replace
-        path: /spec/capacity/storage
-        value: 5Gi
-      - op: replace
         path: /spec/nfs/path
         value: /appdata/prowlarr
+      - op: replace
+        path: /spec/claimRef/name
+        value: prowlarr-config
+      # 5Gi, not the component's 10Gi: the live PVC is 5Gi and the cluster has
+      # no StorageClass, so PersistentVolumeClaimResize rejects any increase and
+      # the apps Kustomization stalls.
+      - op: replace
+        path: /spec/capacity/storage
+        value: 5Gi
   - target:
       kind: PersistentVolumeClaim
       name: nfs-pvc
@@ -29,8 +35,8 @@ patches:
         path: /metadata/name
         value: prowlarr-config
       - op: replace
-        path: /spec/resources/requests/storage
-        value: 5Gi
-      - op: replace
         path: /spec/volumeName
         value: downloads-appdata-prowlarr
+      - op: replace
+        path: /spec/resources/requests/storage
+        value: 5Gi

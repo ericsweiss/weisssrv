@@ -1,7 +1,6 @@
 ---
-# Stop + disable the apt background timers so unattended-upgrades cannot race a
-# role's apt tasks on the dpkg lock. Imported after prepare-base.yml by
-# prepare-common.yml, which every integration-test scenario runs.
+# Stops the apt background timers so unattended-upgrades cannot race a role's
+# apt tasks on the dpkg lock.
 - name: Disable apt background services
   ansible.builtin.raw: |
     systemctl stop apt-daily.timer 2>/dev/null || true

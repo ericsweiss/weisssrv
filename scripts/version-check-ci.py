@@ -1,20 +1,12 @@
 #!/usr/bin/env python3
-"""CI wrapper for check-versions.py — runs the check, posts an MR comment when
-updates are available, and writes the JSON report artifact.
-
-  version-check-ci.py                    # writes ./version-report.json
-  version-check-ci.py --output PATH      # writes the report elsewhere
-
-Environment:
-  CHECK_VERSIONS_CMD      command to run (default ./scripts/check-versions.py)
-  CHECK_VERSIONS_LOCAL    command named in the MR comment footer
-                          (default: the same command)
-  VERSION_CHECK_TIMEOUT   seconds before the subprocess is killed (default 600)
-  GITLAB_API_TOKEN        PRIVATE-TOKEN used to post the MR note
+"""CI wrapper for check-versions.py: runs the check, refreshes the MR comment,
+and writes the JSON report artifact. Exit 0 up to date, 1 updates, 2 errors.
+Environment and inputs: docs/SCRIPTS.md - version-check-ci.py.
 """
 import argparse
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -25,50 +17,121 @@ LOCAL_CMD = os.environ.get("CHECK_VERSIONS_LOCAL", CHECK_CMD)
 # CWD-relative default: the `artifacts:` path CI collects. Keep it stable —
 # a consumer's .gitlab-ci.yml names it.
 DEFAULT_OUTPUT = "version-report.json"
+DEFAULT_TOKEN_ENV = "GITLAB_API_TOKEN"
+# Hidden in the note body so a re-run refreshes that note instead of stacking
+# an identical comment on every pipeline.
+MARKER = "<!-- weisssrv:version-check -->"
 
 
-def post_mr_comment(body: str) -> None:
-    """Post a comment to the current MR via GitLab API."""
+def neutralize_quick_actions(text: str) -> str:
+    """Indent lines starting with `/` so GitLab cannot read them as quick actions.
+
+    Second layer behind fence_for, for the upstream error text this note embeds.
+    """
+    return "\n".join(" " + line if line.startswith("/") else line for line in text.splitlines())
+
+
+def fence_for(text: str) -> str:
+    """A code fence longer than the longest backtick run in `text`.
+
+    A fixed ``` fence is closed early by text that contains one, which puts the
+    rest of the note — quick actions included — back into markdown.
+    """
+    longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    return "`" * max(3, longest + 1)
+
+
+def _api(url: str, token: str, method: str = "GET", payload=None):
+    """One GitLab API call as the token's owner; raises on any failure."""
+    data = json.dumps(payload).encode() if payload is not None else None
+    headers = {"PRIVATE-TOKEN": token}
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    req = Request(url, data=data, headers=headers, method=method)
+    with urlopen(req, timeout=30) as resp:
+        body = resp.read().decode()
+    return json.loads(body) if body else {}
+
+
+_BOT_USER_ID = None
+
+
+def _bot_user_id(api_url: str, token: str):
+    """The token owner's user id, fetched once per run, or None.
+
+    None means "do not edit anything": the marker alone would let the bot
+    rewrite a human's comment that happens to quote it.
+    """
+    global _BOT_USER_ID
+    if _BOT_USER_ID is None:
+        try:
+            _BOT_USER_ID = _api(f"{api_url}/user", token).get("id")
+        except Exception as e:
+            print(f"Warning: could not identify the API token's user ({e}).")
+            _BOT_USER_ID = False
+    return _BOT_USER_ID or None
+
+
+def _marked_note_id(notes_url: str, token: str, api_url: str = ""):
+    """id of the note a previous run of this job left, or None."""
+    bot_id = _bot_user_id(api_url, token) if api_url else None
+    if bot_id is None:
+        return None
+    try:
+        notes = _api(f"{notes_url}?per_page=100", token)
+    except Exception as e:
+        print(f"Warning: could not list MR notes ({e}); posting a new comment.")
+        return None
+    if not isinstance(notes, list):
+        return None
+    for note in notes:
+        if not isinstance(note, dict) or note.get("system"):
+            continue
+        author = note.get("author") if isinstance(note.get("author"), dict) else {}
+        if author.get("id") == bot_id and MARKER in str(note.get("body", "")):
+            return note.get("id")
+    return None
+
+
+def upsert_mr_comment(body: str, token_env: str = DEFAULT_TOKEN_ENV) -> None:
+    """Refresh this job's MR note, or post it the first time."""
     api_url = os.environ.get("CI_API_V4_URL", "")
     project_id = os.environ.get("CI_PROJECT_ID", "")
     mr_iid = os.environ.get("CI_MERGE_REQUEST_IID", "")
-    token = os.environ.get("GITLAB_API_TOKEN", "")
+    token = os.environ.get(token_env, "")
 
     if not all([api_url, project_id, mr_iid, token]):
         if mr_iid:
-            # In an MR pipeline but a credential/URL is missing — surface it
-            # so a revoked/absent GITLAB_API_TOKEN doesn't silently swallow
+            # Surface it: a revoked or absent token must not silently swallow
             # the version comment.
             print(
                 "Warning: in an MR pipeline but GitLab API URL/project/token is "
-                "incomplete; skipping MR comment (check GITLAB_API_TOKEN).",
+                f"incomplete; skipping MR comment (check ${token_env}).",
                 file=sys.stderr,
             )
         return
 
-    url = f"{api_url}/projects/{project_id}/merge_requests/{mr_iid}/notes"
-    data = json.dumps({"body": body}).encode()
-    req = Request(url, data=data, headers={
-        "PRIVATE-TOKEN": token,
-        "Content-Type": "application/json",
-    })
+    notes_url = f"{api_url}/projects/{project_id}/merge_requests/{mr_iid}/notes"
+    note_id = _marked_note_id(notes_url, token, api_url)
     try:
-        with urlopen(req, timeout=30) as resp:
-            resp.read()
-        print("MR comment posted")
+        if note_id:
+            _api(f"{notes_url}/{note_id}", token, method="PUT", payload={"body": body})
+            print("MR comment updated")
+        else:
+            _api(notes_url, token, method="POST", payload={"body": body})
+            print("MR comment posted")
     except Exception as e:
         print(f"Warning: could not post MR comment: {e}")
 
 
-def _services(data: dict) -> list:
-    """Return only well-formed (dict) service entries from a parsed payload.
+def _count(value) -> int:
+    """A summary counter, or 0 when the producer emitted a non-number."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
-    `data` is validated to be a dict, but its `services` value comes from an
-    external subprocess and isn't otherwise checked: a forged/skewed producer
-    could emit `null` (TypeError on iteration) or non-dict entries (AttributeError
-    on `svc.get`). Neither is caught by main()'s parse `except`, so an unguarded
-    loop would crash the wrapper and bypass the stub-artifact contract.
-    """
+
+def _services(data: dict) -> list:
+    """Well-formed (dict) service entries; tolerates a missing or mis-shaped
+    `services`."""
     services = data.get("services")
     if not isinstance(services, list):
         return []
@@ -76,12 +139,7 @@ def _services(data: dict) -> list:
 
 
 def _write_report(path: str, text: str) -> None:
-    """Write the report artifact, creating a --output parent dir if needed.
-
-    The default lands in the CWD, but a consumer redirecting into an artifacts
-    subdir (`--output reports/version-report.json`) would otherwise get a
-    FileNotFoundError on the very first run.
-    """
+    """Write the report artifact, creating a --output parent dir if needed."""
     parent = os.path.dirname(path)
     if parent:
         os.makedirs(parent, exist_ok=True)
@@ -100,17 +158,21 @@ def _parse_args(argv):
         metavar="PATH",
         help=f"where to write the JSON report artifact (default: {DEFAULT_OUTPUT})",
     )
+    parser.add_argument(
+        "--token-env",
+        default=DEFAULT_TOKEN_ENV,
+        metavar="NAME",
+        help=f"env var holding the MR-comment token (default: {DEFAULT_TOKEN_ENV})",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv=None):
     args = _parse_args(argv)
 
-    # Run version check once with --json. check-versions checks ~50 services
-    # sequentially, each with its own request timeout + bounded retries, so a few
-    # slow/unreachable endpoints under a partial outage can take minutes. Give
-    # generous headroom (env-tunable) so that doesn't SIGKILL the run and report
-    # a false "timed out" when most services actually succeeded.
+    # check-versions polls ~50 services sequentially, so a partial outage can
+    # take minutes. The generous env-tunable timeout keeps a slow endpoint from
+    # SIGKILLing a run that mostly succeeded.
     _timeout_raw = os.environ.get("VERSION_CHECK_TIMEOUT", "600")
     try:
         timeout = int(_timeout_raw)
@@ -140,10 +202,7 @@ def main(argv=None):
     data = {}
     try:
         data = json.loads(result.stdout)
-        # A valid-but-non-dict payload (list/number/string/bool/null) would
-        # otherwise hit `data.get(...)` below with an uncaught AttributeError,
-        # bypassing the stub-artifact contract. Reject it as a parse failure so
-        # the ValueError branch writes the self-describing stub and exits 2.
+        # Non-dict payload: treat as a parse failure so the stub artifact is written.
         if not isinstance(data, dict):
             raise ValueError(
                 f"version-check output is not a JSON object (got {type(data).__name__})"
@@ -151,21 +210,17 @@ def main(argv=None):
         _write_report(args.output, result.stdout)
         summary = data.get("summary")
         if not isinstance(summary, dict):
-            # A null/non-dict summary from a skewed producer would otherwise
-            # raise AttributeError on the .get() calls below (uncaught by the
-            # parse except). Treat it as empty; the .get(..., 0) defaults apply.
+            # Tolerate a missing or mis-shaped summary; the defaults apply.
             summary = {}
-        total = summary.get("total", 0)
-        up_to_date = summary.get("up_to_date", 0)
-        updates = summary.get("updates_available", 0)
-        held = summary.get("updates_held", 0)
-        errors = summary.get("errors", 0)
+        total = _count(summary.get("total", 0))
+        up_to_date = _count(summary.get("up_to_date", 0))
+        updates = _count(summary.get("updates_available", 0))
+        held = _count(summary.get("updates_held", 0))
+        errors = _count(summary.get("errors", 0))
 
         print(f"Version check: {total} services, {up_to_date} up to date, {updates} updates, {held} held, {errors} errors")
 
-        # Use .get() for field access below: a malformed service entry must not
-        # raise KeyError here, since the surrounding except would then overwrite
-        # the already-written valid artifact with an error stub.
+        # .get() only: a KeyError here would overwrite the valid artifact with a stub.
         if updates > 0:
             print("\nUpdates available:")
             for svc in _services(data):
@@ -184,14 +239,17 @@ def main(argv=None):
             rc = 1
         else:
             rc = 0
+        if result.returncode not in (0, 1, 2):
+            print(
+                f"Warning: checker exited {result.returncode} (outside the "
+                "documented 0/1/2 contract); reporting 2"
+            )
+            rc = 2
     except (json.JSONDecodeError, ValueError, KeyError) as e:
         print("Warning: could not parse version check output")
         print(result.stdout)
         rc = 2
-        # A wrong-shape (non-dict) payload would have left `data` holding the
-        # parsed list/scalar; reset it so the MR-comment block treats this as a
-        # parse failure (the `rc == 2 and not data` branch) rather than trying
-        # to itemize services from a non-dict.
+        # Reset so the MR-comment block takes the parse-failure branch.
         data = {}
         # Write a self-describing stub so the artifact isn't a 0-byte or
         # raw-text file that reads like a successful empty report.
@@ -209,16 +267,10 @@ def main(argv=None):
     # suppress the actionable update table (or vice versa).
     if os.environ.get("CI_MERGE_REQUEST_IID"):
         sections = []
-        # Build the row lists first, then gate each section header on the list
-        # being non-empty (NOT on the summary counters) so a future
-        # producer/consumer skew can't emit a header with zero rows.
+        # Gate each section on its row list, not on the summary counters.
         update_lines = []
         for svc in _services(data):
-            # Held updates are documented non-actionable holds; they'd
-            # otherwise re-post the same comment on every pipeline.
             if svc.get("update_available") and not svc.get("held"):
-                # Registry notes carry intent (e.g. "intentionally held
-                # back: open upstream regression").
                 notes = svc.get("notes", "")
                 update_lines.append(
                     f"| {svc.get('name', '?')} | {svc.get('current_version', '?')} | "
@@ -241,15 +293,21 @@ def main(argv=None):
         elif rc == 2 and not data:
             # Parse failure — no structured services to itemize.
             error_output = (result.stderr or result.stdout or "No error output").strip()
-            sections.append("### Version check failed\n\n```\n" + error_output + "\n```")
+            fence = fence_for(error_output)
+            sections.append(
+                f"### Version check failed\n\n{fence}\n{error_output}\n{fence}"
+            )
 
         if sections:
             body = (
-                "## Version Check\n\n"
+                MARKER
+                + "\n## Version Check\n\n"
                 + "\n\n".join(sections)
                 + f"\n\nRun `{LOCAL_CMD}` locally for details."
             )
-            post_mr_comment(body)
+            # Upstream error bodies and version names reach this note: a line
+            # starting with `/` is a GitLab quick action run as the token owner.
+            upsert_mr_comment(neutralize_quick_actions(body), args.token_env)
 
     sys.exit(rc)
 

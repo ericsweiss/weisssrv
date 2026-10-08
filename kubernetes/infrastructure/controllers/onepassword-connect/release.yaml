@@ -1,12 +1,7 @@
 ---
-# 1Password Connect Server — self-hosted secret cache for ESO.
-# connect-sync pulls vault data from 1Password cloud into an encrypted
-# local cache. connect-api serves reads from cache on port 8080.
-# Eliminates cloud API rate limiting for ExternalSecrets.
-#
-# Bootstrap secrets (one-time, manually created in external-secrets ns):
-#   op-credentials            — 1password-credentials.json from `op connect server create`
-#   onepassword-connect-token — access token from `op connect token create`
+# 1Password Connect Server, the self-hosted secret cache ESO reads. connect-sync
+# pulls vault data into an encrypted local cache and connect-api serves reads on
+# port 8080. Its bootstrap Secrets are in docs/15-credential-rotation.md.
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -84,10 +79,8 @@ spec:
                     app: onepassword-connect
                 topologyKey: kubernetes.io/hostname
       # Hand-set limits, matched by the paired VPA's maxAllowed; that VPA is
-      # RequestsOnly so nothing rewrites them at runtime. Deliberately above the
-      # peak+60% rule the other platform controllers use (30d peaks are ~36Mi
-      # api / ~28Mi sync): Connect is on the ZFS-encryption boot path and its
-      # working set tracks vault size, so the ceiling is kept generous.
+      # RequestsOnly so nothing rewrites them. The ceiling is above the usual
+      # peak+60% because Connect is on the ZFS-encryption boot path.
       api:
         resources:
           requests:

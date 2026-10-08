@@ -1,0 +1,152 @@
+---
+# promtool unit test for VzdumpBackupNoGuests: a vzdump job that starts no guest
+# backup still reports success and refreshes its timestamp, so the freshness and
+# failure arms stay green. The success gate keeps a failed run out of this one.
+rule_files:
+  - rules.yaml
+evaluation_interval: 5m
+tests:
+  # Success reported, no guest started, on a host that did back guests up
+  # earlier in the 30d lookback.
+  - interval: 5m
+    input_series:
+      - series: 'vzdump_backup_guests{job="node-exporter-host", instance="10.0.10.104:9101"}'
+        values: '2+0x1 0+0x300'
+      - series: 'vzdump_backup_last_run_success{job="node-exporter-host", instance="10.0.10.104:9101"}'
+        values: '1+0x301'
+    alert_rule_test:
+      # Inside the 1h hold.
+      - eval_time: 30m
+        alertname: VzdumpBackupNoGuests
+        exp_alerts: []
+      - eval_time: 90m
+        alertname: VzdumpBackupNoGuests
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: node-exporter-host
+              instance: 10.0.10.104:9101
+
+  # A k3s-only host: every guest it owns is excluded from the vzdump selection,
+  # so its counter is flat at 0 across the whole lookback and it must stay quiet.
+  - interval: 5m
+    input_series:
+      - series: 'vzdump_backup_guests{job="node-exporter-host", instance="10.0.10.103:9101"}'
+        values: '0+0x300'
+      - series: 'vzdump_backup_last_run_success{job="node-exporter-host", instance="10.0.10.103:9101"}'
+        values: '1+0x300'
+    alert_rule_test:
+      - eval_time: 90m
+        alertname: VzdumpBackupNoGuests
+        exp_alerts: []
+      - eval_time: 24h
+        alertname: VzdumpBackupNoGuests
+        exp_alerts: []
+
+  # Guests backed up: silent.
+  - interval: 5m
+    input_series:
+      - series: 'vzdump_backup_guests{job="node-exporter-host", instance="10.0.10.104:9101"}'
+        values: '2+0x30'
+      - series: 'vzdump_backup_last_run_success{job="node-exporter-host", instance="10.0.10.104:9101"}'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 90m
+        alertname: VzdumpBackupNoGuests
+        exp_alerts: []
+
+  # A failed run also counts zero guests; VzdumpBackupFailed owns that state and
+  # this rule must stay out of it. The host backed guests up earlier, so the 30d
+  # arm is satisfied and the success gate is the only thing keeping it quiet.
+  - interval: 5m
+    input_series:
+      - series: 'vzdump_backup_guests{job="node-exporter-host", instance="10.0.10.104:9101"}'
+        values: '2+0x1 0+0x300'
+      - series: 'vzdump_backup_last_run_success{job="node-exporter-host", instance="10.0.10.104:9101"}'
+        values: '0+0x301'
+    alert_rule_test:
+      - eval_time: 90m
+        alertname: VzdumpBackupNoGuests
+        exp_alerts: []
+
+
+  # The zero-guest suppression on both VzdumpBackupStale arms: a host whose last
+  # run succeeded with no guests is excluded even when its timestamp is stale.
+  - interval: 5m
+    input_series:
+      - series: 'up{job="node-exporter-host", instance="10.0.10.104:9101"}'
+        values: '1+0x1200'
+      - series: 'vzdump_backup_last_success_timestamp_seconds{job="node-exporter-host", instance="10.0.10.104:9101"}'
+        values: '0+0x1200'
+      - series: 'vzdump_backup_guests{job="node-exporter-host", instance="10.0.10.104:9101"}'
+        values: '0+0x1200'
+      - series: 'vzdump_backup_last_run_success{job="node-exporter-host", instance="10.0.10.104:9101"}'
+        values: '1+0x1200'
+    alert_rule_test:
+      - eval_time: 48h
+        alertname: VzdumpBackupStale
+        exp_alerts: []
+      - eval_time: 97h
+        alertname: VzdumpBackupStaleCritical
+        exp_alerts: []
+
+  # Same stale timestamp, but the host owns guests: both arms fire. The second
+  # instance carries zero guests, so `on (instance)` is pinned — one zero-guest
+  # host must not silence the fleet.
+  - interval: 5m
+    input_series:
+      - series: 'up{job="node-exporter-host", instance="10.0.10.104:9101"}'
+        values: '1+0x1200'
+      - series: 'vzdump_backup_last_success_timestamp_seconds{job="node-exporter-host", instance="10.0.10.104:9101"}'
+        values: '0+0x1200'
+      - series: 'vzdump_backup_guests{job="node-exporter-host", instance="10.0.10.104:9101"}'
+        values: '2+0x1200'
+      - series: 'vzdump_backup_last_run_success{job="node-exporter-host", instance="10.0.10.104:9101"}'
+        values: '1+0x1200'
+      - series: 'vzdump_backup_guests{job="node-exporter-host", instance="10.0.10.105:9101"}'
+        values: '0+0x1200'
+      - series: 'vzdump_backup_last_run_success{job="node-exporter-host", instance="10.0.10.105:9101"}'
+        values: '1+0x1200'
+    alert_rule_test:
+      # Inside the 1h hold on each arm.
+      - eval_time: 36h30m
+        alertname: VzdumpBackupStale
+        exp_alerts: []
+      - eval_time: 72h30m
+        alertname: VzdumpBackupStaleCritical
+        exp_alerts: []
+      - eval_time: 48h
+        alertname: VzdumpBackupStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: node-exporter-host
+              instance: 10.0.10.104:9101
+      - eval_time: 97h
+        alertname: VzdumpBackupStaleCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: node-exporter-host
+              instance: 10.0.10.104:9101
+
+  # A zero-guest host whose last run FAILED is not excluded: the critical
+  # escalation must still reach the only DR path for compute-node guests.
+  - interval: 5m
+    input_series:
+      - series: 'up{job="node-exporter-host", instance="10.0.10.104:9101"}'
+        values: '1+0x1200'
+      - series: 'vzdump_backup_last_success_timestamp_seconds{job="node-exporter-host", instance="10.0.10.104:9101"}'
+        values: '0+0x1200'
+      - series: 'vzdump_backup_guests{job="node-exporter-host", instance="10.0.10.104:9101"}'
+        values: '0+0x1200'
+      - series: 'vzdump_backup_last_run_success{job="node-exporter-host", instance="10.0.10.104:9101"}'
+        values: '0+0x1200'
+    alert_rule_test:
+      - eval_time: 97h
+        alertname: VzdumpBackupStaleCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: node-exporter-host
+              instance: 10.0.10.104:9101

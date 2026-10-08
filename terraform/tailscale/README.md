@@ -16,25 +16,23 @@ every path the operator uses today.
 sever tailnet connectivity and Tailscale SSH (the path this repo's remote admin
 relies on). `apply` stays **out of CI and supervised**; only a read-only drift
 `plan` runs in CI — the `tailscale-drift-plan` job (`.gitlab-ci.yml`) runs
-`terraform plan` (never `apply`, `allow_failure: true`) on the schedule and
-post-merge on `main`, so an Admin-console hot-fix surfaces as drift instead of
-being silently reverted at the next apply. There is deliberately **no**
-`merge_request_event` rule — the job materializes vault secrets and must not run
-an unmerged branch's code — so the pre-merge control is a local
+`terraform plan` (never `apply`, `allow_failure: exit_codes: [2]`) on the
+schedule and post-merge on `main`, so an Admin-console hot-fix surfaces as drift
+instead of being silently reverted at the next apply. There is deliberately
+**no** `merge_request_event` rule — the job materializes vault secrets and must
+not run an unmerged branch's code — so the pre-merge control is a local
 `task terraform:tailscale-plan`.
 
 > **The ACL apply has landed** — the live tailnet policy is `policy.hujson`.
 > So the rule is unconditional: `tailscale-drift-plan` is **expected empty**, and
 > **any** non-empty plan is real drift — an Admin-console hot-fix that must be
-> reconciled back into this file. Because the job is `allow_failure: true`, its
-> colour is the only signal; a yellow one means review the diff with a supervised
-> `task terraform:tailscale-plan` before applying anything, never wave it through.
+> reconciled back into this file. Drift is the job's one allowed exit code (2),
+> so its colour is the only signal: a yellow one means review the diff with a
+> supervised `task terraform:tailscale-plan` before applying anything, never
+> wave it through.
 >
-> **Migration complete (2026-08-20):** all six Proxmox hosts carry
-> `tag:subnet-router`, route auto-approval is tag-only (the owner entry is
-> removed), and the post-migration tightening has been applied. The runbook
-> below remains the procedure for any later supervised policy change or a
-> rebuild-from-scratch.
+> All six Proxmox hosts carry `tag:subnet-router` and route auto-approval is
+> tag-only.
 
 ## What the policy grants (rule by rule)
 
@@ -81,11 +79,9 @@ one-line note per rule, and `docs/05-tailscale.md` points here.
   gate that backs the Tailscale SSH rule** — Tailscale requires *both* a network
   `acls` rule and an `ssh` rule for a connection to be permitted, so
   `autogroup:self` in the ssh rule alone grants nothing without this. It covers
-  inter-device SSH between the owner's own client devices (laptop ↔ phone) and
-  SSH to the Proxmox hosts while they are still untagged during migration (once
-  tagged they are covered by rule 1's `tag:subnet-router`, since `autogroup:self`
-  excludes tagged devices — a seamless handoff). Port 22 only; not a broad
-  member→member mesh.
+  inter-device SSH between the owner's own client devices (laptop ↔ phone); the
+  tagged Proxmox hosts are covered by rule 1, since `autogroup:self` excludes
+  tagged devices. Port 22 only; not a broad member→member mesh.
 - **ACL rule 4 — admin devices → the operator-exposed proxy devices.**
   `src group:admins → dst tag:k8s:53,443`. `:443` is the `traefik-tailnet`
   device (L3 TCP passthrough; TLS terminated in-cluster on the `*.esweiss.com`
@@ -94,20 +90,17 @@ one-line note per rule, and `docs/05-tailscale.md` points here.
   Split-DNS forwards `esweiss.com` to (tcp+udp, no `proto` field). Access is
   governed by the proxy device tag, so no `autoApprovers.services` block is
   needed (that is HA-ProxyGroup only).
-- **`autoApprovers.routes`** — `10.0.10.0/24` auto-approves for BOTH
-  `tag:subnet-router` **and** `ericsweiss1@gmail.com`. The tag approves routes
-  once a host is tagged; the owner keeps still-untagged hosts approved — no
-  approval gap while the six hosts are tagged one by one. **Post-migration
-  tightening:** once all six are tagged and approved, remove the owner entry
-  (see the in-file comment) so only tag-owned devices auto-approve the route.
+- **`autoApprovers.routes`** — `10.0.10.0/24` auto-approves for
+  `tag:subnet-router` only, so subnet-router failover across the six hosts needs
+  no manual approval and an untagged device cannot self-approve the LAN route.
 - **SSH** — `action check`, `src group:admins`,
   `dst [autogroup:self, tag:subnet-router]`, `users [autogroup:nonroot]`.
-  `autogroup:self` covers SSH between the owner's own untagged client devices (and
-  the hosts while still untagged mid-migration) — its network-access gate is acls
-  rule 3 above; `tag:subnet-router` covers SSH **into** the tagged Proxmox hosts (a
-  tagged device is not matched by `autogroup:self`). **`root` is dropped** — the operator
-  connects as `eric` (passwordless sudo on every host). A commented break-glass
-  rule (with `root`) is kept in the file for emergency re-add.
+  `autogroup:self` covers SSH between the owner's own untagged client devices —
+  its network-access gate is acls rule 3 above; `tag:subnet-router` covers SSH
+  **into** the tagged Proxmox hosts (a tagged device is not matched by
+  `autogroup:self`). **`root` is dropped** — the operator connects as `eric`
+  (passwordless sudo on every host); § Break-glass carries the rule that puts
+  `root` back.
 
 ## Shape from the library, policy from here
 
@@ -115,7 +108,10 @@ one-line note per rule, and `docs/05-tailscale.md` points here.
 pinned `?ref=`: the module owns the `tailscale_acl` resource and its guardrails
 (`reset_acl_on_destroy = false`, `prevent_destroy = true`) plus the Split-DNS
 resources; `policy.hujson` and `local.split_dns` (`split_dns.tf`) are this site's
-data. `moved.tf` carries the state-address migration from the pre-module layout.
+data.
+
+`moved.tf` is the permanent map of the pre-module state addresses: the blocks
+stay, and removing one rides a supervised plan and apply.
 
 Same two notes as `terraform/cloudflare`: the `?ref=` is bumped **by hand**
 (`scripts/check-lib-pins.py` does not read Terraform module sources), and
@@ -140,7 +136,7 @@ Three things to know:
   `tailscale_dns_split_nameservers` resources carry `prevent_destroy`, so
   removing the `esweiss.com` key is a hard plan error rather than a destroy. The
   deliberate path is
-  `terraform state rm 'module.tailnet.tailscale_dns_split_nameservers.this["esweiss.com"]'`
+  `task terraform:tailscale-state -- rm 'module.tailnet.tailscale_dns_split_nameservers.this["esweiss.com"]'`
   (the live mapping survives that), then dropping the key — and doing so breaks
   `*.esweiss.com` resolution for every tailnet client (the mesh path in
   `docs/05-tailscale.md`). Treat the map as break-glass and read the plan.
@@ -148,7 +144,7 @@ Three things to know:
   suffix (`ts-dns-1`) when the bare hostname is still held by a device that has
   not aged out — the common outcome when the Service is recreated before the old
   node key expires. The lookup then errors after its 60s wait, which looks
-  identical to ACL drift in the `allow_failure` job. Recovery: delete the stale
+  identical to ACL drift in the drift-plan job. Recovery: delete the stale
   `ts-dns` device in the Admin console (or `tailscale logout` it) so the rebuilt
   Service reclaims the hostname, then re-plan.
 
@@ -189,23 +185,16 @@ task terraform:tailscale-apply    # SUPERVISED — do NOT pass -auto-approve
 running `terraform apply` if the flag is present), so the plan review cannot be
 bypassed by an errant flag. Review the plan and type `yes` at the prompt.
 
-## Staged apply runbook (supervised — maintenance window)
+## Supervised apply (maintenance window)
 
 Do this in a **maintenance window** with a **non-tailnet fallback** available
 (local LAN console / Proxmox IPMI), in case an SSH cutover goes wrong.
 
-> **Steps 1 and 2 are DONE** — the policy is applied and the drift plan is clean.
-> The live remainder is **step 3** (tag the six hosts) plus the post-migration
-> tightening at the end. Steps 1 and 2 are kept because they are also the
-> procedure for any *later* supervised apply of a policy change, and for a
-> rebuild-from-scratch.
+### 1. Pre-apply checklist — nonroot SSH on ALL SIX hosts
 
-### 1. Pre-apply checklist — validate nonroot SSH on ALL SIX hosts FIRST
-
-Dropping `root` from the Tailscale SSH rule is only safe once `eric` + sudo works
-on every host over the tailnet. Losing both `root` and `eric` = lockout. From a
-tailnet-connected client, for each host `pve-nas-01 pve-opt-01 pve-opt-02
-pve-opt-03 pve-prec-01 pve-laptop-01`:
+The policy grants no `root` Tailscale SSH, so every host has to be reachable as
+`eric` with working sudo before any apply; losing both `root` and `eric` is a
+lockout. From a tailnet-connected client:
 
 ```bash
 for h in pve-nas-01 pve-opt-01 pve-opt-02 pve-opt-03 pve-prec-01 pve-laptop-01; do
@@ -215,86 +204,27 @@ done
 ```
 
 Every host must print `sudo OK`. If any fails, **stop** — fix nonroot+sudo, or
-keep the break-glass `root` rule (see step 5) until it is fixed.
+add the break-glass `root` rule from step 4 until it is fixed.
 
-Also confirm the OAuth creds resolve and review the diff:
+Then confirm the OAuth creds resolve and review the diff:
 
 ```bash
 task terraform:tailscale-init
-task terraform:tailscale-plan     # confirm it matches the intended lockdown
+task terraform:tailscale-plan     # confirm it matches the intended policy
 ```
 
-### 2. Apply the ACL (adds tagOwners + tag-based route auto-approver)
+### 2. Apply
 
 ```bash
 task terraform:tailscale-apply    # review the plan, type `yes`
 ```
-
-Because `autoApprovers` still lists the owner, the six (still-untagged) hosts keep
-their `10.0.10.0/24` route approved through this step, so subnet routing stays
-up and Rule 2 preserves LAN reach. **SSH access to the hosts is continuous across
-this window** — there is no lockout:
-
-- **By tailnet name / tailnet IP (Tailscale SSH):** while a host is still untagged
-  it *is* `autogroup:self`, so acls **rule 3** (`autogroup:self:22`) plus the ssh
-  `autogroup:self` rule permit Tailscale SSH to it. Rule 1 and the ssh
-  `tag:subnet-router` rule do not match yet (nothing is tagged); the moment a host
-  adopts the tag in step 3 the coverage hands off from `autogroup:self` to
-  `tag:subnet-router` with no gap.
-- **By LAN IP over subnet routing (plain SSH):** `ssh eric@10.0.10.10x` is
-  permitted by Rule 2 (`:22`) regardless of tag state. This is the path the step-3
-  Ansible run uses — the inventory `ansible_host` values are the LAN IPs — so
-  tagging never depends on Tailscale SSH being up.
-
-> **CI ordering note.** The `deploy-ansible-proxmox` pipeline runs the tailscale
-> role automatically (it triggers on the inventory and the
-> `ansible/requirements.yml` collection pin). Until step 3 has been completed on
-> a host, its **"Reconcile advertised Tailscale ACL tags"** task benignly reports
-> **needs reauth** — first-time tag adoption on a user-owned device needs an
-> interactive reauth. The task is best-effort by default
-> (`tailscale_tags_require_adoption: false`) and the following debug task surfaces
-> the `rc`/`stderr`, so the pipeline stays green. This is expected, not a failure;
-> step 3 runs the role strictly (`-e tailscale_tags_require_adoption=true`) so an
-> adoption that fails on a host is caught instead of passing green.
 
 > Bootstrapping a tailnet from scratch, first apply only: if the resource reports
 > the ACL already has content, either
 > `terraform import 'module.tailnet.tailscale_acl.this' acl`, or set
 > `overwrite_existing_content=true` on the module's resource for that first apply.
 
-### 3. Tag the six hosts (adopt tag:subnet-router)
-
-The `tailscale_advertise_tags: ["tag:subnet-router"]` var is set in
-`group_vars/proxmox.yml`; run the tailscale role against the Proxmox hosts. Pass
-`-e tailscale_tags_require_adoption=true` so this **intentional** adoption step
-runs strictly — a host that fails to adopt the tag fails the play instead of
-passing green (the default best-effort mode is for the pre-cutover pipeline run,
-where "needs reauth" is expected):
-
-```bash
-op run -- ansible-playbook -i ansible/inventories/prod ansible/playbooks/site.yml \
-  --limit proxmox --tags tailscale -e tailscale_tags_require_adoption=true
-```
-
-The role runs `tailscale set --advertise-tags=tag:subnet-router` on each running
-host (the tag is adopted via this reconcile task, not the initial `tailscale up`).
-**First-time tag adoption on a user-owned device requires an interactive
-reauthentication** (a Tailscale platform behavior) — with strict mode the run
-fails on those hosts (rc/stderr surfaced), and you complete the reauth per host
-below, then re-run. For any host needing reauth, either:
-
-- re-authenticate it with the tag (preferred, keeps it codified):
-  ```bash
-  ssh eric@<host> 'sudo tailscale up --reset \
-    --accept-routes=false --accept-dns=false \
-    --advertise-routes=10.0.10.0/24 --advertise-tags=tag:subnet-router \
-    --operator=eric --ssh'
-  ```
-  (`--reset` + the full flag set because `up` resets unspecified prefs), **or**
-- assign `tag:subnet-router` to the host in the Admin console (Machines → host →
-  Edit ACL tags) — simplest for a one-time migration; key expiry is unaffected.
-
-### 4. Post-apply verification
+### 3. Post-apply verification
 
 ```bash
 # All six hosts tagged and their LAN route approved:
@@ -318,13 +248,23 @@ kubectl --kubeconfig ~/.kube/config-k3s get nodes   # hits .161/.222/.223/.227:6
 #   tailscale-drift-plan → empty plan (green) once live == policy.hujson.
 ```
 
-### 5. Break-glass (if the cutover locks you out)
+### 4. Break-glass (if an apply locks you out)
 
-- **Emergency root SSH:** uncomment the break-glass `ssh` rule (with `root`) in
-  `policy.hujson` and re-apply, **or** add it directly in the Admin console
-  (Access controls). A console edit surfaces as drift in `tailscale-drift-plan`
-  until reconciled back into the repo.
-- **Full revert:** `git revert` the lockdown commit and `task
+- **Emergency root SSH:** add this rule to the `ssh` array in `policy.hujson`
+  and re-apply, **or** add it directly in the Admin console (Access controls) —
+  a console edit surfaces as drift in `tailscale-drift-plan` until it is
+  reconciled back into the repo.
+
+  ```json
+  {
+    "action": "check",
+    "src": ["group:admins"],
+    "dst": ["autogroup:self", "tag:subnet-router"],
+    "users": ["autogroup:nonroot", "root"]
+  }
+  ```
+
+- **Full revert:** `git revert` the offending commit and `task
   terraform:tailscale-apply` to restore the previous policy. The library module's
   guardrails (`reset_acl_on_destroy = false` and `prevent_destroy = true` on
   `tailscale_acl.this`) mean an accidental `destroy` cannot silently revert the
@@ -333,9 +273,29 @@ kubectl --kubeconfig ~/.kube/config-k3s get nodes   # hits .161/.222/.223/.227:6
   (`10.0.10.0/24`), so a device physically on the LAN reaches SSH/8006 directly
   regardless of the tailnet ACL.
 
-## Post-migration tightening (follow-ups)
+## Adding a host to `tag:subnet-router`
 
-- Remove the `ericsweiss1@gmail.com` owner entry from `autoApprovers.routes`
-  once all six hosts are tagged (leaves only `tag:subnet-router`).
-- Consider narrowing the host firewall `admin_ts` set now that tag-scoped tailnet
-  ACLs exist (tracked in `docs/16-next-steps.md`).
+`tailscale_advertise_tags: ["tag:subnet-router"]` is set in
+`group_vars/proxmox.yml`; run the tailscale role against the Proxmox hosts with
+`-e tailscale_tags_require_adoption=true` so a host that fails to adopt the tag
+fails the play instead of passing green:
+
+```bash
+op run -- ansible-playbook -i ansible/inventories/prod ansible/playbooks/site.yml \
+  --limit proxmox --tags tailscale -e tailscale_tags_require_adoption=true
+```
+
+First-time tag adoption on a user-owned device needs an interactive reauth, so
+the default best-effort mode reports **needs reauth** until that is done. For a
+host needing it, either:
+
+- re-authenticate it with the tag (preferred, keeps it codified):
+  ```bash
+  ssh eric@<host> 'sudo tailscale up --reset \
+    --accept-routes=false --accept-dns=false \
+    --advertise-routes=10.0.10.0/24 --advertise-tags=tag:subnet-router \
+    --operator=eric --ssh'
+  ```
+  (`--reset` plus the full flag set, because `up` resets unspecified prefs), **or**
+- assign `tag:subnet-router` in the Admin console (Machines → host → Edit ACL
+  tags); key expiry is unaffected.

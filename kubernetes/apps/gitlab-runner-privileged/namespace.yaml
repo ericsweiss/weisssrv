@@ -1,8 +1,7 @@
 ---
 # Dedicated namespace for the privileged (infrastructure) GitLab Runner. The
-# namespace split is the isolation boundary: the shared runner's namespace-scoped
-# ServiceAccount RBAC cannot read this runner's token Secret. PSS enforce stays
-# `privileged` because the DinD job pods this runner spawns require it.
+# split is the isolation boundary: the shared runner's namespaced RBAC cannot
+# read this runner's token Secret. PSS enforce is privileged for its DinD pods.
 apiVersion: v1
 kind: Namespace
 metadata:

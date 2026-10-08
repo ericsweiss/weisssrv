@@ -1,13 +1,7 @@
 ---
-# Hermes Agent (NousResearch) — one pod, three containers off two self-built
-# images (docs/37):
-#   * gateway   — `gateway run`, the always-on agent supervisor plus its
-#                 OpenAI-compatible API server on :8642.
-#   * dashboard — the FastAPI web UI on :9119, the surface at agent.*.
-#   * camofox   — the anti-detection browser server on :9377.
-# All three share /opt/data (the NFS PVC) and pod-localhost, mirroring
-# upstream's compose bind-mount + host-network shape. Recreate strategy: the
-# single RWO NFS volume must not be dual-mounted across a rolling update.
+# Hermes Agent (docs/37): one pod, three containers — gateway (agent supervisor
+# + OpenAI-compatible API :8642), dashboard (web UI :9119, agent.*), camofox
+# (browser server :9377). Recreate: the RWO NFS PVC must not be dual-mounted.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -29,22 +23,17 @@ spec:
         app.kubernetes.io/name: hermes
         app.kubernetes.io/part-of: hermes
     spec:
-      # No node affinity and no NAS toleration by design: the NAS agent's
-      # esweiss.com/nas=true:PreferNoSchedule taint plus least-allocated scoring
-      # already place this pod (the largest single memory reservation in the
-      # general set) on the roomiest eligible node. modern CPU: the image
-      # bundles a Node/Chromium/uv toolchain, so keep it off the Core2-era nodes.
+      # No node affinity or NAS toleration: the NAS taint plus least-allocated
+      # scoring already place this pod on the roomiest eligible node. modern CPU
+      # because the image bundles a Node/Chromium/uv toolchain.
       nodeSelector:
         ${cluster_node_label_domain}/general: "true"
         ${cluster_node_label_domain}/cpu: "modern"
       imagePullSecrets:
         - name: hermes-registry-pull
-      # This is an s6-overlay image (like the LinuxServer.io *arr images in the
-      # downloads namespace): /init starts as root, remaps the hermes user to
-      # HERMES_UID/GID, chowns /opt/data, then drops every service to the hermes
-      # user via s6-setuidgid. runAsNonRoot / drop-ALL / allowPrivilegeEscalation
-      # false would break that privilege drop, so — matching the *arr precedent —
-      # only the universally-safe subset is applied.
+      # s6-overlay image: /init starts as root to remap the hermes user and then
+      # drops every service to it, so runAsNonRoot and drop-ALL are not set here
+      # (same as the *arr images in the downloads namespace).
       automountServiceAccountToken: false
       securityContext:
         seccompProfile:
@@ -53,18 +42,12 @@ spec:
         options:
           - name: ndots
             value: "1"
-          # ClusterFirst pods resolve via the DNAT'd kube-dns ClusterIP; force a
-          # fresh socket for glibc's parallel A/AAAA queries so the conntrack
-          # DNAT-insert race can't cost a ~5s resolver stall. Kept in sync with
-          # recipes/mealie.yaml and the *arr deployments.
+          # ClusterFirst pod on the DNAT'd kube-dns path — fresh socket for the
+          # second parallel A/AAAA query avoids the ~5s conntrack DNAT race.
           - name: single-request-reopen
-      # Init container: prepares the shared NFS volume. Creates CODEX_HOME and
-      # the camofox subdir, then upserts the GATEWAY-scope vars into
-      # /opt/data/.env — the gateway's config loader reads that store and never
-      # falls back to os.environ, so container env alone is invisible to it. The
-      # upsert runs every start (an ESO rotation lands on the next one) and
-      # leaves unlisted keys, e.g. dashboard-written ones, untouched. Runs
-      # 1000:2000 to match the export's all_squash anon mapping.
+      # Prepares the shared NFS volume and upserts the GATEWAY-scope vars into
+      # /opt/data/.env — the gateway config loader reads that store only, never
+      # os.environ. Runs 1000:2000 to match the export's all_squash mapping.
       initContainers:
         - name: init-data
           image: busybox:${busybox_version}
@@ -84,13 +67,15 @@ spec:
                 sed -i "/^$1=/d" /opt/data/.env
                 printf '%s=%s\n' "$1" "$2" >> /opt/data/.env
               }
+              # Dropped from the upsert list: remove what earlier starts wrote,
+              # or a rotated service-account token lives on in .env forever.
+              sed -i '/^OP_SERVICE_ACCOUNT_TOKEN=/d' /opt/data/.env
               upsert DISCORD_BOT_TOKEN "$DISCORD_BOT_TOKEN"
               upsert DISCORD_ALLOWED_USERS "$DISCORD_ALLOWED_USERS"
               upsert CODEX_HOME "$CODEX_HOME"
               upsert CAMOFOX_URL "$CAMOFOX_URL"
               upsert HASS_URL "$HASS_URL"
               upsert HASS_TOKEN "$HASS_TOKEN"
-              upsert OP_SERVICE_ACCOUNT_TOKEN "$OP_SERVICE_ACCOUNT_TOKEN"
           env:
             - name: DISCORD_BOT_TOKEN
               valueFrom:
@@ -111,10 +96,8 @@ spec:
             - name: CAMOFOX_URL
               value: http://127.0.0.1:9377
             # Home Assistant tool (docs/37 §Home Assistant): HASS_TOKEN's
-            # presence auto-enables it. HASS_URL rides the AdGuard rewrite
-            # home.esweiss.com -> Traefik .101 (post-DNAT traefik-namespace
-            # egress rule in networkpolicy.yaml); that route carries no
-            # forward-auth middleware, so bearer-token API calls reach HA.
+            # presence auto-enables it. HASS_URL rides the AdGuard rewrite to
+            # Traefik .101, a route that carries no forward-auth middleware.
             - name: HASS_URL
               value: https://home.${cluster_internal_domain}
             - name: HASS_TOKEN
@@ -122,13 +105,6 @@ spec:
                 secretKeyRef:
                   name: hermes-secrets
                   key: hass-token
-            # 1Password service-account token, mirrored into .env alongside the
-            # gateway container env so `op run --env-file` paths also work.
-            - name: OP_SERVICE_ACCOUNT_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: hermes-secrets
-                  key: op-service-account-token
           securityContext:
             runAsUser: 1000
             runAsGroup: 2000
@@ -158,42 +134,26 @@ spec:
             - name: HERMES_GID
               value: "2000"
             - name: TZ
-              value: America/Los_Angeles
+              value: ${cluster_timezone}
             # Codex app-server runtime state (auth.json, config.toml, sessions)
             # on the NFS volume, so the subscription OAuth token from
             # `codex login` survives pod restarts and both containers see it.
             - name: CODEX_HOME
               value: /opt/data/.codex
-            # Claude Code CLI (baked into the image) — the coding-task delegate
-            # billed to the Claude Max subscription. The CLI presents this
-            # long-lived OAuth token itself, so the credential never enters the
-            # model context and no ANTHROPIC_API_KEY meters API billing. Config
-            # dir on NFS so CLI state survives pod recreation.
+            # Config dir on NFS so Claude Code CLI state survives recreation.
             - name: CLAUDE_CONFIG_DIR
               value: /opt/data/.claude
+            # Coding delegate billed to the Claude Max subscription: the CLI
+            # presents this OAuth token itself, so the credential never enters
+            # the model context and no ANTHROPIC_API_KEY meters API billing.
             - name: CLAUDE_CODE_OAUTH_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: hermes-secrets
                   key: claude-code-oauth-token
-            # Discord adapter: the gateway activates it when the bot token is
-            # present. Upstream is deny-all without an allowlist, so
-            # DISCORD_ALLOWED_USERS pins the bot to the operator's Discord user
-            # id (a public identifier, not a secret).
-            - name: DISCORD_BOT_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: hermes-secrets
-                  key: discord-bot-token
-            - name: DISCORD_ALLOWED_USERS
-              value: "237388029105405952"
             # Built-in OpenAI-compatible API server, in-process with
-            # `gateway run`. GET /health is unauthenticated and served by the
-            # gateway's own asyncio loop, so the probes below catch a hung
-            # supervisor a crash-loop check cannot see; every functional route
-            # requires API_SERVER_KEY (mandatory, even on loopback). :8642 is
-            # exposed via the hermes-api Service + the agent-api IngressRoute
-            # (docs/37 §Voice assistant); the NetworkPolicy admits only Traefik.
+            # `gateway run`. GET /health is the only keyless route and the one
+            # the probes below use; everything else requires API_SERVER_KEY.
             - name: API_SERVER_ENABLED
               value: "true"
             # Kubelet probes connect to the pod IP, not loopback — bind all
@@ -207,12 +167,9 @@ spec:
                 secretKeyRef:
                   name: hermes-secrets
                   key: api-server-key
-            # 1Password service-account token for the 1Password skill (docs/37
-            # §1Password). A real CONTAINER env var, unlike the other tokens: the
-            # baked-in `op` CLI runs under the terminal tool, whose backend seeds
-            # the child env from os.environ (code_execution strips *TOKEN* vars,
-            # so the skill drives `op` via the terminal tool by design). Scoped
-            # to the isolated Agent vault — never Homelab.
+            # 1Password service-account token, scoped to the isolated Agent
+            # vault and never Homelab (docs/37 §1Password). A real container env
+            # var: `op` runs under the terminal tool, seeded from os.environ.
             - name: OP_SERVICE_ACCOUNT_TOKEN
               valueFrom:
                 secretKeyRef:
@@ -232,12 +189,9 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 30
-          # httpGet, NOT tcpSocket: a bare TCP connect completes in the kernel
-          # accept path and can succeed while the event loop is wedged — exactly
-          # the hang these probes catch. /health does no LLM work. Liveness
-          # rides out transient stalls and restarts a truly hung gateway within
-          # ~2.5 min; readiness de-rotates it from the hermes-api Service
-          # (agent-api.esweiss.com) in the meantime.
+          # httpGet, NOT tcpSocket: a bare TCP connect succeeds while the event
+          # loop is wedged, which is the hang these probes catch. Readiness
+          # de-rotates the pod from the hermes-api Service meanwhile.
           livenessProbe:
             httpGet:
               path: /health
@@ -252,14 +206,9 @@ spec:
             periodSeconds: 15
             timeoutSeconds: 10
             failureThreshold: 4
-          # Memory is hand-set and binding: the VPA is `controlledValues:
-          # RequestsOnly` (vpa.yaml), so this limit is the ceiling the pod is
-          # admitted against and `maxAllowed` tracks the same number — raising
-          # one means raising both, in the same commit (docs/33 § Limit
-          # oscillation). Sized far above the 475Mi 30d working-set peak
-          # because the gateway forks the Codex and Claude Code CLIs, whose
-          # footprint tracks the task being run rather than usage history.
-          # No CPU limit (docs/33).
+          # Hand-set and binding: vpa.yaml is RequestsOnly and its `maxAllowed`
+          # tracks this limit — raise both together (docs/33). Far above the
+          # 475Mi 30d peak because it forks the CLIs. No CPU limit (docs/33).
           resources:
             requests:
               cpu: 100m
@@ -273,15 +222,9 @@ spec:
         - name: dashboard
           image: registry.git.${cluster_internal_domain}/eric/weisssrv/hermes-agent:${hermes_image_version}
           imagePullPolicy: IfNotPresent
-          # Bind 0.0.0.0 (upstream's compose defaults to 127.0.0.1) so Traefik
-          # can reach the dashboard through the Service. Binding to a
-          # non-loopback address engages the dashboard's fail-closed auth gate:
-          # upstream refuses to start the dashboard on 0.0.0.0 unless a
-          # dashboard auth provider is registered. The `self_hosted` Authentik
-          # OIDC provider (env below) is the sole registered provider and the
-          # only auth layer — no forward-auth middleware on the IngressRoutes;
-          # the NetworkPolicy admits only the Traefik namespace on :9119
-          # (docs/37 §SSO). 9119 is the image's default port, so no --port.
+          # Bind 0.0.0.0 so Traefik reaches the dashboard through the Service.
+          # A non-loopback bind engages the fail-closed auth gate: upstream
+          # refuses to start without a registered auth provider (docs/37 §SSO).
           args: ["dashboard", "--host", "0.0.0.0", "--no-open"]
           env:
             - name: HERMES_UID
@@ -289,38 +232,18 @@ spec:
             - name: HERMES_GID
               value: "2000"
             - name: TZ
-              value: America/Los_Angeles
+              value: ${cluster_timezone}
             # Codex app-server runtime state on the NFS volume (see gateway).
             - name: CODEX_HOME
               value: /opt/data/.codex
-            # Claude Code delegate credential + config dir — same values as the
-            # gateway (see the comment there) so an operator `kubectl exec` in
-            # either container can run/verify `claude` with identical state.
+            # Config dir only, so an operator `kubectl exec` here sees the same
+            # CLI state. The OAuth token stays out of the internet-facing
+            # container: the gateway is what forks the CLI.
             - name: CLAUDE_CONFIG_DIR
               value: /opt/data/.claude
-            - name: CLAUDE_CODE_OAUTH_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: hermes-secrets
-                  key: claude-code-oauth-token
-            # Dashboard auth is OIDC-only — the `self_hosted` generic-OIDC
-            # provider is the sole registered one, so the middleware
-            # auto-launches a silent Authentik redirect (docs/37 §SSO). The
-            # dashboard reads these from real container env, unlike the gateway.
-            # No PUBLIC_URL pin: redirect_uri is rebuilt per request from
-            # X-Forwarded-Host/-Proto, so both hostnames round-trip to their own
-            # /auth/callback (both are allowed URIs in
-            # terraform/authentik/providers_oauth2.tf). uvicorn trusts forwarded
-            # headers only from FORWARDED_ALLOW_IPS; "*" is safe because the
-            # NetworkPolicy admits only Traefik to :9119 and Traefik rewrites
-            # those headers.
-            - name: FORWARDED_ALLOW_IPS
-              value: "*"
-            # Issuer = the `agent` application slug on the external authentik
-            # host. From a pod that name resolves to the internal Traefik VIP
-            # (AdGuard split-horizon), and kube-proxy DNATs it before policy
-            # evaluation, so discovery/token/JWKS calls ride the
-            # traefik-namespace egress rule, not a public-internet one.
+            # Dashboard auth is OIDC-only, from real container env (unlike the
+            # gateway). redirect_uri rebuilds from Traefik's forwarded headers,
+            # trusted via dashboard.trusted_proxies (docs/37 §One-time operator setup).
             - name: HERMES_DASHBOARD_OIDC_ISSUER
               value: https://auth.${cluster_external_domain}/application/o/agent/
             - name: HERMES_DASHBOARD_OIDC_CLIENT_ID
@@ -337,12 +260,9 @@ spec:
             - name: http
               containerPort: 9119
               protocol: TCP
-          # Bare TCP connect to the dashboard port, NOT an HTTP GET: a
-          # listener-up check is sufficient health for this single-process
-          # FastAPI dashboard and avoids coupling pod health to any specific
-          # HTTP route or status code (the UI is a redirect-heavy SPA).
-          # startupProbe covers the slow first boot (s6 cont-init: volume chown,
-          # config migrate, skills sync).
+          # tcpSocket, NOT httpGet: a listener-up check is sufficient health for
+          # this single-process FastAPI dashboard and avoids coupling pod health
+          # to a redirect-heavy SPA's routes. startupProbe covers the s6 boot.
           startupProbe:
             tcpSocket:
               port: http
@@ -360,12 +280,9 @@ spec:
             periodSeconds: 30
             timeoutSeconds: 10
             failureThreshold: 5
-          # This is the container the VPA squeezed into OOMKills, dropping the
-          # chat and event feeds (!227): ~2.4x the 1059Mi 30d working-set peak.
           # Hand-set and binding: vpa.yaml is RequestsOnly and its `maxAllowed`
-          # tracks this limit — raise both together (docs/33). The request is
-          # floored by `minAllowed` at the interactive burst, not the idle
-          # baseline. No CPU limit (docs/33).
+          # tracks this limit — raise both together (docs/33). ~2.4x the 1059Mi
+          # 30d working-set peak. No CPU limit (docs/33).
           resources:
             requests:
               cpu: 100m
@@ -375,19 +292,15 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /opt/data
-        # ── Camofox: anti-detection browser server on :9377 ──────────────
-        # jo-inc/camofox-browser — a Camoufox (hardened-Firefox) automation
-        # server the gateway drives over 127.0.0.1. :9377 has no Service and no
-        # ingress allow, so nothing else can reach it. Self-built image
-        # (build-camofox-browser CI job, docker/camofox-browser/README.md); runs
-        # as root because Xvfb and the Camoufox binary live under /root, and NFS
-        # writes are all_squash'd to 1000:2000 anyway.
+        # Camofox: a Camoufox automation server the gateway drives over
+        # 127.0.0.1:9377; no Service, no ingress allow, runs as root.
+        # Self-built: docker/camofox-browser/README.md.
         - name: camofox
           image: registry.git.${cluster_internal_domain}/eric/weisssrv/camofox-browser:${hermes_camofox_version}
           imagePullPolicy: IfNotPresent
           env:
             - name: TZ
-              value: America/Los_Angeles
+              value: ${cluster_timezone}
             # Profiles / cookies / traces on the shared NFS volume so browser
             # sessions survive pod recreation (defaults live under ~/.camofox
             # = /root/.camofox, which is ephemeral).
@@ -409,10 +322,9 @@ spec:
             - name: camofox
               containerPort: 9377
               protocol: TCP
-          # /health reports 503 while the browser is dead/recovering and
-          # triggers its own warm-restart logic, so an httpGet (not tcpSocket)
-          # is the honest liveness signal. startupProbe covers the first
-          # Xvfb + Camoufox launch.
+          # /health reports 503 while the browser is dead or recovering and
+          # drives its own warm restart, so httpGet is the honest liveness
+          # signal. startupProbe covers the first Xvfb + Camoufox launch.
           startupProbe:
             httpGet:
               path: /health
@@ -427,14 +339,9 @@ spec:
             periodSeconds: 30
             timeoutSeconds: 10
             failureThreshold: 5
-          # No readinessProbe: nothing routes through a Service to :9377 (the
-          # gateway calls localhost), so readiness has nothing to gate.
-          # Hand-sized (VPA Off for this container — Firefox memory scales with
-          # open tabs/sessions, not steady-state history): 1Gi covers the real
-          # idle footprint the old 448Mi request under-reserved, and the 3Gi
-          # limit is ~2.9x the 1054Mi 30d working-set peak, capping a
-          # MAX_SESSIONS burst. Re-measure when usage changes. No CPU limit
-          # (docs/33).
+          # No readinessProbe: nothing routes to :9377 through a Service. VPA
+          # Off and hand-sized: 1Gi covers idle Firefox and the 3Gi limit caps
+          # a MAX_SESSIONS burst (~2.9x the 1054Mi 30d peak). No CPU limit.
           resources:
             requests:
               cpu: 100m
@@ -442,18 +349,14 @@ spec:
             limits:
               memory: 3Gi
           # Highest-risk container in the pod (it loads arbitrary web content).
-          # Xvfb and the Camoufox sandbox need no capabilities, and this is not
-          # an s6 image, so drop: ALL does not fight a privilege-drop init.
-          # allowPrivilegeEscalation / readOnlyRootFilesystem stay unset: the
-          # browser writes its runtime tree and may use the Firefox sandbox
-          # helper. Add back a single capability if one proves required.
+          # Not an s6 image: no privilege-drop init to break, so drop: ALL is safe.
+          # readOnlyRootFilesystem stays unset: the browser writes its tree.
           securityContext:
             capabilities:
               drop: ["ALL"]
           # subPath, NOT the volume root: the shared volume also holds the
           # plaintext .env, .codex/auth.json and .claude/ — every delegated
-          # credential the agent owns. Every legitimate camofox path (profiles,
-          # cookies, traces) lives under .camofox, so this mount is sufficient.
+          # credential the agent owns. Camofox needs only .camofox.
           volumeMounts:
             - name: data
               subPath: .camofox

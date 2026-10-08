@@ -11,220 +11,169 @@ namespace: observability
 # sidecar keeps discovering them and no orphans accumulate.
 generatorOptions:
   disableNameSuffixHash: true
+  # Applied to every generated ConfigMap; the sidecar selects on it.
+  labels:
+    grafana_dashboard: "1"
 configMapGenerator:
   - name: grafana-dashboard-adguard
     files:
       - adguard.json
     options:
-      labels:
-        grafana_dashboard: "1"
       annotations:
         grafana_folder: "Networking"
   - name: grafana-dashboard-alertmanager-self
     files:
       - alertmanager-self.json
     options:
-      labels:
-        grafana_dashboard: "1"
       annotations:
         grafana_folder: "Infrastructure"
   - name: grafana-dashboard-alerts-overview
     files:
       - alerts-overview.json
     options:
-      labels:
-        grafana_dashboard: "1"
       annotations:
         grafana_folder: "Infrastructure"
+  - name: grafana-dashboard-authentik
+    files:
+      - authentik.json
+    options:
+      annotations:
+        grafana_folder: "Applications"
   - name: grafana-dashboard-backup-nightly
     files:
       - backup-nightly-jobs.json
     options:
-      labels:
-        grafana_dashboard: "1"
       annotations:
         grafana_folder: "Infrastructure"
   - name: grafana-dashboard-blackbox
     files:
       - blackbox.json
     options:
-      labels:
-        grafana_dashboard: "1"
       annotations:
         grafana_folder: "Infrastructure"
   - name: grafana-dashboard-cert-manager
     files:
       - cert-manager.json
     options:
-      labels:
-        grafana_dashboard: "1"
       annotations:
         grafana_folder: "Infrastructure"
   - name: grafana-dashboard-cluster-overview
     files:
       - cluster-overview.json
     options:
-      labels:
-        grafana_dashboard: "1"
       annotations:
         grafana_folder: "Infrastructure"
   - name: grafana-dashboard-dns-combined
     files:
       - dns-combined.json
     options:
-      labels:
-        grafana_dashboard: "1"
       annotations:
         grafana_folder: "Networking"
   - name: grafana-dashboard-flux
     files:
       - flux-cluster.json
     options:
-      labels:
-        grafana_dashboard: "1"
       annotations:
         grafana_folder: "Infrastructure"
   - name: grafana-dashboard-gitlab
     files:
       - gitlab.json
     options:
-      labels:
-        grafana_dashboard: "1"
       annotations:
         grafana_folder: "Applications"
   - name: grafana-dashboard-gpu
     files:
       - gpu.json
     options:
-      labels:
-        grafana_dashboard: "1"
       annotations:
         grafana_folder: "Infrastructure"
   - name: grafana-dashboard-hindsight
     files:
       - hindsight.json
     options:
-      labels:
-        grafana_dashboard: "1"
       annotations:
         grafana_folder: "Applications"
   - name: grafana-dashboard-home-assistant
     files:
       - home-assistant.json
     options:
-      labels:
-        grafana_dashboard: "1"
       annotations:
         grafana_folder: "Applications"
   - name: grafana-dashboard-immich
     files:
       - immich.json
     options:
-      labels:
-        grafana_dashboard: "1"
       annotations:
         grafana_folder: "Applications"
   - name: grafana-dashboard-infrastructure
     files:
       - infrastructure.json
     options:
-      labels:
-        grafana_dashboard: "1"
       annotations:
         grafana_folder: "Infrastructure"
   - name: grafana-dashboard-loki-self
     files:
       - loki-self.json
     options:
-      labels:
-        grafana_dashboard: "1"
       annotations:
         grafana_folder: "Infrastructure"
   - name: grafana-dashboard-mail
     files:
       - mail.json
     options:
-      labels:
-        grafana_dashboard: "1"
       annotations:
         grafana_folder: "Infrastructure"
   - name: grafana-dashboard-media-stack
     files:
       - media-stack.json
     options:
-      labels:
-        grafana_dashboard: "1"
       annotations:
         grafana_folder: "Applications"
   - name: grafana-dashboard-nextcloud
     files:
       - nextcloud.json
     options:
-      labels:
-        grafana_dashboard: "1"
       annotations:
         grafana_folder: "Applications"
   - name: grafana-dashboard-node-exporter-full
     files:
       - node-exporter-full.json
     options:
-      labels:
-        grafana_dashboard: "1"
       annotations:
         grafana_folder: "Infrastructure"
   - name: grafana-dashboard-prometheus-self
     files:
       - prometheus-self.json
     options:
-      labels:
-        grafana_dashboard: "1"
       annotations:
         grafana_folder: "Infrastructure"
   - name: grafana-dashboard-recipes
     files:
       - recipes.json
     options:
-      labels:
-        grafana_dashboard: "1"
-      annotations:
-        grafana_folder: "Applications"
-  - name: grafana-dashboard-redis
-    files:
-      - redis.json
-    options:
-      labels:
-        grafana_dashboard: "1"
       annotations:
         grafana_folder: "Applications"
   - name: grafana-dashboard-thermals
     files:
       - thermals.json
     options:
-      labels:
-        grafana_dashboard: "1"
       annotations:
         grafana_folder: "Infrastructure"
   - name: grafana-dashboard-traefik-official
     files:
       - traefik-official.json
     options:
-      labels:
-        grafana_dashboard: "1"
       annotations:
         grafana_folder: "Networking"
   - name: grafana-dashboard-unbound
     files:
       - unbound.json
     options:
-      labels:
-        grafana_dashboard: "1"
       annotations:
         grafana_folder: "Networking"
   - name: grafana-dashboard-wg-easy
     files:
       - wg-easy.json
     options:
-      labels:
-        grafana_dashboard: "1"
       annotations:
         grafana_folder: "Applications"

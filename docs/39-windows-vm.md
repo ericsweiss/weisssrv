@@ -23,7 +23,7 @@ are manual, one-time, human steps documented below.
 | Firmware | OVMF/UEFI, q35, pre-enrolled Secure Boot keys, TPM 2.0 (v2) |
 | Storage bus / NIC | VirtIO SCSI (`virtio-scsi-pci`, discard + ssd) / VirtIO (`net0`) |
 | Resource pool | `apps-private` |
-| Autostart | **Auto-starts at boot**, last in the cohort (startup order 60). `onboot=0` is correct and required — its disks are on the encrypted `ssd` pool, so it is started by `pve-start-encrypted-guests` *after* the unlock, via `zfs_encryption_guest_vmids` (docs/32) |
+| Autostart | Auto-started by `pve-start-encrypted-guests`, last in the cohort (startup order 60); `onboot=0` is correct — see [§ Autostart](#autostart) |
 | Backups | vzdump (cluster-wide `all: true` job) → encrypted `tank/proxmox` |
 | Firewall | `sg-windows`: RDP 3389 from `admin_lan` (the homelab `/24` + the `10.0.20.8/29` Home-VLAN admin block) + `admin_ts` (tailnet) |
 
@@ -36,7 +36,7 @@ are manual, one-time, human steps documented below.
 | VirtIO ISO version + sha256 | `ansible/inventories/prod/group_vars/all.yml` (`proxmox_vm_virtio_win_version` / `proxmox_vm_virtio_win_checksum`) |
 | Autostart policy | `ansible/inventories/prod/host_vars/pve-nas-01.yml` (`zfs_encryption_guest_vmids`, includes 155) |
 | Provisioning playbook | `ansible/playbooks/windows.yml` |
-| Firewall group | weisssrv-lib `ansible_collections/weisssrv/infra/roles/proxmox_firewall/templates/cluster.fw.j2` (`[group sg-windows]`) |
+| Firewall group | `ansible/inventories/prod/group_vars/all.yml` (`proxmox_firewall_security_groups` → `sg-windows`) |
 | Internal DNS + PTR | `ansible/inventories/prod/group_vars/dns.yml` |
 | Tasks | `task windows:{provision,provision-check,status,verify}` |
 | RDP monitoring | `kubernetes/infrastructure/observability/exporters/blackbox-exporter.yaml` (`windows-rdp` target) + `WindowsRdpDown` alert (fires only while the VM is powered on, so a deliberate shutdown stays quiet) |
@@ -135,8 +135,7 @@ idempotent — an existing VM is never re-clobbered (create-time-only semantics)
 > assignment → Edit*) set **DNS over HTTPS = Off** for the adapter, and do not
 > enable any third-party DoH/DoT resolver. Encrypted DNS bypasses AdGuard
 > entirely — it breaks Microsoft-account sign-in, Windows Update, and internal
-> `*.esweiss.com` name resolution (this was the root cause of the earlier
-> Windows login/activation failures). Only plaintext DNS to the AdGuard IPs
+> `*.esweiss.com` name resolution. Only plaintext DNS to the AdGuard IPs
 > keeps split-horizon resolution and outbound filtering intact.
 
 ### 4. Enable RDP
@@ -183,7 +182,7 @@ pushed pve-nas-01's slice of the nightly vzdump past the 06:00 media-mover /
 ```bash
 # On pve-nas-01, after a nightly run: how long did the last backup take, and
 # did the I/O-pressure alert stay quiet through the window?
-ssh eric@10.0.10.102 "journalctl -u 'vzdump*' --since yesterday | tail"
+ssh eric@10.0.10.102 "sudo journalctl -u pvescheduler --since yesterday | grep -E '(Starting|Finished) Backup'"
 ```
 
 If pve-nas-01's backup now finishes after ~05:45, exclude VMID 155 or move it to
@@ -213,12 +212,9 @@ You can start or stop it by hand at any time:
 - **Proxmox UI**: VM 155 → **Start**.
 - **CLI**: `ssh eric@10.0.10.102 "sudo qm start 155"`.
 
-**No manual decryption is needed.** The disks live on the encrypted `ssd` pool,
-which is unlocked once at NAS boot (key from 1Password Connect, docs/32) for all
-its guests — so by the time you start Windows the storage is already decrypted,
-and Windows itself does no in-guest crypto. Shutting it down from inside Windows
-(or `qm shutdown 155`) leaves it off until you start it again — or until the next
-NAS boot, which auto-starts it as described above.
+Shutting it down from inside Windows (or `qm shutdown 155`) leaves it off until
+you start it again — or until the next NAS boot, which auto-starts it as
+described above.
 
 ---
 
@@ -261,9 +257,10 @@ this repo:
 
 1. In the guest, install the latest `windows_exporter` MSI (defaults to
    `:9182/metrics`).
-2. Open 3389's sibling scrape port on the guest firewall: add a rule to
-   `[group sg-windows]` in `cluster.fw.j2` allowing `9182/tcp` from
-   `+dc/k3s_nodes` (so Prometheus can reach it), then `task windows:provision`.
+2. Open 3389's sibling scrape port on the guest firewall: add a rule to the
+   `sg-windows` entry of `proxmox_firewall_security_groups` in
+   `group_vars/all.yml` allowing `9182/tcp` from `+dc/k3s_nodes` (so Prometheus
+   can reach it), then `task windows:provision`.
 3. Add a static scrape target / `Probe`/`ScrapeConfig` for `10.0.10.155:9182`
    in the observability stack, plus a NetworkPolicy scrape-allow if needed.
 

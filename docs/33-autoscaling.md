@@ -35,21 +35,24 @@ stays manual — see the last section for why.
   `configs/vpa/platform.yaml`, `maxAllowed` tracking that limit) — an eviction
   would blind the autoscaling stack, so the recommendation is data for a manual
   bump.
-  **The cutover has landed.** The packaged AddOn owned the
-  `v1beta1.metrics.k8s.io` APIService and the kube-system objects under Rancher
-  objectset annotations that Helm cannot adopt, so the HelmRelease could not
-  install until `--disable=metrics-server` was deployed. Two properties made the
-  handover safe without ordering discipline, and both still apply to a rebuild:
+  The `k3s_disable` entry and the Flux HelmRelease are **one unit**: either
+  alone leaves the cluster with no Resource Metrics API. The flag reaches the
+  servers from `task k3s:deploy` or the manual `maintenance-k3s-provision` job,
+  never from the merge pipeline, so a change to one side needs the other
+  deployed deliberately.
+
+  Two properties keep this safe on a rebuild:
   - `install.remediation.retries: -1` on the HelmRelease — unlimited retries, so
-    it installs itself on the first attempt after k3s deletes the AddOn's
-    objects. `flux reconcile helmrelease metrics-server -n kube-system` only
-    skips the wait; no failure-counter reset is ever needed.
+    it installs on the first attempt after k3s deletes the AddOn's objects.
   - metrics-server has **its own Flux Kustomization**
     (`clusters/weisssrv/infrastructure-metrics-server.yaml`) instead of sitting
-    in the `wait: true` controllers stage, so the retry loop cannot make
+    in the `wait: true` controllers stage, so its retry loop cannot make
     `infrastructure-controllers` not-Ready and freeze configs, observability and
-    apps behind it. Nothing `dependsOn` it: HPAs and the recommender read
-    metrics.k8s.io at runtime, never at apply time.
+    apps behind it. Nothing `dependsOn` it — HPAs and the recommender read
+    metrics.k8s.io at runtime, not at apply time — but `wait: true` is kept on
+    that Kustomization on purpose: its readiness is what tells an operator the
+    API is being served. `scripts/deploy-verify.sh` reports it by name, from the
+    list `scripts/flux-child-kustomizations.py` derives.
 - **Horizontal autoscaling for the stateless, HA-fronting tiers.** Prefer each
   chart's own autoscaling toggle over a standalone HPA — so the chart omits
   static `.spec.replicas` and nothing re-asserts a replica count against the HPA
@@ -118,7 +121,7 @@ sidecars, leader-elected singletons), not effort.
 | Prometheus / Loki / Alertmanager / Postgres | various | reject | stateful (StatefulSet / zvol) |
 | grafana | observability | reject | single-writer SQLite on an NFS-backed RWX PV; not horizontally safe (carries an Initial VPA) |
 | coredns | kube-system | n/a | min==max==2 HPA pin (replica anchor, not an autoscaler) |
-| metrics-server / kube-vip / kured | various | n/a | platform components, not application workloads. metrics-server already runs 2 replicas + a PDB from its own HelmRelease (the HPA/VPA dependency — see Components); it and kube-vip carry `Off` VPAs to record a right-sizing signal; kured has none |
+| metrics-server / kube-vip / kured | various | n/a | platform components, not application workloads. metrics-server already runs 2 replicas + a PDB from its own HelmRelease (the HPA/VPA dependency — see Components); it, kube-vip and kured carry `Off` VPAs to record a right-sizing signal |
 | vpa-recommender / -updater / -admission-controller | vpa-system | n/a | the autoscaler itself — a VPA here would have the updater evicting the admission controller that mutates its replacement, so all three stay unmanaged and hand-sized in `controllers/vpa/release.yaml`. The admission controller runs 2 replicas + a PDB instead: it is on the admission path for every pod in the cluster |
 | nvidia-device-plugin | nvidia-device-plugin | n/a | fixed-footprint DaemonSet on the one GPU node; carries an `Off` VPA to record a right-sizing signal |
 
@@ -126,11 +129,10 @@ sidecars, leader-elected singletons), not effort.
 
 Workloads set CPU **requests** and **memory** limits but no **CPU limit**. CPU is
 compressible — under contention the scheduler shares it by request weight, so a
-limit adds nothing but CFS throttling, which hurts tail latency and, worse,
-inflates the CPU% a CPU-based HPA reads (it was firing `CPUThrottlingHigh`
-cluster-wide and pushing the Traefik HPA toward `maxReplicas` on load that wasn't
-real). Memory stays limited because it is incompressible — its failure mode is
-OOM, not throttling.
+limit adds nothing but CFS throttling, which hurts tail latency and inflates the
+CPU% a CPU-based HPA reads, driving replicas up on load that is not real. Memory
+stays limited because it is incompressible — its failure mode is OOM, not
+throttling.
 
 VPAs keep their default `controlledValues: RequestsAndLimits`. A VPA scales an
 *existing* limit — one present in the **live pod spec** — to preserve its
@@ -157,19 +159,19 @@ when exceeding that request, which the sizing avoids.
 a HelmRelease values block, or inside a config-file block string carried in those
 values (the gitlab-runner `runners.config` TOML, where every CI **job pod's**
 limits are declared — those pods exist in no manifest). Intentional exceptions go
-in that script's `CPU_LIMIT_ALLOWLIST` (currently empty).
+in `scripts/autoscaling-policy.yaml` under `cpu_limit_allowlist` (empty by
+design); the script itself is vendored from weisssrv-lib and is not edited here.
 `scripts/validate-helm-values.py` reuses the same scanner over `helm template`
 output for the value-heavy releases, which is the only way to see a CPU limit a
 chart *default* injects.
 
-There is **no** static gate for the mirror-image shape — a container setting
-`requests.memory == limits.memory` while a mutating VPA controls its memory with
-the default `controlledValues`, the ratio-preserving rewrite that produced the
-prowlarr OOMKills and left authentik-server at request == limit == 878Mi. That
-check belongs in `check-hpa-vpa-invariant.py`, which is **vendored** from
-weisssrv-lib (`scripts/README.md` § Origin), so it lands upstream and re-vendors
-here. Until it does, `VPARecommendationExceedsLimit` and
-`ContainerMemoryNearLimit` are the only guard, not a backstop.
+The mirror-image shape is gated by the same run. A container that sets
+`requests.memory == limits.memory` while a mutating VPA controls its memory
+fails `memory_ratio_violations()` under `--require-chart-native-vpas`: the
+admission controller preserves the ratio, so such a container never gains headroom. A
+deliberate 1:1 pin goes in `scripts/autoscaling-policy.yaml` under
+`memory_ratio_allowlist`. At runtime `VPARecommendationExceedsLimit` and
+`ContainerMemoryNearLimit` still cover what a static gate cannot see.
 
 ### Live drift: a limit git does not declare
 
@@ -212,7 +214,8 @@ divergence (`kubectl get
 pods,deployments,statefulsets,daemonsets,verticalpodautoscalers -A -o json`).
 Pass the VPAs as shown: where an **active** VPA controls a container's limits
 (`controlledValues: RequestsAndLimits`, which is also the API default when the
-field is unset), the updater ratio-scales that limit at every admission, so
+field is unset), the admission controller ratio-scales that limit at every
+admission, so
 divergence there is the design rather than a finding — those containers are
 excluded and counted in the summary line instead. Drift is a warning, never an
 exit code: it self-clears on the next restart, and the restart is what the
@@ -241,9 +244,9 @@ what lets Flux's rendered state become the effective state.
 
 | Mode | Used for | Behavior |
 |---|---|---|
-| `Auto` | exporters (proxmox, blackbox, plex, redis, exportarr, zfs, adguard, unbound, dcgm), cert-manager (controller + cainjector), ESO, Connect, alloy, node-exporter, kube-state-metrics, kps operator | updater evicts to apply new requests (brief restart) |
-| `Initial` | **Traefik** (moved from Auto — see below), the MetalLB controller and speaker + cert-manager-webhook (host-network / admission paths), every app VPA except the three `Off` ones below — downloads (incl. the gluetun sidecars caught by wildcard `*` policies), recipes, authentik server + worker, homarr, hermes, registry-cache, tailnet-dns, wg-easy, runners, agent, external-dns (single replica, no PDB), tailscale-operator, Flux controllers, Grafana | new requests apply only when the pod restarts naturally — no surprise evictions mid-download or mid-reconcile. The flip side: a workload that never restarts can sit under-sized for months, which is why `VPARecommendationExceedsLimit` covers this tier |
-| `Off` | Prometheus, Alertmanager, Loki, both PostgreSQLs (the Prometheus/Alertmanager VPAs target the operator CRs, not the StatefulSets — see docs/31), **Hindsight**, coredns (k3s AddOn) / metrics-server / kube-vip | recommendation-only; requests stay hand-tuned in the HelmRelease/manifest (zvol-pinned, eviction-sensitive). Hindsight stays `Off` because its llama container is GPU-pinned (`nvidia.com/gpu`) and its memory is VRAM/model-dictated, not usage-history driven (docs/43) |
+| `Auto` | exporters (proxmox, blackbox, plex, redis, exportarr, zfs, adguard, unbound, dcgm), cert-manager (controller, cainjector and webhook — 2 replicas plus `controllers/cert-manager/pdb.yaml` absorb the eviction), the MetalLB controller, ESO, Connect, alloy, alloy-syslog, reloader, node-exporter, kube-state-metrics, kps operator | updater evicts to apply new requests (brief restart) |
+| `Initial` | **Traefik** (see below), the MetalLB speaker (host-network path), every app VPA except the three `Off` ones below — downloads (incl. the gluetun sidecars caught by wildcard `*` policies), recipes, authentik server + worker, homarr, hermes, registry-cache, tailnet-dns, wg-easy, runners, agent, external-dns (single replica, no PDB), tailscale-operator, Flux controllers, Grafana | new requests apply only when the pod restarts naturally — no surprise evictions mid-download or mid-reconcile. The flip side: a workload that never restarts can sit under-sized for months, which is why `VPARecommendationExceedsLimit` covers this tier |
+| `Off` | Prometheus, Alertmanager, Loki, both PostgreSQLs (the Prometheus/Alertmanager VPAs target the operator CRs, not the StatefulSets — see docs/31), **Hindsight**, coredns (k3s AddOn) / metrics-server / kube-vip / kured / nvidia-device-plugin | recommendation-only; requests stay hand-tuned in the HelmRelease/manifest (zvol-pinned, eviction-sensitive). Hindsight stays `Off` because its llama container is GPU-pinned (`nvidia.com/gpu`) and its memory is VRAM/model-dictated, not usage-history driven (docs/43) |
 
 **Traefik is `Initial`, not `Auto`.** Traefik is the ingress data path for every
 service, including the container registry. Under CI-burst load the `Auto` updater
@@ -267,8 +270,8 @@ nothing to cap (hermes/camofox, hermes/init-data, hindsight/llama).
 
 ### Limit oscillation (why memory VPAs are `controlledValues: RequestsOnly`)
 
-On the default `controlledValues: RequestsAndLimits` the updater rescales the
-memory **limit** with every recommendation, keeping the original
+On the default `controlledValues: RequestsAndLimits` the admission controller
+rescales the memory **limit** on every injection, keeping the original
 request:limit ratio. A quiet period therefore shrinks the ceiling, and the next
 burst runs against a limit sized for the quiet period — measured over 7d before
 the fix: external-dns fell to a 128Mi limit and peaked at 0.97 of it; pulsarr's
@@ -278,17 +281,13 @@ is `Auto`, each one is an eviction of the cluster's secrets reconciler.
 onepassword-connect, cert-controller and the ESO webhook oscillated 9x/7x/7x in
 the same window.
 
-hermes/dashboard is the case that stopped being theoretical: idle-heavy and
-interactive, it held a flat ~138Mi for 26 hours, so the recommender sized the
-request at 194Mi and the 4:1 manifest ratio pulled the limit down to 777Mi — a
-23% cut to the declared 1Gi. The first active chat session drove it ~5x past
-that and it was OOMKilled twice in five minutes, dropping every open chat and
-event stream. The `Initial` tier makes this worse rather than safer: a
-recommendation applies only at pod admission, but an OOM restarts the
-*container* in place, so the shrunken limit is frozen for the pod's lifetime
-and the workload cannot recover on its own. Any interactive workload whose
-quiet baseline is a small fraction of its working peak belongs in the
-`RequestsOnly` set for this reason, not just one whose limit is seen moving.
+Any interactive workload whose quiet baseline is a small fraction of its working
+peak belongs in the `RequestsOnly` set, not just one whose limit is seen moving:
+the recommender sizes the request off the idle baseline, a `RequestsAndLimits`
+VPA drags the limit down with it, and the first real burst OOMs. The `Initial`
+tier does not help — a recommendation applies only at pod admission, but an OOM
+restarts the *container* in place, so the shrunken limit is frozen for the pod's
+lifetime.
 
 The fix is not a bigger cap — it is taking the limit away from the VPA. Where
 `controlledValues: RequestsOnly` is set, the limit is hand-set in the manifest at
@@ -302,11 +301,13 @@ because the limit itself no longer moves.
 | Policy shape | `maxAllowed.memory` |
 |---|---|
 | `controlledValues: RequestsOnly`, mode `Auto`/`Initial` | **== the container's limit** (lower only with a measured reason) |
-| limit-controlling (`RequestsAndLimits` or unset), mode `Auto`/`Initial` | **~0.8x the limit, never equal** — the updater rescales the limit with the request, so a cap at or above it makes the declared ceiling meaningless |
+| limit-controlling (`RequestsAndLimits` or unset), mode `Auto`/`Initial` | **~0.8x the limit, never equal** — the admission controller rescales the limit with the request, so a cap at or above it makes the declared ceiling meaningless. The general form is `0.8 x limit x (request / limit)`; the 0.8x-the-limit shorthand holds only where the manifest declares request == limit |
 | `updateMode: Off` (or per-container `mode: "Off"`) | exempt — nothing applies the recommendation; `== the limit` records growth to the binding ceiling (hindsight) |
 
 **Above the limit is always wrong**, in every shape. Raising a limit means
-re-deriving its cap, in the same commit.
+re-deriving its cap, in the same commit. The 0.8x figure is a ceiling on the
+cap, not a derivation — the cap must still clear the workload's 30d
+working-set peak, or the limit itself is too small.
 
 prowlarr is the one measured exception to the RequestsOnly row: its cap sits at
 384Mi under a 512Mi limit because request == limit was the shape that OOMKilled
@@ -320,13 +321,18 @@ when a chart injects a limit it must stop re-imposing). alloy and homarr are the
 most recent joiners: they were running on live limits ~4.8x and ~2.3x their
 declared ones, so the ceiling a pod admitted *without* the mutating webhook
 (which is `failurePolicy: Ignore`) would have received sat below their measured
-peak, and their limits were re-derived in the same commit. Flipping one lowers
-its effective ceiling from "whatever the updater rescaled it to" down to the
-manifest limit, which is only safe once that limit has been re-measured — so
-cert-manager, cert-manager-cainjector, cert-manager-webhook, reloader and
-tailscale-operator stay on `RequestsAndLimits`, with their
-`configs/vpa/platform.yaml` caps at 0.8x the limit their HelmRelease sets rather
-than above it.
+peak, and their limits were re-derived in the same commit. bar-assistant joined
+the set after OOMKilling against a 276Mi ceiling its VPA had rescaled down from
+the declared 1Gi; its limit stays at 1Gi rather than the peak +60% figure,
+because the OOM shows the sampled 184Mi 30d peak understates the burst. Flipping one lowers
+its effective ceiling from "whatever the admission controller rescaled it to" down to the
+manifest limit, which is only safe once that limit has been re-measured. The
+cert-manager controller, webhook and cainjector have been through that: the
+controller now runs 128Mi/192Mi with its cap re-derived against a ~114Mi peak,
+and the cainjector 64Mi/160Mi with its cap at that limit. What still sits on
+`RequestsAndLimits` — reloader, tailscale-operator and the two metallb
+components — keeps its `configs/vpa/platform.yaml` cap below the limit its
+HelmRelease sets rather than above it.
 
 The rule is machine-checked: `scripts/check-hpa-vpa-invariant.py`
 (`task flux:lint`) fails a `maxAllowed.memory` above any judged container's
@@ -340,9 +346,11 @@ gate is a library MR, not a change here;
 only local escape hatch.
 
 The *arrs, recipes and the small exporters were re-derived under the table
-above. What the gate cannot see stays manual: policies whose target's limits
-never enter the kustomize corpus — the flux-system controllers (upstream
-`gotk-components.yaml` limits), both gitlab-runners and grafana — are still
+above. What the gate cannot see stays manual: `check-hpa-vpa-invariant.py` reads
+only pod-spec kinds, so every policy whose target's limits never enter the
+kustomize corpus is unjudged — the flux-system controllers (upstream
+`gotk-components.yaml` limits), both gitlab-runners, grafana, and the
+chart-installed cert-manager family, reloader and tailscale-operator. Those are
 carried on the roadmap in `docs/16-next-steps.md`.
 
 Side effect worth knowing: `VPARecommendationExceedsLimit` is scoped to `Off`,
@@ -361,6 +369,11 @@ this cluster has to separate:
 | `platform` | 100000 | PreemptLowerPriority | Every platform controller — the table below is the canonical list. It is not inherited: each workload names it in its own pod spec, which for a HelmRelease means a `priorityClassName` value |
 | `ci-jobs` | -10 | Never | GitLab CI job pods, via `[runners.kubernetes] priority_class_name` in both runner TOMLs |
 
+`.value` is immutable, so both classes carry
+`kustomize.toolkit.fluxcd.io/force: "Enabled"` and a re-tune is applied by
+recreate. Pods naming a class are rejected during the recreate window, so
+re-tune during a quiet period.
+
 ### Where `platform` is applied
 
 Each chart spells the key differently, and several have no global form, so the
@@ -378,27 +391,34 @@ in this table through `scripts/validate-helm-values.py`.
 | metallb | `controller.priorityClassName`, `speaker.priorityClassName` | both (no global key) |
 | vpa | `priorityClassName` | recommender, updater, admission-controller; the certgen Jobs stay unclassed |
 | reloader | `reloader.deployment.priorityClassName` | the controller |
+| tailscale-operator | `operatorConfig.priorityClassName` | the operator Deployment |
 | alloy | `controller.priorityClassName` | the DaemonSet |
 | loki | `global.priorityClassName` | the singleBinary StatefulSet (and the gateway, if ever enabled) |
 | kube-prometheus-stack | `prometheusOperator.priorityClassName`, `prometheus.prometheusSpec.priorityClassName`, `alertmanager.alertmanagerSpec.priorityClassName` | operator, Prometheus, Alertmanager. `prometheusOperator.priorityClassName` is templated by the chart but absent from its `values.yaml` — verified by render. Grafana, kube-state-metrics and node-exporter are subcharts and stay unclassed |
 
 Deliberately **not** given `platform`, because they already carry a higher
 built-in class and setting it would be a downgrade: **metrics-server**
-(`system-cluster-critical`), **kured** (`system-node-critical`), **tailnet-dns**
-(`system-cluster-critical`) and the gotk controllers (`system-cluster-critical`,
-shipped in the upstream manifest). Also excluded by design: the GitLab runners
+(`system-cluster-critical`), **kured** (`system-node-critical`),
+**nvidia-device-plugin** (`system-node-critical`, chart default), **tailnet-dns**
+(`system-cluster-critical`) and three of the four gotk controllers
+(`system-cluster-critical`, shipped in the upstream manifest —
+notification-controller runs with none). Also excluded by design: the GitLab runners
 (they keep `ci-jobs`), one-off Jobs, and everything under `kubernetes/apps/`.
 
 The negative value is the load-bearing half: every unclassed pod sits at 0 and so
 outranks a CI job without needing a class of its own, and `preemptionPolicy:
 Never` makes a CI burst queue rather than displace anything.
 
-It treats a symptom. The **ceiling** is the two runner ResourceQuotas, which
-between them admit 38 + 8 = 46 cores of CPU requests against 31 allocatable —
-measured peak requests reached 38.9 cores with 19 pods Pending over 30d, and
-`KubeCPUOvercommit` deliberately excludes the runner namespaces
-(`kubernetes-resources.yaml`), so nothing pages on it. Lowering a quota is the
-change that removes the overcommit; the priority classes only decide who waits.
+The **ceiling** is the two runner ResourceQuotas, which between them admit
+38 + 8 = 46 cores of CPU requests against 31 allocatable. That is deliberate: a
+ResourceQuota is an admission ceiling, not a scheduling guarantee, so a CI burst
+past allocatable queues as Pending rather than displacing platform pods —
+`ci-jobs` is negative with `preemptionPolicy: Never`. `KubeCPUOvercommit` excludes
+the runner namespaces for the same reason (`kubernetes-resources.yaml`), while
+`KubePodNotReady` still covers a job pod stuck Pending for more than 15m.
+
+Lowering `requests.cpu` on the privileged quota is the lever if CI throughput is
+ever traded for a tighter ceiling.
 
 ### VPA blind spots (sized by hand, on purpose)
 
@@ -454,11 +474,15 @@ capped and uncapped recommendation per container/resource. The alerts that
 consume them live under `kubernetes/infrastructure/observability/rules/`
 (`VPARecommendation*` in `infrastructure.yaml`, `ContainerOOMKilled` in
 `kubernetes-resources.yaml`). The
-**`VPARecommendationCapped`** alert fires when `uncappedtarget > target` for
-24h: the recommendation has been clamped by `maxAllowed` for a full day, i.e.
-the workload has outgrown its ceiling (a brief clamp during a burst is
-expected and does not fire). Response: raise the `maxAllowed` cap in the
-policy file (`infrastructure/configs/vpa/` etc.) or investigate the growth.
+**`VPARecommendationCapped`** alert fires when the recommendation has been
+clamped by `maxAllowed` for 24h (a brief clamp during a burst is expected and
+does not fire). On memory it needs both a **1.25x ratio** and a gap over
+**128Mi**, because the cap is derived from the container's limit and a bare `>`
+would fire forever on a workload growing toward its own limit; on CPU the ratio
+alone is enough. Response: `maxAllowed` is derived from the container's limit in
+`configs/vpa/platform.yaml`, so raise the workload's memory limit in its
+HelmRelease and re-derive `maxAllowed` in the same commit — raising the cap
+alone just moves the clamp.
 For a `RequestsOnly` VPA whose `maxAllowed.memory` equals the container's
 memory limit (e.g. the gluetun-exporter sidecar, both 48Mi), raising
 `maxAllowed` alone clears the alert — it reads the VPA CR status target, which
@@ -488,42 +512,58 @@ the clamp.
 
 That loop is manual, so it can silently stop being run: authentik-postgresql's
 recorded target sat at 684Mi against a 512Mi limit for weeks and then OOMKilled
-the SSO database. Three alerts now close it:
+the SSO database. Four alerts now close it:
 
 - **`VPARecommendationExceedsLimit`** — the VPA's memory target has been above
-  the container's configured memory limit for 6h. Scoped to `Off`- and
-  `Initial`-tier VPAs and to `controlledValues: RequestsOnly`
-  (kube-state-metrics exports both through the `update_mode` /
-  `controlled_values` labels). `Auto` is excluded because a mutating VPA on the
+  the container's configured memory limit for 6h. It compares the **larger of
+  the capped and uncapped** targets, so the cap-tracking `RequestsOnly` shape
+  this doc mandates stays in scope instead of clamping the comparison
+  unsatisfiable. Six workloads are excluded, for the page-cache reason below
+  (§ Hand-tuned request baselines). Scoped to `Off`- and `Initial`-tier VPAs and
+  to `controlledValues: RequestsOnly`, which kube-state-metrics exports through
+  the `update_mode` / `controlled_values` labels. The `controlled_values` label
+  reaches only a VPA that declares a `containerName: "*"` policy entry, so the
+  per-container `alloy` and `alloy-syslog` VPAs are out of scope;
+  `ContainerMemoryNearLimit` is what covers the log-shipping plane.
+  `Auto` is excluded because a mutating VPA on the
   default `RequestsAndLimits` re-scales its own limit at the next admission and
   would otherwise page for hours on a condition it fixes itself. `Initial` is
   **included**: "the next admission fixes it" can be months away on a workload
   that never restarts. Response: apply the recommendation in git.
-  (Distinct from `VPARecommendationCapped`, which is about the *policy's*
-  `maxAllowed` clamping the recommendation, not the *container's* limit.)
+  `VPARecommendationCapped` is about the *policy's* `maxAllowed` clamping the
+  recommendation rather than the *container's* limit — the two coincide wherever
+  the cap tracks the limit.
+  Both alerts read the recording rules `workload:vpa_recommendation_memory:max`
+  and `workload:kube_pod_container_resource_memory:max` rather than repeating
+  the join.
 - **`ContainerMemoryNearLimit`** — the leading indicator the other two lack:
   live working set above 90% of the container's own memory limit for 15m,
-  independent of any VPA (the recommender lags a burst by hours). Three
+  independent of any VPA (the recommender lags a burst by hours). Four
   containers are excluded because their steady state legitimately sits near the
   ceiling: `hindsight/llama` (GPU/model-pinned, deliberate `Off` VPA — docs/43)
-  and observability's `prometheus` and `loki`, whose working set counts
-  reclaimable page cache.
+  and observability's `prometheus`, `loki` and `grafana`, whose working sets
+  count reclaimable page cache.
+- **`PageCacheWorkloadRSSNearLimit`** — the RSS band that covers observability's
+  `grafana`, `loki` and `prometheus` in place of the working-set rule above. RSS is the
+  non-reclaimable half, which is what the OOM killer counts, so 90% of the limit
+  there is a real warning. `hindsight/llama` keeps its own band,
+  `HindsightLlamaMemoryNearLimit`, at 95%.
 - **`ContainerOOMKilled`** — the kill itself. Upstream's rules only catch a
   container that stays down or crash-loops, so a clean OOM-and-restart was
   invisible.
 
-All three are unit-tested in `scripts/prometheus-rule-tests/memory-sizing.test.yaml`.
+All of them are unit-tested in `scripts/prometheus-rule-tests/memory-sizing.test.yaml`.
 
 ## Hand-tuned request baselines
 
 Set from observed working sets. The `Off`-tier (recommendation-only)
 workloads keep these hand-tuned numbers permanently: Prometheus 4608Mi request /
 6Gi limit (retention is bounded by `retentionSize: 110GB`, with 365d as the outer
-bound); Loki 768Mi/1Gi; authentik-postgresql 640Mi/1Gi (raised
+bound); Loki 1Gi/1Gi; authentik-postgresql 640Mi/1Gi (raised
 from a 512Mi limit that OOMKilled it — the worked example of applying an
 `Off`-tier recommendation). The `Initial`-tier workloads start from
 these baselines but let the VPA right-size them on the next natural restart:
-Grafana 512Mi/1Gi; Flux controllers 256Mi requests (patched in
+Grafana 1Gi/1Gi; Flux controllers 256Mi requests (patched in
 `kubernetes/clusters/weisssrv/flux-system/kustomization.yaml`).
 
 A `RequestsOnly` policy keeps its **limit** hand-tuned permanently even though
@@ -539,6 +579,18 @@ against a 30Mi RSS on qbittorrent), so an uncapped recommendation walks to the
 ceiling and reserves GiBs the process never touches: its `maxAllowed.memory`
 (1Gi) sits far under the 4Gi container limit and it is expected to sit in
 `VPARecommendationCapped`.
+
+Loki and Grafana are the others. Loki's VPA target (1181Mi live) counts
+reclaimable page cache against a 30d process RSS peak near 680Mi; Grafana's 30d
+working-set peak is 1013Mi for the same reason. Both keep their 1Gi limit as the
+ceiling, raise only the request to meet it, and cap `maxAllowed` there.
+
+radarr and lidarr are in the same class. Their working set is reclaimable NFS
+page cache against a 30d RSS peak near 290Mi, and `maxAllowed.memory` equals
+their 1Gi container limit. nzbget, qbittorrent, loki, grafana, radarr and lidarr
+therefore sit in `VPARecommendationCapped` permanently by design, which is why
+all six are on that alert's exclusion list alongside
+`VPARecommendationExceedsLimit`.
 
 ## Proxmox-level scaling (manual by design)
 

@@ -1,25 +1,9 @@
 #!/usr/bin/env python3
-"""Assert every hand-written `molecule-test:<tag>` literal equals WEISSSRV_LIB_REF.
+"""Assert every hand-written molecule test-image tag equals the library ref.
 
-The integration scenarios spell the image as
-`${MOLECULE_TEST_IMAGE:-.../molecule-test:vX.Y.Z}`. CI always overrides the
-variable (.gitlab/ci/integration-jobs.yml builds it from $WEISSSRV_LIB_REF), so
-only a LOCAL `task ansible:test-integration-*` reads the literal — which is
-exactly why a stale one is invisible: the pipeline is green while the local run
-tests against an old image.
-
-check-lib-pins.py cannot cover these (it reads the `include:` block and
-ansible/requirements.yml only) and it is vendored byte-identical from
-weisssrv-lib, so this site-local gate carries the same contract for the molecule
-literals: they are copies of one pin, `--fix` rewrites them.
-
-.gitlab-ci.yml is READ-ONLY here — it is the single source of the ref.
-
-Usage:
-  scripts/check-molecule-image-pin.py         # verify (exit 1 on drift)
-  scripts/check-molecule-image-pin.py --fix   # rewrite the literals to the pin
+CI overrides MOLECULE_TEST_IMAGE, so only a local run reads the literal and a
+stale one hides behind a green pipeline. `--fix` rewrites them. docs/SCRIPTS.md.
 """
-
 from __future__ import annotations
 
 import argparse
@@ -27,115 +11,188 @@ import re
 import sys
 from pathlib import Path
 
-import yaml
+try:
+    import yaml  # noqa: F401  (ci_yaml needs it; imported here to name it)
+except ImportError:
+    print("ERROR: PyYAML required: pip install pyyaml", file=sys.stderr)
+    raise SystemExit(2) from None
 
-REPO = Path(__file__).resolve().parent.parent
+_HERE = str(Path(__file__).resolve().parent)
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
+try:
+    import ci_yaml  # noqa: E402  (resolved from this script's own directory)
+except ImportError:
+    print(
+        "ERROR: ci_yaml.py must sit next to this script — vendor both "
+        "(see weisssrv-lib scripts/vendorable-paths.yml).",
+        file=sys.stderr,
+    )
+    raise SystemExit(2) from None
+
+LIB_PROJECT = "eric/weisssrv-lib"
 REF_VAR = "WEISSSRV_LIB_REF"
 TAG_RE = re.compile(r"^v\d+\.\d+\.\d+$")
 
-# Files carrying the literal. Globs are resolved relative to the repo root, so a
-# scenario added later is covered without touching this list.
-SOURCES = (
-    "ansible/integration-tests/*/molecule/default/molecule.yml",
+# Files carrying the literal. Globs resolve against the tree holding the CI
+# file, so a scenario added later under ANY name is covered.
+DEFAULT_SOURCES = (
+    "ansible/integration-tests/*/molecule/*/molecule.yml",
+    "ansible/integration-tests/*/molecule/*/molecule.yaml",
     "ansible/TESTING.md",
 )
 
-# The tag half of `weisssrv-lib/molecule-test:<tag>` / `molecule-ci:<tag>`.
-# Anchored on the image path so an unrelated `:v1.2.3` is never rewritten.
-IMAGE_RE = re.compile(r"(weisssrv-lib/molecule-(?:test|ci):)(v[\w.\-]+)")
+# The image names the library publishes for molecule runs.
+IMAGE_NAMES = ("test", "ci")
 
 
-class _RefTolerantLoader(yaml.SafeLoader):
-    """SafeLoader that survives GitLab's `!reference` tag."""
+class OperatorError(Exception):
+    """A bad invocation or a scan that inspected nothing: exit 2, not a finding."""
 
 
-_RefTolerantLoader.add_multi_constructor("!reference", lambda loader, suffix, node: None)
+def image_re(project: str = LIB_PROJECT) -> re.Pattern:
+    """The tag half of `<project>/molecule-{test,ci}:<tag>`.
+
+    Anchored on the image path, so an unrelated `:v1.2.3` is never rewritten,
+    and on a `v`-prefixed tag, so a `:local` sentinel is not a stale pin.
+    """
+    return re.compile(
+        r"(%s/molecule-(?:%s):)(v[\w.\-]+)"
+        % (re.escape(project), "|".join(IMAGE_NAMES))
+    )
 
 
-def declared_ref(ci_file: Path) -> str:
-    doc = yaml.load(ci_file.read_text(encoding="utf-8"), Loader=_RefTolerantLoader) or {}
-    want = (doc.get("variables") or {}).get(REF_VAR)
+def declared_ref(ci_file: Path, ref_var: str = REF_VAR) -> str:
+    """variables.<ref_var> from the pipeline file — the single source for the tag."""
+    try:
+        doc = ci_yaml.load_ci(ci_file, loader=ci_yaml.NullTagCILoader)
+    except OSError as exc:
+        raise OperatorError("%s: %s" % (ci_file, exc)) from exc
+    variables = doc.get("variables")
+    want = variables.get(ref_var) if isinstance(variables, dict) else None
     if not want:
-        raise SystemExit(f"{ci_file}: variables.{REF_VAR} is not set (the single source)")
+        raise OperatorError(
+            "%s: variables.%s is not set (the single source for the pin)"
+            % (ci_file, ref_var)
+        )
     if not isinstance(want, str) or TAG_RE.fullmatch(want) is None:
-        raise SystemExit(
-            f"{ci_file}: {REF_VAR} is {want!r}, which is not a release tag (vX.Y.Z)"
+        raise OperatorError(
+            "%s: %s is %r, which is not a release tag (vX.Y.Z)"
+            % (ci_file, ref_var, want)
         )
     return want
 
 
-def sources(root: Path = REPO) -> list[Path]:
+def sources(root: Path, patterns=DEFAULT_SOURCES) -> list[Path]:
     found: list[Path] = []
-    for pattern in SOURCES:
+    for pattern in patterns:
         found.extend(sorted(root.glob(pattern)))
-    return found
+    return sorted(set(found))
 
 
-def check(want: str, root: Path = REPO) -> list[str]:
-    """Return a list of problems; empty means every literal matches the pin."""
+def check(
+    want: str,
+    root: Path,
+    patterns=DEFAULT_SOURCES,
+    project: str = LIB_PROJECT,
+    ref_var: str = REF_VAR,
+) -> tuple[list[str], int]:
+    """-> (drift findings, literals inspected). The count feeds the vacuity guard."""
+    pattern = image_re(project)
     problems: list[str] = []
     seen = 0
-    for path in sources(root):
-        for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-            for _, tag in IMAGE_RE.findall(line):
+    for path in sources(root, patterns):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise OperatorError("%s: %s" % (path, exc)) from exc
+        for line_no, line in enumerate(text.splitlines(), 1):
+            for _, tag in pattern.findall(line):
                 seen += 1
                 if tag != want:
                     problems.append(
-                        f"{path.relative_to(root)}:{line_no}: molecule image pins "
-                        f"{tag!r}, but {REF_VAR} is {want!r}"
+                        "%s:%d: molecule image pins %r, but %s is %r"
+                        % (path.relative_to(root), line_no, tag, ref_var, want)
                     )
-    if not seen:
-        # Nothing to check is not the same as everything being fine: if the
-        # scenarios stop spelling the fallback, say so rather than passing an
-        # empty set.
-        problems.append("no molecule image literals found — has the fallback moved?")
-    return problems
+    return problems, seen
 
 
-def fix(want: str, root: Path = REPO) -> int:
+def fix(
+    want: str, root: Path, patterns=DEFAULT_SOURCES, project: str = LIB_PROJECT
+) -> int:
+    """Rewrite every literal to `want`; -> the number of files changed."""
+    pattern = image_re(project)
     changed = 0
-    for path in sources(root):
+    for path in sources(root, patterns):
         text = path.read_text(encoding="utf-8")
-        updated, n = IMAGE_RE.subn(lambda m: m.group(1) + want, text)
-        if n and updated != text:
+        updated, count = pattern.subn(lambda m: m.group(1) + want, text)
+        if count and updated != text:
             path.write_text(updated, encoding="utf-8")
             changed += 1
     return changed
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--ci-file", type=Path, default=Path(".gitlab-ci.yml"),
+        help="read the ref from this file and act on the tree containing it",
     )
-    ap.add_argument("--ci-file", type=Path, default=REPO / ".gitlab-ci.yml")
-    ap.add_argument(
-        "--fix", action="store_true", help="rewrite the literals to variables." + REF_VAR
+    parser.add_argument(
+        "--project", default=LIB_PROJECT,
+        help="library project path in the image reference (default: %(default)s)",
     )
-    args = ap.parse_args(argv)
+    parser.add_argument(
+        "--ref-var", default=REF_VAR,
+        help="pipeline variable holding the pin (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--source", action="append", default=None, metavar="GLOB",
+        help="file carrying the literal, relative to the tree; repeatable "
+             "(default: the molecule scenarios and ansible/TESTING.md)",
+    )
+    parser.add_argument(
+        "--fix", action="store_true", help="rewrite the literals to the declared ref",
+    )
+    args = parser.parse_args(argv)
 
-    want = declared_ref(args.ci_file)
-    if args.fix:
-        changed = fix(want)
-        problems = check(want)
-        if problems:
-            print("check-molecule-image-pin: FAILED after rewrite", file=sys.stderr)
-            for problem in problems:
-                print(f"  {problem}", file=sys.stderr)
-            return 1
-        print(f"check-molecule-image-pin: rewrote {changed} file(s) to {want}")
-        return 0
+    patterns = tuple(args.source) if args.source else DEFAULT_SOURCES
+    ci_file = args.ci_file.resolve()
+    root = ci_file.parent
+    try:
+        want = declared_ref(ci_file, args.ref_var)
+        if args.fix:
+            changed = fix(want, root, patterns, args.project)
+        problems, seen = check(want, root, patterns, args.project, args.ref_var)
+    except OperatorError as exc:
+        print("ERROR: %s" % exc, file=sys.stderr)
+        return 2
 
-    problems = check(want)
     if problems:
         print("check-molecule-image-pin: FAILED", file=sys.stderr)
         for problem in problems:
-            print(f"  {problem}", file=sys.stderr)
+            print("  %s" % problem, file=sys.stderr)
         print(
-            "\nFix with: scripts/check-molecule-image-pin.py --fix",
-            file=sys.stderr,
+            "\nFix with: scripts/check-molecule-image-pin.py --fix", file=sys.stderr
         )
         return 1
-    print(f"check-molecule-image-pin: OK — every molecule image pinned at {want}")
+    if not seen:
+        # Nothing to check is not the same as everything being fine: once the
+        # scenarios stop spelling the fallback, say so rather than pass on an
+        # empty set.
+        print(
+            "ERROR: no molecule image literal found under %s — has the fallback "
+            "moved, or is --project/--source wrong?" % root,
+            file=sys.stderr,
+        )
+        return 2
+    if args.fix:
+        print("check-molecule-image-pin: rewrote %d file(s) to %s" % (changed, want))
+        return 0
+    print(
+        "check-molecule-image-pin: OK — %d literal(s) pinned at %s" % (seen, want)
+    )
     return 0
 
 

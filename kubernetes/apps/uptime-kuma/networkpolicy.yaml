@@ -10,14 +10,9 @@ spec:
     - Egress
 
 ---
-# Ingress: Traefik reaches the app on :3001 (status page + admin UI) and
-# Prometheus scrapes /metrics on the same port. Everything else (cross-pod,
-# cross-namespace) is denied by the baseline default-deny-ingress. Kubelet
-# health probes are node-local and not gated by NetworkPolicy.
-#
-# The observability peer is what scripts/check-scrape-netpol.py requires for the
-# ServiceMonitor in
-# kubernetes/infrastructure/observability/service-monitors/uptime-kuma.yaml.
+# Ingress: Traefik reaches the app on :3001 and the Prometheus pod scrapes
+# /metrics on that same port - :3001 is also the admin UI, so the peer is scoped
+# to the scraper, not the whole observability namespace (check-scrape-netpol.py).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -37,21 +32,17 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: observability
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
       ports:
         - protocol: TCP
           port: 3001
 
 ---
-# Egress for the uptime-kuma pod. Probing IS this app's data path, so the
-# allowlist is the monitor inventory: one `to:` block per target class
-# (docs/45 § What it may reach). Adding a monitor whose target is not covered
-# here fails as a timeout, not a policy error — extend this file in the same
-# change.
-#
-# The namespaceSelector peer in rule 3 is load-bearing: kube-proxy DNATs a
-# ClusterIP/VIP to the backend pod IP before policy evaluation, so an ipBlock
-# alone cannot match a Service VIP. No kube-apiserver reach
-# (automountServiceAccountToken is false).
+# Egress: probing IS this app's data path, so the allowlist is the monitor
+# inventory, one `to:` block per target class (docs/45). A monitor whose target
+# is not covered here fails as a timeout - extend this file in the same change.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -77,11 +68,9 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
-    # 2. public HTTPS — the point of the app: the *.ericsweiss.com endpoints
-    #    (which leave the LAN and come back through Cloudflare), third-party
-    #    dependencies, and outbound webhook notifications (Discord/ntfy/…).
-    #    Scoped to :443; a monitor that must check a plaintext :80 redirect
-    #    needs a deliberate edit here.
+    # 2. public HTTPS - the external endpoints, third-party dependencies and
+    #    outbound webhook notifications. Scoped to :443, so a plaintext :80
+    #    monitor needs a deliberate edit here.
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0
@@ -94,14 +83,9 @@ spec:
       ports:
         - protocol: TCP
           port: 443
-    # 3. Traefik — every in-cluster and VM-hosted service is monitored on its
-    #    real user-facing path (https://<app>.esweiss.com), not a direct
-    #    backend port. Two rules because the DNAT happens BEFORE policy
-    #    evaluation (the 2026-07-30 ipBlock/VIP lesson): the load-bearing rule
-    #    is the traefik POD selector on the websecure TARGET port — 443 as
-    #    this chart configures the container, with the chart-default 8443
-    #    also allowed so a values change cannot silently black-hole every
-    #    internal monitor. The VIP:443 ipBlocks document the pre-DNAT intent.
+    # 3. Traefik - monitors hit the real https path and kube-proxy DNATs before
+    #    policy evaluation, so the load-bearing peer is the traefik namespace on
+    #    443 (8443 = chart default); the VIP ipBlocks below are documentation.
     - to:
         - namespaceSelector:
             matchLabels:
@@ -134,10 +118,9 @@ spec:
       ports:
         - protocol: TCP
           port: 587
-    # 4c. Proxmox API on every node — TCP-port monitors only. An HTTPS monitor
-    #     would need the PVE cluster CA trusted in-process (or the un-codified
-    #     "ignore TLS" toggle), and host health is already covered by the
-    #     Proxmox exporter; this is the independent-of-Prometheus liveness view.
+    # 4c. Proxmox API on every node - TCP-port monitors only (an HTTPS monitor
+    #     would need the PVE cluster CA trusted in-process). This is the
+    #     liveness view that does not depend on Prometheus.
     - to:
         - ipBlock: { cidr: 10.0.10.102/32 }
         - ipBlock: { cidr: 10.0.10.103/32 }

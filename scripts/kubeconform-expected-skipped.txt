@@ -1,0 +1,3 @@
+# apiVersion/Kind pairs the CRD catalog carries no schema for, one per line.
+# The render corpus currently skips none; a pair appearing here is a kind this
+# cluster accepts unvalidated. flux-lint fails on any skip outside this list.

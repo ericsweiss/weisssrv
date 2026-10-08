@@ -1,19 +1,8 @@
-# State-address migration for the move onto the library `authentik-sso` module
-# (main.tf). Every object kept its configuration field-for-field; only its
-# address changed, from a root-module resource to a keyed instance of the
-# module's equivalent resource.
-#
-# One block per RESOURCE INSTANCE that existed before the move — every address
-# `terraform state list` reports. An address with NO block here plans as
-# destroy+create of a live SSO object, so the list must stay exhaustive: it is
-# derived from the pre-move .tf files (each explicit resource plus every key of
-# each `for_each` map) and cross-checked against imports.tf and import.sh.
-#
-# `moved` is not affected by `prevent_destroy`, and re-applying is a no-op once
-# state carries the new addresses. The data sources need no blocks: they are
-# re-read on every plan, so their move into the module (the two flows, the
-# signing keypair, the scope/SAML mappings and the two user lookups that used to
-# live in data.tf) is invisible to state.
+# CRITICAL: one block per state address that predates the move onto the library
+# `authentik-sso` module. An address with no block here plans as destroy+create
+# of a live SSO object, so the list must stay exhaustive. `moved` ignores
+# `prevent_destroy`, and re-applying is a no-op once state carries the new
+# addresses. Data sources need no blocks; they are re-read on every plan.
 
 # --- Applications (19) -------------------------------------------------------
 # The three that were explicit resources take their slug as the module key, so

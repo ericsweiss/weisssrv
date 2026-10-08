@@ -1,0 +1,99 @@
+---
+# promtool unit test for UnifiSyslogStale, pinning both failure shapes: the
+# receiver up and accepting nothing, and the component gone from the Alloy
+# config entirely.
+rule_files:
+  - rules.yaml
+evaluation_interval: 1m
+tests:
+  # Receiver up, counter flat: no line accepted for an hour.
+  - interval: 1m
+    input_series:
+      - series: 'loki_source_syslog_entries_total{job="alloy-syslog", component_id="loki.source.syslog.unifi", namespace="observability", pod="alloy-syslog-db5ff859b-xzzvs"}'
+        values: '4131+0x150'
+    alert_rule_test:
+      # Inside the 30m hold.
+      - eval_time: 20m
+        alertname: UnifiSyslogStale
+        exp_alerts: []
+      - eval_time: 60m
+        alertname: UnifiSyslogStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: alloy-syslog
+              component_id: loki.source.syslog.unifi
+
+  # The live baseline is a few hundred lines an hour, so any real feed keeps
+  # increase() above zero.
+  - interval: 1m
+    input_series:
+      - series: 'loki_source_syslog_entries_total{job="alloy-syslog", component_id="loki.source.syslog.unifi", namespace="observability", pod="alloy-syslog-db5ff859b-xzzvs"}'
+        values: '0+7x150'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: UnifiSyslogStale
+        exp_alerts: []
+
+  # The component renamed or removed: the counter arm yields nothing, so the
+  # absent() arm is the only thing left watching.
+  - interval: 1m
+    input_series:
+      - series: 'loki_source_syslog_entries_total{job="alloy-syslog", component_id="loki.source.syslog.unifi", namespace="observability", pod="alloy-syslog-db5ff859b-xzzvs"}'
+        values: '4131 stale'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: UnifiSyslogStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: alloy-syslog
+              component_id: loki.source.syslog.unifi
+
+  # SyslogLogShippingStale: the receiver keeps accepting while loki.write stops
+  # delivering. UnifiSyslogStale stays green here, so this is the only witness.
+  - interval: 1m
+    input_series:
+      - series: 'loki_source_syslog_entries_total{job="alloy-syslog", component_id="loki.source.syslog.unifi", namespace="observability", pod="alloy-syslog-db5ff859b-xzzvs", instance="10.42.3.11:12345"}'
+        values: '0+7x150'
+      - series: 'loki_write_sent_entries_total{job="alloy-syslog", namespace="observability", pod="alloy-syslog-db5ff859b-xzzvs", instance="10.42.3.11:12345"}'
+        values: '4131+0x150'
+    alert_rule_test:
+      # Inside the 15m hold.
+      - eval_time: 10m
+        alertname: SyslogLogShippingStale
+        exp_alerts: []
+      - eval_time: 60m
+        alertname: SyslogLogShippingStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: 10.42.3.11:12345
+
+  # Both halves idle: the gateway stopped sending, which UnifiSyslogStale owns.
+  # The write-side alert must stay quiet.
+  - interval: 1m
+    input_series:
+      - series: 'loki_source_syslog_entries_total{job="alloy-syslog", component_id="loki.source.syslog.unifi", namespace="observability", pod="alloy-syslog-db5ff859b-xzzvs", instance="10.42.3.11:12345"}'
+        values: '4131+0x150'
+      - series: 'loki_write_sent_entries_total{job="alloy-syslog", namespace="observability", pod="alloy-syslog-db5ff859b-xzzvs", instance="10.42.3.11:12345"}'
+        values: '4131+0x150'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: SyslogLogShippingStale
+        exp_alerts: []
+
+  # The counter climbs for 2h then stops: a widened window would still see the
+  # earlier climb, so this pins the 1h lookback.
+  - interval: 1m
+    input_series:
+      - series: 'loki_source_syslog_entries_total{job="alloy-syslog", component_id="loki.source.syslog.unifi", namespace="observability", pod="alloy-syslog-db5ff859b-xzzvs"}'
+        values: '0+7x120 840+0x120'
+    alert_rule_test:
+      - eval_time: 3h30m
+        alertname: UnifiSyslogStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: alloy-syslog
+              component_id: loki.source.syslog.unifi

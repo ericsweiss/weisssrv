@@ -1,10 +1,7 @@
 ---
-# promtool unit tests for the blackbox/endpoint alerts. Pins the load-bearing
-# firing boundaries: the WindowsRdpDown power-state gate, the EndpointDown
-# 10m warning hold, the edge-cert expiry scope, the DNS-probe absent() guard,
-# the NetworkGearProbeFailed hold plus the EndpointDown exclusion that keeps
-# a failed UniFi device from firing both, and the NetworkGearProbeMissing
-# absent() guard behind that pattern-matched aggregate.
+# promtool unit tests for the blackbox/endpoint alerts. Pins the firing
+# boundaries of the multi-series rules: power-state gates, hold windows,
+# absent() guards, exclusions and count() aggregates.
 rule_files:
   - rules.yaml
 evaluation_interval: 1m
@@ -85,14 +82,9 @@ tests:
         alertname: EndpointDown
         exp_alerts: []
 
-  # BlackboxCertExpiringSoon fires for a Cloudflare-edge target
-  # (home.ericsweiss.com) whose cert is under 14 days out; a healthy (30d) edge
-  # cert does not; an esweiss.com target is out of scope entirely; and the five
-  # hostnames whose TLS terminates on our own Traefik (git, registry.git,
-  # pages.git and photos over the WAN, auth over the split-horizon internal VIP)
-  # are excluded
-  # even while expiring — cert-manager's CertExpiringWarning/Critical own those
-  # certs, and firing here too would double-page on a single lapsing cert.
+  # BlackboxCertExpiringSoon fires for a Cloudflare-edge target under 14 days; a
+  # 30d edge cert does not; esweiss.com is out of scope; and hosts whose TLS
+  # terminates on our own Traefik are excluded (cert-manager owns those certs).
   - interval: 1m
     input_series:
       # 10 days to expiry, constant epoch value -> stays < 14d as time advances.
@@ -150,10 +142,8 @@ tests:
         alertname: DNSResolverProbeMissing
         exp_alerts: []
 
-  # NetworkGearProbeFailed: a down UniFi device is still pending at 3m and
-  # fires at 7m, labelled with the device that failed. The gateway probe
-  # (10.0.10.1) is the anchoring case for the fully-anchored regex — it must
-  # not also match 10.0.10.150:53 or 10.0.10.155:3389.
+  # NetworkGearProbeFailed: a down UniFi device fires at 7m, labelled with the
+  # device. The gateway probe pins the fully-anchored regex.
   - interval: 1m
     input_series:
       - series: 'probe_success{instance="10.0.10.1"}'
@@ -198,12 +188,9 @@ tests:
               severity: warning
               instance: '10.0.1.3'
 
-  # NetworkGearProbeMissing fires when any one of the three device probes has no
-  # series at all. Gateway + switch present, AP target dropped -> fire, labelled
-  # with the missing instance. A FAILING probe (switch at 0) is deliberately not
-  # a missing one — that is NetworkGearProbeFailed's job.
-  #
-  # The 15m hold is pinned by the 10m eval: shortening `for` would fire there.
+  # NetworkGearProbeMissing fires when one of the three device probes has no
+  # series. A failing probe is not a missing one. The 10m eval pins the 15m
+  # hold.
   - interval: 1m
     input_series:
       - series: 'probe_success{instance="10.0.10.1"}'
@@ -221,10 +208,8 @@ tests:
               severity: warning
               instance: '10.0.1.3'
 
-  # Each absent() term needs a case that drops ITS instance, or the term can be
-  # deleted outright and the suite still passes — the all-present case only
-  # catches a MIS-SPELLED matcher, never a missing one. The gateway leg matters
-  # most: 10.0.10.1 is the address Phase 2 renumbered the gateway to.
+  # Each absent() term needs a case dropping its own instance, or the term
+  # could be deleted and the suite still pass.
   - interval: 1m
     input_series:
       - series: 'probe_success{instance="10.0.1.2"}'
@@ -282,16 +267,9 @@ tests:
         alertname: NetworkGearProbeFailed
         exp_alerts: []
 
-  # The three network-gear instances are excluded from the EndpointDown
-  # catch-all (routed to NetworkGearProbeFailed), so a down gear probe must not
-  # fire it — while an ordinary endpoint alongside them still does.
-  #
-  # The included half is pinned with IP-ADDRESSED targets, not just the https
-  # one: the exclusion is a regex over dotted quads, so widening it (say to
-  # 10\.0\.10\..*) would swallow real targets while every https assertion
-  # still passed. 10.0.10.161:6443 is the k3s API VIP, whose ONLY alert is
-  # this one; 10.0.10.150:53 also has DNSResolutionDown but pins the second
-  # 10.0.10.1-adjacent spelling the anchored regex must not eat.
+  # The three network-gear instances and the 1.1.1.1 WAN witness are excluded
+  # from the EndpointDown catch-all. IP-addressed targets are included on the
+  # firing side so that widening the exclusion regex fails here.
   - interval: 1m
     input_series:
       - series: 'probe_success{instance="10.0.10.1"}'
@@ -299,6 +277,8 @@ tests:
       - series: 'probe_success{instance="10.0.1.2"}'
         values: '0+0x20'
       - series: 'probe_success{instance="10.0.1.3"}'
+        values: '0+0x20'
+      - series: 'probe_success{instance="1.1.1.1"}'
         values: '0+0x20'
       - series: 'probe_success{instance="https://plex.esweiss.com"}'
         values: '0+0x20'
@@ -319,3 +299,108 @@ tests:
           - exp_labels:
               severity: warning
               instance: 'https://plex.esweiss.com'
+
+  # DNSResolutionDown is count(failed) == count(present), so it scales with the
+  # resolver set instead of naming a number. Both resolvers down fires it.
+  - interval: 1m
+    input_series:
+      - series: 'probe_success{instance="10.0.10.150:53"}'
+        values: '0+0x20'
+      - series: 'probe_success{instance="10.0.10.160:53"}'
+        values: '0+0x20'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: DNSResolutionDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+
+  # One resolver still answering is the degraded case EndpointDown covers, not
+  # a full resolution outage.
+  - interval: 1m
+    input_series:
+      - series: 'probe_success{instance="10.0.10.150:53"}'
+        values: '0+0x20'
+      - series: 'probe_success{instance="10.0.10.160:53"}'
+        values: '1+0x20'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: DNSResolutionDown
+        exp_alerts: []
+
+  # The disarm this shape has to accept: with the probe series gone entirely
+  # both counts are empty, so nothing fires. BlackboxExporterDown is what covers
+  # a missing prober.
+  - interval: 1m
+    input_series:
+      - series: 'probe_success{instance="10.0.10.155:3389"}'
+        values: '1+0x20'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: DNSResolutionDown
+        exp_alerts: []
+
+  # EndpointDownCritical: the email-paging tier. auth down for 5m fires,
+  # labelled with the instance the fully-anchored regex matched.
+  - interval: 1m
+    input_series:
+      - series: 'probe_success{instance="https://auth.esweiss.com"}'
+        values: '0+0x20'
+      - series: 'probe_success{instance="https://git.esweiss.com"}'
+        values: '1+0x20'
+      - series: 'probe_success{instance="https://home.esweiss.com"}'
+        values: '1+0x20'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: EndpointDownCritical
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: EndpointDownCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              instance: 'https://auth.esweiss.com'
+
+  # KeyEndpointProbeMissing: git's target given a path, so the fully-anchored
+  # EndpointDownCritical regex no longer matches it.
+  - interval: 1m
+    input_series:
+      - series: 'probe_success{instance="https://auth.esweiss.com"}'
+        values: '1+0x30'
+      - series: 'probe_success{instance="https://home.esweiss.com"}'
+        values: '1+0x30'
+      - series: 'probe_success{instance="https://git.esweiss.com/health"}'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: KeyEndpointProbeMissing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+
+  # Every key target gone: the `or on() vector(0)` fallback keeps the guard from
+  # evaluating over an empty vector and going quiet.
+  - interval: 1m
+    input_series:
+      - series: 'probe_success{instance="10.0.10.150:53"}'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: KeyEndpointProbeMissing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+
+  # All three load-bearing probes present -> no drift, no alert.
+  - interval: 1m
+    input_series:
+      - series: 'probe_success{instance="https://auth.esweiss.com"}'
+        values: '1+0x30'
+      - series: 'probe_success{instance="https://git.esweiss.com"}'
+        values: '1+0x30'
+      - series: 'probe_success{instance="https://home.esweiss.com"}'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: KeyEndpointProbeMissing
+        exp_alerts: []

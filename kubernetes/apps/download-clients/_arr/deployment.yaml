@@ -34,11 +34,9 @@ spec:
                     operator: DoesNotExist
       nodeSelector:
         ${cluster_node_label_domain}/general: "true"
-      # Pod hardening: these *arr apps do not talk to the kube-API. Only the
-      # universally-safe subset is applied — this is a LinuxServer.io image
-      # (s6 + PUID/PGID) that MUST start as root to drop privileges, so
-      # runAsNonRoot / drop-ALL / aPE:false are deliberately NOT set (they
-      # would break the s6 privilege drop).
+      # Pod hardening is seccomp only: this is a LinuxServer.io image (s6 +
+      # PUID/PGID) that MUST start as root to drop privileges, so runAsNonRoot /
+      # drop-ALL / aPE:false would break the s6 privilege drop.
       automountServiceAccountToken: false
       securityContext:
         seccompProfile:
@@ -47,18 +45,13 @@ spec:
         options:
           - name: ndots
             value: "1"
-          # ClusterFirst pods resolve via the DNAT'd kube-dns ClusterIP; force a
-          # fresh socket for the second of glibc's parallel A/AAAA queries so the
-          # conntrack DNAT-insert race can't cost a ~5s resolver stall. Kept in
-          # sync with recipes/mealie.yaml (same ClusterFirst+ndots:1 setup).
+          # ClusterFirst pod on the DNAT'd kube-dns path - fresh socket for the
+          # second parallel A/AAAA query avoids the ~5s conntrack DNAT race.
           - name: single-request-reopen
       containers:
-        # Sentinel image tag, NOT a deployable value: every overlay (../sonarr,
-        # ../radarr, ../lidarr) MUST `- op: replace` this with its pinned
-        # lscr.io/linuxserver/<app>:version-${..._version} image. The tag is a
-        # fail-fast placeholder (not `:latest`) so a future overlay that forgets
-        # the image patch ImagePullBackOffs loudly instead of silently pulling a
-        # mutable floating tag — the repo pins every image centrally.
+        # Sentinel tag, NOT deployable: every overlay MUST `- op: replace` this
+        # with its pinned lscr.io/linuxserver/<app>:version-${..._version} image.
+        # Not `:latest`, so a missed patch ImagePullBackOffs loudly.
         - name: arr
           image: lscr.io/linuxserver/arr:OVERLAY-MUST-PIN
           imagePullPolicy: IfNotPresent
@@ -68,13 +61,16 @@ spec:
             - name: PGID
               value: "2000"
             - name: TZ
-              value: America/Los_Angeles
+              value: ${cluster_timezone}
             - name: UMASK
               value: "002"
           ports:
             - name: http
               containerPort: 8989
               protocol: TCP
+          # 5-minute liveness budget (30s x 10): a Refresh Series rescan over
+          # NFS stalls /ping long enough that a shorter budget SIGKILLs a
+          # healthy app mid-scan. Readiness drains it first, after ~100s.
           livenessProbe:
             httpGet:
               path: /ping
@@ -82,7 +78,7 @@ spec:
             initialDelaySeconds: 60
             periodSeconds: 30
             timeoutSeconds: 30
-            failureThreshold: 5
+            failureThreshold: 10
           readinessProbe:
             httpGet:
               path: /ping

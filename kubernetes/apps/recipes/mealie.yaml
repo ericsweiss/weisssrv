@@ -31,10 +31,8 @@ spec:
       securityContext:
         seccompProfile:
           type: RuntimeDefault
-        # runAsNonRoot / runAsUser / fsGroup deliberately NOT pinned: the image
-        # starts as root and drops to the postgres user itself, which needs
-        # CAP_CHOWN/CAP_SETUID. Pinning either breaks startup on the populated
-        # PVC.
+        # runAsNonRoot / runAsUser / fsGroup are unset: the image starts as root
+        # and drops to postgres itself, needing CAP_CHOWN and CAP_SETUID.
       # Pinned to the NAS agent: its PV is a zvol hostPath there.
       affinity:
         nodeAffinity:
@@ -99,10 +97,9 @@ spec:
           volumeMounts:
             - name: postgres-data
               mountPath: /var/lib/postgresql/data
-        # postgres_exporter over pod-localhost — connection saturation, xact age
-        # and per-database size for the one DB that has no other signal. Pinned
-        # by tag + immutable digest (same convention as gluetun-exporter); the
-        # observability -> :9187 allow is in networkpolicy.yaml.
+        # postgres_exporter over pod-localhost - connection saturation, xact age
+        # and per-database size. Tag + digest are edited by hand and track the
+        # same upstream as postgres_exporter in all.yml, so bump both together.
         - name: postgres-exporter
           image: quay.io/prometheuscommunity/postgres-exporter:v0.20.1@sha256:ac5ec343104fae0e2d84a27bb8d69b38430a11910c5382cad85d478d2bab713e
           imagePullPolicy: IfNotPresent
@@ -161,10 +158,6 @@ spec:
     - name: postgres
       port: 5432
       targetPort: postgres
-    # postgres_exporter sidecar; the ServiceMonitor scrapes this port.
-    - name: metrics
-      port: 9187
-      targetPort: metrics
   type: ClusterIP
 
 ---
@@ -213,6 +206,8 @@ spec:
         options:
           - name: ndots
             value: "1"
+          # ClusterFirst pod on the DNAT'd kube-dns path — fresh socket for the
+          # second parallel A/AAAA query avoids the ~5s conntrack DNAT race.
           - name: single-request-reopen
       containers:
         - name: mealie
@@ -220,15 +215,14 @@ spec:
           imagePullPolicy: IfNotPresent
           env:
             - name: TZ
-              value: America/Los_Angeles
+              value: ${cluster_timezone}
             - name: PUID
               value: "1000"
             - name: PGID
               value: "2000"
-            # BASE_URL is deliberately unset so Mealie derives redirect_uri per
-            # request and login works on BOTH hostnames; any value pins the OIDC
-            # callback to one origin. Trade-off: links built without a request
-            # context fall back to the default. See docs/22.
+            # BASE_URL is unset so Mealie derives redirect_uri per request and
+            # login works on both hostnames. Any value pins the OIDC callback to
+            # one origin (docs/22).
 
             - name: DB_ENGINE
               value: postgres
@@ -295,10 +289,6 @@ spec:
               value: "true"
             - name: ALLOW_PASSWORD_LOGIN
               value: "false"
-            # OpenAI is configured in-app since Mealie 3.x — the legacy
-            # OPENAI_* env vars are no longer read at runtime (config now
-            # lives in the ai_providers DB table). Set the API key under
-            # Settings > AI (1Password item "OpenAI API Key").
             - name: ALLOW_SIGNUP
               value: "false"
             - name: MAX_WORKERS

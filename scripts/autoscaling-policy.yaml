@@ -1,11 +1,9 @@
 ---
-# Policy data for scripts/check-hpa-vpa-invariant.py (--policy-config) and, for
-# the shared CPU-limit allowlist, scripts/validate-helm-values.py.
-#
-# chart_native_hpa_targets: workloads whose HPA is created by a Helm chart and
-# is therefore absent from the kustomize corpus. Each must have a mutating VPA
-# that excludes cpu (asserted with --require-chart-native-vpas). Keep in step
-# with the HelmReleases that enable autoscaling.
+# Policy data for scripts/check-hpa-vpa-invariant.py (--policy-config) and the
+# shared CPU-limit allowlist in scripts/validate-helm-values.py.
+
+# Workloads whose HPA comes from a Helm chart, so absent from the kustomize
+# corpus. Each needs a mutating VPA excluding cpu (--require-chart-native-vpas).
 chart_native_hpa_targets:
   - namespace: traefik
     kind: Deployment
@@ -20,11 +18,18 @@ chart_native_hpa_targets:
     name: onepassword-connect
     source: connect.hpa
 
-# "namespace/Kind/name" workloads intentionally permitted a CPU limit. Empty by
-# design (docs/33-autoscaling.md) — add an entry only with an inline rationale.
-cpu_limit_allowlist: []
+# "namespace/Kind/name": reason — workloads intentionally permitted a CPU limit.
+# Empty by design (docs/33-autoscaling.md).
+cpu_limit_allowlist: {}
 
-# namespace/VerticalPodAutoscaler/name entries exempt from the VPA memory-cap
-# rule (cap==limit under a limit-controlling policy). Empty: violations are
-# fixed in the manifests instead.
-vpa_cap_allowlist: []
+# "namespace/VerticalPodAutoscaler/name": reason — exempt from the VPA
+# memory-cap rule (cap==limit under a limit-controlling policy).
+vpa_cap_allowlist:
+  authentik/VerticalPodAutoscaler/authentik-postgresql: >-
+    Off tier: recommendations only, applied by hand in release.yaml. The cap is
+    the headroom a growing recommendation may reach, so it sits above today's
+    hand-set limits by design (docs/33-autoscaling.md).
+
+# "namespace/Kind/name": reason — exempt from the memory request:limit ratio
+# rule under a limit-controlling VPA policy.
+memory_ratio_allowlist: {}

@@ -1,11 +1,7 @@
 ---
-# promtool unit tests for the fast silent-failure alerts: the cert-renewal
-# pipeline and Flux reconciliation. Each pair asserts both that the rule fires
-# on the failure it names AND that the healthy series does not — a threshold or
-# label-selector typo breaks exactly one of the two.
-# The multi-day staleness family lives in backup-staleness.test.yaml (it needs a
-# 1h evaluation interval). rule_files is resolved relative to this file's
-# runtime location; the lint script copies the tests next to rules.yaml.
+# promtool unit tests for the cert-renewal and Flux reconciliation alerts: each
+# pair asserts the rule fires on its failure and stays quiet when healthy.
+# rule_files resolves where the lint script copies this next to rules.yaml.
 rule_files:
   - rules.yaml
 evaluation_interval: 1m
@@ -31,6 +27,33 @@ tests:
     input_series:
       - series: 'cert_renewal_last_run_success{instance="10.0.10.150:9101"}'
         values: '1+0x70'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: CertRenewalFailed
+        exp_alerts: []
+
+  # Second arm: a local renewal that succeeded while a distribution target
+  # failed leaves the run bit at 1, so only the failed-target count sees it.
+  - interval: 1m
+    input_series:
+      - series: 'cert_renewal_last_run_success{instance="10.0.10.150:9101"}'
+        values: '1+0x70'
+      - series: 'cert_distribution_last_run_failed_targets{instance="10.0.10.150:9101"}'
+        values: '1+0x70'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: CertRenewalFailed
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: '10.0.10.150:9101'
+
+  - interval: 1m
+    input_series:
+      - series: 'cert_renewal_last_run_success{instance="10.0.10.150:9101"}'
+        values: '1+0x70'
+      - series: 'cert_distribution_last_run_failed_targets{instance="10.0.10.150:9101"}'
+        values: '0+0x70'
     alert_rule_test:
       - eval_time: 65m
         alertname: CertRenewalFailed
@@ -78,3 +101,32 @@ tests:
               name: apps
               namespace: flux-system
               kind: Kustomization
+
+  # CertificateNotReady is the only arm covering a Certificate cert-manager has
+  # never issued: the expiry series does not exist until a first issuance.
+  - interval: 1m
+    input_series:
+      - series: 'certmanager_certificate_ready_status{condition="False", name="wildcard-internal", namespace="observability"}'
+        values: '1+0x70'
+    alert_rule_test:
+      - eval_time: 50m
+        alertname: CertificateNotReady
+        exp_alerts: []
+      - eval_time: 65m
+        alertname: CertificateNotReady
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              condition: 'False'
+              name: wildcard-internal
+              namespace: observability
+
+  # A Certificate that issues stays quiet: the condition="False" sample is 0.
+  - interval: 1m
+    input_series:
+      - series: 'certmanager_certificate_ready_status{condition="False", name="wildcard-internal", namespace="observability"}'
+        values: '0+0x70'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: CertificateNotReady
+        exp_alerts: []

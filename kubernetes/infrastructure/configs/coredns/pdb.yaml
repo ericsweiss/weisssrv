@@ -1,9 +1,7 @@
 ---
-# PodDisruptionBudget for CoreDNS
-# Prevents both replicas from being evicted during node drains (voluntary
-# disruption only). NOTE: this does not protect against hard node loss if both
-# replicas co-locate — topology spread can only be soft here; see the TOPOLOGY
-# SPREAD note in hpa.yaml for why (k3s AddOn owns the Deployment pod template).
+# Keeps one CoreDNS replica available during node drains (voluntary
+# disruption only). Hard pod-spread is unachievable — k3s owns the Deployment
+# pod template as a wrangler AddOn (docs/33-autoscaling.md).
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:

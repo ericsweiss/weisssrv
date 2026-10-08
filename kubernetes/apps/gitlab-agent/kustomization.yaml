@@ -9,15 +9,8 @@ resources:
   - vpa.yaml
 
 # No egress NetworkPolicy, deliberately: kube-router installs the per-pod egress
-# chain after the pod is scheduled, and agentk bails fatally on its startup /api
-# GET in that gap, crashlooping every fresh pod. The agent only egresses to
-# cluster-internal endpoints and holds cluster-admin-equivalent creds anyway, so
-# an allowlist adds little.
-#
-# ACCEPTED RISK — REVIEW BEFORE MULTI-TENANT (pairs with the RBAC note in
-# release.yaml): once the agent RBAC is scoped below cluster-admin for tenant
-# onboarding (docs/30), restore a scoped egress allowlist, but only once agentk
-# tolerates that startup gap.
+# chain after the pod is scheduled and agentk bails fatally on its startup /api
+# GET in that gap, crashlooping every fresh pod. Scoping it: docs/30.
 
 components:
   - ../../components/netpol-baseline

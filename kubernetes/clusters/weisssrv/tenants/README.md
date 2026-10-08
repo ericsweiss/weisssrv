@@ -15,7 +15,25 @@ The tenant-side repo is generated from the **copier template**
 `docs/ONBOARDING.md`, a pre-rendered copy of the wiring file below with the
 tenant's real slug and namespace. Deploys happen cluster-side via Flux, not CI.
 Tenants can instead hand-author their `kubernetes/` tree following the patterns
-in this repo.
+in this repo. A hand-authored tree MUST add what the template ships for free:
+a namespace-wide ingress default-deny NetworkPolicy plus a scrape-allow from
+`observability`. It is mandatory in every namespace here, but
+`scripts/check-default-deny-coverage.py` reads only this repo's rendered
+corpus, so a tenant namespace is invisible to it — see
+`docs/30-multi-repo-onboarding.md` § Pre-Onboarding Checklist.
+
+Merge the wiring file only once the tenant repo carries a real image tag. The
+app template ships `:REPLACE-ME`, which holds the Deployment at zero available
+replicas, and the tenant's own `AppDown` rule is evaluated by this cluster's
+Prometheus, so the critical page lands in this Alertmanager ten minutes later.
+
+Cap the tenant namespace too. The wiring file below ships a `ResourceQuota` and
+a `LimitRange` because `admin` puts no ceiling on requests, and the two runner
+quotas already sum above cluster allocatable (docs/33 § Scheduling priority). Pick
+the numbers per tenant.
+
+A tenant volume is outside every backup set until the operator adds it, and the
+operator owns its snapshot and offsite schedule (docs/42).
 
 See `docs/30-multi-repo-onboarding.md` for the full onboarding procedure.
 
@@ -24,6 +42,68 @@ applied, harmless while unbound) that every tenant wiring file binds alongside
 the built-in `admin` ClusterRole — `admin` does not cover the `traefik.io`,
 `monitoring.coreos.com`, or `autoscaling.k8s.io` CRD groups a tenant app uses.
 See the RBAC comment in the example below.
+
+## Platform contract
+
+What a tenant's manifests bind to on this cluster, beyond the CRDs the
+`dependsOn` chain waits for:
+
+- **The Traefik `websecure` entryPoint.** Every tenant IngressRoute must name
+  it (`kubernetes/infrastructure/controllers/traefik/release.yaml`).
+- **external-dns, pinned to the `external-dns.alpha.kubernetes.io/` annotation
+  prefix** (`kubernetes/infrastructure/controllers/external-dns/release.yaml`).
+  A tenant emitting `external-dns.alpha.kubernetes.io/target` gets no public
+  record if that prefix ever moves, with its pods ready and no alert firing.
+- **Prometheus discovers rules and monitors in every namespace.** The
+  kube-prometheus-stack release sets `ruleSelectorNilUsesHelmValues: false`,
+  `serviceMonitorSelectorNilUsesHelmValues: false` and the matching
+  `*NamespaceSelector: {}`
+  (`kubernetes/infrastructure/observability/kube-prometheus-stack/release.yaml`),
+  so a tenant PrometheusRule or ServiceMonitor is selected without a release
+  label. On the chart defaults both are ignored silently.
+- **A public route has no path condition.** It matches `Host(...)` alone, so a
+  tenant whose ServiceMonitor scrapes the same Service port its IngressRoute
+  backends publishes `/metrics` to the internet. Expose metrics on a second
+  containerPort and a second Service port, point the ServiceMonitor endpoint
+  and the scrape-allow NetworkPolicy at that port, or gate the path at the
+  route.
+- **blackbox-exporter probes a static target list**
+  (`kubernetes/infrastructure/observability/exporters/blackbox-exporter.yaml`).
+  A tenant's own PrometheusRule covers its replicas and its certificates, so to
+  catch a broken IngressRoute or DNS record while replicas stay ready, add the
+  tenant hostname to that list at onboarding.
+
+## Private tenant repositories
+
+Flux authenticates per `GitRepository`, through a Secret named by
+`spec.secretRef.name`. That Secret must live in the same namespace as the
+GitRepository, `flux-system` here, because `secretRef` is namespace-local. It is
+bootstrap state, not Flux-managed: it is what Flux needs in order to read git,
+so it cannot itself come from git.
+
+A deploy key is scoped to one repository and revocable there:
+
+```bash
+flux create secret git example-app-git-auth \
+  --namespace=flux-system \
+  --url=ssh://git@git.ericsweiss.com/<group>/example-app \
+  --ssh-key-algorithm=ecdsa --ssh-ecdsa-curve=p521
+```
+
+Add the printed public key to the tenant repo as a read-only deploy key. Flux
+never pushes to a tenant repo. Then set `url: ssh://...` with the `.git` suffix
+and `secretRef.name` on the GitRepository. A project access token works the same
+way with `--username=git --password=<TOKEN>` and an `https://` url. Rotating the
+credential is re-running the command; nothing in git changes.
+
+The Secret carries no ownership marker, so add `flux-system/<name>` to the
+`ALLOWLIST` in `scripts/check-unmanaged-secrets.py` in the same change that
+creates it.
+
+A tenant repository need not live on this cluster's forge. Flux clones over
+HTTPS or SSH, so a tenant can sit on GitHub while this cluster sits on
+`git.ericsweiss.com`. Write the tenant's own URL rather than copying the
+example's.
 
 ## File naming
 
@@ -69,9 +149,45 @@ metadata:
     pod-security.kubernetes.io/warn: restricted
     pod-security.kubernetes.io/audit: restricted
 ---
-# One-time bootstrap (NOT managed by Flux):
+# Cap the namespace: `admin` places no ceiling on what a tenant may request.
+# `pods:` must exceed the replica count, which surges by one on rollout, and
+# `limits.memory` must cover that many per-pod limits, at the VPA maxAllowed
+# where the tenant ships one.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: example-app-quota
+  namespace: example-app
+spec:
+  hard:
+    pods: "10"
+    requests.cpu: "2"
+    requests.memory: 4Gi
+    limits.memory: 8Gi
+---
+# Defaults and per-container ceilings, so a pod with no resources block cannot
+# land unbounded inside the quota. A `max:` key with no matching `default:` key
+# becomes the default limit, so CPU is left to the quota's requests.cpu.
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: example-app-limits
+  namespace: example-app
+spec:
+  limits:
+    - type: Container
+      default:
+        memory: 512Mi
+      defaultRequest:
+        cpu: 50m
+        memory: 128Mi
+      max:
+        memory: 2Gi
+---
+# One-time bootstrap (NOT managed by Flux), re-runnable for a rotated token:
 #   kubectl -n example-app create secret generic onepassword-connect-token \
-#     --from-literal=token=<CONNECT_TOKEN>
+#     --from-literal=token=<CONNECT_TOKEN> \
+#     --dry-run=client -o yaml | kubectl apply -f -
 #
 # The token should be scoped to the Homelab vault. Create one per tenant
 # so revoking access is independent (find the server ID with
@@ -146,12 +262,9 @@ roleRef:
   name: admin
   apiGroup: rbac.authorization.k8s.io
 ---
-# `admin` (bound above) does NOT aggregate the platform CRD groups a tenant
-# uses — traefik.io (IngressRoute), monitoring.coreos.com
-# (ServiceMonitor/PrometheusRule) and autoscaling.k8s.io (VerticalPodAutoscaler).
-# Bind the shared `tenant-crd-editor` ClusterRole (tenant-crd-editor.yaml)
-# alongside admin so those CRs apply; without it the tenant Kustomization goes
-# NotReady on the first IngressRoute/ServiceMonitor/PrometheusRule/VPA.
+# CRITICAL: `admin` does not aggregate the platform CRD groups, so without the
+# shared `tenant-crd-editor` ClusterRole bound here the tenant Kustomization
+# goes NotReady on its first IngressRoute/ServiceMonitor/PrometheusRule/VPA.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
@@ -209,6 +322,16 @@ identity even though its SA is confined to its own namespace. Exposing that is a
 deliberate choice: the values are hostnames and VIPs the tenant's own routes
 already carry.
 
+kustomize-controller runs with `StrictPostBuildSubstitutions=true`, so every
+`${...}` a tenant manifest carries must resolve from `cluster-config` or the
+tenant's whole reconcile fails. Escape a literal as `$${...}`.
+
+The `infrastructure-configs` stage name in `dependsOn` is a contract every
+tenant depends on. Rename or remove that Kustomization and each tenant stalls
+quietly: kustomize-controller retries "dependency not found", `wait: true`
+applies nothing, and the only signal is `FluxResourceNotReady`, fifteen minutes
+later. `scripts/check-tenant-wiring.py` holds every tenant file to that name.
+
 ## Example: GitLab-variables-backed tenant (friends without 1P)
 
 ESO's GitLab provider reads secrets from GitLab project CI/CD variables. Lower
@@ -228,10 +351,11 @@ metadata:
     pod-security.kubernetes.io/warn: restricted
     pod-security.kubernetes.io/audit: restricted
 ---
-# One-time bootstrap: the friend creates a Personal Access Token in GitLab
-# with read_api scope, then:
+# One-time bootstrap, re-runnable for a rotated token: the friend creates a
+# Personal Access Token in GitLab with read_api scope, then:
 #   kubectl -n friend-project create secret generic gitlab-api-token \
-#     --from-literal=token=glpat-...
+#     --from-literal=token=glpat-... \
+#     --dry-run=client -o yaml | kubectl apply -f -
 ---
 apiVersion: external-secrets.io/v1
 kind: ClusterSecretStore
@@ -245,9 +369,13 @@ spec:
         - friend-project
   provider:
     gitlab:
+      # Optional, and DEFAULTS TO https://gitlab.com — omit it and a
+      # self-hosted project token is sent to the wrong instance.
       url: https://git.ericsweiss.com
       projectID: "<NUMERIC_PROJECT_ID>"  # from GitLab > Settings > General
       auth:
+        # Capital S is the real CRD field; a lower-cased `secretRef` is
+        # pruned as unknown, leaving `auth` with no credential.
         SecretRef:
           accessToken:
             name: gitlab-api-token
@@ -264,43 +392,48 @@ spec:
 
 ## Security considerations
 
-> **Security note**: The default tenant model (Option C) uses the shared `Homelab`
-> vault — tenant ExternalSecrets could theoretically read any item in that vault, not
-> just their prefixed items. This is acceptable for this homelab's trust model
-> (single-operator, invited friends only). For stronger isolation, see Options A
-> (multi-vault shared Connect) and B (per-tenant Connect server) in
-> `docs/30-multi-repo-onboarding.md`.
->
-> The `onepassword-homelab` ClusterSecretStore used by the main repo's workloads is
-> separate from per-tenant `ClusterSecretStore` resources, but both point at the same
-> Connect server and vault. Cross-store reference is no longer cooperative: both the
-> platform store and the tenant example above declare `spec.conditions` listing the
-> namespaces allowed to use them, so a tenant ExternalSecret pointed at
-> `onepassword-homelab` is refused by ESO. `task flux:lint`
-> (`scripts/check-secretstore-scope.py`) fails the build if a store loses its
-> conditions or a consumer namespace is missing from them. What conditions do NOT
-> give you is per-item scoping inside a vault — that still needs Options A/B in
-> `docs/30-multi-repo-onboarding.md` (or a future admission controller).
->
-> **Before onboarding the first tenant**: the Traefik CRD provider currently runs
-> with `allowCrossNamespace: true` (see the accepted-risk comment in
-> `kubernetes/infrastructure/controllers/traefik/release.yaml`), which lets any
-> IngressRoute reference middlewares/services in other namespaces. Fine while
-> every route is operator-authored; a tenant-authored IngressRoute could pull
-> platform middlewares or another namespace's Service. Guard it first — scope the
-> provider per-tenant, add a validating policy pinning `@namespace` refs, or
-> revert to `allowCrossNamespace: false`.
+**Never add a tenant namespace to the platform store.**
+`kubernetes/infrastructure/configs/cluster-secret-store.yaml` admits only the
+platform namespaces it names, and every one of them can mint any item in the
+`Homelab` vault. Adding a tenant namespace there is a one-line handover of the
+runner tokens, the Authentik keys and the SMTP credentials; the tenant's
+`admin` RoleBinding then lets it create ExternalSecrets at will, and RBAC in
+its own namespace cannot take the boundary back. Give the tenant its own store,
+as the examples above do.
+
+Three things every wiring file above carries, and every new one must:
+
+- **The namespace caps** — a `ResourceQuota` and a `LimitRange`, because
+  `admin` places no ceiling on what a tenant may request. The LimitRange sets
+  no CPU key: the apiserver copies a `max` entry with no matching `default`
+  into `default`, which would CFS-throttle every tenant container.
+- **PSA labels on the tenant Namespace** — `enforce: baseline` plus `warn` and
+  `audit: restricted`, so the platform enforces the non-root, read-only-rootfs
+  posture the tenant template ships.
+- **`spec.conditions` on the tenant `ClusterSecretStore`** — a
+  ClusterSecretStore is cluster-scoped, so without conditions any namespace can
+  name it and read its vault. Scope it to the tenant namespace alone.
+  `scripts/check-tenant-wiring.py` (`task lint`) fails the build when a tenant
+  store loses its conditions or reaches past its namespace. The corpus gates
+  under `task flux:lint`, `scripts/check-secretstore-scope.py` included, cover
+  the platform stores only: they read this repo's rendered corpus, which does
+  not include this folder.
+
+Conditions scope the store, not the vault: in the default Option C model every
+tenant shares the `Homelab` vault, so a tenant ExternalSecret can mint any item
+in it. Stronger isolation (per-tenant vault, per-tenant Connect server) and the
+Traefik `allowCrossNamespace` guard that must land before the first tenant
+reconciles are both in `docs/30-multi-repo-onboarding.md` § Pre-Onboarding
+Checklist and § Isolation Options.
 
 ## Namespace ownership
 
-Each tenant owns one dedicated namespace. Tenants MUST NOT create resources in
-other tenants' namespaces or platform namespaces (`flux-system`,
-`external-secrets`, `metallb-system`, `cert-manager`, `traefik`,
-`external-dns`, `authentik`, `observability`). Flux pruning would fight them.
-
-Enforcement is cooperative today (small group of trusted tenants). A future
-admission controller (Kyverno/OPA) could block cross-namespace writes
-automatically — tracked in `docs/16-next-steps.md`.
+Each tenant owns exactly one namespace, and enforcement is RBAC rather than
+convention: the tenant Kustomization sets `serviceAccountName`, and that SA's
+RoleBindings (`admin` + `tenant-crd-editor`) are namespace-scoped, so a
+manifest targeting another namespace fails to apply. See
+`docs/30-multi-repo-onboarding.md` § Namespace Isolation for the platform
+namespace list and for what stays cooperative outside the apply path.
 
 **A tenant PrometheusRule must scope its own expressions.** Prometheus runs
 without `enforcedNamespaceLabel` — deliberately, because the platform's own rules
@@ -312,18 +445,6 @@ carries `namespace="<slug>"` in the selector, not only in the alert labels.
 ## Removal
 
 Delete `tenants/<slug>.yaml` and the matching line in `kustomization.yaml`,
-then commit. Flux prunes:
-- The tenant's `Kustomization` (which cascades to everything it created,
-  including the tenant's ExternalSecrets — and because those use
-  `creationPolicy: Owner`, their rendered `Secret`s are deleted too)
-- The tenant's `GitRepository` source
-- The tenant's `ClusterSecretStore` (now has no consumers)
-- The tenant namespace
-
-Both of the tenant's RoleBindings live in the tenant namespace, so they are
-pruned with it; the shared `tenant-crd-editor` ClusterRole is not per-tenant and
-stays in place for the remaining tenants.
-
-The `onepassword-connect-token` bootstrap secret is not Flux-managed; it is
-deleted when the namespace is pruned. Revoke the Connect token in 1Password
-and delete/archive the tenant's prefixed items in the `Homelab` vault.
+then commit. Flux prunes the Kustomization, the GitRepository, the
+`ClusterSecretStore` and the namespace. Prune order, what survives, and the
+manual token revocation are in `docs/30-multi-repo-onboarding.md` § Removal.

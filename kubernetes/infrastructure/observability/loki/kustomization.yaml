@@ -4,35 +4,25 @@ kind: Kustomization
 resources:
   - storage.yaml
   - release.yaml
-  # No NodePort here, deliberately: an always-on NodePort would expose an
-  # unauthenticated Loki push/read path on every node IP, bypassing the
-  # basic-auth IngressRoute and allow-loki-ingress. Host Alloy ships via
-  # https://loki.esweiss.com; the break-glass NodePort is an apply-by-hand
-  # manifest in docs/12-runbooks.md § Loki break-glass NodePort, not a
-  # manifest Flux would keep alive forever.
-# Loki ruler rule files, delivered by the loki-sc-rules sidecar (same
-# configMapGenerator convention as the Grafana dashboards). loki_rule:"1" matches
-# the sidecar's LABEL; the k8s-sidecar-target-directory annotation makes it write
-# into /rules/fake, where the ruler's local storage looks for the single
-# auth_enabled:false tenant.
+
+# Loki ruler rule files, delivered by the loki-sc-rules sidecar. loki_rule:"1"
+# matches the sidecar's label; k8s-sidecar-target-directory makes it write into
+# /rules/fake, the tenant directory the ruler's local storage scans.
 generatorOptions:
   # Stable name (no content-hash suffix) so the sidecar keeps discovering it and
   # no orphan rule ConfigMaps accumulate.
   disableNameSuffixHash: true
+  labels:
+    loki_rule: "1"
+  annotations:
+    k8s-sidecar-target-directory: /rules/fake
 configMapGenerator:
   - name: loki-rules-host-log-staleness
     files:
       - host-log-staleness.yaml
-    options:
-      labels:
-        loki_rule: "1"
-      annotations:
-        k8s-sidecar-target-directory: /rules/fake
   - name: loki-rules-runner-reaper
     files:
       - runner-reaper.yaml
-    options:
-      labels:
-        loki_rule: "1"
-      annotations:
-        k8s-sidecar-target-directory: /rules/fake
+  - name: loki-rules-unifi-syslog
+    files:
+      - unifi-syslog.yaml

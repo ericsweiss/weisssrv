@@ -1,17 +1,10 @@
 ---
 # promtool unit tests for the SMART growth arms (homelab.storage group).
-# rule_files resolves relative to this file's runtime location; the lint script
-# copies the tests next to the extracted rules.yaml before running them.
-#
-# All three arms are windowed comparisons over a counter that is NORMALLY
-# non-zero and constant — a drive with a lifetime reallocation count sits at
-# that value forever. So the property under test is that a STANDING value is
-# silent and only GROWTH within the window fires. A rule rewritten as a bare
-# `> 0` would pass a naive smoke test and alert permanently on every disk in the
-# estate.
+# The counters are normally non-zero and constant, so the property under test
+# is that a standing value stays silent and only growth in the window fires.
 rule_files:
   - rules.yaml
-evaluation_interval: 1m
+evaluation_interval: 5m
 tests:
   # Reallocated sectors: 24h max-min. A constant historical count is silent.
   - interval: 5m

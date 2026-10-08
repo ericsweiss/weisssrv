@@ -1,8 +1,7 @@
 ---
 # CoreDNS resolver for the tailnet split-horizon view (see configmap.yaml).
-# 2 replicas across nodes for availability; the reloader annotation restarts
-# pods when the Corefile ConfigMap changes. Image is pinned to the same CoreDNS
-# k3s already caches on every node (rancher mirror), so there is no new pull.
+# 2 replicas, spread across nodes best-effort (ScheduleAnyway); the reloader
+# annotation restarts pods on Corefile change. Image matches k3s's CoreDNS.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -67,7 +66,7 @@ spec:
             periodSeconds: 5
           resources:
             requests: { cpu: 25m, memory: 32Mi }
-            limits: { memory: 128Mi }
+            limits: { memory: 160Mi }
           volumeMounts:
             - name: config
               mountPath: /etc/coredns

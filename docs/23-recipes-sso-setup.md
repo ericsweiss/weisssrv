@@ -37,15 +37,22 @@ Create the following items in your **Homelab** vault:
 
 ### 1. Mealie SSO (type: Password)
 - **Item name**: `Mealie SSO`
-- **Fields** (leave empty for now - will populate after creating Authentik provider):
-  - `oidc-client-id` - Client ID from Authentik
-  - `oidc-client-secret` - Client Secret from Authentik
+- **Fields**:
+  - `oidc-client-id` — the `client_id` declared for `mealie` in
+    `terraform/authentik/providers_oauth2.tf`
+  - `oidc-client-secret` — generate locally (`openssl rand -base64 48`)
 
 ### 2. Bar Assistant SSO (type: Password)
 - **Item name**: `Bar Assistant SSO`
-- **Fields** (leave empty for now - will populate after creating Authentik provider):
-  - `authentik-client-id` - Client ID from Authentik
-  - `authentik-client-secret` - Client Secret from Authentik
+- **Fields**:
+  - `authentik-client-id` — the `client_id` declared for `bar_assistant` in
+    `terraform/authentik/providers_oauth2.tf`
+  - `authentik-client-secret` — generate locally (`openssl rand -base64 48`)
+
+1Password is the source of truth for both pairs: `terraform/authentik` reads the
+secret when it creates the provider and ESO reads the pair into the cluster, so
+they cannot drift. Rotation is
+[§ Rotating OAuth2 client secrets](#rotating-oauth2-client-secrets).
 
 ### 3. OpenAI API Key (type: Password)
 - **Item name**: `OpenAI API Key`
@@ -75,9 +82,15 @@ UI. The values Terraform sets, and that the apps' env vars must agree with:
 |---|---|
 | `mealie-users` | Standard Mealie access |
 | `mealie-admins` | Mealie administrators (full admin rights inside Mealie) |
+| `bar-assistant-users` | Bar Assistant access — the gate on the `bar` application (`policy_bindings.tf`) |
 
-Bar Assistant has no group gate — application access is open to authenticated
-users.
+Every Authentik application carries at least one group binding, because bindings
+fail open. Group membership in `groups.tf` is exhaustive (the operator plus the
+`family_users` list), so a new household member must be added there and shipped
+via a supervised apply; adding them to `mealie-users` alone does not grant Bar
+Assistant. Bar Assistant's own `ALLOW_REGISTRATION=true` only auto-creates the
+local account after Authentik has already authorized the login — it is not an
+access gate.
 
 ### OAuth2 providers (`providers_oauth2.tf`)
 
@@ -87,14 +100,14 @@ users.
 | Application slug | `food` | `bar-assistant` |
 | Client type | Confidential | Confidential |
 | Authorization flow | `default-authorization-flow` (implicit consent) | same |
-| Scopes | `openid`, `email`, `profile` | `openid`, `email`, `profile` |
+| Scopes | `openid`, `custom:email_verified`, `profile` (the built-in email scope is swapped for the asserted-verified replacement) | `openid`, `email`, `profile` |
 | Launch URL | `https://food.ericsweiss.com` | `https://bar.ericsweiss.com` |
-| Redirect URI regex | `https://food\.esweiss\.com/login(\?direct=1)?$`<br>`https://food\.ericsweiss\.com/login(\?direct=1)?$` | `https://bar\.(es\|ericsweiss)\.com/oauth/callback$` |
+| Redirect URIs (`matching_mode: strict`) | `https://food.ericsweiss.com/login`<br>`https://food.esweiss.com/login` | `https://bar.ericsweiss.com/oauth/callback`<br>`https://bar.esweiss.com/oauth/callback` |
 | 1Password item | `Mealie SSO` (`oidc-client-id`, `oidc-client-secret`) | `Bar Assistant SSO` (`authentik-client-id`, `authentik-client-secret`) |
 
 > **Both apps pin a single callback origin.** Mealie's is unpinnable only by
 > leaving `BASE_URL` unset; Bar Assistant's is fixed. Changing hostnames means
-> changing the regex and the app env together.
+> changing the redirect URIs and the app env together.
 
 The client secret lives in 1Password and is read by **both** ESO and
 `terraform/authentik`, so the two cannot disagree. Rotating it is a 1Password
@@ -236,16 +249,11 @@ task recipes:logs APP=mealie | grep -i openai
 ### Test Bar Assistant Email
 
 1. Log into Bar Assistant
-2. **Method 1: Password Reset**
-   - Log out
-   - Click **"Forgot Password"**
-   - Enter your email address
-   - Check your email for password reset link
-
-2. **Method 2: Check logs after any email-triggering action**
-   ```bash
-   task recipes:logs APP=bar-assistant | grep -i mail
-   ```
+2. Trigger an email and verify delivery by either method:
+   - **Password reset**: log out, click **Forgot Password**, enter your email
+     address, and check for the reset link.
+   - **Logs**: `task recipes:logs APP=bar-assistant | grep -i mail` after any
+     email-triggering action.
 
 **Troubleshooting Email:**
 ```bash
@@ -297,6 +305,10 @@ key in-app under Settings > AI (stored in 1Password item `OpenAI API Key`).
 2. **OpenAI API Key**: Monitor usage at https://platform.openai.com/usage to avoid unexpected costs.
 3. **Group Membership**: Regularly review Authentik group memberships to ensure proper access control.
 4. **SSL/TLS**: All authentication flows require HTTPS (already configured via Traefik + cert-manager).
+5. **Meilisearch**: the `/search` router carries no forward-auth, because
+   Meilisearch requires an API key on every operation. The master key
+   (`MEILI_MASTER_KEY`) is known only to the Bar Assistant backend, and the
+   browser holds a search-only key that Bar Assistant issues.
 
 ---
 

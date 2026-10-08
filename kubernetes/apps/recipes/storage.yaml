@@ -1,9 +1,7 @@
 ---
-# Recipes storage: app configs on NFS (/appdata/{app} from pve-nas-01);
-# Mealie PostgreSQL on a dedicated ZFS zvol (hostPath on k3s-agt-nas-01).
-#
-# NFS-over-TLS PVs; hostname (not IP) + force annotation rationale:
-# apps/download-clients/_nfs-pv/resources.yaml and docs/07.
+# Recipes storage: app configs on NFS-over-TLS (/appdata/{app} from
+# pve-nas-01); Mealie PostgreSQL on a ZFS zvol (hostPath on k3s-agt-nas-01).
+# Hostname and force-annotation notes: _nfs-pv/resources.yaml and docs/07.
 
 # Mealie App Config Storage
 apiVersion: v1
@@ -16,6 +14,11 @@ metadata:
     type: nfs
     app: mealie
 spec:
+  # Pre-bind to the intended claim so no other empty-storageClass PVC can grab
+  # this PV first.
+  claimRef:
+    namespace: recipes
+    name: mealie-data
   capacity:
     storage: 10Gi
   accessModes:
@@ -105,6 +108,11 @@ metadata:
     type: nfs
     app: bar-assistant
 spec:
+  # Pre-bind to the intended claim so no other empty-storageClass PVC can grab
+  # this PV first.
+  claimRef:
+    namespace: recipes
+    name: bar-assistant-data
   capacity:
     storage: 10Gi
   accessModes:
@@ -136,12 +144,9 @@ spec:
   volumeName: recipes-appdata-bar-assistant
 
 ---
-# mealie-pg-dump landing zone: tank/backups/apps/mealie, the encrypted
-# file-walkable dump dataset that rides both the nightly archive replication and
-# the restic offsite B2 walk — where a zvol snapshot never could (docs/42).
-#
-# DEPLOY-ORDER DEPENDENCY: the nas_storage role creates the subdir and its
-# per-app export, so run the ansible storage deploy before this PV reconciles.
+# CRITICAL: mealie-pg-dump landing zone on tank/backups/apps/mealie, the
+# file-walkable dataset the offsite backups walk (docs/42). The nas_storage
+# role creates the subdir and export, so deploy storage before this reconciles.
 apiVersion: v1
 kind: PersistentVolume
 metadata:

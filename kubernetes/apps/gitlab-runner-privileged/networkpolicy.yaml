@@ -1,16 +1,10 @@
-# NetworkPolicies for the gitlab-runner-privileged namespace (the privileged
-# runner manager + its infrastructure job pods). Infrastructure job pods deploy
-# the homelab itself (ansible/SSH, kubectl, 1Password) and keep unrestricted
-# egress by design. Nothing here serves traffic, so ingress is denied outright
-# via the shared default-deny-ingress (components/netpol-baseline, wired in
-# kustomization.yaml).
+# NetworkPolicies for the gitlab-runner-privileged namespace: the privileged
+# manager and its infrastructure job pods, which deploy the homelab itself and
+# keep unrestricted egress. Ingress is denied via components/netpol-baseline.
 ---
-# Namespace-wide default-deny EGRESS, matching the shared gitlab-runner
-# namespace. The label-scoped allows below (managers-egress for
-# app=gitlab-runner-privileged, infrastructure-jobs-egress for
-# esweiss.com/runner-class=infrastructure) are additive; this policy makes any
-# pod that does NOT carry one of those labels fail closed instead of getting
-# silently unrestricted egress in a privileged-PSA namespace.
+# Namespace-wide default-deny EGRESS: any pod here without one of the labels the
+# allow rules below select (app=gitlab-runner-privileged,
+# esweiss.com/runner-class=infrastructure) fails closed.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -21,14 +15,9 @@ spec:
   policyTypes:
     - Egress
 ---
-# The runner manager long-polls GitLab (git.esweiss.com, which AdGuard rewrites
-# to the internal Traefik VIP 10.0.10.101) and talks to the kube-API to spawn
-# job pods. kube-proxy DNATs the in-cluster VIP (10.43.0.1:443) to the real
-# endpoints BEFORE NetworkPolicy evaluation, so the policy allowlists the server
-# node IPs on 6443 (a 10.43.0.1/32 rule never matches the post-DNAT packet);
-# for the same reason the Traefik VIP is allowed both as an ipBlock (pre-DNAT)
-# and via the traefik namespace pods (post-DNAT). Public 443 is retained for
-# registry/object-storage style callbacks GitLab may redirect to.
+# The runner manager long-polls GitLab and talks to the kube-API. Server node
+# /32s on 6443 — post-DNAT (components/netpol-egress-apiserver); the Traefik VIP
+# needs both an ipBlock (pre-DNAT) and the traefik namespace pods (post-DNAT).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -78,15 +67,7 @@ spec:
       ports:
         - protocol: TCP
           port: 443
-    # Runner S3 cache (kubernetes/apps/ci-cache): the helper container in the
-    # JOB pod is what uploads/downloads cache archives.
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: ci-cache
-      ports:
-        - protocol: TCP
-          port: 3900
+    # Public 443 for the registry/object-storage callbacks GitLab redirects to.
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0

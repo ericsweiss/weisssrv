@@ -1,62 +1,39 @@
 #!/usr/bin/env bash
-# Classification helpers for the verify scripts, extracted so the logic that
-# gates deploy-verify can be unit-tested without a live cluster
-# (scripts/test_deploy_verify_lib.py, same pattern as collect-state-lib.sh).
-#
-# Functions only — no top-level side effects, safe to `source` under `set -e`.
-# Each reads its input from stdin (recorded `kubectl get ... -o json`, or a
-# `kubectl get ... --no-headers` table) or positional args, and writes a verdict
-# to stdout / returns an exit status. None call kubectl/flux themselves.
-#
-# Most helpers need jq, which the deploy-verify env provides (.k3s-deploy-base).
-# post-maintenance-verify.sh sources this file ONLY for gitlab_health_code
-# (curl-only) and keeps its own jq-free classifiers in maintenance-lib.sh, since
-# it must run from any kubectl+curl CI image — see that script's header.
+# Classification helpers for the verify scripts, unit-tested without a live
+# cluster by scripts/test_deploy_verify_lib.py. Functions only, safe to `source`
+# under `set -e`; each reads stdin or args and writes a verdict to stdout.
+
+# Most helpers need jq, which the deploy-verify env provides.
+# post-maintenance-verify.sh sources this file only for the curl-only
+# gitlab_health_code and keeps its jq-free classifiers in maintenance-lib.sh.
 
 # jq fragment: select list items whose Ready condition is missing or not True.
 # Shared by the count/name/dump helpers below (and referenced by deploy-verify.sh
 # for the projections that print richer per-item detail).
 JQ_NOT_READY='select((.status.conditions // []) | map(select(.type == "Ready")) | (length == 0 or .[0].status != "True"))'
 
-# count_not_ready: read a `kubectl get <kind> -o json` list on stdin, print the
-# number of items whose Ready condition is missing or not True. Emits 999
-# (treat-as-not-ready) only when jq ERRORS on non-JSON garbage; on EMPTY input
-# jq exits 0 with no output, so this prints nothing. Callers whose upstream
-# kubectl can fail (empty pipe under pipefail) must therefore keep their own
-# outer `|| echo 999` guard — the helper alone is not fail-closed.
+# A jq failure is loud: the name helpers print to stderr and return non-zero so
+# an empty list cannot read as "nothing is wrong"; count_not_ready prints 999.
+
+# count_not_ready: read a `kubectl get <kind> -o json` list on stdin, print how
+# many items are not Ready. 999 only when jq errors; empty input prints nothing,
+# so callers keep their own `|| echo 999` guard. This is not fail-closed alone.
 count_not_ready() {
   jq "[.items[] | $JQ_NOT_READY] | length" 2>/dev/null || echo "999"
-}
-
-# without_items "<ns>/<name> ...": read a `kubectl get ... -o json` list on stdin
-# and print it back with those items removed, so a KNOWN-transitional object can
-# be carved out of a readiness gate without weakening that gate for anything
-# else. Matched on namespace/name, not kind: kubectl strips per-item TypeMeta
-# from a single-kind list, so `.kind` is null there and present only in the
-# multi-kind `v1 List`. An empty/absent spec is a pass-through.
-without_items() {
-  if [ -z "${1:-}" ]; then cat; return 0; fi
-  jq --arg spec "$1" '
-    ($spec | split(" ") | map(select(length > 0))) as $drop
-    | .items |= map(
-        select(
-          (((.metadata.namespace // "") + "/" + (.metadata.name // "")) as $id
-           | $drop | index($id) | not)
-        )
-      )
-  '
 }
 
 # not_ready_ns_names: read a list on stdin, print "  <namespace>/<name>" for each
 # not-Ready item (used to enumerate non-Ready ExternalSecrets).
 not_ready_ns_names() {
-  jq -r ".items[] | $JQ_NOT_READY | \"  \(.metadata.namespace)/\(.metadata.name)\"" 2>/dev/null || true
+  jq -r ".items[] | $JQ_NOT_READY | \"  \(.metadata.namespace)/\(.metadata.name)\"" || {
+    echo "not_ready_ns_names: jq failed, the not-Ready list is unknown" >&2
+    return 1
+  }
 }
 
 # steady_state: given the pre-reconcile count of not-Ready Kustomizations, print
-# "true" when it is exactly 0 (a steady-state push — non-Ready ExternalSecrets/
-# pods are then failures) else "false" (bootstrap/recovery — they are tolerated).
-# A blank/non-numeric count is treated as not-steady (bootstrap).
+# "true" at exactly 0, where non-Ready ExternalSecrets and pods are failures,
+# else "false". A blank or non-numeric count reads as bootstrap.
 steady_state() {
   if [ "${1:-}" = "0" ]; then echo "true"; else echo "false"; fi
 }
@@ -89,14 +66,15 @@ pods_running_unready() {
 # helmreleases_not_ready_names: read `kubectl get helmreleases -o json` on stdin,
 # print the .metadata.name of each HR whose Ready condition is missing or not True.
 helmreleases_not_ready_names() {
-  jq -r ".items[] | $JQ_NOT_READY | .metadata.name" 2>/dev/null || true
+  jq -r ".items[] | $JQ_NOT_READY | .metadata.name" || {
+    echo "helmreleases_not_ready_names: jq failed, HelmRelease readiness is unknown" >&2
+    return 1
+  }
 }
 
-# helmreleases_hard_failed: read HR JSON on stdin, print the name of each HR that
-# is a HARD failure even during bootstrap/recovery — Ready != True AND either the
-# Ready reason is a terminal failure (InstallFailed/UpgradeFailed/TestFailed/
-# RollbackFailed) OR .status.failures > 0 (the controller has retried at least
-# once). Catches degraded HRs whose Ready reason isn't on the explicit allowlist.
+# helmreleases_hard_failed: read HR JSON on stdin, print each HR that fails hard
+# even during bootstrap: Ready != True and either a terminal Ready reason
+# (Install/Upgrade/Test/RollbackFailed) or .status.failures > 0.
 helmreleases_hard_failed() {
   jq -r '
     .items[]
@@ -108,21 +86,32 @@ helmreleases_hard_failed() {
           or ((.status.failures // 0) > 0)
         )
       )
-    | .metadata.name' 2>/dev/null || true
+    | .metadata.name' || {
+    echo "helmreleases_hard_failed: jq failed, hard-failure state is unknown" >&2
+    return 1
+  }
 }
 
-# gitlab_health_code <path>: single GitLab health probe (curl only, no jq).
-# Tries the internal chain (DNS -> Traefik VIP -> GitLab nginx) first and falls
-# back to the external hostname ONLY on a connection-level failure ("000"/empty)
-# — the internal Traefik->VM leg can stall past the timeout on a healthy GitLab,
-# and both verify scripts run during peak ingress churn. A real HTTP status
-# (incl. 4xx/5xx) means GitLab answered, so it is trusted as-is rather than let
-# an external 200 mask an internal error. Echoes the status code; callers own
-# their own retry budget. The two base URLs are env-overridable for tests.
+# gitlab_health_code <path>: single GitLab health probe, curl only. Internal
+# chain first, external hostname only on a connection-level failure, so an
+# external 200 cannot mask an internal error. GITLAB_HEALTH_* override the URLs.
 gitlab_health_code() {
-  local path="${1:-/-/health}" code
-  local internal="${GITLAB_HEALTH_INTERNAL:-https://git.esweiss.com}"
-  local external="${GITLAB_HEALTH_EXTERNAL:-https://git.ericsweiss.com}"
+  local path="${1:-/-/health}" code domains lib_dir int_dom ext_dom
+  local internal="${GITLAB_HEALTH_INTERNAL:-}"
+  local external="${GITLAB_HEALTH_EXTERNAL:-}"
+  if [ -z "$internal" ] || [ -z "$external" ]; then
+    # Domains come from cluster-config.yaml, the single source, not a literal.
+    lib_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+    if ! domains=$("$lib_dir/cluster-config-value.sh" \
+        cluster_internal_domain cluster_external_domain 2>&1); then
+      echo "cannot resolve the GitLab hostnames: $domains" >&2
+      echo "000"
+      return 0
+    fi
+    read -r int_dom ext_dom <<<"$domains"
+    internal="${internal:-https://git.${int_dom}}"
+    external="${external:-https://git.${ext_dom}}"
+  fi
   code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${internal}${path}" 2>/dev/null || true)
   if [ -z "$code" ] || [ "$code" = "000" ]; then
     code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${external}${path}" 2>/dev/null || true)

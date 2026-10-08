@@ -12,7 +12,7 @@ variable "unifi_api_url" {
 }
 
 variable "unifi_api_key" {
-  description = "UniFi API key (1Password item 'UniFi Controller', field 'api-key'). Created under Control Plane -> Integrations for a Limited Admin with Local Access Only."
+  description = "UniFi API key (1Password item 'UniFi Controller', field 'api-key'). Created under Control Plane -> Integrations for the local admin that owns it, Local Access Only."
   type        = string
   sensitive   = true
 
@@ -42,17 +42,13 @@ variable "unifi_allow_insecure" {
   default     = true
 }
 
-# WLAN pre-shared keys
-# One sensitive variable per SSID, injected by the Taskfile / CI via `op run`
-# from the `WiFi <ssid>` items in the Homelab vault
-# (docs/15-credential-rotation.md "Required 1Password Items"). Never committed,
-# never defaulted, and never assembled into one map variable — a single
-# `TF_VAR_*` cannot carry four separate `op://` references.
-#
-# The bounds are WPA-PSK's own (8-63 characters). The floor is what matters: an
-# empty value would be a syntactically valid plan whose diff is hidden by
-# `sensitive`, and applying it resets that SSID's key — every device on the
-# VLAN drops off at once and the fix needs physical access to each one.
+# CRITICAL: an empty PSK is a syntactically valid plan whose diff `sensitive`
+# hides; applying it resets that SSID's key and drops every device on the VLAN.
+# The validations enforce WPA-PSK's bounds, 8-63 printable ASCII octets, because
+# 802.11 counts octets and a multibyte character fails the radio.
+# One sensitive variable per SSID, never defaulted, injected via `op run` from
+# the `WiFi <ssid>` items (docs/15-credential-rotation.md). They stay separate:
+# a single `TF_VAR_*` cannot carry four `op://` references.
 
 variable "wlan_passphrase_home" {
   description = "PSK for the TheRevengers SSID, VLAN 20 (1Password item 'WiFi TheRevengers', field 'password')."
@@ -61,7 +57,7 @@ variable "wlan_passphrase_home" {
 
   validation {
     condition     = can(regex("^[\\x20-\\x7e]{8,63}$", var.wlan_passphrase_home))
-    error_message = "wlan_passphrase_home must be 8-63 printable ASCII characters (WPA-PSK counts octets, and the passphrase charset is printable ASCII — a multibyte character would pass a character count while failing the 802.11 rule); check the op:// reference in the Taskfile and the unifi-drift-plan job."
+    error_message = "wlan_passphrase_home must be 8-63 printable ASCII characters (see the comment above); check the op:// reference in the Taskfile and the unifi-drift-plan job."
   }
 }
 
@@ -72,7 +68,7 @@ variable "wlan_passphrase_iot" {
 
   validation {
     condition     = can(regex("^[\\x20-\\x7e]{8,63}$", var.wlan_passphrase_iot))
-    error_message = "wlan_passphrase_iot must be 8-63 printable ASCII characters (WPA-PSK counts octets, and the passphrase charset is printable ASCII — a multibyte character would pass a character count while failing the 802.11 rule); check the op:// reference in the Taskfile and the unifi-drift-plan job."
+    error_message = "wlan_passphrase_iot must be 8-63 printable ASCII characters (see the comment above); check the op:// reference in the Taskfile and the unifi-drift-plan job."
   }
 }
 
@@ -83,7 +79,7 @@ variable "wlan_passphrase_guest" {
 
   validation {
     condition     = can(regex("^[\\x20-\\x7e]{8,63}$", var.wlan_passphrase_guest))
-    error_message = "wlan_passphrase_guest must be 8-63 printable ASCII characters (WPA-PSK counts octets, and the passphrase charset is printable ASCII — a multibyte character would pass a character count while failing the 802.11 rule); check the op:// reference in the Taskfile and the unifi-drift-plan job."
+    error_message = "wlan_passphrase_guest must be 8-63 printable ASCII characters (see the comment above); check the op:// reference in the Taskfile and the unifi-drift-plan job."
   }
 }
 
@@ -94,6 +90,6 @@ variable "wlan_passphrase_work" {
 
   validation {
     condition     = can(regex("^[\\x20-\\x7e]{8,63}$", var.wlan_passphrase_work))
-    error_message = "wlan_passphrase_work must be 8-63 printable ASCII characters (WPA-PSK counts octets, and the passphrase charset is printable ASCII — a multibyte character would pass a character count while failing the 802.11 rule); check the op:// reference in the Taskfile and the unifi-drift-plan job."
+    error_message = "wlan_passphrase_work must be 8-63 printable ASCII characters (see the comment above); check the op:// reference in the Taskfile and the unifi-drift-plan job."
   }
 }

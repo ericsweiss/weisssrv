@@ -80,33 +80,19 @@ reference, and NFS export path — are unchanged by encryption.
 - `tank/pve` — ephemeral Proxmox VM/LXC images. (`tank/proxmox` is in
   the encrypted list above because it holds VM backup tarballs that
   contain persistent app state.)
-- `archive` pool — the pool itself is plaintext, but the eight replicated
+- `archive` pool — the pool itself is plaintext, but the seven replicated
   datasets (`archive/{share,backups,nextcloud-data,proxmox,immich-data,appdata,
-  databases,k3s-etcd}`) now arrive as **raw** `zfs send -w` streams from their
-  encrypted tank/ssd sources (`archive-backupctl`), so that backup data is
-  encrypted at rest under the source's own key — archive never loads a key, and
-  a restore needs `zfs load-key`. (`ssd/appdata` holds zvol children — the app
-  DB/data volumes — so the per-dataset re-seed receive uses `-o readonly=on` for
-  volumes, since a per-dataset `-o mountpoint`/`canmount` override on a zvol
-  receive is rejected; the `-R` initial/incremental paths avoid this because
-  `zfs receive -o` applies the override only to the stream's top-level (filesystem)
-  dataset, never to the zvol descendants.) (Sending the now-encrypted sources non-raw is impossible with
-  `-R`: ZFS rejects sending an encrypted dataset with properties unless raw.)
-  This gives the replicated data native at-rest encryption — raw `zfs send -w`
-  replication IS the at-rest protection for those eight archive datasets (the
-  archive pool itself loads no key); only archive data outside those eight
-  datasets stays plaintext. Raw replication
-  preserves the source's compression (ZFS compresses before it encrypts), so the
-  encrypted archive copies are the same size as the sources — not larger. The
-  one-time raw re-seed copies only each dataset's **current snapshot**, not its
-  full history: `zfs send -R` would replicate the source's entire snapshot set
-  (incl. zfs-auto-snap churn the archive doesn't keep — e.g. `tank/proxmox`
-  carries ~46 snapshots vs the ~9 `archsync` the archive retains, ~7.8T vs
-  ~3.1T) and overflow the pool. The `archsync` history rebuilds forward from the
-  re-seed via the normal incrementals. **Never `zfs load-key` + mount an
-  `archive/<dataset>` in place** — it dirties the raw incremental chain and
-  forces a full re-seed; to read a backup, restore it to a `*-restore-*` clone
-  (`archive-backupctl restore <target>`) and load the key there.
+  k3s-etcd}`) arrive as **raw** `zfs send -w` streams from their encrypted
+  tank/ssd sources (`archive-backupctl`). Raw replication is the at-rest
+  protection for those seven datasets: they are encrypted under the source's
+  own key, archive never loads a key, and a restore needs `zfs load-key`.
+  Archive data outside those seven datasets stays plaintext.
+
+  **Never `zfs load-key` + mount an `archive/<dataset>` in place** — it dirties
+  the raw incremental chain and forces a full re-seed. To read a backup, restore
+  it to a `*-restore-*` clone (`archive-backupctl restore <target>`) and load the
+  key there.
+
 - **Compute nodes' `local-ssd` pools (5×)** — host the k3s VM disks
   (servers + agents) and HA-managed LXC subvols. Encrypting these
   would create an unrecoverable cold-boot deadlock: Connect runs in
@@ -172,6 +158,25 @@ reference, and NFS export path — are unchanged by encryption.
   was already a bind from the encrypted `ssd/appdata/plex`; the move closes
   the remaining rootfs gap for both.
 
+### Archive replication is raw (`zfs send -w`)
+
+Raw sends preserve the source's compression (ZFS compresses before it
+encrypts), so the encrypted archive copies are the same size as the sources,
+not larger. Sending the encrypted sources non-raw is not an option: ZFS rejects
+`zfs send -R` on an encrypted dataset unless the stream is raw.
+
+`ssd/appdata` holds zvol children (the app DB/data volumes), so the per-dataset
+re-seed receive uses `-o readonly=on` for volumes — a per-dataset
+`-o mountpoint`/`canmount` override is rejected on a zvol receive. The `-R`
+initial and incremental paths are unaffected, because `zfs receive -o` applies
+the override only to the stream's top-level filesystem dataset.
+
+The one-time re-seed copies each dataset's current snapshot only. `zfs send -R`
+would replicate the source's entire snapshot set — `tank/proxmox` carries ~46
+snapshots against the ~9 `archsync` the archive retains, ~7.8T against ~3.1T —
+and overflow the pool. The `archsync` history rebuilds forward from the re-seed
+via the normal incrementals.
+
 ## Architecture
 
 Key-load is deliberately OFF the early-boot critical path. The box
@@ -216,8 +221,8 @@ encrypted exports, and encrypted-storage guests converge LATE and async.
 
 ## 1Password items
 
-In vault `Homelab`, create one item per pool using the **Password**
-template:
+In vault `Homelab-Boot` (the dedicated boot vault: these two items and nothing
+else), create one item per pool using the **Password** template:
 
 | Item title | Pool | Field name | Field value |
 |------------|------|------------|-------------|
@@ -231,21 +236,26 @@ encrypted. See "What is encrypted, what isn't" above.)
 
 Plus one shared item for the Connect access token used by all hosts:
 
-| Item title | Field name | Source |
-|------------|------------|--------|
-| `ZFS Encryption Connect Token` | `credential` | `op connect token create weisssrv-zfs --server <id> --vaults Homelab` |
+| Item title | Stored in | Field name | Source |
+|------------|-----------|------------|--------|
+| `ZFS Encryption Connect Token` | `Homelab` | `credential` | `op connect token create weisssrv-zfs --server <id> --vaults Homelab-Boot` |
 
-**Scope caveat.** That token grants Connect read access to the **whole**
-`Homelab` vault, while it only ever needs the two pool-passphrase items — a
-plaintext file at `/etc/onepassword-connect/token` (0400 root) on every
-encryption host, so a host compromise reads the vault, not just the
-passphrases. The role takes the vault as an input
-(`zfs_encryption_connect_vault`, default `Homelab`), so narrowing it is a
-1Password-side change plus that variable: put the passphrase items in their own
-vault, grant the **Connect server** access to it (a token cannot reach a vault
-its server was not granted), mint a token scoped to it, and set the variable.
-Until that is done, treat the token as vault-equivalent — the same exposure as a
-leaked Connect admin credential.
+The token item itself lives in `Homelab` because `task zfs:encrypt` reads it as
+`op://Homelab/ZFS Encryption Connect Token/credential`; its **read scope** is
+`Homelab-Boot`.
+
+**Scope.** The token is a plaintext file at `/etc/onepassword-connect/token`
+(0400 root) on every encryption host, so it is scoped to `Homelab-Boot` and can
+read the two pool passphrases and nothing else. The role takes the vault as an
+input (`zfs_encryption_connect_vault`, set in
+`ansible/inventories/prod/host_vars/pve-nas-01.yml`), and `zfs-load-key.sh`
+resolves the vault named there — the variable and the token scope must agree.
+
+A token cannot reach a vault its Connect **server** was not granted, so
+re-vaulting runs in this order: grant the server the vault, mint the token,
+set `zfs_encryption_connect_vault`, converge, prove a real key load, then
+revoke the old token. The `zfs_encryption` role README in the
+`weisssrv.infra` collection carries the detail.
 
 ## Rollout procedure
 
@@ -264,7 +274,7 @@ host.
 task flux:status
 
 # Generate Connect token + place in 1P
-op connect token create weisssrv-zfs --server <connect-id> --vaults Homelab
+op connect token create weisssrv-zfs --server <connect-id> --vaults Homelab-Boot
 # -> paste output into "ZFS Encryption Connect Token" / credential
 
 # Deploy the role on every Proxmox host. On a host with an empty
@@ -385,6 +395,7 @@ For each host that now has at least one encrypted pool, set
 
 ```yaml
 # ansible/inventories/prod/host_vars/pve-nas-01.yml
+zfs_encryption_connect_vault: "Homelab-Boot"
 zfs_encryption_pools:
   - name: tank
     item: "ZFS Pool tank Passphrase"
@@ -508,7 +519,7 @@ over stdin, so it never lands in a remote process's argv):
 #!/usr/bin/env bash
 set -euo pipefail
 for pool in tank ssd; do
-  op read "op://Homelab/ZFS Pool ${pool} Passphrase/passphrase" \
+  op read "op://Homelab-Boot/ZFS Pool ${pool} Passphrase/passphrase" \
     | ssh pve-nas-01 "pass=\$(cat); for root in \$(zfs get -H -t filesystem,volume -o name,value -r encryptionroot ${pool} | awk -F'\t' '\$1==\$2{print \$1}'); do printf '%s\n' \"\$pass\" | sudo zfs load-key \"\$root\"; done"
 done
 ```
@@ -527,10 +538,9 @@ no operator action needed.)
 
 ### No residual failed state to clear
 
-Unlike the old `RequiredBy=zfs-mount.service` design, a locked boot no longer
-puts `zfs-mount.service` into `failed` (the early mount just skips the locked
-datasets and exits 0). After a manual `zfs load-key`, nothing needs a
-`reset-failed`: the next `zfs-mount-encrypted.service` retry sees
+A locked boot does not put `zfs-mount.service` into `failed`: the early mount
+skips the locked datasets and exits 0. After a manual `zfs load-key`, nothing
+needs a `reset-failed` — the next `zfs-mount-encrypted.service` retry sees
 `keystatus=available` and mounts. If you want to confirm convergence:
 
 ```bash
@@ -541,22 +551,17 @@ ss -ltn 'sport = :2049'                              # nfsd listening
 qm status 153; qm status 202; pct status 152         # running
 ```
 
-### Leftover `zfs-mount.service.requires/` symlinks (one-time check)
+### After re-imaging a host or restoring `/etc`
 
-The `RequiredBy=zfs-mount.service` design left `zfs-load-key@<pool>.service`
-symlinks in `/etc/systemd/system/zfs-mount.service.requires/`. **The role no
-longer sweeps that directory** — it stopped creating the dependency, but it does
-not remove symlinks a previous revision installed, and a surviving one restores
-the ordering cycle this whole design exists to break (`zfs-mount.service` fails
-at boot, and with it the guest starts that depend on the mounts).
-
-Verified clean on all six Proxmox hosts on **2026-08-10**; the one leftover
-(an empty directory on pve-nas-01) was removed. It is not self-healing, so
-re-check after rebuilding or re-imaging a host, or after restoring an older
-`/etc`:
+An older revision of the role installed `zfs-load-key@<pool>.service` symlinks
+under `/etc/systemd/system/zfs-mount.service.requires/`. The role no longer
+creates them and does not remove them, and a surviving one restores the boot
+ordering cycle this design exists to break (`zfs-mount.service` fails at boot,
+and with it the guest starts that depend on the mounts). Check after a re-image
+or an `/etc` restore:
 
 ```bash
-ansible proxmox -m shell -a \
+ansible -i ansible/inventories/prod proxmox -m shell -a \
   'ls -1 /etc/systemd/system/zfs-mount.service.requires/ 2>/dev/null || echo CLEAN'
 # Anything listed: rm the symlink, then `systemctl daemon-reload`.
 ```
@@ -565,7 +570,7 @@ ansible proxmox -m shell -a \
 
 | Threat | Protected? |
 |--------|-----------|
-| Stolen offline drive (RMA, disposal, theft from rack) | Yes — `tank`/`ssd` are ZFS-encrypted; `archive`'s eight replicated datasets are raw-encrypted under their source keys (`nvme` and `tank/media` are plaintext by design) |
+| Stolen offline drive (RMA, disposal, theft from rack) | Yes — `tank`/`ssd` are ZFS-encrypted; `archive`'s seven replicated datasets are raw-encrypted under their source keys (`nvme` and `tank/media` are plaintext by design) |
 | Stolen offline drive bundled with stolen Proxmox host (no LAN) | Yes (Connect token unusable without LAN reach to `connect.esweiss.com`) |
 | Stolen running NAS still on the same LAN | No (running root extracts both token and key) |
 | Compromised root via remote exploit on running host | No (same as above) |
@@ -575,15 +580,36 @@ For the running-system threat, a TPM-sealed Proxmox root with measured
 boot would be the next step. Tracked in `docs/16-next-steps.md` as a
 follow-up project.
 
-## Out of scope: host swap
+## Host swap (dm-crypt)
 
-Swap is **not** a ZFS dataset and is not handled by this role. All six Proxmox
-hosts run dm-crypt plain-mode AES-256-XTS swap with a random key regenerated on
-every boot (`encrypted_swap` role → `/dev/mapper/cryptswap`), which needs no
-1Password key material and no unlock step. Details and the activation-reboot
-caveat: `docs/42-offsite-backup.md` § Encrypted swap and
-weisssrv-lib `ansible_collections/weisssrv/infra/roles/encrypted_swap/README.md`; the at-rest posture table in
-`docs/06-zfs.md` carries the summary row.
+Swap is **not** a ZFS dataset and is not handled by the `zfs_encryption` role.
+The `encrypted_swap` role deploys dm-crypt plain-mode, random-key swap on all
+six bare-metal hosts through `/etc/crypttab` (`cryptswap` from `/dev/pve/swap`,
+`/dev/urandom` key, `aes-xts-plain64` with `size=512`, so AES-256-XTS) plus a
+`nofail` `/etc/fstab` entry for `/dev/mapper/cryptswap`. A fresh key each boot
+makes on-disk swap unrecoverable after a reboot. No 1Password key material and
+no unlock step are involved, which is why it sits here rather than in the
+encryption-root machinery above.
+
+It is active on all six hosts. Two durable caveats: the `encrypted_swap` README
+documents a rare boot race that can leave a host swapless until the next reboot,
+surfaced fleet-wide by `EncryptedSwapRestoreFailed` and on the NAS by
+`NASSwapGone`; and `swap-clean` is device-agnostic
+(`swapoff -a` / `swapon -a`) with a pre-flight that skips the cycle while the
+mapper is still pending.
+
+Every failure branch of the finalize script exits 0 so the host never boots
+swapless, so the unit stays green when the plaintext fallback wins. The
+textfile gauges are the only report of that: `EncryptedSwapPlaintextFallback`
+fires while a host swaps to the plaintext device, and
+`EncryptedSwapMetricsMissing` fires when a host that published the gauges stops
+doing so.
+
+The estate-wide at-rest posture table in
+[docs/47-security-posture.md](47-security-posture.md) carries the summary row.
+The role README in weisssrv-lib
+(`ansible_collections/weisssrv/infra/roles/encrypted_swap/README.md`) owns the
+variables.
 
 ## Related documentation
 

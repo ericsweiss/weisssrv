@@ -13,12 +13,9 @@ spec:
     - Egress
 
 ---
-# Ingress: only Traefik may reach the dashboard on :9119 and the gateway's
-# OpenAI-compatible API server on :8642 (the agent-api.esweiss.com
-# IngressRoute — LAN/Tailscale-scoped at Traefik, bearer-keyed at the app).
-# Everything else (cross-pod, cross-namespace) is denied by the baseline
-# default-deny-ingress. Kubelet health probes are node-local and not gated by
-# NetworkPolicy.
+# Ingress: only Traefik may reach the dashboard on :9119 and the
+# OpenAI-compatible API server on :8642. Everything else is denied by the
+# baseline default-deny-ingress; kubelet probes are node-local and ungated.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -42,15 +39,12 @@ spec:
           port: 8642
 
 ---
-# Egress for the hermes pod: kube-dns; public :443 (Codex/Anthropic backends,
-# messaging-platform APIs, and git.ericsweiss.com, which resolves to the WAN IP);
-# public :80 for camofox page loads that start on plain http; the hindsight
-# namespace on :8888; and the traefik namespace on :443 (HASS_URL).
-#
-# The namespaceSelector peers are load-bearing: kube-proxy DNATs a Service/VIP
-# to the backend POD IP before NetworkPolicy evaluation, so an ipBlock for a VIP
-# /32 can never match. No LAN/RFC1918 egress, no SMTP, no kube-apiserver. A
-# messaging platform needing a non-443 port needs a rule here (docs/37).
+# CRITICAL: egress for the hermes pod. kube-dns; public :443 and :80; the
+# hindsight namespace on :8888; the traefik namespace on :443. The
+# namespaceSelector peers are load-bearing: kube-proxy DNATs a Service VIP to
+# the backend pod IP before NetworkPolicy evaluation, so an ipBlock for a VIP
+# /32 can never match. No LAN egress, no SMTP, no kube-apiserver. A messaging
+# platform needing a non-443 port needs a rule here (docs/37).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -100,13 +94,9 @@ spec:
       ports:
         - protocol: TCP
           port: 8888
-    # Traefik on websecure: the dashboard's OIDC discovery/JWKS fetches and
-    # HASS_URL both resolve to the internal Traefik VIP, and only a
-    # namespaceSelector matches post-DNAT.
-    #
-    # Scope note: that peer shape cannot be narrowed per-vhost at L3, so the
-    # gate lives on the Traefik side — the routes whose only network gate is an
-    # IP allowlist use lan-tailscale-strict, which excludes the pod CIDR.
+    # Traefik on websecure: OIDC discovery/JWKS and HASS_URL both resolve to
+    # the internal Traefik VIP, so only a namespaceSelector matches post-DNAT.
+    # Per-vhost scoping lives on the Traefik side, via lan-tailscale-strict.
     - to:
         - namespaceSelector:
             matchLabels:

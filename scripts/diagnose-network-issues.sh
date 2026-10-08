@@ -1,16 +1,8 @@
 #!/usr/bin/env bash
-# Diagnostic script for network instability issues
-# Run from workstation with SSH access to all nodes
+# Network-instability diagnostic, run from a workstation with SSH to every node.
 #
-# Note: We intentionally do NOT use 'set -e' here because we want the script
-# to continue gathering diagnostics from reachable hosts even if some hosts
-# are unreachable (which is useful during network troubleshooting).
-#
-# Dependency: a wall-clock `timeout` (GNU coreutils, or `gtimeout` from
-# `brew install coreutils` on macOS) hard-bounds each SSH. If neither is
-# present the timeout_cmd helper falls through to a bare ssh; in that case
-# the ServerAliveInterval/CountMax options in SSH_OPTS are the only guard
-# against a post-connect stall on a hung host.
+# No `set -e`: an unreachable host must not stop the other sections.
+# Needs a wall-clock `timeout` (`gtimeout` on macOS) to bound each SSH.
 
 _SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # timeout_cmd (shared helper). shellcheck source=scripts/shell-lib.sh
@@ -27,10 +19,8 @@ echo ""
 # Taskfile uses); K3S_SERVERS is already IPs in hosts.env.
 PVE_HOSTS="$PVE_IPS"
 
-# Addresses whose ARP entries matter when chasing a MAC flap (docs/34): the HA
-# service IPs, which come from hosts.env, plus the three VIPs. hosts.env cannot
-# carry those — its generator resolves inventory GROUPS and a VIP is not a host —
-# so they are read from cluster-config.yaml, the ConfigMap that owns them.
+# ARP entries that matter when chasing a MAC flap (docs/34): the HA service IPs
+# from hosts.env plus the three VIPs, which only cluster-config.yaml carries.
 VIP_EXTRA_IPS="$("$_SCRIPT_DIR/cluster-config-value.sh" \
     cluster_metallb_public_vip cluster_metallb_internal_vip cluster_api_vip)" || {
     echo "ERROR: cannot read the VIPs from cluster-config.yaml" >&2
@@ -41,22 +31,19 @@ VIP_OCTET_RE="$(
         | sed 's/.*\(\.[0-9]*\)$/\1/' | sort -u | paste -sd'|' - | sed 's/^/(/; s/$/)/; s/\./\\./g'
 )"
 
-# SSH options as an array so word splitting is explicit and shellcheck-clean.
-# ServerAlive* bound a post-connect stall even on the no-timeout fallback path
-# (host without GNU/BSD timeout) so a hung remote can't block a section.
-SSH_OPTS=(-o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+# ServerAlive* bound a post-connect stall even on the no-timeout fallback path,
+# so a hung remote cannot block a section. Host-key checking stays strict, as in
+# shell-lib.sh: an unknown or changed key reports the host as unreachable.
+SSH_OPTS=(-o ConnectTimeout=5 -o BatchMode=yes \
           -o ServerAliveInterval=5 -o ServerAliveCountMax=2)
 
 ssh_cmd() {
     timeout_cmd 10 ssh "${SSH_OPTS[@]}" "$@"
 }
 
-# Pick a reachable Proxmox entry point for the single-host cluster-wide queries
-# (pvecm / ha-manager / pvesr / corosync). Hardcoding .102 (pve-nas-01) meant
-# those sections went blank precisely when that host was the one down or
-# partitioned — the scenario this diagnostic exists for. Probe the roster and
-# use the first host that answers; fall back to the first PVE IP so the queries
-# still emit their own "unavailable" diagnostics if none respond.
+# Cluster-wide queries (pvecm / ha-manager / pvesr / corosync) run on the first
+# reachable host; fall back to the first PVE IP so they still print their own
+# unavailable diagnostics.
 CLUSTER_ENTRY=""
 for _h in $PVE_HOSTS; do
     if ssh_cmd "eric@$_h" true >/dev/null 2>&1; then
@@ -171,10 +158,8 @@ echo "9. BRIDGE CONFIGURATION"
 echo "========================================"
 for host in $PVE_HOSTS; do
     echo "--- $host bridges ---"
-    # Use ping to check reachability first, then fetch config
-    # NOTE: Ping may be blocked by firewall on some networks. If all hosts show
-    # "Host unreachable" but you know they're up, try running SSH directly:
-    #   ssh eric@10.0.10.102 "cat /etc/network/interfaces | grep -A 10 'auto vmbr'"
+    # Ping may be firewalled — "Host unreachable" here is not proof the host is
+    # down (the SSH attempt below is the real test).
     if ping_check "$host" 2; then
         ssh_cmd eric@"$host" "cat /etc/network/interfaces 2>/dev/null | grep -A 10 'auto vmbr'" || echo "SSH failed (host reachable but SSH error)"
     else

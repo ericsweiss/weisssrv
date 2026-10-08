@@ -1,29 +1,13 @@
-#!/usr/bin/env python3
 """Drift guard: the mail-credential rotation must reach every null client.
 
-`postfix_null_client` writes /etc/postfix/sasl_passwd, the credential a host
-uses to authenticate to smtp-relay. site.yml carries the role for `proxmox` and
-`dns`; every other consumer gets it from its own app playbook. Those app
-playbooks cannot be scoped with `--tags postfix_null_client` — the role is
-listed untagged there, so the tag selects none of its tasks and k3s.yml in
-particular exits 0 having rotated nothing (docs/15). `rotate-mail-credential.yml`
-exists to cover that remainder.
-
-The failure this guards: a new app VM is added with `postfix_null_client` in its
-own playbook, nobody adds it to the rotation playbook's host pattern, and the
-next credential rotation silently leaves that host authenticating with the
-revoked password until its own playbook is next run untagged. Nothing else in
-the repo compares the two lists.
-
-Run with pytest:
-    pytest scripts/test_mail_credential_rotation.py -v
+An app VM added with `postfix_null_client` in its own playbook but missing from
+rotate-mail-credential.yml's host pattern keeps the revoked password. See docs/15.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 import yaml
 
 REPO = Path(__file__).resolve().parent.parent
@@ -72,7 +56,11 @@ def _null_client_plays() -> tuple[set[str], dict[str, str]]:
     """
     tag_reachable: set[str] = set()
     untagged: dict[str, str] = {}
-    for path in sorted(PLAYBOOKS.rglob("*.yml")):
+    # Both suffixes: Ansible runs either, so globbing one spelling would drop a
+    # play from the gate silently.
+    for path in sorted(
+        {p for suffix in ("yml", "yaml") for p in PLAYBOOKS.rglob(f"*.{suffix}")}
+    ):
         if path == ROTATION:
             continue
         rel = str(path.relative_to(PLAYBOOKS))
@@ -134,9 +122,3 @@ def test_rotation_playbook_gathers_facts():
         f"{ROTATION.name} must set gather_facts: true explicitly — "
         f"postfix_null_client branches on os_family"
     )
-
-
-if __name__ == "__main__":
-    import sys
-
-    sys.exit(pytest.main([__file__, "-v"]))

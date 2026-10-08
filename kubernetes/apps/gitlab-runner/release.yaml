@@ -1,15 +1,7 @@
 ---
-# Shared GitLab Runner HelmRelease — adopts the existing Helm release
-# `gitlab-runner` in the gitlab-runner namespace (matching releaseName +
-# targetNamespace). Chart version substituted from cluster-versions ConfigMap.
-# Runner token sourced via ExternalSecret (externalsecret.yaml); the chart
-# reads it from the Secret named `gitlab-runner-token` via runners.secret.
-#
-# The fields shared with ../gitlab-runner-privileged/release.yaml (interval,
-# timeout, chart, install/upgrade, gitlabUrl, replicas, checkInterval, rbac,
-# manager resources, affinity, tolerations) are merged in from the
-# kubernetes/components/gitlab-runner-common component (wired in
-# kustomization.yaml); only this runner's deltas live below.
+# Shared GitLab Runner HelmRelease; the token comes from ExternalSecret
+# `gitlab-runner-token`. Fields shared with ../gitlab-runner-privileged come
+# from kubernetes/components/gitlab-runner-common; only the deltas live here.
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -18,12 +10,9 @@ metadata:
 spec:
   releaseName: gitlab-runner
   values:
-    # Concurrent jobs, capped to what the namespace ResourceQuota admits. A job
-    # pod sums to ~5Gi memory limits (build 4Gi + helper 1Gi) and the manager
-    # (~256Mi) also counts, so 40Gi admits floor((40-0.25)/5)=7. A higher value
-    # would let the runner submit job pods the quota rejects (403, no retry =>
-    # spurious CI failures); at 7, excess jobs queue at the runner slot instead.
-    # Raise with the quota.
+    # Capped to what the namespace ResourceQuota admits: ~5Gi per job pod plus
+    # the 512Mi manager, so limits.memory 46Gi admits 7 with two churn slots.
+    # Above that the quota 403s the pods with no retry. Raise it with the quota.
     concurrent: 7
 
     runners:
@@ -40,18 +29,15 @@ spec:
       # tagged [infrastructure] and go to the privileged runner instead.
       runUntagged: true
 
-      # ACCEPTED RISK (homelab): protected:false lets this runner accept
-      # untagged jobs from any project on any branch. It is non-privileged
-      # (run_as_non_root, no DinD) and its job pods are egress-contained with
-      # RFC1918 blocked (networkpolicy.yaml), so untrusted branch code is boxed
-      # in. A team environment would set protected:true.
+      # protected:false lets this runner accept untagged jobs from any project
+      # on any branch. It is non-privileged and its job pods are egress-contained
+      # with RFC1918 blocked (networkpolicy.yaml), so branch code is boxed in.
       protected: false
 
       executor: kubernetes
 
-      # Mounts the ESO-synced s3access Secret (chart-mandated
-      # accesskey/secretkey names) into the manager as the cache credential —
-      # pairs with the [runners.cache] block in the config template below.
+      # ESO-synced s3access Secret (chart-mandated accesskey/secretkey names),
+      # mounted into the manager — pairs with [runners.cache] below.
       cache:
         secretName: s3access
 
@@ -69,15 +55,11 @@ spec:
           # gitlab-org/gitlab-runner#37408
           environment = ["HOME=/home/gitlab-runner", "GIT_CONFIG_GLOBAL=/home/gitlab-runner/.gitconfig"]
 
-          # TOML sections are POSITIONAL — scalar keys must precede any
-          # sub-table or they silently land inside it (limits misparsed as
-          # pod_labels, pull_policy swallowed by a volume table). Scalars
-          # first, sub-tables last.
-          # S3 runner cache on the in-cluster garage (kubernetes/apps/ci-cache):
-          # this is what makes the pipelines' `cache:` blocks real. Shared so
-          # both runners hit one cache namespace per key; Insecure because the
-          # endpoint is plaintext HTTP fenced to the runner namespaces by
-          # NetworkPolicy (the app README carries the trade).
+          # TOML sections are positional: scalar keys first, sub-tables last.
+
+          # S3 runner cache on the in-cluster garage (kubernetes/apps/ci-cache).
+          # Shared, so both runners hit one cache namespace per key; Insecure
+          # because the endpoint is plaintext HTTP fenced by NetworkPolicy.
           [runners.cache]
             Type = "s3"
             Shared = true
@@ -92,32 +74,29 @@ spec:
 
           [runners.kubernetes]
             namespace = "gitlab-runner"
+            # The default 180s fails a transiently-Pending pod as
+            # runner_system_failure when a co-tenant burst delays placement.
+            poll_timeout = 1200
             # Default CI job image, digest-pinned for reproducibility (the
             # tag is retained for readability; the digest is authoritative).
             # Refresh with: docker buildx imagetools inspect debian:trixie
             image = "debian:trixie@sha256:d07d1b51c39f51188e60be9b64e6bf769fa94e187f092bc32b91305cfa34ba5a"
             privileged = false
 
-            # Rank job pods below every unclassed workload and never preempt
-            # (sources/priorityclasses.yaml). The namespace quotas admit more
-            # CPU requests than the cluster has allocatable, so a CI burst used
-            # to compete with platform pods on arrival order alone. A scalar key
-            # — must stay above the first sub-table.
+            # ci-jobs ranks job pods below every unclassed workload and never
+            # preempts (sources/priorityclasses.yaml).
             priority_class_name = "ci-jobs"
 
-            # CPU/Memory for job pods. No cpu_limit (docs/33, repo-wide): CPU
-            # is compressible, so a limit only adds CFS throttling — cpu_request
-            # sets the contention share and the namespace ResourceQuota's
-            # requests.cpu bounds the aggregate.
+            # CPU/Memory for job pods. No cpu_limit (docs/33): CPU is
+            # compressible, so cpu_request sets the contention share and the
+            # namespace ResourceQuota's requests.cpu bounds the aggregate.
             cpu_request = "500m"
             memory_limit = "4Gi"
             memory_request = "1Gi"
 
-            # Let jobs right-size DOWN from the defaults — the ceilings equal
-            # the defaults, so an override can only shrink a pod, never grow
-            # it (this runner also serves tenant projects). A lint pod
-            # declaring KUBERNETES_MEMORY_LIMIT=1Gi stops a 12-job fan-out
-            # from bursting the namespace quota at pod creation.
+            # Ceilings equal the defaults, so a job override can only shrink a
+            # pod, never grow it — a lint pod declaring KUBERNETES_MEMORY_LIMIT
+            # cannot burst the namespace quota at pod creation.
             memory_limit_overwrite_max_allowed = "4Gi"
             service_memory_limit_overwrite_max_allowed = "4Gi"
             service_memory_request_overwrite_max_allowed = "1Gi"
@@ -153,8 +132,6 @@ spec:
               run_as_group = 1000
               fs_group = 1000
 
-            # Mount emptyDir volume at HOME to ensure writable directory for git config
-            # This is required for non-root execution since the default HOME (/) is read-only
             [[runners.kubernetes.volumes.empty_dir]]
               name = "home"
               mount_path = "/home/gitlab-runner"

@@ -1,10 +1,7 @@
 ---
-# Scrape the CoreDNS prometheus plugin (Corefile: `prometheus :9153`) so this
-# system-cluster-critical tailnet resolver gets the same query-rate / cache /
-# SERVFAIL visibility as kube-system CoreDNS. The kube-prometheus-stack
-# discovers PodMonitors cluster-wide (podMonitorSelectorNilUsesHelmValues:
-# false). Prometheus reaching :9153 requires the allow-observability-scrape
-# NetworkPolicy in networkpolicy.yaml (tailnet-dns is default-deny ingress).
+# Scrape the CoreDNS prometheus plugin on :9153 for the same visibility as
+# kube-system CoreDNS. Reaching that port needs the allow-observability-scrape
+# NetworkPolicy in networkpolicy.yaml, since this namespace is default-deny.
 apiVersion: monitoring.coreos.com/v1
 kind: PodMonitor
 metadata:

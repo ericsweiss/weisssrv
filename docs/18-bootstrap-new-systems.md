@@ -30,7 +30,7 @@ This homelab uses two types of managed systems:
 | **LXC Containers** | `eric` | Pubkey auth | Manual (documented below) |
 | **VMs** | `eric` | Pubkey auth | Cloud-init (minimal manual) |
 
-Note: All hosts use the `eric` user for SSH. On smtp-relay, while we SSH as `eric`, Postfix itself runs as root (which is normal for mail servers).
+Note: all managed systems use the `eric` account for SSH with passwordless sudo — see [docs/03-ssh-users.md](03-ssh-users.md).
 
 ---
 
@@ -60,6 +60,51 @@ Before bootstrapping any system, ensure you have:
 - **VM**: Debian cloud image or ISO
 
 ---
+
+## Proxmox hosts
+
+A fresh Proxmox host has root SSH only. Bootstrapping it means creating the
+`eric` operator account Ansible connects as. docs/00, docs/02 and docs/03 all
+point here for this.
+
+### The script
+
+```bash
+./scripts/bootstrap-proxmox-host.sh <host-ip> '<ssh-public-key>'
+```
+
+For example:
+
+```bash
+./scripts/bootstrap-proxmox-host.sh 10.0.10.107 "$(op read 'op://Homelab/SSH Key/public key')"
+```
+
+It prompts for the target's root password, then:
+
+- creates `eric` (`useradd -m -s /bin/bash`) with passwordless sudo, installed
+  through a `visudo -cf` validation of the candidate file before it is moved
+  into place;
+- prompts for and sets eric's console password;
+- appends the SSH key to `/home/eric/.ssh/authorized_keys` — it never truncates
+  the file — with `700` on `.ssh` and `600` on `authorized_keys`;
+- installs `sudo` if the image lacks it, temporarily disabling the enterprise
+  repos so `apt-get update` can succeed, and restoring exactly the ones it
+  disabled;
+- verifies `ssh eric@host` and `sudo whoami`.
+
+### Manual fallback
+
+Once, as root on the host:
+
+```bash
+useradd -m -s /bin/bash -G sudo eric
+echo 'eric ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/eric
+chmod 440 /etc/sudoers.d/eric
+mkdir -p /home/eric/.ssh && chmod 700 /home/eric/.ssh
+# paste the public key, then:
+chmod 600 /home/eric/.ssh/authorized_keys
+chown -R eric:eric /home/eric/.ssh
+```
 
 ## LXC Container Bootstrap
 
@@ -107,10 +152,11 @@ the five compute hosts, `ssd` on pve-nas-01** (which has no `local-ssd` pool).
 Both are ZFS, so the guest gets snapshots, replication and — on `ssd` — at-rest
 encryption. Do **not** use `local-lvm`: it is an LVM-thin pool outside ZFS
 entirely, so a guest there has no snapshots, no replication and no encryption.
-Four guests do sit on pve-nas-01's `local-lvm` deliberately (the two NAS k3s VMs
-plus the plex and immich-ml LXC rootfs — see docs/32); that is a documented
-exception for guests that must never wait on an unlock, not the default for a
-new guest.
+Two guests do sit on pve-nas-01's `local-lvm` deliberately: VM 202
+(k3s-agt-nas-01) and VM 222 (k3s-srv-nas-01), because VM 222 is an etcd quorum
+member and must never wait on an unlock. The plex and immich-ml CT rootfs sit on the
+encrypted `ssd` pool and start after the unlock
+([docs/32](32-zfs-encryption.md)). Neither case is the default for a new guest.
 
 **Create unprivileged container** (recommended for security):
 
@@ -313,7 +359,7 @@ EOF
 Verify Ansible can reach the new container:
 
 ```bash
-ansible app-01 -m ping
+ansible -i ansible/inventories/prod app-01 -m ping
 ```
 
 Expected output:
@@ -336,10 +382,10 @@ is a fresh checkout (`task ansible:install-collections`, docs/02 § 4).
 task infra:check -- --limit app-01
 
 # Deploy base configuration
-ansible-playbook ansible/playbooks/base.yml --limit app-01
+ansible-playbook -i ansible/inventories/prod ansible/playbooks/base.yml --limit app-01
 
 # Or deploy everything for this host
-ansible-playbook ansible/playbooks/site.yml --limit app-01
+ansible-playbook -i ansible/inventories/prod ansible/playbooks/site.yml --limit app-01
 ```
 
 ### Step 10: Verify Deployment
@@ -348,7 +394,7 @@ Run post-deployment verification:
 
 ```bash
 # Full verification playbook
-ansible-playbook ansible/playbooks/postflight.yml --limit app-01
+ansible-playbook -i ansible/inventories/prod ansible/playbooks/postflight.yml --limit app-01
 ```
 
 Or manually verify:
@@ -427,7 +473,7 @@ Cloud-init automatically configures:
    # Add to inventory (same as LXC, but with ansible_user: eric)
 
    # Deploy base config
-   ansible-playbook ansible/playbooks/base.yml --limit new-vm
+   ansible-playbook -i ansible/inventories/prod ansible/playbooks/base.yml --limit new-vm
    ```
 
 ### Manual VM Bootstrap
@@ -514,29 +560,29 @@ After running the base role:
 
 ```bash
 # 1. Test Ansible connectivity
-ansible <hostname> -m ping
+ansible -i ansible/inventories/prod <hostname> -m ping
 
 # 2. Test SSH access
 ssh eric@<IP>
 
 # 3. Verify sudo
-ansible <hostname> -m shell -a "sudo whoami"  # Should return 'root'
+ansible -i ansible/inventories/prod <hostname> -m shell -a "sudo whoami"  # Should return 'root'
 
 # 4. Check base packages installed
-ansible <hostname> -m shell -a "which htop neovim git"
+ansible -i ansible/inventories/prod <hostname> -m shell -a "which htop neovim git"
 
 # 5. Verify timezone
-ansible <hostname> -m shell -a "timedatectl | grep 'Los_Angeles'"
+ansible -i ansible/inventories/prod <hostname> -m shell -a "timedatectl | grep 'Los_Angeles'"
 
 # 6. Check SSH hardening — ask sshd for its effective config, not the monolithic
 #    file: the base role writes a drop-in at /etc/ssh/sshd_config.d/00-hardening.conf
 #    and never edits /etc/ssh/sshd_config (docs/03).
-ansible <hostname> -b -m shell -a "sshd -T | grep -E 'passwordauthentication|permitrootlogin'"
+ansible -i ansible/inventories/prod <hostname> -b -m shell -a "sshd -T | grep -E 'passwordauthentication|permitrootlogin'"
 # Should show: passwordauthentication no / permitrootlogin no
 # (Proxmox hosts set prohibit-password, which sshd -T prints as without-password.)
 
 # 7. Run full verification
-ansible-playbook ansible/playbooks/postflight.yml --limit <hostname>
+ansible-playbook -i ansible/inventories/prod ansible/playbooks/postflight.yml --limit <hostname>
 ```
 
 ### Common Issues Checklist
@@ -572,7 +618,7 @@ systemctl start ssh
 systemctl enable ssh
 
 # Check if SSH is listening
-netstat -tlnp | grep :22
+ss -tlnp | grep :22
 ```
 
 **Firewall Issue**:
@@ -623,7 +669,7 @@ op read "op://Homelab/SSH Key/public key" | ssh-keygen -lf /dev/stdin
 cat ansible/inventories/prod/hosts.yml
 
 # Test connection
-ansible <hostname> -m ping -vvv
+ansible -i ansible/inventories/prod <hostname> -m ping -vvv
 ```
 
 **Common fixes**:
@@ -723,14 +769,15 @@ sudo whoami  # Should return 'root'
 # 1. Create container
 pct create <VMID> local:vztmpl/<proxmox_lxc_template> \
   --hostname <name> --net0 name=eth0,bridge=vmbr0,ip=<IP>/24,gw=10.0.10.1 \
-  --nameserver 10.0.10.150 --unprivileged 1 --start 1
+  --nameserver 10.0.10.150 --storage <storage> --rootfs <storage>:8 \
+  --unprivileged 1 --start 1
 
 # 2. Configure SSH and user
 pct enter <VMID>
 apt update && apt install -y openssh-server sudo
 useradd -m -s /bin/bash -G sudo eric
 mkdir -p /home/eric/.ssh && chmod 700 /home/eric/.ssh
-cat > /home/eric/.ssh/authorized_keys <<EOF
+cat > /home/eric/.ssh/authorized_keys <<'EOF'
 <paste SSH public key>
 EOF
 chmod 600 /home/eric/.ssh/authorized_keys
@@ -743,8 +790,8 @@ exit
 ssh eric@<IP>
 
 # 4. Add to inventory and deploy
-ansible <hostname> -m ping
-ansible-playbook ansible/playbooks/base.yml --limit <hostname>
+ansible -i ansible/inventories/prod <hostname> -m ping
+ansible-playbook -i ansible/inventories/prod ansible/playbooks/base.yml --limit <hostname>
 ```
 
 ### VM Bootstrap with Cloud-Init (Minimal Steps)
@@ -769,8 +816,8 @@ qm start <VMID>
 ssh eric@<IP>
 
 # 5. Add to inventory and deploy
-ansible <hostname> -m ping
-ansible-playbook ansible/playbooks/base.yml --limit <hostname>
+ansible -i ansible/inventories/prod <hostname> -m ping
+ansible-playbook -i ansible/inventories/prod ansible/playbooks/base.yml --limit <hostname>
 ```
 
 ---
@@ -781,7 +828,7 @@ After successfully bootstrapping and deploying base configuration:
 
 1. **Deploy Service-Specific Configuration**:
    - Run appropriate playbooks for the service role
-   - Example: `ansible-playbook ansible/playbooks/k3s.yml --limit k3s-srv-nas-01`
+   - Example: `ansible-playbook -i ansible/inventories/prod ansible/playbooks/k3s.yml --limit k3s-srv-nas-01`
 
 2. **Configure Application**:
    - Deploy application-specific roles

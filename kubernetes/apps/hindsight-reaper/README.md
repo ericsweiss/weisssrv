@@ -5,25 +5,12 @@ pods left behind by GPU-node reboots.
 
 ## Why this exists
 
-Hindsight's `llama` sidecar requests `nvidia.com/gpu`, satisfiable only on the
-single GPU agent (`pve-prec-01`). When that node reboots — kured coordinated
-reboots, driver reloads — the kubelet starts admitting pods **before** the NVIDIA
-device plugin has re-registered healthy GPUs. A replacement pod scheduled in that
-window is rejected at admission:
-
-```
-Status:  Failed
-Reason:  UnexpectedAdmissionError
-Message: Pod was rejected: Allocate failed due to no healthy devices present;
-         cannot allocate unhealthy devices nvidia.com/gpu, which is unexpected
-```
-
-The Deployment **recovers correctly** — once the GPU is healthy a fresh pod is
-admitted and runs. The problem is only cleanup: the ReplicaSet controller never
-deletes pods it owns, and cluster pod-GC fires only past a high cluster-wide
-threshold (`--terminated-pod-gc-threshold`, default 12500), so the rejected pods
-accumulate in `Failed` across reboots until swept by hand. This reaper is that
-sweep, automated.
+After a GPU-node reboot the kubelet admits pods before the NVIDIA device plugin
+has re-registered healthy GPUs, so the replacement pod is rejected at admission
+and left in `phase=Failed`. The Deployment self-heals; nothing garbage-collects
+the corpses, so they accumulate across reboots. This reaper is that sweep,
+automated. Mechanism and the rejected alternatives:
+`docs/43-gpu-passthrough.md` § Reaping admission-rejected pods.
 
 ## What it does
 
@@ -52,17 +39,5 @@ evidence to investigate, not a corpse to sweep. The program is
 - The Job **exits non-zero on any non-race list/delete error**, so a broken RBAC
   or API outage surfaces as a failed Job (`KubeJobFailed`) instead of a silent
   no-op.
-
-## Alternatives considered
-
-- **Prevent the race** (rather than clean up after it) would need the node to
-  withhold GPU pods until the device plugin reports healthy — i.e. the full
-  NVIDIA **GPU Operator** with its startup-taint machinery, or a custom
-  taint controller. That is a large dependency for one homelab GPU; the recovery
-  already works, so reaping the corpses is the right-sized fix.
-- **Lower `--terminated-pod-gc-threshold`** cluster-wide would auto-GC Failed
-  pods everywhere, but it is a global k3s control-plane change that also makes
-  terminated pods disappear faster in every namespace (worse for debugging). The
-  scoped reaper is more surgical.
 
 See `docs/43-gpu-passthrough.md` § Reaping admission-rejected pods.

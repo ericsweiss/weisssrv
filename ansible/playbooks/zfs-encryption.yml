@@ -1,10 +1,7 @@
 ---
 # Deploy boot-time ZFS-encryption key fetch on every Proxmox host.
-#
-# Run via the Taskfile wrappers (which handle Connect token + SSH key
-# injection from 1Password automatically):
-#   task zfs:encrypt -- --limit pve-nas-01              # deploys mechanism; activates services on hosts with pools
-# See docs/32-zfs-encryption.md for the full per-pool workflow.
+# Run via the Taskfile wrappers, which inject the Connect token and SSH key:
+# `task zfs:encrypt -- --limit pve-nas-01`. Workflow: docs/32-zfs-encryption.md.
 
 - name: Deploy ZFS-encryption boot-time unlock
   hosts: proxmox
@@ -16,3 +13,4 @@
       {{ lookup('ansible.builtin.env', 'ZFS_ENCRYPTION_CONNECT_TOKEN', default='') }}
   roles:
     - role: weisssrv.infra.zfs_encryption
+      tags: [zfs_encryption]

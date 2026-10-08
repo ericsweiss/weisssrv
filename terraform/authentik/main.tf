@@ -1,26 +1,11 @@
-# Authentik SSO state as code. The SHAPE — every resource, its
-# `prevent_destroy` guard, the unbound-application precondition and the security
-# defaults — comes from the weisssrv-lib `authentik-sso` module at a pinned ref;
-# the object inventory (applications, providers, groups, bindings, the outpost
-# list) is this site's data in the sibling files.
-#
-# The module grew what this site's shapes need in v0.7.0: `prevent_destroy` on every object, `custom_scope_mappings`
-# (Mealie's asserted-verified email scope) and the unbound-application
-# precondition. Every terraform root now pins the same release as
-# WEISSSRV_LIB_REF — the pins are bumped by hand (check-lib-pins.py does not
-# read module sources), and scripts/test_site_configs.py fails a missed one.
-#
-# Adoption was address-only: moved.tf maps all 78 pre-module resource instances
-# onto their module addresses, so the first plan after this change is moves and
-# nothing else (README § Adoption onto the library module).
-#
-# The flow slugs, signing key name, grant types and mapping lists are passed
-# EXPLICITLY rather than inherited from the module defaults: they are identity
-# for every provider here, and a library default change must never repoint them
-# on a ref bump. Same reasoning as terraform/cloudflare's zone_settings.
+# Authentik SSO state as code. The shape comes from the weisssrv-lib
+# `authentik-sso` module at a hand-bumped ?ref= that scripts/test_site_configs.py
+# holds equal to WEISSSRV_LIB_REF; this site's objects are in the sibling files.
 module "sso" {
-  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/authentik-sso?ref=v0.17.1"
+  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/authentik-sso?ref=v0.18.0"
 
+  # Flow slugs, signing key, grant types and mappings are passed explicitly so a
+  # library default change cannot repoint provider identity on a ref bump.
   authorization_flow_slug = "default-provider-authorization-implicit-consent"
   invalidation_flow_slug  = "default-provider-invalidation-flow"
   signing_key_name        = "authentik Self-signed Certificate"

@@ -1,37 +1,22 @@
 #!/usr/bin/env python3
-"""Extract the custom alert rules and the Alertmanager config into standalone
-files that `promtool check rules` / `amtool check-config` can lint.
+"""Extract alert rules and the Alertmanager config into promtool/amtool inputs.
 
-Alert exprs live in `additionalPrometheusRulesMap` inside the kube-prometheus-
-stack HelmRelease AND in standalone PrometheusRule manifests under
-observability/rules/; the Alertmanager config lives in an ExternalSecret
-template. None of it is reachable by kubeconform/flux-lint (schema-only), so a
-bad PromQL expr or a malformed route only surfaces post-merge.
-
-LOCAL FORK of the weisssrv-lib script: the library copy reads the HelmRelease
-alone. `rules` here is the union of both sources, so the check works before,
-during and after the split (a group defined twice is caught by promtool's
-duplicate-name check).
-
-  extract-prometheus-config.py rules <out> [--release PATH] [--rules-dir PATH]
-  extract-prometheus-config.py alertmanager <out> [--am-config PATH] [--dummy K=V]
-
-`--dummy` (repeatable) overrides the value substituted for an ESO
-`{{ .name | quote }}` placeholder. An unset name renders as a dummy https URL
-when it ends in `url` (amtool parses webhook/API targets as URLs) and as the
-literal `dummy` otherwise.
+Reads the kube-prometheus-stack HelmRelease, --rules-dir and the Alertmanager
+ExternalSecret template, and writes one lintable file. Contract: docs/SCRIPTS.md.
 """
 from __future__ import annotations
 
 import argparse
 import re
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 
 try:
     import yaml
 except ImportError:
-    sys.exit("PyYAML required: pip install pyyaml")
+    print("ERROR: PyYAML required: pip install pyyaml", file=sys.stderr)
+    raise SystemExit(2) from None
 
 DEFAULT_OBS = Path("kubernetes/infrastructure/observability/kube-prometheus-stack")
 DEFAULT_RELEASE = DEFAULT_OBS / "release.yaml"
@@ -72,7 +57,7 @@ def _prometheusrule_groups(rules_dir: Path) -> list:
     groups: list = []
     if not rules_dir.is_dir():
         return groups
-    for path in sorted(rules_dir.glob("*.yaml")):
+    for path in sorted({*rules_dir.rglob("*.yaml"), *rules_dir.rglob("*.yml")}):
         with path.open() as f:
             for doc in yaml.safe_load_all(f):
                 if isinstance(doc, dict) and doc.get("kind") == "PrometheusRule":
@@ -80,16 +65,39 @@ def _prometheusrule_groups(rules_dir: Path) -> list:
     return groups
 
 
+def _rules_dirs(value: Path | str | Iterable[Path | str]) -> list[Path]:
+    """Normalise one directory or several into a list, so a caller passing a
+    single Path keeps working."""
+    if isinstance(value, (str, Path)):
+        return [Path(value)]
+    return [Path(item) for item in value]
+
+
 def extract_rules(
     out: Path,
     release: Path = DEFAULT_RELEASE,
-    rules_dir: Path = DEFAULT_RULES_DIR,
+    rules_dir: Path | str | Iterable[Path | str] = DEFAULT_RULES_DIR,
+    require_release_rules: bool = False,
 ) -> int:
-    groups = _release_groups(release) + _prometheusrule_groups(rules_dir)
+    dirs = _rules_dirs(rules_dir)
+    listed = ", ".join(f"{d}/" for d in dirs)
+    release_groups = _release_groups(release)
+    if require_release_rules and not release_groups:
+        print(
+            f"ERROR: no rule groups in {release} (additionalPrometheusRulesMap); "
+            "drop --require-release-rules if this consumer keeps every rule "
+            f"under {listed}",
+            file=sys.stderr,
+        )
+        return 1
+    groups = list(release_groups)
+    for rules_dir_path in dirs:
+        groups.extend(_prometheusrule_groups(rules_dir_path))
     if not groups:
         print(
             f"ERROR: no rule groups found in {release} "
-            f"(additionalPrometheusRulesMap) or {rules_dir}/*.yaml",
+            f"(additionalPrometheusRulesMap) or "
+            + ", ".join(f"{d}/**/*.y*ml" for d in dirs),
             file=sys.stderr,
         )
         return 1
@@ -142,17 +150,55 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog=Path(argv[0]).name,
         description=__doc__,
+        epilog=(
+            "rules is the union of additionalPrometheusRulesMap and every "
+            "--rules-dir (repeatable); "
+            "a group defined twice is caught by promtool's duplicate-name check.\n"
+            "--dummy (repeatable) overrides the value substituted for an ESO "
+            "`{{ .name | quote }}` placeholder. An unset name renders as a dummy "
+            "https URL when it ends in `url`, and as the literal `dummy` otherwise."
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("subcommand", choices=("rules", "alertmanager"))
     parser.add_argument("out", type=Path)
     parser.add_argument("--release", type=Path, default=DEFAULT_RELEASE)
-    parser.add_argument("--rules-dir", type=Path, default=DEFAULT_RULES_DIR)
+    parser.add_argument(
+        "--rules-dir", type=Path, action="append", default=None, metavar="DIR",
+        help="PrometheusRule manifest tree; repeat for every tree a consumer "
+             "ships, e.g. the shared rules dir plus the per-app one",
+    )
     parser.add_argument("--am-config", type=Path, default=DEFAULT_AM_CONFIG)
     parser.add_argument("--dummy", action="append", default=[], metavar="NAME=VALUE")
+    parser.add_argument(
+        "--require-release-rules", action="store_true",
+        help="fail when the HelmRelease declares no inline rule groups, for a "
+             "consumer whose rules live in additionalPrometheusRulesMap",
+    )
+    parser.add_argument(
+        "--require-rules-dir", action="store_true",
+        help="fail when the standalone-PrometheusRule tree is absent, for a "
+             "consumer that keeps its rules there",
+    )
     args = parser.parse_args(argv[1:])
     if args.subcommand == "rules":
-        return extract_rules(args.out, args.release, args.rules_dir)
+        rules_dirs = args.rules_dir or [DEFAULT_RULES_DIR]
+        # An absent tree the operator named, or declared it has, drops every
+        # standalone PrometheusRule from the lint while promtool still passes.
+        named = args.rules_dir is not None or args.require_rules_dir
+        missing = [d for d in rules_dirs if not d.is_dir()]
+        if named and missing:
+            print(
+                "ERROR: rules directory "
+                + ", ".join(str(d) for d in missing)
+                + " does not exist; pass --rules-dir to point at the "
+                "PrometheusRule manifests, or drop --require-rules-dir if "
+                f"every rule is inline in {args.release}",
+                file=sys.stderr,
+            )
+            return 2
+        return extract_rules(args.out, args.release, rules_dirs,
+                             args.require_release_rules)
     return extract_alertmanager(args.out, args.am_config, _parse_dummy(args.dummy))
 
 

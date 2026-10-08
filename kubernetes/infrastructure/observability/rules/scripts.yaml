@@ -2,11 +2,6 @@
 # Freshness and success alerts for the host-side scripts and backup producers
 # that write node_exporter textfile metrics, plus the in-cluster pg-dump
 # CronJobs. Runbooks: docs/12-runbooks.md § Backup and recovery.
-#
-# Escalation shape: each tier's total-loss case has a critical sibling
-# (*Prolonged / *StaleCritical) so a multi-day failure reaches the email
-# receiver instead of a twice-daily Discord line. Alertmanager pairs each
-# warning with its critical on the alertname so they never double-page.
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
@@ -74,10 +69,9 @@ spec:
               DR tier is stale and the offsite restic chain runs off it, so both
               copies are ageing together.
 
-        # Per-dataset durability: a vzdump-quiesce deferral preserves the
-        # previous per-dataset success timestamp (re-emitted, not zeroed),
-        # so a chronically deferred dataset still goes stale here without
-        # zeroing the whole-run success metric.
+        # Per-dataset durability: a vzdump-quiesce deferral re-emits the
+        # previous success timestamp rather than zeroing it, so a chronically
+        # deferred dataset still goes stale here.
         - alert: ArchiveBackupDatasetStale
           expr: time() - archive_backup_dataset_last_success_timestamp_seconds > 86400 * 2
           for: 1h
@@ -110,21 +104,9 @@ spec:
               vzdump is overrunning the 06:30 archive-backup timer. See the
               runbook.
 
-        # Replication succeeding while retention does not: snapshots accumulate
-        # on the archive pool until it fills, and last_run_success stays 1 the
-        # whole time, so nothing else here sees it. Mirrors
-        # ResticOffsitePruneBlocked's severity/for and its 2-day shape — the
-        # window is read out of the TSDB rather than held in a multi-day `for:`,
-        # whose pending timer this NAS-pinned Prometheus discards on restart.
-        # max_over_time == 0 means every sample in the window failed, and the
-        # offset arm proves the window actually HAS ~48h of history so a
-        # freshly-deployed collector cannot fire two days early.
-        #
-        # DORMANT until the v0.8.0 adoption wave: archive_backup_last_prune_success
-        # is emitted by nas_storage's archive-backupctl, and the pinned collection
-        # (v0.7.4) does not write it yet — every arm is empty, so the rule cannot
-        # fire either way. It goes live with the pin bump + NAS deploy (docs/16
-        # § Ansible collection migration residue).
+        # Replication succeeding while retention does not: snapshots pile up on
+        # the archive pool while last_run_success stays 1. The window is read
+        # from the TSDB; the offset arm proves it really holds 48h of history.
         - alert: ArchiveBackupPruneBlocked
           expr: >-
             archive_backup_last_prune_success == 0
@@ -197,21 +179,27 @@ spec:
               (timer not run, or node_exporter on dns-01 unreachable). dns-02's
               AdGuard config is drifting from dns-01.
 
+        # The run-success bit covers the local renewal and reload only, so the
+        # failed-target count is the second arm: a dead distribution target
+        # leaves the bit at 1.
         - alert: CertRenewalFailed
-          expr: cert_renewal_last_run_success == 0
+          expr: cert_renewal_last_run_success == 0 or cert_distribution_last_run_failed_targets > 0
           for: 1h
           labels:
             severity: warning
           annotations:
             runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#certificate-renewal-issues'
-            summary: 'Certificate renewal failed'
-            description: 'The certificate renewal and distribution script has not completed successfully.'
+            summary: 'Certificate renewal or distribution failed'
+            description: >-
+              The local renewal and reload failed, or at least one distribution
+              target did not take the new cert. CertDistributionTargetFailed
+              names the target.
 
         # A renewal pipeline broken for three days is an incident, not a nudge:
         # CertExpiringSoon* is only the expiry backstop, and a renewal that has
         # been failing for weeks burns the whole ~60d acme.sh cycle of margin.
         - alert: CertRenewalFailedProlonged
-          expr: cert_renewal_last_run_success == 0
+          expr: cert_renewal_last_run_success == 0 or cert_distribution_last_run_failed_targets > 0
           for: 72h
           labels:
             severity: critical
@@ -219,10 +207,49 @@ spec:
             runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#certificate-renewal-issues'
             summary: 'Certificate renewal has been failing for over 3 days'
             description: >-
-              acme.sh renewal/distribution on {{ $labels.instance }} has failed
-              continuously for 3 days. The wildcard cert still has margin, but
-              nothing is renewing it — fix the pipeline before CertExpiringSoon
-              is the only thing left.
+              acme.sh local renewal and reload on {{ $labels.instance }}, or
+              distribution to at least one target, has failed continuously for
+              3 days. The wildcard cert still has margin, but nothing is
+              renewing it — fix the pipeline before CertExpiringSoon is the only
+              thing left.
+
+        # The run-success bit only moves when the script runs, so a dead acme.sh
+        # cron neither renews nor fails and only time-since-success sees it. 75d
+        # is past the ~60d renewal cycle, leaving ~15d before expiry.
+        - alert: CertRenewalStale
+          expr: time() - cert_renewal_last_success_timestamp_seconds > 86400 * 75
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#certificate-renewal-issues'
+            summary: 'No successful cert renewal on {{ $labels.instance }} in over 75 days'
+            description: >-
+              acme.sh on {{ $labels.instance }} last distributed a cert
+              {{ $value | humanizeDuration }} ago, past the ~60-day renewal
+              cycle, so renewal has stopped running rather than failing. Check
+              `crontab -l` for the acme.sh --cron entry and
+              `journalctl -t homelab-cert-reload` (docs/12 §Certificate Renewal
+              Issues). No absent arm: the gauge appears only after a first
+              success, and a failing run is CertRenewalFailed's.
+
+        # Per-target distribution gauge: a dead target is otherwise collapsed
+        # into the run-level bit and never named. The daily check writes the
+        # gauge, which holds until the next run, so the hold spans one interval.
+        - alert: CertDistributionTargetFailed
+          expr: cert_distribution_target_last_run_success == 0
+          for: 25h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#certificate-renewal-issues'
+            summary: 'Certificate distribution to {{ $labels.host }} is failing'
+            description: >-
+              acme.sh on {{ $labels.instance }} could not install the wildcard
+              cert on {{ $labels.host }}. Every other target is unaffected, so
+              that host keeps serving the cert it already holds until it
+              expires. Check `journalctl -t homelab-cert-reload` and the host's
+              SSH reachability (docs/12 §Certificate Renewal Issues).
 
         - alert: CertExpiringSoon
           expr: (cert_local_expiry_timestamp_seconds - time() < 86400 * 14) or absent(cert_local_expiry_timestamp_seconds)
@@ -270,12 +297,8 @@ spec:
             description: 'The nightly gitlab-backup run did not complete successfully.'
 
         # "The run succeeded" and "a restorable artefact exists" are different
-        # claims: a wrapper whose landing path no longer matches reports success
-        # while sizing nothing. Name-regex rather than one rule per app, so a
-        # future producer inherits the gate for free — every wrapper emits
-        # <app>_backup_last_size_bytes, where 0 means "no artefact found".
-        # label_replace copies __name__ into a `metric` label because Prometheus
-        # strips __name__ from alert labels.
+        # claims: a wrapper whose landing path stopped matching sizes nothing.
+        # label_replace copies __name__, which alert labels do not carry.
         - alert: BackupArtifactEmpty
           expr: >-
             label_replace(
@@ -327,12 +350,9 @@ spec:
               other DR path. Investigate the backup wrapper on the
               GitLab VM now.
 
-        # gitlab-backup deliberately EXCLUDES gitlab-secrets.json from the
-        # tarball, and the artefact glob (*_gitlab_backup.tar) does not match it
-        # either — so a tarball with a fresh mtime and a healthy size can still
-        # be unrestorable. The wrapper copies it separately and sizes it into
-        # its own metric file. Both arms: absent emits present=0 + size=0, a
-        # truncated copy emits present=1 + size=0.
+        # gitlab-backup excludes gitlab-secrets.json from the tarball and the
+        # artefact glob, so a healthy tarball can still be unrestorable. Absent
+        # emits present=0 and size=0; truncated emits present=1 and size=0.
         - alert: GitLabBackupSecretsMissing
           expr: >-
             gitlab_backup_secrets_present == 0
@@ -406,16 +426,9 @@ spec:
               inventory). The photo library and DB live on encrypted zvols;
               the pg_dumpall is the point-in-time DB recovery path.
 
-        # In-cluster CronJob, so freshness comes from
-        # kube_cronjob_status_last_successful_time. 26h = one nightly cycle +
-        # grace; the absent() arm fires if the CronJob is missing or has never
-        # succeeded. Authentik's Postgres is the SSO recovery path.
-        #
-        # `max by (namespace, cronjob)` drops kube-state-metrics' own scrape
-        # labels (instance/pod/endpoint/service). Without it the alert carries
-        # the KSM pod IP, and since Alertmanager groups on `instance` one missed
-        # dump re-notifies as a new group every time KSM is rescheduled. It also
-        # keeps the staleness arm's label set identical to the absent() arm's.
+        # In-cluster CronJob, so freshness is kube_cronjob_status_last_successful_time.
+        # 26h is one nightly cycle plus grace; absent() covers a missing CronJob.
+        # `max by (namespace, cronjob)` drops KSM scrape labels from the group.
         - alert: AuthentikBackupStale
           expr: >-
             (time() - max by (namespace, cronjob) (kube_cronjob_status_last_successful_time{namespace="authentik", cronjob="authentik-pg-dump"}) > 93600)
@@ -452,13 +465,8 @@ spec:
               down). Mealie's Postgres lives on a dedicated zvol.
 
         # Off-node etcd snapshot copy (k3s servers -> pve-nas-01, docs/17). k3s
-        # snapshots every 12h; 36h is three missed copy cycles, wide enough that
-        # one deferred run during planned node maintenance does not page while
-        # still detecting a genuinely stopped copy inside two nights.
-        #
-        # Per-server existence witness for the same reason VzdumpBackupStale has
-        # one: a vector-wide absent() goes silent unless all three servers stop
-        # emitting at once, so one server whose copy timer is gone is invisible.
+        # snapshots every 12h, so 36h is three missed cycles. The existence
+        # witness is per server; a vector-wide absent() hides a single one.
         - alert: EtcdSnapshotStale
           expr: >-
             (time() - etcd_snapshot_last_copy_timestamp_seconds > 129600)
@@ -495,12 +503,32 @@ spec:
               did not complete successfully. Guest VM/LXC images are the DR
               path for the compute-node guests.
 
-        # /etc/pve carries the cluster CA, node certs, authkey and user.cfg —
-        # the first step of total-site recovery. Catches a tar/validate failure
-        # with good archives still on disk, where the producer reports the newest
-        # EXISTING archive's size so BackupArtifactEmpty stays correctly green.
-        # No absent() arm: the producer ships on the Ansible lifecycle, so the
-        # series legitimately does not exist before the first pve-nas-01 deploy.
+        # A zero-guest job still reports success and refreshes the timestamp, so
+        # the failure and staleness alerts stay green while nothing lands. The 30d
+        # arm skips hosts whose only guests are excluded k3s cattle.
+        - alert: VzdumpBackupNoGuests
+          expr: >-
+            vzdump_backup_guests == 0
+            and on (instance) vzdump_backup_last_run_success == 1
+            and on (instance) (max_over_time(vzdump_backup_guests[30d]) > 0)
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#backup-and-recovery'
+            summary: 'Proxmox vzdump on {{ $labels.instance }} backed up no guests'
+            description: >-
+              The last vzdump job on {{ $labels.instance }} finished
+              successfully without starting a single guest backup, so its
+              success metric and timestamp are green while nothing new reached
+              tank-proxmox. Check the guest selection on the Proxmox backup
+              schedule and that this host still owns guests. A host that has
+              backed up no guest at all in 30 days is excluded, so the k3s-only
+              hosts never enter this alert.
+
+        # /etc/pve carries the cluster CA, node certs, authkey and user.cfg, the
+        # first step of total-site recovery. No absent() arm: the series does
+        # not exist before the first pve-nas-01 deploy.
         - alert: PveClusterBackupFailed
           expr: pve_cluster_backup_last_run_success == 0
           for: 1h
@@ -532,17 +560,18 @@ spec:
               cluster CA, node certs, authkey and API tokens; docs/17 makes
               restoring it the first step of total-site recovery.
 
-        # 36h, not 26h: tolerates one nightly run deferred by planned host
-        # maintenance; two missed nights still detect.
-        #
-        # The absence arm is a PER-HOST existence witness, not a bare absent():
-        # a vector-wide absent() only fires once every Proxmox host has stopped
-        # emitting, so one host whose hookscript metric vanishes is silent on
-        # both arms. `up == 1` on the same job/instance is the witness — if the
-        # exporter itself is down, HostExporterDown owns that.
+        # 36h tolerates one nightly run deferred by host maintenance; two missed
+        # nights still detect. The absence arm is a per-host existence witness
+        # (`up == 1` on the same instance), so one dead hookscript is visible.
         - alert: VzdumpBackupStale
           expr: >-
-            (time() - vzdump_backup_last_success_timestamp_seconds > 129600)
+            (
+              (time() - vzdump_backup_last_success_timestamp_seconds > 129600)
+              unless on (instance) (
+                vzdump_backup_guests == 0
+                and on (instance) vzdump_backup_last_run_success == 1
+              )
+            )
             or (
               up{job="node-exporter-host", instance=~"10\\.0\\.10\\.10[2-7]:9101"} == 1
               unless on (instance) vzdump_backup_last_success_timestamp_seconds
@@ -560,10 +589,16 @@ spec:
               not deployed there). Guest VM/LXC images on tank-proxmox are the
               DR path for the compute-node guests.
 
-        # Three missed nights: guest images are the only DR path for the
-        # compute-node guests. No absent() arm — absence stays warning-tier.
+        # Three missed nights: guest images are the only DR path for the compute
+        # nodes. Absence stays warning-tier. A host whose last run succeeded with
+        # no guests is dropped by the `unless`; VzdumpBackupNoGuests watches it.
         - alert: VzdumpBackupStaleCritical
-          expr: time() - vzdump_backup_last_success_timestamp_seconds > 86400 * 3
+          expr: >-
+            (time() - vzdump_backup_last_success_timestamp_seconds > 86400 * 3)
+            unless on (instance) (
+              vzdump_backup_guests == 0
+              and on (instance) vzdump_backup_last_run_success == 1
+            )
           for: 1h
           labels:
             severity: critical
@@ -573,16 +608,13 @@ spec:
             description: >-
               No successful vzdump on {{ $labels.instance }} for more than 3
               days. Guest VM/LXC images on tank-proxmox are the DR path for the
-              compute-node guests.
+              compute-node guests. A host whose last run succeeded while owning
+              no guests is excluded — it pages through VzdumpBackupNoGuests
+              instead, at warning.
 
         # Nightly offsite B2 backup (restic + rclone/B2) on pve-nas-01, chained
-        # OnSuccess of archive-backup.service.
-        #
-        # restic_offsite_last_backup_success is the split-out "the upload landed
-        # in B2" signal; restic_offsite_last_run_success is the older combined
-        # gauge that also went 0 when only retention failed. The `unless` arm
-        # reads the old metric ONLY while the new one is absent, so the alert
-        # keeps working across the collector rollout without conflating the two.
+        # OnSuccess of archive-backup.service. The `unless` arm falls back to the
+        # combined run gauge only where the split upload gauge is absent.
         - alert: ResticOffsiteFailed
           expr: >-
             restic_offsite_last_backup_success == 0
@@ -602,19 +634,8 @@ spec:
               on pve-nas-01.
 
         # B2 is the only offsite copy, so a full day of failed uploads emails.
-        #
-        # The day is measured against the metric's own timestamp, not a 24h
-        # `for:`. A pending timer lives in the alert manager's memory and is
-        # discarded on a Prometheus restart, and this Prometheus is NAS-pinned:
-        # kured reboots, chart upgrades, VPA evictions and NAS incidents all
-        # reset it, so the escalation could never elapse during exactly the
-        # multi-day outage it exists for. Same restart-proof idiom as
-        # ResticOffsiteStaleCritical.
-        #
-        # A repository that has NEVER had a successful backup emits no
-        # _timestamp_ series, so neither arm fires — that state is
-        # ResticOffsiteStale's absent() arm, deliberately at warning, so a
-        # collector that has not shipped yet cannot page critical on merge day.
+        # The day is measured against the metric's own timestamp, not a `for:`.
+        # A repo that never backed up emits no timestamp; ResticOffsiteStale owns it.
         - alert: ResticOffsiteFailedProlonged
           expr: >-
             (
@@ -639,16 +660,38 @@ spec:
               only offsite copy of the curated dumps — treat this as an
               incident, not a nightly retry (docs/42).
 
-        # Retention that cannot run leaves the repo growing without bound and the
-        # WORM restore floor frozen. The ceiling guard is self-latching: once it
-        # refuses, the delete set grows every night until a human raises it.
-        # The two days are read out of the TSDB rather than held in a 48h
-        # `for:`, for the reason on ResticOffsiteFailedProlonged above. There is
-        # no prune-side timestamp gauge, so the history itself is the clock:
-        # min_over_time == 1 means every sample in the window was blocked, and
-        # the offset arm proves the window actually HAS ~48h of history — a
-        # freshly-deployed collector would otherwise satisfy min_over_time on its
-        # first few samples and fire two days early.
+        # restic rc=3: the snapshot was saved but some paths were unreadable.
+        # The gauge is sticky — only an rc=0 backup clears it — so the 36h arm
+        # really does span two nightly runs. Silent until the pin carries it.
+        - alert: ResticOffsiteIncomplete
+          expr: restic_offsite_last_run_incomplete == 1
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#incomplete-offsite-run'
+            summary: 'The last offsite restic run skipped unreadable paths'
+            description: >-
+              restic exited 3: the snapshot exists but at least one path could
+              not be read. Check which paths the wrapper logged - an ext4 clone
+              mounted without journal replay reads back EBADMSG.
+
+        - alert: ResticOffsiteIncompleteProlonged
+          expr: restic_offsite_last_run_incomplete == 1
+          for: 36h
+          labels:
+            severity: critical
+          annotations:
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#incomplete-offsite-run'
+            summary: 'Two consecutive offsite runs were incomplete'
+            description: >-
+              The offsite snapshot has skipped unreadable paths across two
+              consecutive nightly runs. Whatever cannot be read has not been in
+              B2 for over a day (docs/42).
+
+        # Retention that cannot run leaves the repo growing without bound, and the
+        # ceiling guard is self-latching. History is the clock: min_over_time == 1
+        # means every sample was blocked, and the offset arm proves the 48h window.
         - alert: ResticOffsitePruneBlocked
           expr: >-
             restic_offsite_retention_blocked == 1
@@ -670,16 +713,9 @@ spec:
               `restic-offsitectl prune --max-remove N` or raise
               restic_offsite_forget_max_remove (docs/42).
 
-        # last_prune_success is 0 for BOTH "the prune errored" and "the ceiling
-        # guard refused to prune" (its HELP text says 0=blocked/failed). The
-        # refusal is a deliberate, non-failure state with its own alert and its
-        # own 48h grace above, so it is subtracted here — otherwise the ceiling
-        # guard always announces itself 24h early under the wrong diagnosis and
-        # ResticOffsitePruneBlocked never gets to fire.
-        #
-        # The day is read out of the TSDB, same idiom as PruneBlocked above:
-        # max_over_time == 0 means no retention pass applied in 24h, and the
-        # offset arm proves the window has the history to say so.
+        # last_prune_success is 0 for both "the prune errored" and "the ceiling
+        # guard refused". The refusal has its own alert and 48h grace above, so
+        # it is subtracted here. Same TSDB window idiom.
         - alert: ResticOffsitePruneFailed
           expr: >-
             (
@@ -704,21 +740,36 @@ spec:
               and `restic-offsitectl unlock` if a crashed run left one
               (docs/42).
 
-        # An over-broad forget shows up as the repo suddenly shrinking. B2's
-        # hide-lifecycle window is 30 days, so catching it inside 2 days is the
-        # difference between an undelete and a permanent loss.
-        #
-        # The `> 0` guard is load-bearing, not defensive: the emitter documents
-        # the metric as "0 = unknown" and the EXIT trap writes that 0 on EVERY
-        # aborted run (stale-source guard, clone/mount abort, a failed `restic
-        # stats`). Unguarded, the left side goes hugely negative while the right
-        # side is exactly -0.2*0 = 0, so the comparison is trivially true and
-        # pages CRITICAL for a repo that never shrank — on top of the genuine
-        # ResticOffsiteFailed for the same run. One guard is enough because
-        # delta() uses only the window's FIRST and LAST samples: a sentinel as
-        # the last sample is this guard, a sentinel as the first sample makes
-        # the delta positive, and a sentinel in between does not affect it. A
-        # min_over_time guard would only suppress true positives.
+        # last_prune_success is absent, not 0, until a retention pass has run,
+        # so "never pruned" is invisible to the `== 0` arm above. The 3d window
+        # lives in the query: a NAS reboot discards a pending `for:` clock.
+        - alert: ResticOffsitePruneNeverRan
+          expr: >-
+            (
+              restic_offsite_last_success_timestamp_seconds
+              unless on (instance)
+              last_over_time(restic_offsite_last_prune_success[3d])
+            )
+            and on (instance)
+            (restic_offsite_last_success_timestamp_seconds offset 71h)
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: '${cluster_runbook_base_url}/42-offsite-backup.md'
+            summary: 'Offsite B2 retention has never run on {{ $labels.instance }}'
+            description: >-
+              {{ $labels.instance }} is uploading to B2 but has published no
+              prune result for 3 days, so the nightly forget/prune stage has
+              never completed there. Retention is not running and the repo only
+              grows. Run `restic-offsitectl prune` and check the journal
+              (docs/42).
+
+        # CRITICAL: an over-broad forget shows up as the repo shrinking, and B2's
+        # 30-day hide window makes catching it inside 2 days the difference
+        # between an undelete and permanent loss. The `> 0` guard is load-bearing:
+        # the emitter writes 0 ("unknown") on every aborted run, which unguarded
+        # makes the comparison trivially true and pages for a repo that never shrank.
         - alert: ResticOffsiteRepoShrank
           expr: >-
             delta(restic_offsite_repo_size_bytes[2d]) < -0.2 * restic_offsite_repo_size_bytes
@@ -767,11 +818,9 @@ spec:
               only offsite copy is ageing out while the local tiers carry the
               whole risk (docs/42).
 
-        # Integrity of the offsite repo, distinct from the freshness of the last
-        # upload: restic-offsite-verify.timer runs a rotating 1/12 read-data
-        # `restic check` weekly. Split failed-vs-stale, mirroring the run pair.
-        # No absent() arm on either — the verify metrics appear only after the
-        # first verify, so absent() would fire forever on a fresh deploy.
+        # Repo integrity, distinct from the freshness of the last upload:
+        # restic-offsite-verify.timer runs a rotating read-data `restic check`
+        # weekly. No absent() arm: verify metrics appear only after the first run.
         - alert: ResticOffsiteVerifyFailed
           expr: restic_offsite_last_verify_success == 0
           for: 1h
@@ -814,24 +863,9 @@ spec:
               is the only proof the offsite copy is restorable — treat an
               unverified fortnight as an incident (docs/42).
 
-        # `restic check` proves structure and checksums; it does not prove a
-        # restored file matches its source. backup-restore-drill.timer (quarterly,
-        # Persistent=true, restic_offsite) restores the smallest files of the
-        # newest snapshot and byte-compares them against the ZFS subtree they came
-        # from. 100 days = one quarter plus a month of slack.
-        #
-        # Two STALENESS arms and no absent() arm. _last_success_seconds is the
-        # proof clock (write_drill_metrics preserves it across a failed drill);
-        # _last_run_seconds advances on failure too, so it is the only arm that
-        # can see a drill which is still being attempted but has never PASSED —
-        # that state emits no _last_success_seconds series at all. Both arms
-        # carry the same instance labels, so `or` collapses them to one alert.
-        #
-        # absent() is deliberately NOT here: the metric only exists once a
-        # drill has actually run, so a bare absent() arm pages critical from
-        # merge day until the first quarterly elapse — the same trap
-        # GitLabBackupSecretsMissing avoids. BackupRestoreDrillNeverRan below
-        # owns the absence case, at warning tier.
+        # `restic check` proves structure, not that a restored file matches its
+        # source; the quarterly drill byte-compares the smallest restored files.
+        # BackupRestoreDrillNeverRan owns the absence case, at warning.
         - alert: BackupRestoreDrillStale
           expr: >-
             (time() - backup_restore_drill_last_success_seconds > 86400 * 100)
@@ -849,15 +883,9 @@ spec:
               `systemctl start backup-restore-drill.service` on pve-nas-01 and
               read `journalctl -t backup-restore-drill` (docs/42).
 
-        # The absence case, split out of BackupRestoreDrillStale so it cannot
-        # page critical for the ~8 weeks between merge day and the first
-        # quarterly elapse. restic_offsite seeds one drill when the units are
-        # newly installed, so the metric normally appears within a textfile
-        # collector cycle of the deploy; 26h of `for:` absorbs a deploy at any
-        # hour plus that pickup. What survives 26h is a seed that never ran or
-        # never passed — a real gap, but one to work through on a weekday, not
-        # a page. It becomes critical on its own once the staleness clock above
-        # has something to measure.
+        # The absence case, split out of BackupRestoreDrillStale so it cannot page
+        # critical before the first quarterly elapse. The role seeds a drill on
+        # install, so 26h of `for:` absorbs a deploy at any hour.
         - alert: BackupRestoreDrillNeverRan
           expr: absent(backup_restore_drill_last_success_seconds)
           for: 26h
@@ -867,21 +895,21 @@ spec:
             runbook_url: '${cluster_runbook_base_url}/42-offsite-backup.md'
             summary: 'No offsite restore drill has ever passed'
             description: >-
-              backup_restore_drill_last_success_seconds does not exist anywhere:
-              no restore drill has ever compared a restored file byte-for-byte
-              against its source. Either the role's seed drill never ran, it ran
-              and FAILED (check `backup_restore_drill_last_run_seconds` — it
-              advances on failure), or restic_offsite is not deployed. Run
+              backup_restore_drill_last_success_seconds does not exist anywhere,
+              so no restore drill has ever compared a restored file
+              byte-for-byte against its source. Causes: the role's seed drill
+              never ran; it ran and FAILED (check
+              `backup_restore_drill_last_run_seconds` — it advances on
+              failure); restic_offsite is not deployed; or
+              `restic_offsite_restore_drill_enabled` was set false, which makes
+              the role remove the metric. The drill is mandatory on this
+              cluster, so disabling it is not an answer. Run
               `systemctl start backup-restore-drill.service` on pve-nas-01 and
               read `journalctl -t backup-restore-drill` (docs/42).
 
-        # A drill that ran and did NOT pass is invisible for a full quarter
-        # otherwise: BackupRestoreDrillStale measures 100 days and NeverRan only
-        # covers the case where nothing ever passed. write_drill_metrics advances
-        # _last_run_seconds on failure while preserving _last_success_seconds, so
-        # the gap between them IS the failure signal. The effective window is
-        # 25h (the 24h expr threshold plus `for: 1h`), which absorbs the textfile
-        # collector cycle around a drill that started before midnight.
+        # A drill that ran and did not pass is otherwise invisible for a quarter.
+        # _last_run_seconds advances on failure while _last_success_seconds is
+        # preserved, so the gap between them is the failure signal.
         - alert: BackupRestoreDrillFailing
           expr: >-
             backup_restore_drill_last_run_seconds
@@ -900,14 +928,9 @@ spec:
               (docs/42). The staleness clock stays green for 100 days, so this is
               the only timely signal.
 
-        # Coverage floor. A drill can pass on a handful of files drawn from one
-        # dataset and look identical to one that spanned the estate — the
-        # failure mode this drill was rebuilt to close (restic_offsite's
-        # round-robin selection + restic_offsite_restore_drill_min_sources). The
-        # role emits no per-source gauge, so files_compared is the proxy: with a
-        # min_sources floor of 3 a passing drill compares at least that many.
-        # Guarded on run == success so a failed drill (which writes 0) reports
-        # through BackupRestoreDrillFailing above instead of firing twice.
+        # Coverage floor: a drill passing on a handful of files from one dataset
+        # looks like one that spanned the estate. files_compared is the proxy,
+        # guarded on run == success so a failed drill does not fire twice.
         - alert: BackupRestoreDrillProvedTooLittle
           expr: >-
             backup_restore_drill_files_compared < 3
@@ -927,20 +950,19 @@ spec:
               else — check restic_offsite_restore_drill_min_sources and the
               per-source breakdown in `journalctl -t backup-restore-drill`.
 
-        # NAS-side independent freshness: the VM wrappers write their _last_*
-        # metrics from INSIDE the VM, so those go green even when the file never
-        # reached tank/backups. The absent arm is enumerated PER APP because a
-        # family-level absent() would only fire once every app's series vanished.
-        #
-        # pve-cluster is gated on its producer's success metric: that producer
-        # ships on the Ansible lifecycle, so an unconditional absent() would page
-        # for a backup that has never run. `and on()` matches the empty label
-        # set, so the alert keeps absent()'s app="pve-cluster" label.
+        # NAS-side independent freshness: the VM wrappers write their metrics from
+        # inside the VM and stay green when the file never reached tank/backups.
+        # The absent arm is per app; pve-cluster also gates on its success metric.
         - alert: BackupArtifactStale
+          # mtime 0 is the collector's "nothing matched the glob" sentinel, so the
+          # guard keeps a dump that never landed out of the freshness arm:
+          # BackupArtifactNeverLanded owns that case.
           expr: >-
-            (time() - backup_artifact_last_mtime_seconds > 180000)
+            (backup_artifact_last_mtime_seconds != 0
+             and time() - backup_artifact_last_mtime_seconds > 180000)
             or absent(backup_artifact_last_mtime_seconds{app="authentik"})
             or absent(backup_artifact_last_mtime_seconds{app="mealie"})
+            or absent(backup_artifact_last_mtime_seconds{app="hindsight"})
             or absent(backup_artifact_last_mtime_seconds{app="gitlab"})
             or absent(backup_artifact_last_mtime_seconds{app="immich"})
             or absent(backup_artifact_last_mtime_seconds{app="nextcloud"})
@@ -964,10 +986,12 @@ spec:
               the tank/backups/apps/{{ $labels.app }} subdir exists.
 
         # Four days is two more failed nightly cycles past the warning, with the
-        # dump never reaching the dataset that rides into B2. No absent() arm —
-        # the per-app absence cases stay warning-tier above.
+        # dump never reaching the dataset that rides into B2. Absence and the
+        # mtime-0 never-landed sentinel both stay warning-tier above.
         - alert: BackupArtifactStaleCritical
-          expr: time() - backup_artifact_last_mtime_seconds > 86400 * 4
+          expr: >-
+            backup_artifact_last_mtime_seconds != 0
+            and time() - backup_artifact_last_mtime_seconds > 86400 * 4
           for: 1h
           labels:
             severity: critical
@@ -979,13 +1003,29 @@ spec:
               than 4 days old, so nothing for that app has entered the offsite
               chain in four nights.
 
-        # The NAS-side counterpart to BackupArtifactEmpty. That rule keys on the
-        # `<app>_backup_last_size_bytes` family the VM/k8s wrappers emit, which
-        # authentik, mealie and home-assistant have no member of — and a
-        # truncated dump lands with a FRESH mtime, so BackupArtifactStale stays
-        # green too. The mtime guard splits the two 0 meanings the collector
-        # documents: mtime 0 = no matching file at all (staleness owns it),
-        # mtime > 0 with size 0 = a real file that is empty.
+        # mtime 0 is the collector saying nothing matched the app's glob, so no
+        # dump has EVER landed. The window outlasts a full schedule interval and,
+        # unlike a 26h `for:`, survives a Prometheus restart.
+        - alert: BackupArtifactNeverLanded
+          expr: >-
+            max_over_time(backup_artifact_last_mtime_seconds[26h]) == 0
+            and backup_artifact_last_mtime_seconds offset 25h == 0
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#backup-and-recovery'
+            summary: 'No backup artefact has ever landed for {{ $labels.app }}'
+            description: >-
+              Nothing under tank/backups/apps/{{ $labels.app }} matches that
+              app's artefact glob, and nothing has for over a day. Either the
+              dump job has never run, or it writes somewhere the collector does
+              not glob — check the wrapper's landing path and the app's entry
+              in nas_storage_backup_artifact_apps.
+
+        # The NAS-side counterpart to BackupArtifactEmpty, for apps with no
+        # `<app>_backup_last_size_bytes` series. The mtime guard splits the two
+        # meanings of 0: mtime 0 is no file, mtime > 0 with size 0 is an empty one.
         - alert: BackupArtifactZeroBytes
           expr: >-
             backup_artifact_last_size_bytes == 0
@@ -1004,13 +1044,9 @@ spec:
               An empty dump restores nothing; treat it as no backup for that
               app tonight.
 
-        # Companions are the files an artefact cannot be restored WITHOUT
-        # (gitlab-secrets.json for the GitLab tarball) and are deliberately kept
-        # out of the artefact glob, so no freshness/size arm above sees them.
-        # Both arms are needed: absent emits present=0 + size=0, while a
-        # truncated companion emits present=1 + size=0. `or` matches on the
-        # label set minus __name__, so the two arms collapse to one alert per
-        # (app, file) rather than double-paging.
+        # Companions are the files an artefact cannot be restored without, and
+        # they sit outside the artefact glob. Absent emits present=0 and size=0;
+        # truncated emits present=1 and size=0.
         - alert: BackupArtifactCompanionMissing
           expr: >-
             backup_artifact_companion_present == 0
@@ -1029,10 +1065,9 @@ spec:
               backup wrapper — the companion copy is a separate step from the
               dump and fails separately.
 
-        # Collector meta-failure: the oneshot ran but is stuck, or the timer was
-        # never deployed — in which case BackupArtifactStale serves stale inputs.
-        # The timer runs every 10m; 2h is a generous ~12-cycle window so the
-        # nightly archive/restic IO chain cannot flap it.
+        # Collector meta-failure: the oneshot is stuck or the timer was never
+        # deployed, either of which leaves BackupArtifactStale on stale inputs.
+        # The timer runs every 10m, so 2h is ~12 cycles of slack.
         - alert: BackupArtifactCollectorStale
           expr: >-
             (time() - backup_artifact_collector_last_success_seconds > 7200)

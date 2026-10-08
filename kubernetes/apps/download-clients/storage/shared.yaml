@@ -1,11 +1,7 @@
 ---
-# The one-off shared /media volume (a bind of the /mnt/media mergerfs), mounted
-# at the same path in every pod so downloads and library can hard-link. The
-# per-app config PV/PVC pairs are generated from the ../_nfs-pv component by the
-# per-app overlays here — see kustomization.yaml.
-#
-# NFS-over-TLS PV; hostname (not IP) + force annotation rationale:
-# ../_nfs-pv/resources.yaml and docs/07.
+# The shared /media volume, mounted at the same path in every pod so downloads
+# and library can hard-link. Per-app config PV/PVC pairs come from ../_nfs-pv.
+# NFS-over-TLS; hostname and force annotation: ../_nfs-pv/resources.yaml, docs/07.
 apiVersion: v1
 kind: PersistentVolume
 metadata:
@@ -16,6 +12,11 @@ metadata:
     type: nfs
     app: downloads
 spec:
+  # Pre-bound to its PVC: without it a deleted-and-recreated PVC can be bound
+  # by any Available PV of matching size.
+  claimRef:
+    namespace: downloads
+    name: data
   capacity:
     storage: 100Ti  # Large value since NFS doesn't enforce quotas
   accessModes:

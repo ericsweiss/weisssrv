@@ -1,0 +1,81 @@
+---
+# promtool unit tests for UptimeKumaMonitorPersistentlyDown. The 24h window
+# separates an outage blackbox also sees (EndpointDown, 10m) from one only Kuma
+# reports. monitor_status: 0 DOWN, 1 UP, 2 PENDING, 3 MAINTENANCE; only 0 counts.
+rule_files:
+  - rules.yaml
+evaluation_interval: 5m
+tests:
+  # Up for the first hour, then down. The 24h lookback still holds an UP sample
+  # at 20h, so nothing fires until the window is entirely down.
+  - interval: 5m
+    input_series:
+      - series: 'monitor_status{monitor_name="Hermes Agent", monitor_url="https://agent.ericsweiss.com", monitor_type="http", job="uptime-kuma", instance="10.42.3.227:3001"}'
+        values: '1+0x12 0+0x400'
+    alert_rule_test:
+      - eval_time: 20h
+        alertname: UptimeKumaMonitorPersistentlyDown
+        exp_alerts: []
+      # Inside the 15m hold, just after the window goes entirely down.
+      - eval_time: 25h5m
+        alertname: UptimeKumaMonitorPersistentlyDown
+        exp_alerts: []
+      - eval_time: 25h30m
+        alertname: UptimeKumaMonitorPersistentlyDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              monitor_name: Hermes Agent
+              monitor_url: https://agent.ericsweiss.com
+
+  # A monitor parked in MAINTENANCE (3) or PENDING (2) is not DOWN.
+  - interval: 5m
+    input_series:
+      - series: 'monitor_status{monitor_name="Plex", monitor_url="https://plex.ericsweiss.com/identity", monitor_type="http", job="uptime-kuma", instance="10.42.3.227:3001"}'
+        values: '3+0x400'
+      - series: 'monitor_status{monitor_name="Mealie", monitor_url="https://food.ericsweiss.com", monitor_type="http", job="uptime-kuma", instance="10.42.3.227:3001"}'
+        values: '2+0x400'
+    alert_rule_test:
+      - eval_time: 25h30m
+        alertname: UptimeKumaMonitorPersistentlyDown
+        exp_alerts: []
+
+  # A healthy monitor.
+  - interval: 5m
+    input_series:
+      - series: 'monitor_status{monitor_name="Grafana", monitor_url="https://grafana.esweiss.com", monitor_type="http", job="uptime-kuma", instance="10.42.3.227:3001"}'
+        values: '1+0x400'
+    alert_rule_test:
+      - eval_time: 25h30m
+        alertname: UptimeKumaMonitorPersistentlyDown
+        exp_alerts: []
+
+  # A brand-new (or renamed) monitor that is DOWN from its first sample. The
+  # 24h window reads empty before the series starts, so without the `offset`
+  # guard this pages within minutes claiming a 24h outage.
+  - interval: 5m
+    input_series:
+      - series: 'monitor_status{monitor_name="New Target", monitor_url="https://new.ericsweiss.com", monitor_type="http", job="uptime-kuma", instance="10.42.3.227:3001"}'
+        values: '0+0x5'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: UptimeKumaMonitorPersistentlyDown
+        exp_alerts: []
+
+  # Down for a day, then paused in Kuma: the gauge stops being exported, so the
+  # retained zeros must not keep the alert lit.
+  - interval: 5m
+    input_series:
+      - series: 'monitor_status{monitor_name="Paused Target", monitor_url="https://paused.ericsweiss.com", monitor_type="http", job="uptime-kuma", instance="10.42.3.227:3001"}'
+        values: '0+0x312'
+    alert_rule_test:
+      - eval_time: 26h
+        alertname: UptimeKumaMonitorPersistentlyDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              monitor_name: Paused Target
+              monitor_url: https://paused.ericsweiss.com
+      - eval_time: 36h
+        alertname: UptimeKumaMonitorPersistentlyDown
+        exp_alerts: []

@@ -9,13 +9,12 @@
     - weisssrv.infra.base
     - weisssrv.infra.qol
     - weisssrv.infra.postfix_null_client
-    # Also in site.yml; listed here so a standalone deploy stays in sync.
+    # Shared with site.yml; scripts/test_shared_role_playbook_sync.py keeps the two in step.
     - weisssrv.infra.alloy_host
 
-# MUST precede the server/agent plays: the k3s role's off-node etcd-snapshot
-# task asserts tlshd is active and mounts an xprtsec=tls export. Group-wide —
-# agents mount the NAS-backed PVs, servers the etcd-snapshot export. nfs_tls
-# needs only apt + the CA truststore from the base play.
+# CRITICAL: must precede the server and agent plays. The k3s role's off-node
+# etcd-snapshot task asserts tlshd is active and mounts an xprtsec=tls export.
+# Group-wide: agents mount the NAS-backed PVs, servers the snapshot export.
 - name: Deploy NFSv4-over-TLS daemon on NFS-mounting k3s nodes
   hosts: k3s
   become: true
@@ -32,17 +31,16 @@
 - name: Deploy k3s agents
   hosts: k3s_agents
   become: true
-  # One agent at a time: an agent config / kubelet-arg change fires the
-  # Restart k3s-agent handler, and Traefik ingress + the MetalLB L2 speaker run
-  # on the agents, so a simultaneous cluster-wide kubelet bounce can blip the
-  # .100/.101 VIPs. Matches the server play above and maintenance/update-k3s-nodes.yml.
+  # One agent at a time: a config change fires the Restart k3s-agent handler,
+  # and Traefik plus the MetalLB L2 speaker run on the agents, so a cluster-wide
+  # kubelet bounce can blip the ingress VIPs.
   serial: 1
   roles:
     - weisssrv.infra.k3s
 
-# Also in site.yml; listed here so a standalone deploy stays in sync — without
-# it the servers' etcd-snapshot textfile metric (EtcdSnapshotStale) is
-# unexposed. Agents are covered by the in-cluster node-exporter DaemonSet.
+# Shared with site.yml; scripts/test_shared_role_playbook_sync.py keeps the two
+# in step. Without it the servers' etcd-snapshot textfile metric
+# (EtcdSnapshotStale) is unexposed; agents use the in-cluster DaemonSet.
 - name: Deploy host-level metrics on k3s servers
   hosts: k3s_servers
   become: true
@@ -66,15 +64,14 @@
       ansible.builtin.command: k3s kubectl get nodes -o wide
       register: node_status
       changed_when: false
+      check_mode: false
 
     - name: Display cluster status
       ansible.builtin.debug:
         msg: "{{ node_status.stdout_lines }}"
 
-    # Fail loud on any node whose STATUS column does not begin with 'Ready'
-    # (Ready,SchedulingDisabled — a cordoned-but-healthy node — still passes),
-    # mirroring scripts/post-maintenance-verify.sh. STATUS is the 2nd column of
-    # `get nodes -o wide`; skip the header row.
+    # STATUS is the 2nd column of `get nodes -o wide`; the header row is
+    # skipped. Ready,SchedulingDisabled (cordoned but healthy) still passes.
     - name: Fail if any node is not Ready
       ansible.builtin.assert:
         that:
@@ -89,6 +86,7 @@
       ansible.builtin.command: k3s kubectl get pods -A
       register: pod_status
       changed_when: false
+      check_mode: false
 
     - name: Display pod status
       ansible.builtin.debug:

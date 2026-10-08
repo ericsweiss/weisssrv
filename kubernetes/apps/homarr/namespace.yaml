@@ -7,13 +7,9 @@ metadata:
     app.kubernetes.io/name: homarr
     app.kubernetes.io/part-of: homarr
     app.kubernetes.io/managed-by: flux
-    # enforce baseline / warn+audit restricted (matches hermes/recipes). The
-    # image runs a root entrypoint (it templates /etc/nginx at boot), so it does
-    # NOT run non-root and could not pass a strict restricted ENFORCE; baseline
-    # is the correct enforce level. The container still hardens what it can:
-    # drop-ALL then add only CHOWN/SETUID/SETGID/DAC_OVERRIDE (load-bearing —
-    # docs/41), seccomp RuntimeDefault, allowPrivilegeEscalation:false,
-    # fsGroup:2000. warn/audit restricted surface any drift.
+    # Baseline enforce: the image runs a root entrypoint that templates
+    # /etc/nginx at boot, so it cannot pass restricted enforce. The container
+    # keeps drop-ALL plus four load-bearing caps (docs/41).
     pod-security.kubernetes.io/enforce: baseline
     pod-security.kubernetes.io/warn: restricted
     pod-security.kubernetes.io/audit: restricted

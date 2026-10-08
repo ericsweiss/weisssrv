@@ -1,8 +1,7 @@
 ---
-# Internal only: grafana.esweiss.com
-# Grafana handles OIDC authentication natively — no forward-auth middleware needed.
-# lan-tailscale-only keeps it off the public internet, matching every sibling
-# internal *.esweiss.com route (Loki below, onepassword-connect, the arr stack).
+# Internal only. Grafana handles OIDC natively, so no forward-auth middleware;
+# lan-tailscale-only keeps it off the public internet, like every sibling
+# internal route.
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:
@@ -25,11 +24,9 @@ spec:
   tls:
     secretName: grafana-esweiss-tls
 ---
-# Internal only: loki.esweiss.com — Loki push API exposed over TLS so
-# host-side Alloy on Proxmox + k3s VMs can ship journald logs without
-# the plaintext NodePort hop. lan-tailscale-only keeps it off the
-# public internet; loki-push-auth adds basic auth because Loki itself
-# runs auth_enabled=false.
+# Internal only: the Loki PUSH API over TLS, so host-side Alloy ships journald
+# without a plaintext NodePort hop. lan-tailscale-only plus loki-push-auth basic
+# auth; the PathPrefix keeps that credential off the query and delete APIs.
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:
@@ -39,7 +36,7 @@ spec:
   entryPoints:
     - websecure
   routes:
-    - match: Host(`loki.${cluster_internal_domain}`)
+    - match: Host(`loki.${cluster_internal_domain}`) && PathPrefix(`/loki/api/v1/push`)
       kind: Rule
       middlewares:
         - name: lan-tailscale-only

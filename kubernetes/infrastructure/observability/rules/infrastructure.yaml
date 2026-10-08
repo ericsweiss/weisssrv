@@ -10,17 +10,16 @@ spec:
   groups:
     - name: homelab.infrastructure
       rules:
-        # gluetun_vpn_status (downloads/qbittorrent/resources.yaml sidecar): 1 =
-        # anything else unhealthy. Only qbittorrent carries the exporter, and the
-        # namespace scope keeps a future series elsewhere out. 15m exceeds a
-        # Recreate rollout + OpenVPN reconnect.
+        # gluetun_vpn_status (the qbittorrent sidecar): 1 = healthy. Only
+        # qbittorrent carries the exporter; the namespace scope keeps a future
+        # series elsewhere out. 15m exceeds a rollout plus an OpenVPN reconnect.
         - alert: VPNDown
           expr: gluetun_vpn_status{namespace="downloads"} != 1
           for: 15m
           labels:
             severity: critical
           annotations:
-            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/21-download-clients-deployment.md'
             summary: 'Gluetun VPN unhealthy on {{ $labels.pod }}'
             description: >-
               gluetun_vpn_status is {{ $value }} (1 = running) on
@@ -35,7 +34,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/21-download-clients-deployment.md'
             summary: 'Gluetun VPN-health metric missing for qbittorrent'
             description: >-
               No gluetun_vpn_status series for 15m — the qbittorrent pod
@@ -61,10 +60,9 @@ spec:
               WireGuard internet-exit VPN endpoint is down and no client can
               connect. See docs/38-wireguard-vpn.md.
 
-        # Hermes' memory backend (docs/37 §Memory backend). Cluster-internal, so
-        # no blackbox probe: same deployment-availability shape as WgEasyDown.
-        # Warning — Hermes' built-in memory keeps running, so this is degraded
-        # recall, not an outage.
+        # Hermes' memory backend (docs/37). Cluster-internal, so no blackbox
+        # probe: same deployment-availability shape as WgEasyDown. Warning —
+        # Hermes' own memory keeps working, so recall degrades, service does not.
         - alert: HindsightDown
           expr: >-
             kube_deployment_status_replicas_available{namespace="hindsight", deployment="hindsight"} == 0
@@ -81,33 +79,35 @@ spec:
               failing (built-in memory still runs). See docs/37-hermes.md
               §Memory backend.
 
-        # CI registry pull-through cache (docs/27). Warning — a cache outage
-        # only makes molecule jobs cold-pull from the GitLab registry, so it is
-        # slower CI, not broken CI.
+        # CI registry pull-through cache (docs/27): an outage only makes molecule
+        # jobs cold-pull. The `up` arms catch a Ready pod that stopped serving :5001;
+        # every arm aggregates `by (namespace)` so one outage is one series.
         - alert: RegistryCacheDown
           expr: >-
-            kube_deployment_status_replicas_available{namespace="registry-cache", deployment="registry-cache"} == 0
-            or absent(kube_deployment_status_replicas_available{namespace="registry-cache", deployment="registry-cache"})
+            min by (namespace) (kube_deployment_status_replicas_available{namespace="registry-cache", deployment="registry-cache"}) == 0
+            or sum by (namespace) (absent(kube_deployment_status_replicas_available{namespace="registry-cache", deployment="registry-cache"})) > 0
+            or min by (namespace) (up{namespace="registry-cache", service="registry-cache"}) == 0
+            or sum by (namespace) (absent(up{namespace="registry-cache", service="registry-cache"})) > 0
           for: 15m
           labels:
             severity: warning
           annotations:
             runbook_url: '${cluster_runbook_base_url}/27-gitlab-deployment.md'
-            summary: 'CI registry pull-through cache has no available replica'
+            summary: 'CI registry pull-through cache is down or unscrapable'
             description: >-
-              The registry-cache Deployment has 0 available replicas for
-              15m — CI molecule jobs cold-pull the molecule-test image
-              direct from the GitLab registry (slower pipelines, not
-              broken). See docs/27-gitlab-deployment.md § Registry
-              pull-through cache.
+              The registry-cache Deployment has 0 available replicas, or its
+              :5001 metrics endpoint stopped answering, for 15m — CI molecule
+              jobs cold-pull the molecule-test image direct from the GitLab
+              registry (slower pipelines, not broken). See
+              docs/27-gitlab-deployment.md § Registry pull-through cache.
 
         # Runner S3 cache (kubernetes/apps/ci-cache). Same degrade-not-break
         # shape as RegistryCacheDown: a dead cache means every job reinstalls
         # its toolchain again — slower CI, nothing fails.
         - alert: CiCacheDown
           expr: >-
-            kube_deployment_status_replicas_available{namespace="ci-cache", deployment="ci-cache"} == 0
-            or absent(kube_deployment_status_replicas_available{namespace="ci-cache", deployment="ci-cache"})
+            min by (namespace) (kube_deployment_status_replicas_available{namespace="ci-cache", deployment="ci-cache"}) == 0
+            or sum by (namespace) (absent(kube_deployment_status_replicas_available{namespace="ci-cache", deployment="ci-cache"})) > 0
           for: 15m
           labels:
             severity: warning
@@ -120,13 +120,9 @@ spec:
               pip/galaxy toolchain (slower pipelines, not broken). See
               kubernetes/apps/ci-cache/README.md.
 
-        # Uptime Kuma (docs/45): the independent endpoint watchdog and the
-        # public status page. Same deployment-availability shape as the two
-        # above. Warning, not critical — Prometheus itself is what evaluates
-        # this rule, so the PRIMARY alerting path is by definition still up;
-        # what is lost is the second opinion and status.ericsweiss.com. The
-        # blackbox EndpointDown targets cover the ingress path separately, and
-        # this arm is what still fires when the pod cannot schedule at all.
+        # Uptime Kuma (docs/45): the independent endpoint watchdog behind the
+        # public status page. Warning — what is lost is the second opinion and
+        # the status page, not the primary alerting path evaluating this rule.
         - alert: UptimeKumaDown
           expr: >-
             kube_deployment_status_replicas_available{namespace="uptime-kuma", deployment="uptime-kuma"} == 0
@@ -142,11 +138,9 @@ spec:
               no endpoint monitor is running and the public status page is
               down. See docs/45-uptime-kuma.md.
 
-        # The WireGuard endpoint friends and family actually dial is the
-        # MetalLB VIP, not the pod: a lost LoadBalancer ingress IP leaves every
-        # external client unable to connect while WgEasyDown stays green
-        # (docs/38). The IP is asserted, not just presence, so a VIP that moves
-        # pool is caught too.
+        # External clients dial the MetalLB VIP, not the pod: a lost
+        # LoadBalancer ingress IP leaves them unable to connect while WgEasyDown
+        # stays green. The IP is asserted, so a VIP that moves pool is caught.
         - alert: WgEasyEndpointVipMissing
           expr: >-
             absent(kube_service_status_load_balancer_ingress{namespace="wg-easy",
@@ -164,11 +158,9 @@ spec:
               IPAddressPool/L2Advertisement and the Service in
               kubernetes/apps/wg-easy.
 
-        # The same guard for the two ingress VIPs. MetalLB has wedged these
-        # twice (the reason the chart is pinned at 0.15.3 — docs/12), and the
-        # failure presents as dozens of EndpointDown probes with no statement of
-        # cause. Separate rules per Service so the alert names the VIP that went
-        # missing: .100 is every public route, .101 every internal one.
+        # The same guard for the two ingress VIPs, which otherwise present as
+        # an EndpointDown flood with no stated cause. One rule per Service so
+        # the alert names the VIP: .100 public routes, .101 internal ones.
         - alert: TraefikPublicVipMissing
           expr: >-
             absent(kube_service_status_load_balancer_ingress{namespace="traefik",
@@ -177,7 +169,7 @@ spec:
           labels:
             severity: critical
           annotations:
-            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/31-observability.md#alerting'
             summary: 'Traefik public VIP 10.0.10.100 is not assigned'
             description: >-
               The traefik LoadBalancer Service no longer carries
@@ -194,7 +186,7 @@ spec:
           labels:
             severity: critical
           annotations:
-            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/31-observability.md#alerting'
             summary: 'Traefik internal VIP 10.0.10.101 is not assigned'
             description: >-
               The traefik-internal LoadBalancer Service no longer carries
@@ -202,6 +194,27 @@ spec:
               including the VM/LXC guests fronted by vm-ingress. Check
               MetalLB's IPAddressPool/L2Advertisement and the speaker
               DaemonSet.
+
+        # The VIP-missing alerts above point here. A speaker-less cluster still
+        # ASSIGNS every LoadBalancer IP, so the Services keep their EXTERNAL-IP
+        # while nothing announces them; absent() covers a deleted DaemonSet.
+        - alert: MetalLBSpeakerNotScheduled
+          expr: >-
+            kube_daemonset_status_desired_number_scheduled{namespace="metallb-system",
+            daemonset="metallb-speaker"} == 0
+            or absent(kube_daemonset_status_desired_number_scheduled{namespace="metallb-system",
+            daemonset="metallb-speaker"})
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#a-metallb-vip-receives-nothing-while-the-service-looks-healthy'
+            summary: 'No metallb-speaker pod is scheduled, so no LoadBalancer VIP is announced'
+            description: >-
+              The metallb-speaker DaemonSet wants zero pods, or no longer
+              exists. Its nodeSelector is
+              ${cluster_node_label_domain}/ingress, so an unlabelled fleet
+              leaves .99/.100/.101/.162 assigned and unreachable.
 
         # The peer gauges are the only in-cluster view of the WireGuard datapath.
         # They vanish if the app's Prometheus toggle or Bearer token is reset,
@@ -219,11 +232,9 @@ spec:
               Prometheus toggle and Bearer password in the wg-easy Admin Panel
               against the wg-easy-metrics-token secret (docs/38).
 
-        # Tailscale is the out-of-band access path used when the LAN or ingress
-        # is broken, so it needs a named alert rather than the generic
-        # Kube*ReplicasMismatch warnings (which the node-outage inhibit
-        # suppresses). The proxy StatefulSets carry operator-generated name
-        # suffixes, so the rule is namespace-scoped, not name-scoped.
+        # Tailscale is the out-of-band access path when the LAN or ingress is
+        # broken, so it needs a named alert rather than the generic
+        # Kube*ReplicasMismatch warnings the node-outage inhibit suppresses.
         - alert: TailscaleOperatorDown
           expr: >-
             kube_deployment_status_replicas_available{namespace="tailscale", deployment="operator"} == 0
@@ -254,8 +265,7 @@ spec:
 
         # Degradation is graceful (Flux falls back to its ~1m git poll), so
         # warning at 30m: the symptom to name is "push reconcile is off", not
-        # unexplained CI failures. Deployment name carries a version suffix, so
-        # the rule is namespace-scoped.
+        # unexplained CI failures. The Deployment name carries a version suffix.
         - alert: GitLabAgentDown
           expr: >-
             kube_deployment_status_replicas_available{namespace="gitlab-agent"} == 0
@@ -290,19 +300,27 @@ spec:
               outbound email have stopped while the server keeps serving stale
               configuration.
 
-        # postgres_exporter coverage for the five production databases
-        # (authentik + mealie in-cluster sidecars, nextcloud/immich/gitlab as
-        # static VM targets — see service-monitors/postgres.yaml). pg_up flips to
-        # 0 when the exporter cannot reach its database; a dead exporter is
-        # TargetDown.
-        #
-        # The absent() arm enumerates the five exporters that have landed. The
-        # constraint it encodes is a SEQUENCING one, not "absent() is unsafe":
-        # each name may only be added here once its exporter is deployed, so a
-        # new Ansible-installed target lands (or lands in the same change) before
-        # its ServiceMonitor and this list. Without the arm, an exporter silently
-        # dropped from the pinned Endpoints produces no alert at all —
-        # TargetDown does cover it, but the two are independent.
+        # AuthentikWorkerDown is liveness only, so a degraded-but-alive IdP has
+        # no signal. p95 flow planning sits near 10ms with a 7d peak of 24ms, so
+        # 1s is two orders of magnitude out and means logins are timing out.
+        - alert: AuthentikFlowLatencyHigh
+          expr: >-
+            histogram_quantile(0.95, sum by (le) (rate(authentik_flows_plan_time_bucket[30m]))) > 1
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: '${cluster_runbook_base_url}/40-authentik-terraform.md'
+            summary: 'Authentik flow planning p95 is above 1s'
+            description: >-
+              Authentik has taken more than a second at p95 to plan a login flow
+              for 15 minutes, against a normal of about 10ms. Every SSO-fronted
+              app is slow or timing out. Check authentik-server and -worker CPU,
+              and the Postgres backend.
+
+        # postgres_exporter coverage for the production databases; pg_up is 0
+        # when the exporter cannot reach its database. Add a job to the absent()
+        # arm only once its exporter is deployed, or it fires immediately.
         - alert: PostgresDown
           expr: >-
             pg_up == 0
@@ -315,7 +333,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/31-observability.md#alerting'
             summary: 'PostgreSQL exporter {{ $labels.job }} reports down or is missing'
             description: >-
               postgres_exporter for job {{ $labels.job }}
@@ -335,7 +353,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/31-observability.md#alerting'
             summary: 'PostgreSQL on {{ $labels.instance }} above 80% of max_connections'
             description: >-
               {{ $labels.instance }} is holding
@@ -358,7 +376,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/31-observability.md#alerting'
             summary: 'Loki is returning 5xx on more than 5% of requests'
             # $value is a 0-1 ratio; humanizePercentage emits the % sign.
             description: >-
@@ -368,10 +386,8 @@ spec:
               failing — senders do not buffer.
 
         # Discards are unrecoverable (RF=1, senders do not retry a 4xx) and
-        # arrive in short, large bursts, so both rules pair a burst-rate arm
-        # (for:5m) with an hourly-volume arm that a bursty day cannot ride out.
-        # Split by reason class because the remedies differ: a rate limit is a
-        # limits_config cap, an out-of-order reject is the accept window.
+        # arrive in bursts, so each rule pairs a burst-rate arm with an hourly
+        # volume arm. Split by reason: a limits_config cap vs the accept window.
         - alert: LokiDiscardsRateLimited
           expr: >-
             sum by (reason) (rate(loki_discarded_samples_total{job="observability/loki",
@@ -414,18 +430,12 @@ spec:
               reject_old_samples_max_age. Typically a sender WAL replay after
               an outage — widen the window or shorten the replay horizon.
 
-        # Meta-monitoring for the OTHER alerting path: the HostLogShippingStale
-        # rules (loki/host-log-staleness.yaml) run in Loki's in-process ruler and
+        # Meta-monitoring for the loki/ rule files: they run in Loki's ruler and
         # push straight to Alertmanager, so no Prometheus rule sees them fail.
-        #
-        # The `< 24` threshold is the TOTAL rule count across the loki/ rule
-        # files (host-log-staleness.yaml + runner-reaper.yaml);
-        # scripts/test_host_log_staleness.py asserts they stay equal, so
-        # adding a host or a rule file cannot leave a stale threshold that
-        # under-detects.
+        # `< 27` is their total rule count, kept equal by test_host_log_staleness.
         - alert: LokiRulerRulesMissing
           expr: >-
-            sum(loki_prometheus_rule_group_rules{job="observability/loki"}) < 24
+            sum(loki_prometheus_rule_group_rules{job="observability/loki"}) < 27
             or absent(loki_prometheus_rule_group_rules{job="observability/loki"})
           for: 15m
           labels:
@@ -481,7 +491,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/29-flux-operations.md#troubleshooting'
             summary: 'Flux controller {{ $labels.controller }} has reconciliation errors'
             description: >-
               Flux controller {{ $labels.controller }}
@@ -497,7 +507,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/29-flux-operations.md#troubleshooting'
             summary: >-
               Flux resource {{ $labels.customresource_kind }}/{{ $labels.exported_namespace }}/{{ $labels.name }}
               not Ready
@@ -517,7 +527,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/15-credential-rotation.md#troubleshooting'
             summary: '1Password Connect has no available replicas'
             description: >-
               1Password Connect deployment in external-secrets namespace
@@ -532,15 +542,13 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/15-credential-rotation.md#troubleshooting'
             summary: 'ExternalSecret {{ $labels.name }} sync failing'
             description: 'ExternalSecret {{ $labels.name }} in {{ $labels.namespace }} has not synced for 15 minutes.'
 
-        # Successful cloudflare-ddns runs (every 5m) stopped advancing — a
-        # revoked token or a stuck schedule. Does NOT detect an IP that drifted
-        # while a run "succeeded". `max by (namespace, cronjob)` drops
-        # kube-state-metrics' scrape labels, so the alert does not re-notify as a
-        # new Alertmanager group each time KSM is rescheduled.
+        # Successful cloudflare-ddns runs stopped advancing: a revoked token or a
+        # stuck schedule. It does not detect an IP that drifted while a run
+        # succeeded. `max by` drops KSM's scrape labels so a reschedule is quiet.
         - alert: DDNSStale
           expr: >-
             (time() - max by (namespace, cronjob) (kube_cronjob_status_last_successful_time{namespace="cloudflare-ddns", cronjob="cloudflare-ddns"}) > 3600)
@@ -556,6 +564,62 @@ spec:
               completion for more than an hour, or the metric is absent.
               Public-IP A records (${cluster_external_domain}, direct/git) may go stale
               on the next WAN IP change.
+
+        # external-dns runs policy=sync against a TXT registry, so it deletes
+        # what it owns: a source that stops yielding endpoints becomes a
+        # deletion of every public record, and 0 endpoints is that signature.
+        - alert: ExternalDNSNoSourceEndpoints
+          expr: >-
+            max(external_dns_source_endpoints_total) == 0
+            or absent(external_dns_source_endpoints_total)
+          for: 15m
+          labels:
+            severity: critical
+          annotations:
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#updating-dns-records'
+            summary: 'external-dns is discovering no endpoints'
+            description: >-
+              external-dns has found 0 endpoints across its ingress, service
+              and traefik-proxy sources for 15 minutes, or the metric is
+              absent. Under policy=sync it deletes the records it owns, which
+              takes every public hostname down with it.
+
+        # Aggregate BEFORE max_over_time: the raw series carry record_type and
+        # the pod's scrape labels, so a per-series max double-counts every
+        # restart. 20% under the 6h peak is a bulk deletion, not churn.
+        - alert: ExternalDNSRecordsDropped
+          expr: >-
+            sum(external_dns_registry_records)
+            < 0.8 * max_over_time(sum(external_dns_registry_records)[6h:15m])
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#updating-dns-records'
+            summary: 'external-dns owns 20% fewer records than it did 6h ago'
+            description: >-
+              The record count external-dns owns has dropped more than 20%
+              against its 6-hour peak. A deliberate hostname retirement clears
+              once the window rolls forward; anything else is public records
+              being deleted out from under the cluster.
+
+        # The reconcile loop runs every 5m, so half an hour is six missed
+        # rounds — a wedged controller or a provider rejecting every call.
+        - alert: ExternalDNSSyncStale
+          expr: >-
+            (time() - max(external_dns_controller_last_sync_timestamp_seconds) > 1800)
+            or absent(external_dns_controller_last_sync_timestamp_seconds)
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#updating-dns-records'
+            summary: 'external-dns has not completed a sync in 30 minutes'
+            description: >-
+              external-dns has recorded no successful provider sync for 30
+              minutes, or the metric is absent. New and changed Ingress records
+              are not reaching Cloudflare — check the controller log and the
+              API token.
 
         - alert: CertExpiringWarning
           expr: certmanager_certificate_expiration_timestamp_seconds - time() < 86400 * 14
@@ -583,6 +647,22 @@ spec:
               in {{ $labels.namespace }}
               expires in {{ $value | humanizeDuration }}.
 
+        # The expiry arms read the expiration timestamp series, which only
+        # exists after a first successful issuance. This arm covers the
+        # Certificate that never gets one.
+        - alert: CertificateNotReady
+          expr: certmanager_certificate_ready_status{condition="False"} == 1
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#certificate-renewal-issues'
+            summary: 'Certificate {{ $labels.name }} in {{ $labels.namespace }} is not Ready'
+            description: >-
+              cert-manager has not issued Certificate {{ $labels.name }}
+              in {{ $labels.namespace }} for an hour. The expiry alerts cannot
+              cover it: that series only exists after a first issuance.
+
         - alert: TraefikHighErrorRate
           expr: >-
             sum(rate(traefik_service_requests_total{code=~"5.."}[5m]))
@@ -594,53 +674,104 @@ spec:
           labels:
             severity: warning
           annotations:
-            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/31-observability.md#alerting'
             summary: 'Traefik 5xx error rate above 5%'
             # $value is a 0-1 ratio; humanizePercentage emits the % sign.
             description: 'Traefik is returning 5xx errors at {{ $value | humanizePercentage }} over the last 5 minutes.'
 
+        # Aggregate kube-state-metrics' scrape labels away once, here: raw VPA
+        # series carry job/instance/pod/endpoint/service, so a KSM reschedule
+        # restarts an alert's `for:` clock. `unit` stays; descriptions read it.
+        - record: vpa:recommendation_target:max
+          expr: >-
+            max by (exported_namespace, verticalpodautoscaler, container, resource, unit)
+              (vpa_recommendation_target)
+
+        - record: vpa:recommendation_uncappedtarget:max
+          expr: >-
+            max by (exported_namespace, verticalpodautoscaler, container, resource, unit)
+              (vpa_recommendation_uncappedtarget)
+
+        # The workload-scoped join the two memory-sizing alerts share:
+        # exported_namespace -> namespace, target_name -> workload, `source`
+        # separating capped from uncapped. Scoped to VPAs nothing rescales.
+        - record: workload:vpa_recommendation_memory:max
+          expr: >-
+            max by (namespace, verticalpodautoscaler, workload, container, source) (
+              label_replace(
+                label_replace(
+                  label_replace(
+                    {__name__=~"vpa_recommendation_(uncapped)?target", resource="memory", update_mode=~"Off|Initial"}
+                    or
+                    {__name__=~"vpa_recommendation_(uncapped)?target", resource="memory", controlled_values="RequestsOnly"},
+                    "source", "$1", "__name__", "vpa_recommendation_(.*)"),
+                  "namespace", "$1", "exported_namespace", "(.*)"),
+                "workload", "$1", "target_name", "(.*)")
+            )
+
+        # The container side of that join, `kind` carrying limits vs requests.
+        # Per workload, not per (namespace, container): flux-system controllers
+        # share a container name. The prefix strip keeps operator STS joinable.
+        - record: workload:kube_pod_container_resource_memory:max
+          expr: >-
+            label_replace(
+              max by (namespace, workload, container, kind) (
+                (
+                  label_replace(kube_pod_container_resource_limits{resource="memory"}, "kind", "limits", "", "")
+                  or
+                  label_replace(kube_pod_container_resource_requests{resource="memory"}, "kind", "requests", "", "")
+                )
+                * on (namespace, pod) group_left (workload)
+                max by (namespace, workload, pod) (
+                  namespace_workload_pod:kube_pod_owner:relabel
+                )
+              ),
+              "workload", "$1", "workload", "^(?:prometheus|alertmanager)-(.+)$")
+
         # uncappedTarget above target means the recommendation is clamped at
-        # maxAllowed — the workload outgrew its ceiling. 24h hold because
-        # recommendations swing with daily load. Fed by the kube-state-metrics
-        # customResourceState VPA config in kube-prometheus-stack/release.yaml.
-        #
-        # nzbget and qbittorrent memory are excluded: their caps are the
-        # deliberate sizing decision (the recommender chases reclaimable
-        # unpack-/torrent-time page cache — docs/33, download-clients/vpa.yaml),
-        # so left in they would fire permanently.
-        #
-        # Both sides are aggregated to the recommendation's own identity first.
-        # Raw, they carry kube-state-metrics' scrape labels (job/instance/pod/
-        # endpoint/service), so a KSM reschedule changes the alert's label set
-        # mid-`for:` — the pending alert resolves and the 24h clock restarts,
-        # and it would never fire. `unit` is kept because the description reads
-        # it.
+        # maxAllowed. Memory needs a 1.25x ratio and a flat 128Mi gap, so a
+        # workload growing toward its own limit does not fire forever (docs/33).
         - alert: VPARecommendationCapped
           expr: >-
             (
-              max by (exported_namespace, verticalpodautoscaler, container, resource, unit)
-                (vpa_recommendation_uncappedtarget)
-              >
-              max by (exported_namespace, verticalpodautoscaler, container, resource, unit)
-                (vpa_recommendation_target)
+              (
+                vpa:recommendation_uncappedtarget:max{resource="memory"}
+                > 1.25 * vpa:recommendation_target:max{resource="memory"}
+                and
+                vpa:recommendation_uncappedtarget:max{resource="memory"}
+                - vpa:recommendation_target:max{resource="memory"} > 134217728
+              )
+              or
+              (
+                vpa:recommendation_uncappedtarget:max{resource="cpu"}
+                > 1.25 * vpa:recommendation_target:max{resource="cpu"}
+              )
             )
             unless on (exported_namespace, verticalpodautoscaler, container, resource)
             (
-              vpa_recommendation_target{exported_namespace="downloads",
-                                        verticalpodautoscaler="nzbget",
-                                        container="nzbget",
-                                        resource="memory"}
+              vpa:recommendation_target:max{exported_namespace="downloads",
+                                            verticalpodautoscaler="nzbget",
+                                            container="nzbget",
+                                            resource="memory"}
               or
-              vpa_recommendation_target{exported_namespace="downloads",
-                                        verticalpodautoscaler="qbittorrent",
-                                        container="qbittorrent",
-                                        resource="memory"}
+              vpa:recommendation_target:max{exported_namespace="downloads",
+                                            verticalpodautoscaler="qbittorrent",
+                                            container="qbittorrent",
+                                            resource="memory"}
+              or
+              vpa:recommendation_target:max{exported_namespace="downloads",
+                                            verticalpodautoscaler=~"radarr|lidarr",
+                                            resource="memory"}
+              or
+              vpa:recommendation_target:max{exported_namespace="observability",
+                                            verticalpodautoscaler=~"grafana|loki",
+                                            resource="memory"}
             )
           for: 24h
           labels:
             severity: warning
           annotations:
-            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
+            runbook_url: '${cluster_runbook_base_url}/33-autoscaling.md#operations'
             summary: >-
               VPA {{ $labels.exported_namespace }}/{{ $labels.verticalpodautoscaler }}
               recommendation capped at maxAllowed
@@ -649,45 +780,29 @@ spec:
               ({{ $labels.resource }}) in
               {{ $labels.exported_namespace }}/{{ $labels.verticalpodautoscaler }}
               has been clamped by maxAllowed for 24 hours — it wants
-              {{ $value }} {{ $labels.unit }} uncapped. Raise the cap in
-              infrastructure/configs/vpa/ or investigate the growth.
+              {{ $value }} {{ $labels.unit }} uncapped. maxAllowed is derived
+              from the container's limit, so raise the limit in the workload's
+              HelmRelease and re-derive the cap in the same commit (docs/33).
 
-        # The recommendation outgrew the manifest's memory limit — the only
-        # automated signal that a hand-applied size fell behind (docs/33
-        # §Applying an Off-tier recommendation). Scoped to the shapes where
-        # nothing re-scales the limit on its own (update_mode Off or Initial, or
-        # controlledValues RequestsOnly); an Auto VPA on RequestsAndLimits
-        # self-heals at the next eviction and would page for hours.
-        #
-        # The join is per-WORKLOAD, not per-(namespace, container): several
-        # flux-system controllers expose a container named `manager` at
-        # different limits, and a namespace-wide max would compare every one of
-        # them against the largest, silently unfirable for the rest. The
-        # label_replaces map exported_namespace->namespace and target_name->
-        # workload so the join lands, and strip the prometheus-operator's
-        # `<kind>-` StatefulSet prefix so those VPAs still join. Containers with
-        # no memory limit are skipped by design.
+        # The recommendation outgrew the container's memory limit, the automated
+        # signal that a hand-applied size fell behind. It reads the larger of the
+        # capped and uncapped target, so 1.1x keeps a few-percent want quiet.
         - alert: VPARecommendationExceedsLimit
           expr: >-
             max by (namespace, verticalpodautoscaler, workload, container) (
-              label_replace(
-                label_replace(
-                  vpa_recommendation_target{resource="memory", update_mode=~"Off|Initial"}
-                  or
-                  vpa_recommendation_target{resource="memory", controlled_values="RequestsOnly"},
-                  "namespace", "$1", "exported_namespace", "(.*)"),
-                "workload", "$1", "target_name", "(.*)")
+              workload:vpa_recommendation_memory:max
             )
-            > on (namespace, workload, container) group_left ()
-            label_replace(
-              max by (namespace, workload, container) (
-                kube_pod_container_resource_limits{resource="memory"}
-                * on (namespace, pod) group_left (workload)
-                max by (namespace, workload, pod) (
-                  namespace_workload_pod:kube_pod_owner:relabel
-                )
-              ),
-              "workload", "$1", "workload", "^(?:prometheus|alertmanager)-(.+)$")
+            > on (namespace, workload, container) group_left () 1.1 *
+            workload:kube_pod_container_resource_memory:max{kind="limits"}
+            unless on (namespace, workload, container) (
+              workload:kube_pod_container_resource_memory:max{kind="limits",
+                                                              namespace="downloads",
+                                                              container=~"nzbget|qbittorrent|radarr|lidarr"}
+              or
+              workload:kube_pod_container_resource_memory:max{kind="limits",
+                                                              namespace="observability",
+                                                              container=~"grafana|loki"}
+            )
           for: 6h
           labels:
             severity: warning
@@ -705,62 +820,24 @@ spec:
               next burst. Apply the recommendation in git (docs/33
               "Applying an Off-tier recommendation").
 
-        # The same drift one band earlier: the REQUEST is what the scheduler and
-        # the kubelet's eviction ranking see, so a workload past it is already in
-        # the first-to-be-evicted group while its limit still looks generous.
-        # Same workload-scoped join and Off/Initial/RequestsOnly scope as
-        # VPARecommendationExceedsLimit above; 1.25x and 24h keep it clear of
-        # daily swing, and info tier makes it a right-sizing notice.
-        #
-        # The 128Mi absolute floor alongside the ratio is what keeps this a
-        # worklist instead of standing noise: a 32Mi sidecar recommended 128Mi is
-        # 4x but costs nothing to leave alone, while the cases worth acting on
-        # (the TSDB a gigabyte under its need) clear both tests. Info routes to
-        # Discord on a 24h repeat, so a permanently-firing member would ping
-        # daily forever.
+        # The same drift one band earlier, at the request the scheduler and the
+        # kubelet's eviction ranking see. 1.25x with a 128Mi floor keeps this a
+        # worklist rather than standing noise (docs/33).
         - alert: VPARecommendationExceedsRequest
           expr: >-
             (
               max by (namespace, verticalpodautoscaler, workload, container) (
-                label_replace(
-                  label_replace(
-                    vpa_recommendation_target{resource="memory", update_mode=~"Off|Initial"}
-                    or
-                    vpa_recommendation_target{resource="memory", controlled_values="RequestsOnly"},
-                    "namespace", "$1", "exported_namespace", "(.*)"),
-                  "workload", "$1", "target_name", "(.*)")
+                workload:vpa_recommendation_memory:max{source="target"}
               )
               - on (namespace, workload, container) group_left ()
-              label_replace(
-                max by (namespace, workload, container) (
-                  kube_pod_container_resource_requests{resource="memory"}
-                  * on (namespace, pod) group_left (workload)
-                  max by (namespace, workload, pod) (
-                    namespace_workload_pod:kube_pod_owner:relabel
-                  )
-                ),
-                "workload", "$1", "workload", "^(?:prometheus|alertmanager)-(.+)$")
+              workload:kube_pod_container_resource_memory:max{kind="requests"}
             ) > 134217728
             and
             max by (namespace, verticalpodautoscaler, workload, container) (
-              label_replace(
-                label_replace(
-                  vpa_recommendation_target{resource="memory", update_mode=~"Off|Initial"}
-                  or
-                  vpa_recommendation_target{resource="memory", controlled_values="RequestsOnly"},
-                  "namespace", "$1", "exported_namespace", "(.*)"),
-                "workload", "$1", "target_name", "(.*)")
+              workload:vpa_recommendation_memory:max{source="target"}
             )
             > on (namespace, workload, container) group_left () 1.25 *
-            label_replace(
-              max by (namespace, workload, container) (
-                kube_pod_container_resource_requests{resource="memory"}
-                * on (namespace, pod) group_left (workload)
-                max by (namespace, workload, pod) (
-                  namespace_workload_pod:kube_pod_owner:relabel
-                )
-              ),
-              "workload", "$1", "workload", "^(?:prometheus|alertmanager)-(.+)$")
+            workload:kube_pod_container_resource_memory:max{kind="requests"}
           for: 24h
           labels:
             severity: info

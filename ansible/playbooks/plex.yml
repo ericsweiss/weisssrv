@@ -1,18 +1,6 @@
 ---
-# Plex Media Server deployment playbook
-#
-# This playbook provisions the Plex LXC container and deploys Plex Media Server.
-#
-# Prerequisites:
-#   - pve-nas-01 must have storage mounts ready:
-#     - /mnt/ssd/appdata/plex (Plex config)
-#     - /mnt/nvme/fast/plex-transcode (transcoding temp)
-#     - /mnt/media (mergerfs media library)
-#   - Directories must exist with correct permissions (eric:media, 1000:2000)
-#
-# Usage:
-#   task plex:deploy              # Full deployment
-#   task plex:check               # Dry-run
+# Provisions the Plex LXC and deploys Plex Media Server. Prerequisites, storage
+# paths, first-run order and the task commands: docs/20-plex-deployment.md.
 
 - name: Provision Plex LXC container
   hosts: plex
@@ -38,8 +26,21 @@
     - weisssrv.infra.base
     - weisssrv.infra.postfix_null_client
     - weisssrv.infra.plex
-    # Also in site.yml; listed here so a standalone deploy stays in sync.
-    # node_exporter_host is intentionally absent: LXC guests get their host
-    # metrics from the Proxmox host's exporter.
+    # Shared with site.yml; scripts/test_shared_role_playbook_sync.py keeps the two in step.
+    # node_exporter_host is intentionally absent: this guest is not in the
+    # node-exporter-host scrape roster (exporters/node-exporter-host.yaml).
     - weisssrv.infra.alloy_host
     - weisssrv.infra.proxmox_firewall
+
+# weisssrv.infra.base above rewrites authorized_keys, so a re-provisioned guest
+# loses the pinned cert-distribution key. Re-seed it from the cert authority
+# here, before the next renewal strands the target (docs/15).
+- name: Re-seed the cert-distribution key on plex
+  hosts: dns_primary
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Re-seed plex as a cert-distribution target
+      ansible.builtin.include_tasks: tasks/_reseed-cert-target.yml
+      vars:
+        reseed_cert_target_host: plex

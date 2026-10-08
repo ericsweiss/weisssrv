@@ -1,27 +1,18 @@
 ---
-# promtool unit tests for the memory-sizing alerts:
-# VPARecommendationExceedsLimit (the VPA knows the workload needs more than its
-# limit allows), ContainerMemoryNearLimit and its llama-only sibling
-# HindsightLlamaMemoryNearLimit (the live working set approaching the same
-# ceiling, hours earlier) and ContainerOOMKilled (the kill itself, which no
-# upstream rule reports for a container that restarts cleanly). Separate file
-# from autoscaling.test.yaml because that one evaluates at 6h ticks for
-# VPARecommendationCapped's 24h hold; these need 1m granularity.
-#
+# promtool unit tests for the memory-sizing alerts. Separate from
+# autoscaling.test.yaml, which evaluates at 6h ticks; 5m ticks here are fine
+# enough to separate the 6h pending/firing boundary.
+
 # VPARecommendationExceedsLimit joins per WORKLOAD, so every case carries three
-# series: the VPA recommendation (whose target_name is the workload), the
-# container's limit, and namespace_workload_pod:kube_pod_owner:relabel, the
-# kube-prometheus-stack recording rule that maps a pod to its workload.
+# series: the VPA recommendation, the container's limit, and the
+# namespace_workload_pod:kube_pod_owner:relabel recording rule.
 rule_files:
   - rules.yaml
-evaluation_interval: 1m
+evaluation_interval: 5m
 tests:
-  # Off-tier drift, replayed from a real authentik-postgresql OOMKill: a
-  # 684Mi (716711186 B) recommendation against the 512Mi limit the container
-  # actually had. The kube-state-metrics series carries its OWN namespace label
-  # (observability, where KSM runs), so the rule's label_replace must rewrite it
-  # to the VPA's target namespace both for the join to land and for the alert to
-  # route on the workload's namespace.
+  # Off-tier drift: a 684Mi recommendation against a 512Mi limit. The
+  # kube-state-metrics series carries its own namespace label, so the rule's
+  # label_replace must rewrite it to the VPA's target namespace.
   - interval: 1m
     input_series:
       - series: 'vpa_recommendation_target{exported_namespace="authentik", namespace="observability", verticalpodautoscaler="authentik-postgresql", target_name="authentik-postgresql", target_kind="StatefulSet", container="postgresql", resource="memory", unit="byte", update_mode="Off"}'
@@ -60,11 +51,44 @@ tests:
         alertname: VPARecommendationExceedsLimit
         exp_alerts: []
 
-  # The collision this rule was rewritten for: two DIFFERENT workloads in one
-  # namespace expose a container with the SAME name at different limits (the
-  # four flux-system controllers all call theirs `manager`). Joining on
-  # (namespace, container) compared both against the LARGEST limit, so the
-  # under-sized one could never fire. Only kustomize-controller must alert here.
+  # A few percent over the limit is inside the 1.1x deadband: a workload growing
+  # toward its own ceiling must not stand lit. Well over it still alerts.
+  - interval: 1m
+    input_series:
+      - series: 'vpa_recommendation_uncappedtarget{exported_namespace="observability", namespace="observability", verticalpodautoscaler="prometheus", target_name="kube-prometheus-stack-prometheus", target_kind="StatefulSet", container="prometheus", resource="memory", unit="byte", update_mode="Initial"}'
+        values: '6768077873+0x480'
+      - series: 'kube_pod_container_resource_limits{namespace="observability", pod="prometheus-kube-prometheus-stack-prometheus-0", container="prometheus", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
+        values: '6442450944+0x480'
+      - series: 'namespace_workload_pod:kube_pod_owner:relabel{namespace="observability", workload="kube-prometheus-stack-prometheus", workload_type="statefulset", pod="prometheus-kube-prometheus-stack-prometheus-0"}'
+        values: '1+0x480'
+    alert_rule_test:
+      - eval_time: 7h
+        alertname: VPARecommendationExceedsLimit
+        exp_alerts: []
+
+  # The same shape 40% over the limit: past the deadband, so it alerts.
+  - interval: 1m
+    input_series:
+      - series: 'vpa_recommendation_uncappedtarget{exported_namespace="observability", namespace="observability", verticalpodautoscaler="prometheus", target_name="kube-prometheus-stack-prometheus", target_kind="StatefulSet", container="prometheus", resource="memory", unit="byte", update_mode="Initial"}'
+        values: '9019431321+0x480'
+      - series: 'kube_pod_container_resource_limits{namespace="observability", pod="prometheus-kube-prometheus-stack-prometheus-0", container="prometheus", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
+        values: '6442450944+0x480'
+      - series: 'namespace_workload_pod:kube_pod_owner:relabel{namespace="observability", workload="kube-prometheus-stack-prometheus", workload_type="statefulset", pod="prometheus-kube-prometheus-stack-prometheus-0"}'
+        values: '1+0x480'
+    alert_rule_test:
+      - eval_time: 7h
+        alertname: VPARecommendationExceedsLimit
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: observability
+              workload: kube-prometheus-stack-prometheus
+              verticalpodautoscaler: prometheus
+              container: prometheus
+
+  # The collision the workload join exists for: two workloads in one namespace
+  # expose a container with the same name at different limits (the flux-system
+  # controllers all call theirs `manager`). Only kustomize-controller alerts.
   - interval: 1m
     input_series:
       - series: 'vpa_recommendation_target{exported_namespace="flux-system", namespace="observability", verticalpodautoscaler="kustomize-controller", target_name="kustomize-controller", target_kind="Deployment", container="manager", resource="memory", unit="byte", update_mode="Initial"}'
@@ -91,9 +115,8 @@ tests:
               container: manager
 
   # The prometheus-operator names its StatefulSets `<kind>-<CR name>` while the
-  # VPA targets the CR, so the workload join needs the prefix stripped. Without
-  # that arm the Prometheus and Alertmanager VPAs — both Off-tier, exactly the
-  # shape this alert exists for — silently drop out of scope.
+  # VPA targets the CR, so the workload join strips the prefix. Without it the
+  # Off-tier Prometheus and Alertmanager VPAs drop out of scope.
   - interval: 1m
     input_series:
       - series: 'vpa_recommendation_target{exported_namespace="observability", namespace="observability", verticalpodautoscaler="prometheus", target_name="kube-prometheus-stack-prometheus", target_kind="Prometheus", container="prometheus", resource="memory", unit="byte", update_mode="Off"}'
@@ -134,8 +157,8 @@ tests:
               verticalpodautoscaler: pulsarr
               container: pulsarr
 
-  # An Auto VPA on the default controlledValues (RequestsAndLimits) rewrites the
-  # limit alongside the request, so the same shape self-heals and must NOT page.
+  # An Auto VPA whose policy emits no controlled_values label (no "*" entry), so
+  # the recording rule skips it and the alert must NOT page.
   - interval: 1m
     input_series:
       - series: 'vpa_recommendation_target{exported_namespace="downloads", namespace="observability", verticalpodautoscaler="sonarr", target_name="sonarr", target_kind="StatefulSet", container="sonarr", resource="memory", unit="byte", update_mode="Auto"}'
@@ -149,14 +172,27 @@ tests:
         alertname: VPARecommendationExceedsLimit
         exp_alerts: []
 
-  # The other in-scope shape: a MUTATING VPA pinned to RequestsOnly, whose limit
-  # never moves either (authentik-server, node-exporter, dcgm-exporter, the
-  # RequestsOnly *arr tier, and the platform controllers in configs/vpa). Must
-  # fire.
+  # The alloy DaemonSet shape: Auto with per-container RequestsOnly policies and
+  # no "*" entry, so no controlled_values label and no coverage here.
+  - interval: 1m
+    input_series:
+      - series: 'vpa_recommendation_target{exported_namespace="observability", namespace="observability", verticalpodautoscaler="alloy", target_name="alloy", target_kind="DaemonSet", container="alloy", resource="memory", unit="byte", update_mode="Auto"}'
+        values: '1073741824+0x480'
+      - series: 'kube_pod_container_resource_limits{namespace="observability", pod="alloy-abcde", container="alloy", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
+        values: '671088640+0x480'
+      - series: 'namespace_workload_pod:kube_pod_owner:relabel{namespace="observability", workload="alloy", workload_type="daemonset", pod="alloy-abcde"}'
+        values: '1+0x480'
+    alert_rule_test:
+      - eval_time: 7h
+        alertname: VPARecommendationExceedsLimit
+        exp_alerts: []
+
+  # The other in-scope shape: a mutating VPA pinned to RequestsOnly, whose limit
+  # never moves either. Past the 1.1x deadband, so it must fire.
   - interval: 1m
     input_series:
       - series: 'vpa_recommendation_target{exported_namespace="authentik", namespace="observability", verticalpodautoscaler="authentik-server", target_name="authentik-server", target_kind="StatefulSet", container="server", resource="memory", unit="byte", update_mode="Initial", controlled_values="RequestsOnly"}'
-        values: '1610612736+0x480'
+        values: '2147483648+0x480'
       - series: 'kube_pod_container_resource_limits{namespace="authentik", pod="authentik-server-0", container="server", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
         values: '1610612735+0x480'
       - series: 'namespace_workload_pod:kube_pod_owner:relabel{namespace="authentik", workload="authentik-server", workload_type="statefulset", pod="authentik-server-0"}'
@@ -172,9 +208,9 @@ tests:
               verticalpodautoscaler: authentik-server
               container: server
 
-  # A CPU recommendation above a CPU limit is deliberately out of scope (the
-  # repo sets no CPU limits and CPU is compressible): the resource="memory"
-  # selector must drop these even when the numbers would otherwise match.
+  # A CPU recommendation above a CPU limit is out of scope: the repo sets no CPU
+  # limits and CPU is compressible, so the resource="memory" selector must drop
+  # these even when the numbers would otherwise match.
   - interval: 1m
     input_series:
       - series: 'vpa_recommendation_target{exported_namespace="authentik", namespace="observability", verticalpodautoscaler="authentik-postgresql", target_name="authentik-postgresql", target_kind="StatefulSet", container="postgresql", resource="cpu", unit="core", update_mode="Off"}'
@@ -188,10 +224,160 @@ tests:
         alertname: VPARecommendationExceedsLimit
         exp_alerts: []
 
+  # The cap-tracking shape docs/33 mandates for RequestsOnly: maxAllowed equals
+  # the container's limit, so the capped target can never exceed it. Reading the
+  # larger of the capped and uncapped targets is what makes the real need show.
+  - interval: 1m
+    input_series:
+      - series: 'vpa_recommendation_target{exported_namespace="observability", namespace="observability", verticalpodautoscaler="blackbox-exporter", target_name="blackbox-exporter-prometheus-blackbox-exporter", target_kind="Deployment", container="blackbox-exporter", resource="memory", unit="byte", update_mode="Auto", controlled_values="RequestsOnly"}'
+        values: '134217728+0x480'
+      - series: 'vpa_recommendation_uncappedtarget{exported_namespace="observability", namespace="observability", verticalpodautoscaler="blackbox-exporter", target_name="blackbox-exporter-prometheus-blackbox-exporter", target_kind="Deployment", container="blackbox-exporter", resource="memory", unit="byte", update_mode="Auto", controlled_values="RequestsOnly"}'
+        values: '176160768+0x480'
+      - series: 'kube_pod_container_resource_limits{namespace="observability", pod="blackbox-exporter-prometheus-blackbox-exporter-7d5b9c8f4-x2k9p", container="blackbox-exporter", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
+        values: '134217728+0x480'
+      - series: 'namespace_workload_pod:kube_pod_owner:relabel{namespace="observability", workload="blackbox-exporter-prometheus-blackbox-exporter", workload_type="deployment", pod="blackbox-exporter-prometheus-blackbox-exporter-7d5b9c8f4-x2k9p"}'
+        values: '1+0x480'
+    alert_rule_test:
+      - eval_time: 7h
+        alertname: VPARecommendationExceedsLimit
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: observability
+              workload: blackbox-exporter-prometheus-blackbox-exporter
+              verticalpodautoscaler: blackbox-exporter
+              container: blackbox-exporter
+      # Inside the 6h hold.
+      - eval_time: 5h
+        alertname: VPARecommendationExceedsLimit
+        exp_alerts: []
+
+  # grafana and loki are page-cache-dominated: their recommendation outgrows the
+  # declared limit by design, so the exclusion must keep them silent.
+  - interval: 1m
+    input_series:
+      - series: 'vpa_recommendation_target{exported_namespace="observability", namespace="observability", verticalpodautoscaler="grafana", target_name="kube-prometheus-stack-grafana", target_kind="Deployment", container="grafana", resource="memory", unit="byte", update_mode="Initial", controlled_values="RequestsOnly"}'
+        values: '1073741824+0x2000'
+      - series: 'vpa_recommendation_uncappedtarget{exported_namespace="observability", namespace="observability", verticalpodautoscaler="grafana", target_name="kube-prometheus-stack-grafana", target_kind="Deployment", container="grafana", resource="memory", unit="byte", update_mode="Initial", controlled_values="RequestsOnly"}'
+        values: '1610612736+0x2000'
+      - series: 'kube_pod_container_resource_limits{namespace="observability", pod="kube-prometheus-stack-grafana-7d5b9c8f4-x2k9p", container="grafana", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
+        values: '1073741824+0x2000'
+      - series: 'namespace_workload_pod:kube_pod_owner:relabel{namespace="observability", workload="kube-prometheus-stack-grafana", workload_type="deployment", pod="kube-prometheus-stack-grafana-7d5b9c8f4-x2k9p"}'
+        values: '1+0x2000'
+      # The loki half of the same exclusion, in this case so it costs no extra
+      # evaluations.
+      - series: 'vpa_recommendation_target{exported_namespace="observability", namespace="observability", verticalpodautoscaler="loki", target_name="loki", target_kind="StatefulSet", container="loki", resource="memory", unit="byte", update_mode="Initial", controlled_values="RequestsOnly"}'
+        values: '1073741824+0x2000'
+      - series: 'vpa_recommendation_uncappedtarget{exported_namespace="observability", namespace="observability", verticalpodautoscaler="loki", target_name="loki", target_kind="StatefulSet", container="loki", resource="memory", unit="byte", update_mode="Initial", controlled_values="RequestsOnly"}'
+        values: '1610612736+0x2000'
+      - series: 'kube_pod_container_resource_limits{namespace="observability", pod="loki-0", container="loki", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
+        values: '1073741824+0x2000'
+      - series: 'namespace_workload_pod:kube_pod_owner:relabel{namespace="observability", workload="loki", workload_type="statefulset", pod="loki-0"}'
+        values: '1+0x2000'
+    alert_rule_test:
+      - eval_time: 7h
+        alertname: VPARecommendationExceedsLimit
+        exp_alerts: []
+      - eval_time: 30h
+        alertname: VPARecommendationCapped
+        exp_alerts: []
+
+  # The mirror of that: minAllowed holds the CAPPED target above the limit while
+  # the uncapped one sits below it. Reading the uncapped target alone would lose
+  # this case, so the rule takes the larger of the two.
+  - interval: 1m
+    input_series:
+      - series: 'vpa_recommendation_target{exported_namespace="recipes", namespace="observability", verticalpodautoscaler="salt-rim", target_name="salt-rim", target_kind="Deployment", container="salt-rim", resource="memory", unit="byte", update_mode="Off"}'
+        values: '209715200+0x480'
+      - series: 'vpa_recommendation_uncappedtarget{exported_namespace="recipes", namespace="observability", verticalpodautoscaler="salt-rim", target_name="salt-rim", target_kind="Deployment", container="salt-rim", resource="memory", unit="byte", update_mode="Off"}'
+        values: '52428800+0x480'
+      - series: 'kube_pod_container_resource_limits{namespace="recipes", pod="salt-rim-6c4d7b8f9-nm2qt", container="salt-rim", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
+        values: '104857600+0x480'
+      - series: 'namespace_workload_pod:kube_pod_owner:relabel{namespace="recipes", workload="salt-rim", workload_type="deployment", pod="salt-rim-6c4d7b8f9-nm2qt"}'
+        values: '1+0x480'
+    alert_rule_test:
+      - eval_time: 7h
+        alertname: VPARecommendationExceedsLimit
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: recipes
+              workload: salt-rim
+              verticalpodautoscaler: salt-rim
+              container: salt-rim
+
+  # nzbget and qbittorrent chase reclaimable unpack-time page cache, so their
+  # uncapped target runs past the limit by design — the same exclusion
+  # VPARecommendationCapped carries, expressed on the joined label set.
+  - interval: 1m
+    input_series:
+      - series: 'vpa_recommendation_target{exported_namespace="downloads", namespace="observability", verticalpodautoscaler="nzbget", target_name="nzbget", target_kind="Deployment", container="nzbget", resource="memory", unit="byte", update_mode="Initial", controlled_values="RequestsOnly"}'
+        values: '1073741824+0x480'
+      - series: 'vpa_recommendation_uncappedtarget{exported_namespace="downloads", namespace="observability", verticalpodautoscaler="nzbget", target_name="nzbget", target_kind="Deployment", container="nzbget", resource="memory", unit="byte", update_mode="Initial", controlled_values="RequestsOnly"}'
+        values: '6442450944+0x480'
+      - series: 'kube_pod_container_resource_limits{namespace="downloads", pod="nzbget-5f7c9d4b8-tq8xz", container="nzbget", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
+        values: '4294967296+0x480'
+      - series: 'namespace_workload_pod:kube_pod_owner:relabel{namespace="downloads", workload="nzbget", workload_type="deployment", pod="nzbget-5f7c9d4b8-tq8xz"}'
+        values: '1+0x480'
+    alert_rule_test:
+      - eval_time: 7h
+        alertname: VPARecommendationExceedsLimit
+        exp_alerts: []
+
+  # radarr and lidarr hold reclaimable NFS page cache against a maxAllowed equal
+  # to their 1Gi limit, so both alerts exclude their MEMORY series. CPU is not
+  # excluded, so a clamped CPU recommendation still fires.
+  - interval: 1m
+    input_series:
+      - series: 'vpa_recommendation_target{exported_namespace="downloads", namespace="observability", verticalpodautoscaler="radarr", target_name="radarr", target_kind="Deployment", container="radarr", resource="memory", unit="byte", update_mode="Initial", controlled_values="RequestsOnly"}'
+        values: '1073741824+0x2000'
+      - series: 'vpa_recommendation_uncappedtarget{exported_namespace="downloads", namespace="observability", verticalpodautoscaler="radarr", target_name="radarr", target_kind="Deployment", container="radarr", resource="memory", unit="byte", update_mode="Initial", controlled_values="RequestsOnly"}'
+        values: '1610612736+0x2000'
+      - series: 'kube_pod_container_resource_limits{namespace="downloads", pod="radarr-5f7c9d4b8-tq8xz", container="radarr", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
+        values: '1073741824+0x2000'
+      - series: 'namespace_workload_pod:kube_pod_owner:relabel{namespace="downloads", workload="radarr", workload_type="deployment", pod="radarr-5f7c9d4b8-tq8xz"}'
+        values: '1+0x2000'
+      - series: 'vpa_recommendation_target{exported_namespace="downloads", namespace="observability", verticalpodautoscaler="radarr", target_name="radarr", target_kind="Deployment", container="radarr", resource="cpu", unit="core", update_mode="Initial", controlled_values="RequestsOnly"}'
+        values: '2+0x2000'
+      - series: 'vpa_recommendation_uncappedtarget{exported_namespace="downloads", namespace="observability", verticalpodautoscaler="radarr", target_name="radarr", target_kind="Deployment", container="radarr", resource="cpu", unit="core", update_mode="Initial", controlled_values="RequestsOnly"}'
+        values: '3+0x2000'
+    alert_rule_test:
+      - eval_time: 7h
+        alertname: VPARecommendationExceedsLimit
+        exp_alerts: []
+      - eval_time: 30h
+        alertname: VPARecommendationCapped
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              exported_namespace: downloads
+              verticalpodautoscaler: radarr
+              container: radarr
+              resource: cpu
+              unit: core
+
+  # lidarr carries the same exclusion; memory alone, and both alerts stay quiet.
+  - interval: 1m
+    input_series:
+      - series: 'vpa_recommendation_target{exported_namespace="downloads", namespace="observability", verticalpodautoscaler="lidarr", target_name="lidarr", target_kind="Deployment", container="lidarr", resource="memory", unit="byte", update_mode="Initial", controlled_values="RequestsOnly"}'
+        values: '1073741824+0x2000'
+      - series: 'vpa_recommendation_uncappedtarget{exported_namespace="downloads", namespace="observability", verticalpodautoscaler="lidarr", target_name="lidarr", target_kind="Deployment", container="lidarr", resource="memory", unit="byte", update_mode="Initial", controlled_values="RequestsOnly"}'
+        values: '1610612736+0x2000'
+      - series: 'kube_pod_container_resource_limits{namespace="downloads", pod="lidarr-5f7c9d4b8-tq8xz", container="lidarr", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
+        values: '1073741824+0x2000'
+      - series: 'namespace_workload_pod:kube_pod_owner:relabel{namespace="downloads", workload="lidarr", workload_type="deployment", pod="lidarr-5f7c9d4b8-tq8xz"}'
+        values: '1+0x2000'
+    alert_rule_test:
+      - eval_time: 7h
+        alertname: VPARecommendationExceedsLimit
+        exp_alerts: []
+      - eval_time: 30h
+        alertname: VPARecommendationCapped
+        exp_alerts: []
+
   # VPARecommendationExceedsRequest: the same drift one band earlier, on the
-  # REQUEST. Prometheus at a 4524Mi recommendation against a 3Gi request — the
-  # shape that had the TSDB sitting in the eviction-ranked band with nothing
-  # watching. Both tests must pass: >1.25x AND >128Mi absolute.
+  # REQUEST. Prometheus at a 4524Mi recommendation against a 3Gi request.
+  # Both tests must pass: >1.25x AND >128Mi absolute.
   - interval: 1m
     input_series:
       - series: 'vpa_recommendation_target{exported_namespace="observability", namespace="observability", verticalpodautoscaler="prometheus", target_name="kube-prometheus-stack-prometheus", target_kind="Prometheus", container="prometheus", resource="memory", unit="byte", update_mode="Off"}'
@@ -268,11 +454,9 @@ tests:
         alertname: ContainerMemoryNearLimit
         exp_alerts: []
 
-  # hindsight/llama is GPU/model-pinned with a deliberate Off VPA and sits above
-  # 0.9 for ~15% of any month. Excluded by name from the 0.9 rule — left in, it
-  # would fire near-continuously and erode the rule's credibility. Its own band
-  # (HindsightLlamaMemoryNearLimit, 0.95) must stay silent here too: 0.93 is
-  # normal for this container.
+  # hindsight/llama is GPU/model-pinned with an Off VPA and sits above 0.9 for
+  # much of any month, so it is excluded by name from the 0.9 rule. Its own band
+  # (HindsightLlamaMemoryNearLimit, 0.95) stays silent at 0.93 too.
   - interval: 1m
     input_series:
       - series: 'container_memory_working_set_bytes{namespace="hindsight", pod="llama-0", container="llama", node="k3s-agt-prec-01"}'
@@ -287,8 +471,8 @@ tests:
         alertname: HindsightLlamaMemoryNearLimit
         exp_alerts: []
 
-  # The llama leading indicator: 0.96 of the limit held past the 15m hold. This
-  # is the band the 2026-08 OOMKill climbed through with nothing watching it.
+  # The llama leading indicator: 0.96 of the limit held past the 15m hold — the
+  # band an OOMKill climbs through.
   - interval: 1m
     input_series:
       - series: 'container_memory_working_set_bytes{namespace="hindsight", pod="llama-0", container="llama", node="k3s-agt-prec-01"}'
@@ -314,9 +498,8 @@ tests:
         exp_alerts: []
 
   # Prometheus and Loki count reclaimable page cache in their working set, so
-  # they live near the ceiling by design. Same exclusion, different namespace —
-  # and the exclusion is (namespace, container), so a container named
-  # `prometheus` elsewhere is NOT excluded.
+  # they live near the ceiling. The exclusion is (namespace, container), so a
+  # container named `prometheus` elsewhere is not excluded.
   - interval: 1m
     input_series:
       - series: 'container_memory_working_set_bytes{namespace="observability", pod="prometheus-kube-prometheus-stack-prometheus-0", container="prometheus", node="k3s-agt-nas-01"}'
@@ -336,6 +519,102 @@ tests:
               namespace: hermes
               pod: hermes-0
               container: prometheus
+
+  # Grafana is page-cache-dominated too: its working set sits at ~99% of the
+  # 1Gi limit. The exclusion is (namespace, container), so a container named
+  # `grafana` elsewhere still alerts.
+  - interval: 1m
+    input_series:
+      - series: 'container_memory_working_set_bytes{namespace="observability", pod="kube-prometheus-stack-grafana-7d5b9c8f4-x2k9p", container="grafana", node="k3s-agt-nas-01"}'
+        values: '1062207488+0x60'
+      - series: 'kube_pod_container_resource_limits{namespace="observability", pod="kube-prometheus-stack-grafana-7d5b9c8f4-x2k9p", container="grafana", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
+        values: '1073741824+0x60'
+      - series: 'container_memory_working_set_bytes{namespace="hermes", pod="hermes-0", container="grafana", node="k3s-agt-prec-01"}'
+        values: '1062207488+0x60'
+      - series: 'kube_pod_container_resource_limits{namespace="hermes", pod="hermes-0", container="grafana", resource="memory", unit="byte", node="k3s-agt-prec-01"}'
+        values: '1073741824+0x60'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: ContainerMemoryNearLimit
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: hermes
+              pod: hermes-0
+              container: grafana
+
+  # PageCacheWorkloadRSSNearLimit: the RSS band that replaces the 0.9 working-set
+  # rule for the excluded pair. Non-reclaimable memory at ~0.94 of the limit.
+  - interval: 1m
+    input_series:
+      - series: 'container_memory_rss{namespace="observability", pod="kube-prometheus-stack-grafana-7d5b9c8f4-x2k9p", container="grafana", node="k3s-agt-nas-01"}'
+        values: '1059061760+0x60'
+      - series: 'kube_pod_container_resource_limits{namespace="observability", pod="kube-prometheus-stack-grafana-7d5b9c8f4-x2k9p", container="grafana", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
+        values: '1073741824+0x60'
+    alert_rule_test:
+      # Inside the 15m hold.
+      - eval_time: 10m
+        alertname: PageCacheWorkloadRSSNearLimit
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: PageCacheWorkloadRSSNearLimit
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: observability
+              pod: kube-prometheus-stack-grafana-7d5b9c8f4-x2k9p
+              container: grafana
+
+  # Prometheus mmaps its TSDB blocks, so RSS is its band too: ~0.95 of the 6Gi
+  # limit fires, and the 0.9 working-set rule excludes the container.
+  - interval: 1m
+    input_series:
+      - series: 'container_memory_rss{namespace="observability", pod="prometheus-kube-prometheus-stack-prometheus-0", container="prometheus", node="k3s-agt-nas-01"}'
+        values: '6120328396+0x60'
+      - series: 'kube_pod_container_resource_limits{namespace="observability", pod="prometheus-kube-prometheus-stack-prometheus-0", container="prometheus", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
+        values: '6442450944+0x60'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: PageCacheWorkloadRSSNearLimit
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: PageCacheWorkloadRSSNearLimit
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: observability
+              pod: prometheus-kube-prometheus-stack-prometheus-0
+              container: prometheus
+
+  # Prometheus at ~0.8 of the limit: inside the band, so nothing fires.
+  - interval: 1m
+    input_series:
+      - series: 'container_memory_rss{namespace="observability", pod="prometheus-kube-prometheus-stack-prometheus-0", container="prometheus", node="k3s-agt-nas-01"}'
+        values: '5153960755+0x60'
+      - series: 'kube_pod_container_resource_limits{namespace="observability", pod="prometheus-kube-prometheus-stack-prometheus-0", container="prometheus", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
+        values: '6442450944+0x60'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: PageCacheWorkloadRSSNearLimit
+        exp_alerts: []
+
+  # The live shape: Loki's working set sits above the 1Gi limit on page cache
+  # while its RSS is ~680Mi. Neither the excluded 0.9 rule nor the RSS band fires.
+  - interval: 1m
+    input_series:
+      - series: 'container_memory_working_set_bytes{namespace="observability", pod="loki-0", container="loki", node="k3s-agt-nas-01"}'
+        values: '1238368256+0x60'
+      - series: 'container_memory_rss{namespace="observability", pod="loki-0", container="loki", node="k3s-agt-nas-01"}'
+        values: '713031680+0x60'
+      - series: 'kube_pod_container_resource_limits{namespace="observability", pod="loki-0", container="loki", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
+        values: '1073741824+0x60'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: PageCacheWorkloadRSSNearLimit
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: ContainerMemoryNearLimit
+        exp_alerts: []
 
   # A container comfortably inside its limit must stay silent.
   - interval: 1m

@@ -111,9 +111,9 @@ spec:
           port: 9187
 
 ---
-# Egress for the authentik-pg-dump CronJob: kube-dns (resolve the postgres
-# Service) + intra-ns Postgres on 5432. NFS is mounted by the kubelet (node),
-# not the pod, so it is not policed here.
+# Egress for the authentik-pg-dump CronJob: intra-ns Postgres on 5432 (kube-dns
+# comes from the netpol-egress-dns component). NFS is mounted by the kubelet
+# (node), not the pod, so it is not policed here.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -127,18 +127,6 @@ spec:
     - Egress
   egress:
     - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
-          podSelector:
-            matchLabels:
-              k8s-app: kube-dns
-      ports:
-        - protocol: UDP
-          port: 53
-        - protocol: TCP
-          port: 53
-    - to:
         - podSelector:
             matchLabels:
               app.kubernetes.io/instance: authentik
@@ -148,15 +136,9 @@ spec:
           port: 5432
 
 ---
-# Egress for authentik server + worker:
-# - kube-dns
-# - kube-apiserver (the worker drives the Kubernetes integration / embedded
-#   outpost reconciliation and needs API access — its SA token is mounted on
-#   purpose, see release.yaml worker.securityContext note)
-# - intra-ns to Postgres
-# - smtp-relay (10.0.10.151) for password reset / notification emails
-# - Public HTTPS (image pulls happen at kubelet, but the worker fetches
-#   Authentik blueprints + GeoIP DBs over TCP/443 from the internet).
+# Egress for authentik server + worker: kube-apiserver (the worker's Kubernetes
+# integration), intra-ns Postgres, smtp-relay :587, public HTTPS (blueprints and
+# GeoIP). kube-dns comes from the netpol-egress-dns component.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -169,23 +151,8 @@ spec:
   policyTypes:
     - Egress
   egress:
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
-          podSelector:
-            matchLabels:
-              k8s-app: kube-dns
-      ports:
-        - protocol: UDP
-          port: 53
-        - protocol: TCP
-          port: 53
-    # kube-apiserver access. kube-proxy DNATs the in-cluster VIP
-    # (10.43.0.1:443) to the real endpoints BEFORE NetworkPolicy evaluation,
-    # so the policy must allowlist the server node IPs on 6443 — a 10.43.0.1/32
-    # rule never matches the post-DNAT packet (same pattern as gitlab-runner).
-    # The worker uses this for the Kubernetes integration/outpost controller.
+    # Server node /32s on 6443 — post-DNAT (components/netpol-egress-apiserver).
+    # Used by the worker's Kubernetes integration/outpost controller.
     - to:
         - ipBlock:
             cidr: 10.0.10.222/32
@@ -224,32 +191,3 @@ spec:
       ports:
         - protocol: TCP
           port: 443
-
----
-# Egress for the bundled PostgreSQL pod: only kube-dns. Postgres doesn't
-# need any other outbound connection in this deployment.
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: allow-egress-postgres-dns-only
-  namespace: authentik
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/instance: authentik
-      app.kubernetes.io/name: postgresql
-  policyTypes:
-    - Egress
-  egress:
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
-          podSelector:
-            matchLabels:
-              k8s-app: kube-dns
-      ports:
-        - protocol: UDP
-          port: 53
-        - protocol: TCP
-          port: 53

@@ -1,11 +1,7 @@
 ---
-# Grafana Alloy — container-log collector DaemonSet. Tails each node's on-disk
-# pod logs (/var/log/pods) and ships them to Loki; tolerates all taints so it
-# covers NAS, ingress, compute and control-plane nodes. Host journald is a
-# separate path (the alloy_host Ansible role), not this DaemonSet.
-#
-# The chart pins its own config-reloader sidecar digest, independently of the
-# kube-prometheus-stack chart's — a minor-version skew between them is expected.
+# Grafana Alloy container-log collector DaemonSet: tails each node's /var/log/pods
+# and ships to Loki, tolerating all taints so every node is covered. Host journald
+# is a separate path, the alloy_host Ansible role.
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -13,6 +9,8 @@ metadata:
   namespace: observability
 spec:
   interval: 30m
+  driftDetection:
+    mode: enabled
   releaseName: alloy
   timeout: 10m
   chart:
@@ -32,6 +30,17 @@ spec:
       retries: 3
       remediateLastFailure: true
   values:
+    # The chart's default grant includes cluster-wide configmaps and secrets read.
+    # This config only runs discovery.kubernetes role=pod, so pods is the whole
+    # requirement; clusterRules stays non-empty or the chart renders invalid YAML.
+    rbac:
+      rules:
+        - apiGroups: [""]
+          resources: ["pods"]
+          verbs: ["get", "list", "watch"]
+      clusterRules:
+        - nonResourceURLs: ["/metrics"]
+          verbs: ["get"]
     alloy:
       enableReporting: false
       # Root + the host /var/log mount are what the file-based path needs:
@@ -49,11 +58,8 @@ spec:
           - name: alloy-storage
             mountPath: /var/lib/alloy
       # Hand-set limit (the VPA is RequestsOnly — docs/33 § Limit oscillation):
-      # 640Mi is the 30d working-set peak (371Mi) +60%. The old 256Mi sat UNDER
-      # that peak and only survived because the mutating webhook rewrote it
-      # upward at admission — and that webhook is failurePolicy: Ignore, so a
-      # pod admitted while it is down runs at whatever this file declares.
-      # Request is a bootstrap floor; the VPA owns the live number.
+      # 640Mi is the 30d working-set peak (371Mi) +60%. Request is a bootstrap
+      # floor; the VPA owns the live number.
       resources:
         requests:
           cpu: 25m
@@ -113,21 +119,15 @@ spec:
             path_targets = discovery.relabel.pods.output
           }
 
-          // Tail from disk rather than streaming through the kube-apiserver:
-          // read offsets are persisted under the hostPath storage path, so an
-          // Alloy restart (eviction, chart upgrade — the DaemonSet is on an Auto
-          // VPA, so both are routine) resumes instead of gapping or duplicating,
-          // and the apiserver carries no log traffic.
+          // Tail from disk, not through the kube-apiserver: offsets persist
+          // under the hostPath, so a restart resumes instead of gapping.
           loki.source.file "pods" {
             targets    = local.file_match.pods.targets
             forward_to = [loki.process.cri.receiver]
           }
 
-          // Files are raw CRI wire format ("<ts> stdout F <message>"). stage.cri
-          // parses it back into timestamp/stream/message, so Loki keeps the
-          // container's own timestamps and the stored line is the message alone
-          // — without this, every line gains a prefix and every existing
-          // dashboard and LogQL filter breaks.
+          // Files are raw CRI wire format ("<ts> stdout F <message>"); stage.cri
+          // parses it back into timestamp/stream/message.
           loki.process "cri" {
             stage.cri {}
             forward_to = [loki.write.default.receiver]

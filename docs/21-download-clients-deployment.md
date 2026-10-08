@@ -80,7 +80,8 @@ Gluetun control server on `127.0.0.1:8001` and exposes a Prometheus
 `-1` = error, `-2` = unknown). The killswitch means only an in-pod sidecar can reach the control
 API, so the exporter shares the pod network namespace rather than running in the
 `observability` namespace like the other exporters. The control server is
-API-key authenticated (see VPN Management §Control-Server Auth); the exporter
+API-key authenticated (`kubernetes/apps/download-clients/README.md`
+§ Control-Server Auth); the exporter
 sends the key via `GLUETUN_APIKEY`.
 
 - **Scrape**: a `PodMonitor` (`gluetun-qbittorrent`) in the `downloads`
@@ -117,22 +118,14 @@ Create VPN credential items in your Homelab vault:
 #   - openvpn-password: Your PrivadoVPN password
 ```
 
-**For VPN Unlimited (KeepSolid) — user/password + client cert/key, optional:**
-```
-# Item: "VPN Unlimited Credentials"
-# Vault: Homelab
-# Gluetun needs ALL FOUR fields below. Its generated OpenVPN config for VPN
-# Unlimited is cert/key-based (auth-user-pass off), but gluetun's settings
-# validation still requires a non-empty user + password for the provider — omit
-# either and the sidecar fails validation and crash-loops. Generate a
-# Manual/OpenVPN config for one device in the VPN Unlimited portal, note the
-# login it issues, then set:
-#   - openvpn-user: the VPN Unlimited (KeepSolid) OpenVPN username
-#   - openvpn-password: the VPN Unlimited (KeepSolid) OpenVPN password
-#   - openvpn-clientcrt: the full PEM <cert>...</cert> block
-#   - openvpn-clientkey: the full PEM <key>...</key> block
-# Then uncomment the vpnunlimited-* entries in externalsecret.yaml.
-```
+**Adding a second provider.** Privado is the only wired one. A new provider is
+one MR: its credential fields on a 1Password item, matching `secretKey` entries
+in `externalsecret.yaml`, a `case` arm in `_vpn-sidecar/vpn-sidecar.yaml`, and
+matching arms in `scripts/vpn-credcheck.sh` and
+`scripts/downloads-vpn-provider.sh`. `scripts/check-vpn-provider-parity.py`
+holds those three in step. Note that gluetun's settings validation requires a
+non-empty user and password even for a provider whose OpenVPN config is
+cert/key-based, so a cert-only provider still needs all four fields.
 
 **For the Gluetun control-server API key:**
 ```
@@ -141,7 +134,7 @@ Create VPN credential items in your Homelab vault:
 # Field:
 #   - gluetun-control-apikey: generate with `openssl rand -hex 32`
 # Rendered into the gluetun-control-auth Secret's config.toml and consumed by
-# the gluetun-exporter as GLUETUN_APIKEY (see VPN Operations below).
+# the gluetun-exporter as GLUETUN_APIKEY.
 ```
 
 ### 2. NFS Storage Preparation
@@ -162,7 +155,9 @@ Create media directories:
 ssh pve-nas-01 "sudo mkdir -p /mnt/nvme/media/downloads/{nzbget,qbittorrent}/{intermediate,complete}"
 ssh pve-nas-01 "sudo mkdir -p /mnt/nvme/media/library/{TV_Shows,Movies,Music,Books,Audiobooks}"
 ssh pve-nas-01 "sudo chown -R 1000:2000 /mnt/nvme/media/"
-ssh pve-nas-01 "sudo chmod -R 2775 /mnt/nvme/media/"
+# Directories get setgid so new files inherit the media group; files do not.
+ssh pve-nas-01 "sudo find /mnt/nvme/media -type d -exec chmod 2775 {} +"
+ssh pve-nas-01 "sudo find /mnt/nvme/media -type f -exec chmod 664 {} +"
 ```
 
 ### 3. DNS Configuration
@@ -203,7 +198,7 @@ kubernetes/apps/download-clients/
 ├── externalsecret.yaml         # VPN credentials from 1Password (via ESO)
 ├── _vpn-sidecar/               # shared Gluetun VPN sidecar Component (killswitch defined once)
 ├── _nfs-pv/                    # shared NFS PV+PVC Component (TLS mountOptions defined once)
-├── _nfs-pv-arr/                # *arr variant of _nfs-pv (10Gi + actimeo/lookupcache)
+├── _nfs-pv-arr/                # *arr variant of _nfs-pv (10Gi + actimeo/lookupcache/local_lock=all)
 ├── storage/                    # per-app NFS PV/PVC overlays over _nfs-pv + storage/shared.yaml (RWX media PV)
 ├── certificate.yaml            # Wildcard cert in the downloads namespace
 ├── nzbget/                     # overlay over _vpn-sidecar: resources.yaml (Deployment + nzbget-vpn-config) + kustomization.yaml
@@ -289,21 +284,11 @@ spec:
       remoteRef:
         key: PrivadoVPN Credentials
         property: openvpn-password
-    # VPN Unlimited (user/password + client cert/key) — uncomment all four after
-    # populating 1P (see above); gluetun requires every one of them.
-    # - secretKey: vpnunlimited-user
-    #   remoteRef: {key: VPN Unlimited Credentials, property: openvpn-user}
-    # - secretKey: vpnunlimited-password
-    #   remoteRef: {key: VPN Unlimited Credentials, property: openvpn-password}
-    # - secretKey: vpnunlimited-clientcrt
-    #   remoteRef: {key: VPN Unlimited Credentials, property: openvpn-clientcrt}
-    # - secretKey: vpnunlimited-clientkey
-    #   remoteRef: {key: VPN Unlimited Credentials, property: openvpn-clientkey}
 ```
 
 A second ExternalSecret, `gluetun-control-auth`, renders the control-server
 roles `config.toml` (with the exporter apikey) and exposes the raw `apikey` key
-for the exporter env — see VPN Operations below.
+for the exporter env.
 
 The 1P Connect provider uses `key: <item-title>` and `property: <field-name>`.
 See `docs/29-flux-operations.md` for the format rules.
@@ -332,153 +317,35 @@ kubectl exec -n downloads deployment/qbittorrent -c gluetun -- wget -qO- https:/
 
 ## VPN Management
 
-### Live VPN Operations (no git round-trip)
+The committed defaults are **nzbget VPN off, qbittorrent VPN on**, and the
+`vpn-credentials` ExternalSecret carries the per-provider 1Password fields listed
+in § Prerequisites 1.
 
-Three `task downloads:*` commands change VPN state live for day-2 ops:
+Day-2 VPN operations — the live `task downloads:vpn*` toggles, provider
+switching, control-server auth, per-app VPN control and credential rotation —
+are documented next to the manifests in
+`kubernetes/apps/download-clients/README.md` § VPN Management, which is
+canonical for them.
 
-```bash
-task downloads:vpn -- APP=nzbget      STATE=on          # turn a client's VPN on/off
-task downloads:vpn -- APP=qbittorrent STATE=off
-task downloads:vpn-provider -- APP=qbittorrent PROVIDER=privadovpn [COUNTRIES=Netherlands]
-task downloads:vpn-status                                # per-app state + logs + public IP
-task downloads:verify-vpn                                # egress != LAN + LAN containment
-```
+Enabling a VPN, or switching provider, whose credentials are not wired rolls the
+pod into gluetun settings-validation failure and CrashLoopBackOff. Both tasks
+pre-flight with `scripts/vpn-credcheck.sh` and refuse before patching.
 
-Each command `kubectl patch`es the app's `*-vpn-config` ConfigMap; **Reloader**
-rolls the pod and the task waits for the rollout. Provider aliases normalise to
-gluetun's exact `VPN_SERVICE_PROVIDER` string (`privadovpn` → `privado`,
-`vpnunlimited` → `vpn unlimited`). Multi-word countries need the native
-(quoted) form: `task downloads:vpn-provider APP=... PROVIDER=... COUNTRIES="United States"`.
+**Provider → required `vpn-credentials` keys.** This table is canonical;
+`kubernetes/apps/download-clients/README.md` points at it, and
+`scripts/check-vpn-provider-parity.py` gates the three code copies of the same
+map.
 
-**GitOps-safe by design.** Both `*-vpn-config` ConfigMaps carry
-`kustomize.toolkit.fluxcd.io/ssa: IfNotPresent`. Flux **creates** them on a
-fresh cluster from the committed defaults, then never reconciles/reverts them,
-so a live patch is not drift-reverted. The committed values are only the
-**bootstrap default**; once the object exists, live state is authoritative and
-git edits do not propagate. To resync git on top:
+| Provider | Required keys |
+|---|---|
+| `privadovpn` | `privadovpn-user`, `privadovpn-password` |
 
-```bash
-kubectl delete configmap <app>-vpn-config -n downloads
-task flux:reconcile          # Flux recreates it from git
-```
-
-Committed defaults stay: **nzbget VPN off, qbittorrent VPN on**.
-
-> Turning **qbittorrent** VPN off via the live task leaves its gluetun-exporter
-> + PodMonitor running, so `gluetun_vpn_status=0` and `VPNDown` fires after 15m.
-> The live toggle is for short-lived ops; for a durable VPN-off qbittorrent also
-> drop the exporter + PodMonitor in git (README §Per-App VPN Control).
-
-### Provider Switching
-
-Both providers' credentials live in the one `vpn-credentials` Secret under
-provider-prefixed keys (mounted read-only at `/vpn-secrets`). The gluetun
-command wrapper reads `vpn_provider` and exports the matching
-`OPENVPN_*_SECRETFILE` paths — files, not env, so creds never appear in
-`kubectl describe pod`.
-
-| `PROVIDER=` | gluetun provider | Auth | `vpn-credentials` keys | Status |
-|---|---|---|---|---|
-| `privadovpn` | `privado` | OpenVPN user/pass | `privadovpn-user`, `privadovpn-password` | Wired (default) |
-| `vpnunlimited` | `vpn unlimited` | OpenVPN user/pass **and** client cert/key | `vpnunlimited-user`, `vpnunlimited-password`, `vpnunlimited-clientcrt`, `vpnunlimited-clientkey` | Mechanism wired; needs all four in 1P (Prerequisites §1) |
-
-VPN Unlimited (KeepSolid) authenticates the tunnel with a client cert/key, but
-gluetun's settings validation additionally requires a non-empty user + password
-for the provider — so all four keys must be present. `task
-downloads:vpn-provider` pre-flights the target provider's keys against the live
-`vpn-credentials` Secret: if any are missing it **refuses before patching** when
-the app's VPN is ON (so a VPN-on client is never rolled into CrashLoopBackOff),
-and only saves the selection with a warning when the VPN is OFF. Populate the
-credentials (or switch back) before enabling the VPN on that provider.
-
-### Control-Server Auth (WARN suppression)
-
-Gluetun's loopback control server (`127.0.0.1:8001`) is role-authenticated via a
-`config.toml` rendered by ESO (`gluetun-control-auth` Secret) and mounted at
-`/gluetun-auth/config.toml` (`HTTP_CONTROL_SERVER_AUTH_CONFIG_FILEPATH` — the
-default `/gluetun/auth/config.toml` can't be used because `/gluetun` is a
-read-only configMap mount). One `exporter` role grants an **API key** to exactly
-the three routes the gluetun-exporter polls (`GET /v1/vpn/status`,
-`/v1/publicip/ip`, `/v1/openvpn/portforwarded`); all other control routes return
-401. The exporter authenticates with the same key via `GLUETUN_APIKEY`
-(X-API-Key header) from the same Secret, so config and client never drift. A
-**named** role suppresses gluetun's per-request "route ... is unprotected by
-default" WARN spam (gluetun only warns for its auto-generated `public`/none
-role), which is what was polluting `task downloads:vpn-status`. Rotate the key
-by updating `gluetun-control-apikey` in 1Password, then re-syncing the
-`gluetun-control-auth` ExternalSecret and restarting the pods:
-`task flux:rotate-secret -- downloads` force-syncs `gluetun-control-auth` +
-`vpn-credentials` and rolls nzbget/qbittorrent. A bare pod restart alone
-re-reads the *old* key — ESO only re-fetches on its 24h `refreshInterval` and
-Reloader ignores Secret changes by design.
-
-### Per-App VPN Control (committed default)
-
-VPN enablement and provider selection are per-app ConfigMaps in each app
-overlay's `resources.yaml`: `nzbget-vpn-config` in `nzbget/resources.yaml` and
-`qbittorrent-vpn-config` in `qbittorrent/resources.yaml`. The Gluetun sidecar
-itself is the shared `_vpn-sidecar/` Kustomize Component (killswitch defined
-once); each overlay injects it and points it at the matching ConfigMap.
-
-> **Editing these ConfigMaps in git only sets the *bootstrap default*.** Both
-> carry `kustomize.toolkit.fluxcd.io/ssa: IfNotPresent`, so Flux **creates**
-> them once (on a fresh cluster, or after a delete+reconcile resync) and then
-> **never re-applies git edits to them**. On the running cluster the object
-> already exists, so a `git push` that changes `vpn_enabled`/`vpn_provider` does
-> **nothing** — no reconcile, no Reloader roll, the pod keeps its current VPN
-> state. This is deliberate: it is what makes the live tasks below stick. See
-> "Live VPN Operations" above for the full divergence/resync explanation.
-
-**To change VPN state on the running cluster, use the live tasks** (they
-`kubectl patch` the live ConfigMap, which Reloader then rolls):
-
-```bash
-task downloads:vpn -- APP=<nzbget|qbittorrent> STATE=<on|off>
-task downloads:vpn-provider -- APP=<...> PROVIDER=<privadovpn|vpnunlimited> [COUNTRIES=<...>]
-```
-
-**Editing the committed default (fresh cluster / after a resync only).** Change
-the value that a brand-new cluster will bootstrap with — or that a
-delete+reconcile resync will re-apply:
-
-1. Edit the `<app>-vpn-config` ConfigMap section inside `nzbget/resources.yaml`
-   or `qbittorrent/resources.yaml` (set `vpn_enabled: "true"` / `"false"` and
-   `vpn_provider: "privado"` / `"vpn unlimited"`).
-2. Commit and push.
-3. On a cluster where the ConfigMap does **not** yet exist, Flux creates it and
-   **stakater/Reloader rolls the pod automatically** (the nzbget/qbittorrent
-   Deployments carry `reloader.stakater.com/auto: "true"`; Reloader runs in the
-   `reloader` namespace, `kubernetes/infrastructure/controllers/reloader/`). On
-   an existing cluster this step does nothing — to force git back on top, first
-   `kubectl delete configmap <app>-vpn-config -n downloads && task flux:reconcile`
-   (see the resync block under "Live VPN Operations"), or just use the live
-   tasks above.
-
-**Turning qBittorrent's VPN off needs a coupled edit** (exporter + PodMonitor)
-— see the download-clients README §Per-App VPN Control before doing it.
-
-### Check VPN Status
-
-```bash
-# Check VPN status for all download clients
-task downloads:vpn-status
-```
-
-This shows:
-- VPN enabled/disabled status per app
-- Current VPN provider per app
-- Gluetun logs (if VPN enabled)
-- Public IP (to verify VPN is working)
-
-### Rotate VPN Credentials
-
-1. Update the value in 1Password (`PrivadoVPN Credentials/openvpn-password`).
-2. Trigger refresh: `task flux:rotate-secret -- downloads`
-
-To switch provider, use `task downloads:vpn-provider` (Live VPN Operations
-above) — no manifest edit needed. VPN Unlimited additionally needs its
-`vpnunlimited-*` entries populated in 1Password + uncommented in
-`externalsecret.yaml` (Provider Switching above).
+**Single-resolver dependency (VPN on).** While gluetun is up, nzbget and
+qbittorrent resolve via `DNS_ADDRESS=10.0.10.150` only; dns-02 (.160) is **not**
+a fallback on that path — the pod `dnsConfig` applies only when gluetun is
+disabled or crashed. The symptom is indexer and tracker lookups failing while
+the tunnel and the pods are healthy. Check dns-01 liveness and
+`kubectl -n downloads logs <pod> -c gluetun | grep -i dns`.
 
 ## Storage Layout
 
@@ -527,7 +394,12 @@ Configure *arr apps to use:
 ### NZBGet
 
 1. Access: https://nzbget.esweiss.com
-2. Default credentials: `nzbget` / `tegbzn6789`
+2. Credentials: the `ControlUsername` / `ControlPassword` pair on the 1Password
+   **NZBGet** item, injected by Authentik (see § Authentik SSO Integration 2).
+   On a fresh install, change them away from the upstream `nzbget` /
+   `tegbzn6789` defaults in Settings > Security and mirror the values into
+   1Password before exposing the route; the rotation procedure is in
+   [docs/15](15-credential-rotation.md).
 3. Configure:
    - **MainDir**: `/media/downloads/nzbget`
    - **InterDir**: `/media/downloads/nzbget/intermediate`
@@ -537,7 +409,10 @@ Configure *arr apps to use:
 ### qBittorrent
 
 1. Access: https://qbittorrent.esweiss.com
-2. Default credentials: `admin` / `adminadmin` (change immediately!)
+2. First-run password: qBittorrent 5.x generates a random temporary WebUI
+   password on first start — read it from
+   `kubectl logs -n downloads deploy/qbittorrent -c qbittorrent`, then set a
+   permanent one in Tools > Options > Web UI.
 3. Configure:
    - **Default Save Path**: `/media/downloads/qbittorrent/complete`
    - **Temp folder**: `/media/downloads/qbittorrent/intermediate`
@@ -717,62 +592,6 @@ binding (`terraform/authentik/policy_bindings.tf`) — all seven downloads
 apps are gated by `media-admins`. Audit logging comes with the per-app
 applications/providers, which are all code in `terraform/authentik/`.
 
-## Config Migration from Windows
-
-### Sonarr/Radarr Migration
-
-1. **Stop the Windows service**
-
-2. **Locate config on Windows**:
-   ```
-   %APPDATA%\Sonarr\  (or Radarr)
-   ```
-
-3. **Copy database and config**:
-   ```bash
-   # From Windows (using WSL or SCP)
-   scp -r /mnt/c/Users/Eric/AppData/Roaming/Sonarr/* pve-nas-01:/mnt/ssd/appdata/sonarr/
-   ```
-
-4. **Fix permissions**:
-   ```bash
-   ssh pve-nas-01 "sudo chown -R 1000:2000 /mnt/ssd/appdata/sonarr/"
-   ```
-
-5. **Update paths in config.xml**:
-   - Open `/mnt/ssd/appdata/sonarr/config.xml`
-   - Update any Windows paths to Linux paths
-   - Common changes:
-     - `C:\Downloads\` -> `/media/downloads/`
-     - `D:\Media\TV Shows\` -> `/media/library/TV_Shows/`
-
-6. **Update database paths** (if needed):
-   ```bash
-   # Connect to the app and use System > Tasks > Update All Series Paths
-   # Or use the API/sqlite to bulk update
-   ```
-
-### Deluge to qBittorrent Migration
-
-Deluge and qBittorrent use different config formats, but you can:
-
-1. **Export torrents from Deluge**:
-   - Copy `.torrent` files from Deluge's `state` folder
-   - Or use Deluge's "Export Torrent" feature
-
-2. **Import to qBittorrent**:
-   - Add torrents manually to qBittorrent
-   - Point to existing downloaded files
-   - qBittorrent will verify and continue seeding
-
-### Important Migration Notes
-
-- **Quality Profiles**: Will need to be recreated or carefully migrated
-- **Indexers**: Re-add via Prowlarr (simpler than migrating)
-- **Download Clients**: Update URLs to Kubernetes service names
-- **Root Folders**: Must be updated to new Linux paths
-- **Custom Scripts**: Review and adapt for Linux environment
-
 ## Maintenance
 
 ### View Logs
@@ -803,7 +622,7 @@ task downloads:restart
 
 # Restart specific app — delete the pods, never `rollout restart`: these
 # Deployments are Flux-managed and kustomize-controller drift-reverts the
-# restart annotation (docs/12 § Restarting workloads).
+# restart annotation (docs/29 § Restarting a Flux-managed workload).
 kubectl delete pod -n downloads -l app.kubernetes.io/name=sonarr
 ```
 
@@ -844,6 +663,44 @@ Do not add an ad-hoc copy job here; a second uncoordinated backup path is how
 retention and freshness monitoring drift apart.
 
 ## Troubleshooting
+
+### *arr restarts during a library rescan
+
+Symptom: sonarr, radarr or lidarr restarts during a Refresh Series with
+`rescan=always`. The pod exits 137 and the previous container logged
+`database is locked`. Node CPU, NAS I/O and app memory are all idle.
+
+Cause: the *arr config database is WAL-mode SQLite on an NFS mount. Under
+server-side locking every SQLite lock is a round trip to the NAS, and `/ping`
+stalls long enough for the liveness probe to kill the container.
+
+What is set: the config PVs mount with `local_lock=all`
+(`_nfs-pv-arr/kustomization.yaml`), which keeps locks client-local. That is safe
+because each *arr app runs one replica with strategy `Recreate` and mounts only
+its own appdata export. The liveness budget is five minutes (30s x 10,
+`_arr/deployment.yaml`). Readiness drains the pod out of the Service first: a
+hung probe runs to its 20s timeout, so five failures take about 100 seconds.
+
+Applying it: mount options are read at mount time, so a running pod keeps the
+old options. After the reconcile, recreate each *arr pod once with
+`kubectl delete pod -n downloads -l app.kubernetes.io/name=<app>` (a pod delete,
+not `rollout restart`, per docs/29 § Restarting a Flux-managed workload), then
+confirm with
+`kubectl get pv downloads-appdata-<app> -o jsonpath="{.spec.mountOptions}"` and
+`nfsstat -m` on the node.
+
+Verify: liveness failures should sit at roughly zero per day.
+
+```promql
+sum by (pod) (
+  increase(prober_probe_total{namespace="downloads",
+                              probe_type="Liveness",
+                              result="failed"}[1d])
+)
+```
+
+Escalation: if failures persist, move the SQLite files off NFS onto block
+storage. See [docs/16](16-next-steps.md) § Storage.
 
 ### VPN Not Connecting
 
@@ -909,4 +766,4 @@ kubectl exec -n downloads deployment/sonarr -- stat -f /media/library/
 - [Flux Operations](./29-flux-operations.md)
 - [Storage Configuration](./07-fileservices.md)
 - [DNS Configuration](./08-dns.md)
-- Manifests: `kubernetes/apps/download-clients/`
+- Manifests and day-2 VPN operations: `kubernetes/apps/download-clients/README.md`

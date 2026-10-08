@@ -17,9 +17,8 @@ The `build-camofox-browser` CI job (`.gitlab-ci.yml`) does the build.
 
 ## Pins (`ansible/inventories/prod/group_vars/all.yml`)
 
-- **`hermes_camofox_version`** — the bare semver (e.g. `1.12.1`), used as the
-  built image tag; the upstream git tag carries the leading `v`
-  (`git clone --branch v<pin>`).
+- **`hermes_camofox_version`** — the bare semver, used as the built image tag;
+  the upstream git tag carries the leading `v` (`git clone --branch v<pin>`).
 - **`hermes_camofox_git_sha`** — the immutable commit the tag must resolve to.
   The build refuses to run if the clone resolves elsewhere, defending against
   a moved/compromised upstream tag (this container browses the web with

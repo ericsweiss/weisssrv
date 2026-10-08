@@ -1,9 +1,7 @@
 ---
-# Custom PrometheusRule CRs, one file per rule group. Discovered by Prometheus
-# through ruleSelectorNilUsesHelmValues:false + an empty ruleNamespaceSelector
-# (kube-prometheus-stack/release.yaml), so no release label is needed.
-# scripts/extract-prometheus-config.py lints every expr here and runs the
-# promtool unit tests in scripts/prometheus-rule-tests/.
+# Custom PrometheusRule CRs, one file per rule group. Prometheus discovers them
+# because kube-prometheus-stack sets ruleSelectorNilUsesHelmValues: false, so no
+# release label is needed. Linted by task lint:prometheus-config.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:

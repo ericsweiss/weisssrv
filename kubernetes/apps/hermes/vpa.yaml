@@ -1,18 +1,7 @@
 ---
-# VPA: Initial for the hermes Deployment — resize CPU+memory on natural pod
-# restarts (no HPA owns CPU here).
-#
-# `controlledValues: RequestsOnly` on every managed container: limits are
-# hand-set in deployment.yaml and the VPA may not touch them. This workload is
-# interactive and idle-heavy, so on RequestsAndLimits the recommender sizes the
-# request off the quiet baseline and scales the *limit* down with it, and the
-# next active session OOMKills — which `Initial` cannot undo, since it applies
-# only at pod admission while an OOM restarts the container in place.
-# Each `maxAllowed` memory tracks its container's manifest limit exactly, so a
-# capped recommendation can never exceed the ceiling the pod is admitted
-# against — raising one means raising both, in the same commit. `minAllowed`
-# floors the request at the interactive working set rather than the idle
-# baseline. Rationale: docs/33 § Limit oscillation.
+# VPA Initial for the hermes Deployment. RequestsOnly throughout: interactive
+# and idle-heavy, so a rescaled limit would be sized off the quiet baseline and
+# OOM the next session. Caps track deployment.yaml's limits (docs/33).
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
 metadata:
@@ -27,14 +16,13 @@ spec:
       # and burst. Hand-sized request/limit live in deployment.yaml.
       - containerName: camofox
         mode: "Off"
-      # Off: the "*" floor below would ~5x this one-shot initContainer's
-      # hand-sized 8Mi request on every restart.
+      # Off: the "*" floor below would raise this one-shot initContainer's
+      # hand-sized 8Mi request to 128Mi on every restart.
       - containerName: init-data
         mode: "Off"
       # maxAllowed.memory == the dashboard's 2560Mi limit in deployment.yaml.
-      # minAllowed is the interactive floor: the recommender only ever measures
-      # the idle baseline (~138Mi), and reserving that for a container that
-      # needs ~1Gi the moment a chat opens is what OOMKilled it (!227).
+      # minAllowed floors the request at the interactive working set (~1Gi once
+      # a chat opens), not the ~138Mi idle baseline the recommender measures.
       - containerName: dashboard
         controlledValues: RequestsOnly
         minAllowed: {cpu: 100m, memory: 768Mi}

@@ -1,0 +1,37 @@
+---
+# The far end of NodeOutageStormControl's 7d window: an abandoned node stops
+# holding the unscoped inhibit, a multi-day repair keeps it. Own file at a 30m
+# evaluation_interval to keep a week of simulated time cheap; series stay at 5m.
+rule_files:
+  - rules.yaml
+evaluation_interval: 30m
+tests:
+  # Ready for the first hour, then NotReady for over eight days.
+  - interval: 5m
+    input_series:
+      - series: 'kube_node_status_condition{condition="Ready", status="true", node="k3s-agt-01"}'
+        values: '1+0x12 0+0x2400'
+    alert_rule_test:
+      # A day in, the inhibit still holds.
+      - eval_time: 24h
+        alertname: NodeOutageStormControl
+        exp_alerts:
+          - exp_labels:
+              severity: none
+              condition: Ready
+              status: 'true'
+              node: k3s-agt-01
+      # Past 7d of continuous NotReady the lookback no longer sees a Ready
+      # sample, so storm control releases and the per-pod warnings come back
+      # while the node is still being scraped.
+      - eval_time: 7d12h
+        alertname: NodeOutageStormControl
+        exp_alerts: []
+      - eval_time: 7d12h
+        alertname: NodeNotReadyProlonged
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              condition: Ready
+              status: 'true'
+              node: k3s-agt-01

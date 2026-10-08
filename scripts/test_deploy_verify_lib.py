@@ -1,18 +1,6 @@
-#!/usr/bin/env python3
-"""Unit tests for scripts/deploy-verify-lib.sh.
-
-The library holds the pure pod/HelmRelease/Ready-condition classifiers extracted
-from scripts/deploy-verify.sh — the logic that gates the deploy-verify CI job.
-They were inline jq/awk with zero coverage, so a mis-classification would
-silently report a bad deploy as green (a false pass, worse than a red test).
-Each test sources the library in a bash subprocess and drives one helper with
-recorded `kubectl get ... -o json` or `--no-headers` fixtures.
-
-Run with pytest:
-    pytest scripts/test_deploy_verify_lib.py -v
-
-The jq-based helpers are skipped when jq is absent (the deploy-verify CI env
-provides jq; a jq-less pytest runner still exercises the awk helpers).
+"""Unit tests for the deploy-verify-lib.sh classifiers that gate the
+deploy-verify CI job. Each test sources the library in a bash subprocess and
+drives one helper with recorded kubectl fixtures. jq is required, and asserted.
 """
 
 from __future__ import annotations
@@ -23,21 +11,23 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from conftest import source_and_run
 
 LIB = Path(__file__).resolve().parent / "deploy-verify-lib.sh"
-HAS_JQ = shutil.which("jq") is not None
-needs_jq = pytest.mark.skipif(not HAS_JQ, reason="jq not installed")
+
+
+@pytest.fixture(autouse=True)
+def _jq_present() -> None:
+    # Fail rather than skip: without jq every classifier returns its fail-closed
+    # sentinel and the suite reads as a logic bug, not a missing binary.
+    assert shutil.which("jq"), (
+        "jq is not installed, so the deploy-verify classifiers are unverified. "
+        "Install jq in the job that runs this suite."
+    )
 
 
 def _run(func_call: str, stdin: str = "") -> subprocess.CompletedProcess:
-    """Source the library and run a function call, returning the completed proc."""
-    script = f". {LIB}\n{func_call}\n"
-    return subprocess.run(
-        ["bash", "-c", script],
-        input=stdin,
-        capture_output=True,
-        text=True,
-    )
+    return source_and_run(LIB, func_call, stdin)
 
 
 def _ready(status: str) -> dict:
@@ -51,7 +41,6 @@ def _items(*objs) -> str:
 # count_not_ready
 
 
-@needs_jq
 class TestCountNotReady:
     def test_all_ready_zero(self):
         out = _run("count_not_ready", _items(_ready("True"), _ready("True"))).stdout.strip()
@@ -79,17 +68,15 @@ class TestCountNotReady:
         assert _run("count_not_ready", "not json at all").stdout.strip() == "999"
 
     def test_empty_input_yields_empty(self):
-        # jq exits 0 with no output on empty stdin, so the `|| echo 999` does NOT
-        # fire — matching the original inline behavior (only malformed JSON, not
-        # an empty stream, trips the fail-closed default). In practice kubectl
-        # returns valid JSON or nothing, and steady_state("") -> "false" anyway.
+        # jq exits 0 with no output on empty stdin, so `|| echo 999` does not
+        # fire: only malformed JSON trips the fail-closed default. kubectl
+        # returns valid JSON or nothing, and steady_state("") -> "false".
         assert _run("count_not_ready", "").stdout.strip() == ""
 
 
 # not_ready_ns_names
 
 
-@needs_jq
 class TestNotReadyNsNames:
     def _obj(self, ns, name, status):
         o = _ready(status)
@@ -108,56 +95,12 @@ class TestNotReadyNsNames:
         out = _run("not_ready_ns_names", _items(self._obj("a", "ok", "True"))).stdout.strip()
         assert out == ""
 
-
-# without_items
-
-
-@needs_jq
-class TestWithoutItems:
-    """The metrics-server cutover carve-out: drop known-transitional objects only."""
-
-    def _obj(self, ns, name, status):
-        o = _ready(status)
-        o["metadata"] = {"namespace": ns, "name": name}
-        return o
-
-    def _corpus(self):
-        return _items(
-            self._obj("flux-system", "infrastructure-metrics-server", "False"),
-            self._obj("kube-system", "metrics-server", "False"),
-            self._obj("flux-system", "apps", "False"),
-            self._obj("flux-system", "infrastructure-configs", "True"),
-        )
-
-    def test_drops_only_the_named_items(self):
-        spec = "flux-system/infrastructure-metrics-server kube-system/metrics-server"
-        out = _run(f'without_items "{spec}"', self._corpus()).stdout
-        names = [i["metadata"]["name"] for i in json.loads(out)["items"]]
-        assert names == ["apps", "infrastructure-configs"]
-
-    def test_a_real_failure_survives_the_carve_out(self):
-        """flux-system/apps is Ready=False and must still be counted."""
-        spec = "flux-system/infrastructure-metrics-server kube-system/metrics-server"
-        proc = subprocess.run(
-            ["bash", "-c", f'. {LIB}\nwithout_items "{spec}" | count_not_ready\n'],
-            input=self._corpus(),
-            capture_output=True,
-            text=True,
-        )
-        assert proc.stdout.strip() == "1"
-
-    def test_an_empty_spec_is_a_pass_through(self):
-        out = _run('without_items ""', self._corpus()).stdout
-        assert len(json.loads(out)["items"]) == 4
-
-    def test_a_missing_spec_is_a_pass_through(self):
-        out = _run("without_items", self._corpus()).stdout
-        assert len(json.loads(out)["items"]) == 4
-
-    def test_a_same_named_object_in_another_namespace_is_kept(self):
-        corpus = _items(self._obj("other", "metrics-server", "False"))
-        out = _run('without_items "kube-system/metrics-server"', corpus).stdout
-        assert len(json.loads(out)["items"]) == 1
+    def test_a_jq_failure_is_loud_not_an_empty_list(self):
+        """Empty output must mean "nothing not-Ready", never "the query broke"."""
+        res = _run("not_ready_ns_names", "not json at all")
+        assert res.returncode != 0
+        assert res.stdout.strip() == ""
+        assert "jq failed" in res.stderr
 
 
 # steady_state
@@ -278,7 +221,6 @@ class TestPodsRunningUnready:
 # helmreleases_not_ready_names
 
 
-@needs_jq
 class TestHelmreleasesNotReadyNames:
     def _hr(self, name, status):
         o = _ready(status)
@@ -297,11 +239,16 @@ class TestHelmreleasesNotReadyNames:
         out = _run("helmreleases_not_ready_names", _items(self._hr("ok", "True"))).stdout.strip()
         assert out == ""
 
+    def test_a_jq_failure_is_loud_not_an_empty_list(self):
+        res = _run("helmreleases_not_ready_names", "not json at all")
+        assert res.returncode != 0
+        assert res.stdout.strip() == ""
+        assert "jq failed" in res.stderr
+
 
 # helmreleases_hard_failed
 
 
-@needs_jq
 class TestHelmreleasesHardFailed:
     def _hr(self, name, status, reason=None, failures=None):
         cond = {"type": "Ready", "status": status}
@@ -357,6 +304,12 @@ class TestHelmreleasesHardFailed:
         assert "failed" in out
         assert "ok" not in out
         assert "reconciling" not in out
+
+    def test_a_jq_failure_is_loud_not_an_empty_list(self):
+        res = _run("helmreleases_hard_failed", "not json at all")
+        assert res.returncode != 0
+        assert res.stdout.strip() == ""
+        assert "jq failed" in res.stderr
 
 
 # gitlab_health_code: internal-first, external only on a connection-level 000
@@ -421,9 +374,3 @@ class TestGitlabHealthCode:
     def test_both_down_reports_000(self, tmp_path):
         code, _ = _gitlab_code(tmp_path, {})
         assert code == "000"
-
-
-if __name__ == "__main__":
-    import sys
-
-    sys.exit(pytest.main([__file__, "-v"]))

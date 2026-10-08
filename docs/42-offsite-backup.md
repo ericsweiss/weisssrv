@@ -1,9 +1,7 @@
-# Offsite Backup (restic → Backblaze B2) + Encrypted Swap
+# Offsite Backup (restic → Backblaze B2)
 
 Nightly **offsite** backup of the high-value estate to **Backblaze B2** using
-**restic** (client-side encryption) over **rclone**, plus the supporting changes
-that make it work: a consolidated logical-dump landing zone, vzdump right-sizing,
-and encrypted swap on the Proxmox hosts.
+**restic** (client-side encryption) over **rclone**.
 
 This is the *offsite* layer. The *local* DR layers are unchanged:
 
@@ -16,21 +14,25 @@ This is the *offsite* layer. The *local* DR layers are unchanged:
 
 ## Architecture
 
-`restic_offsite` runs on **pve-nas-01** only, chained `OnSuccess=` after
-`archive-backup.service` so B2 uploads the **consistent point-in-time** a
-known-good archive replication just produced (a `07:15` fallback timer + an
-in-script freshness guard cover the rare skipped-OnSuccess path). restic never
+`restic_offsite` runs on **pve-nas-01** only. Its own nightly `07:15` timer,
+pinned in `host_vars/pve-nas-01.yml`, is the default trigger. This host also
+chains the run off `archive-backup.service` by naming `restic-offsite.service` in
+`nas_storage_archive_backup_on_success_units` (pve-nas-01 host_vars), so B2
+uploads the **consistent point-in-time** a known-good archive replication just
+produced. An in-script freshness guard covers a night the chain does not fire.
+restic never
 reads the live datasets — for each source it binds the newest `archsync-*`
 snapshot at a **stable path** so its parent-snapshot optimization re-reads only
 changed files instead of re-hashing the whole set each night.
 
-- **File-walkable datasets** (`tank/backups`, `tank/share`, `ssd/appdata`,
-  `ssd/databases`, `ssd/k3s-etcd`) — `mount --bind -o ro` the
+- **File-walkable datasets** (`tank/backups`, `tank/backups/apps`,
+  `tank/share`, `ssd/appdata` minus its `prometheus` and `loki` children,
+  `ssd/k3s-etcd`) — `mount --bind -o ro` the
   `.zfs/snapshot/archsync-*` subtree at `/mnt/restic-src/<name>`.
 - **File-bearing data zvols** (`tank/immich-data/disk`,
   `tank/nextcloud-data/disk`) — a file walk can't see a live zvol, so the control
   script **clones** the newest `archsync-*` snapshot to a throwaway sibling zvol
-  and mounts its ext4 read-only (`ro,noload`) at `/run/restic-offsite/<name>`.
+  and mounts its ext4 read-only (plain `ro`) at `/run/restic-offsite/<name>`.
   An **EXIT trap** unmounts + destroys every clone so a crashed run never strands
   one. **This closes the immich-photos / nextcloud-user-files offsite gap** — the
   ~2 TB photo library and NC user files now ride into B2.
@@ -57,6 +59,7 @@ a tree the local archive tier did not just certify. Restoring the archive pool
 | Live data | Offsite path | In B2? |
 |---|---|---|
 | authentik/mealie postgres (zvol) | `*-pg-dump` → `tank/backups/apps/<app>` | YES |
+| hindsight postgres (embedded pg0 on NFS) | pg-dump sidecar → `tank/backups/apps/hindsight` | YES |
 | gitlab repos+DB+secrets/config | `gitlab-backup` tar + `gitlab-secrets.json` + `gitlab.rb` → `tank/backups/apps/gitlab` | YES [^gitlab-tar] |
 | immich/nextcloud postgres (zvol) | `*-backup` pg_dump → `tank/backups/apps/<app>` | YES |
 | plex `/config` (ssd/appdata) | appdata walk (60G cache/metadata excluded) | YES (DB/prefs) |
@@ -65,7 +68,8 @@ a tree the local archive tier did not just certify. Restoring the archive pool
 | **nextcloud user files** (`tank/nextcloud-data/disk`) | zvol clone → file walk | **YES** |
 | off-node etcd snapshots (`ssd/k3s-etcd`) | direct walk | YES |
 | tank/share, tank/backups legacy | direct walk | YES |
-| prometheus/loki (zvol) | — | NO (own retention, huge) |
+| hindsight llama models (`ssd/appdata/hindsight/models`) | — | NO (restic-excluded; re-downloaded on first start) |
+| prometheus/loki | — | NO (also out of the archive tier; own retention, huge) |
 | whole-VM images (`tank/proxmox`) | — | NO (local + archive DR only) |
 | **`/etc/pve` (PVE cluster identity)** | `pve-cluster-backup.timer` tar → `tank/backups/apps/pve-cluster` | **YES** |
 | tank/media | — | NO (huge, non-sensitive; Samba/local) |
@@ -74,18 +78,15 @@ a tree the local archive tier did not just certify. Restoring the archive pool
 [^gitlab-tar]: "YES" is a claim about the *tarball*, not about the directory
     being non-empty. `gitlab.rb` and `gitlab-secrets.json` are re-copied there
     nightly, so an empty-of-tarballs landing zone still looks fresh to anything
-    that only checks mtimes. That is exactly how four days of total offsite loss
-    went unnoticed (`gitlab.rb`'s relocated `backup_path` never reached the Rails
-    config because a `notify: Reconfigure gitlab` was lost). Guards added since:
-    the `gitlab` role compares the EFFECTIVE Rails backup path and re-runs the
-    reconfigure itself; the NAS artifact collector matches a per-app glob
-    (`*_gitlab_backup.tar`), not any file; `BackupArtifactEmpty` fires on any
-    wrapper-side `*_backup_last_size_bytes == 0`, and `BackupArtifactZeroBytes`
-    on the NAS-side `backup_artifact_last_size_bytes == 0` (an artefact that
-    landed with a fresh mtime and no content). `gitlab-secrets.json` is covered
-    separately by `GitLabBackupSecretsMissing` — it is excluded from both the
-    tarball and the artefact glob, so nothing else sees it.
-    **Audit artefact NAMES, not just mtimes.**
+    that only checks mtimes. Four guards cover that: the `gitlab` role compares
+    the EFFECTIVE Rails backup path and re-runs the reconfigure itself; the NAS
+    artifact collector matches the per-app glob `*_gitlab_backup.tar`, not any
+    file; `BackupArtifactEmpty` fires on any wrapper-side
+    `*_backup_last_size_bytes == 0` and `BackupArtifactZeroBytes` on the NAS-side
+    `backup_artifact_last_size_bytes == 0`; and `gitlab-secrets.json`, excluded
+    from both the tarball and the glob, is covered by
+    `GitLabBackupSecretsMissing`.
+    **Audit artefact NAMES and SIZES, not mtimes.**
 
 ### The logical-dump landing zone (`tank/backups/apps`)
 
@@ -96,6 +97,11 @@ see a live zvol's block device). Each app has its **own** NFS export
 that app's sole writer — per-app isolation: no client can read another app's
 dumps (the GitLab secrets tarball is reachable only from .153, the Authentik
 credential DB dump only from the k3s pg-dump CIDRs, and so on):
+
+Each entry in `nas_storage_backup_artifact_apps` names one of these subdirs:
+`name` is the `tank/backups/apps/<app>` directory, `pattern` is the glob the
+freshness and size arms watch, and `companions` lists restore-critical files
+that sit outside that glob and get their own alert arm.
 
 - **k3s pg-dump PVs** (authentik, mealie) mount `…:/backups-apps/<app>` by
   hostname with `xprtsec=tls` (export requires TLS; agents + servers CIDRs only).
@@ -165,6 +171,11 @@ restic-offsitectl verify --full  # restic check --read-data (reads ALL data)
 # (restic_offsite_verify_group in restic_offsite_verify.prom), advanced only on
 # success. A wall-clock form (ISO week % 12) would skip a group for a full cycle
 # whenever a week failed or the timer did not run; the cursor retries it.
+# A week whose `verify --auto-subset` collides with a still-running nightly
+# upload is skipped with status 0 and writes no metric, so it shows only as the
+# verify timestamp not advancing — ResticOffsiteVerifyStale is the real signal.
+# An operator-invoked prune, unlock or restore still exits non-zero on a held
+# lock.
 # There is no traditional "re-baseline": restic is content-addressed, every
 # snapshot is logically a full, and the nightly forget --prune continuously
 # repacks.
@@ -175,17 +186,22 @@ restic-offsitectl unlock         # drop a stale lock left by a crashed run
 restic-offsitectl drill          # restore-drill on demand (see Restore drills)
 ```
 
-**Two triggers, one run per generation.** `archive-backup.service` carries
-`OnSuccess=restic-offsite.service` (the primary trigger) and
-`restic-offsite.timer` fires at 07:15 (the fallback for a skipped OnSuccess).
+**Two triggers, one run per generation.** `restic-offsite.timer` fires at 07:15,
+pinned in pve-nas-01 host_vars, and `archive-backup.service` carries
+`OnSuccess=restic-offsite.service` because this host opts in through
+`nas_storage_archive_backup_on_success_units`.
 Both fire every night, so `cmd_run` short-circuits when the last successful run
 already covers the newest `archsync-*` source snapshot **and** every source is
 present and fresh — logging `already-uploaded` and exiting 0 without touching the
-metrics. Before that guard, the estate ran two full `backup` + `forget --prune`
-cycles a night, and the second prune discarded the chain-verified snapshot in
-favour of the fallback one. The freshness condition is load-bearing: a source
+metrics. The freshness condition is load-bearing: a source
 that is stale or missing (i.e. archsync itself failed) must NOT be skipped — it
 falls through to the freshness guard and aborts loudly with `success=0`.
+
+**The swap-clean interlock runs both ways.** swap-clean skips its night while
+`restic-offsite.service` is active, because it stops the guests whose zvol clones
+a run is reading. And `restic-offsitectl run` skips, exit 0, when a unit in
+`restic_offsite_conflicting_units` is active; the last-success timestamp is
+neither refreshed nor cleared, so the staleness alerts stay the signal.
 
 **Restore** (see also docs/17):
 
@@ -227,19 +243,38 @@ those leave `retention_blocked 0`, so `ResticOffsitePruneFailed` and
 `ResticOffsiteFailed` are the ones that fire. Inspect with
 `restic-offsitectl snapshots` before raising the ceiling.
 
+### Unit start timeouts
+
+systemd disables `TimeoutStartSec` for `Type=oneshot`, so the role sets it on
+every unit from v0.18.0 on; an earlier collection pin leaves every oneshot
+unbounded. A run that exceeds its budget is SIGKILLed, which looks like a hang
+in the journal.
+
+| Variable | Default | Governs |
+|---|---|---|
+| `restic_offsite_timeout_start_sec` | 6h | the shared floor the backup and restore-drill units take |
+| `restic_offsite_backup_timeout_start_sec` | the shared floor | the nightly `restic-offsite.service` |
+| `restic_offsite_drill_timeout_start_sec` | the shared floor | the quarterly restore drill |
+| `restic_offsite_verify_timeout_start_sec` | 12h | the weekly `restic check --read-data-subset` |
+| `restic_offsite_timeout_stop_sec` | 5m | teardown after a start-timeout kill |
+
+The verify budget is independent: raising the shared floor for a large
+repository or a slow uplink leaves the deep verify at 12h. A repository whose
+rotating read-data pass takes longer than that must raise
+`restic_offsite_verify_timeout_start_sec` explicitly.
+
 ### Repository locks (rc=11)
 
 An interrupted run leaves a repository lock in the repo. A **shared** lock lets
 plain backups keep succeeding, so snapshots keep landing while every *exclusive*
 operation — `forget`/`prune` and `check` — fails with **rc=11**, reported as
-`repository lock` in the journal. That is what happened on 2026-07-27: a crashed
-run's lock silently disabled retention and integrity verification for ~14 days
-while backups looked healthy, and the resulting alerts went unactioned for six
-days because "backups are landing" reads as fine.
+`repository lock` in the journal. Treat `ResticOffsitePruneFailed` and
+`ResticOffsiteVerifyFailed` as urgent even while snapshots land: retention and
+integrity verification are off until the lock clears.
 
-The durable fix ships in the role: every restic invocation carries
-`--retry-lock` (`restic_offsite_retry_lock`, 15m), and a **pre-flight reaper**
-removes a lock owned by a PID that is dead **on this host** and older than
+Every restic invocation carries `--retry-lock`
+(`restic_offsite_retry_lock`, 15m), and a **pre-flight reaper** removes a lock
+owned by a PID that is dead **on this host** and older than
 `restic_offsite_stale_lock_min_age_h` (6h), logging loudly when it does.
 
 `restic-offsitectl unlock` runs the same reaper on demand and is deliberately
@@ -275,9 +310,9 @@ The **NAS-side** `backup_artifact_last_mtime_seconds{app}` collector stats the
 newest file matching that app's **artefact glob** (`nas_storage_backup_artifact_apps[].pattern`)
 under `tank/backups/apps/<app>` — the independent "a RESTORABLE dump landed
 offsite-eligible" signal (alert `BackupArtifactStale`), distinct from the VM/k8s
-wrappers' own "the dump ran" metrics. The glob is not cosmetic: while it matched
-any file, GitLab's nightly `gitlab.rb`/`gitlab-secrets.json` copies kept the
-alert green through four days in which no tarball reached the landing zone.
+wrappers' own "the dump ran" metrics. The glob is per-app so a companion file
+(`gitlab.rb`, `gitlab-secrets.json`) cannot keep the alert green with no tarball
+present.
 
 Size and companion coverage, because a fresh mtime is not a restorable backup:
 
@@ -298,9 +333,15 @@ Size and companion coverage, because a fresh mtime is not a restorable backup:
   (`host_vars/pve-nas-01.yml`), declaring `gitlab-secrets.json` and `gitlab.rb`
   — the two files `gitlab-backup` excludes from the tarball and that
   `gitlab-backup-run.sh` copies into the landing zone separately, on a step that
-  can fail on its own. `scripts/check-backup-artifact-apps.py` fails the lint
-  stage if the rule exists while no app declares a companion (and vice versa),
-  so it can never ship as coverage that cannot fire.
+  can fail on its own.
+
+  The collector's app list is Ansible-deployed and the alert arms are
+  Flux-reconciled, so the two rot in both directions and neither side is loud
+  about it: an app with no `absent()` arm emits no series at all while its
+  landing dir is never created, and an arm with no app fires forever on a series
+  that will never return. `scripts/check-backup-artifact-apps.py` is the gate —
+  it fails the lint stage when the two lists disagree, including a companion arm
+  that no app declares and the reverse.
 - `GitLabBackupSecretsMissing` — `gitlab_backup_secrets_present == 0` or
   `gitlab_backup_secrets_size_bytes == 0`, written by the GitLab wrapper.
   `gitlab-secrets.json` is excluded from the tarball *and* from the artefact
@@ -342,17 +383,22 @@ Only `restic_offsite_sources` (file sources) count toward coverage: a zvol
 source's filesystem is mounted only during a run, so between runs it has no
 comparand and is never drillable. A requirement above the number of configured
 sources is clamped with a log line rather than wedging the drill permanently.
+
 The journal prints the per-source breakdown (`sampled <src>=<n> …`, sources
 covered, candidates under the floor), so what a pass proved is readable after
 the fact. A sampled path containing a glob metacharacter is skipped with a
 logged note — restic would treat it as a pattern, and the resulting MISSING
 would be a sampler artefact rather than a real failure.
 
-On this cluster five file sources are declared and this host sets
-`restic_offsite_restore_drill_min_sources: 3` (`host_vars/pve-nas-01.yml`), so a
-drill that quietly narrows to one source fails. Three is the practical ceiling:
-`ssd/databases` is empty and can never yield a candidate, leaving four
-drillable sources.
+This host sets `restic_offsite_restore_drill_min_sources` in
+`host_vars/pve-nas-01.yml`, so a drill that quietly narrows to a single source
+fails. The floor is set one under the five declared sources, which keeps a
+source of headroom and cannot be met unless the app-dump source contributes.
+The gate
+counts sources; it cannot require a named one (lib follow-up). The declared
+sources and the reasoning behind the floor live in the `restic_offsite_sources`
+/ `restic_offsite_restore_drill_min_sources` comment in that host_vars file —
+read it there rather than duplicating the arithmetic here.
 
 It writes three gauges to `/var/lib/node_exporter/backup_restore_drill.prom`:
 
@@ -376,15 +422,14 @@ the case where the drill has never passed at all (no success series exists to be
 stale) and the timer has also stopped attempting.
 
 **`BackupRestoreDrillStale` deliberately has no `absent()` arm.** The metric
-does not exist until a drill has actually run, and a `Persistent=true` quarterly
-timer does *not* fire when it is first enabled — systemd bases the next elapse
-on the activation time when there is no `/var/lib/systemd/timers` stamp. An
-`absent()` arm at critical therefore paged continuously from deploy day until
-the first quarterly elapse, up to eight weeks later. The role now runs one drill
-when the units are newly installed, so the metrics exist within a textfile
-collector cycle of the deploy; `BackupRestoreDrillNeverRan` at warning with a
-26h `for:` is what catches a seed that never ran or never passed, without the
-false critical. (`GitLabBackupSecretsMissing` avoids the same trap the same way.)
+does not exist until a drill has run, and a `Persistent=true` quarterly timer
+does not fire when first enabled — systemd bases the next elapse on the
+activation time when there is no `/var/lib/systemd/timers` stamp — so an
+`absent()` arm at critical would page from deploy until the first elapse. The
+role runs one drill when the units are newly installed, so the metrics exist
+within a textfile-collector cycle; `BackupRestoreDrillNeverRan` at warning with
+a 26h `for:` catches a seed that never ran or never passed.
+(`GitLabBackupSecretsMissing` uses the same pattern.)
 
 #### The deeper drill (manual, annual)
 
@@ -392,7 +437,9 @@ The automated drill does not prove that a restored `pg_dump` replays or that an
 encrypted HAOS tar decrypts. Those stay a manual exercise, one artefact per app
 class:
 
-1. **Fetch** — `restic-offsitectl restore backups` pulls the logical-dump tree.
+1. **Fetch** — `restic-offsitectl restore backups-apps` pulls the logical-dump
+   tree (`backups` does not carry it: `tank/backups/apps` is a child dataset and
+   is an empty mountpoint in the parent's walk).
 2. **Postgres class** — the newest `authentik-*.sql.gz` replays into a throwaway
    database (`gunzip -c … | psql -d drill_tmp`); schema and a row count are
    confirmed, then the database is dropped.
@@ -400,12 +447,25 @@ class:
    `backup_information.yml` names the expected GitLab version, and
    `gitlab-secrets.json` is present and non-empty in the same directory (a
    tarball without it cannot decrypt CI variables, 2FA or runner tokens).
-4. **Home Assistant class** — the newest `Automatic_backup_*.tar` decrypts with
+4. **Home Assistant class** — the newest `[Aa]utomatic_backup_*.tar` (HA 2026.8
+   lowercased the default name; both spellings are matched) decrypts with
    `backup_encryption_key` from the **Home Assistant API Token** 1Password item.
    **If that field is empty the HA tars are unrecoverable.**
 5. **File class** — one known file is restored out of `appdata` and diffed
    against the live copy (the automated drill's step, done by hand).
 
+### Incomplete offsite run
+
+restic exiting 3 means the snapshot was saved but some paths were unreadable,
+so the backup is not complete. The wrapper reports that as
+`restic_offsite_last_run_incomplete=1` rather than a failed run, and
+`ResticOffsiteIncomplete` warns on it (docs/12 § Incomplete offsite run).
+
+The shape to expect is an ext4 zvol clone mounted `ro,noload`: `noload` skips
+journal replay, so reads come back EBADMSG ("bad message"). Both
+`restic_offsite_zvol_sources` clones in `host_vars/pve-nas-01.yml` mount plain
+`ro` so the replay happens. Triage is: read the wrapper log for the skipped
+paths, then re-run the job.
 
 ## Cost
 
@@ -444,16 +504,32 @@ not months, whatever the policy says. `restic-offsitectl snapshots` shows the
 truth. Object Lock (governance mode) on the restic prefix remains the stronger
 answer and is the recommended next step if the threat model tightens.
 
+## The overnight chain
+
+The dumps are staggered so their peaks never stack: smartd short tests 02:00,
+`authentik-pg-dump` 02:30, `recipes`/mealie 02:45, vzdump 03:30 to ~05:45,
+media-mover 06:00, archive replication 06:30, and the restic upload chained
+after archive.
+
+The two in-cluster pg-dump CronJobs share two properties worth knowing before
+editing either. They run under `bash` with `set -o pipefail`, because a failed
+`pg_dump` piped into `gzip` otherwise exits 0 and rotates a truncated dump in as
+successful. And they wait for NetworkPolicy ipset propagation (roughly 5-15 s
+after pod creation) before dialing Postgres, or every backoff attempt loses the
+same race.
+
 ## Nightly-chain right-sizing (vzdump)
+
+This host chains the restic run `OnSuccess=` after `archive-backup.service`
+(06:30), so the vzdump window is an offsite-chain constraint: a vzdump slice that
+overruns pushes archive, and archive pushes the offsite upload.
 
 - **Exclude the 9 k3s VMs** from vzdump (`exclude: [202-207,222,223,227]`): they
   are IaC-rebuildable cattle (all persistent data on `backup=0` zvols, covered by
   archive + pg-dumps + B2); keeping OS-disk images also risks a **stale-member
   etcd restore** that can corrupt quorum. Saves ~200 G/night of dump I/O.
-- **bwlimit 61440** (60 MiB/s), raised from 30: measurement showed 30 was the
-  binding constraint rather than pool capability, and the drivers of the earlier
-  I/O-saturation incident (CI DinD on the NAS agent, memory/swap thrash) are
-  fixed.
+- **bwlimit 61440** (60 MiB/s): measurement showed the previous 30 MiB/s was
+  the binding constraint rather than pool capability.
 
 **Measured window (2026-08):** the pve-nas-01 slice runs **03:30 → ~05:36**, not
 the ~04:45 originally projected. Windows 11 (VM 155) is the long pole at ~1h12m,
@@ -467,27 +543,6 @@ Read the current numbers rather than trusting this paragraph:
 The gate for raising the bwlimit further (a comfortable margin to 06:00) is
 therefore **not met**; a raise would have to be paired with shrinking or
 rescheduling the Windows dump.
-
-## Encrypted swap (Proxmox hosts)
-
-`encrypted_swap` deploys **dm-crypt plain-mode, random-key** swap on all six
-bare-metal hosts via `/etc/crypttab` (`cryptswap ← /dev/pve/swap`, `/dev/urandom`
-key, `aes-xts-plain64`/`size=512` = AES-256-XTS) + `/etc/fstab`
-(`/dev/mapper/cryptswap`). A fresh key each boot ⇒ on-disk swap unrecoverable
-after a reboot.
-
-Activation is **deferred to the next reboot** on all six hosts — there is no
-live (running-host) switchover. On reboot `systemd-cryptsetup` opens and
-`mkswap`s the mapper from crypttab and the `nofail` fstab mapper line swaps it
-on; the boot finalize unit then drops the retained plaintext line. Existing
-plaintext swap keeps running until then, so the deploy and a normal activation
-reboot have **no swapless window** (the encrypted_swap README documents one rare
-boot-race exception that can leave a host swapless until the next reboot,
-surfaced by the `NASSwapGone` alert). **Reboot to activate** (compute hosts on
-their next kured reboot; reboot
-`pve-nas-01` when convenient). `swap-clean` is device-agnostic
-(`swapoff -a`/`swapon -a`) and works transparently post-reboot; its pre-flight
-skips the cycle while the mapper is still pending (see the encrypted_swap README).
 
 ## Setup reference (rebuild / new bucket)
 
@@ -526,8 +581,8 @@ working throughout — it never issues a real delete.
 
 > The Backblaze Terraform provider's read path returns empty attributes against
 > B2's current API, producing a permanent phantom diff, which is why bucket
-> settings are reconciled by `scripts/b2-bucket-drift.py` rather than a
-> `terraform/b2` module. Review `task b2:drift`, then `task b2:apply`.
+> settings are reconciled by `scripts/b2-bucket-drift.py` rather than a Terraform
+> module. Review `task b2:drift`, then `task b2:apply`.
 
 ### Object Lock is deliberately OFF (decision record)
 
@@ -547,8 +602,8 @@ Ransomware resistance rests on two compensating controls instead:
 Why not enable it: Object Lock in governance mode is **irreversible per object**
 for its retention period, which means `forget --prune` cannot reclaim space
 inside the window — restic's GFS retention and the lock would fight, and the
-bucket's cost becomes retention-period-times-churn rather than the ~50 GB steady
-state costed above. Revisit if the key ever gains delete capability or the
+bucket's cost becomes retention-period-times-churn rather than the measured
+steady-state footprint costed in § Cost. Revisit if the key ever gains delete capability or the
 threat model changes; the change would be `defaultRetention` in
 `scripts/b2-bucket.json` plus a retention period at least matching
 `restic_offsite_keep_last`, applied through `task b2:apply` so the drift gate
@@ -595,7 +650,7 @@ directory holding a healthy tarball but no `gitlab-secrets.json` is what
 ## Related documentation
 
 - [docs/17-disaster-recovery.md](17-disaster-recovery.md) — restic/B2 restore procedures
-- [docs/06-zfs.md](06-zfs.md), [docs/32-zfs-encryption.md](32-zfs-encryption.md) — the local layers
+- [docs/06-zfs.md](06-zfs.md), [docs/32-zfs-encryption.md](32-zfs-encryption.md) — the local layers, and host swap encryption
 - [docs/15-credential-rotation.md](15-credential-rotation.md) — the `B2 Archive Backup` 1Password item
 - [docs/12-runbooks.md](12-runbooks.md) — backup-and-recovery runbook entries
 - [docs/24-home-assistant-deployment.md](24-home-assistant-deployment.md) — HA's own backup target

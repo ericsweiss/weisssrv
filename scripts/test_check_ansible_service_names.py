@@ -1,29 +1,24 @@
 """Failure-path tests for scripts/check-ansible-service-names.py.
 
-The gate reports success by printing a sentence, so what needs proving is that
-it can still FAIL — on exactly the shape that shipped (a role FQCN passed as a
-systemd unit name), and that it does not fire on the legitimate spellings the
-playbooks use.
+A role FQCN used as a systemd unit name must fail the gate, and the legitimate
+unit spellings the playbooks use must not.
 """
 from __future__ import annotations
 
-import importlib.util
 import subprocess
 import sys
 import textwrap
 from pathlib import Path
 
 import pytest
+from script_loader import load_path
 
 SCRIPT = Path(__file__).resolve().parent / "check-ansible-service-names.py"
 REPO = SCRIPT.parent.parent
 
 
 def _load():
-    spec = importlib.util.spec_from_file_location("check_ansible_service_names", SCRIPT)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return load_path(SCRIPT)
 
 
 @pytest.fixture(scope="module")
@@ -63,7 +58,7 @@ def test_a_role_fqcn_as_a_unit_name_fails(tmp_path):
 
 
 def test_a_masked_no_op_still_fails(tmp_path):
-    """failed_when: false is exactly what made the second occurrence invisible."""
+    """failed_when: false must not mask the violation."""
     root = _playbook(tmp_path, """\
         - hosts: all
           tasks:
@@ -126,6 +121,22 @@ def test_free_form_args_are_inspected(tmp_path):
               systemd: name=weisssrv.infra.k3s state=restarted
         """)
     assert _run(root).returncode == 1
+
+
+def test_an_unparseable_file_is_an_error_not_a_silent_skip(tmp_path):
+    """An unreadable playbook drops out of the walk; the gate must say so
+    instead of printing OK over a file it never scanned."""
+    root = _playbook(tmp_path, """\
+        - name: broken
+          hosts: all
+          tasks:
+            - name: Start a unit
+              ansible.builtin.service: {name: k3s, state: started
+        """)
+    result = _run(root)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "could not parse" in result.stdout
+    assert "play.yml" in result.stdout
 
 
 def test_an_empty_tree_is_an_error_not_a_pass(tmp_path):

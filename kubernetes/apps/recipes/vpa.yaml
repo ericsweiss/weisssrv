@@ -10,10 +10,7 @@ spec:
   updatePolicy: {updateMode: Initial}
   resourcePolicy:
     containerPolicies:
-      # Limit-controlling (controlledValues unset), so the cap is 0.8x the
-      # container's 1Gi memory limit (mealie.yaml) — at or above it the
-      # declared ceiling never binds, because the updater rescales the limit
-      # with the request (docs/33 § Limit oscillation).
+      # Limit-controlling: cap == 0.8x the 1Gi limit in mealie.yaml (docs/33).
       - containerName: "*"
         minAllowed: {cpu: 25m, memory: 128Mi}
         maxAllowed: {cpu: 2, memory: 819Mi}
@@ -28,9 +25,7 @@ spec:
   updatePolicy: {updateMode: "Off"}
   resourcePolicy:
     containerPolicies:
-      # Recommendation-only, so each cap tracks its own container's hand-set
-      # limit (mealie.yaml): the recorded target can then show growth right up
-      # to the ceiling that actually binds it (docs/33, Off row).
+      # Recommendation-only: cap == the 512Mi limit in mealie.yaml (docs/33).
       - containerName: postgres
         minAllowed: {cpu: 25m, memory: 64Mi}
         maxAllowed: {cpu: 1, memory: 512Mi}
@@ -57,12 +52,12 @@ spec:
   updatePolicy: {updateMode: Initial}
   resourcePolicy:
     containerPolicies:
-      # 0.8x the container's 1Gi memory limit (bar-assistant.yaml): the policy
-      # also controls limits, so a cap at the limit would leave no ceiling that
-      # ever binds (docs/33).
+      # Idle-heavy and bursty, so RequestsOnly; cap == the 1Gi limit in
+      # bar-assistant.yaml (docs/33).
       - containerName: "*"
+        controlledValues: RequestsOnly
         minAllowed: {cpu: 25m, memory: 64Mi}
-        maxAllowed: {cpu: 1, memory: 819Mi}
+        maxAllowed: {cpu: 1, memory: 1Gi}
         controlledResources: [cpu, memory]
 ---
 apiVersion: autoscaling.k8s.io/v1
@@ -90,9 +85,8 @@ spec:
   updatePolicy: {updateMode: Initial}
   resourcePolicy:
     containerPolicies:
-      # RequestsOnly: the hand-set 256Mi limit stays the binding ceiling —
-      # it must clear redis's 192mb `--maxmemory` — while the request may
-      # grow to 204Mi (0.8x) for headroom under it (docs/33).
+      # RequestsOnly: the 256Mi limit must clear redis's 192mb `--maxmemory`,
+      # so it stays hand-set; cap is 0.8x it (bar-assistant.yaml, docs/33).
       - containerName: "*"
         controlledValues: RequestsOnly
         minAllowed: {cpu: 10m, memory: 64Mi}

@@ -1,37 +1,17 @@
 ---
-# Allow ingress to the VPA admission-controller webhook (called by the
-# kube-apiserver, which arrives post-DNAT from a server node IP — the
-# vpa-webhook Service maps 443 -> container port 8000). The apiserver source is
-# not pinned by IP because the webhook call originates from whichever server is
-# active; allow the webhook port from anywhere and rely on the webhook's own TLS
-# for authenticity. The :8944 rule is a parity allow only (see below) — VPA
-# exposes no scraped metrics, so nothing actually connects there.
-# Deliberately looser than kube-system-policies/allow-coredns.yaml, which pins
-# the same post-DNAT class to the pod CIDR + LAN: :53 has no per-caller auth
-# so the CIDRs are its only gate, a webhook's own TLS/authz is a real one
-# (docs/29 § Network policy exceptions).
+# VPA admission-controller webhook (vpa-webhook Service maps 443 -> container
+# 8000), open from anywhere: the apiserver call arrives post-DNAT and the
+# webhook's own TLS is the gate (docs/29).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: allow-webhook-and-metrics-ingress
+  name: allow-webhook-ingress
   namespace: vpa-system
 spec:
   podSelector: {}
   policyTypes:
     - Ingress
   ingress:
-    # Webhook (admission-controller listens on 8000)
     - ports:
         - protocol: TCP
           port: 8000
-    # Parity allow for a :8944 admission-controller metrics scrape. Unused:
-    # VPA exposes no scraped metrics endpoint — recommendation visibility comes
-    # via the kube-state-metrics customResourceState config, not a direct
-    # scrape — so no observability pod actually connects here.
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: observability
-      ports:
-        - protocol: TCP
-          port: 8944

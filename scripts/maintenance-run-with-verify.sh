@@ -1,37 +1,26 @@
 #!/usr/bin/env bash
-# Run a maintenance command, then always run the post-maintenance verify
-# script — even if the command failed. A failed maintenance action is
-# exactly when you want a cluster-health snapshot, so verify must run
-# unconditionally.
-#
-# Exit semantics:
-#   - command failed:  exit with command's rc (verify still ran for diagnosis)
-#   - command ok, verify failed: exit with verify's rc
-#   - both ok: exit 0
-#
-# Usage:
-#   bash scripts/maintenance-run-with-verify.sh <command> [args...]
-#
-# The command must be a single program with args: only "$@"'s exit status is
-# captured, so a bare pipeline would mask a mid-pipe failure. Wrap one as
-# `bash -c 'set -o pipefail; a | b'`.
-#
-# The verify script resolves via $CI_PROJECT_DIR when set, else this script's dir.
+# Run a maintenance command, then run the verify script whatever the outcome.
+# Exits with the command's rc if it failed, else the verify's.
+# Usage and VERIFY_SCRIPT: docs/SCRIPTS.md.
 
-set +e  # don't let a command failure short-circuit verify
+# No `-e`: a failing command must still reach the verify below.
+set -uo pipefail
 
 if [ "$#" -lt 1 ]; then
   echo "ERROR: $0 requires at least one argument (the command to run)" >&2
   exit 64  # EX_USAGE
 fi
 
-SCRIPT_DIR="${CI_PROJECT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}/scripts"
-VERIFY="${SCRIPT_DIR}/post-maintenance-verify.sh"
+REPO_DIR="${CI_PROJECT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
+VERIFY="${VERIFY_SCRIPT:-scripts/post-maintenance-verify.sh}"
+case "$VERIFY" in
+  /*) ;;
+  *) VERIFY="${REPO_DIR}/${VERIFY}" ;;
+esac
 
+# Invoked as `bash "$VERIFY"`, so readability is enough: a CI checkout need not
+# preserve the +x bit.
 if [ ! -r "$VERIFY" ]; then
-  # We invoke via `bash "$VERIFY"`, which doesn't need the +x bit — only
-  # readability. Avoids spurious failures from CI checkouts that may not
-  # preserve file modes.
   echo "ERROR: verify script not found or not readable: $VERIFY" >&2
   exit 64
 fi

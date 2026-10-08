@@ -1,8 +1,7 @@
 ---
-# Internal-only TLS cert for the admin UI (vpn.esweiss.com). There is NO public
-# (ericsweiss.com) cert or route: the UI is admin-only and never leaves the LAN/
-# tailnet. The WireGuard endpoint (vpn.ericsweiss.com) is UDP and needs no cert.
-# Must live in the same namespace as the IngressRoute that references it.
+# Internal-only TLS cert for the admin UI (vpn.esweiss.com), in the same
+# namespace as the IngressRoute referencing it. There is no public cert or
+# route; the WireGuard endpoint is UDP and needs none.
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:

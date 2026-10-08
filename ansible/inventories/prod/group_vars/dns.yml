@@ -3,10 +3,9 @@
 
 proxmox_lxc_nesting: true  # Required for systemd 257+
 
-# Write the SAME key base deploys (from=-restricted), not the plain
-# SSH_PUBLIC_KEY the role defaults to: these LXCs are base_managed AND
-# proxmox_lxc-managed, so mismatched content makes every deploy report changed.
-# The ternary short-circuits so a job without SSH_PUBLIC_KEY skips (not errors).
+# The SAME from=-restricted key base deploys, not the plain SSH_PUBLIC_KEY the
+# role defaults to, so the two managers agree; the ternary short-circuits when
+# SSH_PUBLIC_KEY is unset (skip, not error). Same block in mail.yml.
 proxmox_lxc_ssh_public_keys: >-
   {{ ssh_authorized_keys | join("\n")
      if lookup('ansible.builtin.env', 'SSH_PUBLIC_KEY', default='') else '' }}
@@ -17,13 +16,8 @@ proxmox_lxc_ssh_public_keys: >-
 base_is_resolver_host: true
 
 # A resolver's Proxmox-level nameserver is ITSELF (127.0.0.1), not the client
-# default (dns_servers → 10.0.10.150/.160): Proxmox rewrites the container's
-# /etc/resolv.conf from this on every restart, and adguard_home then reasserts
-# 127.0.0.1 in-guest, so keeping the two in step avoids a restart pointing the
-# resolver at the pair instead of itself. The proxmox_lxc DNS reconcile
-# (weisssrv.infra >= v0.15.0) converges any drift here; without this override it
-# would repoint the resolvers to dns_servers. Client LXCs (smtp/plex/immich-ml)
-# correctly keep the dns_servers default.
+# default: Proxmox rewrites the container's /etc/resolv.conf from this on every
+# restart, and the proxmox_lxc DNS reconcile would otherwise repoint it.
 proxmox_lxc_nameserver: "127.0.0.1"
 
 # Boot order (proxmox_lxc_startup_order/delay) is set per host in
@@ -33,20 +27,17 @@ proxmox_lxc_nameserver: "127.0.0.1"
 # references it below.
 unbound_port: 5335
 
-# This site's superseded drop-in name, removed on every run. Site data, so it
-# belongs here rather than in the role default (which is due to become []) —
-# without it the stale file survives, and unbound merges the drop-in dir with a
-# SORTED glob, so weisssrv.conf wins every scalar it duplicates from managed.conf.
+# This site's superseded drop-in name, removed on every run. Without it the
+# stale file survives, and unbound merges the drop-in dir with a SORTED glob, so
+# weisssrv.conf wins every scalar it duplicates from managed.conf.
 unbound_legacy_dropins:
   - weisssrv.conf
 
-adguard_home_user: adguard
-adguard_home_group: adguard
+# Deltas over the adguard_home role defaults only. These two ARE the default
+# value, kept because playbooks outside the role dereference them with no
+# fallback: update-applications.yml the path, postflight.yml the port.
 adguard_home_install_path: /opt/AdGuardHome
 adguard_home_http_port: 3000
-adguard_home_dns_port: 53
-adguard_home_dot_port: 853
-adguard_home_https_port: 443
 adguard_home_admin_user: eric
 # Password from 1Password; bcrypt hash is generated at deploy time by the adguard_home role
 adguard_home_admin_password: >-
@@ -55,31 +46,24 @@ adguard_home_admin_password: >-
 
 # AdGuard terminates the wildcard cert on :443 (UI + DoH) and :853 (DoT/DoQ);
 # Traefik re-originates rather than terminating. :3000 is the plaintext admin
-# API, firewalled to the admin sets (proxmox_firewall_dns_admin_ports in all.yml).
+# API, firewalled to the admin sets (proxmox_firewall_dns_admin_ports, all.yml).
 adguard_home_tls_enabled: true
 adguard_home_tls_server_name: "dns.{{ internal_domain }}"
-adguard_home_cert_path: "{{ adguard_home_install_path }}/certs"
-adguard_home_doq_port: 853
 
 adguard_home_upstream_dns:
   - "127.0.0.1:{{ unbound_port }}"
 
-adguard_home_protection_enabled: true
-adguard_home_upstream_mode: "load_balance"
-adguard_home_fallback_dns: []
-adguard_home_enable_dnssec: true
-adguard_home_resolve_clients: true
-adguard_home_use_private_ptr_resolvers: false
-adguard_home_disable_ipv6: false
-
-adguard_home_cache_enabled: true
-adguard_home_cache_size: 8388608
-adguard_home_cache_ttl_min: 0
-adguard_home_cache_ttl_max: 0
-adguard_home_cache_optimistic: false
-
+# Per-client-IP limiter for the client VLANs; AdGuard DROPS the excess, so the
+# client waits out its resolver timeout. Managed homelab hosts are whitelisted.
+# Plain IPs only, and the order must match GET /control/dns_info.
 adguard_home_ratelimit: 20
-adguard_home_ratelimit_whitelist: []
+# Every inventory host that has an address, so a host add, removal or renumber
+# cannot leave one rate-limited. Sorted for idempotence against the API order.
+_dns_addressed_hosts: >-
+  {{ groups['all'] | map('extract', hostvars)
+     | selectattr('ansible_host', 'defined') | list }}
+adguard_home_ratelimit_whitelist: >-
+  {{ _dns_addressed_hosts | map(attribute='ansible_host') | unique | sort | list }}
 
 # DNS rewrites for internal services. Codified removal of the LAST rewrite (or
 # the last entry in adguard_home_user_rules) needs adguard_home_prune_rewrites /
@@ -120,6 +104,9 @@ adguard_home_rewrites:
   # Traefik at photos.{{ internal_domain }} -> .101 below).
   - domain: "immich.{{ internal_domain }}"
     answer: "10.0.10.157"
+  # ML inference LXC: LAN-only API for the Immich VM (docs/36).
+  - domain: "immich-ml.{{ internal_domain }}"
+    answer: "10.0.10.158"
   - domain: "pve-nas-01.{{ internal_domain }}"
     answer: "10.0.10.102"
   - domain: "pve-laptop-01.{{ internal_domain }}"
@@ -198,37 +185,13 @@ adguard_home_rewrites:
   - domain: "status.{{ internal_domain }}"
     answer: "10.0.10.101"
   # DOCUMENTED EXCEPTION to the internal-only rule below: auth.ericsweiss.com
-  # resolves internally so server-side OIDC discovery/JWKS fetches skip the WAN
-  # hairpin (Cloudflare bot protection 403s non-browser user agents). The issuer
-  # must stay the external name — docs/08.
+  # resolves internally so server-side OIDC discovery skips the WAN hairpin. The
+  # issuer must stay the external name (docs/08).
   - domain: "auth.ericsweiss.com"
     answer: "10.0.10.101"
-  # SECOND DOCUMENTED EXCEPTION — the whole GitLab family, for the same reason:
-  # resolving these names publicly makes an internal client hairpin to our own
-  # WAN address, which the UniFi gateway does not reliably loop back for the
-  # node announcing it (the ASUS happened to). Two of the four broke production
-  # within a day of the cutover:
-  #
-  #   git      — a containerd pull from registry.git.esweiss.com is redirected
-  #              to https://git.ericsweiss.com/jwt/auth for its bearer token
-  #              (GitLab advertises the realm on external_url; not configurable
-  #              per-client), so the pull dies at the 401 no matter which
-  #              registry hostname it started from. Hermes ImagePullBackOff,
-  #              2026-08-22.
-  #   registry — the same class one layer up: a runner resolving the external
-  #              registry name timed out pulling molecule-ci, failing 43/43
-  #              molecule jobs in weisssrv-lib !35.
-  #
-  # git and registry were added live through the AdGuard API as the interim fix
-  # and are codified here so the role's prune does not delete them. The pages
-  # pair has not broken anything; it is added for PARITY, because it is the same
-  # class of name reachable the same way and the cost of waiting for it to fail
-  # is another outage. All four have Traefik routes on .101 (vm-ingress).
-  #
-  # Deliberately NOT rewritten: ide.git and *.ide.git. The Web IDE extension
-  # host is required to hairpin via Cloudflare so GitLab sees the WAN address
-  # (Taskfile, docs/27), and it is also the only external probe left witnessing
-  # the `direct` A record — see docs/08 § Cross-domain rewrites.
+  # SECOND DOCUMENTED EXCEPTION - the GitLab family: a public answer hairpins to
+  # our own WAN address, which the gateway does not loop back. ide.git and
+  # *.ide.git are deliberately NOT rewritten - docs/08 § Cross-domain rewrites.
   - domain: "git.ericsweiss.com"
     answer: "10.0.10.101"
   - domain: "registry.git.ericsweiss.com"
@@ -237,16 +200,9 @@ adguard_home_rewrites:
     answer: "10.0.10.101"
   - domain: "*.pages.git.ericsweiss.com"
     answer: "10.0.10.101"
-  # THIRD DOCUMENTED EXCEPTION — photos.ericsweiss.com, same hairpin class with
-  # a different trigger: the record is DNS-only at Cloudflare (grey cloud — the
-  # Immich mobile app uploads exceed the 100 MB proxied body cap, docs/36), so
-  # internally it used to resolve to our own WAN address. The renumber moved the
-  # homelab onto its own VLAN, whose sources the gateway does not hairpin, which
-  # took the in-cluster Uptime Kuma probe (and any LAN upload path) down while
-  # every browser on the Home VLAN still worked — the asymmetry that made it
-  # look like an Immich outage. Answer is the PUBLIC VIP: unlike the .101
-  # family above, the external router for photos lives on `websecure`
-  # (kubernetes/apps/vm-ingress/immich.yaml).
+  # THIRD DOCUMENTED EXCEPTION - photos is DNS-only at Cloudflare (docs/36) and
+  # must resolve internally. Answer is the PUBLIC VIP: its external router lives
+  # on websecure (kubernetes/apps/vm-ingress/immich.yaml).
   - domain: "photos.ericsweiss.com"
     answer: "10.0.10.100"
   # Hermes gateway OpenAI-compatible API (bearer-keyed; Home Assistant Voice
@@ -294,6 +250,7 @@ adguard_home_user_rules:
   - '||155.10.0.10.in-addr.arpa^$dnsrewrite=NOERROR;PTR;windows.{{ internal_domain }}.'
   - '||156.10.0.10.in-addr.arpa^$dnsrewrite=NOERROR;PTR;nextcloud.{{ internal_domain }}.'
   - '||157.10.0.10.in-addr.arpa^$dnsrewrite=NOERROR;PTR;immich.{{ internal_domain }}.'
+  - '||158.10.0.10.in-addr.arpa^$dnsrewrite=NOERROR;PTR;immich-ml.{{ internal_domain }}.'
   - '||102.10.0.10.in-addr.arpa^$dnsrewrite=NOERROR;PTR;pve-nas-01.{{ internal_domain }}.'
   - '||103.10.0.10.in-addr.arpa^$dnsrewrite=NOERROR;PTR;pve-laptop-01.{{ internal_domain }}.'
   - '||104.10.0.10.in-addr.arpa^$dnsrewrite=NOERROR;PTR;pve-opt-01.{{ internal_domain }}.'
@@ -326,6 +283,120 @@ acme_certs_ssh_private_key: >-
 acme_certs_ssh_public_key: >-
   {{ lookup('ansible.builtin.env', 'DNS01_SSH_PUBLIC_KEY')
      or undef(hint='DNS01_SSH_PUBLIC_KEY env var must be set (run via op run)') }}
+
+# Distribution targets: the role's reload script pushes the PEM pair to each
+# after renewal. Addresses come from the roster, host_key is pinned by hand
+# (`task certs:show-host-keys`). Schema: the acme_certs role README.
+_acme_certs_targets:
+  - host: dns-02
+    ip: "{{ hostvars['dns-02'].ansible_host }}"
+    host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEWbN0fb8eOTlPeHMQ/sZ+vkEgtSPAnZ7OiZjYsAcAyu"
+    cert_dir: /opt/AdGuardHome/certs
+    owner: root
+    group: adguard
+    cert_mode: "0644"
+    key_mode: "0640"
+    restart_service: AdGuardHome
+  - host: smtp-relay
+    ip: "{{ hostvars['smtp-relay'].ansible_host }}"
+    host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIK7o0NXu/ZssOvC0quOLUWBVm9q4l15hiHJ4LoVfHG98"
+    cert_dir: /etc/postfix/tls
+    owner: root
+    group: root
+    cert_mode: "0644"
+    key_mode: "0600"
+    restart_service: postfix
+  # GitLab: cert lives in /etc/gitlab/ssl, referenced by gitlab.rb.
+  # `gitlab-ctl hup nginx` reloads nginx without a full reconfigure.
+  - host: gitlab
+    ip: "{{ hostvars['gitlab'].ansible_host }}"
+    host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIH61P4VRLs1h6QR4YJDlDKDpjJiustrfFboC/O8CS1hB"
+    cert_dir: /etc/gitlab/ssl
+    owner: root
+    group: root
+    cert_mode: "0644"
+    key_mode: "0600"
+    restart_command: "sudo gitlab-ctl hup nginx"
+  # Nextcloud (156): host nginx serves the wildcard from /etc/ssl/nextcloud,
+  # replacing the role's self-signed bootstrap cert so Traefik's vm-tls-wildcard
+  # backend validation succeeds for cloud (docs/35).
+  - host: nextcloud
+    ip: "{{ hostvars['nextcloud'].ansible_host }}"
+    host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOf5zslX71wElT423JUsYIBkp1qIUpAmjLUvy/exDpIk"
+    cert_dir: /etc/ssl/nextcloud
+    owner: root
+    group: root
+    cert_mode: "0644"
+    key_mode: "0600"
+    restart_command: "sudo systemctl reload nginx"
+  # Immich (157): host nginx serves the wildcard on 443 from /etc/nginx/ssl,
+  # replacing the role's self-signed bootstrap cert so Traefik's vm-tls-wildcard
+  # backend validation succeeds for photos (docs/36).
+  - host: immich
+    ip: "{{ hostvars['immich'].ansible_host }}"
+    host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINvksbwaHJ2UoHAYNmpFeKuC7xPZIfhy4BRVWHFzpbt8"
+    cert_dir: /etc/nginx/ssl
+    owner: root
+    group: root
+    cert_mode: "0644"
+    key_mode: "0600"
+    restart_command: "sudo systemctl reload nginx"
+  # CRITICAL: only the NFS server gets the wildcard cert + key. The
+  # *.esweiss.com key impersonates every internal service, and k3s nodes are
+  # xprtsec=tls clients that present no cert. Add one only if an export moves
+  # to xprtsec=mtls. restart_command reloads tlshd when that unit is enabled.
+  - host: pve-nas-01
+    ip: "{{ hostvars['pve-nas-01'].ansible_host }}"
+    host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGxyeQZee3W3aQ0EpeY5sLONaZB1Zy4eKoMAeSLnbRCr"
+    cert_dir: /etc/ssl/private
+    owner: root
+    group: root
+    cert_mode: "0644"
+    key_mode: "0600"
+    restart_command: >-
+      if sudo systemctl list-unit-files tlshd.service >/dev/null 2>&1
+      && sudo systemctl is-enabled --quiet tlshd.service; then
+      sudo systemctl restart tlshd;
+      else
+      echo 'tlshd not yet enabled; skipping reload' >&2;
+      fi
+  # Plex: the plex role's cert-reload hook builds a PKCS#12 bundle from
+  # the renewed PEM pair, atomically swaps it into place, and restarts
+  # plexmediaserver.
+  - host: plex
+    ip: "{{ hostvars['plex'].ansible_host }}"
+    host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIO41P4DvFdeHkZW7Np3w71NH7WV2gGr2BQISIyjyeozB"
+    cert_dir: /etc/ssl/plex
+    # root-owned with plex group read — see plex role configure.yml.
+    owner: root
+    group: plex
+    cert_mode: "0644"
+    key_mode: "0640"
+    restart_command: "sudo /usr/local/sbin/plex-cert-reload.sh"
+  # HAOS: the SSH add-on listens on 22222 as root with no sudo. /ssl is the
+  # directory configuration.yaml's http: ssl_certificate expects; `ha core
+  # restart` re-reads config and binds the new cert.
+  - host: home
+    ip: "{{ hostvars['home'].ansible_host }}"
+    ssh_port: 22222
+    ssh_user: root
+    ssh_no_sudo: true
+    # Shared HAOS key — single source of truth in group_vars/all.yml,
+    # also consumed by home_assistant_host_key in host_vars/home.yml.
+    host_key: "{{ haos_ssh_host_key }}"
+    cert_dir: /ssl
+    owner: root
+    group: root
+    cert_mode: "0644"
+    key_mode: "0600"
+    restart_command: "ha core restart"
+
+# An entry whose host_key is still empty is dropped here rather than pushed to:
+# an unpinned target would accept the key from any host.
+acme_certs_distribution_targets: >-
+  {{ _acme_certs_targets
+     | selectattr('host_key', 'defined')
+     | rejectattr('host_key', 'equalto', '') | list }}
 
 # AdGuard Home Sync (dns-01 -> dns-02). Both URLs go through Traefik (.101), so
 # the sync hop is TLS on the wire and the lan-tailscale-only middleware keeps

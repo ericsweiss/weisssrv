@@ -1,0 +1,36 @@
+# https://taskfile.dev
+# Hindsight, the Hermes long-term memory service. Cluster-internal, no
+# ingress (docs/37).
+version: '3'
+
+tasks:
+  status:
+    desc: Show Hindsight status (pods, service, PVC, VPA)
+    cmds:
+      - task: :_app:status
+        vars:
+          NS: hindsight
+          SECTIONS: |
+            Hindsight Namespace|pods
+            Service|svc
+            PVC|pvc
+            VPA|vpa
+
+  logs:
+    desc: "Tail Hindsight logs (task hindsight:logs [COMPONENT=hindsight|llama])"
+    vars:
+      COMPONENT: '{{.COMPONENT | default "hindsight"}}'
+    cmds:
+      - task: :_app:logs
+        vars:
+          NS: hindsight
+          TARGET: deploy/hindsight
+          CONTAINER: '{{.COMPONENT}}'
+
+  restart:
+    desc: Restart Hindsight (pod delete; Flux-managed, replicas:1 + Recreate)
+    cmds:
+      - task: :_app:restart
+        vars:
+          NS: hindsight
+          SELECTOR: -l app.kubernetes.io/name=hindsight

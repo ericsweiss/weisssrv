@@ -1,15 +1,6 @@
 ---
-# GitLab deployment playbook
-#
-# This playbook provisions the GitLab VM and deploys GitLab EE.
-#
-# Prerequisites:
-#   - Authentik SAML provider configured (for SSO)
-#   - 1Password items created (GitLab, GitLab SSO)
-#
-# Usage:
-#   task gitlab:deploy              # Full deployment (VM + GitLab)
-#   task gitlab:deploy-check        # Dry-run
+# Provisions the GitLab VM and deploys GitLab EE. Prerequisites, SSO setup,
+# first-deploy order and the task commands: docs/27-gitlab-deployment.md.
 
 - name: Provision GitLab VM
   hosts: gitlab
@@ -39,9 +30,9 @@
     - weisssrv.infra.postfix_null_client
     # Exposes the backup wrapper's gitlab_backup.prom textfile; ordered before
     # gitlab so the exporter is in place when the wrapper lands.
-    # Also in site.yml; listed here so a standalone deploy stays in sync.
+    # Shared with site.yml; scripts/test_shared_role_playbook_sync.py keeps the two in step.
     - weisssrv.infra.node_exporter_host
-    # Also in site.yml; listed here so a standalone deploy stays in sync.
+    # Shared with site.yml; scripts/test_shared_role_playbook_sync.py keeps the two in step.
     - weisssrv.infra.alloy_host
     # tlshd for the xprtsec=tls backup mount; must precede the app role, which
     # mounts by hostname. Client-only.
@@ -50,3 +41,16 @@
         nfs_tls_enabled: "{{ gitlab_backup_nfs_enabled | default(false) }}"
     - weisssrv.infra.gitlab
     - weisssrv.infra.proxmox_firewall
+
+# weisssrv.infra.base above rewrites authorized_keys, so a re-provisioned guest
+# loses the pinned cert-distribution key. Re-seed it from the cert authority
+# here, before the next renewal strands the target (docs/15).
+- name: Re-seed the cert-distribution key on gitlab
+  hosts: dns_primary
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Re-seed gitlab as a cert-distribution target
+      ansible.builtin.include_tasks: tasks/_reseed-cert-target.yml
+      vars:
+        reseed_cert_target_host: gitlab

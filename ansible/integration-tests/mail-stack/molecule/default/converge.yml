@@ -8,9 +8,23 @@
   gather_facts: true
   vars_files:
     - ../../../../inventories/prod/group_vars/all.yml
-
+  # No play `vars:` here. vars_files OUTRANKS both play vars and inventory
+  # group_vars, so a mock for any key all.yml defines is dead; scenario values
+  # for those keys go through molecule.yml's provisioner.env.
 
   pre_tasks:
+    # molecule.yml platforms[].groups drive every `group_names` guard below; an
+    # empty group would skip them all and still report a pass.
+    - name: Assert the molecule roster resolved
+      ansible.builtin.assert:
+        that:
+          - groups['relay_servers'] | default([]) | length == 1
+          - groups['mail_clients'] | default([]) | length == 2
+        fail_msg: >-
+          molecule.yml no longer produces relay_servers and mail_clients, so
+          every guarded task in this scenario skips.
+      run_once: true
+
     - name: Container warm-up (apt locks, dpkg state, cache, systemd)
       ansible.builtin.include_tasks: ../../../../molecule/tasks/container-warmup.yml
 
@@ -25,15 +39,9 @@
           - openssl  # Mint the relay's self-signed STARTTLS cert (submission/587)
         state: present
 
-    # The null clients relay over the submission service (587), whose smtpd
-    # mandates STARTTLS before it will accept AUTH. Port 25 is chrooted and
-    # cannot reach /etc/sasldb2 for the auxprop SASL lookup, so the smtp_relay
-    # role ships AUTH off there and does inbound SASL only on 587 (behind TLS) —
-    # which is also the port production null clients use. The STARTTLS handshake
-    # therefore needs a *loadable* certificate (the previous placeholder PEMs
-    # were truncated and unusable), so mint a real self-signed one. The clients
-    # do not verify it (smtp_tls_security_level in the inventory), so self-signed
-    # is sufficient to protect the SASL credential in transit.
+    # The null clients relay over submission (587), whose smtpd mandates STARTTLS
+    # before AUTH. STARTTLS therefore needs a loadable certificate, so mint a
+    # self-signed one; the clients do not verify it.
     - name: Create TLS certificate directory
       ansible.builtin.file:
         path: /etc/letsencrypt/live/smtp-relay

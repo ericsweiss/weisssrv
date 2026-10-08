@@ -1,17 +1,7 @@
 ---
-# Tailscale Kubernetes operator. Watches for Services with
-# `loadBalancerClass: tailscale` and creates a proxy StatefulSet + a tailnet
-# device (real 100.x mesh node) that L3-forwards to the backing Service. We use
-# it to put the internal Traefik ingress (traefik-tailnet) and the tailnet-dns
-# CoreDNS resolver (ts-dns) directly on the tailnet, so remote clients reach the
-# internal *.esweiss.com web apps over the mesh instead of via subnet routing
-# (whose return path to a MetalLB VIP is broken). See docs/05-tailscale.md.
-#
-# OAuth: the `oauth` values are intentionally left unset so the chart consumes
-# the pre-existing `operator-oauth` Secret (keys client_id/client_secret) that
-# ESO renders from 1Password (externalsecret.yaml). Every device the operator
-# creates carries the default tag tag:k8s (policy.hujson tagOwners +
-# group:admins -> tag:k8s:53,443 grant the operator's tag and admin access).
+# Tailscale Kubernetes operator: puts the internal Traefik ingress and the tailnet-dns
+# resolver on the tailnet as mesh devices tagged tag:k8s. The `oauth` values stay unset
+# so the chart consumes the ESO-rendered `operator-oauth` Secret. See docs/05-tailscale.md.
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -19,10 +9,8 @@ metadata:
   namespace: tailscale
 spec:
   interval: 30m
-  # Revert out-of-band edits (see traefik/release.yaml for the repo rule). Safe:
-  # the pinned chart renders no webhook (re-verify on a bump), and the proxy
-  # StatefulSets the operator creates at runtime are not chart-rendered, so
-  # drift never touches them.
+  # Revert out-of-band edits (traefik/release.yaml carries the repo rule). The pinned
+  # chart renders no webhook, so re-verify that on a bump.
   driftDetection:
     mode: enabled
   chart:
@@ -35,6 +23,11 @@ spec:
         namespace: flux-system
       interval: 12h
   install:
+    # CRITICAL: disableWait prevents a bootstrap deadlock. The operator-oauth
+    # Secret comes from the configs stage, which depends on controllers, so Helm
+    # --wait would block on pods that need that Secret.
+    # Install only; upgrades run where the Secret already exists.
+    disableWait: true
     remediation:
       retries: 3
   upgrade:
@@ -46,11 +39,13 @@ spec:
     # Secret (ESO). operatorConfig.hostname names the operator's own device.
     operatorConfig:
       hostname: tailscale-operator
-      # The chart ships resources: {} (BestEffort) — an unbounded-memory pod on
-      # the tight hosts. Give it a floor + memory ceiling; the tailscale-operator
-      # VPA (configs/vpa/platform.yaml, updateMode Initial) right-sizes the
-      # request on natural restarts. Memory limit only — CPU is compressible
-      # (docs/33-autoscaling.md).
+      # `platform` (sources/priorityclasses.yaml): the operator maintains the
+      # tailnet proxy StatefulSets, so it must not lose a scheduling race to a
+      # CI burst. The chart default is "" (priority 0).
+      priorityClassName: platform
+      # The chart ships resources: {} (BestEffort). Give it a floor and a memory
+      # ceiling; the paired VPA (configs/vpa/platform.yaml, Initial) right-sizes
+      # the request on natural restarts. CPU is compressible (docs/33).
       resources:
         requests:
           cpu: 10m

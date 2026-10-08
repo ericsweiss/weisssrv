@@ -1,7 +1,5 @@
 ---
-# Services and EndpointSlices for backend services running outside the cluster
-# Using ClusterIP services with manual EndpointSlices since these are IP addresses, not DNS names
-# Mealie and Bar Assistant are in the recipes namespace (kubernetes/apps/recipes/)
+# Selectorless Services + hand-written EndpointSlices for the off-cluster guests.
 
 # Home Assistant on 10.0.10.154:8123
 apiVersion: v1
@@ -35,9 +33,7 @@ endpoints:
       ready: true
 
 ---
-# Router (UniFi UCG-Fiber gateway) at 10.0.10.1:443 — HTTPS-only web UI, so
-# this backend mirrors the adguard-home-0X pattern below rather than the
-# plaintext :80 the retired ASUS served (docs/46).
+# Router (UniFi UCG-Fiber) at 10.0.10.1:443 - HTTPS-only web UI (docs/46).
 apiVersion: v1
 kind: Service
 metadata:
@@ -64,7 +60,7 @@ ports:
     protocol: TCP
 endpoints:
   - addresses:
-      - 10.0.10.1
+      - ${cluster_lan_gateway}
     conditions:
       ready: true
 

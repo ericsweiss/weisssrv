@@ -1,12 +1,20 @@
 ---
-# Ingress: exactly two consumers of the S3 port (the runner JOB pods in both
-# runner namespaces) and the observability scrape of the admin/metrics port.
-# The netpol-baseline component supplies the namespace default-deny this
-# allowlist punches through.
-#
-# Egress: NONE — a single-node garage talks to nobody (its RPC is loopback),
-# so the policy declares egress and lists no rules: deny-all outbound,
-# including DNS.
+# Namespace-wide default-deny egress; the default-deny INGRESS half comes from
+# the shared ../../components/netpol-baseline component (kustomization.yaml).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-egress
+  namespace: ci-cache
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+
+---
+# Ingress: the S3 port for both runner namespaces, the admin/metrics port for
+# observability. No egress rule at all — a single-node garage talks to nobody,
+# DNS included (its RPC is loopback).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -33,5 +41,8 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: observability
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
       ports:
         - {protocol: TCP, port: 3903}

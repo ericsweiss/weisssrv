@@ -1,18 +1,7 @@
 ---
-# Nextcloud deployment playbook
-#
-# Provisions the Nextcloud VM (10.0.10.156) and deploys the Docker Compose
-# stack. Nextcloud state rides ZFS zvol passthrough disks only (no NFS).
-#
-# Prerequisites:
-#   - Authentik OIDC provider + application configured (for SSO); see docs/35.
-#   - 1Password items created ("Nextcloud Secrets", "Nextcloud SSO"); see docs/15.
-#   - Cert distribution target added for the VM in host_vars/dns-01.yml, then
-#     `task dns:deploy` to push the *.esweiss.com wildcard cert (docs/35).
-#
-# Usage:
-#   task nextcloud:deploy          # Full deployment (VM + Nextcloud)
-#   task nextcloud:deploy-check    # Dry-run
+# Provisions the Nextcloud VM and deploys the Docker Compose stack; state rides
+# ZFS zvol passthrough disks only, no NFS. Prerequisites, SSO setup and the
+# first-deploy order: docs/35-nextcloud.md.
 
 - name: Provision Nextcloud VM
   hosts: nextcloud
@@ -42,9 +31,9 @@
     - weisssrv.infra.postfix_null_client
     # Exposes the backup wrapper's nextcloud_backup.prom textfile; ordered
     # before nextcloud so the exporter is in place when the wrapper lands.
-    # Also in site.yml; listed here so a standalone deploy stays in sync.
+    # Shared with site.yml; scripts/test_shared_role_playbook_sync.py keeps the two in step.
     - weisssrv.infra.node_exporter_host
-    # Also in site.yml; listed here so a standalone deploy stays in sync.
+    # Shared with site.yml; scripts/test_shared_role_playbook_sync.py keeps the two in step.
     - weisssrv.infra.alloy_host
     # tlshd for the xprtsec=tls backup mount; must precede the app role, which
     # mounts by hostname. Client-only.
@@ -53,3 +42,16 @@
         nfs_tls_enabled: "{{ nextcloud_backup_nfs_enabled | default(false) }}"
     - weisssrv.infra.nextcloud
     - weisssrv.infra.proxmox_firewall
+
+# weisssrv.infra.base above rewrites authorized_keys, so a re-provisioned guest
+# loses the pinned cert-distribution key. Re-seed it from the cert authority
+# here, before the next renewal strands the target (docs/15).
+- name: Re-seed the cert-distribution key on nextcloud
+  hosts: dns_primary
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Re-seed nextcloud as a cert-distribution target
+      ansible.builtin.include_tasks: tasks/_reseed-cert-target.yml
+      vars:
+        reseed_cert_target_host: nextcloud

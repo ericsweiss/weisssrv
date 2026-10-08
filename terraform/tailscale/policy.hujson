@@ -27,10 +27,8 @@
       "dst": ["tag:subnet-router:22,80,443,6443,8006"],
     },
 
-    // Rule 2 — owner devices -> the LAN via subnet routing. Ports are
-    // proto-agnostic (tcp+udp, which DNS needs) and ICMP is auto-allowed.
-    // Port-to-service list: README.md. Which host-firewall security group each
-    // port lands in: docs/11-firewall.md, which owns that mapping.
+    // Rule 2 — owner devices -> the LAN via subnet routing. Ports are proto-agnostic
+    // (tcp+udp, which DNS needs); ICMP is auto-allowed. Port-to-service list: README.md.
     {
       "action": "accept",
       "src": ["group:admins"],
@@ -56,9 +54,7 @@
   ],
 
   // Auto-approve the LAN route so subnet-router failover across the six hosts is
-  // real. Tag-only since 2026-08-20: all six Proxmox hosts carry
-  // tag:subnet-router (migration complete), so an untagged device can no
-  // longer self-approve the LAN route.
+  // real. Tag-only: only devices carrying tag:subnet-router may self-approve it.
   "autoApprovers": {
     "routes": {
       "10.0.10.0/24": ["tag:subnet-router"],
@@ -66,9 +62,8 @@
   },
 
   // Tailscale SSH. action "check" = periodic reauth. autogroup:self covers the
-  // owner's untagged devices, tag:subnet-router the tagged Proxmox hosts
-  // (autogroup:self never matches a tagged device). root is dropped — connect as
-  // `eric` (passwordless sudo everywhere).
+  // owner's untagged devices, tag:subnet-router the tagged Proxmox hosts. root is
+  // dropped — connect as `eric`.
   "ssh": [
     {
       "action": "check",
@@ -77,13 +72,6 @@
       "users": ["autogroup:nonroot"],
     },
 
-    // BREAK-GLASS (README § Break-glass): uncomment to restore root SSH if
-    // eric's sudo breaks on every host at once.
-    // {
-    //   "action": "check",
-    //   "src": ["group:admins"],
-    //   "dst": ["autogroup:self", "tag:subnet-router"],
-    //   "users": ["autogroup:nonroot", "root"],
-    // },
+    // Break-glass root SSH (if sudo breaks fleet-wide): README.md § Break-glass.
   ],
 }

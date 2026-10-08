@@ -42,7 +42,7 @@ spec:
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
-  name: hermes-api-tls
+  name: hermes-api-tls-internal
   namespace: hermes
 spec:
   secretName: hermes-api-esweiss-tls

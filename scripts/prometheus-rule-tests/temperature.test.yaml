@@ -1,13 +1,7 @@
 ---
-# promtool unit tests for the thermal ladder (homelab.temperature group).
-# rule_files resolves relative to this file's runtime location; the lint script
-# copies the tests next to the extracted rules.yaml before running them.
-#
-# Every arm in this group is a threshold on a hwmon series JOINED to
-# node_hwmon_chip_names by (instance, chip). That join is the whole reason these
-# need tests: a chip_name filter that stops matching makes the alert silently
-# unfireable, and a threshold alert that can never fire looks exactly like a
-# healthy fleet. Each case therefore supplies BOTH series.
+# promtool unit tests for the thermal ladder (homelab.temperature group). Each
+# arm joins a hwmon series to node_hwmon_chip_names by (instance, chip), so every
+# case supplies both series; a stale chip_name leaves the alert unfireable.
 rule_files:
   - rules.yaml
 evaluation_interval: 1m
@@ -74,10 +68,9 @@ tests:
         alertname: CPUTempWarning
         exp_alerts: []
 
-  # NVMe: warn at 65C, and the alert carries the chip so the drive is
-  # identifiable. The 30m hold is what keeps the nightly backup-window burst
-  # (~15m over 65C on one NAS chip) out of the feed, so both boundaries are
-  # pinned: still pending at 20m, firing at 40m.
+  # NVMe: warn at 65C, carrying the chip so the drive is identifiable. The 30m
+  # hold keeps the nightly backup-window burst out of the feed, so both
+  # boundaries are pinned: still pending at 20m, firing at 40m.
   - interval: 1m
     input_series:
       - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="10.0.10.102:9101", chip="nvme_nvme0"}'
@@ -244,6 +237,12 @@ tests:
       - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="10.0.10.103:9101", chip="pci0000:00_0000:00:1f:6"}'
         values: '92+0x30'
       - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="10.0.10.103:9101", chip="pci0000:00_0000:00:1f:6", chip_name="nic_temp"}'
+        values: '1+0x30'
+      # A second NIC below the threshold: the exact exp_alerts list below is the
+      # negative assertion that it stays silent.
+      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="10.0.10.104:9101", chip="pci0000:00_0000:00:1f:6"}'
+        values: '70+0x30'
+      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="10.0.10.104:9101", chip="pci0000:00_0000:00:1f:6", chip_name="nic_temp"}'
         values: '1+0x30'
     alert_rule_test:
       - eval_time: 20m

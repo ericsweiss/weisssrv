@@ -1,10 +1,7 @@
 ---
-# Local guardrails: run `pre-commit install` once, then these run on every
-# commit. They mirror the fast, tool-light CI lint-stage checks (secret scan,
-# yamllint, whitespace/EOF, plus the repo's dangling-script + doc-link gates) so
-# problems surface before a push + CI round-trip. Heavier tool-dependent jobs
-# (flux:lint, molecule, prometheus-config, the *.sh.j2 shellcheck pass) stay
-# CI-only. Revs are pinned.
+# Local guardrails: `pre-commit install` once, then these run on every commit,
+# mirroring the fast tool-light CI lint checks. The tool-dependent jobs
+# (flux:lint, molecule, prometheus-config, *.sh.j2 shellcheck) stay CI-only.
 repos:
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.30.1
@@ -15,16 +12,60 @@ repos:
     rev: v1.38.0
     hooks:
       - id: yamllint
-        # -d relaxed matches the CI yaml-lint job / `task lint:yamllint`
-        # (this repo has no .yamllint config file).
-        args: [-d, relaxed]
+        # The same profile the CI yaml-lint job and `task lint:yamllint`
+        # select with -c.
+        args: [-c, lint/yamllint-relaxed.yml]
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:
+      # The two mutating hooks skip the byte-identical weisssrv-lib copies in
+      # scripts/vendored-manifest.yml: a normalisation there reds
+      # test_vendored_byte_identity.py, and the fix is upstream + re-vendor.
       - id: end-of-file-fixer
+        exclude: &vendored_copies >-
+          (?x)^(
+          \.gitattributes |
+          ansible/molecule/prepare\-common\.yml |
+          ansible/molecule/tasks/container\-warmup\.yml |
+          ansible/molecule/tasks/prepare\-apt\-disable\.yml |
+          ansible/molecule/tasks/prepare\-base\.yml | lint/yamllint\-relaxed\.yml | ruff\.toml |
+          scripts/b2\-bucket\-drift\.py | scripts/check\-alertmanager\-behaviour\.py |
+          scripts/check\-backup\-artifact\-apps\.py |
+          scripts/check\-cluster\-invariants\.py | scripts/check\-comment\-length\.py |
+          scripts/check\-dashboards\.py |
+          scripts/check\-default\-deny\-coverage\.py | scripts/check\-deploy\-coverage\.sh |
+          scripts/check\-deploy\-preflight\.py |
+          scripts/check\-doc\-links\.py | scripts/check\-ephemeral\-storage\-cap\.py |
+          scripts/check\-helm\-repo\-parity\.py |
+          scripts/check\-hpa\-vpa\-invariant\.py |
+          scripts/check\-kubectl\-version\-pin\.py | scripts/check\-lib\-pins\.py |
+          scripts/check\-live\-cpu\-limits\.py | scripts/check\-molecule\-image\-pin\.py |
+          scripts/check\-netpol\-except\-parity\.py | scripts/check\-nfs\-tls\.py |
+          scripts/check\-pvc\-storageclass\.py | scripts/check\-role\-inputs\.py |
+          scripts/check\-runbook\-anchors\.py |
+          scripts/check\-scrape\-netpol\.py | scripts/check\-secretstore\-scope\.py |
+          scripts/check\-taskfile\.sh | scripts/check\-version\-checksums\.py |
+          scripts/check\-versions\.py |
+          scripts/ci\-fetch\-tools\.py | scripts/ci_playbook_invocations\.py |
+          scripts/ci_yaml\.py | scripts/cluster\-config\-value\.sh |
+          scripts/extract\-prometheus\-config\.py | scripts/find\-pve\-host\-for\-vm\.sh |
+          scripts/find\-reachable\-host\.sh | scripts/flux\-env\.sh | scripts/flux\-render\.sh |
+          scripts/gate_common\.py | scripts/generate\-hosts\-env\.py |
+          scripts/generate\-versions\-configmap\.py | scripts/inventory_tree\.py |
+          scripts/kubeconform\-skipped\.py | scripts/lint\-prometheus\-config\.sh |
+          scripts/maintenance\-run\-with\-verify\.sh | scripts/molecule\-retry\.sh |
+          scripts/resolve\-tool\.sh | scripts/sanitize\-junit\-expected\-failures\.py |
+          scripts/script_loader\.py | scripts/shell\-lib\.sh | scripts/smoke\-lib\.sh |
+          scripts/supervised\-apply\-guard\.sh | scripts/test_check_lib_pins\.py |
+          scripts/test_check_netpol_except_parity\.py |
+          scripts/unifi\-settings\-drift\.py | scripts/validate\-helm\-values\.py |
+          scripts/version\-bump\-mr\.py | scripts/version\-check\-ci\.py |
+          scripts/wait\-for\-reloader\-roll\.sh
+          )$
       - id: trailing-whitespace
         args: [--markdown-linebreak-ext=md]
+        exclude: *vendored_copies
       - id: check-merge-conflict
       - id: check-yaml
         # --unsafe: syntax-only parse (no tag construction) so the GitLab CI
@@ -33,17 +74,79 @@ repos:
 
   - repo: local
     hooks:
-      # The repo's own tool-free lint gates (bash + Python stdlib), same as the
-      # CI taskfile-smoke / docs-link-check jobs.
+      # The repo's own gates, the same ones `task lint` and the CI lint stage
+      # run. `always_run` keeps each on a deletion-only commit, which
+      # pre-commit's staged-file list leaves out.
       - id: check-taskfile
         name: Taskfile-referenced scripts resolve
         entry: bash scripts/check-taskfile.sh
         language: system
-        files: ^Taskfile\.yml$
+        files: ^(Taskfile\.yml|taskfiles/.*\.ya?ml|scripts/)
         pass_filenames: false
+        always_run: true
       - id: check-doc-links
         name: Docs relative Markdown links resolve
         entry: python3 scripts/check-doc-links.py
         language: system
         files: \.md$
         pass_filenames: false
+        always_run: true
+      # A gate that imports PyYAML needs `language: python` with the pin below:
+      # `language: system` runs it against whatever the committer's python3 has.
+      - id: check-cluster-literals
+        name: "Cluster identity stays a ${cluster_*} placeholder"
+        entry: python scripts/check-cluster-literals.py
+        language: python
+        additional_dependencies: ["pyyaml==6.0.2"]
+        files: ^(ansible/inventories/|kubernetes/|scripts/check-cluster-literals\.py)
+        pass_filenames: false
+        always_run: true
+      - id: check-netpol-except-parity
+        name: NetworkPolicy egress fence holds
+        entry: python scripts/check-netpol-except-parity.py --config scripts/netpol-except.yaml
+        language: python
+        additional_dependencies: ["pyyaml==6.0.2"]
+        files: ^(kubernetes/|scripts/)
+        pass_filenames: false
+        always_run: true
+      # A pytest module, not a script: the resource-list checks live in a suite.
+      # An emptied `resources:` list prunes every object its Kustomization
+      # applied, so it is armed on every commit rather than only in CI.
+      - id: kustomization-coverage
+        name: Every manifest is listed and every kustomization renders something
+        entry: python -m pytest scripts/test_kustomization_coverage.py -q -p no:cacheprovider
+        language: python
+        additional_dependencies: ["pyyaml==6.0.2", "pytest==9.1.1"]
+        files: ^kubernetes/
+        pass_filenames: false
+        always_run: true
+      - id: flux-version-pin
+        name: One Flux version across the inventory and the manifests
+        entry: python scripts/check-flux-version-pin.py
+        language: python
+        additional_dependencies: ["pyyaml==6.0.2"]
+        files: ^(kubernetes/|ansible/inventories/prod/group_vars/all\.yml|scripts/check-flux-version-pin\.py)
+        pass_filenames: false
+        always_run: true
+      - id: version-coverage
+        name: Every pin is in the version registry
+        entry: python scripts/check-versions.py --check-coverage
+        language: python
+        additional_dependencies: ["pyyaml==6.0.2"]
+        files: ^(ansible/inventories/prod/group_vars/all\.yml|scripts/version-registry\.py|scripts/check-versions\.py)
+        pass_filenames: false
+        always_run: true
+      - id: check-runbook-anchors
+        name: Alert runbook_url targets resolve
+        entry: python3 scripts/check-runbook-anchors.py
+        language: system
+        files: ^(docs/|kubernetes/)
+        pass_filenames: false
+        always_run: true
+      - id: check-skill-refs
+        name: Skill-cited repo paths resolve
+        entry: python3 scripts/check-skill-refs.py
+        language: system
+        files: ^(\.claude/|docs/|scripts/)
+        pass_filenames: false
+        always_run: true

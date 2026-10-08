@@ -55,8 +55,17 @@ plex.ericsweiss.com                      plex.esweiss.com
 | **CPU Cores** | 4 |
 | **Memory** | 8192 MB |
 | **Swap** | 2048 MB |
-| **Root Disk** | 64 GB (local-lvm) |
+| **Root Disk** | 64 GB (`ssd` — encrypted) |
 | **OS** | Debian 13 (trixie) |
+
+Source of truth: `ansible/inventories/prod/host_vars/plex.yml` — this table is a
+convenience copy.
+
+CT 152 runs `onboot=0` on purpose: its rootfs and the `/config` bind
+(`/mnt/ssd/appdata/plex`) both live on the encrypted `ssd` pool, so it is started
+by `pve-start-encrypted-guests.service` after `zfs-mount-encrypted.service`
+unlocks the pool, not by `pve-guests` at boot. Mechanism:
+[docs/32-zfs-encryption.md](32-zfs-encryption.md).
 
 ## Prerequisites
 
@@ -131,19 +140,26 @@ ls -la /mnt/media
 task storage:deploy
 ```
 
-### 3. AdGuard DNS Records
+### 3. DNS
 
-DNS rewrite should already exist in AdGuard Home (dns-01):
+Both names are codified — nothing to add by hand.
 
-| Domain | Target |
-|--------|--------|
-| plex.esweiss.com | 10.0.10.101 |
+- Internal: `plex.esweiss.com` and `plex-direct.esweiss.com` are declared in
+  `adguard_home_rewrites` (`ansible/inventories/prod/group_vars/dns.yml`), with a
+  matching PTR rewrite for `10.0.10.152`. Apply with `task dns:deploy`. The
+  `adguard_home` role deletes any rewrite not in the codified list, so an entry
+  added in the AdGuard UI is reverted on the next deploy.
+- External: `plex.ericsweiss.com` is managed by external-dns from the Traefik
+  IngressRoute.
 
-The external domain (plex.ericsweiss.com) is managed by external-dns via the Traefik IngressRoute.
+### 4. WAN port forward
 
-### 4. Router Port Forward
-
-Ensure port 32400 TCP is forwarded from the router to 10.0.10.152 (Plex LXC).
+`32400/TCP -> 10.0.10.152` is codified in `terraform/unifi/networks.tf`
+(`port_forwards.plex`) and applied under supervision — see
+[docs/46](46-unifi-network.md) § Port forwards. A matching `iot-to-homelab-plex`
+zone policy lets IoT-VLAN clients reach `:32400`. Verify with
+`task terraform:unifi-plan`; a change made in the UniFi console shows up there as
+drift.
 
 ### 5. Intel Arc GPU Available on pve-nas-01
 
@@ -269,6 +285,24 @@ After deployment, enable hardware transcoding in Plex:
 3. Select "Intel Quick Sync Video" or "VAAPI"
 4. Save changes
 
+### LAN Networks (segmented VLANs)
+
+**Settings > Network > LAN Networks** must list every client VLAN:
+
+```
+10.0.10.0/24,10.0.20.0/24,10.0.30.0/24
+```
+
+Plex treats a client as local only if its address falls in that list. The network
+is segmented into homelab VLAN 10, Home VLAN 20 and IoT VLAN 30
+([docs/46](46-unifi-network.md)), so phones, laptops and TVs reach the server
+from a different subnet. Without this they count as *remote*: remote quality
+caps, transcoding where there used to be direct play, and sessions charged
+against the remote-streaming limits.
+
+This value is Plex UI state, not code — nothing in this repo reconciles it.
+Re-check it after any renumber.
+
 ### Monitoring GPU Usage
 
 ```bash
@@ -292,6 +326,13 @@ This means the container cannot access files owned by host UID 1000 (eric) or GI
 ### The Solution
 
 We configure custom UID/GID mapping in the container configuration to allow specific UIDs/GIDs to pass through unchanged. The Ansible role **automatically detects** the host's video and render group GIDs and generates the appropriate mapping.
+
+> The role writes the `lxc.idmap` block and the `/dev/dri` passthrough **when the
+> container is created**. Both are create-time only (`proxmox_lxc` role), so
+> changing them in inventory for an existing container is a no-op and repairing
+> them on CT 152 means editing `/etc/pve/lxc/152.conf` and restarting the
+> container by hand — see § Troubleshooting. The in-container group membership
+> (`video`, `render`, `media`) *is* reconciled on every `task plex:deploy`.
 
 ```
 # /etc/pve/lxc/152.conf (added automatically by Ansible)
@@ -360,40 +401,16 @@ Inside the container:
 | TV Shows | /media/tv |
 | Music | /media/music |
 
-## Backup Restoration
+## Backup and restore
 
-If restoring from a Windows Plex backup:
+Plex `/config` lives on `ssd/appdata` (the LXC bind `mp0` ->
+`/mnt/ssd/appdata/plex`), so it rides the `ssd/appdata -> archive` replication
+and the nightly restic walk into B2. Restore it file-wise with the same recipe
+as Grafana: [docs/17](17-disaster-recovery.md) § Restore Procedures and § Other
+backup types. Stop `plexmediaserver`, copy the tree back, `chown -R plex:plex
+/config/`, start it again.
 
-### 1. Stop Plex Service
-
-```bash
-ssh eric@10.0.10.152
-sudo systemctl stop plexmediaserver
-```
-
-### 2. Restore Backup
-
-```bash
-# Copy backup to container (from laptop)
-scp -r "Plex Media Server" eric@10.0.10.152:/tmp/
-
-# On container, restore to config directory
-sudo rsync -av /tmp/Plex\ Media\ Server/ /config/Library/Application\ Support/Plex\ Media\ Server/
-sudo chown -R plex:plex /config/
-```
-
-### 3. Update Library Paths
-
-After restoration, library paths need updating from Windows paths to Linux paths. This is done via Plex web interface:
-1. Go to Settings > Manage > Libraries
-2. Edit each library
-3. Update paths from Windows (e.g., `Z:\media\movies`) to Linux (`/media/movies`)
-
-### 4. Start Plex Service
-
-```bash
-sudo systemctl start plexmediaserver
-```
+The whole-container vzdump on `tank/proxmox` remains the bare-metal path.
 
 ## Maintenance
 
@@ -412,15 +429,18 @@ ssh eric@10.0.10.152 "sudo journalctl -u plexmediaserver -f"
 
 ### Updates
 
-Plex updates are managed via the official APT repository:
+Plex is pinned centrally in `ansible/inventories/prod/group_vars/all.yml`
+(`plex_version`) and the `plex` role holds the apt package at that version, so a
+bare `apt upgrade plexmediaserver` is a no-op.
 
 ```bash
-# Update Plex to latest
-ssh eric@10.0.10.152 "sudo apt update && sudo apt upgrade plexmediaserver -y"
-
-# Or via Ansible
-task plex:deploy
+task maintenance:check-versions                  # what is available
+task maintenance:update-version SERVICE=plex     # rewrite the pin
+# commit the pin bump on a branch and merge
+task maintenance:update-plex                     # reconcile the LXC to the pin
 ```
+
+`task plex:deploy` reconciles the version too, as part of the full Plex play.
 
 ### Cleanup Transcoding Cache
 
@@ -447,7 +467,9 @@ ssh eric@10.0.10.152 "ls -la /media"
 ssh eric@10.0.10.152 "id plex"
 ```
 
-**Fix**: If mounts are missing, the container may need restart from Proxmox:
+**Fix**: If mounts are missing, the container may need restart from Proxmox.
+This fails with a confusing error if the `ssd` pool is locked — check the unlock
+first (see § Container Won't Start).
 ```bash
 ssh eric@10.0.10.102 "pct stop 152 && pct start 152"
 ```
@@ -470,9 +492,18 @@ ssh eric@10.0.10.152 "tail -100 '/config/Library/Application Support/Plex Media 
 
 ### Container Won't Start
 
-**Symptom**: Container fails to start after bind mount changes.
+**Symptom**: Container fails to start, or is down after a NAS reboot.
 
-**Check**:
+**Check the encrypted pool first.** The rootfs and the `/config` bind both live
+on `ssd`, so `pct start` cannot succeed until the pool unlocks:
+
+```bash
+ssh eric@10.0.10.102 "zfs get -H keystatus ssd; systemctl status zfs-mount-encrypted pve-start-encrypted-guests --no-pager"
+```
+
+If `keystatus` is `unavailable` the pool has not unlocked — see
+[docs/32](32-zfs-encryption.md). Otherwise:
+
 ```bash
 # On pve-nas-01, check container config
 ssh eric@10.0.10.102 "cat /etc/pve/lxc/152.conf"
@@ -500,7 +531,9 @@ ssh eric@10.0.10.152 "stat /media"
 ssh eric@10.0.10.102 "stat /mnt/media"
 ```
 
-**Fix**: If UID mapping is missing or incorrect:
+**Fix**: these stanzas are written by Ansible only when the container is
+created, so on CT 152 they are repaired by hand — a redeploy will not rewrite
+them.
 1. Stop container: `pct stop 152`
 2. Edit config: `nano /etc/pve/lxc/152.conf`
 3. Add/fix lxc.idmap lines (see [UID/GID Mapping](#uidgid-mapping) section)
@@ -528,7 +561,8 @@ ssh eric@10.0.10.152 "groups plex"
 ssh eric@10.0.10.152 "vainfo"
 ```
 
-**Fix**: If GPU is missing in container:
+**Fix**: the passthrough stanza is written by Ansible only when the container is
+created, so on CT 152 it is repaired by hand — a redeploy will not rewrite it.
 1. Stop container: `ssh eric@10.0.10.102 "pct stop 152"`
 2. Add GPU passthrough to config:
    ```bash
@@ -539,7 +573,8 @@ ssh eric@10.0.10.152 "vainfo"
    EOF
    ```
 3. Start container: `pct start 152`
-4. Verify plex user groups: `ssh eric@10.0.10.152 "sudo usermod -aG video,render plex"`
+4. Reconcile the in-container groups: `task plex:deploy` (the `plex` role adds
+   the user to `video` and, where a render node exists, `render`).
 5. Restart Plex: `ssh eric@10.0.10.152 "sudo systemctl restart plexmediaserver"`
 
 ### Hardware Transcoding Not Working
@@ -571,7 +606,10 @@ ssh eric@10.0.10.152 "sudo intel_gpu_top"
 
 - [docs/06-zfs.md](06-zfs.md) - ZFS storage configuration
 - [docs/07-fileservices.md](07-fileservices.md) - NFS and Samba setup
+- [docs/17-disaster-recovery.md](17-disaster-recovery.md) - restoring `/config` from the archive or B2
 - [docs/18-bootstrap-new-systems.md](18-bootstrap-new-systems.md) - LXC bootstrap process
+- [docs/32-zfs-encryption.md](32-zfs-encryption.md) - the encrypted `ssd` pool and the unlock-ordered start of CT 152
+- [docs/46-unifi-network.md](46-unifi-network.md) - VLANs, the `:32400` forward and the `iot-to-homelab-plex` zone policy
 
 ## External references
 

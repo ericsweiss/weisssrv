@@ -1,8 +1,7 @@
 ---
 # Releases rendered by scripts/validate-helm-values.py: `kustomize build |
 # kubeconform` never templates a chart, so a HelmRelease's `.spec.values` is
-# otherwise unvalidated. Each entry costs one network round-trip, so the list is
-# the value-heavy releases plus any whose chart defaults need watching.
+# otherwise unvalidated. Each entry costs one network round-trip.
 releases:
   - name: traefik
     manifest: kubernetes/infrastructure/controllers/traefik/release.yaml
@@ -34,10 +33,9 @@ releases:
     chart: tailscale-operator
     repo_name: tailscale
     repo_url: https://pkgs.tailscale.com/helmcharts
-  # Listed for the CPU-limit check: these values set only a memory limit, which
-  # is safe solely because the chart's current default is `resources: {}`. A
-  # chart version adding a default limits.cpu would merge in silently, and only
-  # `helm template` sees it.
+  # Listed for the CPU-limit check: these values set only a memory limit, safe
+  # only while the chart default is `resources: {}`. A chart-added default
+  # limits.cpu would merge in silently, and only `helm template` sees it.
   - name: gitlab-agent
     manifest: kubernetes/apps/gitlab-agent/release.yaml
     chart: gitlab-agent

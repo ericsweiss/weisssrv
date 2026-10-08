@@ -9,41 +9,39 @@ external_domain: ericsweiss.com
 dns_servers:
   - 10.0.10.150
   - 10.0.10.160
+# Alternate between the two resolvers rather than always hitting the first and
+# paying a full timeout on a rate-limited drop. Host-side glibc only - CoreDNS
+# balances its own upstreams, so pods are unaffected.
+resolv_conf_options: ['rotate', 'timeout:2', 'attempts:2']
 
-# Hosts that are KNOWINGLY out of the fleet (hardware work, decommissioning) and
-# may therefore be skipped by base.yml / site.yml without failing the run.
-# Read by playbooks/_reachability-gate.yml: a listed host downgrades an
-# UNREACHABLE skip from a hard failure to a loud warning; anything else still
-# ends the playbook non-zero, because `ignore_unreachable` alone would exit 0
-# having configured nothing there. Keep this list EMPTY in steady state — an
-# entry is a dated, reviewable concession, not a permanent exemption, and every
-# role that host needs stays undeployed for as long as it sits here.
-# The downgrade only covers hosts the multi-host plays tolerate. site.yml's
-# SINGLE-host plays (mail, pve-nas-01) deliberately keep no ignore_unreachable,
-# so losing their one host is still a hard UNREACHABLE that ends the run rc 4 —
-# listing smtp-relay or pve-nas-01 here does NOT make site.yml green.
+# VIPs the firewall rules below dereference. Source of truth is
+# kubernetes/infrastructure/sources/cluster-config.yaml (cluster_syslog_vip /
+# cluster_wg_easy_vip); scripts/test_inventory_invariants.py holds the pairs equal.
+syslog_vip: 10.0.10.162
+wg_easy_vip: 10.0.10.99
+
+# Hosts knowingly out of the fleet. Keep EMPTY in steady state - an entry only
+# downgrades an UNREACHABLE skip in the multi-host plays
+# (playbooks/_reachability-gate.yml); site.yml's single-host plays still hard-fail.
 deploy_expected_absent_hosts: []
 
-# Proxmox autostart / boot order is set PER GUEST, never here.
-# Order legend: DNS 10 -> SMTP 20 -> k3s servers 30 -> agents 40 -> apps 50+.
-#
-# There is deliberately no group-wide `proxmox_autostart_enabled` /
-# `proxmox_startup_order` / `proxmox_startup_delay`: the proxmox_lxc role reads
-# `proxmox_autostart_enabled | default(proxmox_lxc_onboot)` (same shape for
-# order/delay), so a value at this level SHADOWS every per-container
-# `proxmox_lxc_*` host_var and reconciles all five LXC guests to
-# onboot=1,order=100,up=0 — which would flip plex to onboot=1 (its /config bind
-# mount is on the encrypted ssd pool; only pve-start-encrypted-guests may start
-# it) and flatten the DNS(10) -> SMTP(20) -> apps(50/57) cold-boot ordering.
-# VMs keep the neutral `proxmox_autostart_*` names in hosts.yml (proxmox_vm has
-# no prefixed alias); LXC containers use `proxmox_lxc_onboot` /
-# `proxmox_lxc_startup_order` / `proxmox_lxc_startup_delay` in host_vars. The
-# role defaults (true / 100 / 0) are the fallback for a guest that sets neither.
+# Where the privileged/infrastructure GitLab runner's executor pods live;
+# maintenance/_reboot-if-needed.yml looks the executor pod up there to avoid
+# rebooting the host running its own CI job.
+maintenance_ci_runner_namespace: gitlab-runner-privileged
+maintenance_ci_executor_pod_prefix: "runner-"
+# Every namespace whose runner JOB pods are pipeline state, not cluster health;
+# the pod-health gates in maintenance/update-k3s-nodes.yml filter on this.
+maintenance_ci_runner_namespaces:
+  - gitlab-runner
+  - gitlab-runner-privileged
+
+# Autostart/boot order is set PER GUEST, never here: a value at this level
+# shadows every per-container proxmox_lxc_* host_var (docs/32).
+# Order: DNS 10 -> SMTP 20 -> k3s srv 30 -> agt 40 -> apps 50+.
 
 # LAN gateway for guest provisioning. Required inputs with no role default:
-# proxmox_lxc asserts proxmox_lxc_gateway and proxmox_vm asserts
-# proxmox_vm_cloudinit_gateway at role entry (both were site-specific role
-# defaults before the weisssrv.infra extraction).
+# proxmox_lxc and proxmox_vm each assert their own gateway at role entry.
 proxmox_lxc_gateway: 10.0.10.1
 proxmox_vm_cloudinit_gateway: 10.0.10.1
 
@@ -57,7 +55,6 @@ proxmox_storage_defaults:
 # Central relay every postfix_null_client host forwards to, and the domain
 # appended to inventory_hostname to form each null client's myhostname.
 postfix_null_client_relay_host: "smtp-relay.{{ internal_domain }}"
-postfix_null_client_relay_port: 587
 postfix_null_client_mail_domain: "{{ internal_domain }}"
 
 # Admin user configuration
@@ -70,33 +67,22 @@ ssh_permit_root_login: "no"
 ssh_password_authentication: false
 ssh_pubkey_authentication: true
 
-# Pinned HAOS (Home Assistant OS) SSH host key. Single source of truth
-# consumed by both the home_assistant role (via home_assistant_host_key
-# in host_vars/home.yml) and the acme_certs cert push (via the `home`
-# entry in acme_certs_distribution_targets in host_vars/dns-01.yml). Rotate
-# here once after a HAOS rebuild:
-#   ssh-keyscan -t ed25519 -p 22222 10.0.10.154
-# Paste only the algorithm + base64 key (no leading "[host]:port").
+# Pinned HAOS SSH host key, consumed by the home_assistant role and by the
+# acme_certs `home` target (host_vars/dns-01.yml). Rotate here after a HAOS
+# rebuild: `ssh-keyscan -t ed25519 -p 22222 10.0.10.154`, algorithm + base64 only.
 haos_ssh_host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKcIncJ961hzakmaNlj9Nw6zwOWRZm0sEYgDntiKDb9O"
 
-# SSH authorized keys
-# IMPORTANT: SSH_PUBLIC_KEY must be set via 'op run' - empty key will fail validation
-#
-# from= ranges: the homelab LAN, the admin-device block on the Home VLAN,
-# Tailscale, and the k3s pod CIDR. The pod CIDR is required because a CI deploy
-# pod SSHing to its OWN node hairpins without SNAT and arrives with a 10.42.x
-# source; cross-host pod connections already masquerade to a permitted LAN IP,
-# so it adds no exposure. The sshd layer mirrors the firewall's admin split
-# (proxmox_firewall_admin_lan_cidrs): only the /29, never the whole Home VLAN.
+# SSH authorized keys. SSH_PUBLIC_KEY must be set via `op run` - an empty key
+# fails validation. from= ranges: the homelab LAN, the admin /29, Tailscale, and
+# the k3s pod CIDR (a deploy pod SSHing to its OWN node arrives as 10.42.x).
 ssh_authorized_keys:
   - >-
     from="10.0.10.0/24,10.0.20.8/29,100.64.0.0/10,10.42.0.0/16"
     {{ lookup('ansible.builtin.env', 'SSH_PUBLIC_KEY') or undef(hint='SSH_PUBLIC_KEY env var must be set') }}
 
 # fail2ban never-ban list. The role default is loopback only; the LAN, the admin
-# block on the Home VLAN and the tailnet are added back so an admin source
-# cannot be banned out of its own hosts (all three are already the only sources
-# the firewall admits to :22).
+# /29 and the tailnet are added back so an admin source cannot be banned out of
+# its own hosts - all three are already the only sources the firewall admits.
 base_fail2ban_ignoreip:
   - 127.0.0.1/8
   - ::1
@@ -104,10 +90,9 @@ base_fail2ban_ignoreip:
   - 10.0.20.8/29
   - 100.64.0.0/10
 
-# 1Password references are NOT duplicated here. `op run --` resolves them from
-# the literal op:// strings in the Taskfile's per-task `env:` blocks (and the
-# equivalent CI job variables); the authoritative item inventory is
-# docs/15-credential-rotation.md § Required 1Password Items.
+# 1Password references are NOT duplicated here: `op run --` resolves them from
+# the literal op:// strings in the Taskfile's per-task env blocks. The item
+# inventory is docs/15 § Required 1Password Items.
 
 # Timezone
 timezone: America/Los_Angeles
@@ -133,9 +118,8 @@ base_common_packages:
   - pciutils  # Required for lspci (e1000e NIC detection workaround)
 
 # Host-side journald -> Loki shipping (alloy_host). The role asserts the URL at
-# entry, and asserts the credentials for an https:// endpoint. The push goes
-# through the internal Traefik IngressRoute; NodePort :31100 stays the
-# emergency fallback (override alloy_host_loki_url per host).
+# entry and the credentials for an https:// endpoint. The push goes through the
+# internal Traefik IngressRoute; NodePort :31100 is the emergency fallback.
 alloy_host_loki_url: "https://loki.{{ internal_domain }}/loki/api/v1/push"
 alloy_host_loki_user: "{{ lookup('ansible.builtin.env', 'LOKI_PUSH_USER') | default('', true) }}"
 alloy_host_loki_password: "{{ lookup('ansible.builtin.env', 'LOKI_PUSH_PASSWORD') | default('', true) }}"
@@ -145,22 +129,20 @@ alloy_host_loki_password: "{{ lookup('ansible.builtin.env', 'LOKI_PUSH_PASSWORD'
 # immich_nginx_self_signed_san, nextcloud passes "" (single-host CN).
 compose_app_nginx_self_signed_san: "DNS:*.{{ internal_domain }}"
 
-# Tailscale configuration
-tailscale_enabled: true
-tailscale_accept_routes: false  # Hosts should NOT accept routes (prevents routing loops)
-tailscale_accept_dns: false  # Use local DNS infrastructure
-tailscale_advertise_routes: []  # Only subnet routers (Proxmox hosts) should advertise routes
+# Tailscale: only the Proxmox hosts advertise subnet routes
+# (group_vars/proxmox.yml). A node that still has to join fails the play when
+# TAILSCALE_AUTH_KEY is absent from the deploy environment (docs/05).
+tailscale_require_authkey: true
 
 # Application version pins. Bump = pick a newer tag, update any paired
 # *_git_sha / *_checksum, run `task flux:sync-versions`, commit; CI verifies and
-# rebuilds, Flux rolls the pods (docs/12). Each pin below carries its upstream
-# feed and only what the tag itself cannot express.
+# rebuilds, Flux rolls the pods (docs/12).
 adguard_home_version: "0.107.79"
 adguard_sync_version: "0.9.3"
 # Host-side Alloy apt package (alloy_host role; distinct from the in-cluster
 # helm_chart_versions.alloy chart pin below).
-alloy_host_version: "1.19.2-1"
-tailscale_version: "1.102.4"
+alloy_host_version: "1.20.1-1"
+tailscale_version: "1.104.1"
 # qol shell/editor pins. Oh My Zsh publishes no release tags, so the clone is
 # pinned to a commit (https://github.com/ohmyzsh/ohmyzsh/commits/master);
 # Vundle is tagged. Host-side only — not Flux versions.
@@ -170,25 +152,29 @@ qol_vundle_version: "v0.10.2"
 # tailnet-dns). Pinned to the rancher mirror k3s already caches on every node.
 coredns_tailnet_version: "1.14.7"
 debian_version: "13"
-# Proxmox LXC root template (pveam appliance). Authoritative pin — mirrors the
-# proxmox_lxc role default (bump both together). Upstream silently rotates the
-# point release, which breaks a cached-template recreate, so it is tracked in
-# check-versions.py as category "manual": `pveam update && pveam available
-# --section system | grep debian-13-standard`.
+# Proxmox LXC root template (pveam appliance). Mirrors the proxmox_lxc role
+# default - bump both together. Upstream silently rotates the point release,
+# which breaks a cached-template recreate, so check-versions tracks it manually.
 proxmox_lxc_template: "debian-13-standard_13.6-1_amd64.tar.zst"
-k3s_version: "v1.36.4+k3s1"
+# Debian cloud image for proxmox_vm guests. The role default tracks `latest/`,
+# whose SHA512SUMS moves with it and so pins nothing. The release id is in the
+# filename, so a bump forces a fresh download instead of reusing a stale file.
+proxmox_vm_cloud_image_url: "https://cloud.debian.org/images/cloud/trixie/20260914-2601/debian-13-generic-amd64-20260914-2601.qcow2"
+proxmox_vm_cloud_image_name: "debian-13-generic-amd64-20260914-2601.qcow2"
+# yamllint disable-line rule:line-length
+proxmox_vm_cloud_image_checksum: "sha512:a733e7d49442a03e70d03e4eb5aaf3967f3efc69ef70952f9bb10fc1ee2c4876eb95956b5ad2d31350e5fada768feb651352535fb8cd1233f61998a5a7d2e93c"
+k3s_version: "v1.37.1+k3s1"
 # sha256 of install.sh for the k3s_version tag: get_url verifies the root-run
-# installer before exec (install.sh's own check covers the k3s binary, not the
-# script). Recompute in lockstep with every k3s_version bump:
+# installer before exec. Recompute in lockstep with every k3s_version bump:
 #   curl -sfL https://raw.githubusercontent.com/k3s-io/k3s/<k3s_version>/install.sh | sha256sum
-k3s_install_script_checksum: "sha256:46177d4c99440b4c0311b67233823a8e8a2fc09693f6c89af1a7161e152fbfad"
-kube_vip_version: "v1.2.3"
+k3s_install_script_checksum: "sha256:ed01f89fd977bf20ac1516bbebf8370bf3ddbaa55dac8aba610956a4c78cc00b"
+kube_vip_version: "v1.2.4"
 # Flux CLI used by CI deploy-verify; the job pins a matching sha256 —
 # update both together when bumping.
 flux_version: "2.9.0"
 
 # Authentik SSO identity provider
-authentik_version: "2026.8.2"
+authentik_version: "2026.8.3"
 
 # Postgres for Authentik (bundled with the Helm chart); trixie base.
 # https://hub.docker.com/_/postgres/tags
@@ -197,56 +183,49 @@ postgresql_version: "18.6-trixie"
 # Postgres for Mealie (standalone deployment); alpine base.
 mealie_postgresql_version: "18.6-alpine"
 
-# Download clients and media stack.
-# LinuxServer.io images: https://docs.linuxserver.io/images/
-# Gluetun: https://github.com/qdm12/gluetun/releases
-# Pulsarr: https://github.com/jamcalli/Pulsarr/releases
-# busybox: init container utility image used by VPN sidecar pre-checks
+# Download clients and media stack. LinuxServer.io: docs.linuxserver.io/images
+# Gluetun: github.com/qdm12/gluetun/releases
+# Pulsarr: github.com/jamcalli/Pulsarr/releases
 busybox_version: "1.38"
 gluetun_version: "v3.41.3"
 nzbget_version: "26.3"
-qbittorrent_version: "5.2.3"
-prowlarr_version: "2.5.2.5491"
-sonarr_version: "4.0.19.2979"
-radarr_version: "6.3.0.10514"
+qbittorrent_version: "5.2.4"
+prowlarr_version: "2.6.5.5623"
+sonarr_version: "4.0.20.3014"
+radarr_version: "6.4.4.10685"
 lidarr_version: "3.1.0.4875"
-pulsarr_version: "0.19.2"
+pulsarr_version: "0.19.4"
 
 # wg-easy WireGuard VPN (internet-exit VPN for the user + friends/family).
 # Container tag has NO leading "v" (upstream convention: :15.3.0, not :v15.3.0).
 # https://github.com/wg-easy/wg-easy/releases
 wg_easy_version: "15.4.0"
 
-# Recipe management stack.
-# Mealie: https://github.com/mealie-recipes/mealie/releases
-# Bar Assistant: https://github.com/bar-assistant/bar-assistant/releases
-# Salt Rim: https://hub.docker.com/r/barassistant/salt-rim/tags
-# Meilisearch: https://github.com/meilisearch/meilisearch/releases (pinned to 1.15.x for Bar Assistant compat)
-# Redis: https://hub.docker.com/_/redis/tags (Alpine variant)
-mealie_version: "v3.26.0"
-bar_assistant_version: "6.7.0"
-salt_rim_version: "5.6.0"
+# Recipe management stack. Upstream feeds per component:
+# scripts/version-registry.py. Meilisearch stays on 1.15.x for Bar Assistant.
+mealie_version: "v3.28.0"
+bar_assistant_version: "6.8.1"
+salt_rim_version: "5.7.0"
 meilisearch_version: "v1.15.2"
 redis_version: "8.10.1-alpine"
 
 # Plex Media Server version (apt-managed via official repository)
 plex_version: "1.43.4.10903-e5521bd8c"
 
-# GitLab EE (using CE features) — Omnibus package.
+# GitLab EE (using CE features) - Omnibus package.
 # https://packages.gitlab.com/gitlab/gitlab-ee
-# Applied by task gitlab:deploy / the deploy-gitlab CI job; the maintenance
-# apt-upgrade honours the gitlab-ee package hold and will not bump it.
-gitlab_version: "19.3.2-ee.0"
+# The maintenance apt-upgrade honours the gitlab-ee hold and will not bump it.
+gitlab_version: "19.4.1-ee.0"
 
 # https://gitlab.com/gitlab-org/charts/gitlab-runner/tags
-gitlab_runner_helm_version: "0.92.1"
+gitlab_runner_helm_version: "0.93.0"
 
 # https://gitlab.com/gitlab-org/charts/gitlab-agent/tags
-gitlab_agent_helm_version: "2.31.0"
+gitlab_agent_helm_version: "2.32.0"
 
 # In-cluster pull-through registry cache for CI (docs/27 § Registry pull-through
 # cache). Bare X.Y.Z tag. https://hub.docker.com/_/registry/tags
-registry_cache_version: "3.1.1"
+registry_cache_version: "3.1.2"
 
 # Nextcloud (compose stack on the VM — consumed by the nextcloud Ansible role;
 # the VM-only pins ride the versions ConfigMap as a harmless superset).
@@ -261,15 +240,14 @@ nextcloud_exporter_version: "0.9.1"
 # The Nextcloud VM's Docker engine uses the shared docker_engine_* pins below —
 # one source of truth across immich / immich_ml / nextcloud.
 
-# Immich (compose stack on the VM). https://github.com/immich-app/immich/releases
-# The Postgres + Valkey images (tag AND digest) are whatever Immich's pinned
-# release pins in its own docker/docker-compose.yml — the DB is release-coupled
-# (vectorchord/pgvectors build), so NEVER bump it independently of immich_version.
-immich_version: "v3.2.0"
+# Immich (compose stack on the VM). The Postgres + Valkey images (tag AND
+# digest) are whatever Immich's pinned release pins in its own compose file - the
+# DB is release-coupled, so NEVER bump it independently of immich_version.
+immich_version: "v3.3.0"
 immich_postgres_version: "14-vectorchord0.4.3-pgvectors0.2.0"
 immich_postgres_digest: "sha256:bcf63357191b76a916ae5eb93464d65c07511da41e3bf7a8416db519b40b1c23"
 immich_valkey_version: "9"
-immich_valkey_digest: "sha256:70739f85ad2ee01a726a965584a0f94895f01b0c60b3cc8b0aeef11eaa6888cf"
+immich_valkey_digest: "sha256:c123e3715db63d06d4ad6964884037aa0d5d4d703939b9929954112889708e1d"
 
 # Docker Engine for the trixie VM compose stacks (immich, immich_ml, nextcloud).
 # dpkg-held so the maintenance apt-upgrade never bumps them under a running stack.
@@ -279,87 +257,61 @@ docker_engine_containerd_version: "2.2.6-1~debian.13~trixie"
 docker_engine_buildx_plugin_version: "0.35.0-1~debian.13~trixie"
 docker_engine_compose_plugin_version: "5.3.1-1~debian.13~trixie"
 # VirtIO driver ISO for the Windows 11 VM. Pinned to a versioned Fedora ARCHIVE
-# URL — the stable-virtio/ symlink is a moving target that breaks the pin on the
-# next upstream release. Fedora publishes no ISO checksum (RPMs only), so the
-# sha256 is computed from the pinned artifact and bumped with it. The Windows
-# install ISO itself is fetched manually from Microsoft — docs/39-windows-vm.md.
-# https://github.com/virtio-win/virtio-win-pkg-scripts
+# URL - the stable-virtio/ symlink breaks the pin on the next release. Fedora
+# publishes no ISO checksum, so the sha256 is ours and bumps with the version.
 proxmox_vm_virtio_win_version: "0.1.285"
 proxmox_vm_virtio_win_checksum: "sha256:e14cf2b94492c3e925f0070ba7fdfedeb2048c91eea9c5a5afb30232a3976331"
-# Hermes Agent. https://github.com/NousResearch/hermes-agent/releases
-# Upstream ships no image; build-hermes-agent clones the repo at this git tag
-# and builds THEIR Dockerfile. The value is the upstream RELEASE TAG (used
-# verbatim as `git clone --branch` and as the built image tag), NOT the semver
-# whl version.
-hermes_version: "v2026.9.11"
-# Immutable commit the pinned tag must resolve to — build-hermes-agent refuses
-# to build on a mismatch (moved/compromised tag defence). Lockstep with
-# hermes_version.
-hermes_git_sha: "939e45c91d751fadd94dcd1b873ac3cb44846213"
+# Hermes Agent. Upstream ships no image; build-hermes-agent clones the repo at
+# this RELEASE TAG and builds THEIR Dockerfile, so the value is the tag, not the
+# semver whl version. https://github.com/NousResearch/hermes-agent/releases
+hermes_version: "v2026.9.24"
+# Immutable commit the pinned tag must resolve to - build-hermes-agent refuses to
+# build on a mismatch (moved/compromised tag defence). Lockstep with the tag.
+hermes_git_sha: "f97608f178d1ffeca59860195ab7da295f7c8e5f"
 # PUBLISHED image tag = <hermes_version>-r<N>. The image is upstream + our
-# patches (docker/hermes-agent/patches/), so a patch change without an upstream
-# bump MUST produce a new tag or the nodes' IfNotPresent cache keeps serving the
-# unpatched image. Bump -rN when patches change; reset to -r1 on a
-# hermes_version bump. CI asserts the prefix matches hermes_version.
-hermes_image_version: "v2026.9.11-r1"
+# patches, so a patch change without an upstream bump MUST produce a new tag or
+# the IfNotPresent cache serves the unpatched image. Reset to -r1 on a bump.
+hermes_image_version: "v2026.9.24-r2"
 # OpenAI Codex CLI, baked into the hermes image by Dockerfile.codex. Requires
 # >=0.130.0 for the Hermes runtime. Build-time only — not substituted into any
 # manifest. https://github.com/openai/codex/releases (npm @openai/codex)
-hermes_codex_version: "0.154.0"
+hermes_codex_version: "0.161.0"
 # Claude Code CLI, baked into the hermes image alongside the Codex CLI so Hermes
-# can delegate coding tasks headlessly (`claude -p`), authenticated with a
-# long-lived OAuth token (CLAUDE_CODE_OAUTH_TOKEN via ESO — no API key; the CLI
-# holds the credential, Hermes only reads stdout). Build-time only — docs/37.
-# https://github.com/anthropics/claude-code (npm @anthropic-ai/claude-code)
-hermes_claude_version: "2.1.270"
-# 1Password CLI (op), baked into the hermes image so Hermes' 1Password skill can
-# drive `op` against the isolated Agent vault (docs/37 §1Password). Value is the
-# full DEB version string, not the bare semver `op --version` reports.
-#
-# NOT optional maintenance: the repo keeps exactly ONE version — 1Password
-# prunes the rest — so a stale pin FAILS the image build outright, and
-# version-check cannot see it (no release feed). Read the current version off
-# the Packages index:
-#   curl -fsSL https://downloads.1password.com/linux/debian/amd64/dists/stable/main/binary-amd64/Packages \
-#     | awk '/^Package: 1password-cli$/{p=1} p&&/^Version:/{print $2; p=0}'
-hermes_op_version: "2.39.0-1"
-# Camofox browser server — the sidecar behind Hermes' camofox tool. Upstream
-# publishes no image; build-camofox-browser clones the repo at tag v<version>.
-# The pin is the bare semver (the image tag); the git tag carries the "v".
-# https://github.com/jo-inc/camofox-browser/releases
-hermes_camofox_version: "1.13.0"
+# can delegate coding tasks headlessly, authenticated with a long-lived OAuth
+# token via ESO rather than an API key. Build-time only (docs/37).
+hermes_claude_version: "2.1.294"
+# 1Password CLI (op), baked into the hermes image for Hermes' 1Password skill
+# (docs/37). Full DEB version string. NOT optional: upstream keeps exactly ONE
+# version, so a stale pin FAILS the build and version-check cannot see it.
+hermes_op_version: "2.40.0-1"
+# Camofox browser server - the sidecar behind Hermes' camofox tool. Upstream
+# publishes no image; build-camofox-browser clones the repo at tag v<version>,
+# so the pin is the bare semver. https://github.com/jo-inc/camofox-browser/releases
+hermes_camofox_version: "1.18.1"
 # Immutable commit tag v${hermes_camofox_version} must resolve to; the build
 # refuses on a mismatch. Lockstep with hermes_camofox_version.
-hermes_camofox_git_sha: "8b5b0959adfadadae38ecce9d7eed706ab102bf1"
+hermes_camofox_git_sha: "39c82094013480b373df6600d44c7f036f58356e"
 
-# Hindsight agent-memory server (vectorize-io/hindsight) — Hermes' long-term
-# memory backend (kubernetes/apps/hindsight, docs/37 §Memory backend). The pin
-# is the ghcr.io/vectorize-io/hindsight image tag (bare semver; the git tag
-# carries a leading "v"). https://github.com/vectorize-io/hindsight/releases
-hindsight_version: "0.9.2"
+# Hindsight agent-memory server - Hermes' long-term memory backend
+# (kubernetes/apps/hindsight, docs/37). The pin is the ghcr.io image tag.
+# https://github.com/vectorize-io/hindsight/releases
+hindsight_version: "0.10.3"
 # llama.cpp server sidecar for Hindsight's local LLM, built as
-# ghcr.io/ggml-org/llama.cpp:server-cuda-<pin> for GPU offload (docs/43).
-# Upstream tags builds (bNNNN) many times a day and not every build publishes
-# images, so this is bumped opportunistically — category "manual" in
-# check-versions. https://github.com/ggml-org/llama.cpp/releases
+# ghcr.io/ggml-org/llama.cpp:server-cuda-<pin> for GPU offload (docs/43). Not
+# every upstream build publishes an image, so this is bumped opportunistically.
 hindsight_llamacpp_version: "b10068"
 
-# GPU stack for the pve-prec-01 1660 Ti (Hindsight CUDA offload, docs/43).
-# nvidia-open comes from NVIDIA's own CUDA apt repo, NOT Debian non-free: the
-# llama.cpp image is built against CUDA 12.8, which needs a native driver >= 570
-# on a consumer GeForce card (cuda-compat forward-compat is unsupported there).
-# Exact apt version; gpu.yml HOLDS the package, and bumping this pin applies
-# over the hold. https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/
+# GPU stack for the pve-prec-01 1660 Ti (docs/43). nvidia-open comes from
+# NVIDIA's own CUDA apt repo: llama.cpp is built against CUDA 12.8, which needs
+# a native driver >= 570. gpu.yml HOLDS it, and a bump applies over the hold.
 nvidia_driver_version: "610.43.02-1"
-# NVIDIA CUDA apt repo keyring. The debian13 repo's signing key is published
-# ONLY inside this cuda-keyring package (no standalone .pub), so gpu.yml verifies
-# this SHA256 BEFORE installing the deb — its maintainer scripts run as root.
-# Bump version + sha256 in lockstep.
+# NVIDIA CUDA apt repo keyring. The debian13 repo's signing key ships ONLY inside
+# this package, so gpu.yml verifies this SHA256 before installing the deb - its
+# maintainer scripts run as root. Bump version + sha256 in lockstep.
 nvidia_cuda_keyring_version: "1.1-1"
 nvidia_cuda_keyring_sha256: "d0d4ef986a44400f9db33c600ef33a985175e7cc63d805a10e1839c7a1e78f5f"
 # Provides nvidia-container-runtime, which k3s auto-detects on PATH and wires
-# into its generated containerd config as the `nvidia` runtime handler (no
-# config-v3.toml.tmpl needed). Exact apt pin.
+# into its containerd config as the `nvidia` runtime handler. Exact apt pin.
 # https://github.com/NVIDIA/nvidia-container-toolkit/releases
 nvidia_container_toolkit_version: "1.19.1-1"
 # NVIDIA DCGM exporter (raw DaemonSet on the GPU node). Tag form is
@@ -371,100 +323,73 @@ dcgm_exporter_version: "4.6.0-4.8.3-distroless"
 # https://github.com/homarr-labs/homarr/releases
 homarr_version: "v1.77.1"
 
-# Uptime Kuma (docs/45). BARE semver tag on Docker Hub (no "v"); the manifest
-# appends "-rootless", which is the same release built with USER node and is
-# what lets the namespace enforce PSA restricted.
-# https://github.com/louislam/uptime-kuma/releases
-uptime_kuma_version: "2.5.4"
+# Uptime Kuma (docs/45). BARE semver tag on Docker Hub; the manifest appends
+# "-rootless", the same release built with USER node, which is what lets the
+# namespace enforce PSA restricted.
+uptime_kuma_version: "2.5.5"
 
-# Garage — the runners' S3 cache backend (kubernetes/apps/ci-cache, docs/13
-# § Runner cache backend). Docker Hub dxflrs/garage; the pinned value is the
-# full upstream tag (vX.Y.Z). Chosen over MinIO: that upstream was archived
-# 2026-04.
+# Garage - the runners' S3 cache backend (kubernetes/apps/ci-cache, docs/13).
+# Docker Hub dxflrs/garage; the pin is the full upstream tag (vX.Y.Z).
 garage_version: "v2.4.1"
 
-# Offsite backup binaries (restic_offsite role on pve-nas-01, docs/42).
-# A NON-EMPTY restic_version becomes an EXACT apt pin — "" means distro.
-# rclone installs from rclone.org's own .deb (Debian's build is years stale);
-# bump version + sha256 together from
-# https://downloads.rclone.org/vX.Y.Z/SHA256SUMS (linux-amd64.deb line).
-restic_offsite_restic_version: ""
+# Offsite backup binaries (restic_offsite on pve-nas-01, docs/42). restic tracks
+# the Debian archive; set restic_offsite_restic_version to pin an exact apt
+# version. rclone installs from rclone.org's own .deb; bump version + sha256 together.
 restic_offsite_rclone_version: "1.74.4"
 restic_offsite_rclone_deb_sha256: "a9da2eaa70428c6dcc5acbb0b7eac0faec4c61643e0b468d9fe09ddf79b7e929"
 
-# Observability stack versions
-# kube-prometheus-stack, Loki, Alloy chart versions are in helm_chart_versions below.
-# Container image versions for standalone exporters:
-# Exportarr: https://github.com/onedr0p/exportarr/releases
-# Blackbox exporter chart version is in helm_chart_versions below.
-# Proxmox VE Exporter: https://github.com/prometheus-pve/prometheus-pve-exporter/releases
-# ZFS Exporter: https://github.com/pdf/zfs_exporter/releases
-# AdGuard Exporter: https://github.com/henrywhitaker3/adguard-exporter/releases
-# Unbound Exporter: https://github.com/letsencrypt/unbound_exporter/releases
-# Redis Exporter: https://hub.docker.com/r/oliver006/redis_exporter/tags
+# Observability stack. Chart versions live in helm_chart_versions below; the
+# standalone exporters' upstream feeds are in scripts/version-registry.py.
 exportarr_version: "v2.3.0"
-proxmox_exporter_version: "3.10.0"
-zfs_exporter_version: "2.4.1"
+proxmox_exporter_version: "3.10.1"
+zfs_exporter_version: "2.4.2"
 # sha256 of zfs_exporter-<version>.linux-amd64.tar.gz from the release's
 # sha256sums.txt — the binary runs as root with /dev/zfs access, so get_url
 # fails closed on a mismatch. Update on every version bump.
-zfs_exporter_checksum: "sha256:60489e74e8f41eadff4f313fb16e94fc0964d37b9cf1be79c25c927b285a3228"
+zfs_exporter_checksum: "sha256:6b6539e091b6fb1a4cf6cc74c501e793d21da50b1e1d7f7c4b7f837db136fa90"
 adguard_exporter_version: "v1.2.1"
 # Installed from the release .deb (prometheus_exporter_artifact_type: deb) —
 # check a new release still publishes one. Upstream ships no checksum file, so
 # the sha256 is our own: `shasum -a 256` the .deb and bump both lines.
 unbound_exporter_version: "0.6.0"
 unbound_exporter_checksum: "sha256:4f61876a292b49f918baf6b6b57d17dcf94f97513787282b0dadb88b95084890"
-redis_exporter_version: "v1.91.1"
-# postgres_exporter sidecar for the VM compose stacks (immich, nextcloud). The
-# GitLab VM uses the exporter Omnibus already bundles, so it carries no pin.
-# https://github.com/prometheus-community/postgres_exporter/releases
+redis_exporter_version: "v1.93.0"
+# postgres_exporter for the VM compose stacks (immich, nextcloud). The mealie
+# sidecar pins the same exporter by tag+digest in
+# kubernetes/apps/recipes/mealie.yaml - bump both together.
 postgres_exporter_version: "v0.20.1"
 
-# Helm chart versions for the k3s platform workloads.
-# - MetalLB: https://artifacthub.io/packages/helm/metallb/metallb
-# - Traefik: https://github.com/traefik/traefik-helm-chart/releases
-# - cert-manager: https://artifacthub.io/packages/helm/cert-manager/cert-manager
-# - external-dns: https://artifacthub.io/packages/helm/external-dns/external-dns
-# - VPA: https://artifacthub.io/packages/helm/fairwinds-stable/vpa
+# Helm chart versions for the k3s platform workloads. Upstream feeds per chart:
+# scripts/version-registry.py.
 helm_chart_versions:
-  # 0.16.x has an open regression in the L2 ServiceL2Status reconciler that
-  # floods the apiserver (~34 r/s 500s in our setup, enough to trip
-  # KubeAPIErrorBudgetBurn). Pinned to 0.15.3 — the v0.16 CRDs already in
-  # the cluster are schema-compatible with the 0.15.3 controller+speaker
-  # images per upstream. Re-evaluate when the fix lands.
-  # Upstream issue: https://github.com/metallb/metallb/issues/3063
+  # CRITICAL: held at 0.15.3. The 0.16.x L2 ServiceL2Status reconciler floods
+  # the apiserver, enough to trip KubeAPIErrorBudgetBurn. The cluster's v0.16
+  # CRDs are compatible with the 0.15.3 images. Re-evaluate after chart 0.16.1.
   metallb: "0.15.3"
-  traefik: "41.5.0"  # App version v3.7.12 (chart 41.x: logs.general->log, logs.access->accessLog)
+  traefik: "41.7.0"  # App version v3.7.14 (chart 41.x: logs.general->log, logs.access->accessLog)
   cert_manager: "v1.21.2"
-  external_dns: "1.22.0"  # App version 0.22.0
-  external_secrets: "2.10.0"  # ESO with 1Password Connect provider
-  kube_prometheus_stack: "91.2.1"  # prometheus-operator v0.94.0 (91.x major = operator bump only, no values-schema change; crds: CreateReplace)
-  # prometheus-community/prometheus-operator-crds chart. Owns the
-  # monitoring.coreos.com CRDs in the dedicated infrastructure-crds stage so
-  # controllers (Traefik's ServiceMonitor) reconcile before kube-prometheus-stack
-  # (docs/29). 32.0.0 = appVersion v0.94.0, matching kube_prometheus_stack
-  # 91.2.0's operator v0.94.0 exactly (CRDs may lead the operator, never trail;
-  # v0.94.0 CRD deltas are additive-only — retentionPercentage, clusterPeerName,
-  # ScrapeConfig SD enums — no field removals/apiVersion changes). COUPLING:
-  # bump in lockstep with kube_prometheus_stack so the CRD set stays
-  # version-matched to the operator kps deploys (docs/12).
-  prometheus_operator_crds: "32.0.0"
-  loki: "18.13.0"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0); 18.0.0 = dashboard-gen only
-  alloy: "1.12.1"
-  prometheus_blackbox_exporter: "11.18.0"
-  onepassword_connect: "2.4.1"
-  vpa: "5.0.1"  # chart major = app 1.7.1; every values key this repo sets is unchanged in 5.x
+  external_dns: "1.23.0"  # App version 0.23.0
+  external_secrets: "2.12.0"  # ESO with 1Password Connect provider
+  kube_prometheus_stack: "92.1.1"  # prometheus-operator v0.94.1 (92.x major = kubernetes.io/os=linux nodeSelector default)
+  # prometheus-community/prometheus-operator-crds. Owns the monitoring.coreos.com
+  # CRDs in the infrastructure-crds stage (docs/29). COUPLING: its appVersion must
+  # equal the pinned kube_prometheus_stack's operator appVersion (docs/12).
+  prometheus_operator_crds: "32.0.1"
+  loki: "18.14.0"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0)
+  alloy: "1.13.0"
+  prometheus_blackbox_exporter: "11.20.0"
+  onepassword_connect: "2.4.2"
+  vpa: "5.1.0"  # app 1.7.1; every values key this repo sets exists in the 5.x chart
   kured: "6.1.0"  # Kubernetes Reboot Daemon (app 1.22.1); owns k3s-node reboots flagged by maintenance
-  reloader: "2.2.17"  # stakater/Reloader (app v1.4.20); auto-restarts annotated workloads on ConfigMap change (Secrets excluded via ignoreSecrets)
-  # Tailscale K8s operator (appVersion v1.102.3; tracks the host
+  reloader: "2.2.18"  # stakater/Reloader (app v1.4.22); auto-restarts annotated workloads on ConfigMap change (Secrets excluded via ignoreSecrets)
+  # Tailscale K8s operator (appVersion v1.102.4; tracks the host
   # tailscale_version, but only once the chart actually publishes — flux-lint's
   # helm-values gate fails a phantom chart version)
-  tailscale_operator: "1.102.3"
+  tailscale_operator: "1.102.4"
   # NVIDIA k8s device plugin — advertises nvidia.com/gpu on the labelled GPU node
   # (kubernetes/infrastructure/controllers/nvidia-device-plugin). Chart tracks the
   # plugin appVersion. https://github.com/NVIDIA/k8s-device-plugin/releases
-  nvidia_device_plugin: "0.20.0"
+  nvidia_device_plugin: "0.20.1"
   # kubernetes-sigs/metrics-server (chart 3.14.0 = app v0.9.0). Replaces the k3s
   # packaged AddOn, which is disabled on the servers — see
   # kubernetes/infrastructure/controllers/metrics-server/release.yaml.
@@ -478,32 +403,23 @@ proxmox_resource_pools:
   - apps-private    # Internal applications
 
 # Firewall IPSet special entries. Sets whose members are inventory hosts are
-# derived from each host's `firewall_ipsets`; the sets below carry addresses and
-# CIDRs that are not inventory hosts, and a key that no host references creates
-# the set outright (docs/11-firewall.md).
+# derived from each host's `firewall_ipsets`; the sets below carry addresses that
+# are not inventory hosts, and a key no host references creates the set (docs/11).
 firewall_ipset_special_entries:
   k3s_nodes:
     - ip: 10.0.10.161
       comment: k3s API VIP
   # SERVICE scope, the counterpart to admin_lan: the client subnets allowed at
-  # user-facing app ports (Traefik 80/443, Home Assistant 8123, GitLab web,
-  # Nextcloud/Immich 443, Plex + HAOS discovery, SMB). Deliberately excludes
-  # IoT/Guest/Work — those reach only the ports named for them explicitly.
+  # user-facing app ports. Deliberately excludes IoT/Guest/Work - those reach
+  # only the ports named for them explicitly.
   lan_clients:
     - ip: 10.0.10.0/24
       comment: homelab LAN
     - ip: 10.0.20.0/24
       comment: Home VLAN 20 (trusted personal devices)
-  # Resolver scope: every CLIENT VLAN uses the weisssrv resolvers, handed out by
-  # UniFi DHCP, so :53 has to admit subnets that must never reach an admin
-  # surface. Wider than lan_clients on purpose, and only ever referenced
-  # from :53.
-  #
-  # The Default/mgmt VLAN (10.0.1.0/24) is deliberately NOT a member: its DHCP
-  # hands out public resolvers to avoid a bootstrap loop (the resolvers are LXCs
-  # behind the gear on that VLAN), and no UniFi zone policy admits
-  # Internal -> homelab (terraform/unifi/networks.tf). Re-pointing a management
-  # device at AdGuard means adding the zone policy AND the entry here.
+  # Resolver scope: every CLIENT VLAN uses these resolvers, so :53 has to admit
+  # subnets that must never reach an admin surface. The Default/mgmt VLAN is
+  # deliberately NOT a member - adding it needs the UniFi zone policy too.
   dns_clients:
     - ip: 10.0.10.0/24
       comment: homelab LAN
@@ -517,45 +433,26 @@ firewall_ipset_special_entries:
       comment: Work VLAN 50
 
 # ADMIN scope: the management plane only (:22, :8006, :6443, :3389, :3000,
-# :22222). With VLAN segmentation the flat-LAN accepted risk is gone — client
-# devices live on the Home/IoT/Guest/Work VLANs and reach service ports through
-# the lan_clients set above, never this one. Members are the homelab LAN (cert
-# distribution, CI deploy sources, tailnet SNAT all originate there) plus the
-# 10.0.20.8/29 admin-device block on the Home VLAN, which UniFi DHCP reserves
-# for admin workstations (docs/46).
-# proxmox_firewall_admin_ts_cidrs keeps the role default (the full Tailscale
-# CGNAT range) — single-owner tailnet, per-device pins risk DR lockout, and the
-# Tailscale ACL policy already enforces device/user granularity (docs/05).
+# :22222). The homelab LAN plus the 10.0.20.8/29 admin-device block on the Home
+# VLAN (docs/46). admin_ts keeps the role default - the ACL gates it (docs/05).
 proxmox_firewall_admin_lan_cidrs:
   - 10.0.10.0/24
   - 10.0.20.8/29
 
 # SMB clients, NOT inheriting admin_lan: file shares are a service surface, so
-# they follow the lan_clients membership, not the admin one. The role renders
-# the `smb_clients` IPSet from this variable rather than from
-# firewall_ipset_special_entries, so the list has to exist separately — but it
-# is DERIVED, not restated: two literal copies of one scope is how a Phase 2
-# renumber (or a new client VLAN) moves one and silently leaves the other,
-# breaking every SMB mount with nothing pointing at the cause.
+# they follow lan_clients. The role renders the `smb_clients` IPSet from this
+# variable, so it must exist separately - but DERIVED, never a second literal.
 proxmox_firewall_smb_client_cidrs: "{{ firewall_ipset_special_entries.lan_clients | map(attribute='ip') | list }}"
 
 # The router forwards :51820/udp to the wg-easy MetalLB VIP. `-dest` scopes the
 # WAN rule to the VIP so it never opens a node's own :51820/udp (flannel
 # wireguard-native). docs/38.
 proxmox_firewall_wan_wireguard_vips:
-  - 10.0.10.99
+  - "{{ wg_easy_vip }}"
 
-# Source sets for the two rule groups the collection renders itself but the
-# site re-scopes: sg-dns's `:53` (tcp+udp) and the whole of
-# sg-k3s-ingress-int (`:80`/`:443`). Both default to [admin_ts, admin_lan] in
-# the role, so naming the client sets here is what lets a VLAN outside
-# admin_lan resolve or reach the internal Traefik VIP at all
-# (weisssrv.infra v0.13.0; docs/11-firewall.md § Client scopes).
-#
-# :53 takes dns_clients — UniFi DHCP hands the weisssrv resolvers to every
-# VLAN, including the ones with no other homelab access. The internal ingress
-# takes lan_clients — Home-VLAN devices only; IoT/Guest/Work reach nothing but
-# the ports named for them. admin_ts stays on both so the tailnet is unchanged.
+# Source sets for the two rule groups the collection renders itself but the site
+# re-scopes: sg-dns's `:53` and the whole of sg-k3s-ingress-int. Both default to
+# [admin_ts, admin_lan], so naming client sets here is what admits a VLAN at all.
 proxmox_firewall_dns_client_sources:
   - admin_ts
   - dns_clients
@@ -565,14 +462,8 @@ proxmox_firewall_k3s_ingress_int_sources:
   - lan_clients
 
 # Resolver admin surfaces rendered into sg-dns ({port, sources[], comment?}).
-# The role default is the two admin sets only.
-#
-# Both surfaces stay on the ADMIN sets after the VLAN split: :443 is the AdGuard
-# UI and :3000 its plaintext API carrying a reusable admin credential, so no
-# client VLAN reaches either — the client VLANs get :53 and nothing else, via
-# the dns_clients set above. Naming k3s_nodes on :443 admits nothing extra
-# (every node sits inside the homelab LAN and pod egress SNATs to the node IP);
-# it is spelled out so the in-cluster callers are documented.
+# Both stay on the ADMIN sets: :443 is the AdGuard UI and :3000 its plaintext
+# API carrying a reusable admin credential, so no client VLAN reaches either.
 proxmox_firewall_dns_admin_ports:
   - port: 443
     sources: [k3s_nodes, admin_ts, admin_lan]
@@ -582,11 +473,8 @@ proxmox_firewall_dns_admin_ports:
     comment: AdGuard Home plaintext admin API
 
 # Application scrape targets appended to sg-metrics ({port, sources[],
-# comment?}). The role builds in only the exporters its own roles bind (9100,
-# 9101, 9134, 9167); every app port below opens on EVERY node, which is why the
-# scraper set is named rather than defaulted. k3s SNATs pod traffic to node IPs,
-# so k3s_nodes is the scrape source; :31100 is the Loki push NodePort, i.e.
-# host -> k8s, not a scrape.
+# comment?}). Every app port below opens on EVERY node, which is why the scraper
+# set is named rather than defaulted. :31100 is the Loki push NodePort.
 proxmox_firewall_metrics_scrape_ports:
   - port: 8123
     sources: [k3s_nodes]
@@ -604,38 +492,43 @@ proxmox_firewall_metrics_scrape_ports:
     sources: [core-cluster]
     comment: loki push (NodePort, host->k8s)
 
-# Per-application security groups. The role owns the infrastructure groups
-# (sg-dns, sg-host-admin, sg-vm-admin, sg-k3s-*, sg-nfs-server, sg-metrics,
-# sg-pve-cluster, sg-smb-server, sg-smtp-relay, sg-host-egress); everything
-# application-shaped is site data and lives here. `rules` are raw cluster.fw
-# lines emitted verbatim, in order — pve-firewall is first-match-wins within a
-# group. Guests reference these by name via guest_security_groups (hosts.yml).
-#
-# Source-set convention after the VLAN split: a USER-facing port takes
-# +dc/lan_clients (homelab LAN + Home VLAN), an ADMIN port keeps +dc/admin_lan
-# (homelab LAN + the /29 admin block). lan_clients is a superset of admin_lan,
-# so a port that moved needs no second admin rule.
+# Host-originated egress the sg-host-egress allowlist does not already cover.
+proxmox_firewall_host_egress_extra_ports:
+  - port: 2222
+    proto: tcp
+    comment: GitLab SSH
+  - port: 31100
+    proto: tcp
+    comment: Loki push NodePort
+
+# Appended to sg-smtp-relay's egress allowlist. The relay runs alloy_host and
+# the guest is policy_out: DROP, so the break-glass Loki NodePort needs a rule.
+proxmox_firewall_smtp_relay_extra_egress_ports:
+  - port: 31100
+    proto: tcp
+    comment: Loki push NodePort
+
+# CRITICAL: the IPSets allowed at the relay's :25/:587 in sg-smtp-relay. The
+# role default is empty, which renders no inbound rule and closes both ports.
+proxmox_firewall_smtp_relay_sources:
+  - core-cluster
+
+# Per-application security groups. The role owns the infrastructure groups;
+# application-shaped ones are site data. `rules` are raw cluster.fw lines emitted
+# verbatim, in order - pve-firewall is first-match-wins within a group.
 proxmox_firewall_security_groups:
-  # Lets the UniFi gateway reach the alloy-syslog receiver at its MetalLB VIP
-  # 10.0.10.162:514/udp (docs/31, docs/46). This is a per-VM (guest) firewall
-  # group, NOT a datacenter cluster.fw rule: a frame destined to a VIP is
-  # FORWARDED to the announcing node's guest VM, so it is filtered by that
-  # guest's firewall (default-drop), never PVEFW-HOST-IN — which is why the
-  # cluster.fw form silently dropped every frame. `-dest` scopes the accept to
-  # the VIP, `-source` to the gateway SVI (the only sender). Assigned to every
-  # ingress agent (the alloy-syslog pod is ingress-labelled but not node-pinned,
-  # so MetalLB can announce .162 from any of them), the same set the wg-easy VIP
-  # is opened across.
+  # CRITICAL: a frame destined to a VIP is FORWARDED to the announcing node's
+  # guest and filtered by THAT guest's firewall, never PVEFW-HOST-IN, so this is
+  # a per-guest group and not a cluster.fw rule. It lets the UniFi gateway reach
+  # the alloy-syslog receiver on :514/udp, and is assigned to every ingress
+  # agent because MetalLB can announce the VIP from any of them (docs/11).
   - name: sg-syslog-vip
     rules:
-      - "IN ACCEPT -source 10.0.10.1 -dest 10.0.10.162 -p udp -dport 514 -log nolog"
+      - "IN ACCEPT -source {{ proxmox_lxc_gateway }} -dest {{ syslog_vip }} -p udp -dport 514 -log nolog"
 
   # git-ssh passthrough entrypoint on the ingress agents (Traefik `gitssh`,
-  # internal VIP :2222 -> the GitLab VM's sshd). USER scope on purpose: the
-  # pre-renumber path was the WAN forward, which any internal client could
-  # hairpin to, and sshd's own auth (plus the gitlab-ssh fail2ban jail on the
-  # VM) stays the real gate. Tailnet clients arrive SNAT'd from the hosts'
-  # homelab addresses, which lan_clients contains.
+  # internal VIP :2222 -> the GitLab VM's sshd). USER scope on purpose: sshd's
+  # own auth plus the gitlab-ssh fail2ban jail is the real gate.
   - name: sg-k3s-gitssh
     rules:
       - "IN ACCEPT -source +dc/lan_clients -p tcp -dport 2222 -log nolog"
@@ -698,35 +591,28 @@ proxmox_firewall_security_groups:
   - name: sg-immich-ml
     rules:
       # The ML inference API is AUTHLESS by upstream design, so this rule IS the
-      # security boundary: admit ONLY the Immich VM (.157), its sole legitimate
-      # consumer. No admin/LAN debug access on purpose — probe it from the VM or
-      # over an SSH loopback (SSH/ICMP admin comes from sg-vm-admin).
+      # security boundary: admit ONLY the Immich VM (.157). No admin/LAN debug
+      # access on purpose - probe it from the VM or over an SSH loopback.
       - "IN ACCEPT -source 10.0.10.157 -p tcp -dport 3003 -log nolog"
 
   - name: sg-haos
     rules:
       # SSDP (1900) and mDNS (5353) discovery from the client VLANs in
-      # lan_clients. NOTE the layering: the UniFi zone firewall is the FIRST
-      # gate for anything arriving from another VLAN (terraform/unifi
-      # local.policies), so a rule here only ever sees traffic a zone policy
-      # already admitted.
+      # lan_clients. The UniFi zone firewall is the FIRST gate for anything from
+      # another VLAN, so a rule here only sees traffic a zone policy admitted.
       - "IN ACCEPT -source +dc/lan_clients -p udp -dport 1900 -log nolog"
       - "IN ACCEPT -source +dc/lan_clients -p udp -dport 5353 -log nolog"
-      # mDNS from the IoT VLAN. Kept inline (and NOT folded into lan_clients)
-      # because it is the one IoT->here flow that can arrive with a 10.0.30.x
-      # source: UniFi's mDNS repeater re-transmits the query on this interface
-      # with the ORIGINAL source address, not the gateway's. There is
-      # deliberately no 1900 counterpart — SSDP is link-local multicast that no
-      # UniFi feature reflects, so such a rule could never match (docs/46).
+      # mDNS from the IoT VLAN, kept inline because it is the one IoT->here flow
+      # that arrives with a 10.0.30.x source: UniFi's repeater re-transmits with
+      # the ORIGINAL address. No 1900 counterpart - SSDP is link-local multicast.
       - "IN ACCEPT -source 10.0.30.0/24 -p udp -dport 5353 -log nolog"
       # The web UI is a user-facing surface — phones and tablets live on the
       # Home VLAN, so it follows lan_clients.
       - "IN ACCEPT -source +dc/admin_ts -p tcp -dport 8123 -log nolog"
       - "IN ACCEPT -source +dc/lan_clients -p tcp -dport 8123 -log nolog"
       # HA's device-INITIATED paths from IoT: a Cast speaker fetching the TTS
-      # proxy URL HA handed it, and integration webhooks posting back to HA's
-      # internal_url. Gated first by the `iot-to-homelab-ha` zone policy, which
-      # scopes it to this guest's address.
+      # proxy URL, and integration webhooks posting back to internal_url. Gated
+      # first by the `iot-to-homelab-ha` zone policy.
       - "IN ACCEPT -source 10.0.30.0/24 -p tcp -dport 8123 -log nolog"
       # SSH add-on (22222) — ADMIN scope.
       - "IN ACCEPT -source +dc/admin_ts -p tcp -dport 22222 -log nolog"
@@ -738,24 +624,15 @@ proxmox_firewall_security_groups:
 
   - name: sg-plex
     rules:
-      # DLNA (32469), GDM (32410-32414) and SSDP (1900) discovery stay LAN-only
-      # (no remote use case), sourced from the client VLANs in lan_clients.
-      #
-      # The IoT VLAN is deliberately ABSENT from all three. GDM and SSDP are
-      # multicast, which does not route between VLANs at all, and unicast DLNA
-      # would be dropped by the UniFi zone firewall first — the only iot->homelab
-      # allowances are :53, Plex :32400 and HA :8123 (terraform/unifi
-      # local.policies). TVs on IoT still stream: :32400 is world-open below and
-      # the Plex client finds the server through plex.tv rather than by
-      # discovery.
+      # DLNA (32469), GDM (32410-32414) and SSDP (1900) discovery stay LAN-only,
+      # sourced from lan_clients. The IoT VLAN is ABSENT: multicast does not route
+      # between VLANs, and TVs there stream over the world-open :32400 anyway.
       - "IN ACCEPT -source +dc/lan_clients -p tcp -dport 32469 -log nolog"
       - "IN ACCEPT -source +dc/lan_clients -p udp -dport 32410:32414 -log nolog"
       - "IN ACCEPT -source +dc/lan_clients -p udp -dport 1900 -log nolog"
-      # Media port 32400 — INTENTIONALLY open to the WAN for direct remote
-      # streaming (the router forwards it here, docs/20 §4). Plex authenticates
-      # every remote session against plex.tv before serving media, so this is an
-      # authenticated endpoint; restricting the source would force remote
-      # playback through the bandwidth-limited plex.tv relay.
+      # Media port 32400 - INTENTIONALLY open to the WAN for direct remote
+      # streaming (docs/20). Plex authenticates every remote session against
+      # plex.tv first; restricting the source forces the slow plex.tv relay.
       - "IN ACCEPT -p tcp -dport 32400 -log nolog"
 
   - name: sg-windows
@@ -763,11 +640,9 @@ proxmox_firewall_security_groups:
       - "IN ACCEPT -source +dc/admin_ts -p tcp -dport 3389 -log nolog"
       - "IN ACCEPT -source +dc/admin_lan -p tcp -dport 3389 -log nolog"
 
-# Per-service node-affinity rules. Each (a) lists ONLY the five local-ssd
-# compute nodes, so the service never lands on pve-nas-01 unless every compute
-# node is down (strict=false, avoiding I/O contention with the NAS), and (b)
-# gives its HOME node priority 2 vs 1, so after a failover it fails BACK instead
-# of stranding. Homes match the proxmox_ha_replication_jobs layout below.
+# Per-service node-affinity rules. Each lists ONLY the five local-ssd compute
+# nodes, so the service never lands on pve-nas-01 unless they are all down
+# (strict=false), and gives its HOME node priority 2 so it fails BACK.
 proxmox_ha_rules:
   - name: affinity-dns-01
     type: node-affinity
@@ -775,11 +650,8 @@ proxmox_ha_rules:
       - ct:150  # dns-01 (AdGuard Home primary)
     nodes:
       # Home is pve-prec-01, the only host with real RAM headroom; dns-02 sits
-      # on pve-opt-03 so the pair stays split across hosts.
-      #
-      # THIS ENTRY, the 150-* proxmox_ha_replication_jobs source_node, and
-      # dns-01's proxmox_host in hosts.yml are ONE UNIT — move all three
-      # together or proxmox_ha/replication.yml cannot manage the jobs.
+      # on pve-opt-03 so the pair stays split. This entry, dns-01's proxmox_host
+      # and the 150-* source_node are ONE UNIT (test_inventory_invariants.py).
       - "pve-prec-01:2"  # home
       - "pve-laptop-01:1"
       - "pve-opt-01:1"
@@ -858,14 +730,11 @@ proxmox_ha_resources:
     enabled: true
 
 # Storage replication, every 15 minutes. Each service replicates to ALL 4 other
-# local-ssd nodes so HA can fail over to any of them; job id is
-# <VMID>-<job_number>. pve-nas-01 is excluded (no local-ssd).
-# Schedules are explicit times, not */15, so the four services' offsets stay
-# deterministic.
+# local-ssd nodes so HA can fail over to any of them; pve-nas-01 has no
+# local-ssd. Schedules are explicit times so the four offsets stay deterministic.
 proxmox_ha_replication_jobs:
-  # dns-01 (150), offset 0. source_node MUST track the affinity-dns-01 home or
-  # the role's replication pass cannot manage these jobs; the source node cannot
-  # also be a target, which is why 150-3 goes to pve-laptop-01.
+  # dns-01 (150), offset 0. source_node MUST track the affinity-dns-01 home and
+  # can never also be a target - asserted by scripts/test_inventory_invariants.py.
   - id: "150-0"
     source_node: pve-prec-01
     target_node: pve-opt-01
@@ -969,10 +838,9 @@ proxmox_ha_replication_jobs:
     comment: "home-assistant -> pve-opt-03"
     enabled: true
 
-# Relay SASL credential, injected via `op run --` (handled by the task wrapper).
-# One credential, two consumers: every null client authenticates WITH it, and the
-# relay stores it in its own sasldb — so the two role-prefixed names are anchored
-# to a single definition rather than kept in step by hand.
+# Relay SASL credential, injected via `op run --`. One credential, two consumers:
+# every null client authenticates WITH it and the relay stores it in its own
+# sasldb, so the two role-prefixed names are anchored to a single definition.
 postfix_null_client_sasl_user: &relay_sasl_user >-
   {{ lookup('ansible.builtin.env', 'SMTP_RELAY_USER')
      or undef(hint='SMTP_RELAY_USER env var must be set') }}

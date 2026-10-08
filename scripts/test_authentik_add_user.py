@@ -1,23 +1,16 @@
-"""Tests for authentik-add-user.py — the users.tf username scaffolder.
+"""Tests that authentik-add-user.py scaffolds a username without writing personal data into users.tf."""
 
-The scaffolder appends a username to `managed_usernames`; personal data (name,
-email) is emitted only as a 1Password JSON snippet and MUST NOT be written into
-the public-mirrored users.tf.
-"""
-
-import importlib.util
 import json
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+from script_loader import load_path
 
 SCRIPT = Path(__file__).parent / "authentik-add-user.py"
 
-spec = importlib.util.spec_from_file_location("authentik_add_user", SCRIPT)
-mod = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(mod)
+mod = load_path(SCRIPT)
 
 EMPTY = """locals {
   managed_usernames = [

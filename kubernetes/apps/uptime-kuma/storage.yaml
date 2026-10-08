@@ -1,19 +1,10 @@
 ---
-# NFS-backed persistent state for Uptime Kuma — the SQLite DB (monitors,
-# heartbeat history, status pages, notification channels) plus the status-page
-# logo uploads, all under one writable /app/data mount. Lives on the encrypted
-# ssd/appdata dataset, so the nightly ssd/appdata -> archive replication
-# captures it; the export's all_squash maps every write to 1000:2000 and the
-# nas_storage role owns the subdir (nas_storage_appdata_dirs).
-#
-# SQLite-on-NFS is the same trade Homarr and Hindsight take on this export:
-# SQLite tolerates exactly one writer, and replicas: 1 + Recreate
-# (deployment.yaml) guarantee no two pods dual-mount this RWO PV. Kuma writes a
-# heartbeat row per monitor per interval, so it is the busiest writer of the
-# three — docs/45 records the ext4-on-zvol fallback if WAL/locking ever bites.
-#
-# NFS-over-TLS PV; hostname (not IP) + force annotation rationale:
-# apps/download-clients/_nfs-pv/resources.yaml and docs/07.
+# CRITICAL: SQLite on NFS tolerates exactly one writer, so replicas: 1 plus the
+# Recreate strategy (deployment.yaml) must keep two pods from dual-mounting this
+# PV. State lives on the encrypted ssd/appdata dataset, which the nightly
+# replication to archive captures. Hostname-not-IP and the force annotation:
+# apps/download-clients/_nfs-pv/resources.yaml and docs/07; docs/45 records the
+# ext4-on-zvol fallback.
 apiVersion: v1
 kind: PersistentVolume
 metadata:

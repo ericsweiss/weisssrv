@@ -1,45 +1,26 @@
 #!/usr/bin/env python3
-"""Assert the LIVE cluster imposes no CPU limits (docs/33-autoscaling.md).
-
-`scripts/check-hpa-vpa-invariant.py` proves the policy holds in *git*; that is
-not the same as it holding in the *cluster*. Three ways a CPU limit reaches a
-live pod without appearing in git:
-  1. SSA co-ownership by a retired field manager — a controller dropping the
-     field from its OWN fieldset cannot delete a field another manager owns;
-  2. a Helm chart default the values file never mentions (map-merge keeps it);
-  3. an admission mutation (LimitRange defaults, a mutating webhook).
-
-None is visible to a static lint, so this check reads the cluster instead.
-
-Input: `kubectl get pods -A -o json` on stdin (keeps the logic unit-testable
-with no cluster). Exit 1 and list the offenders if any container — init,
-regular or ephemeral — declares a CPU limit.
-
-It also reports the OPPOSITE drift, on memory: a limit git declares that the
-live pod never got. A mutating VPA rewrites resources at pod ADMISSION, so a pod
-keeps the pair it was admitted with for its whole lifetime — a new memory limit
-(or a flipped `controlledValues`) on an `Initial`-tier VPA updates the template
-while every running pod keeps the old ceiling. The fix is a `kubectl rollout
-restart`, which is why this half only WARNS and never changes the exit code:
-nothing in the reconcile loop clears it.
-
-Feed the workload templates in alongside the pods to enable it — the check is
-skipped (with a note) when the input holds pods only. Feed the VPAs in too:
-where an ACTIVE VPA controls a container's limits (`controlledValues:
-RequestsAndLimits`, which is also the API default), the live limit is SUPPOSED to
-diverge from the template — the updater ratio-scales it with each request
-revision — so those containers are excluded from drift reporting rather than
-reported as findings nobody can fix.
-
-  kubectl get pods -A -o json | python3 scripts/check-live-cpu-limits.py
-  kubectl get pods,deployments,statefulsets,daemonsets,verticalpodautoscalers \\
-    -A -o json | python3 scripts/check-live-cpu-limits.py
+"""Assert the live cluster imposes no CPU limits, and warn on memory limits a
+pod was never admitted with. Reads `kubectl get ... -o json` on stdin.
+Invocations and the exit contract: weisssrv-lib docs/SCRIPTS.md.
 """
 from __future__ import annotations
 
-import json
 import sys
+from pathlib import Path
 from typing import NamedTuple
+
+_HERE = str(Path(__file__).resolve().parent)
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
+try:
+    from gate_common import load_live_items  # noqa: E402  (from this script's own directory)
+except ImportError:
+    print(
+        "ERROR: gate_common.py must be vendored beside this gate "
+        "(see scripts/vendorable-paths.yml)", file=sys.stderr,
+    )
+    raise SystemExit(2) from None
 
 # Containers permitted a live CPU limit despite the repo-wide policy, as
 # "namespace/pod-name-prefix/container". Empty by design — an entry here is a
@@ -139,9 +120,8 @@ def _template_containers(workload: dict) -> list[dict]:
 def _matches(workload: dict, pod: dict) -> bool:
     """A pod belongs to a workload when the workload's selector covers its labels.
 
-    Deliberately label-based rather than ownerReference-based: a pod from a
-    SUPERSEDED ReplicaSet still matches, and that is exactly the stale pod this
-    check is looking for.
+    Label-based rather than ownerReference-based, so a pod from a superseded
+    ReplicaSet still matches.
     """
     selector = ((workload.get("spec") or {}).get("selector") or {}).get("matchLabels") or {}
     if not selector:
@@ -151,13 +131,10 @@ def _matches(workload: dict, pod: dict) -> bool:
 
 
 def _vpa_limit_policies(vpas: list[dict]) -> dict[tuple[str, str, str], dict]:
-    """-> {(namespace, target kind, target name): {containerName: policy}}.
+    """Index active VPAs as {(namespace, kind, name): {containerName: policy}}.
 
-    Only ACTIVE VPAs are indexed: `updateMode: Off` is recommendation-only and
-    never rewrites a pod, so a workload under one drifts for the ordinary
-    (reportable) reason. A VPA with no `containerPolicies` at all still controls
-    every container, hence the wildcard default seeded before the explicit
-    entries overlay it.
+    `updateMode: Off` is recommendation-only and is skipped. The wildcard entry
+    covers a VPA declaring no containerPolicies.
     """
     index: dict[tuple[str, str, str], dict] = {}
     for vpa in vpas:
@@ -175,12 +152,10 @@ def _vpa_limit_policies(vpas: list[dict]) -> dict[tuple[str, str, str], dict]:
 
 
 def _limits_are_vpa_controlled(policies: dict, container: str | None) -> bool:
-    """Does the VPA rewrite this container's LIMITS at admission?
+    """Does the VPA rewrite this container's limits at admission?
 
-    An exact containerName policy wins over the wildcard, exactly as the VPA
-    admission controller resolves it. `controlledValues` is absent far more often
-    than it is set, and its API default is RequestsAndLimits — so absent means
-    controlled, not uncontrolled.
+    An exact containerName policy wins over the wildcard. An absent
+    `controlledValues` means controlled: its API default is RequestsAndLimits.
     """
     policy = policies.get(container)
     if policy is None:
@@ -251,17 +226,13 @@ limit they were admitted with. Restart the workload to pick up the declared one:
 
 
 def main() -> int:
-    try:
-        payload = json.load(sys.stdin)
-    except json.JSONDecodeError as exc:
-        sys.exit(f"Failed to parse `kubectl get pods -o json` input: {exc}")
-    items = payload.get("items") if isinstance(payload, dict) else payload
-    if not isinstance(items, list):
-        sys.exit("Input is not a pod list (expected `kubectl get pods -A -o json`)")
+    # Exit 2 is "the gate could not inspect its subject" — an operator error on
+    # the left of the pipe, never a clean tree and never a violation. The shared
+    # loader owns that arm, including the valid-but-empty item list.
+    items = load_live_items(what="pods")
 
     # A single-type `kubectl get pods` strips `kind` from each item; asking for
     # several types keeps it. So an item without a kind is a pod.
-    items = [i for i in items if isinstance(i, dict)]
     pods = [i for i in items if i.get("kind") in (None, "Pod")]
     workloads = [i for i in items if i.get("kind") in WORKLOAD_KINDS]
     vpas = [i for i in items if i.get("kind") == VPA_KIND]
@@ -270,9 +241,9 @@ def main() -> int:
     if violations:
         print(
             "Live CPU-limit policy violated — these containers are running with a "
-            "CPU limit that the repo does not declare (docs/33-autoscaling.md). "
-            "CFS throttling hurts tail latency and, on a VPA-managed workload, the "
-            "limit shrinks with every request revision:",
+            "CPU limit that the repo does not declare. CFS throttling hurts tail "
+            "latency and, on a VPA-managed workload, the limit shrinks with every "
+            "request revision:",
             file=sys.stderr,
         )
         print("\n".join(violations), file=sys.stderr)
@@ -294,7 +265,7 @@ def main() -> int:
         print(
             "WARNING: live memory limits diverge from their workload templates — "
             "these pods were admitted before the current commit and a mutating VPA "
-            "froze the old pair (docs/33 § Live drift):",
+            "froze the old pair:",
             file=sys.stderr,
         )
         print("\n".join(drift.lines), file=sys.stderr)

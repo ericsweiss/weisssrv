@@ -34,23 +34,22 @@ The `build-hermes-agent` CI job (`.gitlab-ci.yml`) does both stages.
 
 ## Pins (`ansible/inventories/prod/group_vars/all.yml`)
 
-- **`hermes_version`** — the upstream **release tag** (e.g. `v2026.7.7.2`, which
-  is release `0.18.2`). Used verbatim as `git clone --branch` and as the built
-  image tag.
+- **`hermes_version`** — the upstream **release tag**, used verbatim as `git
+  clone --branch` and as the built image tag.
 - **`hermes_git_sha`** — the immutable commit the tag must resolve to. The build
   refuses to run if `git clone --branch hermes_version` resolves elsewhere,
   defending against a moved/compromised upstream tag. Bump in lockstep with
   `hermes_version`.
 - **`hermes_image_version`** — the tag the **cluster actually pulls**, always
   `<hermes_version>-r<N>`. The `-rN` local revision exists because the image is
-  upstream *plus* the reviewed `patches/`: a patch change with no upstream bump
-  still has to produce a new tag, or the nodes' `IfNotPresent` cache keeps
-  serving the unpatched image. Bump `-rN` when the patches change; reset to
+  upstream *plus* the baked CLIs and any reviewed `patches/`: a local change with
+  no upstream bump still has to produce a new tag, or the nodes' `IfNotPresent`
+  cache keeps serving the old image. Bump `-rN` on any local change; reset to
   `-r1` on a `hermes_version` bump. CI hard-fails the build if the prefix does
   not match `hermes_version`, so the two cannot drift.
 - **`hermes_codex_version`** — the OpenAI Codex CLI version baked in by the
-  wrapper (e.g. `0.144.5`; requires `>= 0.130.0` for the Hermes runtime). Bumped
-  independently of the Hermes release.
+  wrapper; requires `>= 0.130.0` for the Hermes runtime. Bumped independently of
+  the Hermes release.
 - **`hermes_claude_version`** — the Claude Code CLI version baked in alongside
   Codex (`npm i -g @anthropic-ai/claude-code@<version>`) for the coding-delegate
   path. Bumped independently.
@@ -108,11 +107,11 @@ and runbooks.
 ## Local patches (`patches/*.patch`)
 
 Applied by `build-hermes-agent` to the SHA-verified upstream tree before the
-build (`git apply -p1`, loud failure on drift). Each patch documents the
-upstream version it targets; **re-verify every patch on a hermes version
-bump** and drop any that upstreamed.
+build (`git apply -p1`, loud failure on drift). **The directory carries no
+patches right now** — [`patches/README.md`](patches/README.md) holds the naming
+and re-verification rules.
 
-- `0001-hindsight-manual-retain-async.patch` — the manual `hindsight_retain`
-  tool path omitted `retain_async`, running synchronously against minutes-long
-  CPU extraction and blowing Hermes's 120s tool timeout; the patch honors the
-  configured flag (default async) like the automatic retention path.
+Only files in the Hermes repo are patchable here. The `hindsight` memory
+provider is a plugin Hermes installs at runtime onto the data volume, so a fix
+for it is an upstream change in `vectorize-io/hindsight`, never a patch.
+See `docs/37-hermes.md` § Memory backend.

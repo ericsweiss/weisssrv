@@ -1,21 +1,11 @@
 ---
-# Platform Traefik middlewares, referenced by IngressRoutes in the configs,
-# controllers, observability and apps stages. They live here (not in
-# apps/vm-ingress) so they exist before the later stages: a missing middleware
-# fails closed — Traefik disables the router and the route 404s until it
-# reconciles. Middlewares used only by apps stay in apps/vm-ingress/middleware.yaml.
+# Platform Traefik middlewares, referenced by IngressRoutes in the later stages. They
+# live here so they exist first: a missing middleware fails closed and the route 404s.
+# Middlewares used only by apps stay in apps/vm-ingress/middleware.yaml.
 
-# IP allowlist for internal-only services (homelab LAN + Home VLAN + Tailscale +
-# in-cluster pods).
-# The pod CIDR is included because traefik-internal runs
-# externalTrafficPolicy: Local, so in-cluster callers (e.g. blackbox-exporter
-# probing https://git.esweiss.com) arrive with a pod source IP. That CIDR is
-# routable only inside the CNI overlay, so it cannot be spoofed from outside.
-# The Home VLAN is a separate UniFi zone (docs/46) whose devices are the ones
-# these routes exist for — phones, laptops, TVs — so it is allowlisted here even
-# though nothing this repo manages lives on it. Every other VLAN (IoT, Guest,
-# Work) is deliberately absent: the gateway's inter-zone deny is the first gate,
-# this list the second.
+# IP allowlist for internal-only services: homelab LAN, Home VLAN, Tailscale and
+# the pod CIDR (traefik-internal runs externalTrafficPolicy: Local, so in-cluster
+# callers arrive with a pod source IP). Other VLANs stay out by design (docs/46).
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:
@@ -30,22 +20,12 @@ spec:
       - ${cluster_pod_cidr}       # K3s pod CIDR (see k3s_cluster_cidr in group_vars)
 
 ---
-# Stricter allowlist. For routes whose only gates are this list plus the
-# backend's own login, where anything else reaching them is a real escalation —
-# 1Password Connect, and the router/AdGuard appliance UIs that have no
-# forward-auth.
-#
-# It is strict in TWO directions, and both matter:
-#   - no pod CIDR, so an in-cluster workload cannot reach these routes; and
-#   - the Home VLAN enters as the 10.0.20.8/29 ADMIN BLOCK, not the whole /24.
-#     Traefik proxies from a k3s node, which is inside `admin_lan` — so this
-#     list is the only thing standing between a Home-VLAN device and the
-#     appliance UIs, and admitting the whole VLAN would hand them to every
-#     phone, TV and guest laptop that knows the house PSK. The /29 is exactly
-#     what the Proxmox firewall's `admin_lan` set, the sshd `from=` restrictions
-#     and fail2ban's ignoreip carry, so the two layers say the same thing.
-# The admin workstation lives in that block by UniFi DHCP reservation (docs/46);
-# any other admin device reaches these routes over Tailscale.
+# CRITICAL: stricter allowlist for routes gated only by this list plus the backend's
+# own login. No pod CIDR, and the Home VLAN enters as the admin /29 mirroring the
+# Proxmox admin_lan set (docs/11, docs/46). Over Tailscale these names must resolve to
+# the internal VIP via the apps/tailnet-dns override zone, so the request arrives
+# subnet-routed into the LAN range; the mesh CNAME path arrives with a pod source IP
+# and this list rejects it.
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:
@@ -55,8 +35,8 @@ spec:
   ipAllowList:
     sourceRange:
       - ${cluster_lan_cidr}     # Local LAN
-      - ${cluster_home_admin_cidr}   # Home VLAN admin block (10.0.20.8/29 — docs/46)
-      - ${cluster_tailnet_cidr}      # Tailscale CGNAT range
+      - ${cluster_home_admin_cidr}   # Home VLAN admin block (docs/46)
+      - ${cluster_tailnet_cidr}      # Tailscale CGNAT — matches only unSNAT'd mesh traffic
 
 ---
 # HSTS for public services. Chain security-headers alongside it on WAN routes.
@@ -71,10 +51,8 @@ spec:
     stsIncludeSubdomains: true
 
 ---
-# Baseline response headers for WAN-facing routes, chained after hsts-header.
-# Kept separate from hsts-header so a route that must be framed (or needs a
-# looser referrer policy) can take HSTS without this. frameDeny is safe for the
-# current consumers — none embeds itself in an iframe; an app that does needs
+# Baseline response headers for WAN-facing routes, chained after hsts-header. Separate
+# so a route that must be framed can still take HSTS. An app that embeds itself needs
 # its own middleware with customFrameOptionsValue: SAMEORIGIN.
 apiVersion: traefik.io/v1alpha1
 kind: Middleware

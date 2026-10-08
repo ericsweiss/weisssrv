@@ -23,7 +23,7 @@ Tailscale is deployed via the `tailscale` Ansible role on all Proxmox hosts.
 
 ```bash
 # Deploy Tailscale to all Proxmox hosts
-ansible-playbook ansible/playbooks/site.yml --tags tailscale
+ansible-playbook -i ansible/inventories/prod ansible/playbooks/site.yml --tags tailscale
 ```
 
 ### Manual Installation (if needed)
@@ -81,6 +81,7 @@ tailscale_enabled: true
 tailscale_accept_routes: false  # Prevents routing loops; hosts should not accept routes
 tailscale_accept_dns: false  # We use our own DNS
 tailscale_advertise_routes: []  # Only subnet routers (Proxmox hosts) advertise routes
+tailscale_require_authkey: true  # A pending join with no auth key fails the play
 
 # The auth key is not an inventory value: the `op://Homelab/Tailscale Auth
 # Key/credential` reference lives in the Taskfile task's env: block (mirrored by
@@ -104,7 +105,22 @@ required IP forwarding via a role-owned sysctl drop-in
 (`/etc/sysctl.d/99-tailscale-ip-forward.conf`) plus a tailscaled systemd
 drop-in (`ExecStartPost` re-applies `net.ipv4.ip_forward=1`, since Proxmox
 bridge/network init can reset it after systemd-sysctl at boot). When
-`tailscale_advertise_routes` is empty the role removes both drop-ins.
+`tailscale_advertise_routes` is empty the role removes both of those drop-ins.
+
+The role also installs a second tailscaled drop-in,
+`bridge-masquerade-fix.conf`, whose `ExecStartPost` runs
+`/usr/local/sbin/tailscale-bridge-masq-fix`. It keeps a bridge-local `ACCEPT`
+rule above Tailscale's `ts-postrouting` jump in `nat POSTROUTING`, so a guest
+running on the subnet router itself is not double-masqueraded. Without it, VMs
+and containers on that host — including the kube-vip API VIP `10.0.10.161` — are
+unreachable over Tailscale while guests on the other hosts work. Check with
+`sudo iptables -t nat -S POSTROUTING`, expecting the `ACCEPT` directly above the
+`-j ts-postrouting` jump.
+
+`tailscale-bridge-masq-fix.timer` owns the rule and re-asserts it every minute,
+so it survives a tailscaled restart or a firewall reload that flushes `nat`. The
+`ExecStartPost` on tailscaled covers the gap at boot before the timer's first
+run. The mechanism is documented in the `weisssrv.infra.tailscale` role README.
 
 An advertised route is only usable once **approved** in the tailnet. The
 `autoApprovers` block in `terraform/tailscale/policy.hujson` auto-approves any
@@ -118,28 +134,16 @@ Tailscale SSH rules, tag owners, and subnet-route auto-approvers — as
 `policy.hujson`, mirroring the `terraform/cloudflare` pattern (GitLab HTTP state
 backend, 1Password-injected credentials).
 
-**Least-privilege lockdown — applied.** `policy.hujson` carries the tag/port-scoped
-policy below, which replaced the earlier non-breaking baseline
-(`autogroup:member -> *:*` full mesh + root SSH). The supervised apply has
-landed: the live tailnet ACL matches `policy.hujson` and `tailscale-drift-plan`
-runs clean. What remains is the **host tagging** half — no Proxmox host reports
-`tag:subnet-router` yet (`tailscale status --json` shows `Self.Tags: null`), so
-routes are still approved via the owner entry in `autoApprovers.routes` rather
-than the tag. See `terraform/tailscale/README.md` for the procedure and docs/16
-for status.
+`policy.hujson` carries a tag- and port-scoped least-privilege policy:
+`group:admins` (not `autogroup:member`) is the `src` of every rule, the six
+Proxmox hosts carry `tag:subnet-router` (set from `tailscale_advertise_tags` in
+`group_vars/proxmox.yml`), and `autoApprovers.routes` approves `10.0.10.0/24`
+from that tag alone, which is what makes subnet-router failover approval-free.
+Tailscale SSH runs `action check` with `root` dropped.
 
-In outline: `group:admins` (not `autogroup:member`) is the `src` of every rule;
-`tag:subnet-router` is the Proxmox hosts' tag; four rules cover the hosts' own
-services, LAN access via subnet routing on the union of user-facing service
-ports, an SSH network gate, and `group:admins → tag:k8s:53,443` (the
-operator-registered `ts-dns` / `traefik-tailnet` devices); `autoApprovers.routes`
-keeps subnet-router failover approval-free; and Tailscale SSH runs `action check`
-with root dropped.
-
-**[`terraform/tailscale/README.md`](../terraform/tailscale/README.md) is the
-authoritative rule-by-rule reference** — per-port justification, the staged apply
-runbook, and the break-glass procedure all live there, and `policy.hujson` is the
-source of truth for the policy itself.
+[`terraform/tailscale/README.md`](../terraform/tailscale/README.md) is the
+authoritative rule-by-rule reference; `policy.hujson` is the source of truth for
+the policy itself.
 
 - **Credentials**: the `Tailscale OAuth` 1Password item (fields `client id`
   and `credential`) holds an OAuth client scoped to `acl` **and `dns`** (both
@@ -148,22 +152,24 @@ source of truth for the policy itself.
 - **Apply is supervised**: a wrong policy can sever tailnet connectivity and
   Tailscale SSH, so `terraform apply` here is a deliberate operator step (a
   read-only drift `plan` in CI is fine). Wrappers: `task
-  terraform:tailscale-{init,plan,apply}`. Follow the staged runbook (pre-apply
-  nonroot-SSH checklist, tag adoption, verification, break-glass) in
-  `terraform/tailscale/README.md`.
-- **Tagging order**: apply the ACL first (defines `tagOwners` + the tag-based
-  route auto-approver), then run the tailscale role so the hosts adopt the tag.
-  First-time tag adoption on a running user-owned host needs a supervised
-  reauthentication.
+  terraform:tailscale-{init,plan,apply}`. Follow
+  `terraform/tailscale/README.md` § Supervised apply (maintenance window):
+  pre-apply nonroot-SSH checklist, apply, verification, break-glass.
+- **Tagging order**: apply the ACL before tagging hosts — `tagOwners` and the
+  tag-based route auto-approver must exist first. First-time tag adoption on a
+  running user-owned host needs a supervised reauthentication.
 
 ## Internal web apps over Tailscale (Kubernetes operator)
 
-Subnet routing reaches plain LAN hosts (SSH, Proxmox UI, AdGuard, the VMs by IP)
-but **cannot** reach the k3s Traefik ingress VIP (`10.0.10.101`): that VIP is a
-MetalLB L2 address whose backing k3s node has no route back to the tailnet CGNAT
-range, so the return path of a subnet-routed connection is dropped and every
-`*.esweiss.com` web app times out from a remote client. The fix puts the ingress
-directly on the tailnet instead of routing to it.
+Subnet routing already reaches everything on the LAN, including the k3s Traefik
+ingress VIP `10.0.10.101` — the subnet router SNATs routed traffic, so the
+backing node sees a `10.0.10.0/24` source and needs no route back to the tailnet
+CGNAT range. What subnet routing does not give is name-based access: a remote
+client would need a per-name DNS override for every `*.esweiss.com` app, and the
+path depends on a healthy subnet router. Putting the ingress directly on the
+tailnet fixes both — split DNS resolves the names, and the mesh path does not
+depend on any one Proxmox host. The subnet-routed path to `10.0.10.101` remains
+the fallback when the operator proxies are down.
 
 **Components** (all Flux-managed; versions pinned in `all.yml`):
 
@@ -290,17 +296,16 @@ If DNS resolution doesn't work over Tailscale:
 - **Operator User**: Only `eric` user can manage Tailscale on each host
 - **No Exit Node**: Hosts do not route internet traffic through the homelab
 - **Least privilege**: the codified tailnet ACL is tag/port-scoped (no `*:*`
-  full mesh) and applied, so a single compromised tailnet device has no flat
-  lateral reach — see `terraform/tailscale/README.md`. The remaining gap is host
-  tagging: routes are still approved via the owner entry in
-  `autoApprovers.routes` rather than `tag:subnet-router`
+  full mesh) and applied; the six Proxmox hosts carry `tag:subnet-router` and
+  route approval rides the tag only, so an untagged device cannot self-approve
+  the LAN route — see `terraform/tailscale/README.md`
 - **ACL changes**: review `policy.hujson` against the live Admin-console ACL
   before any supervised apply (see `terraform/tailscale/README.md`)
 
 ## Related documentation
 
 - [terraform/tailscale/README](../terraform/tailscale/README.md) — the authoritative rule-by-rule ACL reference
-- [docs/16 — Next steps](16-next-steps.md) (host-tagging status)
+- [docs/16 — Next steps](16-next-steps.md)
 - [docs/11 — Firewall](11-firewall.md) (`admin_ts` IPSet)
 - [docs/08 — DNS](08-dns.md) (tailnet split DNS)
 

@@ -1,14 +1,8 @@
 ---
-# Shared static NFS PV+PVC pair — a Kustomize Component carrying the boilerplate
-# every downloads config volume would otherwise copy-paste, xprtsec=tls
-# included, so a new app cannot silently mount plaintext. Rationale for each
-# field: resources.yaml.
-#
-# Each per-app overlay (../storage/<app>) lists this component and patches only
-# the per-app differences (PV name/label/capacity/path, PVC name/size/volumeName)
-# via in-place JSON6902 ops. The sonarr/radarr/lidarr overlays additionally
-# INSERT actimeo/lookupcache ahead of xprtsec=tls, so xprtsec stays defined once
-# here.
+# CRITICAL: shared static NFS PV+PVC pair for the downloads config volumes,
+# defining xprtsec=tls once so no app mounts plaintext. Each ../storage/<app>
+# overlay patches only its names, capacity and path via JSON6902 ops, and the
+# arr overlays insert mount options AHEAD of xprtsec. Field notes: resources.yaml.
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 resources:

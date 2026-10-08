@@ -1,8 +1,7 @@
 ---
-# *arr NFS PV/PVC skeleton — extends ../_nfs-pv with what the sonarr/radarr/
-# lidarr config volumes add over the other clients: 10Gi capacity and the NFS
-# attribute-caching mountOptions. Each *arr storage overlay (../storage/<app>)
-# lists this component and patches only the per-app identifiers.
+# *arr NFS PV/PVC skeleton: extends ../_nfs-pv with 10Gi and the mountOptions
+# the config volume needs. That volume holds a WAL-mode SQLite database, so
+# locks stay client-local: one Recreate replica per app is the single writer.
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 components:
@@ -15,9 +14,9 @@ patches:
       - op: replace
         path: /spec/capacity/storage
         value: 10Gi
-      # *arr apps add NFS attribute caching ahead of xprtsec=tls. The test
-      # turns a reordered base list into a loud build failure instead of a
-      # silent insert at the wrong index.
+      # *arr apps add NFS attribute caching and client-local locking ahead of
+      # xprtsec=tls. The `test` ops turn a reordered base list into a loud build
+      # failure instead of a silent insert at the wrong index.
       - op: test
         path: /spec/mountOptions/3
         value: xprtsec=tls
@@ -27,6 +26,12 @@ patches:
       - op: add
         path: /spec/mountOptions/4
         value: lookupcache=positive
+      - op: test
+        path: /spec/mountOptions/5
+        value: xprtsec=tls
+      - op: add
+        path: /spec/mountOptions/5
+        value: local_lock=all
   - target:
       kind: PersistentVolumeClaim
       name: nfs-pvc

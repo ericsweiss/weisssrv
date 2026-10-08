@@ -21,6 +21,9 @@ patches:
       - op: replace
         path: /spec/nfs/path
         value: /appdata/qbittorrent
+      - op: replace
+        path: /spec/claimRef/name
+        value: qbittorrent-config
   - target:
       kind: PersistentVolumeClaim
       name: nfs-pvc

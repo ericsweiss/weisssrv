@@ -1,11 +1,7 @@
 ---
-# Shared downloads IngressRoute skeleton — a Kustomize Component mirroring the
-# _arr / _nfs-pv / _vpn-sidecar pattern. It carries the middleware chain,
-# entryPoints, and tls secret that all seven download-clients routes previously
-# copy-pasted; each per-app overlay (../ingress-routes/<app>) lists this
-# component and patches only the four per-app differences (name, Host(), service
-# name, service port). Home Assistant's SSO-bypass routes stay separate
-# (ingress-routes-ha-bypass.yaml) — different priority + no authentik-auth.
+# Shared downloads IngressRoute skeleton: a Kustomize Component carrying the
+# middleware chain, entryPoints and tls secret. Each ../ingress-routes/<app>
+# overlay patches only name, Host(), service name and service port.
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 resources:

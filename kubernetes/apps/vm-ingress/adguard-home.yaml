@@ -1,15 +1,7 @@
 ---
-# AdGuard Home dashboards, two route flavours per instance (docs/08):
-#   * dns-01/dns-02.esweiss.com — RAW routes, no SSO: AdGuard's own login is the
-#     break-glass path when Authentik or the cluster is degraded. Because that
-#     login is the only gate, they use lan-tailscale-STRICT, which drops the k3s
-#     pod CIDR so in-cluster pods cannot reach the DNS admin UI.
-#   * adguard/adguard-02.esweiss.com — SSO routes: Authentik forward-auth
-#     (dns-admins) via the authentik-auth-basic middleware, which is the only
-#     variant that forwards the injected credential header. Objects live in
-#     terraform/authentik (docs/40).
-# All four share the adguard-home-0X-backend Services over 443/https.
-# IngressRoute for dns-01.esweiss.com (AdGuard Home primary, internal-only)
+# AdGuard Home dashboards over the adguard-home-0X-backend Services: raw dns-0X
+# hosts on lan-tailscale-strict (break-glass, AdGuard's own login), SSO
+# adguard-0X hosts behind authentik-auth-basic forward-auth. docs/08, docs/40.
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:

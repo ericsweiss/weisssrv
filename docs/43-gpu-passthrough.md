@@ -24,6 +24,9 @@ is a **supervised operator window**, never unattended CI.
 
 ## What is codified
 
+The passthrough is live: the card is bound to VM 207, the node advertises
+`nvidia.com/gpu: 4`, and Hindsight offloads to it.
+
 Everything below is in the repo. The **Applied by** column says what actually
 carries each piece to the host or cluster.
 
@@ -33,9 +36,9 @@ carries each piece to the host or cluster.
 | VFIO host prep | `vfio_passthrough` role + `hosts.yml` (`vfio_passthrough_enabled` + `vfio_passthrough_pci_ids`) | `deploy-ansible-proxmox` writes the GRUB drop-in (`intel_iommu=on iommu=pt` + a `vfio-pci.ids=` earliest-bind cmdline) + `/etc/modprobe.d/vfio.conf` (nouveau blacklist + audio/USB softdeps + redundant `vfio-pci ids=`) + `/etc/modules-load.d/vfio-pci.conf` (force-load vfio-pci at boot), rebuilds grub/initramfs, **prints reboot-required. Never reboots.** |
 | Driver + toolkit | `k3s` role `tasks/gpu.yml` (gated `k3s_gpu_node: true`) | Runs only via `task k3s:deploy` (node ops are never CI). Installs `nvidia-open` (NVIDIA CUDA repo) + `nvidia-container-toolkit`. |
 | VM RAM + hostpci | `hosts.yml` VM 207 (`vm_memory: 30720`, `proxmox_vm_hostpci: ["0000:01:00"]`) | **Rebuild only.** `proxmox_vm` applies memory and hostpci at qm-CREATE, so an existing VM is changed by hand — see the runbook below. |
-| Device plugin + RuntimeClass | `infrastructure/controllers/nvidia-device-plugin` | Flux reconciles; DaemonSet has no node until 207 is labelled + toolkit installed (sits waiting, harmless). |
-| GPU offload | `apps/hindsight/deployment.yaml` (CUDA image, `-ngl 99`, `nvidia.com/gpu: 1`, `runtimeClassName: nvidia`) | Flux reconciles; the llama pod goes **Pending** until the GPU is advertised. |
-| Observability | `observability/exporters/dcgm-exporter.yaml` + ServiceMonitor + dashboard + `homelab.gpu` alerts | Flux reconciles; DCGM has no node until 207 is a GPU node. |
+| Device plugin + RuntimeClass | `infrastructure/controllers/nvidia-device-plugin` | Flux-reconciled; the DaemonSet runs on the GPU agent (207) and advertises `nvidia.com/gpu: 4` (time-sliced from the one physical card). |
+| GPU offload | `apps/hindsight/deployment.yaml` (CUDA image, `-ngl 99`, `nvidia.com/gpu: 1`, `runtimeClassName: nvidia`) | Flux-reconciled; the Hindsight llama container runs on 207 holding one `nvidia.com/gpu` slice under `runtimeClassName: nvidia`. |
+| Observability | `observability/exporters/dcgm-exporter.yaml` + ServiceMonitor + dashboard + `homelab.gpu` alerts | Flux-reconciled; DCGM exporter runs on 207 and feeds the GPU dashboard and alerts. |
 
 ## Driver / CUDA compatibility — why nvidia-open (CUDA repo)
 
@@ -55,25 +58,25 @@ GPU — the 1660 Ti (TU116, Turing) has a GSP, so it is supported — and the
 CUDA-repo `nvidia-open` is CUDA-12.8-capable.
 
 The DKMS module build + `nvidia-smi` + CUDA init are still **validated in the
-window** (step 8) — a first driver install always needs one VM reboot to load
+window** (step 6) — a first driver install always needs one VM reboot to load
 the freshly-built module. **If the open kernel module ever fails to initialize
 on this specific card**, the proprietary `cuda-drivers` metapackage from the
 *same* CUDA repo is the drop-in alternative (`apt-get install cuda-drivers`,
 then reboot).
 
-## Operational window runbook
+## Rebuild / re-attach runbook
 
-Preconditions: the in-cluster manifests are merged + reconciled (device plugin,
-RuntimeClass, DCGM, the CUDA Hindsight deployment — all waiting), and
-`deploy-ansible-proxmox` has run (ARC cap + VFIO config staged on prec-01). Never
-run this while a `deploy-*` pipeline is in flight (serialize).
+This applies only to a host rebuild, a VM 207 rebuild, or a card swap — the
+initial bring-up is done.
 
-1. **Baseline (optional).** Run one Hindsight retain/query and record CPU tok/s
-   for a before/after (the CPU baseline is ~13 tok/s).
-2. **Remove any legacy manual ARC cap** on prec-01 so the role's
-   `/etc/modprobe.d/zfs.conf` is the single source (the host historically carried
-   a hand-set `zfs_arc_max`). Confirm `cat /etc/modprobe.d/zfs.conf` shows 8G.
-3. **Preflight etcd, then evacuate Home Assistant.** Confirm etcd is 3/3
+Preconditions: the in-cluster manifests are reconciled (device plugin,
+RuntimeClass, DCGM, the CUDA Hindsight deployment), and `deploy-ansible-proxmox`
+has run (ARC cap + VFIO config staged on prec-01). Never run this while a
+`deploy-*` pipeline is in flight (serialize).
+
+1. **Preflight etcd, then evacuate Home Assistant.** Confirm `cat
+   /etc/modprobe.d/zfs.conf` on prec-01 shows the role-managed 8G ARC cap while
+   you are there. Confirm etcd is 3/3
    (`task k3s:status`): the prec-01 server (227) is one of the three, and a
    3-node quorum tolerates exactly one server down, so losing it for the host
    reboot is safe (sequence the window so *only* prec-01's guests are affected).
@@ -86,12 +89,12 @@ run this while a `deploy-*` pipeline is in flight (serialize).
    it lands and is healthy on the target before rebooting. (Skip this only if HA
    downtime for the whole reboot window is acceptable — then expect `vm:154` down
    until prec-01 is back.)
-4. **Drain the agent.** `kubectl cordon k3s-agt-prec-01` then
+2. **Drain the agent.** `kubectl cordon k3s-agt-prec-01` then
    `kubectl drain k3s-agt-prec-01 --ignore-daemonsets --delete-emptydir-data`.
    Hindsight (Recreate/RWO) goes down — Hermes degrades to built-in memory
    (accepted).
-5. **Reboot the host.** With Home Assistant already migrated off (step 3) and the
-   agent drained (step 4), `qm stop 207`, then reboot pve-prec-01. On boot, verify
+3. **Reboot the host.** With Home Assistant already migrated off (step 1) and the
+   agent drained (step 2), `qm stop 207`, then reboot pve-prec-01. On boot, verify
    VFIO claimed the card: `lspci -nnk -s 01:00 | grep -i 'Kernel driver'` →
    `vfio-pci` on **all four** functions (the `vfio_passthrough` role binds vfio-pci
    at the earliest point via the `vfio-pci.ids=` kernel cmdline, force-loads it via
@@ -100,31 +103,36 @@ run this while a `deploy-*` pipeline is in flight (serialize).
    still shows a host driver, confirm the cmdline `vfio-pci.ids=` landed
    (`cat /proc/cmdline`) and the modules-load.d + modprobe.d files made it into the
    initramfs (the role runs `update-initramfs -u`; re-run it + reboot if so).
-6. **Attach GPU + grow RAM** (VM stopped):
+4. **Attach GPU, grow RAM and grow the root disk** (VM stopped). `hosts.yml`
+   codifies the root disk at 128G (`proxmox_vm_disk_size`), which Ansible does
+   not shrink or grow on an existing VM:
    ```bash
    qm set 207 --memory 30720 --hostpci0 0000:01:00
+   qm resize 207 scsi0 128G
    qm start 207
+   # in the guest, online — no reboot, no GPU detach, no drain
+   sudo growpart /dev/sda 1 && sudo resize2fs /dev/sda1
    ```
-7. **Install the driver in the guest.** `task k3s:deploy` limited to the prec
+5. **Install the driver in the guest.** `task k3s:deploy` limited to the prec
    agent (installs `nvidia-open` + `nvidia-container-toolkit`), then **reboot
    the VM once** to load the DKMS kernel module. Verify in-guest:
    `nvidia-smi` reports the 1660 Ti; `getent hosts` / `ip link` confirm the NIC
    is still `eth0` (i440fx keeps the name).
-8. **Validate GPU inference (THE gate).** Uncordon
+6. **Validate GPU inference (THE gate).** Uncordon
    (`kubectl uncordon k3s-agt-prec-01`), `task flux:reconcile`, and confirm:
-   - the device plugin advertises `nvidia.com/gpu: 1` on the node
+   - the device plugin advertises `nvidia.com/gpu: 4` on the node
      (`kubectl describe node k3s-agt-prec-01 | grep nvidia.com/gpu`);
    - the Hindsight pod is Running on prec-01 and the **llama container loaded the
      model on the GPU** (`kubectl logs … -c llama` shows CUDA/offload lines;
      `nvidia-smi` in the guest shows the llama process + VRAM used);
    - DCGM metrics flow (Grafana "GPU (NVIDIA DCGM)" dashboard) and no
      `HindsightGpuOffloadIdle`;
-   - measure tok/s (expect ≥ ~10× the CPU baseline).
+   - measure tok/s (expect ≥ ~10× a CPU-only run).
    **If the llama container crash-loops on a CUDA init error** despite
    `nvidia-smi` reporting the card, the open kernel module is not initializing on
    this GPU → swap to the proprietary `cuda-drivers` metapackage from the same
    CUDA repo (`apt-get install cuda-drivers`, reboot) and re-check.
-9. **Reconcile against the baseline.** `task flux:status` all READY, nodes 9/9,
+7. **Reconcile against the baseline.** `task flux:status` all READY, nodes 9/9,
    endpoint sweep matches, etcd 3/3, HA guests settled.
 
 ### DCGM device visibility caveat
@@ -135,11 +143,13 @@ On a single-GPU node with the device plugin active, the container toolkit needs
 `NVIDIA_VISIBLE_DEVICES=all` to inject the GPU. The k3s role's `tasks/gpu.yml`
 now sets this automatically (`nvidia-ctk config --set … --in-place`, idempotent)
 right after installing the toolkit, so it should already be `true` when you reach
-step 8. **Still verify in the window**: without it DCGM runs and its target reads
+step 6. **Still verify in the window**: without it DCGM runs and its target reads
 `up==1` but emits **zero** `DCGM_FI_DEV_*` series — a silent telemetry loss the
 `GpuTelemetryMissing` alert (below) now backstops. If metrics are absent, confirm
 the flag (`grep accept-nvidia-visible-devices /etc/nvidia-container-runtime/config.toml`)
-and restart the DaemonSet (`kubectl -n observability rollout restart ds/dcgm-exporter`).
+and restart the DaemonSet (`kubectl -n observability delete pod -l
+app.kubernetes.io/name=dcgm-exporter`), per docs/29 § Restarting a Flux-managed
+workload.
 (This never affects the llama container, which allocates the GPU via
 `nvidia.com/gpu`.)
 
@@ -192,7 +202,13 @@ them: every 6 hours it deletes `Failed`-phase pods labelled
 `app.kubernetes.io/name=hindsight` in the `hindsight` namespace that are older
 than 30 minutes, via a namespaced `pods: list,delete` Role. It never selects a
 `Running`/`Pending` pod, and it keeps pods whose reason is `Evicted`/`OOMKilled`
-(resource-pressure evidence). To clear them by hand instead:
+(resource-pressure evidence).
+
+Its script, `hindsight-reaper.py`, sits next to the kustomization rather than in
+`scripts/`, because kustomize refuses `configMapGenerator` sources outside the
+kustomization root. Its tests are `scripts/test_hindsight_reaper.py`.
+
+To clear them by hand instead:
 
 ```bash
 # Label-scoped like the reaper. Note this DOES also remove Evicted/OOMKilled
@@ -229,6 +245,28 @@ the pod Pending until the GPU is reattached. If GPU binding cannot be made to
 work after two systematic-debugging passes, roll back the hostpci, keep the RAM
 raise, uncordon, and report — do **not** leave the node cordoned.
 
+### Releasing the host drop-ins
+
+The `vfio_passthrough` role reconciles both ways. With `vfio_passthrough_enabled`
+false or unset, its disabled arm removes the three files it writes:
+
+- `/etc/default/grub.d/vfio-iommu.cfg`
+- `/etc/modprobe.d/vfio.conf`
+- `/etc/modules-load.d/vfio-pci.conf`
+
+Those are the conventional VFIO names, not role-namespaced, so ownership is
+decided by a marker substring inside the file. A drop-in carrying no marker is
+reported and left in place by design. A file written by a role version from
+before the marker shipped is removed by hand.
+
+Removal is staged exactly like the writes: grub and the initramfs are rebuilt,
+nothing is rebooted, and the host releases the card on its next boot.
+
+`site.yml` composes the role on every Proxmox host, with
+`vfio_passthrough_enabled` set only on pve-prec-01, so every other host runs the
+disabled arm. Read the play output for a "left in place" report and clear those
+files by hand.
+
 ## Machine type (future work)
 
 Proper PCIe passthrough (`--machine q35 --hostpci0 …,pcie=1`) is intentionally
@@ -241,8 +279,7 @@ is the safe, sufficient path for a 6GB Turing.
 
 ## Design constraints (do not undo these)
 
-Four non-obvious constraints hold this setup together. Each was expensive to
-discover and each fails silently if reverted.
+Four non-obvious constraints hold this setup together; each fails silently if reverted.
 
 - **`cuda-keyring`, not a standalone `.pub`.** The debian13 CUDA repo's
   `InRelease` is signed by a key (`02182E60…8793F200`) NVIDIA ships **only** in

@@ -1,10 +1,9 @@
 ---
-# wg-easy — WireGuard VPN + admin UI (internet-exit only; see docs/38 for the
-# two-layer no-LAN egress security model). Image tag has no leading "v"
-# (upstream container convention); the pin is the wg_easy_version key.
-#
-# replicas:1 + Recreate: the SQLite state on NFS tolerates exactly one writer,
-# and only one node may own the WireGuard listener behind the MetalLB VIP.
+# wg-easy: WireGuard VPN and admin UI, internet-exit only (docs/38). The image
+# tag has no leading "v"; the pin is the wg_easy_version key.
+
+# CRITICAL: replicas 1 with Recreate. The SQLite state on NFS tolerates exactly
+# one writer, and only one node may own the WireGuard listener behind the VIP.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -24,19 +23,22 @@ spec:
       labels:
         app.kubernetes.io/name: wg-easy
     spec:
-      # HARD pin to the ingress agents: with ETP Local, MetalLB announces the
-      # VIP from the pod's node, and only those agents carry the
-      # sg-k3s-ingress-pub group that admits the WAN :51820/udp forward.
-      # Selecting on the label excludes the NAS agent by construction — a soft
-      # avoid could land there and silently black-hole the endpoint.
+      # HARD pin to the ingress agents: with ETP Local, MetalLB announces the VIP
+      # from the pod's node, and only those agents carry sg-k3s-ingress-pub, which
+      # admits the WAN :51820/udp forward. A soft avoid would black-hole it.
       nodeSelector:
         ${cluster_node_label_domain}/ingress: "true"
       # wg-easy is not a Kubernetes-integrated app; it needs no API access.
       automountServiceAccountToken: false
-      # Public resolvers for the POD itself, deliberately NOT kube-dns: it only
-      # resolves public names, and dropping the kube-dns allow from the egress
-      # policy is what stops forwarded client traffic reaching internal DNS —
-      # see networkpolicy.yaml for the no-LAN model.
+      # k3s does not enable SeccompDefault, so this is what keeps the container
+      # off Unconfined. The privileged sysctl initContainer runs Unconfined
+      # regardless, and NET_RAW is a capability, not a seccomp, check.
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      # Public resolvers for the POD itself, deliberately NOT kube-dns: the
+      # missing kube-dns egress allow is what keeps forwarded client traffic off
+      # internal DNS (networkpolicy.yaml).
       dnsPolicy: None
       dnsConfig:
         nameservers:
@@ -46,17 +48,8 @@ spec:
           - name: ndots
             value: "1"
       initContainers:
-        # The pod network namespace starts with ip_forward=0. WireGuard needs
-        # forwarding + src_valid_mark (fwmark-routed return path) to relay client
-        # traffic out eth0. These are namespaced sysctls, so setting them in an
-        # initContainer that shares this pod's netns persists them for the main
-        # container. Done here — NOT via pod securityContext.sysctls — because
-        # the k3s kubelet does not allowlist these as unsafe sysctls
-        # (group_vars/k3s.yml k3s_kubelet_args), so a pod-level sysctl would be
-        # rejected SysctlForbidden. This keeps the change pod-local instead of a
-        # fleet-wide kubelet allowed-unsafe-sysctls change. privileged (the ns is
-        # PSA privileged) guarantees /proc/sys/net is writable; the container
-        # exits immediately.
+        # Sets the pod-netns sysctls WireGuard forwarding needs. Not pod-level
+        # securityContext.sysctls: the k3s kubelet does not allowlist them (docs/38).
         - name: sysctl
           image: busybox:${busybox_version}
           command: ["/bin/sh", "-c"]
@@ -112,8 +105,7 @@ spec:
               value: "fdcc:ad94:bacf:61a3::/64"
             # Full-tunnel: every client routes ALL v4 traffic through the VPN.
             # The no-LAN guarantee is enforced server-side by the egress
-            # NetworkPolicy (networkpolicy.yaml), not by trusting this client
-            # route.
+            # NetworkPolicy, not by trusting this client route.
             - name: INIT_ALLOWED_IPS
               value: "0.0.0.0/0"
             # Runtime config
@@ -138,18 +130,9 @@ spec:
               containerPort: 51821
               protocol: TCP
           securityContext:
-            # drop: [ALL] first, then add back only what wg-quick needs, or the
-            # container silently keeps the runtime's whole default set.
-            #   - NET_ADMIN drives wg0; NET_RAW is required because the image's
-            #     PostUp hooks run iptables in LEGACY mode, which opens a raw
-            #     socket to initialize the nat table (without it wg-quick tears
-            #     wg0 back down).
-            #   - NOT SYS_MODULE: the wireguard module is already loaded on every
-            #     node (flannel wireguard-native), so wg-easy just attaches.
-            #   - NOT DAC_OVERRIDE: the appdata export squashes every client to
-            #     uid 1000, so the server's ACCESS RPC grants root's writes and
-            #     the client-side DAC_OVERRIDE path is never reached.
-            # root is required because wg-easy's entrypoint runs as uid 0.
+            # drop ALL, then add back only what wg-quick needs: NET_ADMIN for wg0,
+            # NET_RAW for the image's iptables-legacy PostUp hooks. Runs as uid 0.
+            # Why SYS_MODULE and DAC_OVERRIDE are not granted: docs/38.
             runAsUser: 0
             runAsGroup: 0
             capabilities:
@@ -165,17 +148,12 @@ spec:
             periodSeconds: 15
             timeoutSeconds: 5
             failureThreshold: 3
-          # NFS-ESTALE self-heal: liveness stats the NFS-backed /etc/wireguard
-          # so a stale or hung handle restarts the pod and it remounts. The UI
-          # keeps answering on :51821 while that state is unreadable, so the
-          # tcpSocket readiness above cannot catch it. Conservative timing so a
-          # brief NFS blip cannot flap-restart.
+          # NFS-ESTALE self-heal: the UI keeps answering on :51821 while the
+          # NFS-backed state is unreadable, so readiness cannot catch a stale
+          # handle. Timing is conservative so a brief NFS blip cannot flap-restart.
           livenessProbe:
             exec:
-              command:
-                - sh
-                - -c
-                - stat /etc/wireguard >/dev/null 2>&1 || exit 1
+              command: ["stat", "/etc/wireguard"]
             initialDelaySeconds: 30
             periodSeconds: 30
             timeoutSeconds: 10
@@ -183,9 +161,9 @@ spec:
           resources:
             requests:
               cpu: 25m
-              memory: 64Mi
+              memory: 192Mi
             limits:
-              memory: 256Mi
+              memory: 384Mi
           volumeMounts:
             - name: config
               mountPath: /etc/wireguard

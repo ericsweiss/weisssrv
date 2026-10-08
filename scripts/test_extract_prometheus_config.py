@@ -1,26 +1,18 @@
-"""Tests for scripts/extract-prometheus-config.py — a local fork of the library
-script (see test_vendored_byte_identity.FORKED).
+"""Tests the local fork of scripts/extract-prometheus-config.py.
 
-What is tested here is the fork's own reason to exist: rules are the UNION of
-the HelmRelease and the standalone PrometheusRule manifests, and a null-valued
-key reaches the script's error path rather than a traceback. The generic
-extraction is covered by the library's suite.
+Covers the fork's own behaviour: rules are the UNION of the HelmRelease and the
+standalone PrometheusRule manifests, and a null-valued key hits the error path.
 """
 from __future__ import annotations
 
-import importlib.util
 import subprocess
 import sys
 from pathlib import Path
 
 import yaml
+from script_loader import load_script
 
-_SPEC = importlib.util.spec_from_file_location(
-    "extract_prometheus_config",
-    Path(__file__).parent / "extract-prometheus-config.py",
-)
-ext = importlib.util.module_from_spec(_SPEC)
-_SPEC.loader.exec_module(ext)  # type: ignore[union-attr]
+ext = load_script("extract-prometheus-config.py")
 
 
 class TestExtractRules:
@@ -127,6 +119,24 @@ class TestPrometheusRuleSource:
         assert ext.extract_rules(out, empty_release, rules_dir) == 0
         assert len(yaml.safe_load(out.read_text())["groups"]) == 1
 
+    def test_a_subdirectory_and_a_yml_suffix_are_both_scanned(self, tmp_path: Path):
+        """A rule file promtool never sees is an unlinted expr; the walk is
+        recursive and covers both YAML suffixes."""
+        rules_dir = tmp_path / "rules"
+        (rules_dir / "nested").mkdir(parents=True)
+        (rules_dir / "nested" / "zfs.yaml").write_text(self.RULE_DOC)
+        (rules_dir / "mail.yml").write_text(
+            self.RULE_DOC.replace("zfs", "mail").replace(
+                "ZFSPoolNotOnline", "MailQueueGrowing"
+            )
+        )
+        empty_release = tmp_path / "release.yaml"
+        empty_release.write_text("spec:\n  values: {}\n")
+        out = tmp_path / "rules.yaml"
+        assert ext.extract_rules(out, empty_release, rules_dir) == 0
+        doc = yaml.safe_load(out.read_text())
+        assert sorted(g["name"] for g in doc["groups"]) == ["mail", "zfs"]
+
     def test_live_tree_yields_every_group_from_both_sources(self, tmp_path: Path):
         # Guards the split itself: whichever home the groups move to, the
         # extractor must still see all of them.
@@ -139,12 +149,7 @@ class TestPrometheusRuleSource:
 
 
 class TestRulesDirIsFullyShipped:
-    """The extractor globs observability/rules/ off disk; Flux ships only what
-    that directory's kustomization.yaml enumerates. Kustomize errors on a listed
-    file that is missing but never on a present file that is unlisted — so a new
-    rules file added without the resources entry lints clean, passes its promtool
-    unit tests, and never reaches Prometheus. Nothing else closes that loop.
-    """
+    """Every file in observability/rules/ is listed in its kustomization.yaml."""
 
     RULES_DIR = Path(__file__).resolve().parent.parent / ext.DEFAULT_RULES_DIR
     KUSTOMIZATION = RULES_DIR / "kustomization.yaml"
@@ -185,6 +190,79 @@ class TestRulesDirIsFullyShipped:
                 f"{name} holds a non-PrometheusRule document; "
                 f"extract-prometheus-config.py would skip it"
             )
+
+
+class TestRequireFlags:
+    """Each rule source can be declared mandatory, so an emptied or renamed one
+    reds the gate instead of linting the subset that is left.
+    """
+
+    def _release(self, tmp_path: Path, groups: list | None) -> Path:
+        values: dict = {}
+        if groups is not None:
+            values["additionalPrometheusRulesMap"] = {"custom": {"groups": groups}}
+        path = tmp_path / "release.yaml"
+        path.write_text(yaml.safe_dump({"spec": {"values": values}}))
+        return path
+
+    def _rules_dir(self, tmp_path: Path) -> Path:
+        rules_dir = tmp_path / "rules"
+        rules_dir.mkdir()
+        (rules_dir / "a.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "kind": "PrometheusRule",
+                    "spec": {"groups": [{"name": "dir", "rules": [{"record": "r", "expr": "1"}]}]},
+                }
+            )
+        )
+        return rules_dir
+
+    def test_require_release_rules_fails_on_an_emptied_map(self, tmp_path: Path):
+        release = self._release(tmp_path, None)
+        rules_dir = self._rules_dir(tmp_path)
+        out = tmp_path / "rules.yaml"
+        assert ext.extract_rules(out, release, rules_dir) == 0
+        assert ext.extract_rules(out, release, rules_dir, True) == 1
+
+    def test_require_release_rules_passes_when_the_map_has_groups(self, tmp_path: Path):
+        release = self._release(
+            tmp_path, [{"name": "inline", "rules": [{"record": "r", "expr": "1"}]}]
+        )
+        out = tmp_path / "rules.yaml"
+        assert ext.extract_rules(out, release, self._rules_dir(tmp_path), True) == 0
+
+    def test_require_rules_dir_fails_on_an_absent_tree(self, tmp_path: Path):
+        release = self._release(
+            tmp_path, [{"name": "inline", "rules": [{"record": "r", "expr": "1"}]}]
+        )
+        out = tmp_path / "rules.yaml"
+        argv = [
+            "extract-prometheus-config.py",
+            "rules",
+            str(out),
+            "--release",
+            str(release),
+            "--rules-dir",
+            str(tmp_path / "gone"),
+        ]
+        assert ext.main(argv + ["--require-rules-dir"]) == 2
+        # Without the flag the named-but-absent tree is still an operator error.
+        assert ext.main(argv) == 2
+
+    def test_require_rules_dir_passes_when_the_tree_exists(self, tmp_path: Path):
+        release = self._release(tmp_path, None)
+        out = tmp_path / "rules.yaml"
+        assert ext.main([
+            "extract-prometheus-config.py",
+            "rules",
+            str(out),
+            "--release",
+            str(release),
+            "--rules-dir",
+            str(self._rules_dir(tmp_path)),
+            "--require-rules-dir",
+        ]) == 0
 
 
 class TestCli:

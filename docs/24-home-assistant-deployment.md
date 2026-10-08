@@ -258,17 +258,11 @@ ignored, raises a repair, and stops working in 2027.2. Do not add one.
      - `10.43.0.0/16` — k3s service network
 4. Save (saving restarts Home Assistant)
 
-> **History — the `.storage/http` trap (resolved 2026-08-30).** The 2026.8
-> migration imported the old YAML `http:` block into `/config/.storage/http`
-> once (`yaml_migration_done`), after which the store governed
-> `trusted_proxies` while the YAML silently did nothing — and core updates
-> could re-import, resetting hand-patched store values back to the stale
-> snapshot. During the 2026-08 renumber this froze the pre-renumber proxy list
-> and 400'd every proxied request, twice, surviving a config edit and a full
-> VM reboot. Resolved by managing the settings in the UI (above) and deleting
-> the YAML block outright. Emergency lever if the UI is unreachable behind a
-> 400: patch `data.*.trusted_proxies` in the store JSON via
-> `qm guest exec 154` + `docker restart homeassistant`.
+> **Trap.** `trusted_proxies` lives in `/config/.storage/http`, not YAML; a core
+> update can re-import stale values from an old YAML `http:` block, so keep
+> these settings UI-managed and the YAML block deleted. If the UI is unreachable
+> behind a 400, patch `data.*.trusted_proxies` in that store via
+> `qm guest exec 154` and `docker restart homeassistant`.
 
 ## Phase 4: Download/Media Access (Optional)
 
@@ -276,19 +270,24 @@ Home Assistant can directly access download clients and media managers using hig
 
 ### Overview
 
-Home Assistant bypass routes allow direct API access to:
-- `tv.esweiss.com` - Sonarr
-- `movies.esweiss.com` - Radarr
-- `music.esweiss.com` - Lidarr
-- `nzbget.esweiss.com` - NZBGet
-- `qbittorrent.esweiss.com` - qBittorrent
+One IngressRoute, `downloads-ha-bypass`, carries five path-scoped routes for
+direct API access:
+
+| Host | App | Path |
+|---|---|---|
+| `tv.esweiss.com` | Sonarr | `/api` |
+| `movies.esweiss.com` | Radarr | `/api` |
+| `music.esweiss.com` | Lidarr | `/api` |
+| `qbittorrent.esweiss.com` | qBittorrent | `/api` |
+| `nzbget.esweiss.com` | NZBGet | `/jsonrpc` |
 
 Apps that do **not** need HA bypass routes (no Home Assistant integration):
 - `prowlarr.esweiss.com` - Prowlarr
 - `pulsarr.esweiss.com` - Pulsarr
 
 **How it works:**
-- High-priority IngressRoutes match both hostname AND Home Assistant's IP (10.0.10.154)
+- Each route matches hostname AND Home Assistant's IP (10.0.10.154) AND the API
+  path prefix, so it is never a full-host bypass
 - These routes bypass Authentik SSO but keep other security middlewares (HSTS, IP whitelist)
 - Regular routes with SSO remain active for browser access
 - Uses Traefik's routing priority to prefer HA bypass over SSO routes
@@ -300,7 +299,7 @@ and Flux-managed alongside the rest of the downloads stack. To update them, edit
 file, commit, and push.
 
 ```bash
-# Verify (should show 5 bypass routes: sonarr, radarr, lidarr, nzbget, qbittorrent)
+# Verify (one object, downloads-ha-bypass, carrying the five routes)
 kubectl get ingressroute -n downloads | grep ha-bypass
 ```
 
@@ -416,7 +415,7 @@ Templates are version-controlled in the `weisssrv.infra.home_assistant` role (we
 If you prefer to run Ansible directly:
 
 ```bash
-op run --env-file=<(echo "") -- ansible-playbook ansible/playbooks/home-assistant.yml
+op run --env-file=<(echo "") -- ansible-playbook -i ansible/inventories/prod ansible/playbooks/home-assistant.yml
 ```
 
 **Manual Configuration Alternative:**
@@ -493,63 +492,9 @@ mount.
 
 ### Backup Configuration
 
-**Step 1: Where backups live**
-
-HAOS's scheduled backups are written to the NAS, not to the VM disk. The
-codified target is the per-app export
-`/export/backups-apps/home-assistant` on pve-nas-01 — a bind of
-`/mnt/tank/backups/apps/home-assistant`, declared in
-`host_vars/pve-nas-01.yml` (`nas_storage_exports`) and registered in
-`nas_storage_backup_artifact_apps`. HAOS mounts it as
-`10.0.10.102:/backups-apps/home-assistant` (the fsid-relative path under the
-`fsid=0` root).
-
-That export is the estate's **one plaintext-on-the-wire backup flow**: its
-client line for `10.0.10.154/32` carries no `xprtsec`, because the HAOS
-Supervisor hard-codes its NFS mount and ships no `tlshd`, so it can never
-request TLS. The k3s-facing `/export/appdata` export (TLS-required) is
-therefore not usable by HAOS. `all_squash` maps writes to 1000:2000.
-
-Because the files land on `tank/backups/apps`, they ride the
-`tank/backups → archive` replication and the restic B2 walk, and their
-freshness is watched by `BackupArtifactStale{app="home-assistant"}`
-([docs/42](42-offsite-backup.md)). The nightly whole-VM vzdump remains the
-bare-metal DR path.
-
-**Step 2: Configure Automatic Backups**
-
-1. **Settings → System → Storage → Add network storage**:
-   - Name: `nas_backup` (alphanumerics and underscores only), Usage: **Backup**
-   - Server `10.0.10.102`, Protocol **NFS**, version **4**, remote share
-     `/backups-apps/home-assistant` (HAOS mounts this plaintext — the documented
-     `.154` exception above)
-2. **Settings → System → Backups → Automatic backups**: enable, keep 7 days, and
-   set the **location** to the `nas_backup` network storage.
-3. Download the emergency kit (Backups → ⋮) and store the backup encryption key
-   as `backup_encryption_key` on the **Home Assistant API Token** 1Password item.
-   Automatic backups are `protected: true` — **without that key the offsite tars
-   are undecryptable**.
-
-This is a one-time UI step per rebuild: the NAS side is Ansible-managed, but
-HAOS's own storage/backup settings are not (docs/42 has the same walkthrough).
-
-> **The scheduled backup is `type: partial`, deliberately.** It carries core
-> config, the add-ons and the `ssl` folder — **not** `/media`, `/share` or
-> `addons/local`, which are therefore absent from both the HA-native and the
-> offsite (B2) tiers. They are not unprotected: vmid 154 is not in the vzdump
-> exclusion list, so the whole guest image is captured nightly to `tank/proxmox`
-> and replicated to `archive` — image-level, local + archive only. Those folders
-> are empty on this deployment, so the partial scope is the accepted position
-> ([docs/16](16-next-steps.md) § Accepted risks). Switch the scheduled backup to
-> **full** if `/media` or `/share` ever holds something worth an offsite copy.
-
-**Step 3: Manual Backup**
-
-Create your first backup:
-1. Go to **Settings > System > Backups**
-2. Click **Create Backup**
-3. Select what to include (Full backup recommended)
-4. Name it appropriately (e.g., `pre-production-2026-01`)
+Backups are covered once, under § Maintenance → Backups below: the two automated
+tiers, where the granular backups land on the NAS, and the one-time HAOS
+storage/backup UI setup.
 
 ### SSH Access Configuration
 
@@ -581,28 +526,6 @@ ssh root@10.0.10.154 -p 22222
 # Or use the task command
 task home-assistant:console
 ```
-
-### Update Strategy
-
-**Step 1: Enable Update Notifications**
-
-1. Go to **Settings > System > Updates**
-2. Enable notifications for updates
-
-**Step 2: Update Process**
-
-Before updating:
-1. **Create a backup** (Settings > System > Backups)
-2. **Review release notes** at https://www.home-assistant.io/blog/
-3. **Check for breaking changes**
-
-To update:
-1. Go to **Settings > System > Updates**
-2. Click **Update** next to Home Assistant Core/OS/Supervisor
-3. Wait for update to complete
-4. Verify system stability
-
-**Important**: Always backup before major version updates (e.g., 2025.12 → 2026.1)
 
 ## Phase 6: Authentik SSO Integration
 
@@ -706,7 +629,7 @@ The values Terraform sets — match these when configuring the HA side:
 | Authorization flow | `default-authorization-flow` (implicit consent) |
 | Scopes | `openid`, `email`, `profile` |
 | Launch URL | `https://home.ericsweiss.com` |
-| Redirect URI regex | `https://home\.ericsweiss\.com/auth/openid/callback$`<br>`https://home\.esweiss\.com/auth/openid/callback$` |
+| Redirect URIs (`matching_mode: strict`) | `https://home.ericsweiss.com/auth/openid/callback`<br>`https://home.esweiss.com/auth/openid/callback` |
 | Access gate | `home-assistant-users` group binding |
 
 The client ID and secret live on the **Home Assistant SSO** 1Password item and
@@ -714,24 +637,22 @@ are read by both ESO and `terraform/authentik`, so they cannot disagree.
 
 ### Step 4: Store Credentials in 1Password
 
+The **Home Assistant SSO** item is the source of truth: `terraform/authentik`
+reads it when it creates the provider, and ESO reads it into the cluster. Set
+`authentik-client-id` to the `client_id` declared for `home_assistant` in
+`terraform/authentik/providers_oauth2.tf`, and generate the secret locally.
+
 ```bash
-# Sign in to 1Password
 eval $(op signin)
 
-# Create or update the Home Assistant SSO item
-# Use the 1Password UI to add/update the item with:
-# - Item name: Home Assistant SSO
-# - Field: authentik-client-id (paste Client ID from Authentik)
-# - Field: authentik-client-secret (paste Client Secret from Authentik)
-```
-
-Alternatively, create via CLI:
-```bash
 op item create --category=password --title="Home Assistant SSO" \
   --vault=Homelab \
-  authentik-client-id="<paste-client-id-here>" \
-  authentik-client-secret="<paste-client-secret-here>"
+  authentik-client-id="<client_id from providers_oauth2.tf>" \
+  authentik-client-secret="$(openssl rand -base64 48)"
 ```
+
+Both values reach Authentik on the next supervised `terraform apply`
+([docs/40](40-authentik-terraform.md)).
 
 ### Step 5: Deploy Configuration
 
@@ -801,105 +722,8 @@ With `block_login: true`, only the SSO login button is displayed. To re-enable l
 2. Set `block_login: false`
 3. Redeploy: `task home-assistant:deploy-config && task home-assistant:restart-after-config`
 
-### Troubleshooting
-
-#### "Invalid redirect URI" Error
-
-**Cause**: Authentik provider redirect URIs don't match.
-
-**Fix**: Verify the Authentik provider has both redirect URIs:
-```
-https://home\.ericsweiss\.com/auth/openid/callback$
-https://home\.esweiss\.com/auth/openid/callback$
-```
-
-#### "Invalid client" Error
-
-**Cause**: Client ID or secret mismatch between Authentik and Home Assistant.
-
-**Fix**:
-1. Verify 1Password has the correct values:
-   ```bash
-   op read "op://Homelab/Home Assistant SSO/authentik-client-id"
-   op read "op://Homelab/Home Assistant SSO/authentik-client-secret"
-   ```
-2. Compare with Authentik provider settings
-3. Redeploy configuration: `task home-assistant:deploy-config`
-
-#### "User not found" Error
-
-**Cause**: User doesn't exist in Home Assistant.
-
-**Fix**: Pre-create the user (see Step 6) with matching username.
-
-#### SSO Button Not Appearing
-
-**Cause**: `hass-openid` integration not installed or configuration not loaded.
-
-**Fix**:
-1. Verify custom component is installed:
-   ```bash
-   task home-assistant:console
-   ls -la /config/custom_components/openid
-   ```
-2. Check Home Assistant logs:
-   ```bash
-   cat /config/home-assistant.log | grep -i openid
-   ```
-3. Verify `configuration.yaml` has the `openid:` block:
-   ```bash
-   cat /config/configuration.yaml | grep -A 10 openid
-   ```
-4. Restart Home Assistant: `task home-assistant:vm-restart`
-
-#### Configuration Check Failed
-
-**Cause**: Syntax error in `configuration.yaml` or missing secrets.
-
-**Fix**:
-1. Check Ansible deployment output for errors
-2. Manually verify secrets exist:
-   ```bash
-   task home-assistant:console
-   cat /config/secrets.yaml | grep oidc
-   ```
-3. Run configuration check:
-   ```bash
-   ha core check
-   ```
-
-### Maintenance
-
-#### Updating hass-openid
-
-Check for updates via HACS:
-1. Go to **HACS -> Integrations**
-2. Find **OpenID Connect**
-3. If an update is available, click **Update**
-4. Restart Home Assistant
-
-#### Rotating OIDC Credentials
-
-The `Home Assistant` OAuth2 provider is Terraform-managed
-([docs/40](40-authentik-terraform.md)) — `client_secret` comes from the same
-1Password field this VM reads — so **do not regenerate it in the Authentik UI**:
-the next supervised apply reverts it and logins break until then. Rotate from
-1Password outwards:
-
-1. Generate a new value (`openssl rand -base64 48` or the 1Password generator).
-2. Update 1Password:
-   ```bash
-   op item edit "Home Assistant SSO" authentik-client-secret="<new-secret>"
-   ```
-3. Push it to Authentik — supervised, review the plan:
-   ```bash
-   task terraform:authentik-apply
-   ```
-4. Redeploy configuration (reads the same 1Password field):
-   ```bash
-   task home-assistant:deploy-config
-   task home-assistant:restart-after-config
-   ```
+SSO failures are under § Troubleshooting → SSO. Updating `hass-openid` and
+rotating the OIDC client secret are under § Maintenance.
 
 ### Configuration Reference
 
@@ -995,17 +819,81 @@ Verify the `home-assistant-headers` middleware is applied (it lives in `kubernet
 kubectl get middleware home-assistant-headers -n traefik -o yaml
 ```
 
-Ensure `configuration.yaml` has:
-```yaml
-http:
-  use_x_forwarded_for: true
-  trusted_proxies:
-    - 10.0.10.0/24
+Confirm **Settings > System > Network** has *Trust X-Forwarded-For* enabled with
+the Traefik source CIDRs listed (Phase 3, Step 3). A `http:` block in
+`configuration.yaml` is ignored since HA 2026.8 and only raises a repair issue.
+
+### SSO
+
+#### "Invalid redirect URI" Error
+
+**Cause**: Authentik provider redirect URIs don't match.
+
+**Fix**: Verify the Authentik provider has both redirect URIs (strict match, no
+regex):
 ```
+https://home.ericsweiss.com/auth/openid/callback
+https://home.esweiss.com/auth/openid/callback
+```
+
+#### "Invalid client" Error
+
+**Cause**: Client ID or secret mismatch between Authentik and Home Assistant.
+
+**Fix**:
+1. Verify 1Password has the correct values:
+   ```bash
+   op read "op://Homelab/Home Assistant SSO/authentik-client-id"
+   op read "op://Homelab/Home Assistant SSO/authentik-client-secret"
+   ```
+2. Compare with Authentik provider settings
+3. Redeploy configuration: `task home-assistant:deploy-config`
+
+#### "User not found" Error
+
+**Cause**: User doesn't exist in Home Assistant.
+
+**Fix**: Pre-create the user (see Step 6) with matching username.
+
+#### SSO Button Not Appearing
+
+**Cause**: `hass-openid` integration not installed or configuration not loaded.
+
+**Fix**:
+1. Verify custom component is installed:
+   ```bash
+   task home-assistant:console
+   ls -la /config/custom_components/openid
+   ```
+2. Check Home Assistant logs:
+   ```bash
+   cat /config/home-assistant.log | grep -i openid
+   ```
+3. Verify `configuration.yaml` has the `openid:` block:
+   ```bash
+   cat /config/configuration.yaml | grep -A 10 openid
+   ```
+4. Restart Home Assistant: `task home-assistant:vm-restart`
+
+#### Configuration Check Failed
+
+**Cause**: Syntax error in `configuration.yaml` or missing secrets.
+
+**Fix**:
+1. Check Ansible deployment output for errors
+2. Manually verify secrets exist:
+   ```bash
+   task home-assistant:console
+   cat /config/secrets.yaml | grep oidc
+   ```
+3. Run configuration check:
+   ```bash
+   ha core check
+   ```
 
 ## Maintenance
 
-### Backup Home Assistant
+### Backups
 
 Two automated tiers cover HA; neither needs a manual download.
 
@@ -1014,18 +902,68 @@ Two automated tiers cover HA; neither needs a manual download.
 | Nightly `vzdump` of the HAOS VM (.154) | whole-VM image, local + archive | `VzdumpBackupStale` |
 | HA's own automatic backups to the `nas_backup` network storage | granular, encrypted tars on `tank/backups/apps/home-assistant`, riding archive + restic B2 | `BackupArtifactStale{app="home-assistant"}` |
 
-An ad-hoc full backup is still available under **Settings → System → Backups →
-Create Backup** when you want a restore point before a risky change. Restoring
-the granular tars needs `backup_encryption_key` from the **Home Assistant API
-Token** 1Password item.
+**Where the granular backups live**
 
-### Update Home Assistant
+HAOS's scheduled backups are written to the NAS, not to the VM disk. The
+codified target is the per-app export
+`/export/backups-apps/home-assistant` on pve-nas-01 — a bind of
+`/mnt/tank/backups/apps/home-assistant`, declared in
+`host_vars/pve-nas-01.yml` (`nas_storage_exports`) and registered in
+`nas_storage_backup_artifact_apps`. HAOS mounts it as
+`10.0.10.102:/backups-apps/home-assistant` (the fsid-relative path under the
+`fsid=0` root).
 
-Updates are managed through the Home Assistant UI:
+That export is the estate's **one plaintext-on-the-wire backup flow**: its
+`10.0.10.154/32` client line carries no `xprtsec` for the same reason as the
+media mount above, so the TLS-required `/export/appdata` export is not usable by
+HAOS. `all_squash` maps writes to 1000:2000.
 
-1. Settings > System > Updates
-2. Click update notification
-3. Follow prompts
+Because the files land on `tank/backups/apps`, they ride the
+`tank/backups → archive` replication and the restic B2 walk
+([docs/42](42-offsite-backup.md)). The nightly whole-VM vzdump remains the
+bare-metal DR path.
+
+**Configure automatic backups**
+
+1. **Settings → System → Storage → Add network storage**:
+   - Name: `nas_backup` (alphanumerics and underscores only), Usage: **Backup**
+   - Server `10.0.10.102`, Protocol **NFS**, version **4**, remote share
+     `/backups-apps/home-assistant` (HAOS mounts this plaintext — the documented
+     `.154` exception above)
+2. **Settings → System → Backups → Automatic backups**: enable, keep 7 days, and
+   set the **location** to the `nas_backup` network storage.
+3. Download the emergency kit (Backups → ⋮) and store the backup encryption key
+   as `backup_encryption_key` on the **Home Assistant API Token** 1Password item.
+   Automatic backups are `protected: true` — **without that key the offsite tars
+   are undecryptable**.
+
+This is a one-time UI step per rebuild: the NAS side is Ansible-managed, but
+HAOS's own storage/backup settings are not (docs/42 has the same walkthrough).
+
+> **The scheduled backup is `type: partial`, deliberately.** It carries core
+> config, the add-ons and the `ssl` folder — **not** `/media`, `/share` or
+> `addons/local`, which are therefore absent from both the HA-native and the
+> offsite (B2) tiers. They are not unprotected: vmid 154 is not in the vzdump
+> exclusion list, so the whole guest image is captured nightly to `tank/proxmox`
+> and replicated to `archive` — image-level, local + archive only. Those folders
+> are empty on this deployment, so the partial scope is the accepted position
+> ([docs/16](16-next-steps.md) § Accepted risks). Switch the scheduled backup to
+> **full** if `/media` or `/share` ever holds something worth an offsite copy.
+
+**Ad-hoc backup**
+
+Take one under **Settings > System > Backups > Create Backup** before a risky
+change. Restoring the granular tars needs `backup_encryption_key` from the
+**Home Assistant API Token** 1Password item.
+
+### Updating Home Assistant
+
+Before updating, create a backup (**Settings > System > Backups**), read the
+release notes at https://www.home-assistant.io/blog/, and check for breaking
+changes. Then update Core, OS or Supervisor from **Settings > System >
+Updates**, where update notifications can also be enabled.
+
+Always back up before a major version update.
 
 ### VM Snapshots
 
@@ -1037,6 +975,37 @@ ssh pve-prec-01 "qm snapshot 154 pre-update --description 'Before HA update'"
 # To restore if needed:
 ssh pve-prec-01 "qm rollback 154 pre-update"
 ```
+
+### Updating hass-openid
+
+Check for updates via HACS:
+1. Go to **HACS -> Integrations**
+2. Find **OpenID Connect**
+3. If an update is available, click **Update**
+4. Restart Home Assistant
+
+### Rotating OIDC Credentials
+
+The `Home Assistant` OAuth2 provider is Terraform-managed
+([docs/40](40-authentik-terraform.md)) — `client_secret` comes from the same
+1Password field this VM reads — so **do not regenerate it in the Authentik UI**:
+the next supervised apply reverts it and logins break until then. Rotate from
+1Password outwards:
+
+1. Generate a new value (`openssl rand -base64 48` or the 1Password generator).
+2. Update 1Password:
+   ```bash
+   op item edit "Home Assistant SSO" authentik-client-secret="<new-secret>"
+   ```
+3. Push it to Authentik — supervised, review the plan:
+   ```bash
+   task terraform:authentik-apply
+   ```
+4. Redeploy configuration (reads the same 1Password field):
+   ```bash
+   task home-assistant:deploy-config
+   task home-assistant:restart-after-config
+   ```
 
 ## DNS Configuration Reference
 

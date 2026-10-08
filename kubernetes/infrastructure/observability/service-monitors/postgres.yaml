@@ -1,25 +1,7 @@
 ---
-# postgres_exporter coverage for the five production databases. Three shapes:
-#
-#   * authentik — the bundled postgresql subchart renders its own metrics
-#     Service + ServiceMonitor (`postgresql.metrics.serviceMonitor.enabled: true`
-#     in apps/authentik/release.yaml), and prometheusSpec's
-#     serviceMonitorSelectorNilUsesHelmValues:false + empty namespaceSelector
-#     pick it up. NO PodMonitor here: it would scrape the identical podIP:9187
-#     target a second time, duplicating every pg_* series under a different
-#     `job` and firing PostgresDown/PostgresConnectionsHigh twice per incident.
-#   * mealie — hand-rolled sidecar with no chart ServiceMonitor, so it needs the
-#     PodMonitor below (portNumber 9187, so no Service port has to be named).
-#   * the three VM databases — static targets like the other off-cluster
-#     exporters.
-#
-# PostgresDown / PostgresConnectionsHigh (rules/infrastructure.yaml) key on
-# `pg_up` / `pg_stat_activity_count` with no job matcher, so they cover all
-# three shapes unchanged.
-#
-# Each in-cluster target needs an ingress allow from observability on 9187 in its
-# own namespace's NetworkPolicy (both namespaces are default-deny-ingress), and
-# each VM target needs 9187 opened to k3s_nodes by its Proxmox security group.
+# postgres_exporter targets: mealie below, the three VM databases static.
+# authentik's is chart-rendered; a PodMonitor here doubles its pg_* series.
+# A new target needs a job in PostgresDown's absent() arm (rules/infrastructure.yaml).
 apiVersion: monitoring.coreos.com/v1
 kind: PodMonitor
 metadata:

@@ -1,33 +1,15 @@
 ---
-# prometheus-operator-crds — the monitoring.coreos.com CRDs (Alertmanager,
-# Prometheus, ServiceMonitor, PodMonitor, PrometheusRule, Probe, ScrapeConfig,
-# ThanosRuler, PrometheusAgent, AlertmanagerConfig), installed in their OWN Flux
-# stage (infrastructure-crds) BEFORE the controllers stage.
-#
-# Why a dedicated CRD stage: on a fresh cluster the Traefik HelmRelease (in
-# infrastructure-controllers) renders a ServiceMonitor and hard-fails ("you have
-# to deploy monitoring.coreos.com/v1 first") because those CRDs otherwise only
-# arrive two stages later with kube-prometheus-stack. This stage installs them
-# first so any controller can render monitoring CRs. kube-prometheus-stack no
-# longer ships its own copies (crds.enabled:false + install/upgrade.crds:Skip in
-# observability/kube-prometheus-stack/release.yaml).
-#
-# Ownership: this chart ships the CRDs as Helm-owned templates (charts/crds/
-# templates/crd-*.yaml, each gated on .Values.<crd>.enabled), unlike kps which
-# ships them via a crds/ directory (install-only, no Helm ownership).
-#
-# Keep the prometheus_operator_crds pin in all.yml in lockstep with
-# kube_prometheus_stack so the CRD set stays version-matched to the operator.
+# prometheus-operator-crds: the monitoring.coreos.com CRDs in their own stage so
+# controllers (Traefik) can render ServiceMonitors on a fresh bootstrap. Keep the
+# prometheus_operator_crds pin in all.yml in lockstep with kube_prometheus_stack.
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
   name: prometheus-operator-crds
   namespace: prometheus-operator-crds
   annotations:
-    # Garbage-collecting this HelmRelease (a stage rename/move under
-    # infrastructure-crds, which reconciles with prune: true) would trigger a
-    # `helm uninstall`. Opt out of prune so a refactor cannot take the CRDs with
-    # it; deleting this release is then a deliberate manual act.
+    # Garbage-collecting this HelmRelease would trigger a `helm uninstall`, so it
+    # opts out of prune: deleting it has to be a deliberate manual act.
     kustomize.toolkit.fluxcd.io/prune: disabled
 spec:
   interval: 30m
@@ -47,12 +29,9 @@ spec:
         namespace: flux-system
       interval: 12h
   install:
-    # RetryOnFailure, NOT the default RemediateOnFailure: install remediation has
-    # no strategy field, so it ALWAYS remediates by uninstalling — between each
-    # retry. For a release whose entire content is Helm-owned CRDs, that would
-    # cascade-delete every Prometheus/Alertmanager/ServiceMonitor/PodMonitor/
-    # PrometheusRule/Probe/ScrapeConfig object in the cluster. Retrying in place
-    # leaves a failed install visibly stuck instead, which is always recoverable.
+    # CRITICAL: RetryOnFailure, not the default. Install remediation otherwise
+    # uninstalls, which for a Helm-owned CRD release cascade-deletes every
+    # monitoring CR in the cluster. A stuck install is recoverable.
     strategy:
       name: RetryOnFailure
       retryInterval: 5m
@@ -61,14 +40,9 @@ spec:
       retries: 3
       remediateLastFailure: true
   values:
-    # Belt to the install-strategy braces: stamp helm.sh/resource-policy: keep on
-    # every CRD so ANY helm uninstall of this release (manual, or a re-install
-    # after Helm history loss) leaves the CRDs — and therefore every monitoring CR
-    # — in place. Same protection cert-manager gets from crds.keep and ESO from
-    # crds.annotations. Recovering from that state needs the one-time metadata
-    # adoption in docs/29, not a rebuild of the observability stack.
-    # All 10 CRDs stay enabled (chart default), matching kps's set; the chart
-    # ships them as templates (not a crds/ dir), so no install.crds field applies.
+    # CRITICAL: resource-policy keep, so a helm uninstall leaves the CRDs and
+    # every monitoring CR standing. The CRDs are chart templates, not a crds/
+    # directory, so no install.crds field applies. Recovery: docs/29.
     crds:
       annotations:
         helm.sh/resource-policy: keep

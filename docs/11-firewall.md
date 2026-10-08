@@ -101,21 +101,23 @@ are multicast and never leave the VLAN, and TVs on IoT still stream because
 `:32400` is world-open and the Plex client finds the server through plex.tv.
 Folding IoT into `lan_clients` would also silently grant the web UIs.
 
-Two of those rule groups are written by the collection's `cluster.fw.j2`, not by
-site data, so they are re-scoped through role variables rather than
-`proxmox_firewall_security_groups`. `weisssrv.infra` v0.13.0 added both; each
-name in the list renders as one `+dc/<name>` source in the rule shape the
-template already used, and both default to `[admin_ts, admin_lan]` so an
+Several rule groups the collection renders itself are re-scoped by site
+variables rather than by `proxmox_firewall_security_groups`. Each name in a
+source list renders as one `+dc/<name>` source in the rule shape the template
+already uses, and the two source lists default to `[admin_ts, admin_lan]`, so an
 unset site renders exactly what it rendered before.
 
 | Variable | Rules it scopes | Value here |
 |---|---|---|
 | `proxmox_firewall_dns_client_sources` | `sg-dns` `:53` tcp+udp | `["admin_ts", "dns_clients"]` |
 | `proxmox_firewall_k3s_ingress_int_sources` | all of `sg-k3s-ingress-int` (`:80`/`:443`) | `["admin_ts", "lan_clients"]` |
+| `proxmox_firewall_dns_admin_ports` | the AdGuard admin surfaces in `sg-dns` (`{port, sources, comment}`) | `:443` from `k3s_nodes, admin_ts, admin_lan`; `:3000` from `admin_ts, admin_lan` |
+| `proxmox_firewall_wan_wireguard_vips` | the `-dest`-scoped `:51820/udp` accept in `sg-k3s-ingress-pub` | `[10.0.10.99]`, the wg-easy VIP the router forwards from the WAN ([docs/38](38-wireguard-vpn.md)) |
 
-`admin_ts` stays on both — the tailnet reaches the resolvers and the internal
-ingress exactly as before — and `admin_lan` drops off because `dns_clients` and
-`lan_clients` both contain it.
+`admin_ts` stays on both source lists — the tailnet reaches the resolvers and
+the internal ingress exactly as before — and `admin_lan` drops off because
+`dns_clients` and `lan_clients` both contain it. The two AdGuard admin surfaces
+stay on the admin sets: no client VLAN reaches the UI or the plaintext API.
 
 **`admin_ts` is deliberately the full CGNAT range** (`100.64.0.0/10`), not
 per-device 100.x pins. Accepted risk: this is a single-owner tailnet
@@ -129,41 +131,60 @@ Revisit only if the tailnet ever gains non-admin members.
 
 ### Security Groups
 
-Security groups are reusable rule sets. Each security group has a **single, clear purpose** - admin access is separated from service-specific rules.
+Security groups are reusable rule sets, each with a single, clear purpose -
+admin access is separated from service-specific rules. Two sources own them, and
+neither one is reproduced here:
 
-#### Admin Access Security Groups
+- **lib** groups are rendered by the collection's `cluster.fw.j2`
+  (weisssrv-lib
+  `ansible_collections/weisssrv/infra/roles/proxmox_firewall/templates/cluster.fw.j2`,
+  plus that role's README). Several take their ports or source sets from site
+  variables; the **To** column names the variable where one applies.
+- **site** groups are entries of `proxmox_firewall_security_groups` in
+  `ansible/inventories/prod/group_vars/all.yml`, whose `rules` are emitted
+  verbatim. That file carries the per-rule reasoning.
 
-**sg-host-admin** - Proxmox hypervisor hosts only:
-```ini
-[group sg-host-admin]
+Read the live result with `pve-firewall compile`, or
+`sudo cat /etc/pve/firewall/cluster.fw` on any host.
 
-IN ACCEPT -source +dc/admin_ts -p tcp -dport 8006 -log nolog # Proxmox Web UI
-IN ACCEPT -source +dc/admin_lan -p tcp -dport 8006 -log nolog
-IN ACCEPT -source +dc/admin_ts -p tcp -dport 22 -log nolog   # SSH
-IN ACCEPT -source +dc/admin_lan -p tcp -dport 22 -log nolog
-IN ACCEPT -source +dc/admin_ts -p icmp -log nolog            # Ping
-IN ACCEPT -source +dc/admin_lan -p icmp -log nolog
-```
+| Group | Source | Opens | To | Attaches to |
+|---|---|---|---|---|
+| `sg-host-admin` | lib | Proxmox UI `:8006`, SSH `:22`, ICMP | `admin_ts`, `admin_lan` | Proxmox hosts |
+| `sg-pve-cluster` | lib | Proxmox UI `:8006`, SSH `:22`, corosync `:5405`/`:5406` udp | `pve_hosts` | Proxmox hosts |
+| `sg-host-egress` | lib | Egress allowlist: DNS/DoT, NTP, apt, Tailscale, SSH, GitLab SSH, SMTP, NFS, Loki push `:31100`, corosync, Proxmox API, ICMP | outbound, any destination | Proxmox hosts, paired with the trailing `OUT DROP` (see Host egress filtering) |
+| `sg-nfs-server` | lib | RPC `:111` tcp+udp, NFS `:2049` | `nfs_clients` | pve-nas-01 |
+| `sg-smb-server` | lib | SMB `:445` | `smb_clients` | pve-nas-01 |
+| `sg-vm-admin` | lib | SSH `:22`, ICMP | `admin_ts`, `admin_lan` | **all VMs and LXCs** |
+| `sg-dns` | lib | DoT `:853` tcp+udp; AdGuard admin `:443` and `:3000`; resolver `:53` tcp+udp | admin sets for DoT; `proxmox_firewall_dns_admin_ports` for the admin surfaces; `proxmox_firewall_dns_client_sources` for `:53` | dns-01, dns-02 |
+| `sg-smtp-relay` | lib | SMTP `:25` and submission `:587`; an egress allowlist (DNS/DoT, `:587`, apt, Loki `:31100`, ICMP) | `core-cluster` inbound | smtp-relay |
+| `sg-k3s-core` | lib | etcd `:2379:2380` + metrics `:2381`, kubelet `:10250`, flannel WireGuard `:51820/udp`, MetalLB memberlist `:7946` tcp+udp, k3s supervisor `:9345`, API `:6443` | `k3s_nodes`, plus `admin_ts`/`admin_lan` on `:6443` | all k3s nodes |
+| `sg-k3s-ingress-int` | lib | `:443` then `:80` | `proxmox_firewall_k3s_ingress_int_sources` — here the tailnet + `lan_clients`, not the admin sets | K3s ingress agents (internal apps) |
+| `sg-k3s-ingress-pub` | lib | `:443`/`:80`, plus `:51820/udp` scoped by `-dest` to each VIP in `proxmox_firewall_wan_wireguard_vips` (here the wg-easy VIP `10.0.10.99`, which the router forwards from the WAN — [docs/38](38-wireguard-vpn.md)) | any source | K3s ingress agents (public apps) |
+| `sg-metrics` | lib | node-exporter-host `:9101` on bare metal; the in-cluster node-exporter DaemonSet `:9100`, which listens on the k3s nodes and on nothing else this group attaches to; zfs-exporter `:9134`, unbound-exporter `:9167`, plus every entry of `proxmox_firewall_metrics_scrape_ports` (today `:8123`, `:32400`, `:7472`, `:7473`, and Loki push `:31100` from `core-cluster`) | `k3s_nodes` | **all hosts and guests** |
+| `sg-syslog-vip` | site | UniFi gateway syslog `:514/udp`, scoped `-source 10.0.10.1 -dest 10.0.10.162` (the alloy-syslog MetalLB VIP) | the gateway SVI only | K3s ingress agents |
+| `sg-k3s-gitssh` | site | Git SSH `:2222` — Traefik's `gitssh` entrypoint on the internal VIP, forwarded to the GitLab VM's sshd | `lan_clients` | K3s ingress agents |
+| `sg-plex` | site | DLNA `:32469`, GDM `:32410:32414`, SSDP `:1900`; media `:32400` | `lan_clients` for discovery; `:32400` from any source (WAN-forwarded, authenticated against plex.tv) | Plex container |
+| `sg-gitlab` | site | web `:443`/`:80`, registry `:5050`, Pages `:8443`, Git SSH `:2222` and `:22`, postgres_exporter `:9187` | per rule: `k3s_nodes` for the proxied ports, `lan_clients` for web, admin sets for `:22`, any for `:2222` | GitLab VM (.153) |
+| `sg-nextcloud` | site | `:443`, nextcloud-exporter `:9205`, postgres_exporter `:9187` | `k3s_nodes`, `admin_ts`, `lan_clients` | Nextcloud VM (.156) |
+| `sg-immich` | site | `:443`, Immich telemetry `:8081`/`:8082`, postgres_exporter `:9187` | `k3s_nodes`, `admin_ts`, `lan_clients` | Immich VM (.157) |
+| `sg-immich-ml` | site | ML inference `:3003` | the Immich VM `10.0.10.157` **only** — the API is authless, so this rule is the security boundary | immich-ml LXC (.158) |
+| `sg-haos` | site | Home Assistant `:8123`, mDNS `:5353`, SSDP `:1900`, SSH add-on `:22222`, ICMP | `lan_clients`, plus `10.0.30.0/24` inline on `:5353` and `:8123`; admin sets on `:22222` | Home Assistant VM (.154) |
+| `sg-windows` | site | RDP `:3389` | `admin_ts`, `admin_lan` | Windows VM (.155) |
 
-**sg-vm-admin** - All VMs and LXC containers:
-```ini
-[group sg-vm-admin]
+A `proxmox_firewall_security_groups` entry must use a name pve-firewall accepts
+(a leading letter, then letters, digits, `-` or `_`, 2 to 18 characters), it
+must be unique within the list, and it must not reuse one of the `lib` names in
+the table above. pve-firewall keys groups by name, so two `[group <name>]`
+sections render and one of the two rule sets is silently discarded. No name in
+use today collides. The role asserts all three before it renders anything
+(`tasks/assert_port_lists.yml`, against `_proxmox_firewall_builtin_groups` and
+`_proxmox_firewall_group_name_re` in its `vars/main.yml`), so a collision is a
+failed play rather than a silently dropped rule set.
 
-IN ACCEPT -source +dc/admin_ts -p tcp -dport 22 -log nolog   # SSH
-IN ACCEPT -source +dc/admin_lan -p tcp -dport 22 -log nolog
-IN ACCEPT -source +dc/admin_ts -p icmp -log nolog            # Ping
-IN ACCEPT -source +dc/admin_lan -p icmp -log nolog
-```
-
-**sg-pve-cluster** - Proxmox cluster communication:
-```ini
-[group sg-pve-cluster]
-
-IN ACCEPT -source +dc/pve_hosts -p tcp -dport 8006 -log nolog      # Web UI
-IN ACCEPT -source +dc/pve_hosts -p tcp -dport 22 -log nolog        # SSH
-IN ACCEPT -source +dc/pve_hosts -p udp -dport 5406 -log nolog      # Corosync
-IN ACCEPT -source +dc/pve_hosts -p udp -dport 5405 -log nolog      # Corosync
-```
+`sg-syslog-vip` has to be a **guest** group, not a `cluster.fw` rule: a frame
+addressed to a MetalLB VIP is forwarded to the announcing node's VM and filtered
+by that guest's firewall, never by `PVEFW-HOST-IN`. It attaches to every ingress
+agent because MetalLB may announce `.162` from any of them.
 
 The cleartext live-migration range (TCP 60000-60050) is deliberately **not**
 opened, in or out. `proxmox_ha` pins `migration: type=secure` in
@@ -173,138 +194,10 @@ invisible at the packet filter. `proxmox_firewall_insecure_migration_ports:
 true` renders the rules again, and should only ever be set alongside a
 deliberate `proxmox_ha_migration_type: insecure`.
 
-#### Service-Specific Security Groups
-
-> Two sources own these blocks, and which one applies depends on the group.
-> `sg-dns`, `sg-host-admin`, `sg-vm-admin`, `sg-k3s-*`, `sg-nfs-server`,
-> `sg-metrics`, `sg-pve-cluster`, `sg-smb-server`, `sg-smtp-relay` and
-> `sg-host-egress` are **library built-ins**, reproduced from
-> weisssrv-lib `ansible_collections/weisssrv/infra/roles/proxmox_firewall/templates/cluster.fw.j2` —
-> if they ever diverge, trust the template. The per-application groups
-> (`sg-plex`, `sg-gitlab`, `sg-nextcloud`, `sg-immich`, `sg-immich-ml`,
-> `sg-haos`, `sg-windows`) are **site data**: entries of
-> `proxmox_firewall_security_groups` in
-> `ansible/inventories/prod/group_vars/all.yml`, which the template renders
-> through a generic loop. For those, that file is the authoritative source.
-
-**sg-dns** - DNS service ports only (no SSH):
-```ini
-[group sg-dns]
-
-# DoT (DNS over TLS)
-IN ACCEPT -source +dc/admin_ts -p udp -dport 853 -log nolog
-IN ACCEPT -source +dc/admin_lan -p udp -dport 853 -log nolog
-IN ACCEPT -source +dc/admin_ts -p tcp -dport 853 -log nolog
-IN ACCEPT -source +dc/admin_lan -p tcp -dport 853 -log nolog
-# AdGuard Home plaintext admin API (:3000)
-IN ACCEPT -source +dc/admin_ts -p tcp -dport 3000 -log nolog
-IN ACCEPT -source +dc/admin_lan -p tcp -dport 3000 -log nolog
-# AdGuard Home HTTPS admin UI (:443) — Traefik proxies dns-01/dns-02.esweiss.com
-IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 443 -log nolog
-IN ACCEPT -source +dc/admin_ts -p tcp -dport 443 -log nolog
-IN ACCEPT -source +dc/admin_lan -p tcp -dport 443 -log nolog
-# Standard DNS — sources from proxmox_firewall_dns_client_sources, one
-# tcp+udp pair per name, in list order
-IN ACCEPT -source +dc/admin_ts -p tcp -dport 53 -log nolog
-IN ACCEPT -source +dc/admin_ts -p udp -dport 53 -log nolog
-IN ACCEPT -source +dc/dns_clients -p tcp -dport 53 -log nolog
-IN ACCEPT -source +dc/dns_clients -p udp -dport 53 -log nolog
-```
-
-**sg-smtp-relay** - SMTP relay (no SSH):
-```ini
-[group sg-smtp-relay]
-
-# SMTP submission from core cluster
-IN ACCEPT -source +dc/core-cluster -p tcp -dport 587 -log nolog
-# SMTP relay from core cluster
-IN ACCEPT -source +dc/core-cluster -p tcp -dport 25 -log nolog
-# Outbound egress allowlist — only ENFORCED because the smtp-relay guest sets
-# policy_out: DROP (guest_firewall_policy_out in its inventory entry); with
-# Proxmox's guest default (policy_out ACCEPT) these OUT ACCEPTs are no-ops.
-# conntrack auto-allows replies to inbound 25/587.
-# DNS and SMTP submission (upstream relay to Gmail)
-OUT ACCEPT -p udp -dport 853 -log nolog
-OUT ACCEPT -p tcp -dport 853 -log nolog
-OUT ACCEPT -p udp -dport 53 -log nolog
-OUT ACCEPT -p tcp -dport 53 -log nolog
-OUT ACCEPT -p tcp -dport 587 -log nolog
-# apt (the base role runs apt inside the LXC) + ICMP diagnostics
-OUT ACCEPT -p tcp -dport 80 -log nolog
-OUT ACCEPT -p tcp -dport 443 -log nolog
-OUT ACCEPT -p tcp -dport 31100 -log nolog       # Loki push NodePort fallback (alloy_host_loki_url)
-OUT ACCEPT -p icmp -log nolog
-```
-
-**sg-nfs-server** - NFS exports:
-```ini
-[group sg-nfs-server]
-
-IN ACCEPT -source +dc/nfs_clients -p udp -dport 111 -log nolog
-IN ACCEPT -source +dc/nfs_clients -p tcp -dport 111 -log nolog
-IN ACCEPT -source +dc/nfs_clients -p tcp -dport 2049 -log nolog
-```
-
-**sg-smb-server** - Samba shares:
-```ini
-[group sg-smb-server]
-
-IN ACCEPT -source +dc/smb_clients -p tcp -dport 445 -log nolog
-```
-
-**sg-k3s-core** - K3s cluster communication:
-```ini
-[group sg-k3s-core]
-
-IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 2379:2380 -log nolog  # etcd
-IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 2381 -log nolog       # etcd metrics (kubeEtcd scrape)
-IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 10250 -log nolog      # kubelet
-IN ACCEPT -source +dc/k3s_nodes -p udp -dport 51820 -log nolog      # Flannel WireGuard (the CNI backend; VXLAN/8472 is not used)
-IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 7946 -log nolog       # MetalLB memberlist
-IN ACCEPT -source +dc/k3s_nodes -p udp -dport 7946 -log nolog       # MetalLB memberlist
-IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 9345 -log nolog       # k3s supervisor
-IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 6443 -log nolog       # Kubernetes API
-IN ACCEPT -source +dc/admin_ts -p tcp -dport 6443 -log nolog        # kubectl from Tailscale
-IN ACCEPT -source +dc/admin_lan -p tcp -dport 6443 -log nolog       # kubectl from LAN
-```
-
-**sg-plex** - Plex Media Server (site data — `proxmox_firewall_security_groups`
-in `group_vars/all.yml`):
-```ini
-[group sg-plex]
-
-IN ACCEPT -source +dc/lan_clients -p tcp -dport 32469 -log nolog      # DLNA
-IN ACCEPT -source +dc/lan_clients -p udp -dport 32410:32414 -log nolog # GDM
-IN ACCEPT -source +dc/lan_clients -p udp -dport 1900 -log nolog       # SSDP
-IN ACCEPT -p tcp -dport 32400 -log nolog                              # Plex Web (public)
-```
-
-**sg-host-egress** - Host-originated egress allowlist (hosts only, paired
-with a trailing `OUT DROP` in host.fw — see "Host egress filtering" below):
-```ini
-[group sg-host-egress]
-
-OUT ACCEPT -p udp -dport 53 -log nolog          # DNS
-OUT ACCEPT -p tcp -dport 53 -log nolog          # DNS over TCP
-OUT ACCEPT -p udp -dport 853 -log nolog         # DNS over TLS
-OUT ACCEPT -p tcp -dport 853 -log nolog         # DNS over TLS
-OUT ACCEPT -p udp -dport 123 -log nolog         # NTP
-OUT ACCEPT -p tcp -dport 80 -log nolog          # apt / HTTP
-OUT ACCEPT -p tcp -dport 443 -log nolog         # apt, Proxmox repos, Tailscale control/DERP, 1Password Connect
-OUT ACCEPT -p udp -dport 41641 -log nolog       # Tailscale direct
-OUT ACCEPT -p udp -dport 3478 -log nolog        # Tailscale STUN
-OUT ACCEPT -p tcp -dport 22 -log nolog          # SSH (migration, host-to-host, cert distribution)
-OUT ACCEPT -p tcp -dport 2222 -log nolog        # GitLab SSH
-OUT ACCEPT -p tcp -dport 587 -log nolog         # SMTP submission to relay
-OUT ACCEPT -p tcp -dport 25 -log nolog          # SMTP relay
-OUT ACCEPT -p tcp -dport 2049 -log nolog        # NFS (backup target / shares)
-OUT ACCEPT -p tcp -dport 111 -log nolog         # rpcbind (NFS)
-OUT ACCEPT -p udp -dport 111 -log nolog         # rpcbind (NFS)
-OUT ACCEPT -p tcp -dport 31100 -log nolog       # Loki push NodePort fallback (alloy_host_loki_url)
-OUT ACCEPT -p udp -dport 5404:5412 -log nolog   # corosync cluster membership
-OUT ACCEPT -p tcp -dport 8006 -log nolog        # Proxmox API (cluster/migration)
-OUT ACCEPT -p icmp -log nolog                   # ping/diagnostics
-```
+`sg-smtp-relay`'s OUT rules are only *enforced* because the smtp-relay guest
+sets `guest_firewall_policy_out: "DROP"`. With Proxmox's guest default
+(`policy_out ACCEPT`) they are no-ops; conntrack auto-allows replies to inbound
+`:25`/`:587` either way.
 
 ### Options
 
@@ -402,38 +295,29 @@ GROUP sg-vm-admin
 GROUP sg-k3s-core
 GROUP sg-k3s-ingress-int
 GROUP sg-k3s-ingress-pub
+GROUP sg-syslog-vip
+GROUP sg-k3s-gitssh
 GROUP sg-metrics
 ```
 
 ## Kubernetes NetworkPolicies (in-cluster pod egress)
 
 The Proxmox firewall above governs host/VM/LXC traffic. *Inside* the k3s cluster,
-pod-to-pod and pod-to-external traffic is governed by Kubernetes NetworkPolicies
-(Flux-managed under `kubernetes/apps/*/networkpolicy.yaml` and the controller
-namespaces). Each app namespace runs **default-deny** ingress + egress, and every
-pod is then granted exactly the egress it needs by a **scoped, per-pod
-NetworkPolicy** (selected by `app.kubernetes.io/name`).
+pod traffic is governed by Kubernetes NetworkPolicies, all Flux-managed.
 
-### Design decision: per-pod egress is deliberately granular (not deduplicated)
-
-The same egress *entries* recur across policies — "allow DNS to kube-dns" appears
-in ~9 policies and "allow apiserver (`10.0.10.222/223/227:6443`)" in ~5. This
-duplication is **intentional and is kept as-is**:
-
-- Egress is scoped per workload, so each pod gets the minimum it needs. For
-  example, the Authentik Postgres pod has `allow-egress-postgres-dns-only` (DNS
-  only, **no** apiserver), while `allow-egress-authentik` grants the server pods
-  DNS + apiserver + their specific destinations.
-- The only way to remove the duplication in Kustomize is a namespace-wide
-  baseline policy granting DNS + apiserver to **all** pods. Because
-  NetworkPolicies are additive (a pod's egress is the union of all policies
-  selecting it), that baseline can only *loosen* the posture — Postgres (and any
-  DNS-only pod) would gain apiserver egress it deliberately lacks. That is a real
-  reduction in defense-in-depth (a lateral-movement path from a compromised data
-  pod to the API server) that offline CI cannot catch.
-- The duplication is therefore the price of keeping each pod's egress minimal and
-  explicitly auditable. We keep the granular per-pod policies; re-IPing a server
-  node is the only maintenance cost, and that is rare and caught at deploy time.
+- Every namespace runs an **ingress default-deny**, applied by the
+  `netpol-baseline` Kustomize component. Two namespaces are documented
+  exceptions: `downloads` (its local policy covers ingress *and* egress) and
+  `flux-system` (upstream gotk manifests). The canonical list is
+  [docs/29](29-flux-operations.md) § Network policy exceptions.
+- Egress is an **allowlist per app**, scoped by `app.kubernetes.io/name`. The
+  three recurring allowances ship as components — `netpol-egress-dns`,
+  `netpol-egress-apiserver`, `netpol-egress-public` — used only where the policy
+  they replace already selected the whole namespace; elsewhere the rule stays
+  inline. [`kubernetes/components/README.md`](../kubernetes/components/README.md)
+  is canonical for that rule and for why the rest is still copy-pasted.
+- `scripts/check-netpol-except-parity.py` keeps the reserved-CIDR except-lists
+  of the remaining copies identical.
 
 ## Ansible Role
 
@@ -527,42 +411,18 @@ k3s_agents:
         - sg-vm-admin         # SSH + ICMP for admin access
         - sg-k3s-core         # K3s cluster communication
         - sg-k3s-ingress-int  # Internal ingress (tailnet + lan_clients)
-        - sg-k3s-ingress-pub  # Public ingress (all sources)
+        - sg-k3s-ingress-pub  # Public ingress (all sources) + the wg-easy VIP
+        - sg-syslog-vip       # UniFi gateway syslog to the alloy-syslog VIP
+        - sg-k3s-gitssh       # Git SSH :2222 passthrough to the GitLab VM
         - sg-metrics          # Prometheus exporter scraping
 ```
 
-**Available Security Groups** (`lib` = rendered by the collection's
-`cluster.fw.j2`; `site` = an entry of `proxmox_firewall_security_groups` in
-`group_vars/all.yml`):
-
-| Security Group | Source | Purpose | Use For |
-|---------------|--------|---------|---------|
-| `sg-vm-admin` | lib | SSH + ICMP admin access | **All VMs/LXCs** |
-| `sg-dns` | lib | DNS service (DoT, UDP/TCP 53, AdGuard UI) | DNS containers |
-| `sg-smtp-relay` | lib | SMTP submission/relay + outbound | smtp-relay container |
-| `sg-plex` | site | Plex Media Server ports | Plex container |
-| `sg-k3s-core` | lib | K3s cluster communication | All K3s nodes |
-| `sg-k3s-ingress-int` | lib | HTTP/HTTPS from `proxmox_firewall_k3s_ingress_int_sources` — here the tailnet + `lan_clients` (Home VLAN), not the admin sets | K3s ingress nodes (internal apps) |
-| `sg-k3s-ingress-pub` | lib | HTTP/HTTPS from all sources | K3s ingress nodes (public apps) |
-| `sg-gitlab` | site | GitLab HTTP/HTTPS + Git SSH | GitLab VM |
-| `sg-nextcloud` | site | HTTPS 443 (Traefik + admin) + nextcloud-exporter 9205 | Nextcloud VM (.156) |
-| `sg-immich` | site | HTTPS 443 (Traefik + admin) + Immich telemetry 8081/8082 | Immich VM (.157) |
-| `sg-immich-ml` | site | ML inference 3003 from the Immich VM **only** (the API is authless — this rule is the security boundary) | immich-ml LXC (.158) |
-| `sg-haos` | site | Home Assistant Web UI (+ `:8123` from IoT) + mDNS | Home Assistant VM |
-| `sg-windows` | site | Windows RDP | Windows VMs |
-| `sg-metrics` | lib | Prometheus exporter scrape ports from k3s_nodes: the collection's built-ins (9100/9101/9134/9167) plus whatever `proxmox_firewall_metrics_scrape_ports` in `group_vars/all.yml` declares (today 8123/32400/7472/7473, and the Loki push NodePort 31100 from core-cluster) | **All hosts and guests** |
-
-Five more groups are rendered by `cluster.fw.j2` but are **host-only**: they
-attach to Proxmox hosts via `host.fw`, never to a guest's
+**Available security groups**: the full list — what each group opens, the
+sources it opens it to and where it attaches — is the table in
+[§ Security Groups](#security-groups) above. Five of them (`sg-host-admin`,
+`sg-pve-cluster`, `sg-nfs-server`, `sg-smb-server`, `sg-host-egress`) are
+host-only: they attach through `host.fw` and never appear in a guest's
 `guest_security_groups`.
-
-| Security group | Purpose |
-|---|---|
-| `sg-host-admin` | SSH + ICMP + Proxmox UI 8006 from the admin sources |
-| `sg-pve-cluster` | corosync + Proxmox cluster traffic between `pve_hosts` |
-| `sg-nfs-server` | NFS/RPC from `nfs_clients` (pve-nas-01) |
-| `sg-smb-server` | SMB from `smb_clients` (pve-nas-01) |
-| `sg-host-egress` | Host-originated egress allowlist, paired with the trailing `OUT DROP` in `host.fw` (via `proxmox_firewall_egress_filtering`) |
 
 To enforce a guest egress allowlist, set `guest_firewall_policy_out: "DROP"`
 on the guest's inventory entry — its security groups' OUT ACCEPT rules then
@@ -580,8 +440,10 @@ Guest firewall configs are stored in `/etc/pve/firewall/` which is **cluster-sha
 - Firewall rules are accessible from ANY Proxmox node in the cluster
 - Cluster-wide firewall (`cluster.fw`) and `pveum` tasks delegate to the first
   **reachable** Proxmox host (resilient to a down first node); host firewalls
-  (`host.fw`) run on each node itself. Per-guest rules (`<vmid>.fw`) delegate to
-  `groups['proxmox'][0]` unless `firewall_deploy_host` is set
+  (`host.fw`) run on each node itself. Per-guest rules (`<vmid>.fw`) use the same
+  first-reachable delegate as the cluster tasks; set `firewall_deploy_host` to
+  pin a specific node instead
+- Emptying a guest's `guest_security_groups` deletes its `<vmid>.fw`
 - No need to track which host is running each container
 - Works with Proxmox HA and live migration
 
@@ -597,7 +459,7 @@ To update guest firewall rules, modify `guest_security_groups` in inventory and 
 task infra:deploy
 
 # Update specific host
-ansible-playbook ansible/playbooks/site.yml --limit dns-01
+task infra:deploy -- --limit dns-01
 ```
 
 ## Troubleshooting

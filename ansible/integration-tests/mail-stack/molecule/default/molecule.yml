@@ -5,18 +5,11 @@
 driver:
   name: docker
 
-# The systemd-container block is identical for every platform here, so the first
-# entry anchors it and the rest merge it and override only name/groups. Anchors
-# are per-file (YAML has no cross-file include), so the same shape is repeated
-# once per scenario.
 platforms:
   - name: smtp-relay
-    # The systemd-container block is identical for every platform in this
-    # scenario, so it is anchored once and merged into the rest; only name and
-    # groups differ. Anchors are per-file — YAML has no cross-file include — so
-    # each scenario carries its own copy of the shape.
+    # Shared systemd-container shape; only name/groups differ per platform.
     <<: &systemd_platform
-      image: "${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:v0.17.1}"
+      image: "${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:v0.18.0}"
       pre_build_image: true
       privileged: true
       cgroupns_mode: host
@@ -49,73 +42,48 @@ platforms:
 dependency:
   name: galaxy
   options:
-    # The single source of truth for the weisssrv.infra pin these
-    # scenarios exercise. Resolved by ansible-galaxy in molecule's CWD,
-    # which is the scenario's stack dir (ansible/integration-tests/<stack>).
+    # Single source of truth for the weisssrv.infra pin, resolved in molecule's
+    # CWD (the stack dir).
     requirements-file: ../../requirements.yml
 provisioner:
   name: ansible
   env:
     # Required for molecule_docker plugin (upstream broken conditional in destroy.yml)
     ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
-    # Provide dummy SSH key for testing (base role expects this via all.yml lookup)
+    # Dummy key: all.yml looks SSH_PUBLIC_KEY up and the base role requires it.
     # yamllint disable-line rule:line-length
     SSH_PUBLIC_KEY: "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC3qctest123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123== test@molecule"
     SMTP_RELAY_USER: relay_user
     SMTP_RELAY_PASSWORD: test_relay_password
-    # admin_email in group_vars/all.yml hard-requires this env var
-    # (undef() guard); the aliases template renders it on every host. Set to the
-    # asserted relay address so all.yml's admin_email (which shadows the
-    # inventory group_vars) rewrites root -> admin@example.com and the verify
-    # play's relay-queue assertion matches.
+    # all.yml's admin_email hard-requires this env var (undef() guard).
     ROOT_EMAIL_ALIAS: admin@example.com
   playbooks:
     prepare: ../../../_shared/prepare.yml
   inventory:
     group_vars:
       relay_servers:
-        # SMTP Relay configuration (smtp_relay role)
-        admin_user: root
-        admin_email: admin@example.com
+        # SMTP Relay configuration (smtp_relay role). Anything all.yml also
+        # defines is steered through provisioner.env above: vars_files outranks
+        # both play vars and inventory group_vars, so a copy here would be dead.
         smtp_relay_internal_domain: test.local
         smtp_relay_upstream: "[smtp.gmail.com]:587"
         smtp_relay_upstream_user: test@example.com
         smtp_relay_upstream_password: test_gmail_app_password
-        smtp_relay_sasl_user: relay_user
-        smtp_relay_sasl_password: test_relay_password
         smtp_relay_tls_cert_dir: /etc/letsencrypt/live/smtp-relay
-        # Deltas over smtp_relay_default_config only — everything else is the
-        # role default and is deliberately not restated here, so this scenario
-        # exercises the shipped hardening rather than a frozen copy of it.
-        #
-        # Inbound SASL is deliberately NOT forced onto port 25: that smtpd is
-        # chrooted and cannot read /etc/sasldb2 for the auxprop lookup (the role
-        # ships smtpd_sasl_auth_enable: "no" there for exactly this reason). The
-        # null-client auth path is exercised on the submission service (587) —
-        # non-chrooted, behind mandatory TLS — using the role defaults. Because
-        # mynetworks stays loopback-only and permit_mynetworks stays dropped
-        # (both role defaults), a relayed message is proof of a real SASL
-        # handshake rather than a mynetworks exemption.
+        # Deltas over the role's shipped hardening only: inbound SASL stays on
+        # 587 (25 is chrooted and cannot read /etc/sasldb2) and mynetworks stays
+        # loopback-only, so a relayed message proves a real SASL handshake.
         smtp_relay_config:
-          # Outbound only: encrypt to the (mock) Gmail smarthost without
-          # verifying its certificate. Upstream AUTH fails on the mock
-          # credentials regardless, leaving the message deferred at the relay —
-          # which is what the verify play's relay-queue assertion keys on.
+          # Encrypt to the mock Gmail smarthost without verifying its cert; the
+          # mock credentials leave the message deferred at the relay, which is
+          # what the verify play's relay-queue assertion keys on.
           smtp_tls_security_level: "encrypt"
 
       mail_clients:
-        # Null client configuration (postfix_null_client role)
-        admin_email: admin@example.com
-        internal_domain: test.local
-        postfix_null_client_mail_domain: test.local
-        postfix_null_client_relay_host: smtp-relay
         # Relay over submission (587), like production — that is the port whose
         # smtpd is NOT chrooted, so the relay's auxprop sasldb SASL check
-        # actually resolves. Port 25 (chrooted, AUTH-off) is used only for the
-        # banner connectivity probe in the verify play.
+        # resolves. Port 25 is used only for the banner probe in verify.
         postfix_null_client_relay_port: 587
-        postfix_null_client_sasl_user: relay_user
-        postfix_null_client_sasl_password: test_relay_password
         postfix_null_client_config:
           myhostname: "{{ inventory_hostname }}.test.local"
           myorigin: "/etc/mailname"
@@ -123,19 +91,16 @@ provisioner:
           relayhost: "[smtp-relay]:587"
           mynetworks: "127.0.0.0/8"
           inet_interfaces: "loopback-only"
-          # Submission mandates STARTTLS; require it here too. The relay serves a
-          # self-signed cert (minted in converge), so verification is off — the
-          # SASL credential is still protected in transit.
+          # Submission mandates STARTTLS. The relay's cert is self-signed
+          # (minted in converge), so verification is off.
           smtp_tls_security_level: "encrypt"
           smtp_tls_CAfile: "/etc/ssl/certs/ca-certificates.crt"
           smtp_sasl_auth_enable: "yes"
           smtp_sasl_security_options: "noanonymous"
           smtp_sasl_password_maps: "hash:/etc/postfix/sasl_passwd"
-        # Prefixed name (was postfix_virtual_aliases). The role gates BOTH
-        # templates/virtual.j2 and main.cf's virtual_alias_maps on this exact
-        # var being defined — and actively removes /etc/postfix/virtual{,.db}
-        # when it is not — so the pre-rename name leaves the client with no
-        # virtual table at all.
+        # The role gates templates/virtual.j2 and main.cf virtual_alias_maps on
+        # this var being defined, and removes /etc/postfix/virtual{,.db} when it
+        # is not.
         postfix_null_client_virtual_aliases:
           - from: "admin@test.local"
             to: "admin@example.com"

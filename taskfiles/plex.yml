@@ -1,0 +1,27 @@
+# https://taskfile.dev
+# Plex Media Server LXC (docs/20).
+version: '3'
+
+tasks:
+  deploy:
+    desc: Deploy Plex Media Server (provisions LXC container and installs Plex)
+    dir: "{{.ANSIBLE_DIR}}"
+    # Anchor shared with plex:check so dry-run and deploy can't diverge.
+    env: &plex_env
+      ROOT_EMAIL_ALIAS: op://Homelab/Email Config/root_alias
+      SMTP_RELAY_USER: op://Homelab/SMTP Relay Auth/username
+      SMTP_RELAY_PASSWORD: op://Homelab/SMTP Relay Auth/password
+      SSH_PUBLIC_KEY: op://Homelab/SSH Key/public key
+      PLEX_PFX_PASSPHRASE: op://Homelab/Plex Custom Certificate/password
+      # plex.yml runs alloy_host, which asserts the Loki push creds.
+      LOKI_PUSH_USER: op://Homelab/Loki Push Auth/username
+      LOKI_PUSH_PASSWORD: op://Homelab/Loki Push Auth/password
+    cmds:
+      - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/plex.yml {{.CLI_ARGS}}
+
+  check:
+    desc: Check mode - show what Plex deployment would change
+    dir: "{{.ANSIBLE_DIR}}"
+    env: *plex_env
+    cmds:
+      - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/plex.yml --check --diff {{.CLI_ARGS}}

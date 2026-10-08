@@ -1,17 +1,6 @@
-# Applications — the tiles on the authentik library page plus their provider
-# bindings. One map entry per app, keyed by slug (which is also the OIDC issuer
-# path). Adding an app = one entry here + its provider; see README "Adding a new
-# application".
-#
-# Access is enforced by the group policy bindings in policy_bindings.tf, and the
-# module fails the plan for any slug missing there (an unbound application is
-# open to every authenticated user). Roles beyond access (admin vs user) are
-# resolved inside each app from its group claims — see that app's doc.
-#
-# `provider_type` + `provider_key` name an entry of the provider maps in
-# providers_{oauth2,proxy,saml}.tf. Every application carries the module's
-# `prevent_destroy`: the slug IS the issuer path, so a renamed key would plan as
-# destroy+create and break that app's logins (README § Guardrails).
+# Applications — the authentik library tiles, keyed by slug (also the OIDC
+# issuer path). `provider_type` + `provider_key` name an entry of the maps in
+# providers_{oauth2,proxy,saml}.tf. See README § Adding a new application.
 locals {
   # Shared application posture, pinned here so a library default change cannot
   # rewrite live access semantics on a ref bump. "any" means EITHER of an app's
@@ -129,8 +118,7 @@ locals {
       icon          = "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/adguard-home.svg"
     }
 
-    # Traefik dashboard, Terraform-authored (no imports.tf entry — the route had
-    # no forward-auth before this application existed).
+    # Traefik dashboard, Terraform-authored, so no imports.tf entry.
     traefik = {
       name          = "Traefik Dashboard"
       group         = "Software"

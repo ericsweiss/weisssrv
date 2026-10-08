@@ -50,9 +50,11 @@ the k3s AddOn manifests that deploy into it.
    `crds` → `controllers` → `configs`, then `observability` and `apps` in
    parallel (apps deliberately do not gate on observability health).
    `infrastructure-metrics-server` hangs off `sources` alone, outside that
-   chain, and nothing `dependsOn` it — so its (deliberately long-lived) install
-   failure during the AddOn cutover cannot freeze any stage behind it. Derive
-   the live list and its order with
+   chain, and nothing `dependsOn` it: its readiness depends on an Ansible-side
+   flag (`metrics-server` in `k3s_disable`) rather than on anything Flux
+   applies, so a drift between a merge and `task k3s:deploy` cannot freeze the
+   stages behind it. The Kustomization's own header owns the full rationale.
+   Derive the live list and its order with
    `python3 scripts/flux-child-kustomizations.py` rather than reading it here.
 4. `postBuild.substituteFrom` substitutes `${var}` placeholders from **two**
    ConfigMaps, both `optional: false` on every stage after `sources`:
@@ -64,8 +66,19 @@ the k3s AddOn manifests that deploy into it.
      hard-codes a value the ConfigMap owns, and cross-checks the ConfigMap
      against the Ansible inventory.
 5. Flux's `helm-controller` reconciles `HelmRelease` CRs (adopted or fresh).
+   A HelmRelease sets `driftDetection: {mode: enabled}`, which reverts
+   out-of-band edits to chart-rendered objects. The exception is a chart that
+   ships a webhook whose `caBundle` is injected at runtime: drift correction
+   would wipe it on every reconcile.
 6. External Secrets Operator syncs `ExternalSecret` → k8s `Secret` from
    1Password via the `onepassword-homelab` `ClusterSecretStore`.
+
+A ServiceMonitor lives next to the app that deploys its scrape target, beside
+the NetworkPolicy that admits the scrape. Two kinds stay in
+`infrastructure/observability/service-monitors/`: monitors for targets this repo
+does not deploy, and monitors whose scrape credential is the
+`observability-exporter-secrets` Secret, because prometheus-operator resolves a
+monitor's credential `secretRef` in the monitor's own namespace.
 
 ## Operational commands
 
@@ -87,8 +100,9 @@ task flux:lint              # kustomize build + kubeconform for infra/ and apps/
 ## Cluster topology
 
 Node-by-node list (3 servers forming the etcd quorum + 6 agents) and the VIPs
-(API .161 via kube-vip; MetalLB .100 public / .101 internal / .99 wg-easy) live in
-[docs/01-overview.md](../docs/01-overview.md) (canonical).
+(API .161 via kube-vip; MetalLB .100 public / .101 internal / .99 wg-easy /
+.162 alloy-syslog) live in [docs/01-overview.md](../docs/01-overview.md)
+(canonical).
 
 ## Namespaces (by owner)
 
@@ -102,9 +116,10 @@ Node-by-node list (3 servers forming the etcd quorum + 6 agents) and the VIPs
 | `external-dns` | Flux (HelmRelease) | external-dns |
 | `vpa-system` | Flux (HelmRelease) | Vertical Pod Autoscaler (docs/33) |
 | `reloader` | Flux (HelmRelease) | Reloader — rolls workloads on ConfigMap changes only (Secrets excluded via `ignoreSecrets: true`) |
-| `kube-system` | k3s (+ Flux HelmReleases: kured, metrics-server) | k3s built-ins, kured reboot coordinator, and metrics-server once the AddOn cutover closes (docs/33 § metrics-server) |
+| `kube-system` | k3s (+ Flux HelmReleases: kured, metrics-server) | k3s built-ins, the kured reboot coordinator, and metrics-server (Flux-owned, not the k3s AddOn — docs/33 § Components) |
 | `kube-node-lease`, `kube-public` | k3s | Cluster built-ins, nothing deployed into them |
 | `cloudflare-ddns` | Flux (Kustomize) | DDNS CronJob |
+| `ci-cache` | Flux (Kustomize) | Single-node Garage S3 backend for the GitLab runner cache (docs/13) |
 | `authentik` | Flux (HelmRelease) | Authentik SSO + bundled PostgreSQL |
 | `downloads` | Flux (Kustomize) | Gluetun + *arr (privileged PSS — Gluetun needs CAP_NET_ADMIN) |
 | `recipes` | Flux (Kustomize) | Mealie + Bar Assistant + Salt Rim + postgres + meilisearch + redis |
@@ -116,11 +131,13 @@ Node-by-node list (3 servers forming the etcd quorum + 6 agents) and the VIPs
 | `prometheus-operator-crds` | Flux (HelmRelease) | The `monitoring.coreos.com` CRDs (`infrastructure-crds` stage) |
 | `hermes` | Flux (Kustomize) | Hermes agent + dashboard + camofox (docs/37) |
 | `hindsight` | Flux (Kustomize) | Hermes' memory backend + llama.cpp GPU sidecar, no ingress (docs/37) |
+| `hindsight-reaper` | Flux (Kustomize) | 6-hourly CronJob sweeping admission-rejected Hindsight pods (docs/43) |
 | `homarr` | Flux (Kustomize) | Homarr dashboard (docs/41) |
 | `registry-cache` | Flux (Kustomize) | Pull-through registry cache for CI (docs/27) |
 | `wg-easy` | Flux (Kustomize) | wg-easy WireGuard VPN (docs/38) |
 | `tailnet-dns` | Flux (Kustomize) | Tailnet-facing DNS forwarder |
 | `tailscale` | Flux (HelmRelease) | tailscale-operator |
+| `uptime-kuma` | Flux (Kustomize) | Uptime Kuma endpoint monitoring + public status page (docs/45) |
 | `nvidia-device-plugin` | Flux (HelmRelease) | Time-sliced GPU device plugin (docs/43) |
 | `default` | Flux (Kustomize) | IngressRoutes for non-k8s VMs (via `apps/vm-ingress/`) |
 | `gitlab` | Flux (Kustomize) | IngressRoutes for the GitLab VM (web + registry + pages) |

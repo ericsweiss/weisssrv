@@ -1,14 +1,13 @@
 ---
-# promtool unit tests for homelab.host-exporter — the group that backfills the
-# upstream node-exporter mixin for job="node-exporter-host" (the 15 bare-metal /
-# LXC / VM targets on :9101, which every chart-shipped node rule misses because
-# it is scoped to job="node-exporter").
+# promtool unit tests for homelab.host-exporter, the group that backfills the
+# node-exporter mixin for job="node-exporter-host" (the :9101 host targets).
+# 5m ticks give HostNetworkInterfaceFlapping (for: 2m) one in-window evaluation.
 rule_files:
   - rules.yaml
-evaluation_interval: 1m
+evaluation_interval: 5m
 tests:
-  # HostExporterDown: one target down fires (the case TargetDown mathematically
-  # cannot catch at 1/15 = 6.7% < 10%), and its healthy peers do not.
+  # HostExporterDown: one down target fires — the case TargetDown cannot catch
+  # below its 10% floor — and its healthy peers do not.
   - interval: 1m
     input_series:
       - series: 'up{job="node-exporter-host", instance="10.0.10.104:9101"}'
@@ -108,11 +107,9 @@ tests:
               mountpoint: /
               fstype: ext4
 
-  # HostNetworkInterfaceFlapping: at the job's real 60s scrape interval a
-  # bouncing link (>4 carrier transitions inside 10m) fires, while a single
-  # clean link event — 2 transitions, what a cable reseat or a reboot looks
-  # like — does not. The interval here mirrors the ServiceMonitor's 60s, which
-  # is what makes the mixin's [2m]/>2 shape unfireable and this one correct.
+  # HostNetworkInterfaceFlapping: at the job's 60s scrape interval a bouncing
+  # link (>4 carrier transitions in 10m) fires and a single clean link event
+  # does not.
   - interval: 1m
     input_series:
       - series: 'node_network_up{job="node-exporter-host", instance="10.0.10.104:9101", device="nic0"}'
@@ -185,10 +182,8 @@ tests:
               instance: '10.0.10.104:9101'
               device: nic0
 
-  # HostNetworkReceiveErrs: the same 1%-of-packets ratio on the receive side.
-  # This is the arm that watches the documented OptiPlex e1000e failure family
-  # (docs/34), so both halves are pinned — .104 over the ratio fires, .105 at
-  # zero errors on the same device name stays silent.
+  # HostNetworkReceiveErrs: the 1%-of-packets ratio on the receive side, the
+  # arm watching the OptiPlex e1000e failure family (docs/34).
   - interval: 1m
     input_series:
       - series: 'node_network_receive_errs_total{job="node-exporter-host", instance="10.0.10.104:9101", device="nic0"}'
@@ -213,14 +208,8 @@ tests:
               instance: '10.0.10.104:9101'
               device: nic0
 
-  # The rate window is [5m], not the [2m] the mixin uses, because this job is
-  # scraped every 60s: a [2m] window holds two samples, so a SINGLE missed
-  # scrape (a kured drain, a busy host, one dropped scrape — punched in here at
-  # minute 31) leaves it with one sample, rate() returns nothing for two
-  # evaluations, and the 1h `for:` restarts from zero. The e1000e hang this arm
-  # watches (docs/34) drops scrapes while it degrades, so a window that cannot
-  # survive a gap is a window that never reaches an hour. At [5m] the gap is
-  # absorbed and the alert still fires on schedule.
+  # The [5m] rate window absorbs a single missed scrape at this job's 60s
+  # interval, so the 1h `for:` still completes. A [2m] window would reset it.
   - interval: 1m
     input_series:
       - series: 'node_network_receive_errs_total{job="node-exporter-host", instance="10.0.10.104:9101", device="nic0"}'
@@ -237,11 +226,9 @@ tests:
               instance: '10.0.10.104:9101'
               device: nic0
 
-  # HostSlabLeakSuspected: SUnreclaim 27 GiB above ARC on the NAS fires (the
-  # 2026-08-18 nfsd file_lock leak shape); a healthy peer whose SUnreclaim is
-  # ~ARC does not. Default label matching: both series come from the same
-  # exporter with identical job+instance. 1m samples: wider spacing than the
-  # 5m staleness lookback would break the 24h `for:` chain between points.
+  # HostSlabLeakSuspected: SUnreclaim 27 GiB above ARC fires; a peer at ~ARC
+  # does not. 1m samples: wider spacing than the 5m staleness lookback would
+  # break the 24h `for:` chain between points.
   - interval: 1m
     input_series:
       - series: 'node_memory_SUnreclaim_bytes{job="node-exporter-host", instance="10.0.10.102:9101"}'
@@ -313,11 +300,8 @@ tests:
               job: node-exporter-host
               instance: '10.0.10.102:9101'
 
-  # NodeSystemdServiceFailed replaces the mixin's disabled copy. The metric
-  # names and label shapes are node_exporter's systemd collector, enabled on the
-  # host exporter only (node_exporter_host_systemd_collector): unit_state carries
-  # name/state/type and is 1 for the CURRENT state, 0 for the others — so the
-  # rule must select state="failed" AND == 1, not just the series' presence.
+  # NodeSystemdServiceFailed. unit_state is 1 for the current state and 0 for
+  # the others, so the rule selects state="failed" AND == 1, not presence.
   - interval: 1m
     input_series:
       - series: 'node_systemd_unit_state{job="node-exporter-host", instance="10.0.10.104:9101", name="zfs-load-key@ssd.service", state="failed", type="oneshot"}'
@@ -392,9 +376,8 @@ tests:
         alertname: NodeSystemdServiceCrashlooping
         exp_alerts: []
 
-  # The console gettys restart-loop forever on consoleless guests (the live case
-  # that fired this alert); the deny-list must keep them out of the crashloop
-  # rule too, even at a rate that would otherwise trip it.
+  # Console gettys restart-loop forever on consoleless guests: the deny-list must
+  # keep them out of the crashloop rule at any rate.
   - interval: 1m
     input_series:
       - series: 'node_systemd_service_restart_total{job="node-exporter-host", instance="10.0.10.223:9101", name="serial-getty@ttyS0.service"}'
@@ -404,11 +387,9 @@ tests:
         alertname: NodeSystemdServiceCrashlooping
         exp_alerts: []
 
-  # NodeExporterSystemdCollectorFailed watches the collector itself: a failing
-  # systemd collector still scrapes HTTP 200, so the only evidence is
-  # node_scrape_collector_success{collector="systemd"} == 0. One host failing
-  # fires after 30m; its healthy peer and the OTHER collectors on the same host
-  # (which the rule's collector= selector must not catch) stay silent.
+  # NodeExporterSystemdCollectorFailed: a failing systemd collector still
+  # scrapes HTTP 200, so the evidence is collector_success{systemd} == 0. Other
+  # collectors on the same host must stay silent.
   - interval: 1m
     input_series:
       - series: 'node_scrape_collector_success{job="node-exporter-host", instance="10.0.10.104:9101", collector="systemd"}'
@@ -439,4 +420,207 @@ tests:
     alert_rule_test:
       - eval_time: 40m
         alertname: NodeExporterSystemdCollectorFailed
+        exp_alerts: []
+
+  # NodeExporterHealthcheckRestartLoop: three restarts inside the hour fire,
+  # two do not. The gauge is a timestamp, so `changes()` counts the restarts.
+  - interval: 5m
+    input_series:
+      - series: 'node_exporter_healthcheck_last_restart_timestamp_seconds{job="node-exporter-host", instance="10.0.10.104:9101"}'
+        values: '100 100 200 200 300 300 400+0x20'
+      - series: 'node_exporter_healthcheck_last_restart_timestamp_seconds{job="node-exporter-host", instance="10.0.10.102:9101"}'
+        values: '100 100 200+0x24'
+    alert_rule_test:
+      # Inside the 15m hold.
+      - eval_time: 35m
+        alertname: NodeExporterHealthcheckRestartLoop
+        exp_alerts: []
+      - eval_time: 45m
+        alertname: NodeExporterHealthcheckRestartLoop
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: node-exporter-host
+              instance: '10.0.10.104:9101'
+
+  # ZfsEncryptedMountStuck: `activating` past 30m fires the warning, and the
+  # same series past 2h escalates. An `active` unit matches neither.
+  - interval: 5m
+    input_series:
+      - series: 'node_systemd_unit_state{job="node-exporter-host", instance="10.0.10.102:9101", name="zfs-mount-encrypted.service", state="activating"}'
+        values: '1+0x40'
+      - series: 'node_systemd_unit_state{job="node-exporter-host", instance="10.0.10.102:9101", name="zfs-mount-encrypted.service", state="active"}'
+        values: '0+0x40'
+      - series: 'node_systemd_unit_state{job="node-exporter-host", instance="10.0.10.103:9101", name="zfs-mount-encrypted.service", state="activating"}'
+        values: '0+0x40'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: ZfsEncryptedMountStuck
+        exp_alerts: []
+      - eval_time: 40m
+        alertname: ZfsEncryptedMountStuck
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: node-exporter-host
+              instance: '10.0.10.102:9101'
+              name: zfs-mount-encrypted.service
+              state: activating
+      - eval_time: 40m
+        alertname: ZfsEncryptedMountStuckCritical
+        exp_alerts: []
+      - eval_time: 3h
+        alertname: ZfsEncryptedMountStuckCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: node-exporter-host
+              instance: '10.0.10.102:9101'
+              name: zfs-mount-encrypted.service
+              state: activating
+
+  # HostSlabCacheGrowing: a 10 GiB/24h ramp fires. The NAS baseline of a few
+  # GiB a day and a flat cache of the same absolute size must not.
+  - interval: 30m
+    input_series:
+      - series: 'node_slab_object_bytes{job="node-exporter-host", instance="10.0.10.102:9101", cache="skbuff_ext_cache"}'
+        values: '2147483648+223696213x60'
+      - series: 'node_slab_object_bytes{job="node-exporter-host", instance="10.0.10.103:9101", cache="skbuff_ext_cache"}'
+        values: '8589934592+0x60'
+    alert_rule_test:
+      # The 24h delta has not crossed 6 GiB yet.
+      - eval_time: 1h
+        alertname: HostSlabCacheGrowing
+        exp_alerts: []
+      # Inside the 1h hold: the delta crosses at 14h30m, the alert fires at
+      # 15h30m.
+      - eval_time: 15h
+        alertname: HostSlabCacheGrowing
+        exp_alerts: []
+      - eval_time: 26h
+        alertname: HostSlabCacheGrowing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: node-exporter-host
+              instance: '10.0.10.102:9101'
+              cache: skbuff_ext_cache
+
+  # The steady-state leak on the NAS, about 2 GiB a day: below the threshold, so
+  # the alert does not stand lit between the weekly reboots.
+  - interval: 30m
+    input_series:
+      - series: 'node_slab_object_bytes{job="node-exporter-host", instance="10.0.10.102:9101", cache="skbuff_ext_cache"}'
+        values: '2147483648+44739242x60'
+    alert_rule_test:
+      - eval_time: 26h
+        alertname: HostSlabCacheGrowing
+        exp_alerts: []
+
+  # SlabinfoCollectorDegraded, arm 1: /proc/slabinfo unreadable, so the
+  # collector publishes success=0 and no per-cache series at all.
+  - interval: 5m
+    input_series:
+      - series: 'node_slabinfo_collector_success{job="node-exporter-host", instance="10.0.10.102:9101"}'
+        values: '0+0x12'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: SlabinfoCollectorDegraded
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: node-exporter-host
+              instance: '10.0.10.102:9101'
+
+  # Arm 2: the timer is dead, so last_success_seconds stops advancing while the
+  # stale textfile keeps exporting the other series.
+  - interval: 5m
+    input_series:
+      - series: 'node_slabinfo_collector_success{job="node-exporter-host", instance="10.0.10.102:9101"}'
+        values: '1+0x18'
+      - series: 'node_slabinfo_collector_last_success_seconds{job="node-exporter-host", instance="10.0.10.102:9101"}'
+        values: '600+0x18'
+      - series: 'node_slab_cache_present{job="node-exporter-host", instance="10.0.10.102:9101", cache="skbuff_ext_cache"}'
+        values: '1+0x18'
+    alert_rule_test:
+      - eval_time: 90m
+        alertname: SlabinfoCollectorDegraded
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: node-exporter-host
+              instance: '10.0.10.102:9101'
+
+  # Arm 3: the kernel renamed or merged one of the named caches, which would
+  # otherwise read as a leak that stopped.
+  - interval: 5m
+    input_series:
+      - series: 'node_slabinfo_collector_success{job="node-exporter-host", instance="10.0.10.102:9101"}'
+        values: '1+0x12'
+      - series: 'node_slabinfo_collector_last_success_seconds{job="node-exporter-host", instance="10.0.10.102:9101"}'
+        values: '0+300x12'
+      - series: 'node_slab_cache_present{job="node-exporter-host", instance="10.0.10.102:9101", cache="skbuff_ext_cache"}'
+        values: '1+0x12'
+      - series: 'node_slab_cache_present{job="node-exporter-host", instance="10.0.10.102:9101", cache="file_lock_cache"}'
+        values: '0+0x12'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: SlabinfoCollectorDegraded
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: node-exporter-host
+              instance: '10.0.10.102:9101'
+
+  # Arm 4: the textfile vanished after the collector had been running, so no
+  # slabinfo series exists and the three arms above evaluate over an empty vector.
+  - interval: 5m
+    input_series:
+      - series: 'up{job="node-exporter-host", instance="10.0.10.102:9101"}'
+        values: '1+0x12'
+      - series: 'node_slabinfo_collector_success{job="node-exporter-host", instance="10.0.10.102:9101"}'
+        values: '1 1 1'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: SlabinfoCollectorDegraded
+        exp_alerts: []
+      - eval_time: 60m
+        alertname: SlabinfoCollectorDegraded
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: node-exporter-host
+              instance: '10.0.10.102:9101'
+
+  # Arm 4's 7d guard: a collector never deployed on this host has no series to
+  # regress from, so the exporter being up on its own stays silent.
+  - interval: 5m
+    input_series:
+      - series: 'up{job="node-exporter-host", instance="10.0.10.102:9101"}'
+        values: '1+0x24'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: SlabinfoCollectorDegraded
+        exp_alerts: []
+      - eval_time: 115m
+        alertname: SlabinfoCollectorDegraded
+        exp_alerts: []
+
+  # A healthy collector: success=1, the timestamp advances with the clock and
+  # every named cache is present.
+  - interval: 5m
+    input_series:
+      - series: 'up{job="node-exporter-host", instance="10.0.10.102:9101"}'
+        values: '1+0x12'
+      - series: 'node_slabinfo_collector_success{job="node-exporter-host", instance="10.0.10.102:9101"}'
+        values: '1+0x12'
+      - series: 'node_slabinfo_collector_last_success_seconds{job="node-exporter-host", instance="10.0.10.102:9101"}'
+        values: '0+300x12'
+      - series: 'node_slab_cache_present{job="node-exporter-host", instance="10.0.10.102:9101", cache="skbuff_ext_cache"}'
+        values: '1+0x12'
+      - series: 'node_slab_cache_present{job="node-exporter-host", instance="10.0.10.102:9101", cache="file_lock_cache"}'
+        values: '1+0x12'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: SlabinfoCollectorDegraded
         exp_alerts: []

@@ -122,7 +122,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "max(unbound_up{instance=~\".*150.*\"})",
+          "expr": "max(unbound_up{instance=~\"10.0.10.150:.*\"})",
           "legendFormat": "dns-01",
           "refId": "A"
         }
@@ -160,7 +160,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "max(unbound_up{instance=~\".*160.*\"})",
+          "expr": "max(unbound_up{instance=~\"10.0.10.160:.*\"})",
           "legendFormat": "dns-02",
           "refId": "A"
         }

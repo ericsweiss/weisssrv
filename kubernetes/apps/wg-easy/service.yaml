@@ -1,9 +1,9 @@
 ---
 # WireGuard UDP endpoint. MetalLB L2 announces the pinned VIP .99 (vpn-pool in
-# infrastructure/configs/metallb-ip-pools.yaml). externalTrafficPolicy: Local
-# preserves the real client source IP (WireGuard needs it for peer endpoint
-# tracking + roaming) and, with MetalLB L2, forces the announcing node to be the
-# one running the pod. The physical router forwards WAN :51820/udp -> .99.
+# infrastructure/configs/metallb-ip-pools.yaml). externalTrafficPolicy Local
+# keeps the client source IP and pins the announcement to the pod's node.
+
+# The physical router forwards WAN :51820/udp to .99.
 apiVersion: v1
 kind: Service
 metadata:

@@ -1,10 +1,7 @@
 ---
-# Unlike the other six overlays, nzbget swaps the shared authentik-auth
-# middleware (skeleton index 1) for authentik-auth-basic: its proxy provider
-# injects the NZBGet ControlUsername/ControlPassword as an Authorization header
-# and only the -basic variant forwards it — the shared one strips every
-# authResponseHeaders entry from the client request (apps/authentik/middleware.yaml),
-# which would cost SSO users a second login.
+# nzbget swaps the shared authentik-auth middleware for authentik-auth-basic.
+# Its proxy provider injects NZBGet credentials as an Authorization header and
+# only the -basic variant forwards it (apps/authentik/middleware.yaml).
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: downloads
@@ -21,13 +18,10 @@ patches:
       - op: replace
         path: /spec/routes/0/match
         value: Host(`nzbget.${cluster_internal_domain}`)
-      # Guard the positional replace below (same rail the _vpn-sidecar overlays
-      # use): index 1 is authentik-auth only as long as nobody prepends to the
-      # shared chain. If someone adds e.g. a rate-limiter at the front, index 1
-      # becomes lan-tailscale-only and this patch would silently swap the IP
-      # allowlist for an auth middleware — leaving nzbget.esweiss.com reachable
-      # from anywhere Traefik is, with `kustomize build` still exiting 0. The
-      # test turns that into a loud build failure.
+      # CRITICAL: guards the positional replace below. Index 1 is authentik-auth
+      # only while nobody prepends to the shared chain; a prepend would make this
+      # patch swap the IP allowlist for an auth middleware, exposing nzbget
+      # wherever Traefik is, with `kustomize build` still exiting 0.
       - op: test
         path: /spec/routes/0/middlewares/1/name
         value: authentik-auth

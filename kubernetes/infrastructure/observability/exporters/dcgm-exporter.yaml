@@ -1,10 +1,7 @@
 ---
-# NVIDIA DCGM exporter — GPU telemetry (utilisation, memory, temperature, power,
-# SM clocks, ECC) for the pve-prec-01 1660 Ti. The k8s device plugin advertises
-# the GPU but exports NO metrics; DCGM does. Runs as a DaemonSet pinned to the
-# GPU node. It does NOT request nvidia.com/gpu (that would consume the node's
-# single GPU allocation, which the Hindsight llama container needs) — instead it
-# monitors via NVML with NVIDIA_VISIBLE_DEVICES=all under the nvidia runtime.
+# NVIDIA DCGM exporter — GPU telemetry for the pve-prec-01 1660 Ti, as a DaemonSet
+# pinned to the GPU node. It monitors via NVML with NVIDIA_VISIBLE_DEVICES=all and
+# does NOT request nvidia.com/gpu, which Hindsight's llama container needs (docs/43).
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -33,6 +30,9 @@ spec:
       # (RuntimeClass in infrastructure/controllers/nvidia-device-plugin).
       runtimeClassName: nvidia
       automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: dcgm-exporter
           image: nvcr.io/nvidia/k8s/dcgm-exporter:${dcgm_exporter_version}
@@ -44,10 +44,9 @@ spec:
             # consumer (the llama container) can be correlated in Grafana.
             - name: DCGM_EXPORTER_KUBERNETES
               value: "true"
-            # Monitor every GPU on the node WITHOUT consuming a device-plugin
-            # allocation. If DCGM exports no DCGM_FI_DEV_* series, the container
-            # toolkit needs accept-nvidia-visible-devices-envvar-when-unprivileged
-            # =true (docs/43); GpuExporterNoMetrics detects that state.
+            # No DCGM_FI_DEV_* series means the container toolkit needs
+            # accept-nvidia-visible-devices-envvar-when-unprivileged=true
+            # (docs/43); GpuTelemetryMissing detects that state.
             - name: NVIDIA_VISIBLE_DEVICES
               value: all
             - name: NVIDIA_DRIVER_CAPABILITIES
@@ -86,10 +85,9 @@ spec:
               memory: 256Mi
             limits:
               memory: 1Gi
-          # DCGM_EXPORTER_KUBERNETES needs the kubelet pod-resources socket to
-          # map each GPU metric back to the consuming pod/namespace (the labels
-          # the ServiceMonitor + dashboards expect); without it the k8s mapping
-          # silently produces metrics with no pod labels.
+          # DCGM_EXPORTER_KUBERNETES needs the kubelet pod-resources socket to map
+          # each GPU metric back to the consuming pod/namespace; without it the
+          # metrics carry no pod labels.
           volumeMounts:
             - name: pod-resources
               mountPath: /var/lib/kubelet/pod-resources
@@ -116,3 +114,20 @@ spec:
     - name: metrics
       port: 9400
       targetPort: metrics
+
+---
+# jobLabel sets job=dcgm-exporter for the GPU dashboard + alert selectors.
+# In-namespace, so allow-intra-namespace-ingress already admits the scrape.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: dcgm-exporter
+  namespace: observability
+spec:
+  jobLabel: app.kubernetes.io/name
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: dcgm-exporter
+  endpoints:
+    - port: metrics
+      interval: 30s

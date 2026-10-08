@@ -54,6 +54,7 @@ Internet
         +-- vip-wg-easy   (10.0.10.99)  - MetalLB wg-easy VPN endpoint (UDP)
         +-- vip-public    (10.0.10.100) - MetalLB public ingress
         +-- vip-internal  (10.0.10.101) - MetalLB internal services
+        +-- vip-syslog    (10.0.10.162) - MetalLB alloy-syslog receiver (UDP 514, LAN-only)
         +-- k3s-api       (10.0.10.161) - kube-vip K3s API HA endpoint
 ```
 
@@ -86,6 +87,14 @@ uplink through a **2-NIC active-backup bond** (`nic0`/`nic1`, hand-maintained in
 `/etc/network/interfaces`); the other hosts are single-NIC. See
 [docs/34-bond-mac-flapping.md](34-bond-mac-flapping.md).
 
+pve-nas-01 uplinks at 10 GbE on nic1 (Marvell AQC113, VLAN 10 tagged via
+`nic1.10`); every other host is 1 GbE. The k3s ingress pool deliberately excludes
+k3s-agt-nas-01 — it carries no `esweiss.com/ingress` label and none of the
+`sg-k3s-ingress-*` groups — to keep the request path off the storage host.
+Proxied throughput to the NAS-hosted origins (gitlab .153, nextcloud .156,
+immich .157) therefore rides an ingress node's 1 GbE uplink twice, and the
+10 GbE port serves NFS and replication fan-out.
+
 ### IP Allocation Strategy
 
 | Range | Purpose | Status |
@@ -94,7 +103,7 @@ uplink through a **2-NIC active-backup bond** (`nic0`/`nic1`, hand-maintained in
 | 10.0.10.99-101 | MetalLB VIPs (`vpn-pool` .99 / public .100 / internal .101) | Active |
 | 10.0.10.102-109 | Proxmox hosts | Active (.102-.107) |
 | 10.0.10.150-159 | Infrastructure services (DNS, SMTP, apps) | Active (.150-.158) |
-| 10.0.10.160-169 | Additional infrastructure services | Active (.160 dns-02) |
+| 10.0.10.160-169 | Additional infrastructure services | Active (.160 dns-02, .162 syslog VIP) |
 | 10.0.10.200-207 | K3s agent VMs (subnet: 10.0.10.200/29) | Active (.202-.207) |
 | 10.0.10.220-227 | K3s server VMs (.222/.223 in 10.0.10.220/29; .227 is outside it) | Active (.222, .223, .227) |
 
@@ -192,7 +201,8 @@ canonical home for implementation status.
 ## Related documentation
 
 - [docs/00-hardware-setup.md](00-hardware-setup.md) — hardware inventory and Proxmox install
-- [docs/46-unifi-network.md](46-unifi-network.md) — the UniFi tier: VLANs, zone firewall, port map, cutover runbook
+- [docs/46-unifi-network.md](46-unifi-network.md) — the UniFi tier: VLANs, zone firewall, port map, day-2 ops
+- [docs/48-unifi-audit-and-migration.md](48-unifi-audit-and-migration.md) — the 2026-08 audit, bring-up and renumber record
 - [docs/11-firewall.md](11-firewall.md) — firewall IP sets and security groups
 - [docs/19-k3s-deployment.md](19-k3s-deployment.md) — the k3s cluster layer
 - [docs/16-next-steps.md](16-next-steps.md) — remaining work and accepted risks

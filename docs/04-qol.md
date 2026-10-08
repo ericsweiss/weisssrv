@@ -19,7 +19,7 @@ The `qol` role configures a comfortable development environment for the `eric` u
 Applied by the `qol` Ansible role:
 
 ```bash
-ansible-playbook ansible/playbooks/site.yml --tags qol
+ansible-playbook -i ansible/inventories/prod ansible/playbooks/site.yml --tags qol
 ```
 
 ### Oh My Zsh Theme
@@ -30,58 +30,15 @@ Provides a clean, informative prompt with git status integration.
 
 ### Plugins
 
-The following Oh My Zsh plugins are configured:
-
-```yaml
-qol_omz_plugins:
-  - 1password          # 1Password CLI completions
-  - ansible            # Ansible completions
-  - command-not-found  # Suggests package for missing commands
-  - docker             # Docker completions
-  - docker-compose     # Docker Compose completions
-  - dotenv             # Auto-load .env files
-  - fzf                # Fuzzy finder integration
-  - git                # Git aliases and completions
-  - golang             # Go development tools
-  - kubectl            # Kubernetes CLI completions
-  - rsync              # Rsync completions
-  - systemd            # Systemd unit management shortcuts
-  - terraform          # Terraform completions
-  - tmux               # Tmux integration and aliases
-  - vscode             # VS Code integration
-```
+Plugins, the theme and the Oh My Zsh / Vundle pins are role defaults: weisssrv-lib
+`ansible_collections/weisssrv/infra/roles/qol/defaults/main.yml`. Override them
+per host or group in `group_vars` / `host_vars`.
 
 ### Custom Aliases
 
-Located in `~/.alias.zsh`, deployed from weisssrv-lib
-`ansible_collections/weisssrv/infra/roles/qol/templates/alias.zsh.j2` (the source
-of truth — the listing below is a summary and can drift):
-
-```bash
-export EDITOR="nvim"
-
-# Config editing
-alias ez="$EDITOR ~/.zshrc"       # Edit Zshrc
-alias ea="$EDITOR ~/.alias.zsh"   # Edit Alias
-alias el="$EDITOR ~/.local.zsh"   # Edit Local
-alias sz='exec zsh'               # Source Zsh
-
-# Bookmarks
-alias @tmp='cd ~/tmp'
-alias @downloads='cd ~/Downloads'
-alias @src='cd ~/src'
-alias @repo='cd ~/src/repo'
-
-# Directory navigation
-alias ..='cd ..'           # up one directory
-alias ...='cd ../..'       # up two directories
-alias ....='cd ../../..'   # up three directories
-
-# Applications
-alias v='nvim'
-alias vim='nvim'
-alias kn='kubectl config set-context --current --namespace'
-```
+`~/.alias.zsh` is rendered from weisssrv-lib
+`ansible_collections/weisssrv/infra/roles/qol/templates/alias.zsh.j2`, which is
+the source of truth for the alias set.
 
 ### Shell Files
 
@@ -94,15 +51,8 @@ alias kn='kubectl config set-context --current --namespace'
 
 ### Installation
 
-Neovim is installed with the Vundle plugin manager (bootstrapped by the role
-itself, not listed as a plugin) and these `qol_nvim_plugins` defaults:
-
-```yaml
-qol_nvim_plugins:
-  - tpope/vim-fugitive           # Git integration
-  - sheerun/vim-polyglot         # Language pack
-  - joshdick/onedark.vim         # Color scheme (qol_nvim_colorscheme: onedark)
-```
+Neovim is installed with the Vundle plugin manager, bootstrapped by the role
+itself. The plugin set is the `qol_nvim_plugins` role default.
 
 ### Configuration
 
@@ -144,76 +94,13 @@ set tabstop=4 shiftwidth=4 softtabstop=0 expandtab smarttab
 ### Installed Packages
 
 The `qol` role installs its own `qol_packages` on top of the base set, so
-`--tags qol` is standalone:
+`--tags qol` is standalone; both lists are role defaults in weisssrv-lib
+`ansible_collections/weisssrv/infra/roles/qol/defaults/main.yml`. The
+site-wide package list the `base` role installs is `base_common_packages` in
+`ansible/inventories/prod/group_vars/all.yml`.
 
-```yaml
-qol_packages:
-  - zsh
-  - neovim          # also in base base_common_packages
-  - fzf
-  - ripgrep
-  - fd-find
-```
-
-Oh My Zsh is installed at a pinned commit (`qol_omz_commit` in
-weisssrv-lib `ansible_collections/weisssrv/infra/roles/qol/defaults/main.yml`) rather than tracking `master` — bump it
-deliberately like any other version pin.
-
-Common development tools installed by the `base` role:
-
-```yaml
-base_common_packages:
-  - curl
-  - wget
-  - neovim
-  - htop
-  - tmux
-  - screen
-  - git
-  - jq              # JSON processor
-  - unzip
-  - rsync
-  - net-tools       # ifconfig, netstat, etc.
-  - dnsutils        # dig, nslookup, etc.
-  - ca-certificates
-  - gnupg
-  - lsb-release
-  - sudo
-  - pciutils        # lspci (e1000e NIC detection workaround)
-```
-
-### tmux
-
-Terminal multiplexer for managing multiple terminal sessions.
-
-**Basic usage**:
-```bash
-# Start new session
-tmux
-
-# Detach: Ctrl+b, then d
-# List sessions
-tmux ls
-
-# Attach to session
-tmux attach -t 0
-```
-
-### fzf (Fuzzy Finder)
-
-Fast file and command finder with Oh My Zsh integration.
-
-**Basic usage**:
-```bash
-# Fuzzy find files
-Ctrl+T
-
-# Fuzzy find command history
-Ctrl+R
-
-# Fuzzy cd into directory
-Alt+C
-```
+Oh My Zsh is installed at a pinned commit (`qol_omz_commit`) rather than
+tracking `master`, so bump it deliberately like any other version pin.
 
 ## Custom Configuration
 
@@ -258,10 +145,10 @@ belongs in `~/.local.zsh` (per-host overrides, not managed by Ansible).
 
 ```bash
 # Deploy to all Proxmox hosts
-ansible-playbook ansible/playbooks/site.yml --tags qol
+ansible-playbook -i ansible/inventories/prod ansible/playbooks/site.yml --tags qol
 
 # Deploy to specific host
-ansible-playbook ansible/playbooks/site.yml --tags qol --limit pve-nas-01
+ansible-playbook -i ansible/inventories/prod ansible/playbooks/site.yml --tags qol --limit pve-nas-01
 ```
 
 ## Troubleshooting
@@ -280,7 +167,7 @@ ansible-playbook ansible/playbooks/site.yml --tags qol --limit pve-nas-01
 
 3. **Re-run role**:
    ```bash
-   ansible-playbook ansible/playbooks/site.yml --tags qol --limit $(hostname)
+   ansible-playbook -i ansible/inventories/prod ansible/playbooks/site.yml --tags qol --limit $(hostname)
    ```
 
 ### Plugin Not Working

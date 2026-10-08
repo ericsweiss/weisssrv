@@ -1,31 +1,6 @@
-# Forward-auth (single application) proxy providers, served by the embedded
-# outpost (outpost.tf). They share one shape — only name + external_host (and
-# the basic-auth block, below) vary — so they are now ONE map consumed by the
-# library module's `for_each`, where they used to be ten explicit resources.
-#
-# A half-imported state produces a plan full of creates for objects that already
-# exist, so import.sh must run to completion and `terraform plan` must be clean
-# before anything is applied. import.sh and imports.tf name the keys below.
-#
-# Shared shape notes:
-# - property_mappings is deliberately NOT set (the module never sets it):
-#   authentik auto-assigns the five default scope mappings to every proxy
-#   provider, and the goauthentik provider only manages this field when it is
-#   explicitly configured (its Read skips the field otherwise) — configuring it
-#   would leave a permanent phantom "+ property_mappings" diff on the imported
-#   state. See README "Provider quirks".
-# - Basic-auth INJECTION (basic_auth_enabled true + the two *_attribute names)
-#   is on for providers whose upstream keeps its own credential check: the
-#   outpost reads the named attributes from the user (group attributes merge
-#   into user attributes — groups.tf stores them on the app's access group)
-#   and sends them as the Authorization header; the dedicated
-#   authentik-auth-basic Traefik middleware forwards it upstream. Currently:
-#   nzbget (nzbget_user/nzbget_password on media-admins) and the two AdGuard
-#   providers (adguard_user/adguard_password on dns-admins). All other
-#   providers keep injection disabled with both attribute fields empty. These
-#   fields name ATTRIBUTES — never put a literal credential in them.
-# - every provider carries the module's prevent_destroy: a renamed key plans as
-#   destroy+create and breaks that app's forward-auth (README § Guardrails).
+# Forward-auth proxy providers served by the embedded outpost (outpost.tf).
+# Each entry is name, external_host and optional basic-auth attribute names,
+# consumed by the library module's for_each. README § Basic-auth injection.
 
 locals {
   # Shared posture, pinned here so a library default change cannot rewrite live
@@ -69,9 +44,8 @@ locals {
     }
 
     # NZBGet validates HTTP Basic against its own ControlUsername/ControlPassword
-    # and has no External auth mode, so injection kills the double-login. Values
-    # live on the media-admins group (groups.tf). The nzbget IngressRoute must use
-    # the authentik-auth-basic middleware or the header is stripped.
+    # and has no External auth mode, so injection kills the double-login. Its
+    # IngressRoute must use the authentik-auth-basic middleware.
     nzbget = {
       name          = "NZBGet"
       external_host = "https://nzbget.esweiss.com"
@@ -96,14 +70,9 @@ locals {
       external_host = "https://vpn.esweiss.com"
     }
 
-    # AdGuard Home SSO dashboards (Terraform-authored, docs/08)
-    # One provider per hostname (forward_single matches exactly one external
-    # host): adguard.esweiss.com -> dns-01, adguard-02.esweiss.com -> dns-02.
-    # Both inject the AdGuard admin credentials (adguard_user/adguard_password
-    # attributes on the dns-admins group, from the 'AdGuard Home' 1Password item)
-    # — AdGuard has no external-auth mode, so injection is what makes the SSO
-    # hostnames log straight in. The raw dns-01/dns-02.esweiss.com routes and the
-    # direct IPs stay untouched as the cluster-outage break-glass path.
+    # AdGuard Home SSO dashboards, one provider per hostname (forward_single
+    # matches exactly one host). Both inject the admin credentials held on the
+    # dns-admins group; the raw dns-01/dns-02 routes are break-glass (docs/08).
     adguard_01 = {
       name          = "AdGuard Home dns-01"
       external_host = "https://adguard.esweiss.com"
@@ -123,19 +92,16 @@ locals {
     }
 
     # Traefik dashboard (api@internal). No injection: the dashboard has no
-    # backend login at all, so forward-auth IS its only identity gate — the
-    # route also keeps lan-tailscale-strict in front of it
-    # (infrastructure/controllers/traefik/release.yaml).
+    # backend login, so forward-auth is its only identity gate. The route also
+    # keeps lan-tailscale-strict in front of it.
     traefik_dashboard = {
       name          = "Traefik Dashboard"
       external_host = "https://traefik.esweiss.com"
     }
 
-    # Uptime Kuma admin UI (docs/45). The INTERNAL hostname only: the external
-    # status.ericsweiss.com router publishes the read-only status page and has
-    # no admin path for a provider to gate, so forward_single needs just this
-    # one host. No injection — Kuma keeps its own single-account login
-    # underneath the outpost, and its login form is not HTTP Basic.
+    # Uptime Kuma admin UI, internal hostname only: the external status router
+    # publishes the read-only status page and has no admin path to gate. No
+    # injection; Kuma's own login form is not HTTP Basic (docs/45).
     uptime_kuma = {
       name          = "Uptime Kuma"
       external_host = "https://status.esweiss.com"

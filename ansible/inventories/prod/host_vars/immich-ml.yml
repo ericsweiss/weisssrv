@@ -12,9 +12,8 @@ proxmox_lxc_swap: 2048
 # 64G rootfs: the OpenVINO model cache is multi-GB and lives in the rootfs
 # (named docker volume) — it is re-downloadable cache, not state.
 proxmox_lxc_disk_size: 64G
-# ssd (encrypted): the role only places NEW containers — the live rootfs was
-# created on local-lvm and is migrated once with
-# `pct move-volume 158 rootfs ssd --delete` (stopped, at a deploy window).
+# ssd (encrypted): the role only places NEW containers. Migrate a live rootfs
+# once with `pct move-volume 158 rootfs ssd --delete`, stopped, at a window.
 proxmox_lxc_storage: ssd
 
 # Docker runs inside the container (compose stack). keyctl is required
@@ -22,13 +21,9 @@ proxmox_lxc_storage: ssd
 proxmox_lxc_nesting: true
 proxmox_lxc_keyctl: true
 
-#
-# onboot=0: the rootfs lives on the ENCRYPTED ssd pool, so pct start fails
-# until ssd unlocks. Like plex, this CT is started by
-# pve-start-encrypted-guests.service AFTER zfs-mount-encrypted.service unlocks
-# ssd — NOT by pve-guests at boot (zfs_encryption_guest_ctids in
-# host_vars/pve-nas-01.yml; docs/32-zfs-encryption.md).
-# Order 57 places it after the other apps (nextcloud 55, immich 56).
+# onboot=0: the rootfs lives on the ENCRYPTED ssd pool, so pct start fails until
+# ssd unlocks; pve-start-encrypted-guests.service starts it (docs/32). Order 57
+# places it after nextcloud (55) and immich (56).
 proxmox_lxc_onboot: false
 proxmox_lxc_startup_order: 57
 proxmox_lxc_startup_delay: 10
@@ -37,8 +32,12 @@ proxmox_lxc_startup_delay: 10
 # docker volume — there is no host state to bind in. (proxmox_lxc applies the
 # GPU lxc.idmap whenever proxmox_lxc_gpu_passthrough is set, bind mounts or not.)
 
-# GPU passthrough for Intel Arc B580 OpenVINO ML inference.
-# /dev/dri is SHARED with the plex LXC (vmid 152): LXC passthrough bind-mounts
-# the host device nodes non-exclusively, so the kernel (xe driver) arbitrates
-# between consumers — Plex transcode and ML inference coexist on the one card.
+# GPU passthrough for OpenVINO ML inference. /dev/dri is SHARED with the plex
+# LXC (152): passthrough bind-mounts the device nodes non-exclusively, so the xe
+# driver arbitrates between Plex transcode and ML inference.
 proxmox_lxc_gpu_passthrough: true
+
+# The inference API is authless, so publish it only on the LAN address the
+# Immich VM reaches, on top of the sg-immich-ml rule. Probe it from the VM or
+# from this guest at its own address, not at 127.0.0.1.
+immich_ml_bind: "{{ ansible_host }}"

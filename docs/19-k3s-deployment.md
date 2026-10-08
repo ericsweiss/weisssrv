@@ -2,6 +2,23 @@
 
 This guide walks through deploying the 9-node k3s cluster (3 servers + 6 agents) and the Flux GitOps platform that manages every workload on top of it.
 
+## Overview
+
+Cluster topology: 9 nodes — 3 servers (etcd quorum, .222/.223/.227) + 6 agents
+(.202-.207). The canonical node-by-node list with IPs, host placement, and
+roles lives in `docs/01-overview.md`; `ansible/inventories/prod/hosts.yml` is
+the machine-readable source.
+
+Cluster features:
+- **kube-vip** - API VIP at 10.0.10.161
+- **MetalLB** - LoadBalancer IPs; four single-/32 pools are defined in
+  `kubernetes/infrastructure/configs/metallb-ip-pools.yaml` (.100 public, .101
+  internal, .99 wg-easy UDP endpoint, .162 alloy-syslog UDP 514)
+- **Traefik** - Ingress controller
+- **external-dns** - Automatic Cloudflare DNS management
+
+---
+
 ## Quick Reference: Complete Deployment Workflow
 
 K3s deployment is a three-phase approach:
@@ -44,9 +61,12 @@ export KUBECONFIG=~/.kube/config-k3s
 kubectl get nodes  # Verify cluster
 
 # === PHASE 3: Flux bootstrap ===
-# 3a. Create the bootstrap secrets (1P Connect credentials for ESO)
-# Run `task flux:bootstrap-onepassword` for instructions, then create manually.
+# 3a. Create the bootstrap Secrets (1P Connect credentials for ESO).
+#     The first task prints the procedure; run `op connect server create` as it
+#     instructs (it writes ./1password-credentials.json), then the apply task
+#     mints the Connect token and creates both Secrets.
 task flux:bootstrap-onepassword
+task flux:bootstrap-onepassword-apply
 
 # 3b. Bootstrap Flux (reads Flux GitLab PAT from 1P, commits flux-system/ to this repo)
 task flux:bootstrap
@@ -95,63 +115,6 @@ Helm releases, rotate secrets, add an app, suspend/resume, troubleshoot).
 
 ---
 
-## Idempotency and Upgrades
-
-**All k3s Ansible tasks are idempotent** — safe to re-run at any time without side effects.
-
-### Ansible Tasks (`task k3s:deploy`)
-
-| Operation | Idempotency Mechanism |
-|-----------|----------------------|
-| K3s server install | Version check - installs/upgrades when version differs |
-| K3s agent install | Version check - installs/upgrades when version differs |
-| Config files | Template tasks with notify - only restarts on change |
-| Node labels/taints | `--overwrite` flag - safe to re-apply |
-| kube-vip manifest | Template task - only updates if changed |
-| Package installation | `state: present` - no-op if installed |
-
-### K3s Version Upgrades
-
-To upgrade k3s to a new version:
-
-1. **Update the version** in `ansible/inventories/prod/group_vars/all.yml`:
-   ```yaml
-   k3s_version: "v<new>+k3s1"  # New version (must be >= the current pin in all.yml)
-   ```
-
-2. **Run the node upgrade task** - it drains and upgrades each node in turn:
-   ```bash
-   task maintenance:update-k3s-nodes
-   ```
-
-### Flux-Managed Workloads
-
-| Operation | Mechanism |
-|-----------|-----------|
-| HelmReleases | helm-controller via `flux reconcile` (every 30 minutes by default) |
-| Kustomizations | kustomize-controller via `flux reconcile` (every 10 minutes by default) |
-| ExternalSecrets | ESO polls 1Password (24h refresh by default) or on-demand via `task flux:refresh-secret -- <ns>/<name>` |
-| Substitutions | Flux re-renders every reconcile using the `cluster-versions` ConfigMap |
-
-Flux is itself idempotent — safe to run `task flux:reconcile` anytime.
-
----
-
-## Overview
-
-Cluster topology: 9 nodes — 3 servers (etcd quorum, .222/.223/.227) + 6 agents
-(.202-.207). The canonical node-by-node list with IPs, host placement, and
-roles lives in `docs/01-overview.md`; `ansible/inventories/prod/hosts.yml` is
-the machine-readable source.
-
-Cluster features:
-- **kube-vip** - API VIP at 10.0.10.161
-- **MetalLB** - LoadBalancer IPs; pools are defined in
-  `kubernetes/infrastructure/configs/metallb-ip-pools.yaml` (.100 public, .101
-  internal, .99 wg-easy UDP endpoint)
-- **Traefik** - Ingress controller
-- **external-dns** - Automatic Cloudflare DNS management
-
 ## Prerequisites
 
 ### 1. 1Password Setup
@@ -186,9 +149,10 @@ openssl rand -base64 32
 
 The server config advertises it via `agent-token`, and the role reconciles each
 agent's `K3S_TOKEN` on the next deploy; the token is only used at join time, so
-existing nodes stay registered through a change. If `K3S_AGENT_TOKEN` is unset
-the role falls back to the cluster token, but every wired call site passes it —
-a missing item hard-fails `op run`.
+existing nodes stay registered through a change. An unset `K3S_AGENT_TOKEN`
+hard-fails the play, the same as `K3S_TOKEN` — `group_vars/k3s.yml` resolves
+both with `or undef(hint=...)`. Every wired call site injects it through the
+op-run wrapper.
 
 **Rollout order:** deploy servers first (they advertise the agent token via a
 serial control-plane restart), then agents; verify all nodes return to `Ready`
@@ -361,7 +325,7 @@ gate on observability health). A seventh stage,
 `infrastructure-metrics-server`, sits **off** that chain — it dependsOn
 `sources` only, so a metrics-server problem cannot stall the platform (see the
 header of `kubernetes/clusters/weisssrv/infrastructure-metrics-server.yaml` and
-docs/33 § metrics-server). The
+docs/33 § Components). The
 canonical description of each stage's role and membership lives in
 `docs/29-flux-operations.md`; each stage's `kustomization.yaml` under
 `kubernetes/infrastructure/` and `kubernetes/apps/` is the current set.
@@ -478,6 +442,48 @@ dig k3s.esweiss.com @10.0.10.150
 # External DNS (verify external-dns logs)
 kubectl logs -n external-dns -l app.kubernetes.io/name=external-dns -f
 ```
+
+## Idempotency and Upgrades
+
+**All k3s Ansible tasks are idempotent** — safe to re-run at any time without side effects.
+
+### Ansible Tasks (`task k3s:deploy`)
+
+| Operation | Idempotency Mechanism |
+|-----------|----------------------|
+| K3s server install | Version check - installs/upgrades when version differs |
+| K3s agent install | Version check - installs/upgrades when version differs |
+| Config files | Template tasks with notify - only restarts on change |
+| Node labels/taints | `--overwrite` flag - safe to re-apply |
+| kube-vip manifest | Template task - only updates if changed |
+| Package installation | `state: present` - no-op if installed |
+
+### K3s Version Upgrades
+
+To upgrade k3s to a new version:
+
+1. **Update the version** in `ansible/inventories/prod/group_vars/all.yml`:
+   ```yaml
+   k3s_version: "v<new>+k3s1"  # New version (must be >= the current pin in all.yml)
+   ```
+
+2. **Run the node upgrade task** - it drains and upgrades each node in turn:
+   ```bash
+   task maintenance:update-k3s-nodes
+   ```
+
+### Flux-Managed Workloads
+
+| Operation | Mechanism |
+|-----------|-----------|
+| HelmReleases | helm-controller via `flux reconcile` (every 30 minutes by default) |
+| Kustomizations | kustomize-controller via `flux reconcile` (every 10 minutes by default) |
+| ExternalSecrets | ESO polls 1Password (24h refresh by default) or on-demand via `task flux:refresh-secret -- <ns>/<name>` |
+| Substitutions | Flux re-renders every reconcile using the `cluster-versions` ConfigMap |
+
+Flux is itself idempotent — safe to run `task flux:reconcile` anytime.
+
+---
 
 ## Post-Deployment
 
@@ -656,67 +662,6 @@ kubectl get svc traefik -n traefik -o yaml
 kubectl describe svc traefik -n traefik
 ```
 
-### CI molecule flake: "Too many open files" (inotify exhaustion)
-
-Applies to any Molecule job on these nodes — the `integration-tests` matrix here
-and the role-scenario matrix in `weisssrv-lib`, which runs on the same runner.
-
-**Symptom.** A Molecule job fails at the prepare step:
-
-```
-TASK [Wait for systemd to be ready]
-fatal: [<role>-test]: FAILED! => {"attempts": 3, ...,
-  "stderr": "Error response from daemon: Container <id> is not running"}
-CRITICAL Ansible return code was 2 ... prepare-common.yml
-```
-
-The container is created and passes the creation-wait, then dies within ~7s.
-The failure is `script_failure` (rc 2), which the job's `retry` policy
-deliberately does **not** auto-retry, so it fails the pipeline and has
-historically needed a manual "retry job". It is intermittent, hits at any
-concurrency (even a single job), and clusters on **one node at a time**.
-
-**Root cause.** systemd PID 1 inside the test container can't allocate its
-control-group inotify watch:
-
-```
-Failed to create control group inotify object: Too many open files
-Failed to allocate manager object: Too many open files
-[!!!!!!] Failed to allocate manager object.
-Exiting PID 1...
-```
-
-`fs.inotify.max_user_instances` is a **per-UID, host-global** limit (the runner
-pods share the host user namespace). Its kernel default of **128** is drawn down
-by every uid-0 container on the node — kubelet, containerd, Flux, Prometheus,
-Alloy, and each pod's root process — all heavy inotify users. On a
-container-dense node the pool is exhausted, so the *next* systemd-in-Docker
-molecule container's `inotify_init()` returns `EMFILE` and PID 1 exits before
-molecule's prepare can reach it. Whichever node is nearest its cap fails, which
-is why it appears to roam across nodes between pipelines.
-
-**Fix (codified).** The `k3s` role raises the ceilings on every node via
-`/etc/sysctl.d/90-k3s-inotify.conf` (`k3s_inotify_*` in the role defaults):
-`fs.inotify.max_user_instances = 8192`, `fs.inotify.max_user_watches =
-1048576`. Redeploy with `task k3s:deploy` (or a role-scoped run) to apply.
-
-**Diagnose / verify limits per node:**
-
-```bash
-# Current ceiling on a node (128 = unpatched default; 8192 = fixed):
-ssh <k3s-node> cat /proc/sys/fs/inotify/max_user_instances
-
-# Apply on all nodes without a full role redeploy. max_user_instances is the
-# exhausted limit that fixes the symptom (inotify_init -> EMFILE); max_user_watches
-# is hardening the role also raises — run the second invocation for parity. Writing
-# sysctl_file= persists the same drop-in the role manages, so this survives reboot;
-# `task k3s:deploy` remains the canonical owner.
-ansible k3s_servers:k3s_agents -b -m ansible.posix.sysctl \
-  -a "name=fs.inotify.max_user_instances value=8192 sysctl_file=/etc/sysctl.d/90-k3s-inotify.conf sysctl_set=true reload=true"
-ansible k3s_servers:k3s_agents -b -m ansible.posix.sysctl \
-  -a "name=fs.inotify.max_user_watches value=1048576 sysctl_file=/etc/sysctl.d/90-k3s-inotify.conf sysctl_set=true reload=true"
-```
-
 ## Rebuilding a Server Node
 
 To rebuild a lost or corrupted server VM (including the first server) while
@@ -738,11 +683,24 @@ The role guards against the classic first-server rebuild footgun:
 otherwise render `cluster-init: true` and bootstrap a NEW single-node etcd
 cluster (fresh CA) while the surviving servers still hold the old quorum. The
 role checks for local etcd data (`/var/lib/rancher/k3s/server/db/etcd`) and
-probes the API VIP; if the node has no etcd data but the VIP already serves a
-cluster, it renders the join stanza instead. `cluster-init` is only rendered
-on a genuine first bootstrap (no local data AND a dead VIP), so the scoped
-deploy above is safe for any server. If ALL three servers are lost, that is a
+probes the API VIP and each other member of `k3s_server_group` (the
+`k3s_servers` group here, which is the role default); if the node has no etcd
+data but anything answers, it renders the join stanza instead. The scoped deploy
+above is therefore safe for any server. If ALL three servers are lost, that is a
 cluster restore, not a node rebuild — see `docs/17-disaster-recovery.md`.
+
+Nothing answering is an inability to determine, not proof that no cluster
+exists, so the role refuses to render `cluster-init` on that evidence alone. A
+genuine greenfield bootstrap must say so explicitly:
+
+```bash
+task k3s:deploy -- --limit k3s-srv-nas-01 -e k3s_bootstrap_new_cluster=true
+```
+
+The variable is not set in `hosts.yml`: it defaults to false so every ordinary
+deploy and every rebuild fails loudly rather than bootstrapping a second etcd
+cluster with a fresh CA against a surviving quorum. Pass it only when the
+cluster really is being created from nothing.
 
 ## Expanding Beyond 3 Server Nodes
 
@@ -765,7 +723,10 @@ guest on each — check the memory budget for those 14-15 GiB hosts first
 
 ### Step 1: Add New Server Nodes to Inventory
 
-Edit `ansible/inventories/prod/hosts.yml` and add entries for the new server nodes under `k3s_servers`. Set `k3s_is_first_server: false` on all new servers.
+Edit `ansible/inventories/prod/hosts.yml` and add entries for the new server
+nodes under `k3s_servers`. Set `k3s_is_first_server: false` on all new servers.
+They join the existing cluster, so `k3s_bootstrap_new_cluster` stays unset — see
+the rebuild section above for the one case that needs it.
 
 ### Step 2: Provision and Deploy
 

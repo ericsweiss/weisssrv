@@ -1,0 +1,28 @@
+# https://taskfile.dev
+# Backblaze B2 offsite-backup bucket settings, applied through the raw API.
+version: '3'
+
+tasks:
+  # Codified B2 bucket settings (docs/42); same 1Password item restic_offsite uses.
+  # Apply is supervised: a bad lifecycle rule can start expiring backup data.
+  drift:
+    desc: "Drift-check the B2 backup bucket settings against scripts/b2-bucket-drift.py (read-only)"
+    # Anchor shared by b2:drift/apply — the bucket-settings app key.
+    env: &b2_env
+      B2_APPLICATION_KEY_ID: op://Homelab/B2 Archive Backup/b2_key_id
+      B2_APPLICATION_KEY: op://Homelab/B2 Archive Backup/b2_application_key
+    preconditions: &b2_preconditions
+      - sh: command -v op
+        msg: "1Password CLI is not installed"
+      # `op account list`, not `op whoami` — see the note on infra:deploy's preconditions.
+      - sh: op account list 2>/dev/null
+        msg: "1Password CLI not authenticated. Run: eval $(op signin)"
+    cmds:
+      - op run -- python3 scripts/b2-bucket-drift.py --config scripts/b2-bucket.json
+
+  apply:
+    desc: "SUPERVISED: reconcile the B2 bucket to the codified settings — review the drift output first; a bad lifecycle rule can expire backup data"
+    env: *b2_env
+    preconditions: *b2_preconditions
+    cmds:
+      - op run -- python3 scripts/b2-bucket-drift.py --config scripts/b2-bucket.json --apply

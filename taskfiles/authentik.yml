@@ -1,0 +1,43 @@
+# https://taskfile.dev
+# Authentik SSO day-2 operations. The Terraform layer that owns the SSO
+# objects is taskfiles/terraform.yml (docs/40).
+version: '3'
+
+tasks:
+  add-user:
+    desc: Scaffold a managed authentik user into terraform/authentik/users.tf (task authentik:add-user -- <username> --name "Full Name" --email a@b.c [--groups app-x,app-y])
+    cmds:
+      - python3 scripts/authentik-add-user.py {{.CLI_ARGS}}
+
+  status:
+    desc: Show Authentik SSO status
+    cmds:
+      - task: :_app:status
+        vars:
+          NS: authentik
+          SECTIONS: |
+            Authentik Namespace|pods
+            Services|svc
+            PVCs|pvc
+            IngressRoutes|ingressroute
+
+  logs:
+    desc: "View Authentik logs (task authentik:logs [COMPONENT=server])"
+    vars:
+      COMPONENT: '{{.COMPONENT | default "server"}}'
+    cmds:
+      - task: :_app:logs
+        vars:
+          NS: authentik
+          TARGET: -l app.kubernetes.io/name=authentik,app.kubernetes.io/component={{.COMPONENT}}
+
+  restart:
+    desc: Restart Authentik server and worker
+    cmds:
+      # HelmRelease-managed, so `rollout restart` is correct here (docs/29
+      # § Restarting a Flux-managed workload).
+      - echo "Restarting Authentik..."
+      - kubectl rollout restart deployment -n authentik -l app.kubernetes.io/name=authentik
+      - echo "Waiting for rollout to complete..."
+      - kubectl rollout status deployment/authentik-server -n authentik --timeout=300s
+      - kubectl rollout status deployment/authentik-worker -n authentik --timeout=300s

@@ -1,19 +1,7 @@
 ---
-# configs/ reconciles AFTER controllers/ because every resource here is a CR
-# defined by a CRD that controllers/ installs (ClusterSecretStore needs ESO,
-# ClusterIssuer + Certificates need cert-manager, IPAddressPool needs MetalLB,
-# ExternalSecrets need ESO + ClusterSecretStore, Middlewares need Traefik).
-# Two entries are built-in kinds needing no CRD — the NetworkPolicy sets
-# (builtin-namespace-policies.yaml, kube-system-policies/), which fence
-# namespaces this repo does not otherwise own. They sit here rather than earlier
-# because nothing renders or schedules against them.
-#
-# priorityclasses.yaml lives under sources/, not here: pods in the controllers
-# stage name `platform`, and a pod whose PriorityClass does not exist yet is
-# rejected at admission (see that file's header).
-#
-# The versions-configmap.yaml lives under sources/ (not here) because it must
-# exist before controllers/ renders HelmReleases with ${var} placeholders.
+# configs/ reconciles AFTER controllers/ because nearly every resource here is a
+# CR whose CRD controllers/ installs. The PriorityClasses and the versions
+# ConfigMap live under sources/ instead; controllers/ needs both (see headers).
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:

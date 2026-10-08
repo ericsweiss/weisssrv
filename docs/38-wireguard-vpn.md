@@ -47,7 +47,9 @@ It runs as a single pod in the `wg-easy` namespace, reconciled by Flux from
 - **State**: SQLite DB + `wg0` config live on NFS at `/appdata/wg-easy`
   (`ssd/appdata/wg-easy`, ZFS-encrypted at rest, captured by the archive
   replicator for free). The DB holds the server keypair, every peer's public +
-  preshared key, and the admin credential hash — treat it as sensitive.
+  preshared key, and the admin credential hash — treat it as sensitive. SQLite
+  on NFS tolerates exactly one writer, which is why the Deployment is
+  `replicas: 1` with the `Recreate` strategy.
 - **Scheduling**: the pod is pinned to an `esweiss.com/ingress` agent
   (`nodeSelector`). With `externalTrafficPolicy: Local`, MetalLB L2 announces the
   `.99` VIP from the node running the pod, so that node **must** carry
@@ -57,14 +59,37 @@ It runs as a single pod in the `wg-easy` namespace, reconciled by Flux from
   ingress label excludes it by construction — a `general` selector would not,
   since the NAS agent is also `general` yet lacks the firewall group. State is on
   NFS, so the pod is not otherwise pinned to a specific node.
-- **Privilege**: the pod runs in a PSA `privileged` namespace. The wg-easy
-  container is root + `CAP_NET_ADMIN` only (no `SYS_MODULE` — the `wireguard`
-  kernel module is already loaded by flannel's `wireguard-native` backend on
-  every node). A one-shot **privileged initContainer** sets the pod-netns
+- **Privilege**: the pod runs in a PSA `privileged` namespace, which is
+  acceptable because wg-easy is the only workload in it; `audit` and `warn` stay
+  `restricted`, so any other pod landing there still trips an admission warning
+  and an audit annotation. The wg-easy container is root + `CAP_NET_ADMIN` only
+  (no `SYS_MODULE` — the `wireguard` kernel module is already loaded by
+  flannel's `wireguard-native` backend on every node, and no `DAC_OVERRIDE` —
+  the appdata export squashes every client to uid 1000, so the server's ACCESS
+  RPC grants root's writes and the client-side `DAC_OVERRIDE` path is never
+  reached). A one-shot **privileged initContainer** sets the pod-netns
   sysctls `net.ipv4.ip_forward=1` and `net.ipv4.conf.all.src_valid_mark=1`
   (namespaced sysctls; k3s does not allowlist them as unsafe sysctls, so setting
   them in the shared netns via an initContainer avoids a fleet-wide kubelet
   change).
+- **VIP placement**: `10.0.10.99` must stay outside the Homelab VLAN's DHCP
+  pool, which `terraform/unifi/networks.tf` codifies as
+  `10.0.10.2-10.0.10.98` and the `unifi-drift-plan` job re-checks
+  ([docs/46](46-unifi-network.md)). A colliding lease is invisible except as
+  `EndpointDown`.
+
+### Tunnel MTU
+
+`wg0` is **1420** (the wg-easy default, stored in the SQLite DB and visible in
+`wg0.conf` on the NFS volume), and the pod network is also 1420 because
+`k3s_flannel_backend` is `wireguard-native`. A full-size inner packet therefore
+yields a roughly 1480-byte outer datagram that is IP-fragmented on the node/pod
+hop rather than black-holed, since kernel WireGuard leaves DF clear.
+
+The non-fragmenting value is **1360** (1420 minus 20 IPv4, 8 UDP and 32
+WireGuard). It can only be set in the admin UI, because the value lives in the
+NFS-backed `wg-easy.db` and every peer would have to re-import its config. A CNI
+or MTU change moves it.
 
 ---
 
@@ -113,6 +138,12 @@ pod IPs) is dropped — so a connected client genuinely **cannot reach internal
 DNS**, matching the user-confirmed invariant. Client DNS to `1.1.1.1` is public
 and covered by the internet rule.
 
+There are deliberately no in-pod `iptables` hooks: the CNI egress policy is
+enforced outside the pod, so nothing that manipulates the pod's own netns can
+undo it, and it survives wg-easy upgrades. wg-easy's optional Per-Client
+Firewall (Admin Panel → Interface) can further restrict individual clients but
+is not part of the no-LAN fence and is not configured.
+
 ### Inbound endpoint scoping — Proxmox host firewall (not a no-LAN egress layer)
 The only inbound path is the WAN `:51820/udp` forward to the `.99` VIP. The
 `sg-k3s-ingress-pub` rule that admits it is **`-dest`-scoped to `10.0.10.99`**,
@@ -122,26 +153,6 @@ so it opens the wg-easy endpoint without exposing the node's own `:51820/udp`
 does **nothing** to fence a *connected* client out of the LAN (that is Layers 1–2
 above). Egress from the k3s VMs is already permitted at the guest-firewall level;
 the CNI NetworkPolicy is the meaningful egress control.
-
-### Deviation from the original spec — no in-pod iptables hooks
-The original (user-confirmed) design called for a third *in-pod* enforcement
-layer: `iptables` `FORWARD … -j DROP` post-up hooks inside wg-easy that drop
-LAN-destined forwarded client traffic. That was **intentionally dropped** in
-favour of the CNI-layer egress NetworkPolicy (Layer 2 above), which is a strictly
-stronger, config-independent guarantee: it is enforced *outside* the pod by the
-CNI, so it cannot be undone by anything that manipulates the pod's own
-netns/iptables, and it does not depend on wg-easy's hook configuration surviving
-upgrades. The one thing an in-pod `FORWARD` drop covers that a plain
-NetworkPolicy cannot express — blocking forwarded client traffic to the CoreDNS
-*ClusterIP* while still letting the pod resolve names — is instead handled by
-giving the pod its **own** public resolver (`dnsPolicy: None`) and removing the
-`kube-dns` egress allow, which makes Layer 2 a genuine superset (see Layer 2).
-wg-easy's optional **Per-Client Firewall** (Admin Panel → Interface)
-remains available to further restrict individual clients, but is not required for
-the no-LAN fence and is not configured by default. Consequently the verification
-runbook below tests the **two real enforcement points** (client DNS + the
-NetworkPolicy egress, including the internal-DNS check) — there is no separate
-"iptables hooks" layer to verify, by design.
 
 ### Threat model summary
 - **Untrusted client** (compromised friend device): can browse the internet via
@@ -165,10 +176,12 @@ NetworkPolicy egress, including the internal-DNS check) — there is no separate
 
 ---
 
-## Deploy plan
+## Rebuild reference
 
-Order matters only in that the 1Password item and the router forward are manual
-prerequisites; the Flux/Ansible/Terraform changes are otherwise independent.
+Everything below is already in place. It is recorded so the VPN can be
+reconstructed, not as a checklist to work through. Only the 1Password item and
+the WAN forward are manual prerequisites; the Flux, Ansible and Terraform state
+is otherwise independent and already committed.
 
 ### 1. Create the 1Password item (operator)
 In the **Homelab** vault, create item **`WireGuard VPN`** with fields:
@@ -194,30 +207,25 @@ ansible-playbook -i ansible/inventories/prod ansible/playbooks/site.yml --tags p
 automatically — `ansible/inventories/prod/hosts.yml` and `ansible/requirements.yml`
 are triggers — so
 the manual run above is only for out-of-band deploys.)
-(`nas_storage_appdata_dirs` gained `wg-easy`; `cluster.fw.j2` gained the VIP-scoped
-WireGuard rule.)
+The NFS export subdir comes from `nas_storage_appdata_dirs`
+(`host_vars/pve-nas-01.yml`); the VIP-scoped WireGuard rule is rendered into
+`[group sg-k3s-ingress-pub]` by the collection's `cluster.fw.j2` from
+`proxmox_firewall_wan_wireguard_vips` (`group_vars/all.yml`).
 
 ### 3. Terraform — external DNS record
 ```bash
 # review the new module.zone.cloudflare_record.protected_external_content["vpn"]
 # (A, DNS-only) — the entry itself is local.dns_records["vpn"] in dns.tf
-task terraform:plan
-task terraform:apply
+task terraform:cloudflare-plan
+task terraform:cloudflare-apply
 # seed the live IP immediately (record is created at the placeholder until the
 # next DDNS run):
 kubectl -n cloudflare-ddns create job --from=cronjob/cloudflare-ddns manual-$(date +%s)
 ```
 
-### 4. Flux — the app + platform edits
-Commit + push the branch, merge the MR. Flux reconciles:
-- `kubernetes/apps/wg-easy/` (the app)
-- `metallb-ip-pools.yaml` (`vpn-pool` .99 + L2Advertisement)
-- `cloudflare-ddns/cronjob.yaml` (adds `vpn.ericsweiss.com`)
-- observability (ServiceMonitor + blackbox target + `WgEasyDown` alert +
-  `observability-exporter-secrets` metrics token)
-- `versions-configmap.yaml` (`wg_easy_version`)
-
-Force it if impatient: `task flux:reconcile`. Verify:
+### 4. Flux
+Commit + push the branch, merge the MR; Flux reconciles `kubernetes/`. Force it
+if impatient: `task flux:reconcile`. Verify:
 ```bash
 task wg-easy:status                          # pod Ready, svc EXTERNAL-IP 10.0.10.99
 kubectl get svc -n wg-easy wg-easy       # confirms the VIP was assigned
@@ -232,17 +240,19 @@ state:
 - The Homelab VLAN's DHCP pool stops at `.98`, so `.99` can never be leased.
 
 Change either one in the controller UI and the next `unifi-drift-plan` flags it;
-change it in `terraform/unifi/networks.tf` and apply. Historically this was a
-hand-made rule on the Asus GT-AX11000 Pro at `192.168.0.1` — that router is
-retired by the UniFi cutover, and its UI is not where this lives any more.
+change it in `terraform/unifi/networks.tf` and apply.
 
 ### 6. Enable metrics (operator, one-time)
 Log into `https://vpn.esweiss.com` (Authentik → wg-easy admin login) →
 **Admin Panel → General** → enable **Prometheus** and set the **Bearer
 password** to the exact `metrics-token` value from 1Password. The ServiceMonitor
-(`observability`) then scrapes `wireguard_*` metrics. (Until this is done the
-scrape is 401/`up=0`; no alert keys off it — `WgEasyDown` watches Deployment
-availability instead.)
+(`observability`) then scrapes `wireguard_*` metrics. No alert keys off it —
+`WgEasyDown` watches Deployment availability instead.
+
+A rebuild has to redo this step. With Prometheus disabled in the Admin Panel,
+`/metrics/prometheus` serves the Nuxt SPA HTML with a **200** rather than a 401,
+so the scrape fails on content type and the target sits permanently down while
+the app looks healthy.
 
 ### 7. Authentik objects (Terraform)
 

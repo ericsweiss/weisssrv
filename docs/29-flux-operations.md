@@ -1,6 +1,8 @@
 # Flux Operations Guide
 
-Operator-facing guide for running the Flux GitOps system that reconciles every Kubernetes workload in this cluster. Covers the daily loop (commit → reconcile), secret management via External Secrets Operator (ESO) + 1Password, adding new apps, suspending/resuming, rollback, and troubleshooting.
+Operator-facing guide for running the Flux GitOps system that reconciles every Kubernetes workload
+in this cluster. Covers the daily loop (commit → reconcile), secret management via External Secrets
+Operator (ESO) + 1Password, adding new apps, suspending/resuming, rollback, and troubleshooting.
 
 ## Overview
 
@@ -12,32 +14,74 @@ Flux is the sole deploy mechanism for Kubernetes workloads in this cluster. The 
 - Cluster state: whatever Flux reconciles from that directory.
 - Operator action: edit YAML, commit, push. Flux does the rest.
 
-`kubectl apply` and `helm upgrade` are no longer part of the deploy path. They still work for diagnostics (`kubectl describe`, `kubectl logs`) and emergency break-glass, but Flux will revert anything that drifts from the committed state on the next reconcile.
+`kubectl apply` and `helm upgrade` are no longer part of the deploy path. They still work for
+diagnostics (`kubectl describe`, `kubectl logs`) and emergency break-glass, but Flux will revert
+anything that drifts from the committed state on the next reconcile.
 
 ### Topology
 
 Flux runs in the `flux-system` namespace. Four controllers:
 
-- **source-controller** — polls the Git repository, produces `GitRepository` artifacts for other controllers to read.
-- **kustomize-controller** — reconciles `Kustomization` CRs (server-side apply of rendered manifests, with drift correction and prune).
-- **helm-controller** — reconciles `HelmRelease` CRs (renders chart + values, installs/upgrades, tracks history).
-- **notification-controller** — dispatches events/alerts and hosts webhook `Receiver`s. The one Receiver in the cluster is created **by the GitLab agent**, not by git — see [Push-Triggered Reconciliation](#push-triggered-reconciliation).
+- **source-controller** — polls the Git repository, produces `GitRepository` artifacts for other
+  controllers to read.
+- **kustomize-controller** — reconciles `Kustomization` CRs (server-side apply of rendered
+  manifests, with drift correction and prune).
+- **helm-controller** — reconciles `HelmRelease` CRs (renders chart + values, installs/upgrades,
+  tracks history).
+- **notification-controller** — dispatches events/alerts and hosts webhook `Receiver`s. The one
+  Receiver in the cluster is created **by the GitLab agent**, not by git — see [Push-Triggered
+  Reconciliation](#push-triggered-reconciliation).
 
-Top-level Kustomizations that Flux owns (all in `flux-system` namespace), reconciled in `dependsOn` order. Each stage's `kustomization.yaml` is the authoritative membership list; the summaries below are indicative:
+Top-level Kustomizations that Flux owns (all in `flux-system` namespace), reconciled in `dependsOn`
+order. Each stage's `kustomization.yaml` is the authoritative membership list; the summaries below
+are indicative:
 
-1. `infrastructure-sources` → `kubernetes/infrastructure/sources/` (HelmRepository CRs + the `cluster-versions` and `cluster-config` ConfigMaps). No dependencies. No postBuild substitution (it defines the ConfigMaps and has no placeholders).
-2. `infrastructure-crds` → `kubernetes/infrastructure/crds/` (the `prometheus-operator-crds` HelmRelease — the `monitoring.coreos.com` CRDs). `dependsOn: infrastructure-sources`. `wait: true` so controllers do not start until the CRDs are Established. Substitutes the chart version from `cluster-versions` (+ `cluster-config`).
-3. `infrastructure-controllers` → `kubernetes/infrastructure/controllers/` (HelmReleases for ESO, 1Password Connect, MetalLB, cert-manager, Traefik, external-dns, VPA, kured, reloader, tailscale-operator). `dependsOn: infrastructure-sources` **and** `infrastructure-crds` (so a controller ServiceMonitor renders against existing CRDs). Substitutes chart versions from `cluster-versions` and cluster identity from `cluster-config`.
-4. `infrastructure-configs` → `kubernetes/infrastructure/configs/` (ClusterSecretStore, ClusterIssuer, MetalLB IP pools, wildcard certs, CoreDNS override, DDNS CronJob, shared Cloudflare secrets, Traefik middlewares + TLS options, VPA policies, 1Password Connect certificate + ingress, default-namespace config). `dependsOn: infrastructure-controllers` (CRDs must exist). Substitutes from `cluster-versions` + `cluster-config`.
-5. `infrastructure-observability` → `kubernetes/infrastructure/observability/` (kube-prometheus-stack, Loki, Alloy, exporters, service monitors, dashboards, ingress). `dependsOn: infrastructure-configs`. Substitutes from `cluster-versions` + `cluster-config`. kube-prometheus-stack runs with `crds.enabled: false` + `install/upgrade.crds: Skip` — the monitoring CRDs are owned by the `infrastructure-crds` stage, not this chart.
-6. `apps` → `kubernetes/apps/` (Authentik, download-clients, hermes, homarr, hindsight, recipes, gitlab-runner, gitlab-runner-privileged, gitlab-runner-reaper, gitlab-agent, registry-cache, tailnet-dns, vm-ingress, wg-easy). `dependsOn: infrastructure-configs` — deliberately parallel to observability, so a failed observability upgrade cannot freeze app reconciliation. Substitutes image/chart versions from `cluster-versions` and cluster identity from `cluster-config`.
-7. `infrastructure-metrics-server` → `kubernetes/infrastructure/controllers/metrics-server/` — **off the chain**: `dependsOn: infrastructure-sources` only, and nothing dependsOn it. It sits inside the controllers directory but is reconciled separately because its install is expected to fail until the Ansible-side `--disable=metrics-server` lands, and a failing HelmRelease inside the `wait: true` controllers stage would freeze configs, observability and apps behind it. Nothing needs `metrics.k8s.io` to be *served* before it can be applied — HPAs and the VPA recommender read it at runtime. See the file's header and docs/33 § metrics-server.
+1. `infrastructure-sources` → `kubernetes/infrastructure/sources/` (HelmRepository CRs + the
+   `cluster-versions` and `cluster-config` ConfigMaps). No dependencies. No postBuild substitution
+   (it defines the ConfigMaps and has no placeholders).
+2. `infrastructure-crds` → `kubernetes/infrastructure/crds/` (the `prometheus-operator-crds`
+   HelmRelease — the `monitoring.coreos.com` CRDs). `dependsOn: infrastructure-sources`. `wait:
+   true` so controllers do not start until the CRDs are Established. Substitutes the chart version
+   from `cluster-versions` (+ `cluster-config`).
+3. `infrastructure-controllers` → `kubernetes/infrastructure/controllers/` (the platform
+   HelmReleases — see the directory's `kustomization.yaml`). `dependsOn: infrastructure-sources`
+   **and** `infrastructure-crds` (so a controller ServiceMonitor renders against existing CRDs).
+   Substitutes chart versions from `cluster-versions` and cluster identity from `cluster-config`.
+4. `infrastructure-configs` → `kubernetes/infrastructure/configs/` (ClusterSecretStore,
+   ClusterIssuer, MetalLB IP pools, wildcard certs, CoreDNS override, DDNS CronJob, shared
+   Cloudflare secrets, Traefik middlewares + TLS options, VPA policies, 1Password Connect
+   certificate + ingress, default-namespace config). `dependsOn: infrastructure-controllers` (CRDs
+   must exist). Substitutes from `cluster-versions` + `cluster-config`.
+5. `infrastructure-observability` → `kubernetes/infrastructure/observability/`
+   (kube-prometheus-stack, Loki, Alloy, exporters, service monitors, dashboards, ingress).
+   `dependsOn: infrastructure-configs`. Substitutes from `cluster-versions` + `cluster-config`.
+   kube-prometheus-stack runs with `crds.enabled: false` + `install/upgrade.crds: Skip` — the
+   monitoring CRDs are owned by the `infrastructure-crds` stage, not this chart.
+6. `apps` → `kubernetes/apps/` (one directory per app — see `kubernetes/apps/kustomization.yaml`).
+   `dependsOn: infrastructure-configs` — deliberately parallel to observability, so a failed
+   observability upgrade cannot freeze app reconciliation. Substitutes image/chart versions from
+   `cluster-versions` and cluster identity from `cluster-config`.
+7. `infrastructure-metrics-server` → `kubernetes/infrastructure/controllers/metrics-server/` — **off
+   the chain**: `dependsOn: infrastructure-sources` only, and nothing dependsOn it. It sits inside
+   the controllers directory but is reconciled separately because its install is expected to fail
+   until the Ansible-side `--disable=metrics-server` lands, and a failing HelmRelease inside the
+   `wait: true` controllers stage would freeze configs, observability and apps behind it. Nothing
+   needs `metrics.k8s.io` to be *served* before it can be applied — HPAs and the VPA recommender
+   read it at runtime. See the file's header and docs/33 § Components.
 
-`scripts/flux-child-kustomizations.py` prints this list in `dependsOn` order, derived from `kubernetes/clusters/weisssrv/*.yaml`; `task flux:reconcile` and `scripts/deploy-verify.sh` both consume it, so adding a stage is a one-file change.
+`scripts/flux-child-kustomizations.py` prints this list in `dependsOn` order, derived from
+`kubernetes/clusters/weisssrv/*.yaml`; `task flux:reconcile` and `scripts/deploy-verify.sh` both
+consume it, so adding a stage is a one-file change.
 
-The five-way infrastructure split ensures the monitoring CRDs (`infrastructure-crds`) exist before any controller renders a ServiceMonitor, and CRD-dependent configs run after the controllers that install their CRDs. Apps branch off `infrastructure-configs` in parallel with observability: with the monitoring CRDs now installed up-front by `infrastructure-crds`, the monitoring CRs under `apps/` and observability render cleanly on a fresh bootstrap, and in steady state observability failures no longer block apps.
+The five-way infrastructure split ensures the monitoring CRDs (`infrastructure-crds`) exist before
+any controller renders a ServiceMonitor, and CRD-dependent configs run after the controllers that
+install their CRDs. Apps branch off `infrastructure-configs` in parallel with observability: with
+the monitoring CRDs now installed up-front by `infrastructure-crds`, the monitoring CRs under
+`apps/` and observability render cleanly on a fresh bootstrap, and in steady state observability
+failures no longer block apps.
 
-Tenant Kustomizations (external repos) live in `kubernetes/clusters/weisssrv/tenants/<repo>.yaml` and are reconciled by the root cluster Kustomization. See `docs/30-multi-repo-onboarding.md`.
+Tenant Kustomizations (external repos) live in `kubernetes/clusters/weisssrv/tenants/<repo>.yaml`
+and are reconciled by the root cluster Kustomization. See `docs/30-multi-repo-onboarding.md`.
 
 ### Fresh bootstrap / disaster recovery
 
@@ -101,13 +145,23 @@ fires *after* data is already being written to an unbacked-up disk:
 
 ### Reconciliation Cadence
 
-- **Push-triggered (live)**: the GitLab agent's Flux module triggers an immediate `GitRepository` reconcile on every push — see [Push-Triggered Reconciliation](#push-triggered-reconciliation).
-- **GitRepository poll**: 1 minute (source-controller checks GitLab for new commits — the fallback when the agent is down).
-- **Kustomization interval**: 10 minutes (forced full re-reconcile even without new commits — corrects drift from manual `kubectl apply` or cluster-side edits).
+- **Push-triggered (live)**: the GitLab agent's Flux module triggers an immediate `GitRepository`
+  reconcile on every push — see [Push-Triggered Reconciliation](#push-triggered-reconciliation).
+- **GitRepository poll**: 1 minute (source-controller checks GitLab for new commits — the fallback
+  when the agent is down).
+- **Kustomization interval**: 10 minutes (forced full re-reconcile even without new commits —
+  corrects drift from manual `kubectl apply` or cluster-side edits).
 - **HelmRelease interval**: 30 minutes (values re-render + chart upgrade check).
-- **ExternalSecret refreshInterval**: 24 hours (ESO re-reads 1Password and updates the k8s Secret if changed).
+- **ExternalSecret refreshInterval**: 24 hours (ESO re-reads 1Password and updates the k8s Secret if
+  changed).
 
-Worst case (agent down, poll fallback): a pushed change reaches the cluster inside ~1 minute (poll) + reconcile time.
+Worst case (agent down, poll fallback): a pushed change reaches the cluster inside ~1 minute (poll)
++ reconcile time.
+
+One drift class survives a reconcile: a live Deployment can keep a field the
+rendered manifest no longer sets, when a retired field manager still co-owns it
+in `managedFields`. `scripts/check-live-cpu-limits.py` (the `cluster-drift-plan`
+CI job) is the gate that catches it.
 
 ---
 
@@ -118,8 +172,10 @@ Worst case (agent down, poll fallback): a pushed change reaches the cluster insi
 The flow is always the same:
 
 1. Edit YAML in `kubernetes/`.
-2. `git commit` + `git push`.
-3. Wait a few seconds (GitLab agent push trigger; worst case ~1 minute via the poll fallback).
+2. Commit on a **feature branch** and open a merge request. Never push to
+   `main` — Flux reconciles `main` after the merge.
+3. After the merge, wait a few seconds (GitLab agent push trigger; worst case
+   ~1 minute via the poll fallback).
 4. Verify.
 
 Example — bump the Authentik chart version:
@@ -135,9 +191,9 @@ task flux:sync-versions
 git add ansible/inventories/prod/group_vars/all.yml \
         kubernetes/infrastructure/sources/versions-configmap.yaml
 git commit -m "Bump Authentik to <new-version>"
-git push
+git push -u origin <branch>     # then open the MR; Flux acts on main after merge
 
-# 4. Watch the reconcile
+# 4. Watch the reconcile, after the merge
 task flux:status
 ```
 
@@ -162,7 +218,8 @@ flux get source git -A
 kubectl get externalsecret -A
 ```
 
-Healthy state: every row shows `READY=True` and `STATUS=*Applied revision <sha>*` or `Release reconciliation succeeded`.
+Healthy state: every row shows `READY=True` and `STATUS=*Applied revision <sha>*` or `Release
+reconciliation succeeded`.
 
 ### Forcing Reconciliation
 
@@ -179,7 +236,36 @@ flux reconcile kustomization apps -n flux-system --with-source
 flux reconcile helmrelease authentik -n authentik --with-source
 ```
 
-`--with-source` forces the GitRepository to re-fetch before reconciling. Without it, Flux reconciles the last-fetched revision.
+`--with-source` forces the GitRepository to re-fetch before reconciling. Without it, Flux reconciles
+the last-fetched revision.
+
+### Restarting a Flux-managed workload
+
+Which command to use depends on who owns the object, not on what you want to
+happen:
+
+The `kustomize.toolkit.fluxcd.io/name` label is the discriminator: it is on
+everything kustomize-controller applies and on nothing a HelmRelease produces,
+so the label tells the two apart without a hand-kept list. The mixed-namespace
+task below partitions on it rather than enumerating workloads.
+
+- **HelmRelease-backed workloads** take `kubectl rollout restart`. The
+  helm-controller owns the release, not the individual Deployment, so a restart
+  annotation survives until the next Helm upgrade. Authentik is the worked
+  example.
+- **Kustomize-managed workloads** take `kubectl delete pod`. A `rollout restart`
+  writes a `kubectl.kubernetes.io/restartedAt` annotation the kustomize-controller
+  treats as drift and reverts on the next reconcile, so the pods come back and
+  the restart silently un-happens. Everything under `kubernetes/apps/` that is
+  not a HelmRelease is in this class, and those Deployments are `replicas: 1`
+  with the `Recreate` strategy, so a pod delete is a clean restart.
+
+After a pod delete, wait on the new pod with
+`kubectl wait --for=condition=ready -l <selector>`. Run against the old pods it
+passes immediately, so give the delete a moment to take effect first.
+
+`task <app>:restart` already picks the right one per app; when a namespace mixes
+the two, so does its task (`task observability:restart` is the worked example).
 
 ### Fast Local Iteration
 
@@ -199,7 +285,8 @@ Workflow:
 3. Commit + push when happy.
 4. Or: do nothing — Flux reverts in the next cycle and nothing is lost.
 
-Any change made via `dev-apply` that isn't committed is lost at the next reconcile. That's the feature, not the bug — use it as guardrails.
+Any change made via `dev-apply` that isn't committed is lost at the next reconcile. That's the
+feature, not the bug — use it as guardrails.
 
 ---
 
@@ -207,18 +294,26 @@ Any change made via `dev-apply` that isn't committed is lost at the next reconci
 
 ### Secret Model
 
-- **Two manually-created bootstrap secrets**: `op-credentials` and `onepassword-connect-token` in the `external-secrets` namespace. Created once during initial setup — `task flux:bootstrap-onepassword` prints the procedure, and `task flux:bootstrap-onepassword-apply` executes it (requires `op` auth, a reachable cluster, and `./1password-credentials.json` from `op connect server create`; the Connect token is minted via `op connect token create` — deliberately not an `op read`, no vault item exists for it). These authenticate the 1Password Connect server.
-- **Everything else**: `ExternalSecret` CR → ESO reads from 1Password via Connect → writes a `Secret` into the app namespace → app consumes it normally.
+- **Two manually-created bootstrap secrets**: `op-credentials` and `onepassword-connect-token` in
+  the `external-secrets` namespace. Created once during initial setup — `task
+  flux:bootstrap-onepassword` prints the procedure, and `task flux:bootstrap-onepassword-apply`
+  executes it (requires `op` auth, a reachable cluster, and `./1password-credentials.json` from `op
+  connect server create`; the Connect token is minted via `op connect token create` — deliberately
+  not an `op read`, no vault item exists for it). These authenticate the 1Password Connect server.
+- **Everything else**: `ExternalSecret` CR → ESO reads from 1Password via Connect → writes a
+  `Secret` into the app namespace → app consumes it normally.
 
-There are no other manually-created Secrets in the cluster. `op run -- kubectl create secret` is no longer part of the workflow.
+The only other manually-created Secrets are the per-tenant ESO bootstrap Secrets
+(`docs/30-multi-repo-onboarding.md`), each declared in the check script's allowlist. `op run --
+kubectl create secret` is no longer part of the workflow.
 
 `scripts/check-unmanaged-secrets.py` enforces that: it reads every live Secret and
 fails on any that carries no ownership marker (ESO ownerReference, Flux/Helm
 labels, a controller's own label) and is not in the script's documented allowlist.
 A hand-applied Secret is invisible to `task flux:rotate-secret` and to docs/15, so
 a superseded credential value can sit in the cluster indefinitely — the check is
-what makes "there are no other manually-created Secrets" true rather than
-aspirational. `task flux:verify` runs it as a **warning** (that task is the
+what keeps the hand-applied set to the allowlist rather than aspirational. `task flux:verify` runs
+it as a **warning** (that task is the
 post-deploy/DR gate and must be able to go green); `task flux:verify-unmanaged-secrets`
 runs the same check standalone and exits non-zero, which is the form to use when
 confirming a cleanup.
@@ -232,7 +327,8 @@ its namespace added there as well as its ExternalSecret — `task flux:lint`
 
 ### 1Password Connect Provider Reference Format
 
-The ESO 1Password Connect provider uses `remoteRef.key` for the item title and `remoteRef.property` for the field name:
+The ESO 1Password Connect provider uses `remoteRef.key` for the item title and `remoteRef.property`
+for the field name:
 
 ```yaml
 remoteRef:
@@ -241,7 +337,8 @@ remoteRef:
 ```
 
 - `<1P-item-title>` is the human-readable title of the 1Password item (e.g. `Authentik Secrets`).
-- `<field-name>` is the field label (`password`, `credential`, `username`, custom field names, etc.).
+- `<field-name>` is the field label (`password`, `credential`, `username`, custom field names,
+  etc.).
 
 **Common mistakes that break parsing**:
 
@@ -261,7 +358,8 @@ Example from `kubernetes/apps/authentik/externalsecret.yaml`:
 
 1. Create or extend an `ExternalSecret` YAML in the app folder.
 2. Reference the 1P item by title (`key`) and field name (`property`).
-3. Wire the consuming Deployment/HelmRelease to the resulting Secret via `valueFrom.secretKeyRef` or the chart's `existingSecret` field.
+3. Wire the consuming Deployment/HelmRelease to the resulting Secret via `valueFrom.secretKeyRef` or
+   the chart's `existingSecret` field.
 4. Commit + push.
 
 Template:
@@ -313,31 +411,29 @@ task flux:rotate-secret -- <app>
 task flux:refresh-secret -- <namespace>/<externalsecret-name>
 ```
 
-`rotate-secret` annotates the ExternalSecret with a force-sync annotation (ESO picks it up immediately), waits for the Secret to update, then rolls the Deployments/StatefulSets that consume it.
+`rotate-secret` annotates the ExternalSecret with a force-sync annotation (ESO picks it up
+immediately), waits for the Secret to update, then rolls the Deployments/StatefulSets that consume
+it.
 
 ### Rate Limits
 
 1Password Families plan: **1,000 reads per day, account-wide**.
 
-Current footprint: **20 ExternalSecrets across 15 namespaces, ~56 fields**
-(authentik 5, recipes 8, hermes 6+1, downloads 2+1, homarr 2, wg-easy 2,
-tailscale 2, registry-cache 2, runner/agent tokens 3, cloudflare 3,
-observability-secrets 2, observability-exporter-secrets 13, alertmanager-config 3,
-loki-push-auth 1). The 1Password Connect provider syncs the entire vault into a
-local encrypted cache periodically — individual field reads from ExternalSecrets
-hit this cache, not the 1Password cloud API. Rate limits apply to the vault-sync
-operations, not per-field reads, so the headroom is generous. Two ExternalSecrets
-use `refreshInterval: 1h` (`observability/alertmanager-config` and
+The 1Password Connect provider syncs the entire vault into a local encrypted
+cache periodically — individual field reads from ExternalSecrets hit this cache,
+not the 1Password cloud API. Rate limits apply to the vault-sync operations, not
+per-field reads, so the headroom is generous. Two ExternalSecrets use
+`refreshInterval: 1h` (`observability/alertmanager-config` and
 `observability/loki-push-auth`); every other one uses `24h`. Run
-`kubectl get externalsecrets -A` for the current set — that command, not this
-paragraph, is the source of truth.
+`kubectl get externalsecrets -A` for the current set.
 
 Every manual `task flux:refresh-secret` or `task flux:rotate-secret` adds
 fields_in_that_ExternalSecret extra reads. Rotating a single app a few times
 a day is fine. Loops are not — if you find yourself scripting refreshes,
 raise the refreshInterval instead.
 
-Adding tenants on the 1Password backend (see `docs/30-multi-repo-onboarding.md`) shares this budget. Friends without 1Password accounts should use the GitLab-variables path.
+Adding tenants on the 1Password backend (see `docs/30-multi-repo-onboarding.md`) shares this budget.
+Friends without 1Password accounts should use the GitLab-variables path.
 
 ---
 
@@ -412,7 +508,12 @@ The canonical app pattern is `kubernetes/apps/authentik/` — copy its structure
      provisioner); the zvol itself is created host-side via
      `vm_additional_disks` (docs/06). A brand-new top-level dataset is added to
      `nas_storage_archive_backup_sources` in `host_vars/pve-nas-01.yml`;
-     `ssd/appdata/*` children are auto-enrolled.
+     `ssd/appdata/*` children are auto-enrolled. `check-nfs-tls.py` covers
+     `spec.nfs` on PersistentVolumes only: a pod-inline `volumes[].nfs` has no
+     `mountOptions` field at all (the options come from the kubelet default),
+     and a CSI-provisioned volume keeps its server and options in the
+     StorageClass parameters, so either shape needs the gate extended in the
+     same commit that introduces it.
    - **Scheduling**: NAS-avoid is the default for stateless workloads
      (preferred `nodeAffinity` `esweiss.com/nas DoesNotExist` weight 100 +
      `nodeSelector esweiss.com/general: "true"`, plus
@@ -426,27 +527,9 @@ The canonical app pattern is `kubernetes/apps/authentik/` — copy its structure
      `op run -- terraform apply`; never the Authentik UI (UI-created objects
      drift out of state). See `docs/40-authentik-terraform.md`.
 
-2. **Wire it into the apps Kustomization**:
-
-   ```yaml
-   # kubernetes/apps/kustomization.yaml
-   resources:
-     - authentik
-     - download-clients
-     - hermes
-     - homarr
-     - hindsight
-     - recipes
-     - gitlab-runner
-     - gitlab-runner-privileged
-     - gitlab-runner-reaper
-     - gitlab-agent
-     - registry-cache
-     - tailnet-dns
-     - vm-ingress
-     - wg-easy
-     - <name>   # <-- add this line
-   ```
+2. **Wire it into the apps Kustomization**: add `- <name>` to the `resources:`
+   list in `kubernetes/apps/kustomization.yaml`, which is the authoritative
+   membership list.
 
 3. **If the Helm chart isn't already sourced**, add a HelmRepository:
 
@@ -465,7 +548,9 @@ The canonical app pattern is `kubernetes/apps/authentik/` — copy its structure
 
    Then add `<name>.yaml` to `kubernetes/infrastructure/sources/kustomization.yaml`.
 
-4. **Version pinning via `${var_name}`**: every chart version or image tag must be a placeholder like `${myapp_version}`, matching a key in `cluster-versions`. Add the key to `ansible/inventories/prod/group_vars/all.yml`, then:
+4. **Version pinning via `${var_name}`**: every chart version or image tag must be a placeholder
+   like `${myapp_version}`, matching a key in `cluster-versions`. Add the key to
+   `ansible/inventories/prod/group_vars/all.yml`, then:
 
    ```bash
    task flux:sync-versions   # regenerates versions-configmap.yaml
@@ -497,6 +582,29 @@ The canonical app pattern is `kubernetes/apps/authentik/` — copy its structure
    kubectl get pods -n <name>
    ```
 
+### What an app may bind to
+
+An app manifest set may reference these platform objects. Each already exists,
+and none is created by the app.
+
+- `ClusterIssuer` `letsencrypt-prod` for Certificates. `letsencrypt-staging` is
+  available for an unproven zone or token scope.
+- The shared Traefik middlewares, referenced cross-namespace: `hsts-header`,
+  `security-headers`, `lan-tailscale-only` and `lan-tailscale-strict` in the
+  `traefik` namespace, `authentik-auth` and `authentik-auth-basic` in
+  `authentik`. Traefik runs with `allowCrossNamespace`, which is what makes the
+  reference legal.
+- Prometheus with `ruleSelectorNilUsesHelmValues: false` and
+  `serviceMonitorSelectorNilUsesHelmValues: false`, so a PrometheusRule or
+  ServiceMonitor in any namespace is picked up without a release label.
+- The `VerticalPodAutoscaler` CRD, for the per-app VPA docs/33 requires.
+- The `onepassword-homelab` ClusterSecretStore, for ExternalSecrets.
+- The `cluster-versions` and `cluster-config` ConfigMaps, substituted into every
+  stage after `sources`.
+
+An app that references anything outside this list ships its own copy, or it
+never becomes Ready.
+
 ### Network policy exceptions
 
 This is the canonical list — CLAUDE.md and `kubernetes/components/README.md`
@@ -508,17 +616,32 @@ namespace" rule:
 | Namespace | Why |
 |---|---|
 | `downloads` (dir `kubernetes/apps/download-clients/`) | Ships its own default-deny covering ingress **and** egress, so the component would be redundant |
-| `flux-system` | Upstream gotk manifests ship their own policies; we do not patch them |
+| `flux-system` | Upstream gotk manifests ship their own policies; they are not patched here |
 
 A *third* unfenced namespace is a bug, not a precedent, and
 `scripts/check-default-deny-coverage.py` (in `task flux:lint` and the CI
 flux-lint job) is what fails it: over the same rendered corpus it collects every
 namespace that owns a workload — including the ones a HelmRelease targets, whose
 pods never appear in a kustomize build — and requires each to carry a
-namespace-wide NetworkPolicy with `Ingress` in `policyTypes`. The exceptions
-above live in that script as a reasoned map, so adding one is a code change with
-a written justification. `downloads` needs no entry: its own policy is
-namespace-wide and satisfies the invariant outright.
+namespace-wide NetworkPolicy with `Ingress` in `policyTypes`. A policy whose
+ingress rule names no ports and admits every peer is not a fence: `{}`,
+`namespaceSelector: {}` and a `/0` `ipBlock` whose except list leaves any
+address admitted are all wide open. An empty `podSelector` with no
+`namespaceSelector` is scoped to the policy's own namespace, so it narrows and
+still fences. Only `flux-system` is built into
+that script's exemption map; the script is vendored byte-identical from
+weisssrv-lib, so a site-specific exemption is never an edit to it — it is an
+`--exempt NS=REASON` flag added to the `check-default-deny-coverage.py`
+invocation in `scripts/flux-corpus-gates.sh`, the one gate list that
+`task flux:lint` and the CI flux-lint job both run, and the reason is
+mandatory. `downloads`
+needs no entry at all: its own policy is namespace-wide and satisfies the
+invariant outright.
+
+The controller webhook policies (cert-manager, external-secrets, metallb, vpa)
+are deliberately looser than the kube-system CoreDNS allow. Both pin a
+post-DNAT class with no pinnable source IP, but `:53` has no per-caller auth, so
+the CIDRs are its only gate — while a webhook's own TLS and authz is a real one.
 
 `scripts/check-scrape-netpol.py` cannot cover this and is not the place to try:
 it only inspects namespaces that already run an ingress-deny policy, so an
@@ -528,24 +651,29 @@ while masking a real regression later.
 
 #### kube-system is fenced, not excepted
 
-It used to be the third exception. It is not any more: it carries the same
-`netpol-baseline` default-deny as everything else, plus an enumerated allow set,
-all in `kubernetes/infrastructure/configs/kube-system-policies/`. That directory
-is deliberately the *only* place kube-system policies live — a deny is only safe
-if its allow set is complete, so the two must be reviewed together and land in
-the same reconcile, even though kured and metrics-server are reconciled by other
+kube-system carries the same `netpol-baseline` default-deny as everything else,
+plus an enumerated allow set, all in
+`kubernetes/infrastructure/configs/kube-system-policies/`. That directory is
+deliberately the *only* place kube-system policies live — a deny is only safe if
+its allow set is complete, so the two must be reviewed together and land in the
+same reconcile, even though kured and metrics-server are reconciled by other
 Kustomizations.
 
 | Resident | Ingress allowed | Notes |
 |---|---|---|
-| CoreDNS (`k8s-app: kube-dns`) | 53/UDP+TCP from `namespaceSelector: {}`, the pod CIDR and the LAN CIDR; 9153/TCP from `observability` | The pod-CIDR peer is not redundant: a query aimed at the kube-dns ClusterIP from outside the pod network is DNAT'd **and masqueraded**, so it can arrive as the sending node's flannel gateway address. The LAN peer is defence in depth with no evidenced consumer today — the hostNetwork DaemonSets (kube-vip, node-exporter, metallb-speaker) run `dnsPolicy: ClusterFirst`, which the kubelet demotes to `Default` under hostNetwork, so they resolve via the node's resolv.conf (AdGuard), not CoreDNS. It is kept so host-netns resolution cannot silently break, and is safe because neither pod IPs nor the ClusterIP are LAN-routable |
-| metrics-server | 10250/TCP, no source peer | Same trade as the cert-manager / vpa-system / metallb-system webhook policies: the aggregation-layer call arrives post-DNAT from whichever server is active, so no source IP is pinnable, and the component's own TLS is the gate. **Two** label-scoped policies, not one namespace-wide one — the k3s AddOn (`k8s-app: metrics-server`) and the chart (`app.kubernetes.io/name: metrics-server`) label differently and both are live through the cutover window; one podSelector cannot OR across two keys, but policies are additive. Drop the AddOn one when the cutover closes |
+| CoreDNS (`k8s-app: kube-dns`) | 53/UDP+TCP from `namespaceSelector: {}`, the pod CIDR and the LAN CIDR; 9153/TCP from `observability` | The pod-CIDR peer is not redundant: a query aimed at the kube-dns ClusterIP from outside the pod network is DNAT'd **and masqueraded**, so it can arrive as the sending node's flannel gateway address. The LAN peer is defence in depth with no evidenced consumer today — the hostNetwork DaemonSets (kube-vip, node-exporter, metallb-speaker) run `dnsPolicy: ClusterFirst`, which the kubelet demotes to `Default` under hostNetwork, so they resolve via the node's resolv.conf (AdGuard), not CoreDNS. It is kept so host-netns resolution cannot silently break, and is safe because neither pod IPs nor the ClusterIP are LAN-routable. Before narrowing or deleting the LAN peer, confirm no host-side unit queries the kube-dns ClusterIP (10.43.0.10) |
+| metrics-server | 10250/TCP, no source peer | Same trade as the cert-manager / vpa-system / metallb-system webhook policies: the aggregation-layer call arrives post-DNAT from whichever server is active, so no source IP is pinnable, and the component's own TLS is the gate. Label-scoped to the chart (`app.kubernetes.io/name: metrics-server`) rather than namespace-wide, so the port is not opened for some future kube-system workload that binds 10250 |
 | kured | 8080/TCP from `observability` | Its ServiceMonitor is chart-native via `metrics.create`, which `check-scrape-netpol.py` cannot see (it matches `serviceMonitor.enabled` only), so this allow is pinned by `scripts/test_check_default_deny_coverage.py` instead (teaching the gate the `metrics.create` spelling is a weisssrv-lib change) |
 | kube-vip | n/a | hostNetwork — NetworkPolicy never gates a hostNetwork pod as a target |
 
 `kube-public` and `kube-node-lease` also carry a fail-closed `default-deny-all`
-(`configs/builtin-namespace-policies.yaml`). Both are pod-free, so this changes
-no traffic; it exists so a pod created there by hand is not unguarded.
+(`configs/builtin-namespace-policies.yaml`). `check-default-deny-coverage.py`
+only examines namespaces that own a workload, so these two — being pod-free —
+are invisible to it and are fenced explicitly by that manifest instead. It
+changes no traffic; it exists so a pod created there by hand is not unguarded.
+
+Adding a workload to kube-system means adding its allow in the same commit —
+the deny is only safe while the allow set is complete.
 
 Verification after a reconcile that touches any of this:
 
@@ -581,7 +709,8 @@ additive and harmless on their own.
 
 ### Emergency Stop
 
-Suspending a resource freezes Flux's reconciliation of it — drift won't be corrected, upgrades won't happen. Use when you need to investigate, or when a reconcile loop is making things worse.
+Suspending a resource freezes Flux's reconciliation of it — drift won't be corrected, upgrades won't
+happen. Use when you need to investigate, or when a reconcile loop is making things worse.
 
 ```bash
 # Suspend a specific HelmRelease
@@ -594,7 +723,12 @@ task flux:suspend -- flux-system/kustomization/apps
 task flux:resume -- authentik/helmrelease/authentik
 ```
 
-The argument is `<namespace>/<kind>/<name>`. Kind must be one of `kustomization` or `helmrelease` -- these are the only single-word Flux resource kinds that the task wrapper handles correctly (it splits on `/` and passes the kind to `flux suspend <kind>`). Multi-word kinds like `source git` or `source helm` contain a space that would break the slash-delimited parsing. `externalsecret` is not a Flux resource (it belongs to ESO and cannot be suspended via the `flux` CLI). For other Flux resources, use the `flux` CLI directly (e.g., `flux suspend source git flux-system -n flux-system`).
+The argument is `<namespace>/<kind>/<name>`. Kind must be one of `kustomization` or `helmrelease` --
+these are the only single-word Flux resource kinds that the task wrapper handles correctly (it
+splits on `/` and passes the kind to `flux suspend <kind>`). Multi-word kinds like `source git` or
+`source helm` contain a space that would break the slash-delimited parsing. `externalsecret` is not
+a Flux resource (it belongs to ESO and cannot be suspended via the `flux` CLI). For other Flux
+resources, use the `flux` CLI directly (e.g., `flux suspend source git flux-system -n flux-system`).
 
 ### Top-Level Suspend
 
@@ -629,7 +763,8 @@ Resume reverses the state.
 
 ### Revert a Bad Commit
 
-This is the primary rollback path. Git is the source of truth — revert the commit and Flux applies the reversal.
+This is the primary rollback path. Git is the source of truth — revert the commit and Flux applies
+the reversal.
 
 ```bash
 git revert <sha-of-bad-commit>
@@ -639,13 +774,17 @@ git push
 task flux:status
 ```
 
-Flux treats the revert like any other change. Inside ~1 minute the cluster is back to the pre-commit state.
+Flux treats the revert like any other change. Inside ~1 minute the cluster is back to the pre-commit
+state.
 
 ### What Survives a Revert
 
-- **PVCs**: not deleted by Flux prune (they have `pvc-protection` finalizers and are covered by `prune: false` guards on storage resources where needed). Data on Authentik postgres, Mealie postgres, download-clients data, etc. is safe.
+- **PVCs**: not deleted by Flux prune (they have `pvc-protection` finalizers and are covered by
+  `prune: false` guards on storage resources where needed). Data on Authentik postgres, Mealie
+  postgres, download-clients data, etc. is safe.
 - **StatefulSet pods**: the StatefulSet may be recreated but PVCs are preserved, so data persists.
-- **HelmRelease history**: `helm history <name> -n <ns>` shows every revision, including the reverted one. You can `helm rollback` manually if Flux is also down.
+- **HelmRelease history**: `helm history <name> -n <ns>` shows every revision, including the
+  reverted one. You can `helm rollback` manually if Flux is also down.
 
 ### HelmRelease History
 
@@ -657,7 +796,8 @@ helm history authentik -n authentik
 helm rollback authentik <revision> -n authentik
 ```
 
-Don't do this while Flux is healthy — Flux will revert you. Use it only when Flux itself is stuck and you're breaking glass.
+Don't do this while Flux is healthy — Flux will revert you. Use it only when Flux itself is stuck
+and you're breaking glass.
 
 ### Flux Remediation
 
@@ -673,11 +813,14 @@ upgrade:
     remediateLastFailure: true
 ```
 
-Flux automatically retries failed upgrades and rolls back on repeated failure. Check `flux get hr -n <ns>` for the current status and `flux logs --level=error --kind=HelmRelease` for the error chain.
+Flux automatically retries failed upgrades and rolls back on repeated failure. Check `flux get hr -n
+<ns>` for the current status and `flux logs --level=error --kind=HelmRelease` for the error chain.
 
 ---
 
 ## Troubleshooting
+
+Alerts: FluxReconciliationFailure, FluxResourceNotReady.
 
 ### ExternalSecret stuck in `SecretSyncError`
 
@@ -687,10 +830,15 @@ kubectl describe externalsecret <name> -n <ns>
 
 Common causes:
 
-- **Bad 1P reference format**: the `remoteRef.key` has `op://` prefix or uses the old `<item-id>/<field>` format. Fix: use `key: <item-title>` with `property: <field-name>`.
-- **Item moved vaults**: ESO's ClusterSecretStore is scoped to `Homelab`. If someone moved an item to a different vault, ESO can't see it.
-- **Bootstrap secrets missing/wrong**: check `kubectl get secret op-credentials onepassword-connect-token -n external-secrets`. If absent or stale, see `task flux:bootstrap-onepassword` for instructions.
-- **Rate limit hit**: rare. Error message mentions 429. Raise refreshIntervals or pare back manual refreshes.
+- **Bad 1P reference format**: the `remoteRef.key` has `op://` prefix or uses the old
+  `<item-id>/<field>` format. Fix: use `key: <item-title>` with `property: <field-name>`.
+- **Item moved vaults**: ESO's ClusterSecretStore is scoped to `Homelab`. If someone moved an item
+  to a different vault, ESO can't see it.
+- **Bootstrap secrets missing/wrong**: check `kubectl get secret op-credentials
+  onepassword-connect-token -n external-secrets`. If absent or stale, see `task
+  flux:bootstrap-onepassword` for instructions.
+- **Rate limit hit**: rare. Error message mentions 429. Raise refreshIntervals or pare back manual
+  refreshes.
 
 Force a retry after fixing:
 
@@ -709,17 +857,22 @@ flux logs --kind=HelmRelease --name=<name> --namespace=<ns>
 
 Patterns:
 
-- **Values rendering failure**: substitution variable missing. `kubectl describe kustomization apps -n flux-system` shows substitution errors. Check `versions-configmap.yaml` has the key.
+- **Values rendering failure**: substitution variable missing. `kubectl describe kustomization apps
+  -n flux-system` shows substitution errors. Check `versions-configmap.yaml` has the key.
 - **Chart pull failure**: source HelmRepository is broken. `flux get source helm -A` — check Ready.
-- **`InvalidChartReference` for a version that exists upstream**: source-controller's cached chart index is stale. HelmRepository `interval` is the bound on how long this can last (1h cluster-wide). Force-refresh:
+- **`InvalidChartReference` for a version that exists upstream**: source-controller's cached chart
+  index is stale. HelmRepository `interval` is the bound on how long this can last (1h
+  cluster-wide). Force-refresh:
 
   ```bash
   flux reconcile source helm <repo> -n flux-system
   flux reconcile helmrelease <name> -n <ns>
   ```
 
-- **Install/upgrade failure**: the chart itself is rejecting values. `helm status` shows the error. Fix values in `release.yaml`, commit, push.
-- **Timeout**: workload didn't become Ready in time. Usually a pod-level issue — `kubectl get pods -n <ns>` and `kubectl describe pod <pod> -n <ns>`.
+- **Install/upgrade failure**: the chart itself is rejecting values. `helm status` shows the error.
+  Fix values in `release.yaml`, commit, push.
+- **Timeout**: workload didn't become Ready in time. Usually a pod-level issue — `kubectl get pods
+  -n <ns>` and `kubectl describe pod <pod> -n <ns>`.
 
 After fixing:
 
@@ -729,13 +882,18 @@ flux reconcile helmrelease <name> -n <ns> --with-source
 
 ### Kustomization stuck `Reconciling`
 
-A Kustomization (`apps`, `infrastructure-sources`, `infrastructure-crds`, `infrastructure-controllers`, `infrastructure-configs`, `infrastructure-observability`, or `infrastructure-metrics-server`) is in progress but never reaches Ready. `scripts/flux-child-kustomizations.py` prints the current set in `dependsOn` order — it derives them from `kubernetes/clusters/weisssrv/*.yaml`, so it is never stale.
+A Kustomization (`apps`, `infrastructure-sources`, `infrastructure-crds`,
+`infrastructure-controllers`, `infrastructure-configs`, `infrastructure-observability`, or
+`infrastructure-metrics-server`) is in progress but never reaches Ready.
+`scripts/flux-child-kustomizations.py` prints the current set in `dependsOn` order — it derives them
+from `kubernetes/clusters/weisssrv/*.yaml`, so it is never stale.
 
 ```bash
 kubectl describe kustomization <name> -n flux-system
 ```
 
-Most common cause: `wait: true` + a health check failing. The Kustomization waits for every child resource to report Ready, and one of them is stuck.
+Most common cause: `wait: true` + a health check failing. The Kustomization waits for every child
+resource to report Ready, and one of them is stuck.
 
 - Find the stuck child: `flux get all -A | grep -v True`.
 - Fix the child (usually a HelmRelease or a stuck Deployment).
@@ -750,10 +908,24 @@ Most common cause: `wait: true` + a health check failing. The Kustomization wait
 
 A placeholder like `${authentik_version}` is showing up as a literal string in a deployed resource.
 
-- **Which ConfigMap**: version pins live in `cluster-versions`, cluster identity (domains, CIDRs, VIPs) in `cluster-config`. Both are substituted by every stage after `sources`.
-- **ConfigMap missing or key typo**: `kubectl get configmap cluster-versions cluster-config -n flux-system -o yaml` — confirm the key exists.
-- **`substituteFrom` missing on the Kustomization**: check `kubernetes/clusters/weisssrv/{apps,infrastructure-crds,infrastructure-controllers,infrastructure-configs,infrastructure-observability}.yaml` all have the `postBuild.substituteFrom` block referencing BOTH ConfigMaps. (`infrastructure-sources.yaml` intentionally does NOT — sources/ defines them and has no placeholders.)
-- **ConfigMap not yet reconciled**: both live in `kubernetes/infrastructure/sources/` and are created by the `infrastructure-sources` Flux Kustomization. On a cold bootstrap, if that Kustomization hasn't reconciled yet, controllers/configs substitution fails loudly (`optional: false`) — check `flux get ks infrastructure-sources -n flux-system`.
+- **Which ConfigMap**: version pins live in `cluster-versions`, cluster identity (domains, CIDRs,
+  VIPs) in `cluster-config`. Both are substituted by every stage after `sources`.
+- **ConfigMap missing or key typo**: `kubectl get configmap cluster-versions cluster-config -n
+  flux-system -o yaml` — confirm the key exists.
+- **`substituteFrom` missing on the Kustomization**: check
+  `kubernetes/clusters/weisssrv/{apps,infrastructure-crds,infrastructure-controllers,infrastructure-configs,infrastructure-observability}.yaml`
+  all have the `postBuild.substituteFrom` block referencing BOTH ConfigMaps.
+  (`infrastructure-sources.yaml` intentionally does NOT — sources/ defines them and has no
+  placeholders.)
+- **ConfigMap not yet reconciled**: both live in `kubernetes/infrastructure/sources/` and are
+  created by the `infrastructure-sources` Flux Kustomization. On a cold bootstrap, if that
+  Kustomization hasn't reconciled yet, controllers/configs substitution fails loudly (`optional:
+  false`) — check `flux get ks infrastructure-sources -n flux-system`.
+- **Strict substitution**: kustomize-controller runs with
+  `StrictPostBuildSubstitutions=true` (patched in
+  `kubernetes/clusters/weisssrv/flux-system/kustomization.yaml`), so an undefined
+  `${var}` fails the whole Kustomization instead of rendering empty. That applies
+  to tenant Kustomizations too. Escape a literal as `$${var}`.
 
 Regenerate from scratch if in doubt:
 
@@ -761,6 +933,33 @@ Regenerate from scratch if in doubt:
 task flux:sync-versions
 git diff kubernetes/infrastructure/sources/versions-configmap.yaml
 ```
+
+### A changed PV mountOption that nothing picked up
+
+The kubelet reads `mountOptions` at mount time only. Flux reconciles the PV
+while every running pod stays on the options it mounted with, so the change
+looks applied and is not in effect.
+
+Delete the mounting pods one workload at a time — a pod delete, not
+`rollout restart` (§ Restarting a Flux-managed workload) — then confirm on the
+node:
+
+```bash
+kubectl delete pod -n <ns> -l app.kubernetes.io/name=<app>
+ssh <node> nfsstat -m
+```
+
+### A new NFS-backed PV stuck in `ContainerCreating`
+
+Flux reconciles `kubernetes/` within about a minute of a merge, while the export
+the PV names is created by a later `task storage:deploy`. Merge and deploy the
+Ansible half first. The other order leaves the pod in `ContainerCreating` with
+`mount.nfs: ... No such file or directory`, and a Deployment with
+`strategy: Recreate` on an RWO volume makes that a full outage rather than a
+rolling one.
+
+Recovery order: create the export, `exportfs -ra` on the NAS, then delete the
+stuck pod.
 
 ### Flux Logs
 
@@ -770,7 +969,8 @@ flux logs --kind=Kustomization --name=apps --namespace=flux-system
 flux logs --kind=HelmRelease --name=authentik --namespace=authentik
 ```
 
-The `flux logs` command aggregates controller logs by resource, which is far more useful than raw `kubectl logs` against the controller pods.
+The `flux logs` command aggregates controller logs by resource, which is far more useful than raw
+`kubectl logs` against the controller pods.
 
 ---
 
@@ -846,6 +1046,14 @@ pipeline when the pin drifts from `versions-configmap.yaml`). Upgrade steps:
    ```bash
    flux install --export > kubernetes/clusters/weisssrv/flux-system/gotk-components.yaml
    ```
+
+   Run `task flux:lint` immediately.
+   `kubernetes/clusters/weisssrv/flux-system/kustomization.yaml` still carries a
+   JSON6902 `op: remove` on the controllers' CPU limit, which hard-fails if a
+   regenerated manifest ever ships without one. The two memory-request patches
+   are strategic-merge and tolerate a missing default. The lint stage also
+   compares the manifest's `# Flux Version:` header against `FLUX_VERSION` and
+   the versions ConfigMap, so this step is enforced rather than remembered.
 
 4. Commit all four files together and push; Flux upgrades itself on
    reconcile.

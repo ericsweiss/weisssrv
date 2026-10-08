@@ -1,25 +1,20 @@
-"""Coverage for check-default-deny-coverage.py.
+"""Site policy pinned against check-default-deny-coverage.py.
 
-The gate exists to FAIL on the third unfenced namespace, so every arm is proved
-against a fixture corpus — the live tree is expected to pass and therefore
-proves nothing about failure.
+Pins the site data: the exemption set and the kube-system ingress allows that no
+scrape gate can see. The gate's own failure paths are proved in weisssrv-lib.
 """
 from __future__ import annotations
 
-import importlib.util
 import io
 import textwrap
 from pathlib import Path
 
 import pytest
 import yaml
+from script_loader import load_script
 
 REPO = Path(__file__).resolve().parent.parent
-_SPEC = importlib.util.spec_from_file_location(
-    "check_default_deny_coverage", REPO / "scripts" / "check-default-deny-coverage.py"
-)
-gate = importlib.util.module_from_spec(_SPEC)
-_SPEC.loader.exec_module(gate)
+gate = load_script("check-default-deny-coverage.py")
 
 
 FENCED = """\
@@ -47,134 +42,6 @@ def run(monkeypatch, corpus: str, argv: list[str] | None = None) -> int:
     return gate.main(argv or [])
 
 
-def test_fenced_namespace_passes(monkeypatch, capsys) -> None:
-    corpus = DEPLOY.format(ns="apps") + "---\n" + FENCED.format(ns="apps")
-    assert run(monkeypatch, corpus) == 0
-    assert "Ingress default-deny OK" in capsys.readouterr().out
-
-
-def test_unfenced_namespace_fails(monkeypatch, capsys) -> None:
-    assert run(monkeypatch, DEPLOY.format(ns="apps")) == 1
-    assert "apps: owns workloads" in capsys.readouterr().err
-
-
-def test_a_helmrelease_puts_its_target_namespace_in_scope(monkeypatch) -> None:
-    """A chart's workloads never appear in a kustomize corpus."""
-    corpus = """\
-        apiVersion: helm.toolkit.fluxcd.io/v2
-        kind: HelmRelease
-        metadata:
-          name: thing
-          namespace: flux-system
-        spec:
-          targetNamespace: charted
-        """
-    assert run(monkeypatch, corpus) == 1
-
-
-def test_an_app_scoped_policy_does_not_fence_the_namespace(monkeypatch, capsys) -> None:
-    corpus = DEPLOY.format(ns="apps") + textwrap.dedent(
-        """\
-        ---
-        apiVersion: networking.k8s.io/v1
-        kind: NetworkPolicy
-        metadata:
-          name: allow-one-app
-          namespace: apps
-        spec:
-          podSelector:
-            matchLabels: {app: one}
-          policyTypes: [Ingress]
-        """
-    )
-    assert run(monkeypatch, corpus) == 1
-    assert "apps: owns workloads" in capsys.readouterr().err
-
-
-def test_a_namespace_wide_allow_all_policy_does_not_fence(monkeypatch, capsys) -> None:
-    """The false fence: it satisfied "has an Ingress policyType" while fencing nothing."""
-    corpus = DEPLOY.format(ns="apps") + textwrap.dedent(
-        """\
-        ---
-        apiVersion: networking.k8s.io/v1
-        kind: NetworkPolicy
-        metadata:
-          name: allow-all-ingress
-          namespace: apps
-        spec:
-          podSelector: {}
-          policyTypes: [Ingress]
-          ingress: [{}]
-        """
-    )
-    assert run(monkeypatch, corpus) == 1
-    assert "apps: owns workloads" in capsys.readouterr().err
-
-
-def test_an_allow_all_policy_defeats_a_sibling_default_deny(monkeypatch) -> None:
-    """NetworkPolicies are additive — the open one wins, so the namespace is unfenced."""
-    corpus = (
-        DEPLOY.format(ns="apps")
-        + "---\n"
-        + FENCED.format(ns="apps")
-        + textwrap.dedent(
-            """\
-            ---
-            apiVersion: networking.k8s.io/v1
-            kind: NetworkPolicy
-            metadata:
-              name: allow-all-ingress
-              namespace: apps
-            spec:
-              podSelector: {}
-              policyTypes: [Ingress]
-              ingress: [{}]
-            """
-        )
-    )
-    assert run(monkeypatch, corpus) == 1
-
-
-def test_a_namespace_wide_policy_with_real_rules_still_fences(monkeypatch) -> None:
-    """Only a rule with neither `from` nor `ports` is wide open; a narrowed one counts."""
-    corpus = DEPLOY.format(ns="apps") + textwrap.dedent(
-        """\
-        ---
-        apiVersion: networking.k8s.io/v1
-        kind: NetworkPolicy
-        metadata:
-          name: allow-scrape
-          namespace: apps
-        spec:
-          podSelector: {}
-          policyTypes: [Ingress]
-          ingress:
-            - from:
-                - namespaceSelector:
-                    matchLabels: {kubernetes.io/metadata.name: observability}
-        """
-    )
-    assert run(monkeypatch, corpus) == 0
-
-
-def test_an_egress_only_policy_does_not_fence_the_namespace(monkeypatch) -> None:
-    corpus = DEPLOY.format(ns="apps") + textwrap.dedent(
-        """\
-        ---
-        apiVersion: networking.k8s.io/v1
-        kind: NetworkPolicy
-        metadata:
-          name: allow-egress-dns
-          namespace: apps
-        spec:
-          podSelector: {}
-          policyTypes: [Egress]
-          egress: [{}]
-        """
-    )
-    assert run(monkeypatch, corpus) == 1
-
-
 def test_the_declared_exemptions_are_honoured(monkeypatch) -> None:
     assert run(monkeypatch, DEPLOY.format(ns="flux-system")) == 0
 
@@ -188,24 +55,6 @@ def test_kube_system_is_no_longer_exempt(monkeypatch) -> None:
     assert run(monkeypatch, corpus) == 0
 
 
-def test_a_cli_exemption_needs_a_reason(monkeypatch) -> None:
-    assert run(monkeypatch, DEPLOY.format(ns="apps"), ["--exempt", "apps"]) == 2
-
-
-def test_a_cli_exemption_with_a_reason_is_honoured(monkeypatch) -> None:
-    assert run(monkeypatch, DEPLOY.format(ns="apps"), ["--exempt", "apps=because"]) == 0
-
-
-def test_an_empty_corpus_is_an_operator_error(monkeypatch) -> None:
-    assert run(monkeypatch, "") == 2
-
-
-def test_a_corpus_without_workloads_is_an_operator_error(monkeypatch, capsys) -> None:
-    """The shape a render loop that never reached an app stage produces."""
-    assert run(monkeypatch, FENCED.format(ns="apps")) == 2
-    assert "0 workload namespaces" in capsys.readouterr().err
-
-
 @pytest.mark.parametrize("ns", sorted(gate.EXEMPT_NAMESPACES))
 def test_every_exemption_carries_a_reason(ns: str) -> None:
     assert len(gate.EXEMPT_NAMESPACES[ns]) > 40
@@ -213,18 +62,8 @@ def test_every_exemption_carries_a_reason(ns: str) -> None:
 
 # --- The kube-system allows no gate can see -----------------------------------
 #
-# check-scrape-netpol.py matches `serviceMonitor.enabled` / `podMonitor.enabled`
-# in HelmRelease values, and neither kube-system monitor is spelled that way:
-# kured's comes from `metrics.create: true`, and CoreDNS's is rendered by
-# kube-prometheus-stack (chart-rendered monitors never enter the flux:lint
-# corpus at all). metrics-server's :10250 is not a scrape path at all — it is
-# the aggregated metrics.k8s.io API, so no scrape gate would ever look for it,
-# and losing it breaks `kubectl top`, the HPA and the VPA recommender rather
-# than a dashboard. So kube-system is the one fenced namespace where deleting or
-# mistyping an ingress allow passes every gate in `task lint`. These pin the
-# three rules directly. The gate script is vendored from weisssrv-lib, so
-# teaching it the `metrics.create` spelling is a library change, not a local
-# edit.
+# check-scrape-netpol.py matches `serviceMonitor.enabled` / `podMonitor.enabled`,
+# which kured, CoreDNS and metrics-server's :10250 API are not.
 
 KUBE_SYSTEM_POLICIES = REPO / "kubernetes" / "infrastructure" / "configs" / "kube-system-policies"
 

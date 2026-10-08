@@ -4,7 +4,11 @@ kind: Namespace
 metadata:
   name: ci-cache
   labels:
-    # PSA restricted: garage runs non-root with a read-only rootfs; the only
-    # writable paths are the two emptyDir mounts below.
+    app.kubernetes.io/name: ci-cache
+    app.kubernetes.io/part-of: ci-cache
+    app.kubernetes.io/managed-by: flux
+    # PSA restricted: garage runs non-root with a read-only rootfs; its only
+    # writable paths are the emptyDir mounts in deployment.yaml.
     pod-security.kubernetes.io/enforce: restricted
-    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted

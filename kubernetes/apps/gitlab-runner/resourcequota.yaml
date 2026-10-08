@@ -1,14 +1,12 @@
 ---
-# Aggregate resource bounds for the shared-runner namespace. concurrent:7 job
-# pods (cpu_request 500m / memory_request 1Gi, memory_limit 4Gi each — see
-# release.yaml) plus the manager could otherwise schedule ~7.5 CPU + 15Gi of
-# requests and burst to ~60Gi of memory limits, enough to evict resident
-# workloads on a tight node (opt nodes idle with only a few GB free).
-#
-# Deliberately NO cpu / limits.cpu quota dimension: a CPU-limit quota would
-# force EVERY pod in the namespace to declare a CPU limit, which would reject
-# the runner manager (it intentionally runs with no CPU limit to avoid CFS
-# throttling). We bound CPU only via requests.cpu, and memory via both.
+# Aggregate bounds for the shared-runner namespace, sized against concurrent:7
+# and the agent VM size (proxmox_vm_cores/proxmox_vm_memory in hosts.yml);
+# re-derive on a resize. Non-pods dimensions exceed allocatable (docs/16).
+
+# CRITICAL: no cpu or limits.cpu dimension. A CPU-limit quota forces every pod
+# in the namespace to declare a CPU limit, which rejects the runner manager;
+# it runs with no CPU limit to avoid CFS throttling. CPU is bounded by
+# requests.cpu alone, memory by both.
 apiVersion: v1
 kind: ResourceQuota
 metadata:
@@ -18,18 +16,15 @@ spec:
   hard:
     requests.cpu: "8"
     requests.memory: 16Gi
-    # concurrent:7 x 5Gi job-pod limits + the manager, PLUS two churn
-    # slots: Terminating pods still count against the quota (same modelling
-    # as the privileged twin), and at exactly 7x5+manager the next burst
-    # 403s with no retry. Terminating limits are accounting, not resident
-    # memory, so the eviction guard this quota exists for is unchanged.
+    # concurrent:7 x 5Gi job-pod limits plus the manager, plus two churn slots:
+    # Terminating pods still count against the quota, and at exactly
+    # 7x5+manager the next burst 403s with no retry.
     limits.memory: 46Gi
     pods: "20"
 ---
-# Default requests/limits so any pod created in this namespace without explicit
-# resources (e.g. an auxiliary pod a CI job spawns via its pods:create RBAC)
-# still counts against the quota above instead of slipping in unbounded.
-# Only memory carries a default limit — never a CPU limit (see quota note).
+# Default requests and limits so a pod created here without explicit resources
+# still counts against the quota above. Only memory carries a default limit,
+# never CPU (see the quota note).
 apiVersion: v1
 kind: LimitRange
 metadata:

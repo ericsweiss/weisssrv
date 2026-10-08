@@ -1,0 +1,95 @@
+# https://taskfile.dev
+# GitLab VM deployment and operations (docs/27).
+version: '3'
+
+tasks:
+  deploy:
+    desc: Deploy GitLab (provisions VM and installs GitLab)
+    dir: "{{.ANSIBLE_DIR}}"
+    # Anchors shared with gitlab:deploy-check so dry-run and deploy can't diverge.
+    env: &gitlab_env
+      ROOT_EMAIL_ALIAS: op://Homelab/Email Config/root_alias
+      SMTP_RELAY_USER: op://Homelab/SMTP Relay Auth/username
+      SMTP_RELAY_PASSWORD: op://Homelab/SMTP Relay Auth/password
+      SSH_PUBLIC_KEY: op://Homelab/SSH Key/public key
+      # gitlab.yml runs alloy_host, which asserts the Loki push creds.
+      LOKI_PUSH_USER: op://Homelab/Loki Push Auth/username
+      LOKI_PUSH_PASSWORD: op://Homelab/Loki Push Auth/password
+      GITLAB_ROOT_PASSWORD: op://Homelab/GitLab/root-password
+      GITLAB_SAML_CERT_FINGERPRINT: op://Homelab/GitLab SSO/saml-cert-fingerprint
+      # Admin api token for the Web IDE /application/settings block. Named
+      # GITLAB_ADMIN_API_TOKEN to match the deploy job and avoid the CI-side
+      # GITLAB_API_TOKEN project-variable shadow (see gitlab_servers.yml).
+      GITLAB_ADMIN_API_TOKEN: op://Homelab/GitLab API Token/credential
+    preconditions: &gitlab_deploy_preconditions
+      - sh: command -v ansible-playbook
+        msg: "ansible-playbook is not installed"
+      # `op account list`, not `op whoami` — see the note on infra:deploy's preconditions.
+      - sh: op account list 2>/dev/null
+        msg: "1Password CLI not authenticated. Run: eval $(op signin)"
+    cmds:
+      - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/gitlab.yml {{.CLI_ARGS}}
+
+  deploy-check:
+    desc: Check mode - show what GitLab deployment would change
+    dir: "{{.ANSIBLE_DIR}}"
+    env: *gitlab_env
+    preconditions: *gitlab_deploy_preconditions
+    cmds:
+      - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/gitlab.yml --check --diff {{.CLI_ARGS}}
+
+  status:
+    desc: Show GitLab status
+    cmds:
+      - echo "=== GitLab VM Status ==="
+      - ssh eric@{{.GITLAB_IP}} "sudo gitlab-ctl status" || echo "GitLab VM not reachable or not installed"
+      - echo ""
+      - echo "=== GitLab IngressRoutes ==="
+      - kubectl get ingressroute -n gitlab 2>/dev/null || echo "No IngressRoutes found"
+      - echo ""
+      - echo "=== GitLab Runner Pods (shared + privileged) ==="
+      - kubectl get pods -n gitlab-runner -o wide 2>/dev/null || echo "No runners found"
+      - kubectl get pods -n gitlab-runner-privileged -o wide 2>/dev/null || echo "No privileged runners found"
+      - echo ""
+      - echo "=== GitLab Runner HelmReleases (Flux-managed) ==="
+      - kubectl get helmrelease -n gitlab-runner 2>/dev/null || echo "No HelmReleases found"
+      - kubectl get helmrelease -n gitlab-runner-privileged 2>/dev/null || echo "No privileged HelmReleases found"
+      - echo ""
+      - echo "=== GitLab Runner Reaper ==="
+      - kubectl get cronjob -n gitlab-runner-reaper 2>/dev/null || echo "No reaper CronJob found"
+      - echo ""
+      - echo "=== GitLab Agent ==="
+      - kubectl get pods -n gitlab-agent 2>/dev/null || echo "No agent pods found"
+      - kubectl get helmrelease -n gitlab-agent 2>/dev/null || echo "No agent HelmRelease found"
+
+  verify:
+    desc: Run GitLab smoke tests (web UI, registry, pages, SSH)
+    cmds:
+      - bash scripts/verify-gitlab.sh
+
+  backup:
+    desc: Create GitLab backup (wrapper applies SKIP=registry,artifacts, copies secrets, seeds the freshness metric)
+    cmds:
+      - echo "Creating GitLab backup..."
+      # The wrapper, not bare `gitlab-backup create`: it applies the slim-backup
+      # SKIP list, copies gitlab-secrets.json + gitlab.rb alongside, and writes
+      # the gitlab_backup.prom metric the backup-staleness alert reads.
+      - ssh eric@{{.GITLAB_IP}} "sudo /usr/local/sbin/gitlab-backup-run.sh"
+      - echo ""
+      - 'echo "Backup complete. List backups with:"'
+      - echo "  ssh eric@{{.GITLAB_IP}} 'sudo ls -la /var/opt/gitlab/backups/'"
+
+  console:
+    desc: SSH to GitLab VM
+    cmds:
+      - ssh eric@{{.GITLAB_IP}}
+
+  logs:
+    desc: View GitLab logs
+    cmds:
+      - ssh eric@{{.GITLAB_IP}} "sudo gitlab-ctl tail"
+
+  reconfigure:
+    desc: Reconfigure GitLab after changes
+    cmds:
+      - ssh eric@{{.GITLAB_IP}} "sudo gitlab-ctl reconfigure"

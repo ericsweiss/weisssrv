@@ -109,19 +109,20 @@ Create the following items in your **Homelab** vault before deploying. Secrets a
 
 > **IMPORTANT**: SSO secrets are REQUIRED, not optional. Password-based login is disabled in both applications - Authentik SSO is the only way to log in. You must configure Authentik providers BEFORE deploying. See [SSO Setup Guide](./23-recipes-sso-setup.md) for complete instructions.
 
-**Create the items:**
+**Create the items.** Generate the two app secrets straight into the vault so
+neither value reaches the terminal:
 
 ```bash
-# Generate secure passwords for new installations
-echo "Mealie Postgres password: $(openssl rand -base64 32)"
-echo "Meilisearch master key: $(openssl rand -base64 32)"
+op item create --vault Homelab --category password --title 'Mealie Secrets' \
+  "postgres-password=$(openssl rand -base64 32)"
+op item create --vault Homelab --category password --title 'Bar Assistant Secrets' \
+  "meilisearch-master-key=$(openssl rand -base64 32)"
 ```
 
-Then create in 1Password:
-- **Mealie Secrets** (type: Password) with field `postgres-password`
-- **Bar Assistant Secrets** (type: Password) with field `meilisearch-master-key`
-- **Mealie SSO** (type: Password) with fields `oidc-client-id`, `oidc-client-secret` (from Authentik)
-- **Bar Assistant SSO** (type: Password) with fields `authentik-client-id`, `authentik-client-secret` (from Authentik)
+Then create the two SSO items, whose values come from `terraform/authentik`
+([SSO Setup Guide](./23-recipes-sso-setup.md)):
+- **Mealie SSO** (type: Password) with fields `oidc-client-id`, `oidc-client-secret`
+- **Bar Assistant SSO** (type: Password) with fields `authentik-client-id`, `authentik-client-secret`
 
 **Optional Items:**
 
@@ -344,7 +345,7 @@ task recipes:restart
 
 # Restart specific app — delete the pods, never `rollout restart`: these
 # Deployments are Flux-managed and kustomize-controller drift-reverts the
-# restart annotation (docs/12 § Restarting workloads).
+# restart annotation (docs/29 § Restarting a Flux-managed workload).
 kubectl delete pod -n recipes -l app.kubernetes.io/name=mealie
 kubectl delete pod -n recipes -l app.kubernetes.io/name=bar-assistant
 ```

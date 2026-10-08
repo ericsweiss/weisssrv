@@ -58,12 +58,9 @@ spec:
                 secretKeyRef:
                   name: observability-exporter-secrets
                   key: proxmox-token-secret
-            # Proxmox nodes serve per-node self-signed certs with no IP SAN, so
-            # verifying against the target IP can't succeed without distributing
-            # a shared cert to pveproxy. Verification is left off as an accepted
-            # LAN MITM risk: the token is still encrypted in transit (8006 is
-            # HTTPS) and scoped to the read-only PVEAuditor role (see
-            # proxmox_firewall), so a captured token cannot mutate cluster state.
+            # Off until the wildcard cert reaches pveproxy and the ServiceMonitor
+            # targets node names (deferred, docs/16): per-node self-signed certs have
+            # no IP SAN. Accepted: a LAN MITM could capture the PVEAuditor token.
             - name: PVE_VERIFY_SSL
               value: "false"
           livenessProbe:
@@ -79,18 +76,25 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 15
           resources:
+            # The tmp emptyDir's sizeLimit is the cap; this request is what
+            # ranks the pod by its own usage under node pressure.
             requests:
               cpu: 50m
               memory: 64Mi
+              ephemeral-storage: 64Mi
             limits:
-              # No CPU limit (docs/33): pve-exporter bursts during scrape
-              # (Python parsing the cluster-wide /pve API response) and CFS
-              # throttling trips CPUThrottlingHigh. The memory limit stays —
-              # OOM is a real failure mode.
+              # No CPU limit (docs/33): the exporter bursts during scrape and CFS
+              # throttling trips CPUThrottlingHigh. The memory limit stays.
               memory: 256Mi
+              # Above the emptyDir cap, which shares this budget with the rotated
+              # container logs; at the cap the kubelet evicts first.
+              ephemeral-storage: 128Mi
       volumes:
         - name: tmp
-          emptyDir: {}
+          emptyDir:
+            # Only scratch for the Python runtime. Over sizeLimit the kubelet
+            # evicts the pod.
+            sizeLimit: 64Mi
 ---
 apiVersion: v1
 kind: Service
@@ -106,13 +110,9 @@ spec:
     - name: metrics
       port: 9221
 ---
-# The exporter returns cluster-wide data (/cluster/resources, /nodes)
-# regardless of which node ?target= points at, so every target produces the
-# same pve_* series. We scrape just two hosts rather than all six to avoid
-# storing every series 2-6x (TSDB cardinality / on-disk size); two targets
-# on different hosts give resilience if the queried node is down, and
-# ProxmoxHostDown's min()/absent() logic already handles a target dropping
-# out. Add a node IP to params.target to scrape a specific PVE node.
+# Every target returns the same cluster-wide pve_* series, so only two hosts are
+# scraped: enough for resilience if one is down, without storing each series six
+# times. ProxmoxHostDown's min()/absent() logic handles a target dropping out.
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
@@ -123,11 +123,9 @@ spec:
     matchLabels:
       app.kubernetes.io/name: proxmox-exporter
   endpoints:
-    # Both endpoints share one scrape config and differ only by params.target
-    # (which PVE node the exporter queries). A YAML anchor carries the shared
-    # block so the target IP is the only per-host edit; add a node by appending
-    # another `- <<: *pve-endpoint` with its own params. (Kustomize expands the
-    # anchor at build time, so the rendered scrape config is unchanged.)
+    # Both endpoints share one scrape config via a YAML anchor and differ only by
+    # params.target; add a node with another `- <<: *pve-endpoint`.
+
     # pve-nas-01
     - &pve-endpoint
       port: metrics

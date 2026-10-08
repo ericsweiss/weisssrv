@@ -1,16 +1,7 @@
 ---
-# NFS-backed persistent state for Homarr — the SQLite DB, board config, icons
-# and the encrypted integration credentials, all under one writable /appdata
-# mount. Lives on the encrypted ssd/appdata dataset, so the nightly
-# ssd/appdata -> archive replication captures it; the export's all_squash maps
-# every write to 1000:2000 and the nas_storage role owns the subdir.
-#
-# SQLite-on-NFS is deliberate: SQLite tolerates exactly one writer, and
-# replicas: 1 + Recreate (deployment.yaml) guarantee no two pods dual-mount this
-# RWO PV. docs/41 records the ext4-on-zvol fallback if WAL/locking ever bites.
-#
-# NFS-over-TLS PV; hostname (not IP) + force annotation rationale:
-# apps/download-clients/_nfs-pv/resources.yaml and docs/07.
+# NFS-backed Homarr state (SQLite DB, boards, icons, credentials) on encrypted
+# ssd/appdata. SQLite takes one writer, so replicas: 1 + Recreate keep two pods
+# off this RWO PV; docs/41 and apps/download-clients/_nfs-pv carry the rest.
 apiVersion: v1
 kind: PersistentVolume
 metadata:

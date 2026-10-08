@@ -1,16 +1,7 @@
 ---
-# wg-easy state on NFS (/appdata/wg-easy from pve-nas-01). This holds the
-# SQLite database + wg0 config = the server keypair, every peer's public key and
-# preshared key, and the admin credential hash. Sensitive at rest — it lives on
-# ssd/appdata (ZFS native encryption) and is captured by the archive replicator
-# for free (child of the ssd/appdata SRC_LIST root; no SRC_LIST edit needed).
-#
-# NFS (not a zvol) because wg-easy state is tiny and the pod is not pinned to
-# the NAS node — a single-writer SQLite DB over nfsvers=4.2/hard is safe with
-# replicas:1 + Recreate (no concurrent openers).
-#
-# NFS-over-TLS PV; hostname (not IP) + force annotation rationale:
-# apps/download-clients/_nfs-pv/resources.yaml and docs/07.
+# wg-easy state on NFS (/appdata/wg-easy): SQLite DB + wg0 config, i.e. the server
+# keypair, every peer key/PSK and the admin hash. On ssd/appdata - ZFS-encrypted and
+# in the nightly archive replication. PV shape: apps/download-clients/_nfs-pv, docs/07.
 apiVersion: v1
 kind: PersistentVolume
 metadata:
@@ -21,6 +12,11 @@ metadata:
     type: nfs
     app: wg-easy
 spec:
+  # Pre-bind to the intended claim so no other empty-storageClass PVC can grab
+  # this PV first.
+  claimRef:
+    namespace: wg-easy
+    name: wg-easy-config
   capacity:
     storage: 1Gi
   accessModes:

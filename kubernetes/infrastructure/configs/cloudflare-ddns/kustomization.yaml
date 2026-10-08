@@ -6,10 +6,9 @@ resources:
   - namespace.yaml
   - cronjob.yaml
 
-# The CronJob calls api.cloudflare.com plus a public IPv4-detection provider
-# (api.ipify.org, with ipv4.icanhazip.com / checkip.amazonaws.com as fallbacks),
-# all public TCP/443 — so kube-dns + public HTTPS and nothing else. No LAN
-# egress: the public component's except-list is what denies it.
+# The CronJob calls api.cloudflare.com and a public IPv4-detection provider over
+# TCP/443, so egress is kube-dns plus public HTTPS and nothing else. LAN egress
+# is denied by the public component's except-list.
 components:
   - ../../../components/netpol-baseline
   - ../../../components/netpol-egress-dns

@@ -140,7 +140,7 @@ After OS installation, verify virtualization is enabled:
 
 ```bash
 # Check for virtualization support
-egrep -c '(vmx|svm)' /proc/cpuinfo
+grep -Ec '(vmx|svm)' /proc/cpuinfo
 # Should return > 0
 
 # Verify VT-d/IOMMU (for PCI passthrough)
@@ -351,37 +351,10 @@ ssh root@10.0.10.102
 
 ### Create Admin User
 
-Ansible playbooks expect a non-root user with sudo access. Create user `eric`:
-
-```bash
-# Create user
-useradd -m -s /bin/bash eric
-
-# Set password (temporary - SSH key auth will be enforced)
-passwd eric
-
-# Add to sudo group
-usermod -aG sudo eric
-
-# Configure passwordless sudo (temporary)
-echo "eric ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/eric
-chmod 440 /etc/sudoers.d/eric
-
-# Copy SSH keys
-mkdir -p /home/eric/.ssh
-cp /root/.ssh/authorized_keys /home/eric/.ssh/
-chown -R eric:eric /home/eric/.ssh
-chmod 700 /home/eric/.ssh
-chmod 600 /home/eric/.ssh/authorized_keys
-```
-
-**Test user access**:
-
-```bash
-# From laptop
-ssh eric@10.0.10.102
-sudo -v  # Should not prompt for password
-```
+Ansible expects a non-root user `eric` with passwordless sudo. Both paths, the
+`bootstrap-proxmox-host.sh` script and the manual `useradd` fallback, are in
+[docs/18 — Bootstrapping new systems](18-bootstrap-new-systems.md) § Proxmox
+hosts.
 
 ### Configure Timezone and Locale
 
@@ -450,23 +423,10 @@ Before running Ansible automation, verify the following on each node.
 
 ### Automated Bootstrap (Recommended)
 
-Use the bootstrap script to automate user creation, SSH key deployment, and sudo configuration:
-
-```bash
-# From your laptop, run the bootstrap script against the new host
-./scripts/bootstrap-proxmox-host.sh <host-ip> <your-ssh-public-key>
-
-# Example:
-./scripts/bootstrap-proxmox-host.sh 10.0.10.107 "ssh-ed25519 AAAA... eric@laptop"
-```
-
-The script handles:
-- Creating user `eric` with sudo group
-- Deploying SSH authorized keys
-- Configuring passwordless sudo
-- Installing required packages (sudo if missing)
-
-After bootstrap, verify SSH access: `ssh eric@<host-ip>`
+`scripts/bootstrap-proxmox-host.sh` creates `eric`, sets a console password,
+deploys the SSH key and verifies access. Usage and the manual fallback are in
+[docs/18 — Bootstrapping new systems](18-bootstrap-new-systems.md) § Proxmox
+hosts.
 
 ### Manual Checklist (if not using bootstrap script)
 
@@ -556,6 +516,7 @@ Your bare metal hardware is now ready for full GitOps automation.
 ## Related documentation
 
 - [docs/02 — Installation](02-install.md) (the Ansible deployment that follows)
+- [docs/18 — Bootstrapping new systems](18-bootstrap-new-systems.md) (the `eric` user, SSH key and sudo, script or manual)
 - [docs/06 — ZFS](06-zfs.md) (exact pool creation commands, incl. the boot-disk partition trap)
 - [docs/44 — Storage bootstrap](44-storage-bootstrap.md) (datasets a rebuilt NAS needs)
 - [docs/01 — Overview](01-overview.md) (host/IP topology)

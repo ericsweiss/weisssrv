@@ -56,17 +56,14 @@ spec:
             - name: PGID
               value: "2000"
             - name: TZ
-              value: America/Los_Angeles
+              value: ${cluster_timezone}
             - name: baseUrl
               value: "http://pulsarr.downloads.svc.cluster.local:3003"
             - name: port
               value: "3003"
-            # SSO-only, matching the *arr apps' "Authentication: External": the
-            # sole path to :3003 is Traefik (NetworkPolicy) through the
-            # authentik-auth middleware + media-admins binding. This env value
-            # overrides the stored DB config on every boot, so the UI cannot
-            # re-enable native login; set it back to `required` to restore it.
-            # docs/21 §Authentik SSO Integration.
+            # SSO-only: the sole path to :3003 is Traefik through the
+            # authentik-auth middleware. This env value overrides the stored DB
+            # config on every boot, so the UI cannot re-enable native login.
             - name: authenticationMethod
               value: disabled
           ports:
@@ -80,9 +77,8 @@ spec:
               # a cold start gets when VPA admission is unavailable.
               memory: 512Mi
             limits:
-              # 30d working-set peak 903Mi +60%, rounded to the VPA's maxAllowed
-              # (vpa.yaml) so a capped recommendation can never exceed the
-              # ceiling it is admitted against. Hand-set and stays hand-set —
+              # Matches the VPA's maxAllowed (vpa.yaml) so a capped
+              # recommendation cannot exceed its admission ceiling. Hand-set:
               # the VPA is RequestsOnly.
               memory: 1536Mi
           livenessProbe:

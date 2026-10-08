@@ -10,11 +10,9 @@ tailscale_additional_flags:
   - "--operator=eric"
   - "--ssh"
 
-# Adopted via the role's best-effort `tailscale set --advertise-tags` reconcile
-# task, NOT the initial `tailscale up` — a tag on `up` hard-fails a join before
-# tagOwners exists. DEPLOY ORDER MATTERS: apply the ACL first (it defines
-# tagOwners + the tag-based route auto-approver), THEN run this role so the
-# hosts adopt the tag — see terraform/tailscale/README.md.
+# Adopted via the role's best-effort `tailscale set --advertise-tags` reconcile,
+# NOT the initial `tailscale up` - a tag on `up` hard-fails a join before
+# tagOwners exists. Apply the ACL FIRST, then run this role (terraform/tailscale).
 tailscale_advertise_tags:
   - "tag:subnet-router"
 
@@ -28,8 +26,7 @@ base_ssh_permit_root_login: "prohibit-password"
 base_fail2ban_pveproxy_enabled: true
 
 # ip_forward=1 required for Tailscale subnet routing (advertised above).
-# pve_firewall occasionally resets this; nic_tuning role installs a sysctl.d
-# drop-in that persists across reboots and `sysctl --system` reloads.
+# pve-firewall resets this; nic_tuning persists it as a sysctl.d drop-in.
 nic_tuning_ip_forward: true
 
 # Proxmox-only host metrics: smartmontools + drivetemp and the four textfile
@@ -37,24 +34,24 @@ nic_tuning_ip_forward: true
 # installs but publishes none of them.
 node_exporter_host_proxmox: true
 
-# Host-originated egress filtering on every Proxmox host: default-deny OUT plus
-# the sg-host-egress allowlist (proxmox_firewall/templates/cluster.fw.j2).
-# FORWARDed guest/subnet traffic is unaffected — host.fw OUT is host-originated
-# only.
+# The node-exporter-full dashboard's System Processes rows read this collector.
+node_exporter_host_processes_collector: true
+
+# Only HOST-scope proxmox_firewall_* keys belong here; the role fails the play
+# on a cluster-scope input. Host-originated egress filtering means default-deny
+# OUT plus the sg-host-egress allowlist; FORWARDed guest traffic is unaffected.
 proxmox_firewall_egress_filtering: true
 
 # ZFS ARC cap for the COMPUTE hosts (8 GiB). site.yml runs zfs_arc_cap only
-# where proxmox_role != 'nas' (pve-nas-01's ARC is owned by nas_storage —
-# nas_storage_zfs_arc_max_bytes in its host_vars). Sized for pve-prec-01, whose
-# VFIO guest RAM is host-pinned (docs/43); the 14-15 GiB opt/laptop hosts
-# override to 2 GiB in host_vars, because an ARC free to grow to 8 GiB there
-# competes with the guests it exists to serve.
+# where proxmox_role != 'nas' (the NAS's ARC is owned by nas_storage). Sized for
+# pve-prec-01; the 14-15 GiB small_ram_hosts child group overrides it to 2 GiB.
 zfs_arc_cap_max_bytes: 8589934592
 
-# NFSv4-over-TLS handshake daemon on every Proxmox host: prerequisite for the
-# tank-proxmox storage.cfg target moving to hostname + xprtsec=tls (the
-# proxmox_backup role's codified shape — storage.cfg is clustered, so EVERY
-# node mounts it and needs tlshd). Client mode only: hosts need just the
-# system CA truststore, no cert/key (pve-nas-01 overrides nfs_tls_is_server
-# in host_vars — it is the NFS server).
+# NFSv4-over-TLS handshake daemon on every Proxmox host: storage.cfg is
+# clustered, so EVERY node mounts tank-proxmox over xprtsec=tls and needs tlshd.
+# Client mode only - pve-nas-01 sets nfs_tls_is_server in its host_vars.
 nfs_tls_enabled: true
+
+# Keep removing the wildcard PEM acme_certs may stage on a client.
+# pve-nas-01 is the server, where the scrub is gated off.
+nfs_tls_scrub_client_cert: true

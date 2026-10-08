@@ -7,10 +7,9 @@ metadata:
     app.kubernetes.io/name: downloads
     app.kubernetes.io/part-of: media-stack
     app.kubernetes.io/managed-by: flux
-    # enforce: privileged is required namespace-wide for the Gluetun sidecar's
-    # NET_ADMIN + hostPath TUN device; PSA cannot scope that to one pod.
-    # warn/audit stay at baseline so a new over-privileged pod is still
-    # surfaced instead of silently blessed (the gluetun pods themselves warn).
+    # enforce: privileged is namespace-wide for the Gluetun sidecar's NET_ADMIN
+    # and hostPath TUN device; PSA cannot scope that to one pod. warn and audit
+    # stay at baseline so a new over-privileged pod is still surfaced.
     pod-security.kubernetes.io/enforce: privileged
     pod-security.kubernetes.io/audit: baseline
     pod-security.kubernetes.io/warn: baseline

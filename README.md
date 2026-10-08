@@ -39,7 +39,8 @@ Internet
     |
     +-- K3s cluster          9 nodes (3 servers + etcd, 6 agents)
     |
-    +-- MetalLB / kube-vip VIPs  public + internal ingress, API, wg-easy
+    +-- MetalLB / kube-vip VIPs  public + internal ingress, API, wg-easy,
+                                 alloy-syslog receiver
 ```
 
 Canonical host/node/VIP topology reference: [docs/01-overview.md](docs/01-overview.md).
@@ -70,9 +71,8 @@ cd weisssrv
 # Or clone from GitHub (read-only mirror)
 # git clone https://github.com/ericsweiss/weisssrv.git
 
-# Install Python lint/test tooling (Ansible, Molecule, ansible-lint, yamllint).
-# The script unit tests run by `task lint` additionally need pytest + pyyaml:
-#   pip install pytest pyyaml
+# Pins for ansible, ansible-lint, molecule, pytest, ruff and yamllint - PyYAML
+# arrives with ansible-core.
 pip install -r requirements.txt
 
 # Install Ansible collections, including weisssrv.infra (every role) at the tag
@@ -119,7 +119,11 @@ task k3s:status                # Show cluster and workload status
 # Flux GitOps (all Kubernetes workloads deploy via git push)
 task flux:status               # Concise health summary
 task flux:reconcile            # Force reconciliation
-task flux:sync-versions        # Regenerate versions-configmap from all.yml
+
+# Generated files - all three are drift-gated by task lint and by CI
+task hosts:sync                    # scripts/hosts.env, from hosts.yml
+task flux:sync-versions            # versions-configmap.yaml, from all.yml
+task flux:sync-host-log-staleness  # loki/host-log-staleness.yaml, from the alloy_host play
 
 # Maintenance
 task maintenance:check-versions       # Check all services for updates
@@ -164,9 +168,11 @@ weisssrv/
 │   └── apps/                 # Sibling top-level Kustomization (dependsOn infrastructure-configs,
 │                             #   parallel to observability so its health can't freeze app reconciliation):
 │                             #   one dir per app — see kubernetes/apps/ for the current set
-├── scripts/                  # Utility scripts (version checker, versions-configmap generator, etc.)
+├── scripts/                  # Gates, generators and operational helpers — scripts/README.md is the inventory
+├── lint/                     # Vendored lint profiles (yamllint) — not at the repo root by design
 ├── docs/                     # Documentation
-└── Taskfile.yml              # Task runner commands (including flux:*)
+├── Taskfile.yml              # Task runner — top-level tasks plus the includes: tree
+└── taskfiles/                # One file per task namespace (flux:lint is `lint:` in taskfiles/flux.yml)
 ```
 
 ### Related repositories
@@ -184,6 +190,11 @@ eric/weisssrv-lib     CI job templates · the weisssrv.infra Ansible collection
    └── eric/weisssrv-app-template       copier template for tenant repos that
                                         deploy INTO this cluster (docs/30)
 ```
+
+The template was extracted from this repo, not the other way round: weisssrv
+has no `.copier-answers.yml` and is never re-rendered. Improvements are ported
+between the two by hand, so a change that is not site data belongs in the
+template (or the library) as well as here.
 
 Every arrow is a pinned dependency: this repo pins the library tag in
 `variables.WEISSSRV_LIB_REF` (`.gitlab-ci.yml`, enforced by
@@ -208,13 +219,13 @@ Ansible tree here: [ansible/README.md](ansible/README.md).
 ## Secrets Management
 
 All secrets stay in 1Password and are injected at runtime — never in the
-inventory. Host-side tooling gets them from the invoking `Taskfile.yml` task's
-own `env:` block, mirrored by the matching CI job's `variables:`, both resolved
-by `op run --`:
+inventory. Host-side tooling gets them from the invoking task's own `env:` block
+in the Taskfile tree (`Taskfile.yml` or `taskfiles/<ns>.yml`), mirrored by the
+matching CI job's `variables:`, both resolved by `op run --`:
 
 ```yaml
-# Taskfile.yml — the task that runs the playbook owns the reference
-  infra:deploy:
+# taskfiles/infra.yml — the task that runs the playbook owns the reference
+  deploy:              # invoked as `task infra:deploy`
     env:
       SMTP_GMAIL_PASSWORD: op://Homelab/SMTP Relay Gmail/password
 ```
@@ -251,7 +262,8 @@ Split-horizon DNS:
 
 9-node HA cluster (3 servers + 6 agents) with:
 - **kube-vip**: API VIP at 10.0.10.161 (the 3-node etcd quorum tolerates 1 server failure)
-- **MetalLB**: LoadBalancer IPs (.100 public, .101 internal, .99 wg-easy endpoint)
+- **MetalLB**: LoadBalancer IPs (.100 public, .101 internal, .99 wg-easy
+  endpoint, .162 alloy-syslog receiver)
 - **Traefik**: Ingress controller (TLS served from cert-manager wildcard certs)
 - **external-dns**: Automatic Cloudflare DNS management
 - **cert-manager**: Let's Encrypt certificate automation
@@ -269,191 +281,29 @@ and [docs/30-multi-repo-onboarding.md](docs/30-multi-repo-onboarding.md)
 
 ## Applications
 
-### Authentik SSO
+Each row names the doc that owns the deployment. Hostnames on `esweiss.com` are
+internal (AdGuard) and on `ericsweiss.com` external (Cloudflare).
 
-Identity provider for Single Sign-On across all applications:
+| Application | Hostnames | Authentication | Doc |
+|---|---|---|---|
+| Authentik SSO | auth.esweiss.com / auth.ericsweiss.com | the IdP itself | [kubernetes/apps/authentik/README.md](kubernetes/apps/authentik/README.md); Terraform layer [docs/40](docs/40-authentik-terraform.md) |
+| Plex (LXC .152) | plex.esweiss.com / plex.ericsweiss.com | Plex account | [docs/20](docs/20-plex-deployment.md) |
+| Download and media stack (`downloads`) | nzbget / qbittorrent / prowlarr / tv / movies / music / pulsarr .esweiss.com | Authentik | [docs/21](docs/21-download-clients-deployment.md); day-2 VPN ops in [kubernetes/apps/download-clients/README.md](kubernetes/apps/download-clients/README.md) |
+| Recipes (`recipes`) | food.esweiss.com / food.ericsweiss.com; bar.ericsweiss.com (bar.esweiss.com redirects to it) | Authentik | [docs/22](docs/22-recipes-deployment.md), [docs/23](docs/23-recipes-sso-setup.md) |
+| Home Assistant (HAOS VM .154) | home.esweiss.com / home.ericsweiss.com | HA local + Authentik | [docs/24](docs/24-home-assistant-deployment.md) |
+| GitLab (VM .153) | git.esweiss.com / git.ericsweiss.com, plus registry and pages | Authentik SAML | [docs/27](docs/27-gitlab-deployment.md) |
+| Nextcloud (VM .156) | cloud.esweiss.com / cloud.ericsweiss.com | Authentik OIDC, SSO-only | [docs/35](docs/35-nextcloud.md) |
+| Immich (VM .157) | photos.esweiss.com / photos.ericsweiss.com | Authentik OIDC, SSO-only | [docs/36](docs/36-immich.md) |
+| Hermes Agent + Hindsight | agent.esweiss.com / agent.ericsweiss.com (Hindsight has no ingress) | Authentik OIDC | [docs/37](docs/37-hermes.md) |
+| wg-easy VPN | vpn.ericsweiss.com:51820/udp endpoint; vpn.esweiss.com admin UI | Authentik on the admin UI | [docs/38](docs/38-wireguard-vpn.md) |
+| Windows 11 desktop (VM .155) | none — RDP only | Windows local | [docs/39](docs/39-windows-vm.md) |
+| Homarr | dashboard.esweiss.com / dashboard.ericsweiss.com | Authentik OIDC, SSO-only | [docs/41](docs/41-homarr.md) |
+| Uptime Kuma | status.esweiss.com (status page + admin UI) / status.ericsweiss.com (public status page only) | forward-auth on the admin surface only | [docs/45](docs/45-uptime-kuma.md) |
+| Observability (Grafana) | grafana.esweiss.com | Authentik OIDC | [docs/31](docs/31-observability.md) |
+| Immich ML (LXC .158) | none — LAN API for the Immich VM only | none | [docs/36](docs/36-immich.md) |
 
-- **URL**: auth.esweiss.com (internal) / auth.ericsweiss.com (external — always
-  the OIDC issuer host, even for internal-only apps)
-- **Features**:
-  - OIDC/OAuth2 provider for every user-facing app (see the per-app docs)
-  - SAML provider for GitLab
-  - PostgreSQL data on persistent ZFS zvol
-- **Documentation**: [kubernetes/apps/authentik/README.md](kubernetes/apps/authentik/README.md)
-
-### Plex Media Server
-
-LXC container on NAS with Intel GPU passthrough for hardware transcoding.
-
-- **URL**: plex.esweiss.com
-- **Documentation**: [docs/20-plex-deployment.md](docs/20-plex-deployment.md)
-
-### Download Clients and Media Stack
-
-VPN-protected download clients with media management applications:
-
-| Service | Purpose | URL |
-|---------|---------|-----|
-| Gluetun | VPN gateway with killswitch | - |
-| NZBGet | Usenet downloads | nzbget.esweiss.com |
-| qBittorrent | BitTorrent downloads | qbittorrent.esweiss.com |
-| Prowlarr | Indexer manager | prowlarr.esweiss.com |
-| Sonarr | TV shows | tv.esweiss.com |
-| Radarr | Movies | movies.esweiss.com |
-| Lidarr | Music | music.esweiss.com |
-| Pulsarr | Plex Watchlist automation | pulsarr.esweiss.com |
-
-All services are protected by Authentik SSO and internal-only DNS.
-
-- **Documentation**: [docs/21-download-clients-deployment.md](docs/21-download-clients-deployment.md)
-
-### Recipe Management
-
-Mealie and Bar Assistant for food and cocktail recipe management:
-
-| Service | Purpose | URL |
-|---------|---------|-----|
-| Mealie | Recipe management and meal planning | food.esweiss.com |
-| Bar Assistant | Cocktail recipe management | bar.ericsweiss.com (bar.esweiss.com redirects to it) |
-
-Both services use Authentik SSO for authentication. Bar Assistant additionally
-runs its Salt Rim web UI, Meilisearch, and Redis — see docs/22 for the full
-component list.
-
-- **Documentation**: [docs/22-recipes-deployment.md](docs/22-recipes-deployment.md)
-
-### Home Assistant
-
-Home automation platform running on Home Assistant OS:
-
-- **URLs**: home.esweiss.com (internal), home.ericsweiss.com (external)
-- **Authentication**: Authentik SSO via hass-openid custom integration
-- **Features**:
-  - Traefik ingress with WebSocket support
-  - API bypass routes for download client integrations
-  - Configuration managed via Ansible with 1Password secrets
-- **Documentation**: [docs/24-home-assistant-deployment.md](docs/24-home-assistant-deployment.md)
-
-### GitLab
-
-Self-hosted Git repository and CI/CD platform:
-
-- **URLs**: git.esweiss.com (internal), git.ericsweiss.com (external)
-- **Features**:
-  - GitLab EE (CE features) on dedicated VM (version pinned in `ansible/inventories/prod/group_vars/all.yml`)
-  - Container Registry (registry.git.ericsweiss.com)
-  - GitLab Pages (*.pages.git.ericsweiss.com)
-  - CI/CD Runners on k3s cluster (infrastructure + shared multi-project)
-  - Authentik SAML SSO integration
-  - Git SSH access on port 2222 (external)
-- **Documentation**: [docs/27-gitlab-deployment.md](docs/27-gitlab-deployment.md)
-
-### Nextcloud
-
-Self-hosted file sync and collaboration on a NAS-pinned VM:
-
-- **URLs**: cloud.esweiss.com (internal), cloud.ericsweiss.com (external)
-- **Stack**: Docker Compose (nextcloud-apache + PostgreSQL + Redis + cron +
-  exporter) on VM .156, all state on ZFS zvol passthrough disks (no NFS),
-  host-nginx TLS
-- **Authentication**: Authentik OIDC SSO-only
-- **Documentation**: [docs/35-nextcloud.md](docs/35-nextcloud.md)
-
-### Immich
-
-Self-hosted photo and video management on a NAS-pinned VM:
-
-- **URLs**: photos.esweiss.com (internal), photos.ericsweiss.com (external)
-- **Stack**: docker-compose (immich-server + CPU ML + release-pinned
-  Postgres/vectorchord + Valkey) on VM .157, encrypted zvols (photo library on
-  `tank/immich-data`), host-nginx TLS, nightly pg_dump
-- **Authentication**: Authentik OIDC SSO-only
-- **Documentation**: [docs/36-immich.md](docs/36-immich.md)
-
-### WireGuard VPN (wg-easy)
-
-Internet-exit VPN for the user + friends/family (`wg-easy` v15):
-
-- **Endpoint**: vpn.ericsweiss.com:51820/udp (WAN → MetalLB VIP .99)
-- **Admin UI**: vpn.esweiss.com (internal-only, Authentik `vpn-admins`)
-- **Model**: full-tunnel internet exit; clients are fenced out of the LAN by a
-  two-layer egress no-LAN fence (client full-tunnel + public DNS, and a CNI
-  egress NetworkPolicy killswitch that also blocks internal DNS), plus a
-  separate `-dest`-scoped WAN firewall rule that scopes the inbound endpoint.
-  Public client DNS (1.1.1.1), IPv4-only.
-- **Documentation**: [docs/38-wireguard-vpn.md](docs/38-wireguard-vpn.md)
-
-### Observability (Grafana)
-
-Metrics, logs, dashboards, and alerting for the whole platform:
-
-- **URL**: grafana.esweiss.com
-- **Stack**: Prometheus + Grafana + Loki + Alloy, plus exporters (Proxmox, ZFS,
-  AdGuard, Unbound, Blackbox, Plex, Exportarr)
-- **Authentication**: Authentik OIDC
-- **Features**: community + custom dashboards via the `grafana_dashboard`
-  ConfigMap sidecar, Loki log datasource, Discord/email alerting
-- **Documentation**: [docs/31-observability.md](docs/31-observability.md)
-
-### Hermes Agent
-
-NousResearch autonomous AI agent platform with a web dashboard:
-
-- **URLs**: agent.esweiss.com (internal), agent.ericsweiss.com (external)
-- **Authentication**: the dashboard's own Authentik-OIDC login on both hostnames
-  (`hermes-users` group gate; an auth provider is mandatory on its 0.0.0.0 bind),
-  plus a Traefik-only NetworkPolicy. Authentik objects in `terraform/authentik`
-  (docs/40)
-- **Workload**: one pod, three containers (gateway supervisor + FastAPI dashboard
-  + camofox anti-detection browser sidecar) off a self-built image (upstream
-  ships none — built by the `build-hermes-agent` CI job); NFS `/opt/data` state
-  on encrypted `ssd/appdata`
-- **Memory backend**: a cluster-internal Hindsight deployment (no ingress) serves
-  Hermes' long-term memory — see [docs/37-hermes.md](docs/37-hermes.md)
-  (§Memory backend)
-- **Documentation**: [docs/37-hermes.md](docs/37-hermes.md)
-
-### Windows 11 VM
-
-On-demand Windows 11 desktop (OVMF/TPM/q35 shell provisioned via `proxmox_vm`):
-
-- **Access**: RDP to VM .155 (NAS-pinned). Its disks are on the encrypted `ssd`
-  pool, so it runs `onboot=0` and is started after unlock by
-  `pve-start-encrypted-guests` (last in the encrypted-guest cohort)
-- **Documentation**: [docs/39-windows-vm.md](docs/39-windows-vm.md)
-
-### Homarr
-
-Homelab dashboard/launcher for every service in the cluster:
-
-- **URLs**: dashboard.esweiss.com (internal), dashboard.ericsweiss.com (external)
-- **Authentication**: Authentik OIDC, SSO-only (`homarr-admins` group gate, admin
-  via the OIDC `groups` claim; no standing local admin — DR via docs/41 §SSO);
-  Authentik objects in `terraform/authentik` (docs/40)
-- **Workload**: raw k3s manifests (`kubernetes/apps/homarr/`), NFS-backed SQLite
-  state on encrypted `ssd/appdata`
-- **Integrations**: direct in-cluster/LAN URLs (bypassing the SSO perimeter) to
-  the *arr stack, qBittorrent/NZBGet, AdGuard, Proxmox, Plex, Home Assistant,
-  Nextcloud, and Immich
-- **Documentation**: [docs/41-homarr.md](docs/41-homarr.md)
-
-### Uptime Kuma
-
-Endpoint monitoring and the public status page:
-
-- **URLs**: status.ericsweiss.com (external — **public status page only**),
-  status.esweiss.com (internal — status page plus the admin UI)
-- **Authentication**: Authentik forward-auth (`status-admins` group) on the
-  admin surface only; the status-page paths are unauthenticated on both
-  hostnames and the external hostname has no admin router at all (404). Kuma has
-  no SSO of its own; its single local account sits underneath the outpost
-- **Workload**: raw k3s manifests (`kubernetes/apps/uptime-kuma/`), the upstream
-  `-rootless` image under PSA `restricted`, NFS-backed SQLite state on encrypted
-  `ssd/appdata`
-- **Monitors**: the pod's NetworkPolicy egress is the monitor inventory —
-  public :443, Traefik + both MetalLB VIPs, the two resolvers, the SMTP relay,
-  the six Proxmox APIs and the k3s API VIP. ICMP monitors are unsupported
-- **Documentation**: [docs/45-uptime-kuma.md](docs/45-uptime-kuma.md)
+Every user-facing app sits behind Authentik, and the OIDC issuer host is always
+the external name (auth.ericsweiss.com) even for an internal-only app.
 
 ## Documentation
 
@@ -470,6 +320,7 @@ Endpoint monitoring and the public status page:
 
 | Document | Description |
 |----------|-------------|
+| [46-unifi-network](docs/46-unifi-network.md) | The network tier everything below sits on — UniFi gateway/switch/AP: VLANs, zone firewall, WLANs, port map, DHCP reservations, port forwards, site settings, day-2 ops |
 | [04-qol](docs/04-qol.md) | Quality of life configs (Oh My Zsh, Neovim, etc.) |
 | [05-tailscale](docs/05-tailscale.md) | VPN setup |
 | [06-zfs](docs/06-zfs.md) | ZFS configuration with exact pool creation commands |
@@ -478,7 +329,6 @@ Endpoint monitoring and the public status page:
 | [09-certs](docs/09-certs.md) | TLS certificates (acme.sh + distribution) |
 | [10-mail](docs/10-mail.md) | Mail relay configuration |
 | [11-firewall](docs/11-firewall.md) | Proxmox firewall (IPSets + Security Groups) |
-| [46-unifi-network](docs/46-unifi-network.md) | UniFi gateway/switch/AP tier: VLANs, zone-based firewall, WLANs, port map, bench pre-provisioning + cutover runbook |
 
 ### Platform (k3s, Flux, observability, SSO, GPU)
 
@@ -522,9 +372,10 @@ Endpoint monitoring and the public status page:
 | [17-disaster-recovery](docs/17-disaster-recovery.md) | Disaster recovery and backup procedures |
 | [18-bootstrap-new-systems](docs/18-bootstrap-new-systems.md) | Bootstrapping new LXC containers and VMs |
 | [25-multi-node-expansion](docs/25-multi-node-expansion.md) | Multi-node expansion and Proxmox HA — the current HA-operations reference (docs/26 defers to it) |
-| [34-bond-mac-flapping](docs/34-bond-mac-flapping.md) | Opt-node network faults: the active-backup bond `all_slaves_active` MAC-flap black-hole **and** the e1000e TX Hardware Unit Hang — diagnosis, recovery, nic_tuning fixes |
+| [34-bond-mac-flapping](docs/34-bond-mac-flapping.md) | Host network faults: the active-backup bond `all_slaves_active` MAC-flap black-hole, the e1000e TX Hardware Unit Hang, and the br_netfilter skb_ext slab leak — diagnosis, recovery, nic_tuning fixes |
 | [42-offsite-backup](docs/42-offsite-backup.md) | Offsite backup (restic → Backblaze B2, client-side encrypted) + encrypted swap |
 | [44-storage-bootstrap](docs/44-storage-bootstrap.md) | Storage bootstrap: creating the ZFS pools and datasets a rebuilt NAS needs before restore |
+| [47-security-posture](docs/47-security-posture.md) | What is and is not encrypted, at rest and in transit, and why |
 
 ### Historical (completed / superseded — read-only)
 
@@ -533,6 +384,7 @@ Endpoint monitoring and the public status page:
 | [14-post-base-plan](docs/14-post-base-plan.md) | K3s platform roadmap and workload planning (superseded — historical record) |
 | [26-multi-node-implementation](docs/26-multi-node-implementation.md) | Step-by-step 6-node cluster implementation (completed — retained for rebuild reference) |
 | [28-gitlab-migration](docs/28-gitlab-migration.md) | GitHub to GitLab migration guide |
+| [48-unifi-audit-and-migration](docs/48-unifi-audit-and-migration.md) | The 2026-08 UniFi configuration audit findings (ZBF-xx / PORT-xx / ADM-xx / GW-xx) and the record of the bring-up, cutover and homelab renumber |
 
 ### Component docs (outside the numbered set)
 
@@ -545,7 +397,7 @@ Endpoint monitoring and the public status page:
 | `kubernetes/apps/<app>/README.md` (one per app that has notes — see `kubernetes/apps/`) | Per-app notes; [authentik](kubernetes/apps/authentik/README.md) is the **canonical** Authentik doc (its Terraform layer is docs/40) |
 | [terraform/cloudflare/README](terraform/cloudflare/README.md), [terraform/tailscale/README](terraform/tailscale/README.md), [terraform/authentik/README](terraform/authentik/README.md), [terraform/unifi/README](terraform/unifi/README.md) | Per-module ownership, plan/apply rules, import + DR recipes |
 | [kubernetes/components/README](kubernetes/components/README.md) | The reusable Kustomize components (netpol-baseline, the three netpol-egress-*, gitlab-runner-common) and when to take one rather than an inline policy |
-| [scripts/README](scripts/README.md) | Every script, grouped by purpose, with its origin (local / dual-maintained / vendored) |
+| [scripts/README](scripts/README.md) | Every script, grouped by purpose, with its origin (local / vendored / forked) |
 | [docker/hermes-agent/README](docker/hermes-agent/README.md), [docker/camofox-browser/README](docker/camofox-browser/README.md) | The two app images this repo builds |
 | [.claude/skills/weisssrv-development/SKILL](.claude/skills/weisssrv-development/SKILL.md) | The agent operating map (workflow invariants, gates, decision tree) |
 
@@ -565,6 +417,9 @@ Endpoint monitoring and the public status page:
   is also described elsewhere, and link rather than restate. Enumerations that
   must stay exact (apps, exports, namespaces, version pins) should name the file
   that generates them.
+- **Groups are ordered by layer** (network, hosts, storage, services) and rows
+  within a group by document number. A row placed out of number order says why
+  in its description.
 - **No table of contents.** The heading structure is the navigation; a hand-kept
   TOC only adds a second thing to drift.
 - **Cross-links go in a `## Related documentation` section at the foot** of the
@@ -585,7 +440,7 @@ Endpoint monitoring and the public status page:
   current stays in its topical group instead, carries the banner at the point
   the superseded procedure begins rather than at the top, and is annotated in
   its index row — `docs/23-recipes-sso-setup.md` is that variant.
-- Every relative `.md` link is CI-checked (`docs-link-check` over every tracked
+- Every relative `.md` link is CI-checked (`lint-docs-links` over every tracked
   Markdown file), so a rename that breaks a cross-link fails the pipeline.
 
 **Agent guidance**: coding agents should start from the
@@ -595,12 +450,9 @@ above. `CLAUDE.md` and `AGENTS.md` defer to it, as do the Cursor rules.
 
 ## User Management
 
-All hosts use user `eric` with passwordless sudo:
-- Proxmox hosts
-- LXC containers (unprivileged with mapped UIDs)
-- K3s VMs (via cloud-init)
-
-Note: While Postfix on smtp-relay runs as root (normal for mail servers), SSH access is still via user `eric`.
+Every host, LXC container and k3s VM uses the `eric` account with passwordless
+sudo; LXC containers are unprivileged with mapped UIDs. Service users, SSH key
+handling and rotation are [docs/03-ssh-users.md](docs/03-ssh-users.md).
 
 ## Credits
 

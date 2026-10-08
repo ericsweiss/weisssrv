@@ -59,7 +59,7 @@
    **field**. No `op://`, no item IDs.
 3. **CI** — `.gitlab-ci.yml` uses `op read` / `op run` with
    `OP_SERVICE_ACCOUNT_TOKEN`, which **must be masked and protected** (a GitLab
-   project setting — docs/13 § the credential note): protected means it is
+   project setting — docs/13 § Validate Stage): protected means it is
    absent on merge-request refs, so no MR job can read the vault with a
    branch's own code and every op:// consumer is main-only. Token-guarded jobs (deploy,
    maintenance, the drift plans) are simply not created without it — including

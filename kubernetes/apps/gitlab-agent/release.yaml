@@ -26,33 +26,24 @@ spec:
   values:
     image:
       tag: ""  # Use chart appVersion default
-    # ACCEPTED RISK (single-operator today) — REVIEW BEFORE MULTI-TENANT:
-    # rbac.create (chart default true) grants the agent cluster-admin via
-    # gitlab-agent:weisssrv-k3s-gitlab-agent-cluster-admin. Deliberate: this
-    # agent is the CI deploy path for the whole kubernetes/ tree, so it needs
-    # broad apply rights today. Before tenant repos deploy through it (docs/30),
-    # scope this RBAC below cluster-admin (namespaced Roles per tenant, or an
-    # impersonation/least-privilege ClusterRole limited to the resource kinds
-    # the platform actually applies) so a compromised agentk can't touch the
-    # whole cluster.
+    # cluster-admin RBAC (chart default rbac.create), single-operator. Scoping it
+    # below cluster-admin is docs/30 § Pre-Onboarding Checklist.
     config:
       # Internal hostname (git.esweiss.com → Traefik VIP 10.0.10.101) keeps
       # the agent's KAS long-poll inside the LAN: no WAN roundtrip, no
       # router-hairpin dependency.
       kasAddress: wss://git.${cluster_internal_domain}/-/kubernetes-agent/
-      # Chart reads key "token" from the referenced Secret (non-configurable
-      # in chart; tokenKey is set explicitly for clarity and forward
-      # compatibility). The sibling ExternalSecret (externalsecret.yaml)
-      # creates Secret "gitlab-agent-token" with data key "token".
+      # Chart reads key "token" from the referenced Secret; tokenKey is set
+      # explicitly for clarity. The sibling ExternalSecret creates Secret
+      # "gitlab-agent-token" with data key "token".
       secretName: gitlab-agent-token
       tokenKey: token
     resources:
       requests:
         cpu: 10m
         memory: 64Mi
-      # Memory only — no CPU limit (docs/33). Do NOT write `cpu: null` to
-      # "clear" one: this chart defaults to `resources: {}`, so Helm has
-      # nothing to coalesce over and the null renders literally, which
-      # kubeconform rejects.
+      # Memory only — no CPU limit (docs/33); 160Mi == vpa.yaml's maxAllowed.
+      # Do NOT write `cpu: null`: the chart defaults to `resources: {}`, so Helm
+      # has nothing to coalesce over and the null renders literally.
       limits:
-        memory: 128Mi
+        memory: 160Mi

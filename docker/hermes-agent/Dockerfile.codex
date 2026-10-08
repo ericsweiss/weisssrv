@@ -1,9 +1,5 @@
 # Thin wrapper over the upstream-built Hermes Agent image, baking in the three
 # CLIs Hermes shells out to. Why each is here: README.md.
-#
-# The base already ships Node 22 + npm and ends on `USER root`, so `npm i -g`
-# lands in /usr/local without a permission dance; ENTRYPOINT/CMD/ENV/WORKDIR/USER
-# are all inherited.
 ARG HERMES_IMAGE
 FROM ${HERMES_IMAGE}
 
@@ -24,15 +20,13 @@ RUN command -v node >/dev/null 2>&1 || { echo "node not found in base image"; ex
     && codex --version \
     && claude --version
 
-# `op` is invoked through Hermes' TERMINAL tool, which preserves
-# OP_SERVICE_ACCOUNT_TOKEN in the subprocess env — the code_execution tool
-# strips any *TOKEN* var by substring. docs/37 §1Password.
-#
-# SUPPLY-CHAIN PIN: TLS does not prove the signing key is authentic, so the
-# fingerprint is checked before the key is trusted — same constant as
-# weisssrv-lib's `.install-1password` fragment, which documents re-deriving it.
-# EVERY primary (pub) fingerprint is collected, because `gpg --dearmor` trusts
-# every key in the file and `--with-colons` also emits fpr: records for subkeys.
+# `op` runs through Hermes' TERMINAL tool because code_execution strips *TOKEN*
+# vars - docs/37 §1Password.
+
+# CRITICAL: TLS does not prove the signing key is authentic, so the
+# fingerprint is checked first - same constant as weisssrv-lib's
+# `.install-1password`. Every primary (pub) fingerprint is compared because
+# `gpg --dearmor` trusts every key in the file; subkey fpr: records are skipped.
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends ca-certificates curl gnupg; \
@@ -56,5 +50,6 @@ RUN set -eux; \
       > /etc/apt/sources.list.d/1password.list; \
     apt-get update; \
     apt-get install -y --no-install-recommends "1password-cli=${HERMES_OP_VERSION}"; \
+    apt-get purge -y --auto-remove gnupg; \
     rm -rf /var/lib/apt/lists/*; \
     op --version

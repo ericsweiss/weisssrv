@@ -1,12 +1,7 @@
 ---
-# VPA: Initial for the stateless server/worker (resize on natural restarts,
-# no proactive eviction of an SSO provider), Off for PostgreSQL (zvol-backed;
-# recommendations only — apply by hand in release.yaml).
-#
-# authentik-server is memory-only here: its CPU is owned by the chart-native
-# HPA (server.autoscaling in release.yaml, scales 2→4 on login bursts), so the
-# VPA must leave CPU alone to avoid HPA/VPA-on-CPU thrashing. The worker stays
-# single-replica + full VPA.
+# VPA tiers: Initial for the stateless server/worker (resize on natural restarts,
+# no eviction of an SSO provider), Off for PostgreSQL (recommendations only,
+# applied by hand in release.yaml). The server is memory-only - the HPA owns CPU.
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
 metadata:
@@ -16,18 +11,8 @@ spec:
   updatePolicy: {updateMode: Initial}
   resourcePolicy:
     containerPolicies:
-      # RequestsOnly: the server's memory limit is a fixed burst ceiling set in
-      # release.yaml. The default RequestsAndLimits preserves the manifest's
-      # request:limit ratio, which had rewritten the live limit down to the
-      # request (878Mi == 878Mi) against an 810Mi working set — the same
-      # zero-headroom trap documented for prowlarr in
-      # apps/download-clients/vpa.yaml.
-      #
-      # maxAllowed == the 1536Mi limit in release.yaml, the RequestsOnly shape
-      # docs/33 § Limit oscillation prescribes: the request may rise to the
-      # ceiling the pod is admitted against (Guaranteed QoS) but never past it.
-      # It was 2Gi — ABOVE the limit, so the cap bounded nothing. Move both
-      # numbers in the same commit.
+      # RequestsOnly: maxAllowed.memory tracks the fixed 1536Mi limit in
+      # release.yaml - move both in the same commit (docs/33 § Limit oscillation).
       - containerName: "*"
         controlledValues: RequestsOnly
         minAllowed: {memory: 256Mi}
@@ -43,12 +28,7 @@ spec:
   updatePolicy: {updateMode: Initial}
   resourcePolicy:
     containerPolicies:
-      # Same shape as the server: the 1536Mi limit in release.yaml is hand-set
-      # and stays the real ceiling (it is also what a pod admitted WITHOUT the
-      # mutating webhook gets — failurePolicy: Ignore), and maxAllowed.memory
-      # tracks it. The default RequestsAndLimits would rescale the limit with
-      # the request instead, so the effective ceiling would be whatever the last
-      # recommendation happened to be rather than the number reviewed here.
+      # Same shape as the server: maxAllowed tracks release.yaml's hand-set limit.
       - containerName: "*"
         controlledValues: RequestsOnly
         minAllowed: {cpu: 25m, memory: 256Mi}

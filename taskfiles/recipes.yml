@@ -1,0 +1,66 @@
+# https://taskfile.dev
+# Recipe stack: Mealie and Bar Assistant. The data services are pinned to the
+# NAS node for NFS locality and backup consistency (docs/22).
+version: '3'
+
+tasks:
+  status:
+    desc: Show status of recipe management stack
+    cmds:
+      - task: :_app:status
+        vars:
+          NS: recipes
+          SECTIONS: |
+            Recipes Namespace|pods
+            Services|svc
+            PVCs|pvc
+            IngressRoutes|ingressroute
+
+  restart:
+    desc: Restart all recipe apps
+    cmds:
+      - task: :_app:restart
+        vars:
+          NS: recipes
+          SELECTOR: --all
+          BANNER: Restarting recipe apps (pod delete)...
+
+  logs:
+    desc: "View logs for a specific app (task recipes:logs APP=mealie)"
+    vars:
+      APP: '{{.APP | default "mealie"}}'
+    cmds:
+      - |
+        APP="{{.APP}}"
+        echo "=== $APP logs ==="
+        kubectl logs -n recipes -l app.kubernetes.io/name="$APP" -f
+
+  shell:
+    desc: "Open shell in app container (task recipes:shell APP=mealie)"
+    vars:
+      APP: '{{.APP | default "mealie"}}'
+    cmds:
+      - |
+        APP="{{.APP}}"
+        echo "Opening shell in $APP..."
+        kubectl exec -it -n recipes deployment/"$APP" -- /bin/sh
+
+  delete:
+    desc: Delete recipe stack (preserves namespace, PVCs, and secrets)
+    cmds:
+      - echo "Deleting workloads (preserving namespace, storage, and secrets)..."
+      - |
+        # Delete only workload resources, NOT namespace/storage/secrets
+        kubectl delete deployment -n recipes --all --ignore-not-found
+        kubectl delete statefulset -n recipes --all --ignore-not-found
+        kubectl delete ingressroute -n recipes --all --ignore-not-found
+      - |
+        echo ""
+        echo "Workloads deleted. Namespace, PVCs, and secrets preserved."
+        echo "Flux will recreate the workloads on next reconcile (~1 minute)."
+        echo "To keep them deleted, suspend the apps Kustomization first:"
+        echo "  task flux:suspend -- flux-system/kustomization/apps"
+        echo ""
+        echo "To fully remove everything:"
+        echo "  task flux:suspend -- flux-system/kustomization/apps"
+        echo "  kubectl delete namespace recipes"

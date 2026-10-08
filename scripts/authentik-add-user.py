@@ -1,20 +1,7 @@
 #!/usr/bin/env python3
-"""Scaffold a managed authentik user into terraform/authentik/users.tf.
-
-Appends one username to the `locals { managed_usernames = [...] }` list. The
-repo mirrors to a PUBLIC remote, so personal data (name, email) never lands
-here — it lives in the 1Password "Authentik User Identities" item, and this
-script prints the exact JSON snippet to add there. Credentials are set by the
-person via an enrollment/recovery link after the supervised apply (docs/40
-§ Managed users). The script never touches group membership: that lives on the
-group (groups.tf), and the closing instructions say exactly what to add where.
-
-Usage:
-    python3 scripts/authentik-add-user.py <username> --name "Full Name" \
-        --email user@example.com [--groups mealie-users,homarr-users]
-
-`--name`/`--email` are used ONLY to print the 1Password snippet (never written
-to git); `--groups` only affects the printed instructions.
+"""Scaffold a managed authentik user into terraform/authentik/users.tf, by
+appending one username to `managed_usernames`. Personal data never lands in git:
+`--name`, `--email` and `--groups` only shape printed output (docs/40).
 """
 
 from __future__ import annotations

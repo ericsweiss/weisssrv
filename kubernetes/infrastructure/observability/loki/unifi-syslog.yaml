@@ -1,0 +1,37 @@
+# UniFi gateway security events as LogQL rules evaluated by Loki's ruler.
+# UnifiSyslogStale, the receiver going quiet, is a Prometheus rule in
+# rules/monitoring.yaml.
+groups:
+  - name: unifi-syslog
+    interval: 1m
+    rules:
+      # Baseline is a handful of failed block-writes a week, so 20 in an hour is
+      # a real spike rather than the standing condition.
+      - alert: UnifiIpsBlockFailed
+        expr: sum(count_over_time({job="unifi-syslog"} |= "ipset[ips] add failed" [1h])) > 20
+        for: 15m
+        labels: { severity: warning, component: network }
+        annotations:
+          summary: "UniFi IPS could not write a block entry"
+          description: "The gateway logged more than 20 `ipset[ips] add failed` lines in an hour, against a near-zero baseline: inline IPS matched traffic it then failed to block, so the detection is real but nothing was dropped. Usually a full or missing ipset. Check the gateway's IPS state and its memory headroom (docs/46)."
+          runbook_url: "${cluster_runbook_base_url}/46-unifi-network.md"
+      # Baseline is a line or two a week, so 10 in an hour is the engine actually
+      # starving rather than its normal chatter.
+      - alert: UnifiIdsEngineFailure
+        expr: sum(count_over_time({job="unifi-syslog"} |= "INSUFFICIENT_MEMORY" [1h])) > 10
+        for: 15m
+        labels: { severity: warning, component: network }
+        annotations:
+          summary: "UniFi IDS/IPS engine is out of memory"
+          description: "The gateway's IDS/IPS daemon logged more than 10 INSUFFICIENT_MEMORY lines in an hour, against a near-zero baseline. The engine drops rules or stops inspecting when this happens, so inline blocking is degraded while the gateway still forwards. Reduce the enabled signature categories or restart the daemon (docs/46)."
+          runbook_url: "${cluster_runbook_base_url}/46-unifi-network.md"
+      # Baseline is 2-3 error lines per 15m (about 1800 per 7d, 7d peak 13), so
+      # 60 in a 15m window is well above any observed burst.
+      - alert: UnifiGatewayErrorBurst
+        expr: sum(count_over_time({job="unifi-syslog"} |~ "(?i)\\berror\\b" [15m])) > 60
+        for: 5m
+        labels: { severity: warning, component: network }
+        annotations:
+          summary: "UniFi gateway is logging errors far above its baseline"
+          description: "More than 60 error lines in 15 minutes from the gateway, against a baseline near 3. Read the raw stream in Grafana ({job=\"unifi-syslog\"}) to see which subsystem is failing (docs/46)."
+          runbook_url: "${cluster_runbook_base_url}/46-unifi-network.md"

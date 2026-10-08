@@ -1,12 +1,7 @@
 ---
-# IngressRoute for router (internal-only: LAN + Tailscale)
-#
-# Deliberately NO Authentik forward-auth: the router's own login is the gate and
-# it must stay administrable when SSO is degraded (as with the AdGuard routes).
-# The IP allowlist is therefore the only network gate, so this route uses
-# lan-tailscale-STRICT: strict drops the k3s pod CIDR, keeping in-cluster pods
-# (notably the hermes agent) off the router admin UI. Nothing in-cluster
-# consumes this host.
+# IngressRoute for router, internal-only (LAN + Tailscale). No Authentik
+# forward-auth: the router's own login is the gate, so lan-tailscale-strict is
+# the network gate and drops the k3s pod CIDR. Nothing in-cluster needs it.
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:
@@ -24,10 +19,8 @@ spec:
         - name: hsts-header
           namespace: traefik
       services:
-        # The UniFi UCG-Fiber serves its UI over HTTPS only (:443, redirecting
-        # :80), with a self-signed certificate — hence the dedicated
-        # unifi-self-signed ServersTransport rather than vm-tls-wildcard, which
-        # validates against the acme.sh wildcard the gateway does not carry.
+        # The UCG-Fiber serves its UI over HTTPS with a self-signed cert, so
+        # it needs unifi-self-signed rather than vm-tls-wildcard.
         - name: router-backend
           port: 443
           scheme: https

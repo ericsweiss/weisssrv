@@ -48,8 +48,9 @@ which is why the VM stays sized 6 vCPU / 12 GB.
 ## GPU machine learning (immich-ml LXC)
 
 A dedicated LXC (`immich-ml`, vmid 158, `10.0.10.158`, 4 cores / 8 GB / 64 GB
-rootfs on `local-lvm`) runs the `immich-machine-learning:<immich_version>-openvino`
-container under docker compose (`immich_ml` role, `task immich-ml:*`).
+rootfs on the encrypted NAS `ssd` pool, `ssd/pve/subvol-158-disk-0`) runs the
+`immich-machine-learning:<immich_version>-openvino` container under docker
+compose (`immich_ml` role, `task immich-ml:*`).
 
 ### Why an LXC, not the VM
 
@@ -79,11 +80,14 @@ way to open the 0660 device nodes.
   3003. Photo bytes transit the LAN as plain HTTP between .157 and .158 —
   same trust level as the other intra-LAN service flows.
 - No state: the multi-GB model cache is a named docker volume in the rootfs —
-  re-downloadable, holds models only (never photos), so the unencrypted
-  `local-lvm` placement and the lack of backup enrollment are deliberate.
-  Unlike the NAS app guests (plex/gitlab/nextcloud/immich, all `onboot=0` +
-  `pve-start-encrypted-guests`), this LXC is `onboot=1`: nothing waits on the
-  ZFS unlock, so it boots unattended via plain `pve-guests`.
+  re-downloadable, holds models only (never photos). The rootfs sits on the
+  aes-256-gcm `ssd` pool, so like the other NAS app guests
+  (plex/gitlab/nextcloud/immich) this LXC is `onboot=0` and listed in
+  `zfs_encryption_guest_ctids` on pve-nas-01 — `pve-start-encrypted-guests.service`
+  starts it once `zfs-mount-encrypted.service` unlocks `ssd` (startup order 57,
+  after nextcloud 55 and immich 56). See
+  [docs/32](32-zfs-encryption.md). It rides the cluster-wide nightly vzdump like
+  every other non-k3s guest; the exclude list holds the k3s VMs only.
 
 ### Version lockstep
 
@@ -122,7 +126,7 @@ is pinned to the NAS host, so block passthrough is both faster and simpler).
 
 | Mount | zvol | Size | Pool / encryption | Contents |
 |---|---|---|---|---|
-| `/mnt/immich-app` | `ssd/appdata/immich/app` | 20 GB | `ssd/appdata` (aes-256-gcm) | compose dir, rendered config + `.env`, ML model cache, pg_dump backups |
+| `/mnt/immich-app` | `ssd/appdata/immich/app` | 20 GB | `ssd/appdata` (aes-256-gcm) | compose dir, rendered config + `.env`, ML model cache |
 | `/mnt/immich-postgres` | `ssd/appdata/immich/postgres` | 24 GB | `ssd/appdata` (aes-256-gcm) | Postgres data directory |
 | `/mnt/immich-data` | `tank/immich-data/disk` | 2 TB **sparse** | `tank/immich-data` (aes-256-gcm) | the photo library (`UPLOAD_LOCATION=/mnt/immich-data/library`) |
 
@@ -143,7 +147,7 @@ is pinned to the NAS host, so block passthrough is both faster and simpler).
   vmid 157 is in `zfs_encryption_guest_vmids` (`host_vars/pve-nas-01.yml`). See
   [docs/32-zfs-encryption.md](32-zfs-encryption.md).
 
-Encryption posture summary: [docs/06-zfs.md](06-zfs.md) (At Rest table).
+Encryption posture summary: [docs/47-security-posture.md](47-security-posture.md) (At Rest table).
 
 ## Backups
 
@@ -154,16 +158,21 @@ Two tiers plus an application-level DB dump:
 2. **archive** (`archive-backupctl`, raw-encrypted `zfs send -w`) — `ssd/appdata`
    (app + postgres zvols) → `archive/appdata`, and `tank/immich-data` (the photo
    library) → `archive/immich-data`. Both already in `SRC_LIST` — no edit.
-3. **pg_dumpall** (nightly `immich-backup.timer`, `02:30`) — a logical database
-   dump gzipped onto the app zvol at `/mnt/immich-app/backups/immich-*.sql.gz`
-   (rides tier 2). This is the point-in-time DB recovery path and is uniform with
-   the GitLab backup plumbing. Immich's own built-in DB dump is disabled
+3. **pg_dumpall** (nightly `immich-backup.timer`, `01:00`) — a logical database
+   dump gzipped to `/mnt/backups-offsite/immich-*.sql.gz`, an NFS mount
+   (`xprtsec=tls`) of `pve-nas-01:/backups-apps/immich` = `tank/backups/apps/immich`,
+   so the dump rides archive and restic B2 rather than the app zvol
+   ([docs/42](42-offsite-backup.md)). This is the point-in-time DB recovery path
+   and is uniform with the GitLab backup plumbing. `/mnt/backups-offsite` is the
+   sole dump location; the superseded `/mnt/immich-app/backups` (~187 MB, newest
+   2026-07-22) is pruned by nothing and needs a one-time manual sweep.
+   Immich's own built-in DB dump is disabled
    (`backup.database.enabled: false` in the config file) to avoid duplication.
    `immich-backup-run.sh` emits node_exporter textfile metrics
    (`immich_backup_last_run_success` / `_last_success_timestamp_seconds` / …)
    read by the `ImmichBackupFailed` / `ImmichBackupStale` alerts.
 
-Retention: `immich_backup_keep_days` (default 7) local dumps; the archive tier
+Retention: `immich_backup_keep_days` (default 7) dumps in the landing dir; the archive tier
 keeps its own `archsync` grandfather set.
 
 ### Restore
@@ -177,7 +186,7 @@ keeps its own `archsync` grandfather set.
   ssh eric@10.0.10.157
   cd /mnt/immich-app/compose
   sudo docker compose stop immich-server immich-machine-learning
-  gunzip -c /mnt/immich-app/backups/immich-<ts>.sql.gz \
+  gunzip -c /mnt/backups-offsite/immich-<ts>.sql.gz \
     | sudo docker compose exec -T database psql -U postgres -d postgres
   sudo docker compose up -d
   ```
@@ -188,7 +197,8 @@ keeps its own `archsync` grandfather set.
 
 - **Internal** (`photos.esweiss.com`): AdGuard rewrite → `10.0.10.101`
   (Traefik-internal VIP). A direct `immich.esweiss.com` → `10.0.10.157` rewrite
-  (+ PTR) exists for admin/SSH convenience. `group_vars/dns.yml`.
+  (+ PTR) exists for admin/SSH convenience, as does `immich-ml.esweiss.com` →
+  `10.0.10.158` (+ PTR) for the machine-learning CT. `group_vars/dns.yml`.
 - **External** (`photos.ericsweiss.com`): a **DNS-only** Cloudflare CNAME →
   `direct.ericsweiss.com` (`terraform/cloudflare/dns.tf`, `local.dns_records["photos"]`,
   which the library module renders as `module.zone.cloudflare_record.protected["photos"]`).
@@ -324,7 +334,7 @@ exists:
    ingress do not exist yet), then redeploy SSO-only: `task immich:deploy`. This
    claims the first-registered-account owner/admin while the instance is reachable
    only on the LAN, closing the takeover window before the public record goes live.
-5. **Apply external DNS**: `task terraform:apply` (creates the `photos` DNS-only
+5. **Apply external DNS**: `task terraform:cloudflare-apply` (creates the `photos` DNS-only
    CNAME). Trigger a DDNS run if the origin IP is stale.
 6. **Flux** reconciles `kubernetes/apps/vm-ingress` (Service/EndpointSlice/
    IngressRoutes) and `service-monitors` on merge to `main`.
@@ -341,10 +351,11 @@ Immich couples its Postgres image to each release (the vectorchord/pgvectors
 build), and major DB upgrades are release-coupled. **Always** take the
 `immich_version`, `immich_postgres_version` (+`_digest`), and
 `immich_valkey_version` (+`_digest`) pins for a given release from **that
-release's own `docker/docker-compose.yml`** — never bump the DB independently.
+release's own compose file** — never bump the DB independently.
 
-1. Read the target release's compose (`github.com/immich-app/immich`, tag
-   `docker/docker-compose.yml`) for the exact image tags + digests.
+1. Read the target release's compose at
+   `github.com/immich-app/immich/blob/<tag>/docker/docker-compose.yml` for the
+   exact image tags + digests.
 2. Update the four `immich_*` pins in `group_vars/all.yml`, run
    `task flux:sync-versions`, commit both files.
 3. Review the release notes for **breaking DB migrations**; take a `task
@@ -363,6 +374,12 @@ pin still needs a one-off `apt install --allow-downgrades docker-ce=<ver> …`.
 
 ## Observability
 
+immich-server runs under a cgroup memory cap (`immich_server_mem_limit: "8g"` in
+`group_vars/immich_servers.yml`, 8 GiB of the VM's 12 GiB). The remote-ML leak
+that motivated it (immich-app/immich#31488) is fixed in v3.3.0, which is the
+current `immich_version` pin. The cap stays, so any future leak costs a
+container restart instead of walking the VM into `HostMemAvailableLow`.
+
 - **Logs**: `alloy_host` ships the VM's journald (including docker container logs
   — the daemon uses the `journald` log driver) to Loki. The `immich-ml` LXC is
   wired the same way (same role, same journald log driver).
@@ -375,16 +392,10 @@ pin still needs a one-off `apt install --allow-downgrades docker-ce=<ver> …`.
     pg_dumpall.
   - `EndpointDown` — the `photos.esweiss.com` blackbox probe (added to the
     blackbox target list) covers the ingress path.
-- **Grafana**: Immich ships **no** official Grafana dashboard for the pinned
-  release — [upstream monitoring docs](https://docs.immich.app/features/monitoring/)
-  point you at building your own against the metrics — so none is vendored here.
-  The only community option (Grafana.com ID `22555`, "Immich Overview") is a
-  single-revision, unmaintained (Dec 2024) dashboard authored for a Kubernetes
-  **Helm** deployment; its panel variables and label selectors do not match this
-  compose/static-endpoint VM, so importing it as-is would render mostly empty.
-  The metrics are explorable in Grafana today; vendor a dashboard via the
-  `grafana_dashboard` configMapGenerator (`observability/dashboards/`) once a
-  good, native-metrics dashboard emerges.
+- **Grafana**: `observability/dashboards/immich.json`, hand-authored against the
+  native OTEL metrics (no upstream or community dashboard matches this
+  compose/static-endpoint deployment). Inventory in
+  [docs/31](31-observability.md).
 
 ## Mobile app
 
@@ -412,7 +423,9 @@ automatic phone-photo sync.
   admitted), and the immich-server logs for ML-endpoint connection errors.
 - **Stack won't start after a NAS reboot**: the encrypted pools must unlock first;
   verify vmid 157 is in `zfs_encryption_guest_vmids` and the pools are mounted
-  (`docs/32`). (The `immich-ml` LXC is exempt — no encrypted storage, `onboot=1`.)
+  (`docs/32-zfs-encryption.md`). The `immich-ml` LXC (CT 158) is gated on the same unlock, so a
+  locked `ssd` takes both .157 and .158 down — check 157 in
+  `zfs_encryption_guest_vmids` and 158 in `zfs_encryption_guest_ctids`.
 
 ## Related documentation
 

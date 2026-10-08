@@ -18,5 +18,25 @@
     - role: weisssrv.infra.nic_tuning
       tags: [nic_tuning, network]
 
+# weisssrv.infra.base above rewrites each guest's authorized_keys, which drops
+# the pinned cert-distribution key, and the loss only shows at the next renewal.
+# Re-seed every sudo target from the cert authority here (docs/15).
+- name: Re-seed the cert-distribution key on every cert target
+  hosts: dns_primary
+  become: true
+  gather_facts: false
+  ignore_unreachable: true
+  tasks:
+    - name: Re-seed each cert-distribution target
+      ansible.builtin.include_tasks: tasks/_reseed-cert-target.yml
+      loop: >-
+        {{ acme_certs_distribution_targets | default([])
+           | rejectattr('ssh_no_sudo', 'defined') | list }}
+      loop_control:
+        loop_var: reseed_cert_target_host_entry
+        label: "{{ reseed_cert_target_host_entry.host }}"
+      vars:
+        reseed_cert_target_host: "{{ reseed_cert_target_host_entry.host }}"
+
 - name: Gate on the reachability ledger
   ansible.builtin.import_playbook: _reachability-gate.yml

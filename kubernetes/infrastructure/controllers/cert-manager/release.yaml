@@ -1,12 +1,10 @@
 ---
-# cert-manager HelmRelease — adopts the existing release `cert-manager` in
-# cert-manager namespace (matching releaseName + targetNamespace). Chart version
-# substituted from cluster-versions ConfigMap.
-#
-# CRDs: the jetstack chart ships CRDs as templates gated by values.crds.enabled
-# (NOT a crds/ directory), so Flux's install/upgrade crds policy has no effect
-# here — crds.enabled below is what makes upgrades manage them. crds.keep
-# protects them (and every Certificate) on uninstall.
+# CRITICAL: the jetstack chart ships CRDs as templates gated by
+# values.crds.enabled, not a crds/ directory, so Flux's crds policy does nothing
+# here. crds.enabled below is what manages them on upgrade, and crds.keep is what
+# protects them, and every Certificate, on uninstall.
+# The release adopts the existing `cert-manager` release; the chart version comes
+# from the cluster-versions ConfigMap.
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -43,13 +41,29 @@ spec:
       enabled: true
       servicemonitor:
         enabled: true
+    # 192Mi: the 30d working-set peak is ~114Mi, and the paired VPA cap
+    # (configs/vpa/platform.yaml) must clear that peak or it clamps permanently.
     resources:
       requests:
         cpu: 50m
-        memory: 64Mi
-      limits:
         memory: 128Mi
+      limits:
+        memory: 192Mi
     webhook:
+      # 2 replicas + controllers/cert-manager/pdb.yaml: the webhook validates
+      # every cert-manager CR write, so a single pod fails those writes closed
+      # while it drains for a kured reboot.
+      replicaCount: 2
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          matchLabelKeys:
+            - pod-template-hash
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: webhook
+              app.kubernetes.io/instance: cert-manager
       resources:
         requests:
           cpu: 50m
@@ -62,8 +76,8 @@ spec:
           cpu: 50m
           memory: 64Mi
         limits:
-          # 160Mi: the VPA's uncapped want sat pinned at the old 128Mi
-          # ceiling's cap for a day (~105Mi after margin, live ~66Mi).
+          # Hand-set ceiling (docs/33 § Limit oscillation); the VPA in
+          # configs/vpa/platform.yaml caps the request at the same number.
           memory: 160Mi
     global:
       # `platform` (sources/priorityclasses.yaml). global.priorityClassName is

@@ -3,8 +3,11 @@
 WireGuard VPN (wg-easy v15) for the user + friends/family. It provides
 **internet-only egress through the home connection**: connected clients can
 reach the internet but **cannot** reach the home LAN (`10.0.10.0/24`), any
-RFC1918/CGNAT/link-local range, or internal DNS. Full architecture, the security
-model, and the client-onboarding runbook are in
+RFC1918/CGNAT/link-local range, or internal DNS. It is enforced in two
+independent egress layers - the pushed client config and the pod egress
+NetworkPolicy, the latter being the codified guarantee - plus a `-dest`-scoped
+inbound WAN rule that is not part of the egress fence. Full architecture, the
+security model, and the client-onboarding runbook are in
 [`docs/38-wireguard-vpn.md`](../../../docs/38-wireguard-vpn.md).
 
 - **VPN endpoint** (WAN): `vpn.ericsweiss.com:51820/udp` → router forwards to the
@@ -33,27 +36,6 @@ a Bearer token from `observability-exporter-secrets` — the repo convention for
 scrape auth. Prometheus export is a per-install UI setting, so a rebuilt or
 wiped state directory needs the enable step again (see Notes).
 
-## No-LAN enforcement (two layers)
-
-The client → LAN fence is enforced in **two egress layers** so that no single
-misconfiguration re-opens the LAN:
-
-1. **wg-easy config** — clients get `AllowedIPs=0.0.0.0/0` (full tunnel) and
-   public DNS (`1.1.1.1`/`1.0.0.1`), never internal AdGuard. (Trusts the client,
-   so not sufficient on its own.)
-2. **NetworkPolicy egress** (the codified guarantee) — the pod may egress to
-   `0.0.0.0/0` **except** every RFC1918/CGNAT/link-local block, with no
-   `kube-dns` allow (the pod runs `dnsPolicy: None` → `1.1.1.1`/`1.0.0.1`). All
-   tunneled client traffic NATs out through the pod, so this blocks the LAN —
-   internal DNS included — at the CNI layer regardless of client config.
-
-**Inbound endpoint scoping (not a no-LAN egress layer).** The WAN `:51820/udp`
-allow is `-dest`-scoped to the `.99` VIP (`sg-k3s-ingress-pub`), so it opens the
-endpoint without exposing the node's flannel-wg `:51820`. This controls *who can
-reach the endpoint from the WAN*; it does **nothing** to fence a *connected*
-client out of the LAN (that is the two layers above). See
-[`docs/38-wireguard-vpn.md`](../../../docs/38-wireguard-vpn.md).
-
 ## Ops
 
 ```bash
@@ -71,7 +53,12 @@ task wg-easy:restart    # pod delete (Flux-managed, Recreate)
 - **Metrics** live in the wg-easy database, not in git: Admin Panel > General →
   enable Prometheus and set the Bearer password to the `metrics-token` value
   from 1Password "WireGuard VPN". Redo this after any state wipe; confirm with
-  `wg_easy_up` in Prometheus. `WgEasyDown` keys off Deployment availability, so
-  it stays valid either way.
+  `wireguard_configured_peers` in Prometheus. `WgEasyMetricsMissing` fires 30m
+  after that series disappears; `WgEasyDown` keys off Deployment availability,
+  so it stays valid either way.
 - **Bootstrap** (`INIT_*`) applies on first boot only; later changes are UI
   actions. See docs/38.
+- **Tunnel MTU**: wg0 is 1420, the same as the pod network (flannel
+  wireguard-native), so full-size VPN packets are IP-fragmented on the node/pod
+  hop. See [`docs/38-wireguard-vpn.md`](../../../docs/38-wireguard-vpn.md)
+  § Tunnel MTU.

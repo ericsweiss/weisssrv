@@ -10,6 +10,11 @@ metadata:
 spec:
   interval: 30m
   releaseName: authentik
+  # Correct out-of-band edits to chart-rendered objects — see the rationale on
+  # controllers/traefik/release.yaml. Safe here: no webhook caBundle, and
+  # server.autoscaling omits .spec.replicas so the HPA has nothing to fight.
+  driftDetection:
+    mode: enabled
   # Authentik upgrades run PostgreSQL schema migrations that routinely take
   # 5-10 minutes; Flux's 5m default would remediate mid-migration and risk
   # schema corruption.
@@ -32,13 +37,9 @@ spec:
     remediation:
       retries: 3
       remediateLastFailure: true
-  # Image tags substituted from cluster-versions ConfigMap via Kustomization
-  # postBuild.substituteFrom (apps top-level Kustomization). Inline refs keep
-  # everything in one file and avoid Flux's cross-namespace valuesFrom limits:
-  # HelmRelease.spec.valuesFrom[].namespace is not supported, so the referenced
-  # ConfigMap/Secret must live in the same namespace as the HelmRelease.
-  # (Note: chart sourceRef DOES support cross-namespace — this HelmRelease's
-  # sourceRef points at flux-system/HelmRepository/authentik, which works.)
+  # Image tags substituted from the cluster-versions ConfigMap. Values stay inline:
+  # HelmRelease.spec.valuesFrom has no namespace field, so a referenced ConfigMap
+  # would have to live in this namespace.
   values:
     # No canonical-domain value: the chart has no such key, and the OIDC
     # issuer/redirect URLs derive from the request Host (auth.ericsweiss.com
@@ -47,9 +48,9 @@ spec:
       # secret_key sourced from authentik-secrets via env (see server.env, worker.env below)
 
       # SMTP relay for notifications
-      # smtp-relay.esweiss.com requires SASL authentication on port 587
+      # The relay requires SASL authentication on port 587
       email:
-        host: smtp-relay.${cluster_internal_domain}
+        host: ${cluster_smtp_host}
         port: 587
         use_tls: true
         use_ssl: false
@@ -68,13 +69,9 @@ spec:
         password: ""  # From existingSecret
 
     server:
-      # Horizontal autoscaling via the chart's own server.autoscaling (min 2 /
-      # max 4 on ~75% CPU). Using the chart toggle (not a standalone HPA) makes
-      # the chart omit `.spec.replicas` from the server Deployment, so a helm
-      # upgrade can't reset it to a static value and churn against the HPA.
-      # CPU is owned here; vpa.yaml scopes authentik-server to memory only so
-      # the VPA does not contend with the HPA on CPU. The worker stays single-
-      # replica with full VPA and no HPA.
+      # Chart-native autoscaling (min 2 / max 4 on ~75% CPU): the chart toggle
+      # makes it omit `.spec.replicas`, so a helm upgrade cannot churn against
+      # the HPA. vpa.yaml keeps the server memory-only so the VPA stays off CPU.
       autoscaling:
         enabled: true
         minReplicas: 2
@@ -86,10 +83,8 @@ spec:
               target:
                 type: Utilization
                 averageUtilization: 75
-        # Damp HPA flap: the server idles well under the 75% trip point, but
-        # sub-minute SSO and task-reconcile spikes cross it and used to bounce
-        # 2→4. Require ~2 min of sustained pressure, one pod at a time; keep the
-        # default 5-min downscale damping.
+        # Damp HPA flap: require ~2 min of sustained CPU pressure, one pod at a
+        # time; default 5-min downscale damping.
         behavior:
           scaleUp:
             stabilizationWindowSeconds: 120
@@ -108,12 +103,9 @@ spec:
         enabled: true
         minAvailable: 1
 
-      # Pod hardening: run the server under the runtime's default seccomp
-      # profile (chart-exposed pod-level securityContext). NOTE: automount of
-      # the SA token is intentionally left enabled — authentik uses the
-      # Kubernetes API for its integration/outpost controller (serviceAccount.create
-      # is true), so disabling the token mount would break that. seccompProfile
-      # is the only universally-safe value the chart cleanly exposes here.
+      # Pod hardening is limited to the chart-exposed seccompProfile. SA token
+      # automount stays ON: authentik reaches the Kubernetes API for its
+      # integration/outpost controller.
       securityContext:
         seccompProfile:
           type: RuntimeDefault
@@ -148,17 +140,9 @@ spec:
               name: authentik-secrets
               key: smtp-password
 
-      # CPU request is static — the HPA owns CPU, and sizing it so the 75%
-      # target sits well above the idle draw is what stops the threshold
-      # tripping at near-idle.
-      #
-      # The memory limit is hand-set and permanent: vpa.yaml is
-      # controlledValues: RequestsOnly, so the VPA never rewrites it and 1536Mi
-      # is the ceiling every pod is admitted against. That is the whole
-      # guarantee — the REQUEST is still VPA-managed, bounded by that policy's
-      # maxAllowed, which equals this limit (1536Mi): under RequestsOnly the
-      # request may rise to the ceiling the pod is admitted against, never past
-      # it. Moving this limit means moving that cap in the same commit.
+      # CPU request is static - the HPA owns CPU. The memory limit is hand-set and is
+      # the real ceiling; vpa.yaml is RequestsOnly with maxAllowed equal to it, so move
+      # both numbers in the same commit (docs/33).
       resources:
         requests:
           cpu: 200m
@@ -189,10 +173,9 @@ spec:
     worker:
       replicas: 1
 
-      # Pod hardening: run the worker under the runtime's default seccomp
-      # profile (chart-exposed pod-level securityContext). SA token automount is
-      # left enabled here too — the worker drives the Kubernetes integration /
-      # embedded outpost reconciliation and needs API access.
+      # Same as the server: chart-exposed seccompProfile only, SA token automount
+      # left on for the worker's Kubernetes integration and embedded outpost
+      # reconciliation.
       securityContext:
         seccompProfile:
           type: RuntimeDefault
@@ -271,16 +254,9 @@ spec:
       enabled: true
       image:
         tag: "${postgresql_version}"
-      # postgres_exporter sidecar. The chart-rendered ServiceMonitor is the ONLY
-      # scrape of it — see observability/service-monitors/postgres.yaml for why
-      # no authentik PodMonitor exists. Its ingress allow lives in
-      # networkpolicy.yaml, and the flux:lint scrape gate is namespace-level
-      # only, so a mis-scoped :9187 rule passes CI and surfaces as TargetDown.
-      #
-      # extraEnvVars re-point the exporter at the `authentik` role: the subchart
-      # hardcodes DATA_SOURCE_USER to `postgres`, which this deployment's
-      # official-postgres image never creates. Later duplicates win, so these
-      # must stay last.
+      # postgres_exporter sidecar; its only scrape is the chart-rendered
+      # ServiceMonitor, its ingress allow is in networkpolicy.yaml. extraEnvVars
+      # re-point it at the `authentik` role (the subchart hardcodes `postgres`).
       metrics:
         enabled: true
         serviceMonitor:
@@ -312,35 +288,26 @@ spec:
           size: 10Gi
           storageClass: ""
           existingClaim: authentik-postgres-data  # Use dedicated ZFS zvol PVC
-        # Hand-applied from the Off-tier VPA recommendation (vpa.yaml keeps
-        # this StatefulSet recommendation-only): request tracks the recorded
-        # target, limit is ~1.5x it for burst headroom. Re-apply from the
-        # recommendation when it moves (docs/33).
+        # Hand-applied from the Off-tier VPA recommendation (vpa.yaml is
+        # recommendation-only here): request tracks the recorded target, limit
+        # ~1.5x for burst. Re-apply when the recommendation moves (docs/33).
         resources:
           requests:
             cpu: 100m
             memory: 640Mi
           limits:
             memory: 1Gi
-        # Pin to NAS agent for local storage
-        affinity:
-          nodeAffinity:
-            requiredDuringSchedulingIgnoredDuringExecution:
-              nodeSelectorTerms:
-                - matchExpressions:
-                    - key: kubernetes.io/hostname
-                      operator: In
-                      values:
-                        - k3s-agt-nas-01
-        # Tolerate NAS taint to run on k3s-agt-nas-01
+        # Pinned to the storage node, where the data volume lives. Keyed on the
+        # label, like the toleration below.
+        nodeSelector:
+          ${cluster_node_label_domain}/nas: "true"
         tolerations:
           - key: ${cluster_node_label_domain}/nas
             operator: Equal
             value: "true"
             effect: PreferNoSchedule
 
-    # Authentik dropped the bundled Redis dependency in 2025.10 — all state
-    # now lives in PostgreSQL.
+    # The chart's Redis is unused: all authentik state lives in PostgreSQL.
     redis:
       enabled: false
 

@@ -12,57 +12,39 @@ k3s_tls_sans:
 k3s_registry_host_pins:
   - name: "registry.git.{{ external_domain }}"
     ip: 10.0.10.101
-  # The registry hands containerd a 401 pointing at
-  # https://git.ericsweiss.com/jwt/auth for the bearer token, so pinning the
-  # registry name alone still leaves the pull resolving the auth realm publicly
-  # — and a public answer means hairpinning to our own WAN address, which the
-  # UniFi gateway does not loop back for the announcing node (docs/08).
+  # containerd is handed a 401 pointing at the auth realm on git.ericsweiss.com,
+  # so pinning the registry name alone still leaves the pull resolving that name
+  # publicly - and a public answer hairpins to our own WAN address (docs/08).
   - name: "git.{{ external_domain }}"
     ip: 10.0.10.101
 k3s_storage_host_pins:
-  - name: "pve-nas-01.{{ internal_domain }}"
-    ip: 10.0.10.102
+  - name: "{{ (groups['nas'] | first) ~ '.' ~ internal_domain }}"
+    ip: "{{ hostvars[groups['nas'] | first].ansible_host }}"
 
 # Server (control-plane) token — grants the ability to join as a SERVER and pull
 # cluster CA material (from 1Password at runtime).
 k3s_token: "{{ lookup('ansible.builtin.env', 'K3S_TOKEN') or undef(hint='K3S_TOKEN env var must be set (run via op run)') }}"
 
-# Lower-privilege agent token. Agents join with this worker-only token (1Password
-# "K3s Agent Token", injected as K3S_AGENT_TOKEN by the Taskfile and every deploy
-# job), so a compromised agent VM can't register a control-plane node or fetch
-# the cluster CA. Servers advertise it via `agent-token` in the server config.
-# The `or k3s_token` fallback only covers a manual run outside the op-run
-# wrapper — see docs/19-k3s-deployment.md.
-k3s_agent_token: "{{ lookup('ansible.builtin.env', 'K3S_AGENT_TOKEN') or k3s_token }}"
+# Lower-privilege agent token (1Password "K3s Agent Token", injected as
+# K3S_AGENT_TOKEN by the Taskfile and every deploy job) so a compromised agent
+# cannot register a control-plane node or fetch the cluster CA.
+k3s_agent_token: >-
+  {{ lookup('ansible.builtin.env', 'K3S_AGENT_TOKEN')
+     or undef(hint='K3S_AGENT_TOKEN env var must be set (run via op run)') }}
 
 # Network configuration. k3s derives the cluster DNS ClusterIP (.10) from the
 # service CIDR itself, so there is no cluster-dns knob to set here.
 k3s_cluster_cidr: "10.42.0.0/16"
 k3s_service_cidr: "10.43.0.0/16"
 
-# DNS resolver search-suffix list. Empty for k3s VMs because kubelet copies
-# the host's /etc/resolv.conf search domains into every pod, and ndots:5
-# combined with `search esweiss.com` causes every cluster-internal lookup
-# (e.g. radarr.downloads.svc.cluster.local) to be suffixed and probed
-# externally first. Pod resolvers still get cluster.local search via
-# kubelet's --cluster-domain.
+# Empty for k3s VMs: kubelet copies the host's resolv.conf search domains into
+# every pod, and ndots:5 plus `search esweiss.com` would suffix and probe every
+# cluster-internal lookup externally first.
 resolv_conf_search_domains: []
 
-# Disable built-in components — we deploy our own.
-#
-# local-storage: k3s ships `local-path` as the CLUSTER-DEFAULT StorageClass, so
-# a PVC omitting storageClassName silently lands on the k3s VM bootdisk, which
-# no backup path covers. Every PV here is static (`storageClassName: ""` +
-# Retain), so removing the class turns a silent fall-through into a Pending PVC.
-#
-# metrics-server: k3s packages it as a static wrangler AddOn a HelmChartConfig
-# cannot patch. This entry and the HelmRelease in
-# kubernetes/infrastructure/controllers/metrics-server/ are ONE UNIT — disabling
-# here without that release leaves every HPA and the VPA recommender with no
-# metrics.
-#
-# Applying this restarts the k3s servers (config.yaml change): needs a healthy
-# etcd quorum — do not deploy with a server node down.
+# CRITICAL: built-in components we replace. metrics-server here and the
+# HelmRelease in infrastructure/controllers/metrics-server/ are one unit.
+# Applying a change restarts the k3s servers - needs a healthy etcd quorum.
 k3s_disable:
   - servicelb       # Using MetalLB
   - traefik         # Deploying our own Traefik
@@ -71,42 +53,44 @@ k3s_disable:
 
 # wireguard-native encrypts pod-to-pod traffic across nodes (UDP/51820) at ~5%
 # throughput cost. Switching the backend on a running cluster needs a
-# server-by-server restart — docs/19-k3s-deployment.md § Switching flannel
-# backend. The UDP/8472 firewall rule is retained as the vxlan rollback path.
+# server-by-server restart and UDP/8472 re-added to sg-k3s-core - docs/19.
 k3s_flannel_backend: "wireguard-native"
 
-# image-gc-{high,low}-threshold: 70/50 instead of the 85/80 default — the
-# thresholds are a PERCENTAGE of the disk, so on the small k3s VM root disks
-# the default lets containerd's image store grow past what leaves room for
-# ephemeral storage before pruning starts.
+# image-gc-{high,low}-threshold 70/50, not the 85/80 default: the thresholds are
+# a PERCENTAGE of the disk, so on the small k3s VM root disks the default lets
+# the image store crowd out ephemeral storage before pruning starts.
 k3s_kubelet_args:
   - "image-gc-high-threshold=70"
   - "image-gc-low-threshold=50"
 
-# tlshd for the xprtsec=tls mounts of pve-nas-01's exports. Group-wide, not
-# per-agent: the NFS-backed PVs float across the cluster, and the servers mount
-# the off-node etcd-snapshot export. Client-only — do NOT re-add k3s nodes to
-# acme_certs_distribution_targets in host_vars/dns-01.yml; the role scrubs stale
-# cert/key material from client-only nodes.
+# tlshd for the xprtsec=tls mounts of pve-nas-01's exports, group-wide.
+# Client-only - do NOT add k3s nodes to acme_certs_distribution_targets;
+# the role scrubs stale cert material.
 nfs_tls_enabled: true
 
-# Off-node etcd snapshot copy (servers only; docs/17). Each server's systemd
-# timer copies its newest local etcd snapshot to the NAS (/export/k3s-etcd over
-# xprtsec=tls) and emits etcd_snapshot_last_copy_timestamp_seconds for the
-# EtcdSnapshotStale alert.
+# Keep removing the wildcard PEM acme_certs may stage on a client. Every k3s
+# node is a client, so the scrub always runs here.
+nfs_tls_scrub_client_cert: true
+
+# Off-node etcd snapshot copy (servers only; docs/17). A systemd timer copies
+# each server's newest snapshot to the NAS over xprtsec=tls and emits
+# etcd_snapshot_last_copy_timestamp_seconds for the EtcdSnapshotStale alert.
 k3s_etcd_snapshot_offnode_enabled: true
 # Mounted by hostname — the *.esweiss.com cert has no IP SAN, so an IP mount
 # fails the TLS handshake.
-k3s_etcd_snapshot_nfs_server: "pve-nas-01.{{ internal_domain }}"
+k3s_etcd_snapshot_nfs_server: "{{ (groups['nas'] | first) ~ '.' ~ internal_domain }}"
 
-# kube-apiserver audit logging (servers only; docs/19 + docs/31). The log is
-# node-local (/var/lib/rancher/k3s/server/logs/audit.log, apiserver-rotated) and
-# NOT shipped to Loki — alloy_host reads journald only.
-# Changing this costs a ROLLING CONTROL-PLANE RESTART on the next
-# `task k3s:deploy`; needs a healthy etcd quorum — do not deploy with a server down.
+# kube-apiserver audit logging (servers only; docs/19, docs/31). The log is
+# node-local and NOT shipped to Loki - alloy_host reads journald only. Changing
+# this costs a rolling control-plane restart; needs a healthy etcd quorum.
 k3s_audit_enabled: true
 
 k3s_kube_vip_interface: "eth0"
+
+# Delegate target for cluster-wide kubectl in the maintenance playbooks: a k3s
+# server OTHER than the host being worked on, falling back to the first server.
+# _reboot-if-needed.yml uses its own proxmox_host-aware variant.
+k3s_delegate_server: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
 
 # Boot order and the `platform` resource pool are per host in hosts.yml —
 # servers and agents use different orders, so a group value would be shadowed.

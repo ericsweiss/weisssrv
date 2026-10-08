@@ -1,7 +1,5 @@
 ---
-# Shared Molecule prepare header: wait for systemd, then ensure the ansible
-# temp dir exists. Imported at the top of prepare-common.yml, which then imports
-# prepare-apt-disable.yml.
+# Waits for systemd, then ensures the ansible temp dir exists.
 - name: Wait for systemd to be ready
   ansible.builtin.raw: |
     for i in $(seq 1 30); do

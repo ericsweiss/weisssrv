@@ -6,12 +6,12 @@ This document covers SSH configuration, user management, and authentication for 
 
 The homelab uses a consistent user management approach:
 
-- **Proxmox Hosts**: User `eric` with passwordless sudo
-- **LXC Containers**: User `eric` with passwordless sudo
-  - Containers are **unprivileged** (mapped UIDs for security)
-  - Services run as dedicated non-root users (adguard, unbound)
-  - Postfix on smtp-relay runs as root (normal for mail servers)
-- **VMs**: User `eric` via cloud-init
+- **Proxmox Hosts**: user `eric` with passwordless sudo
+- **LXC Containers**: user `eric` with passwordless sudo; containers are
+  unprivileged (mapped UIDs) and services run as dedicated non-root users
+  (`adguard`, `unbound`). Postfix on smtp-relay runs as root, which is standard
+  for mail servers.
+- **VMs**: user `eric` via cloud-init
 
 ## SSH Configuration
 
@@ -24,19 +24,23 @@ Applies to all 6 cluster nodes: pve-nas-01, pve-laptop-01, pve-opt-01, pve-opt-0
 SSH configuration managed by the `base` role:
 
 ```yaml
-ssh_port: 22
-ssh_permit_root_login: "no"  # Default for most hosts
-ssh_password_authentication: false
-ssh_pubkey_authentication: true
+base_ssh_port: 22
+base_ssh_permit_root_login: "no"  # default for most hosts
+base_ssh_password_authentication: false
+base_ssh_pubkey_authentication: true
 ```
 
 **Key Features**:
 - Root login disabled via SSH (with exception below)
 - User `eric` has passwordless sudo
 - SSH keys stored in 1Password and deployed via Ansible
-- Restricted by source IP (`from="10.0.10.0/24,10.0.20.8/29,100.64.0.0/10,10.42.0.0/16"` — the homelab LAN, the Home-VLAN admin block, Tailscale, and the k3s pod CIDR; see `group_vars/all.yml` for the authoritative ranges and why the pod CIDR is required for in-cluster CI deploy jobs)
+- Restricted by source IP:
+  `from="10.0.10.0/24,10.0.20.8/29,100.64.0.0/10,10.42.0.0/16"` — the homelab
+  LAN, the Home-VLAN admin block, Tailscale and the k3s pod CIDR. The pod CIDR
+  is there so in-cluster CI deploy jobs can SSH back; `group_vars/all.yml`
+  holds the authoritative ranges.
 
-**Proxmox Host Exception**: Root SSH with key authentication is enabled on Proxmox cluster hosts (`ssh_permit_root_login: "prohibit-password"` in `group_vars/proxmox.yml`). This is required for:
+**Proxmox Host Exception**: Root SSH with key authentication is enabled on Proxmox cluster hosts (`base_ssh_permit_root_login: "prohibit-password"` in `group_vars/proxmox.yml`). This is required for:
 - **Live VM/CT migrations** between cluster nodes
 - **ZFS storage replication** for HA failover
 - **Proxmox cluster operations** (corosync, pve-cluster)
@@ -53,11 +57,6 @@ ssh eric@10.0.10.160  # dns-02
 ssh eric@10.0.10.151  # smtp-relay
 ```
 
-Services run as dedicated non-root users with appropriate capabilities:
-- AdGuard Home: `adguard:adguard`
-- Unbound: `unbound:unbound`
-- Postfix: runs as root (standard for mail servers)
-
 ### SSH Keys
 
 SSH public keys are managed via 1Password, in the two-part shape described in
@@ -66,7 +65,7 @@ block (mirrored by the matching CI job's `variables:`), and the inventory reads
 it back from the environment.
 
 ```yaml
-# Taskfile.yml — the task's env: block
+# taskfiles/<ns>.yml (or Taskfile.yml) — the task's env: block
 SSH_PUBLIC_KEY: op://Homelab/SSH Key/public key
 
 # group_vars/all.yml
@@ -147,21 +146,19 @@ with `Include /etc/ssh/sshd_config.d/*.conf` and sshd resolves directives
 first-match-wins, so the `00-` prefix sorts (and therefore wins) ahead of any
 cloud-init drop-in (e.g. `50-cloud-init.conf`).
 
-Settings applied:
+Settings applied (rendered from weisssrv-lib
+`ansible_collections/weisssrv/infra/roles/base/templates/sshd-hardening.conf.j2`,
+which is the source of truth):
 
 ```
-# Authentication
+Port 22
+PermitRootLogin no                 # prohibit-password on the Proxmox hosts - see above
 PasswordAuthentication no
 PubkeyAuthentication yes
-PermitRootLogin no
-ChallengeResponseAuthentication no
+KbdInteractiveAuthentication no    # replaces the deprecated ChallengeResponseAuthentication alias
 UsePAM yes
-
-# Security hardening
 X11Forwarding no
 MaxAuthTries 3
-
-# Connection keepalive
 ClientAliveInterval 300
 ClientAliveCountMax 2
 ```
@@ -191,7 +188,10 @@ eric ALL=(ALL) NOPASSWD: ALL
 
 SSH keys include `from=` restrictions limiting access to:
 - Homelab LAN: `10.0.10.0/24`
-- Home-VLAN admin block: `10.0.20.8/29` — the admin workstation's reservation range on the Home VLAN ([docs/11-firewall.md](11-firewall.md) § Client scopes; `admin_lan`, `base_fail2ban_ignoreip` and the `lan-tailscale-strict` middleware all key off the same /29)
+- Home-VLAN admin block: `10.0.20.8/29`, the admin workstation's reservation
+  range on the Home VLAN. `admin_lan`, `base_fail2ban_ignoreip` and the
+  `lan-tailscale-strict` middleware all key off the same /29
+  ([docs/11-firewall.md](11-firewall.md) § Client scopes).
 - Tailscale VPN: `100.64.0.0/10`
 - k3s pod CIDR: `10.42.0.0/16` (required so in-cluster CI runner pods can SSH back to their own node — see `group_vars/all.yml`)
 
@@ -281,7 +281,7 @@ To add or update SSH keys:
 
 2. **Deploy via Ansible**:
    ```bash
-   ansible-playbook ansible/playbooks/base.yml --tags ssh
+   ansible-playbook -i ansible/inventories/prod ansible/playbooks/base.yml --tags ssh
    ```
 
 3. **Verify access**:
@@ -289,69 +289,16 @@ To add or update SSH keys:
    ssh eric@10.0.10.102
    ```
 
-## LXC User Management
-
-LXC containers use the `eric` user with passwordless sudo, consistent with Proxmox hosts and VMs:
-
-1. **Unprivileged Containers**: UIDs are mapped (e.g., container root = host UID 100000)
-2. **Service Isolation**: All services run as dedicated non-root users:
-   - AdGuard Home: `adguard:adguard`
-   - Unbound: `unbound:unbound`
-   - Postfix: runs as root (standard for mail servers)
-3. **Consistent Automation**: Same user across all hosts simplifies Ansible playbooks
-
-Note: While we SSH as `eric` to smtp-relay, Postfix itself runs as root. This is normal and expected for mail servers.
+Deployment is additive: it never removes a superseded key. Revoking one is an
+ad-hoc `authorized_key state=absent` run over `all:!home:!windows`, documented
+in [docs/15 § SSH Keys](15-credential-rotation.md).
 
 ## Bootstrap Configuration
 
-### Automated Bootstrap (Recommended)
-
-Use the bootstrap script to prepare new Proxmox hosts for Ansible management:
-
-```bash
-# From your laptop
-./scripts/bootstrap-proxmox-host.sh <host-ip> <your-ssh-public-key>
-
-# Example:
-./scripts/bootstrap-proxmox-host.sh 10.0.10.107 "ssh-ed25519 AAAA... eric@laptop"
-```
-
-The script handles:
-- Creating user `eric` with sudo group membership
-- Deploying SSH authorized keys with proper permissions
-- Configuring passwordless sudo via `/etc/sudoers.d/eric`
-- Installing `sudo` package if not present (common on fresh Proxmox)
-- Temporarily disabling enterprise repos during package install
-
-After bootstrap, verify: `ssh eric@<host-ip> sudo whoami` should return `root`.
-
-### Manual Setup (Alternative)
-
-If you prefer manual setup or the bootstrap script doesn't work:
-
-1. **Ensure user `eric` exists with sudo group**:
-   ```bash
-   # SSH as root to new host
-   ssh root@<host-ip>
-   useradd -m -s /bin/bash -G sudo eric
-   ```
-
-2. **Configure passwordless sudo**:
-   ```bash
-   echo 'eric ALL=(ALL) NOPASSWD: ALL' | tee /etc/sudoers.d/eric
-   chmod 440 /etc/sudoers.d/eric
-   ```
-
-3. **Deploy SSH key**:
-   ```bash
-   mkdir -p /home/eric/.ssh
-   echo "your-ssh-public-key" >> /home/eric/.ssh/authorized_keys
-   chown -R eric:eric /home/eric/.ssh
-   chmod 700 /home/eric/.ssh
-   chmod 600 /home/eric/.ssh/authorized_keys
-   ```
-
-After this setup, Ansible can manage everything else.
+Pre-Ansible access to a new host is
+[docs/18 — Bootstrapping new systems](18-bootstrap-new-systems.md) § Proxmox
+hosts: `scripts/bootstrap-proxmox-host.sh` for the automated path, the
+`useradd` / `sudoers.d` / `authorized_keys` sequence for the manual fallback.
 
 ### Automated Setup for New VMs
 
@@ -414,7 +361,7 @@ If `eric` user is prompted for password:
 
 2. **Re-apply base role**:
    ```bash
-   ansible-playbook ansible/playbooks/base.yml --tags users
+   ansible-playbook -i ansible/inventories/prod ansible/playbooks/base.yml --tags users
    ```
 
 ## Related documentation

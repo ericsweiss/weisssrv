@@ -21,6 +21,9 @@ patches:
       - op: replace
         path: /spec/nfs/path
         value: /appdata/pulsarr
+      - op: replace
+        path: /spec/claimRef/name
+        value: pulsarr-config
   - target:
       kind: PersistentVolumeClaim
       name: nfs-pvc

@@ -40,6 +40,29 @@ tests:
           - exp_labels:
               severity: warning
 
+  # SMARTCollectorStale, same three arms: stale timestamp, fresh timestamp,
+  # series absent entirely.
+  - interval: 1m
+    input_series:
+      - series: 'smartmon_collector_last_success_seconds{instance="10.0.10.102:9101"}'
+        values: '-2000+0x10'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: SMARTCollectorStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: '10.0.10.102:9101'
+
+  - interval: 1m
+    input_series:
+      - series: 'smartmon_collector_last_success_seconds{instance="10.0.10.102:9101"}'
+        values: '0+60x10'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: SMARTCollectorStale
+        exp_alerts: []
+
   - interval: 1m
     input_series: []
     alert_rule_test:
@@ -48,3 +71,36 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
+
+  # The success arm: a fresh timestamp with smartmon_collector_success 0 on a
+  # host that did list devices is the failed-scan or unparsed-device state.
+  - interval: 1m
+    input_series:
+      - series: 'smartmon_collector_last_success_seconds{instance="10.0.10.102:9101"}'
+        values: '0+60x20'
+      - series: 'smartmon_collector_success{instance="10.0.10.102:9101"}'
+        values: '1+0x2 0+0x18'
+      - series: 'smartmon_collector_devices_scanned{instance="10.0.10.102:9101"}'
+        values: '4+0x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SMARTCollectorStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: '10.0.10.102:9101'
+
+  # A host that lists no device has no SMART metric to lose, so the
+  # devices_scanned guard keeps its success 0 quiet.
+  - interval: 1m
+    input_series:
+      - series: 'smartmon_collector_last_success_seconds{instance="10.0.10.154:9101"}'
+        values: '0+60x20'
+      - series: 'smartmon_collector_success{instance="10.0.10.154:9101"}'
+        values: '0+0x20'
+      - series: 'smartmon_collector_devices_scanned{instance="10.0.10.154:9101"}'
+        values: '0+0x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SMARTCollectorStale
+        exp_alerts: []

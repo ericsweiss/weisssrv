@@ -1,31 +1,7 @@
-#!/usr/bin/env python3
-"""
-Unit tests for check-deploy-host-coverage.py.
+"""Failure-path tests for check-deploy-host-coverage.py.
 
-That gate fails when a role a CI-deployed playbook declares does not reach every
-host the playbook declares it for — the gap that let nfs_tls go unmanaged on
-five of six Proxmox hosts while the path-level deploy-coverage gate stayed
-green. These tests drive it via subprocess against fixture repos built with
---repo, pinning the behaviours the gate hinges on:
-
-  (a) a role whose deploy job selects its tag AND lists its path passes
-  (b) a role dropped from the job's --tags fails, naming the unreached hosts
-  (c) a role the job runs but does not list in `changes:` fails (it would never
-      be triggered by an edit to itself)
-  (d) --limit is honoured: a job limited to one group leaves the other group's
-      hosts uncovered
-  (e) transitive group references (`children:` naming a group defined elsewhere,
-      with an empty body) expand to their real hosts — a resolver bug here would
-      UNDER-report the declared set and silently pass
-  (f) an unknown host pattern is a hard error (exit 2), never a quiet pass
-  (g) `!deploy_skipped` (the runtime reachability ledger the deploy plays
-      subtract) does NOT shrink the declared set — a host one run skipped still
-      needs a deploy job covering it
-  (h) any OTHER exclusion/intersection is still a hard error (exit 2), so
-      teaching the gate one form did not make it permissive
-
-Run with pytest:
-    pytest scripts/test_check_deploy_host_coverage.py -v
+A role a CI deploy job runs must reach every host its playbook declares it for.
+Fixtures are throwaway repos driven through --repo.
 """
 
 from __future__ import annotations
@@ -34,8 +10,6 @@ import subprocess
 import sys
 import textwrap
 from pathlib import Path
-
-import pytest
 
 SCRIPT = Path(__file__).resolve().parent / "check-deploy-host-coverage.py"
 
@@ -222,5 +196,28 @@ def test_missing_playbook_is_a_hard_error(tmp_path):
     assert "does not exist" in result.stderr
 
 
-if __name__ == "__main__":
-    sys.exit(pytest.main([__file__, "-v"]))
+def test_an_acknowledged_gap_is_skipped_by_its_short_name(tmp_path):
+    """Playbooks declare `weisssrv.infra.<role>`; ACKNOWLEDGED_GAPS is keyed short."""
+    site = SITE_YML.replace("- role: nfs_tls", "- role: weisssrv.infra.proxmox_vm").replace(
+        "tags: [nfs_tls]", "tags: [proxmox_vm]"
+    )
+    repo = build_repo(tmp_path, ci_yml("qol", ["ansible/requirements.yml"]), site=site)
+    result = run(repo)
+    assert result.returncode == 0, result.stderr
+    assert "(skipped proxmox_vm:" in result.stdout
+
+
+def test_a_referenced_script_block_still_counts_as_coverage(tmp_path):
+    """A `!reference [.anchor, script]` block must be expanded, not read as an
+    empty script that silently drops the job's invocation."""
+    invocation = (
+        "op run -- ansible-playbook -i inventories/prod playbooks/site.yml "
+        "--limit proxmox --tags qol,nfs_tls"
+    )
+    ci = ci_yml("qol,nfs_tls", ["ansible/roles/nfs_tls/**/*"])
+    referenced = ci.replace(
+        f"    - {invocation}", "    - !reference [.proxmox-script, script]"
+    ) + f".proxmox-script:\n  script:\n    - {invocation}\n"
+    assert "!reference" in referenced and referenced.count(invocation) == 1
+    result = run(build_repo(tmp_path, referenced))
+    assert result.returncode == 0, result.stdout + result.stderr

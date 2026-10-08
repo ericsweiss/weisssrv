@@ -8,6 +8,18 @@
   gather_facts: true
 
   tasks:
+    # molecule.yml platforms[].groups drive every `group_names` guard below; an
+    # empty group would skip every assertion and still report a pass.
+    - name: Assert the molecule roster resolved
+      ansible.builtin.assert:
+        that:
+          - groups['relay_servers'] | default([]) | length == 1
+          - groups['mail_clients'] | default([]) | length == 2
+        fail_msg: >-
+          molecule.yml no longer produces relay_servers and mail_clients, so
+          every assertion in this scenario skips.
+      run_once: true
+
     # SMTP Relay Server Verification
     - name: Check Postfix service on relay
       ansible.builtin.systemd:
@@ -125,14 +137,9 @@
         success_msg: "Client virtual alias file configured"
       when: "'mail_clients' in group_names"
 
-    # Integration Tests (Client -> Relay)
-    # Tested end to end below: transport connectivity (banner), then a real
-    # message relayed client -> relay (alias rewriting + relay acceptance +
-    # queuing for [smtp.gmail.com]:587). The Gmail upstream itself is NOT
-    # exercised — mock credentials mean every upstream outcome (no network,
-    # DNS failure, 535 auth reject) leaves the message DEFERRED at the relay,
-    # which is exactly what the end-to-end assertion keys on. Actual Gmail
-    # delivery is validated manually in production.
+    # Client -> relay end to end: banner, then a real message. The Gmail upstream
+    # is not exercised — mock credentials leave the message DEFERRED at the
+    # relay, which is what the assertion keys on.
     - name: Test SMTP connectivity from client to relay
       ansible.builtin.shell: |
         set -o pipefail
@@ -160,11 +167,8 @@
         msg: "SMTP banner received: {{ smtp_test.stdout }}"
       when: "'mail_clients' in group_names"
 
-    # End-to-end relay acceptance: send a real message on each client and
-    # assert (a) it leaves the client queue (handed to the relay) and (b) it
-    # lands on the relay queued for the rewritten recipient. root ->
-    # admin@example.com rewriting happens on the client (aliases/virtual), so
-    # seeing admin@example.com on the relay proves rewriting + acceptance.
+    # root -> admin@example.com rewriting happens on the client, so seeing
+    # admin@example.com on the relay queue proves rewriting plus acceptance.
     - name: Send test mail on client (root -> aliased recipient)
       ansible.builtin.shell: |
         set -o pipefail
@@ -226,11 +230,8 @@
       changed_when: false
       when: "'relay_servers' in group_names"
 
-    # Load-bearing, not informational: the scenario relays through 587 on SASL
-    # alone (molecule.yml keeps the role's loopback-only mynetworks and drops
-    # permit_mynetworks). If mynetworks ever widened, a relayed message would
-    # prove a network exemption instead of a real handshake and the mail-stack
-    # assertions above would pass for the wrong reason.
+    # Load-bearing: if mynetworks ever widened, the relay assertions above would
+    # prove a network exemption instead of a real SASL handshake.
     - name: Assert relay mynetworks grants no network exemption
       ansible.builtin.assert:
         that:
@@ -241,23 +242,3 @@
           prove SASL authentication.
         success_msg: "Relay mynetworks is loopback-only: {{ relay_mynetworks.stdout }}"
       when: "'relay_servers' in group_names"
-
-    # Final Summary
-    - name: Integration test summary
-      ansible.builtin.debug:
-        msg: |
-          Mail Stack Integration Test Results:
-          ====================================
-          Host: {{ inventory_hostname }}
-          {% if 'relay_servers' in group_names %}
-          Role: SMTP Relay Server
-          Postfix: {{ 'RUNNING' if relay_postfix.status.ActiveState == 'active' else 'FAILED' }}
-          Port 25: {{ 'LISTENING' }}
-          Relayhost: {{ relay_relayhost.stdout }}
-          {% elif 'mail_clients' in group_names %}
-          Role: Mail Client
-          Postfix: {{ 'RUNNING' if client_postfix.status.ActiveState == 'active' else 'FAILED' }}
-          Relayhost: {{ client_relayhost.stdout }}
-          SMTP Connectivity: {{ 'OK' if smtp_test.rc == 0 else 'FAILED' }}
-          Null Client Mode: {{ 'YES' if 'loopback-only' in client_interfaces.stdout else 'NO' }}
-          {% endif %}

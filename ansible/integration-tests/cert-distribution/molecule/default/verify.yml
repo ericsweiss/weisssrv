@@ -6,6 +6,8 @@
   hosts: cert_servers
   become: true
   gather_facts: true
+  vars_files:
+    - ../../../../inventories/prod/group_vars/all.yml
 
   tasks:
     # acme.sh Installation Verification
@@ -80,7 +82,7 @@
     # SSH Key Setup Verification (matches role output)
     - name: Check SSH private key for distribution
       ansible.builtin.stat:
-        path: /home/eric/.ssh/id_ed25519_certs
+        path: /home/{{ admin_user }}/.ssh/id_ed25519_certs
       register: ssh_key
 
     - name: Assert SSH distribution key exists
@@ -93,7 +95,7 @@
 
     - name: Check SSH public key for distribution
       ansible.builtin.stat:
-        path: /home/eric/.ssh/id_ed25519_certs.pub
+        path: /home/{{ admin_user }}/.ssh/id_ed25519_certs.pub
       register: ssh_pubkey
 
     - name: Assert SSH public key exists
@@ -104,9 +106,24 @@
         fail_msg: "SSH distribution public key not created or wrong permissions"
         success_msg: "SSH distribution public key exists"
 
+    # The library role owns the reload script's filename, so it is discovered
+    # here rather than spelled out.
+    - name: Locate the reload script the role installed
+      ansible.builtin.find:
+        paths: /usr/local/sbin
+        patterns: "*cert-reload.sh"
+        file_type: file
+      register: reload_script_found
+
+    - name: Assert exactly one reload script was installed
+      ansible.builtin.assert:
+        that:
+          - reload_script_found.files | length == 1
+        fail_msg: "acme_certs installed no single /usr/local/sbin/*cert-reload.sh"
+
     - name: Check cert reload script
       ansible.builtin.stat:
-        path: /usr/local/sbin/homelab-cert-reload.sh
+        path: "{{ (reload_script_found.files | first).path }}"
       register: reload_script
 
     - name: Assert reload script exists
@@ -119,7 +136,7 @@
         success_msg: "Cert reload script exists and is executable"
 
     - name: Read reload script content
-      ansible.builtin.command: cat /usr/local/sbin/homelab-cert-reload.sh
+      ansible.builtin.command: cat {{ (reload_script_found.files | first).path }}
       register: reload_script_content
       changed_when: false
 
@@ -143,6 +160,8 @@
   hosts: cert_clients
   become: true
   gather_facts: true
+  vars_files:
+    - ../../../../inventories/prod/group_vars/all.yml
 
   tasks:
     # Certificate Directory Verification
@@ -227,15 +246,13 @@
         fail_msg: "SSH service not running"
         success_msg: "SSH service is running"
 
-    # The role's authorized_key task rewrites the key comment (not the keygen
-    # -C comment) to "cert distribution (<authority host>)", so grep for that.
-    # -F: the parentheses are literal, and the comment is the role's exact
-    # output — matching it loosely would let a key with the wrong provenance
-    # satisfy the assert.
+    # The role rewrites the key comment to "cert distribution (<authority>)".
+    # grep -F keeps the parentheses literal and the match exact, so a key with
+    # the wrong provenance cannot satisfy the assert.
     - name: Check authorized_keys for cert distribution key
       ansible.builtin.command: >-
         grep -cF "cert distribution ({{ groups['cert_servers'] | first }})"
-        /home/{{ admin_username }}/.ssh/authorized_keys
+        /home/{{ admin_user }}/.ssh/authorized_keys
       register: authorized_key_check
       changed_when: false
       failed_when: false
@@ -245,7 +262,7 @@
         that:
           - authorized_key_check.rc == 0
           - authorized_key_check.stdout | int > 0
-        fail_msg: "cert-distribution pubkey missing from {{ admin_username }}'s authorized_keys"
+        fail_msg: "cert-distribution pubkey missing from {{ admin_user }}'s authorized_keys"
         success_msg: "cert-distribution key present in authorized_keys ({{ authorized_key_check.stdout }})"
 
     # Forced-command receiver hardening verification
@@ -276,12 +293,12 @@
         fail_msg: "cert-receive sudoers drop-in missing or wrong perms"
         success_msg: "cert-receive sudoers drop-in present (0440)"
 
-    # The whole point of the redesign: the key must be pinned to the forced
-    # command and stripped of shell/pty/forwarding — never a login shell.
+    # The key must be pinned to the forced command and stripped of
+    # shell/pty/forwarding — never a login shell.
     - name: Read the cert-distribution authorized_keys line
       ansible.builtin.command: >-
         grep -F "cert distribution ({{ groups['cert_servers'] | first }})"
-        /home/{{ admin_username }}/.ssh/authorized_keys
+        /home/{{ admin_user }}/.ssh/authorized_keys
       register: authorized_key_line
       changed_when: false
 
@@ -293,11 +310,9 @@
         fail_msg: "cert-distribution key is NOT restricted to the forced-command receiver"
         success_msg: "cert-distribution key is locked to command=...cert-receive,restrict"
 
-    # The receiver only installs a cert it validated (parse + notAfter + key
-    # match + wildcard SAN + chains to a CA in the client truststore), so a real
-    # X.509 with a wildcard SAN landing here is proof the forced-command path ran
-    # end to end and passed validation — including the trust-chain check (the
-    # converge play installs the test CA on the clients so the leaf chains).
+    # The receiver installs only a cert it validated (parse, notAfter, key
+    # match, wildcard SAN, chain to a truststore CA), so a real X.509 landing
+    # here proves the forced-command path ran end to end.
     - name: The distributed cert is a real, unexpired X.509
       ansible.builtin.command: >-
         openssl x509 -in /etc/ssl/certs/wildcard/fullchain.pem -noout -checkend 0
@@ -315,30 +330,3 @@
           - "'DNS:*.' in distributed_cert_san.stdout"
         fail_msg: "Distributed cert has no wildcard SAN"
         success_msg: "Distributed cert is a valid wildcard cert"
-
-- name: Integration Test Summary
-  hosts: all
-  become: true
-  gather_facts: true
-
-  tasks:
-    - name: Certificate distribution integration test summary
-      ansible.builtin.debug:
-        msg: |
-          Certificate Distribution Integration Test Results:
-          ==================================================
-          Host: {{ inventory_hostname }}
-          Role: {% if 'cert_servers' in group_names %}Certificate Server{% else %}Certificate Client{% endif %}
-
-          {% if 'cert_servers' in group_names %}
-          acme.sh Installed: {{ 'YES' if hostvars[inventory_hostname].acme_sh.stat.exists else 'NO' }}
-          Certificates: {{ hostvars[inventory_hostname].mock_cert_domains | length }} domains
-          Distribution Targets: {{ hostvars[inventory_hostname].acme_certs_distribution_targets | length }} hosts
-          SSH Key for Distribution: {{ 'YES' if hostvars[inventory_hostname].ssh_key.stat.exists else 'NO' }}
-          Reload Script: {{ 'YES' if hostvars[inventory_hostname].reload_script.stat.exists else 'NO' }}
-          {% else %}
-          Certificate Directory: {{ 'EXISTS' if hostvars[inventory_hostname].client_cert_dir.stat.exists else 'MISSING' }}
-          Fullchain Certificate: {{ 'RECEIVED' if hostvars[inventory_hostname].client_fullchain.stat.exists else 'MISSING' }}
-          Private Key: {{ 'RECEIVED' if hostvars[inventory_hostname].client_privkey.stat.exists else 'MISSING' }}
-          SSH Service: {{ hostvars[inventory_hostname].ssh_service.status.ActiveState }}
-          {% endif %}

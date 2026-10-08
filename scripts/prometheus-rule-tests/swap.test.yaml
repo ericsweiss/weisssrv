@@ -101,8 +101,7 @@ tests:
     input_series:
       - series: 'node_memory_SwapTotal_bytes{instance="10.0.10.102:9101"}'
         values: '8589934592+0x110'
-      # used = 4 GiB, except a 4-sample dip to used = 1 GiB (Free = 7 GiB) at
-      # t=1500-1590m, inside the eval-time 2-day window.
+      # used = 4 GiB with a 4-sample dip to 1 GiB inside the 2-day window.
       - series: 'node_memory_SwapFree_bytes{instance="10.0.10.102:9101"}'
         values: '4294967296+0x50 7516192768+0x3 4294967296+0x56'
     alert_rule_test:
@@ -132,4 +131,169 @@ tests:
     alert_rule_test:
       - eval_time: 45m
         alertname: NASSwapGone
+        exp_alerts: []
+
+  # SwapCleanSkipped: every run across the 3d window skipped the swap cycle, so
+  # run_success stays 1 and only the skip gauge reports it. The reason label
+  # rides through from swap_clean_skip_reason_info.
+  - interval: 30m
+    input_series:
+      - series: 'swap_clean_last_run_skipped{instance="10.0.10.102:9101"}'
+        values: '1+0x150'
+      - series: 'swap_clean_skip_reason_info{instance="10.0.10.102:9101", reason="conflicting unit active: archive-backup.service"}'
+        values: '1+0x150'
+    alert_rule_test:
+      - eval_time: 73h
+        alertname: SwapCleanSkipped
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: '10.0.10.102:9101'
+              reason: 'conflicting unit active: archive-backup.service'
+
+  # One run inside the window DID cycle the swap (skipped 0), so the reset is
+  # still working and the alert must stay quiet — this is what separates a
+  # wedged unit from an ordinary overlap.
+  - interval: 30m
+    input_series:
+      - series: 'swap_clean_last_run_skipped{instance="10.0.10.102:9101"}'
+        values: '0+0x4 1+0x150'
+      - series: 'swap_clean_skip_reason_info{instance="10.0.10.102:9101", reason="conflicting unit active: archive-backup.service"}'
+        values: '1+0x154'
+    alert_rule_test:
+      - eval_time: 73h
+        alertname: SwapCleanSkipped
+        exp_alerts: []
+
+  # EncryptedSwapRestoreFailed: the finalize run ended swapless on a host the
+  # NAS-only NASSwapGone never watched.
+  - interval: 1m
+    input_series:
+      - series: 'encrypted_swap_any_swap_active{instance="10.0.10.103:9101"}'
+        values: '0+0x60'
+      - series: 'node_memory_SwapTotal_bytes{instance="10.0.10.103:9101"}'
+        values: '0+0x60'
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: EncryptedSwapRestoreFailed
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: '10.0.10.103:9101'
+
+  # An operator put swap back by hand: the boot-time gauge still reads 0 but
+  # SwapTotal clears the alert, so it cannot latch until the next reboot.
+  - interval: 1m
+    input_series:
+      - series: 'encrypted_swap_any_swap_active{instance="10.0.10.103:9101"}'
+        values: '0+0x60'
+      - series: 'node_memory_SwapTotal_bytes{instance="10.0.10.103:9101"}'
+        values: '34359738368+0x60'
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: EncryptedSwapRestoreFailed
+        exp_alerts: []
+
+  # Handoff: on the NAS, where the finalize gauge exists, the fleet-wide alert
+  # owns the page and NASSwapGone stands down rather than firing alongside it.
+  - interval: 1m
+    input_series:
+      - series: 'encrypted_swap_any_swap_active{instance="10.0.10.102:9101"}'
+        values: '0+0x60'
+      - series: 'node_memory_SwapTotal_bytes{instance="10.0.10.102:9101"}'
+        values: '0+0x60'
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: NASSwapGone
+        exp_alerts: []
+      - eval_time: 45m
+        alertname: EncryptedSwapRestoreFailed
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: '10.0.10.102:9101'
+
+  # EncryptedSwapPlaintextFallback: the mapper is not the swap device but the
+  # host still swaps, so the finalize run fell back to the plaintext device.
+  - interval: 1m
+    input_series:
+      - series: 'encrypted_swap_mapper_active{instance="10.0.10.103:9101"}'
+        values: '0+0x60'
+      - series: 'encrypted_swap_any_swap_active{instance="10.0.10.103:9101"}'
+        values: '1+0x60'
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: EncryptedSwapPlaintextFallback
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: '10.0.10.103:9101'
+      # The swapless failure is EncryptedSwapRestoreFailed's page, not this one.
+      - eval_time: 45m
+        alertname: EncryptedSwapRestoreFailed
+        exp_alerts: []
+
+  # Mutation case: the mapper IS the swap device, so the host swaps encrypted
+  # and neither encrypted-swap alert may fire.
+  - interval: 1m
+    input_series:
+      - series: 'encrypted_swap_mapper_active{instance="10.0.10.103:9101"}'
+        values: '1+0x60'
+      - series: 'encrypted_swap_any_swap_active{instance="10.0.10.103:9101"}'
+        values: '1+0x60'
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: EncryptedSwapPlaintextFallback
+        exp_alerts: []
+
+  # A swapless host: mapper_active 0 with no swap at all is the restore
+  # failure, and the plaintext alert must stay quiet so the two cannot double-page.
+  - interval: 1m
+    input_series:
+      - series: 'encrypted_swap_mapper_active{instance="10.0.10.103:9101"}'
+        values: '0+0x60'
+      - series: 'encrypted_swap_any_swap_active{instance="10.0.10.103:9101"}'
+        values: '0+0x60'
+      - series: 'node_memory_SwapTotal_bytes{instance="10.0.10.103:9101"}'
+        values: '0+0x60'
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: EncryptedSwapPlaintextFallback
+        exp_alerts: []
+      - eval_time: 45m
+        alertname: EncryptedSwapRestoreFailed
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: '10.0.10.103:9101'
+
+  # EncryptedSwapMetricsMissing: the textfile vanished after the host had been
+  # publishing it, so every encrypted-swap arm now evaluates over nothing.
+  - interval: 5m
+    input_series:
+      - series: 'up{job="node-exporter-host", instance="10.0.10.103:9101"}'
+        values: '1+0x30'
+      - series: 'encrypted_swap_finalize_last_run_seconds{instance="10.0.10.103:9101"}'
+        values: '1000 1000 1000'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: EncryptedSwapMetricsMissing
+        exp_alerts: []
+      - eval_time: 120m
+        alertname: EncryptedSwapMetricsMissing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: node-exporter-host
+              instance: '10.0.10.103:9101'
+
+  # Mutation case: a host that never ran encrypted swap has no gauge to
+  # regress from, so the exporter being up on its own stays silent.
+  - interval: 5m
+    input_series:
+      - series: 'up{job="node-exporter-host", instance="10.0.10.104:9101"}'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 120m
+        alertname: EncryptedSwapMetricsMissing
         exp_alerts: []

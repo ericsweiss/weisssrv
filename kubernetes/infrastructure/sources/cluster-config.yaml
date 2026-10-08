@@ -1,46 +1,11 @@
 ---
-# Cluster identity and addressing for Flux postBuild substitution — the sibling
-# of cluster-versions. Every stage after `sources` substitutes from BOTH
-# (kubernetes/clusters/weisssrv/*.yaml), so a manifest anywhere under
-# kubernetes/apps or kubernetes/infrastructure can spell this cluster's domains,
-# CIDRs and VIPs as `${placeholder}` instead of a literal.
-#
-# Key names are the cluster-template's contract (weisssrv-cluster-template
-# docs/ARCHITECTURE.md) so the reference cluster and the template agree; only
-# the keys the manifests here actually reference are defined, and the rest of
-# the contract lands as the manifests adopt it. Renaming a key does NOT fail the
-# build — Flux and envsubst both render an unknown `${placeholder}` as an EMPTY
-# STRING. scripts/check-cluster-literals.py is what catches that, together with
-# flux-lint's pre-substitution "unknown placeholder" check.
-#
-# THIS FILE IS NOT SUBSTITUTED INTO ANYTHING ITSELF: infrastructure-sources.yaml
-# deliberately carries no substituteFrom (it is where both ConfigMaps live), so
-# everything under kubernetes/infrastructure/sources/ stays literal.
-#
-# WHAT DELIBERATELY STAYS A LITERAL in the substituted trees — anything a tool
-# parses BEFORE Flux substitutes:
-#   * NetworkPolicy `ipBlock` CIDRs — scripts/check-netpol-except-parity.py
-#     reads them straight from git; a placeholder blinds the one gate that keeps
-#     the reserved-CIDR fences from drifting.
-#   * PromQL `expr` and the addresses in kubernetes/infrastructure/observability/rules/
-#     — promtool lints and unit-tests them from source, against fixtures that
-#     carry real addresses (scripts/prometheus-rule-tests/).
-#   * regex patterns that escape the dots (`esweiss\.com`) — substituting a
-#     value into a pattern changes what the pattern means.
-#   * per-guest and per-node addresses (the VM/LXC guests, the Proxmox hosts,
-#     the k3s nodes). Those are Ansible inventory data; a second hand-maintained
-#     copy here would be a source of truth that drifts, not one that helps.
-# scripts/check-cluster-literals.py enforces exactly that split, and
-# scripts/test_check_cluster_literals.py covers the gate. That gate scans the
-# GENERATOR sources too (Grafana dashboard *.json, the cloudflare-ddns *.py),
-# not just *.yaml: they are rendered into a substituted manifest, so a hostname
-# in a dashboard's PromQL matcher has to move with the domain like any other.
-#
-# The values below that also exist in the Ansible inventory (internal_domain,
-# external_domain, dns_servers, k3s_cluster_cidr / k3s_service_cidr, k3s_api_vip,
-# and the two MetalLB VIPs — mirrored as AdGuard rewrite answers in
-# group_vars/dns.yml) are cross-checked against it by the same gate, so this file
-# and ansible/inventories/prod/ cannot silently disagree.
+# CRITICAL: cluster identity for Flux postBuild substitution, paired with
+# cluster-versions; every stage after `sources` substitutes from both and this
+# tree is not substituted itself. Key names are a contract with every manifest
+# here: kustomize-controller runs with StrictPostBuildSubstitutions, so an
+# unknown ${placeholder} FAILS the reconcile.
+# scripts/check-cluster-literals.py owns the placeholder rule, its literal
+# exceptions and agreement with ansible/inventories/prod/ (docs/29).
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -51,62 +16,73 @@ data:
   # names are published to the public Cloudflare zone (docs/08).
   cluster_internal_domain: "esweiss.com"
   cluster_external_domain: "ericsweiss.com"
+  # WAN A records the cloudflare-ddns CronJob owns, as `label[:proxied]` pairs;
+  # `@` is the apex and proxied defaults to true.
+  cluster_ddns_records: "direct:false, git:false, vpn:false, @:true"
 
-  # Prefix for this repo's own label, taint and annotation keys
-  # (<prefix>/nas, <prefix>/gpu, <prefix>/runner-class, ...). Equal to the
-  # internal domain, but a separate key because the k3s Ansible layer must label
-  # nodes with this same prefix or the affinity rules never match — moving the
-  # internal domain and moving the label prefix are different changes.
+  # Prefix for this repo's own label, taint and annotation keys (<prefix>/nas,
+  # <prefix>/gpu, ...). Equal to the internal domain, but a separate key: the k3s
+  # Ansible layer labels nodes with this prefix or no affinity rule ever matches.
   cluster_node_label_domain: "esweiss.com"
 
   cluster_lan_cidr: "10.0.10.0/24"
-  # The Home VLAN (UniFi VLAN 20 — docs/46): personal client devices, a zone of
-  # its own behind the gateway's zone-based firewall. Trusted enough to reach
-  # the internal ingress allowlists (configs/traefik-middlewares.yaml) and
-  # nothing else; the Proxmox firewall grants it the same service ports through
-  # the `lan_clients` ipset, not through admin_lan. Deliberately WITHOUT an
-  # Ansible-inventory counterpart: no host this repo manages lives on it, so
-  # there is nothing for check-cluster-literals.py to cross-check it against.
+  # Default gateway on the LAN (UniFi gateway). downloads:verify-vpn dials it
+  # to prove the qbittorrent pod cannot reach the LAN directly.
+  cluster_lan_gateway: "10.0.10.1"
+  # Home VLAN (UniFi VLAN 20 — docs/46): client devices, trusted enough for the
+  # internal ingress allowlists and nothing else. No inventory counterpart — no
+  # host this repo manages lives on it.
   cluster_home_cidr: "10.0.20.0/24"
-  # The admin-device block INSIDE the Home VLAN: the addresses UniFi DHCP
-  # reserves for admin workstations, and the same /29 the Proxmox firewall's
-  # `admin_lan` set, the sshd `from=` restrictions and fail2ban's ignoreip carry
-  # (group_vars/all.yml). It exists so the Traefik allowlist in front of the
-  # routes with NO forward-auth — the appliance UIs and the 1Password Connect
-  # API — can mirror `admin_lan` exactly instead of admitting the whole VLAN.
-  # Like cluster_home_cidr it has no Ansible-inventory counterpart to
-  # cross-check: the /29 appears in all.yml as one entry of a list, not as a
-  # named key.
+  # Admin-device block inside the Home VLAN, the same /29 the Proxmox `admin_lan`
+  # set carries (group_vars/all.yml, as a list entry rather than a named key), so
+  # lan-tailscale-strict can mirror admin_lan instead of the whole VLAN.
   cluster_home_admin_cidr: "10.0.20.8/29"
   cluster_pod_cidr: "10.42.0.0/16"
   cluster_service_cidr: "10.43.0.0/16"
-  # CGNAT range (RFC 6598) that Tailscale allocates from — a constant, kept here
-  # so allowlists stay declarative.
+  # CGNAT range (RFC 6598) Tailscale allocates from.
   cluster_tailnet_cidr: "100.64.0.0/10"
+  # MagicDNS suffix from the Tailscale admin console; apps/tailnet-dns CNAMEs
+  # internal names into it.
+  cluster_tailnet_dns_suffix: "taile792d8.ts.net"
 
-  # MetalLB VIPs. This ConfigMap is their source of truth: the pools that assign
-  # them (infrastructure/configs/metallb-ip-pools.yaml) read them from here, and
-  # they have no Ansible-inventory counterpart. AdGuard's rewrites
-  # (group_vars/dns.yml) point at the same addresses and must move with them.
+  # MetalLB VIPs, sourced here: configs/metallb-ip-pools.yaml reads them, and the
+  # AdGuard rewrites in group_vars/dns.yml answer with them and must move too.
   cluster_metallb_public_vip: "10.0.10.100"
   cluster_metallb_internal_vip: "10.0.10.101"
-  # wg-easy's WAN endpoint gets its own VIP so the UDP port-forward is
-  # independent of the two ingress VIPs (docs/38).
+  # wg-easy's WAN endpoint VIP, independent of the two ingress VIPs (docs/38).
+  # Mirrored in proxmox_firewall_wan_wireguard_vips in group_vars/all.yml.
   cluster_wg_easy_vip: "10.0.10.99"
-  # Syslog collector VIP — the alloy-syslog receiver's LoadBalancer, in its own
-  # /32 pool so the gateway's remote-syslog target is a stable address
-  # independent of the ingress VIPs. LAN-only (no WAN forward); the UCG sends
-  # UDP :514 here for the Loki pipeline (docs/31). No Ansible counterpart.
+  # alloy-syslog receiver VIP, its own /32 pool so the gateway's remote-syslog
+  # target is stable. Mirrored by the sg-syslog-vip guest-firewall rule in
+  # group_vars/all.yml — both must move together (docs/31).
   cluster_syslog_vip: "10.0.10.162"
-  # kube-vip's API VIP. Unlike the MetalLB pools this one IS owned by Ansible
-  # (`k3s_api_vip` in group_vars/k3s.yml, which configures kube-vip); the key
-  # exists so manifests and the operator tooling stop re-spelling the address,
-  # and check-cluster-literals.py holds the two equal.
+  # kube-vip's API VIP, owned by Ansible (`k3s_api_vip` in group_vars/k3s.yml);
+  # check-cluster-literals.py holds the two equal.
   cluster_api_vip: "10.0.10.161"
+
+  # Host-side services, mirroring the hosts.yml entries that define them. The
+  # NFS one is spelled by NAME: the wildcard cert carries no IP SAN, so an IP
+  # mount fails the TLS handshake (docs/24).
+  cluster_nas_host: "pve-nas-01.esweiss.com"
+  cluster_smtp_host: "smtp-relay.esweiss.com"
+
+  # Prometheus jobs that scrape node-exporter: the in-cluster DaemonSet and the
+  # host exporter (observability/exporters/node-exporter-host.yaml). Filesystem
+  # and host panels select on this so a host pool cannot page unseen.
+  cluster_node_exporter_job_regex: "node-exporter|node-exporter-host"
 
   # LAN resolvers, space-separated — the form CoreDNS's `forward` needs, and the
   # same pair as `dns_servers` in group_vars/all.yml.
   cluster_upstream_dns_servers: "10.0.10.150 10.0.10.160"
+
+  # Site timezone, mirrored from `timezone` in group_vars/all.yml. Container TZ
+  # env values and CronJob spec.timeZone read it instead of a literal.
+  cluster_timezone: "America/Los_Angeles"
+
+  # ACME registration contact for the letsencrypt-prod ClusterIssuer, and the
+  # Alertmanager email recipient.
+  cluster_acme_email: "ericsweiss1@gmail.com"
+  cluster_alert_email: "ericsweiss1@gmail.com"
 
   # Prefix every alert's runbook_url gets. Composed from the canonical GitLab
   # remote, so a 3am alert link and the repo Flux reconciles from cannot drift.

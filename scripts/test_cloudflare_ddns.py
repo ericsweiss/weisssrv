@@ -1,26 +1,33 @@
-"""Unit tests for the cloudflare-ddns CronJob program.
-
-The module lives next to its manifests
-(kubernetes/infrastructure/configs/cloudflare-ddns/cloudflare-ddns.py) because
-kustomize only accepts configMapGenerator sources inside the kustomization
-root, so it is loaded by path here.
-"""
-import importlib.util
+"""Unit tests for the cloudflare-ddns CronJob program, loaded by path."""
+import os
 from pathlib import Path
 
 import pytest
+from script_loader import load_path
 
-MODULE_PATH = (
-    Path(__file__).resolve().parent.parent
-    / "kubernetes/infrastructure/configs/cloudflare-ddns/cloudflare-ddns.py"
-)
+REPO = Path(__file__).resolve().parent.parent
+DDNS_DIR = REPO / "kubernetes/infrastructure/configs/cloudflare-ddns"
+MODULE_PATH = DDNS_DIR / "cloudflare-ddns.py"
+CRONJOB_PATH = DDNS_DIR / "cronjob.yaml"
+
+# The program is configured only by env, so the suite supplies the env the
+# CronJob supplies. Any zone with a dot in it exercises the same code paths.
+TEST_ZONE = "example.test"
+TEST_RECORDS = "@, direct:false, git:false, vpn:false"
 
 
-def _load():
-    spec = importlib.util.spec_from_file_location("cloudflare_ddns", MODULE_PATH)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+def _load(zone=TEST_ZONE, records=TEST_RECORDS):
+    previous = {key: os.environ.get(key) for key in ("DDNS_ZONE", "DDNS_RECORDS")}
+    os.environ["DDNS_ZONE"] = zone
+    os.environ["DDNS_RECORDS"] = records
+    try:
+        return load_path(MODULE_PATH)
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 @pytest.fixture(scope="module")
@@ -32,18 +39,79 @@ def test_module_exists():
     assert MODULE_PATH.is_file(), f"{MODULE_PATH} missing — the CronJob mounts it"
 
 
-def test_records_cover_the_four_wan_names(ddns):
-    # ZONE is the ${cluster_external_domain} placeholder in the raw file (Flux
-    # substitutes it at reconcile), so assert the record SHAPE around it rather
-    # than a hard-coded zone — which is also what keeps this test honest if the
-    # site's external domain changes.
+def test_the_program_carries_no_site_data(ddns):
+    """Zone and record list come from env only. A built-in list would keep
+    working after the CronJob stopped passing one, hiding the breakage."""
+    source = MODULE_PATH.read_text()
+    assert "DEFAULT_RECORDS" not in source
+    assert "esweiss" not in source
+    assert "cluster_external_domain" not in source
+    assert ddns.ZONE == TEST_ZONE
+    assert ddns.RECORDS == (
+        (TEST_ZONE, True),
+        (f"direct.{TEST_ZONE}", False),
+        (f"git.{TEST_ZONE}", False),
+        (f"vpn.{TEST_ZONE}", False),
+    )
+
+
+def test_an_unset_record_list_leaves_nothing_to_manage(capsys):
+    """RECORDS parses to empty, which records_are_valid then refuses."""
+    unset = _load(records="")
+    assert unset.RECORDS == ()
+    assert unset.records_are_valid(unset.RECORDS) is False
+    assert "RECORDS is empty" in capsys.readouterr().err
+
+
+def test_parse_records_reads_the_cronjob_spec(ddns):
+    """The CronJob supplies the record list, so the parser is the contract."""
     zone = ddns.ZONE
-    assert zone == "${cluster_external_domain}"
-    names = {name for name, _ in ddns.RECORDS}
-    assert names == {zone, f"direct.{zone}", f"git.{zone}", f"vpn.{zone}"}
-    # Only the apex is proxied on create; the rest need a direct origin.
-    assert dict(ddns.RECORDS)[zone] is True
-    assert not any(proxied for name, proxied in ddns.RECORDS if name != zone)
+    parsed = ddns.parse_records("@, direct:false, git:false, vpn:false")
+    assert parsed == (
+        (zone, True),
+        (f"direct.{zone}", False),
+        (f"git.{zone}", False),
+        (f"vpn.{zone}", False),
+    )
+    # A bare label is proxied by default; ':false' turns it off.
+    assert ddns.parse_records("www") == ((f"www.{zone}", True),)
+    assert ddns.parse_records("www:false") == ((f"www.{zone}", False),)
+    # Whitespace and empty entries between commas are ignored.
+    assert ddns.parse_records(" www , ,") == ((f"www.{zone}", True),)
+
+
+def test_parse_records_keeps_a_malformed_entry_for_the_validator(ddns):
+    """Dropping one would silently stop updating a WAN name."""
+    for spec in ("a:bogus", "b:false:oops"):
+        parsed = ddns.parse_records(spec)
+        assert parsed == (spec,), parsed
+        assert ddns.records_are_valid(parsed) is False
+
+
+def test_parse_records_rejects_an_empty_or_dot_edged_label(ddns):
+    """A label like '' or '.' would build `.zone` and POST it as a new record."""
+    for spec in (":false", " :false", ".:false", "www.:false", "a..b:false"):
+        parsed = ddns.parse_records(spec)
+        assert ddns.records_are_valid(parsed) is False, parsed
+    # A mixed spec still fails closed, so no run manages a partial list.
+    assert ddns.records_are_valid(ddns.parse_records(" :false, www")) is False
+
+
+def test_the_cronjob_passes_both_values_from_cluster_config(ddns):
+    """The env wiring is the whole configuration, so it is the contract."""
+    import yaml
+
+    cronjob = yaml.safe_load(CRONJOB_PATH.read_text())
+    containers = cronjob["spec"]["jobTemplate"]["spec"]["template"]["spec"]["containers"]
+    env = {e["name"]: e.get("value") for e in containers[0]["env"]}
+    assert env["DDNS_ZONE"] == "${cluster_external_domain}"
+    assert env["DDNS_RECORDS"] == "${cluster_ddns_records}"
+
+    config = yaml.safe_load(
+        (REPO / "kubernetes/infrastructure/sources/cluster-config.yaml").read_text()
+    )
+    spec = config["data"]["cluster_ddns_records"]
+    assert ddns.records_are_valid(ddns.parse_records(spec, zone=TEST_ZONE)) is True
 
 
 def test_get_public_ip_skips_non_global_and_non_ipv4(ddns, monkeypatch):
@@ -81,10 +149,9 @@ def test_build_record_body_preserves_terraform_owned_fields(ddns):
 
 
 def test_build_record_body_preserves_every_terraform_owned_decoration(ddns):
-    """The PUT replaces the WHOLE record, so a decoration this script omits is
-    erased on the next address change — and reads afterwards as Terraform drift
-    rather than as a DDNS bug. `comment` was already carried; `tags` and
-    `settings` are the two that were being silently dropped."""
+    """The PUT replaces the WHOLE record, so every Terraform-owned decoration must
+    be carried forward; one this script omits is erased on the next address
+    change and reads afterwards as Terraform drift."""
     existing = {
         "ttl": 60,
         "proxied": True,
@@ -215,7 +282,7 @@ def test_update_record_refuses_an_ambiguous_multi_record_name(ddns, monkeypatch,
 
 
 def test_records_are_valid_rejects_empty_and_nameless_lists(ddns, capsys):
-    """The RECORDS analogue of ct's blank `DDNS_RECORDS` / stray `:false`."""
+    """An empty RECORDS list, or any entry with no name, must be rejected."""
     assert ddns.records_are_valid(ddns.RECORDS) is True
     assert ddns.records_are_valid(()) is False
     assert "RECORDS is empty" in capsys.readouterr().err
@@ -242,7 +309,6 @@ def _main_past_the_zone_guard(ddns, monkeypatch, records):
     """Drive main() past the token and zone guards, making every outbound call
     fatal to the assertion: the point is that nothing is reached."""
     monkeypatch.setenv("CF_API_TOKEN", "tok")
-    monkeypatch.setattr(ddns, "zone_is_substituted", lambda *a, **k: True)
     monkeypatch.setattr(ddns, "RECORDS", records)
     calls = []
     monkeypatch.setattr(ddns, "get_public_ip", lambda *a, **k: calls.append("ip") or "203.0.113.9")
@@ -276,22 +342,24 @@ def test_main_fails_without_a_token(ddns, monkeypatch):
     assert ddns.main() == 1
 
 
-def test_zone_guard_rejects_the_raw_placeholder(ddns):
-    # The file on disk carries the placeholder, so this is the exact value a
-    # failed Flux substitution would leave behind.
-    assert ddns.zone_is_substituted(ddns.ZONE) is False
-    assert ddns.zone_is_substituted("") is False
-    assert ddns.zone_is_substituted("nodots") is False
-    assert ddns.zone_is_substituted("ericsweiss.com") is True
+def test_zone_guard_rejects_empty_and_unsubstituted_zones(ddns):
+    assert ddns.zone_is_valid("") is False
+    assert ddns.zone_is_valid("nodots") is False
+    # Exactly what a failed Flux substitution leaves in the env var.
+    assert ddns.zone_is_valid("${cluster_external_domain}") is False
+    assert ddns.zone_is_valid(TEST_ZONE) is True
 
 
-def test_main_refuses_to_touch_dns_with_an_unsubstituted_zone(ddns, monkeypatch):
+def test_main_refuses_to_touch_dns_with_an_unsubstituted_zone(monkeypatch):
     """Empty/placeholder zone -> `GET /zones?name=` is unfiltered; fail before that."""
+    unsubstituted = _load(zone="${cluster_external_domain}")
     monkeypatch.setenv("CF_API_TOKEN", "tok")
     called = []
-    monkeypatch.setattr(ddns, "get_public_ip", lambda *a, **k: called.append("ip") or "1.2.3.4")
-    monkeypatch.setattr(ddns, "api_request", lambda *a, **k: called.append("api"))
-    assert ddns.main() == 1
+    monkeypatch.setattr(
+        unsubstituted, "get_public_ip", lambda *a, **k: called.append("ip") or "1.2.3.4"
+    )
+    monkeypatch.setattr(unsubstituted, "api_request", lambda *a, **k: called.append("api"))
+    assert unsubstituted.main() == 1
     assert called == []
 
 
@@ -315,3 +383,29 @@ def test_get_zone_id_returns_the_matching_zone(ddns, monkeypatch):
         },
     )
     assert ddns.get_zone_id("tok", "ericsweiss.com") == "z1"
+
+
+def test_update_record_percent_encodes_the_record_name_in_the_query(ddns, monkeypatch):
+    """A name carrying `&` or `+` must not break out of the `name=` parameter."""
+    seen = []
+
+    def fake_api(token, url, method="GET", data=None, timeout=30):
+        seen.append(url)
+        return {"success": True, "result": [{"id": "r1", "content": "198.51.100.7"}]}
+
+    monkeypatch.setattr(ddns, "api_request", fake_api)
+    assert ddns.update_record("tok", "z1", "a+b&zone_id=evil.ericsweiss.com", "198.51.100.7", False) is True
+    assert seen[0].endswith("name=a%2Bb%26zone_id%3Devil.ericsweiss.com")
+    assert "&zone_id=" not in seen[0]
+
+
+def test_get_zone_id_percent_encodes_the_zone_in_the_query(ddns, monkeypatch):
+    seen = []
+
+    def fake_api(token, url, method="GET", data=None, timeout=30):
+        seen.append(url)
+        return {"success": True, "result": [{"id": "z1", "name": "a+b&x=1.com"}]}
+
+    monkeypatch.setattr(ddns, "api_request", fake_api)
+    assert ddns.get_zone_id("tok", "a+b&x=1.com") == "z1"
+    assert seen[0].endswith("/zones?name=a%2Bb%26x%3D1.com")

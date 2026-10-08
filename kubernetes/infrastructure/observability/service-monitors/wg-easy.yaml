@@ -1,14 +1,7 @@
 ---
-# wg-easy's native metrics, served on the UI port (51821) at /metrics/prometheus.
-# Lives in observability with its Bearer secret, same shape as the meilisearch /
-# home-assistant ServiceMonitors; observability->51821 is opened by
-# allow-wg-easy-ingress (kubernetes/apps/wg-easy/networkpolicy.yaml).
-#
-# The Bearer password is set in the app's Admin Panel > General and MUST equal
-# `wg-easy-metrics-token` (1Password "WireGuard VPN" > metrics-token). With
-# Prometheus disabled there the endpoint serves the Nuxt SPA HTML with a 200
-# rather than a 401, so the scrape fails on content type and the target sits
-# permanently down — a rebuild has to redo that step.
+# wg-easy's native metrics on the UI port (51821) at /metrics/prometheus;
+# observability->51821 via apps/wg-easy/networkpolicy.yaml. The Bearer password
+# in Admin Panel > General MUST equal 1Password "WireGuard VPN" > metrics-token.
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:

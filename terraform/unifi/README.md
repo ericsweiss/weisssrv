@@ -17,31 +17,6 @@ networks, zones, policies, client reservations and port forwards), the `wlans`
 map in `main.tf` (which has to name the passphrase variables), and the
 credential variables.
 
-## ⚠️ The first v0.13.2 apply finishes the unfreeze
-
-The 2026-08-23 unfreeze apply at v0.13.1 landed the six networks'
-`setting_preference = "manual"` (the fields that froze applies after the
-cutover are pinned and converged) and then hit three more controller
-behaviours, absorbed by module v0.13.2: the default network rejects
-virtual-network overrides (which failed the two mgmt reservations outright),
-WLAN `ap_group_ids` and the site `ips` block flap on every write (and the
-failed `ips` write DISABLED a console-enabled IPS — restored by hand;
-**day-2 IPS mode is console-owned from v0.13.2**: Settings → CyberSecure →
-Threat Management). The failed client creates left bare server-side stubs the
-next apply adopts, and the interrupted `-replace` of `eric-bedroom-hyperion`
-already removed its old state entry, so no flag is needed any more.
-
-The finishing plan and apply are plain:
-
-```bash
-task terraform:unifi-plan
-```
-
-It must show exactly **sixteen reservation creates and nothing else** — no
-network, WLAN, or site changes. Then `task terraform:unifi-apply`, and the
-next plan must be "No changes" — that convergence closes the cutover.
-Anything in the plan beyond the sixteen creates is real drift.
-
 ## ⚠️ Apply is a supervised step
 
 `terraform apply` here rewrites the gateway's own segmentation. A wrong zone
@@ -60,7 +35,7 @@ invoking terraform if the flag is present), the same hard guard
 `terraform:authentik-apply` and `terraform:tailscale-apply` carry, so plan
 review cannot be bypassed by an errant flag. CI never applies: it runs only the
 read-only `unifi-drift-plan` job (`terraform plan -detailed-exitcode`,
-`allow_failure: true`, on the schedule and post-merge on `main`), so a
+`allow_failure: exit_codes: [2]`, on the schedule and post-merge on `main`), so a
 controller-UI hot-fix surfaces as drift instead of being silently reverted
 later. There is deliberately **no** `merge_request_event` rule — the job reads
 five vault items and must not run an unmerged branch's code — so the pre-merge
@@ -69,6 +44,14 @@ control is a local `task terraform:unifi-plan`.
 **Take a controller backup (`.unf` export) before any apply that touches
 networks or zones.** The controller's own settings are not in this state, and
 a rollback of a zone change is faster from a backup than from a plan.
+
+**Never apply a `local.networks.<key>.subnet` change from a device on that
+VLAN.** The gateway rewrites the subnet in place and drops every session on it
+the moment it lands, including the plan's own API connection. The `UniFi
+Controller` 1Password item's `url` field has to move with the gateway in the
+same change, or every later plan fails to connect. Renumbering VLAN 10 also
+moves `local.dns_ips`, `plex_ip`, `ha_ip`, `traefik_public_vip`, the `homelab`
+DHCP scope and every `port_forwards` target.
 
 ## Guardrails
 
@@ -105,7 +88,7 @@ all — destroy drops the state entry and changes nothing on the controller.
 |---|---|---|---|
 | Networks (VLANs + DHCP scopes) | 6 | `module.network.unifi_network.this[<key>]` | `local.networks` |
 | Custom firewall zones | 5 | `module.network.unifi_firewall_zone.this[<name>]` | `local.zones` |
-| Zone policies | 20 | `module.network.unifi_firewall_policy.this[<name>]` | `local.policies` |
+| Zone policies | 25 | `module.network.unifi_firewall_policy.this[<name>]` | `local.policies` |
 | WLANs | 4 | `module.network.unifi_wlan.this[<key>]` | `wlans` in `main.tf` |
 | Client reservations | 28 | `module.network.unifi_client.this[<key>]` | `local.clients` |
 | WAN port forwards | 5 | `module.network.unifi_port_forward.this[<key>]` | `local.port_forwards` |
@@ -123,21 +106,28 @@ UI.
 ### The segmentation in one paragraph
 
 The baseline is UniFi's own: **every zone reaches External and Gateway; no zone
-reaches another internal zone.** Every VLAN is its own zone, so the eleven
+reaches another internal zone.** Every VLAN is its own zone, so the twelve
 `ALLOW` entries in `local.policies` are the complete list of what crosses a VLAN
-boundary — Home reaches Homelab and IoT in full, Homelab reaches Home and IoT in
-full, IoT gets the two DNS resolvers plus Plex `:32400` and Home Assistant
-`:8123`, Work and Guest get the resolvers only, and the homelab↔management ICMP
-pair exists so the blackbox probes for the switch and the AP can reach them.
-Anything else between internal zones is blocked, including iot→home,
-work→anything else, guest→anything else, and home→work.
+boundary. Home reaches Homelab and IoT in full. Homelab reaches IoT only from
+Home Assistant, and Home only from Home Assistant and Plex — a zone-wide allow
+would be inherited by every k3s pod, which SNATs to a VLAN 10 address. IoT gets
+the two DNS resolvers plus Plex `:32400` and Home Assistant `:8123`, Work and
+Guest get the resolvers only, the homelab↔management ICMP pair exists so the
+blackbox probes for the switch and the AP can reach them, and
+`homelab-to-homelab-hairpin` opens `:80,443` to the public Traefik VIP so
+hairpinned grey-cloud names resolve from VLAN 10. Anything else between internal
+zones is blocked, including iot→home, work→anything else, guest→anything else,
+and home→work.
 
-The nine `BLOCK` entries narrow the two default-allow paths an `ALLOW` list
-cannot touch: `{guest,iot,work}-to-gateway-mgmt` keeps the console login off
-those VLANs' own gateway addresses, and `{guest,iot,work}-to-external-dns` plus
-`{guest,iot,work}-to-gateway-dns` close both ways a device with a hardcoded
-resolver could bypass AdGuard on `:53`/`:853` — a public resolver out through
-External, and the gateway's own forwarder answering on each VLAN's `.1`.
+The thirteen `BLOCK` entries narrow the two default-allow paths an `ALLOW` list
+cannot touch. `{guest,iot,work}-to-gateway-mgmt` keeps the console login off
+those VLANs' own gateway addresses. `{home,homelab}-to-gateway-extras` closes
+every gateway port but `:443` on the two trusted VLANs. And
+`{guest,iot,work,home}-to-external-dns` plus `{guest,iot,work,home}-to-gateway-dns`
+close both ways a device with a hardcoded resolver could bypass AdGuard on
+`:53`/`:853` — a public resolver out through External, and the gateway's own
+forwarder answering on each VLAN's `.1`. `docs/46-unifi-network.md` § Zones and
+policies is canonical for the per-row detail.
 Zone-per-VLAN is what makes the provider's inability to order rules irrelevant:
 the allowances are against a deny rather than a first-match list, and each
 `BLOCK` targets a zone-pair that no `ALLOW` here touches (the two Gateway
@@ -162,14 +152,26 @@ this root will report.
   (upstream #438/#430/#431 — zero blocks wipes live overrides). The switch port
   map is a documented physical layout in docs/46, and adoption is a console
   step.
-- **6 GHz.** Including `6g` in `wlan_bands` fails WLAN creation (upstream
-  #406), so every SSID here is 2.4 + 5 GHz. Enabling the U7's 6 GHz radio for
-  an SSID is a UI step, and it is drift this root cannot see.
+- **6 GHz on a WLAN CREATE.** `bands` is managed here and pins each SSID's
+  radio set (TheRevengers and DunderMiffLAN carry `6g`), but upstream #406
+  fails `6g` at creation. A WLAN that has to be created from scratch is created
+  without `6g`, applied, then given it back.
+- **TLS verification against the controller (accepted residual).**
+  `unifi_allow_insecure` defaults ON: `unifi_api_url` is the console's LAN
+  address, which serves a self-signed certificate, and a real certificate there
+  would carry a 60-day renewal that breaks every plan when it lapses. The
+  session stays on the LAN and the input flips to `false` for a console that
+  can verify (docs/46 § Codified vs manual).
 - **WAN settings, remote access, the controller's own account.** WAN DNS
   (1.1.1.1 / 9.9.9.9 plain, deliberately not the internal resolvers — a
   gateway that resolves through the cluster cannot boot the cluster), ui.com
-  remote access and the Limited Admin account that owns the API key are
-  console-side.
+  remote access and the local `terraform` admin that owns the API key are
+  console-side. That account holds full admin rights inside the UniFi Network
+  application, which the provider requires, and no cloud access.
+- **Day-2 IPS mode.** The module `ignore_changes = [ips]`, so
+  `site_settings.ips_mode` in `main.tf` is create-time intent only. The live
+  mode is changed in the console (Settings → CyberSecure → Threat Management)
+  and is not drift this root reports.
 - **Guest portal / Hotspot.** Nothing here uses the controller's guest portal:
   the Guest VLAN is `purpose = "corporate"` in a custom zone (see below), so
   its isolation is policy plus `l2_isolation`, not the Hotspot feature.
@@ -202,15 +204,23 @@ in CI), from the Homelab vault (docs/15-credential-rotation.md):
 | `wlan_passphrase_work` | `op://Homelab/WiFi DunderMiffLAN/password` |
 | (state backend) | `op://Homelab/GitLab Terraform State Token/credential` |
 
-The `UniFi Controller` item's `username`/`password` fields are the Limited
-Admin's console login — kept there for break-glass, not read by Terraform
-(`api_key` wins whenever it is set, and the provider cannot log in to an
-account with 2FA).
+The `UniFi Controller` item's `username`/`password` fields are the local
+`terraform` admin's console login — kept there for break-glass, not read by
+Terraform (`api_key` wins whenever it is set, and the provider cannot log in to
+an account with 2FA).
 
 Every one of these variables has a length floor, because the failure they guard
 is silent: a renamed 1Password field resolves to an empty string, a
 `sensitive` value's diff is hidden, and an applied empty PSK drops every device
 on that VLAN at once.
+
+Plans and applies run with `unifi_allow_insecure = true`. The console serves its
+own self-signed certificate on the LAN address `unifi_api_url` names, so the API
+key and — on a WLAN change — the four SSID passphrases cross a TLS session whose
+certificate is never verified. That covers `task terraform:unifi-plan`, `task
+terraform:unifi-apply` and the scheduled `unifi-drift-plan` job alike. Set
+`TF_VAR_unifi_allow_insecure=false` once the console presents a certificate the
+machine trusts; no source edit is needed.
 
 ## State backend
 
@@ -278,7 +288,56 @@ Only after every pre-existing object is in state is "0 to add" the expected
 plan result. The same sequence is the DR path when the state is lost and the
 controller is intact.
 
-## Changing a client reservation
+## Client reservations
+
+`local.clients` (`networks.tf`) is both the fixed-IP map and the standing way to
+put a device on the right VLAN.
+
+- **Adoption, not creation.** Every entry adopts the client the controller
+  already knows (`allow_existing` is module-side), so an entry creates nothing.
+- **Steering is placement, not authorization.** An entry naming a network moves
+  a WIRELESS device on its next association, with no SSID re-join and nothing
+  done to the device. A device that keeps another VLAN's PSK falls back to that
+  VLAN if its MAC ever stops matching, so IoT-class devices still get
+  re-onboarded onto `Panopticon` over time.
+- **Wired devices behind the unmanaged switches on Connection A are the
+  caveat.** Steering one needs the switch to assign a VLAN by MAC to a device it
+  does not see on its own port. Where that does not take, the entry is inert and
+  the device stays on the port's native VLAN. An override always delivers
+  TAGGED, so a tag-unaware client black-holes; a managed port at the drop is the
+  fix (docs/16). Entries in that position are marked in `networks.tf`.
+- **MAC case matters.** The provider matches MACs case-sensitively against the
+  controller's lowercase spellings and `mac` is ForceNew, so a new entry must
+  spell its MAC in lowercase or every apply plans a replacement and the adopt
+  path fails. Entries the provider created carry their config spelling in state,
+  which is why some existing entries are uppercase and stay that way until they
+  are re-imported. `scripts/test_terraform_roots.py` fails a new uppercase one.
+- **Homelab hosts and guests are deliberately absent.** Ansible addresses them
+  statically, and a reservation for an address the host also configures itself
+  is two sources of truth for one address.
+
+### Pools
+
+Every reservation sits OUTSIDE its network's DHCP pool, and the pool bounds in
+`local.networks` are what enforce it: a reservation inside the pool can collide
+with a lease the server has already handed out. The reservations are the last
+octets these devices already had on the flat LAN, so the pools are bounded
+around them rather than the other way round:
+
+```
+home  .50-.199 — macbook .10 below; hdhr .200 and vizio-cast-display .218 above
+iot   .50-.99  — hue .3 below; the Kasa plugs .120-.127 above, then one device
+                 block .210-.225 (.212 unused): both Hyperion Pis .210-.211,
+                 the WLED controllers .213-.215, the Levoit appliances
+                 .216-.217, and the Echoes .219-.224 with the Vizio TV at .225
+                 (.218 is the Home-VLAN vizio-cast-display, not an IoT gap)
+mgmt  .100-.199 — the switch .2 and the AP .3 below
+```
+
+Adding one: pick an address outside the pool for its network, or move the pool
+bound in `local.networks` first. Both halves are one plan.
+
+### Changing one is a replace
 
 Upstream #428: every in-place UPDATE of a `unifi_client` fails with
 `inconsistent result after apply: .last_ip`. Renaming a reservation or moving
@@ -322,6 +381,13 @@ controller-side object is recreated.
   explicit reverse policy instead, which is why `homelab-to-internal-icmp` and
   `internal-to-homelab-icmp` are a pair rather than one policy — the module
   also forces the attribute off for anything that is not an `ALLOW`.
+- **`wlan_bands` must be pinned, not left null.** The attribute is
+  Optional+Computed, and a null on an existing WLAN does not release ownership:
+  the plan reconciles to the provider's 2g/5g default and strips a console-set
+  6g. Each SSID in `main.tf` therefore spells its live radio set, so config
+  equals the console value and no write is issued. Upstream #406 rejects "6g"
+  at CREATE only, so a WLAN that must be created from scratch is applied
+  without 6g first and the band re-added in a second apply.
 - **An empty `dhcp_server.dns_servers` never converges** (upstream #429) — the
   module sends `null` instead, so "no DHCP DNS" is an empty list here.
 
@@ -340,27 +406,3 @@ controller-side object is recreated.
    `ansible/inventories/prod/group_vars/all.yml` are the LAN-facing scopes, and
    a new VLAN that must reach a guest service belongs in one of them.
 6. `task terraform:unifi-plan` → review → supervised apply.
-
-## Phase 2 — the homelab renumber
-
-Phase 1 left the homelab on `192.168.0.0/24` (VLAN-tagged, but not renumbered)
-so cutover night changed routing without touching a single address in
-`ansible/`, `kubernetes/` or any guest. Phase 2 moved it to `10.0.10.0/24`,
-every last octet preserved.
-
-In this root that was a small, contained edit, and this list is the complete
-one: `local.networks.homelab.subnet` and its DHCP scope, the three homelab
-locals `dns_ips` / `plex_ip` / `ha_ip` (which every policy references rather
-than repeating), and the five `local.port_forwards` targets. Nothing else here
-names a homelab address.
-Everything outside this root — the inventory, the k8s manifests, the DNS
-rewrites — is the bulk of that MR; docs/46 § Phase 2 owns the sequence.
-
-**Applying it is not small.** The gateway rewrites the VLAN 10 subnet in place,
-which drops every session on it the moment it lands — including the plan's own
-API connection if you run it from the homelab. Run the apply from a device on
-the Home VLAN, and only at the point the sequence in docs/46 § Phase 2 reaches
-it: the hosts, guests and k3s nodes are renumbered around it, not by it. The
-`UniFi Controller` 1Password item's `url` field moves with the gateway
-(`https://192.168.0.1` → `https://10.0.10.1`) or every later plan fails to
-connect.

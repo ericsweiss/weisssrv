@@ -1,7 +1,6 @@
-# Normalize line endings on checkin regardless of a contributor's core.autocrlf
-# setting. .editorconfig declares eol=lf, but only editors honor that — git does
-# not enforce it. This repo is shell-heavy (heredocs, sed blocks, *.sh.j2
-# templates), none of which tolerate CRLF, so LF is enforced here.
+# Normalize line endings on checkin whatever a contributor's core.autocrlf is:
+# git does not enforce .editorconfig's eol=lf, and shell heredocs, sed blocks
+# and *.sh.j2 templates do not tolerate CRLF.
 * text=auto eol=lf
 
 # Explicit LF for the interpreted/templated files that break on CRLF.

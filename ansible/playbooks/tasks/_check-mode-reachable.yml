@@ -1,8 +1,7 @@
 ---
-# Check-mode reachability guard, shared by the guest playbooks' pre_tasks.
-# In check mode the guest may not exist yet (LXC/VM creation is skipped), so
-# probe connectivity first and end the play quietly instead of erroring.
-# Override reachable_check_timeout (seconds, default 5) per include.
+# Check-mode reachability guard, shared by the guest playbooks' pre_tasks. In
+# check mode the guest may not exist yet, so probe first and end the play
+# quietly. reachable_check_timeout (seconds, default 5) is per include.
 
 - name: Check if host is reachable (check mode safety)
   ansible.builtin.wait_for_connection:

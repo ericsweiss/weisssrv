@@ -1,49 +1,34 @@
 #!/usr/bin/env python3
 """Assert every NFS PersistentVolume mounts over TLS, by hostname.
 
-The `nas_storage` k3s exports require TLS: the client lines carry `xprtsec=tls`
-and the server REJECTS a plaintext mount. A PV that omits the option therefore
-does not degrade to plaintext, it fails to mount — after the pod is scheduled,
-as a mount error nothing else predicts.
-
-The paired half is the server address. `xprtsec=tls` verifies the server
-certificate, whose SAN is `*.esweiss.com` with NO IP SAN, so a PV that names the
-NAS by IP fails the handshake. Every PV happens to be correct; the next one
-copied from a non-TLS example would not be, and neither half is expressed
-anywhere a tool could read.
-
-SCOPE: `spec.nfs` on a PersistentVolume, which is how every NFS mount in this
-repo is declared. NOT covered, because neither exists here and both would need a
-different shape: a pod-inline `volumes[].nfs` (no mountOptions field at all — the
-options come from the kubelet default), and a CSI-provisioned volume, whose
-server and options live in the driver's StorageClass parameters rather than in
-the PV. Adding either means extending this gate in the same commit.
-
-Input: the rendered manifest corpus on stdin (what `task flux:lint` accumulates
-from `kustomize build | envsubst`), the same contract as
-check-pvc-storageclass.py and check-scrape-netpol.py.
-
-The gate refuses to be vacuous: an empty corpus, or one that renders documents
-but declares no NFS PV, is an operator error (exit 2) rather than a pass — the
-render loop having missed the storage-declaring stages is exactly what that
-looks like.
-
-Exit 0 clean, 1 on a finding, 2 on an operator error.
-
-Usage:
-  cat rendered-corpus.yaml | python3 scripts/check-nfs-tls.py
+Covers `spec.nfs` on a PersistentVolume only, reading the rendered corpus on
+stdin. Scope, inputs and exit codes: docs/SCRIPTS.md.
 """
 from __future__ import annotations
 
+import argparse
 import ipaddress
 import sys
+from pathlib import Path
+from typing import List, Tuple
+
+_HERE = str(Path(__file__).resolve().parent)
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
 
 try:
-    import yaml
+    from gate_common import (  # noqa: E402  (resolved from this script's own directory)
+        doc_key,
+        load_corpus,
+    )
 except ImportError:
-    sys.exit("PyYAML required: pip install pyyaml")
+    print(
+        "ERROR: gate_common.py must be vendored beside this gate "
+        "(see scripts/vendorable-paths.yml)", file=sys.stderr,
+    )
+    raise SystemExit(2) from None
 
-REQUIRED_OPTION = "xprtsec=tls"
+DEFAULT_OPTION = "xprtsec=tls"
 
 
 def _is_ip(server: str) -> bool:
@@ -54,10 +39,13 @@ def _is_ip(server: str) -> bool:
     return True
 
 
-def nfs_violations(docs: list[dict]) -> tuple[list[str], int]:
+def nfs_violations(docs: List[dict], required_option: str = DEFAULT_OPTION,
+                   cert_domain: str = "",
+                   allow_ip_server: bool = False) -> Tuple[List[str], int]:
     """-> (violations, NFS PVs inspected). The count feeds the vacuity guard."""
-    out: list[str] = []
+    out: List[str] = []
     seen = 0
+    certificate = "%s certificate" % cert_domain if cert_domain else "server certificate"
     for doc in docs:
         if doc.get("kind") != "PersistentVolume":
             continue
@@ -66,61 +54,73 @@ def nfs_violations(docs: list[dict]) -> tuple[list[str], int]:
         if not isinstance(nfs, dict):
             continue
         seen += 1
-        name = (doc.get("metadata") or {}).get("name", "?")
+        name = doc_key(doc)
         options = [str(o) for o in (spec.get("mountOptions") or [])]
-        if REQUIRED_OPTION not in options:
+        # Kubernetes comma-joins mountOptions for the mount helper, so one
+        # element may carry several options.
+        flat = {part.strip() for element in options for part in element.split(",")}
+        if required_option not in flat:
             out.append(
-                f"PersistentVolume/{name}: mountOptions lack {REQUIRED_OPTION} "
-                f"(has {options or 'none'}) — the export rejects plaintext"
+                "%s: mountOptions lack %s (has %s) — the export "
+                "rejects plaintext" % (name, required_option, options or "none")
             )
         server = str(nfs.get("server", ""))
-        if _is_ip(server):
+        if not server:
+            out.append("%s: spec.nfs.server is empty" % name)
+        elif _is_ip(server) and not allow_ip_server:
             out.append(
-                f"PersistentVolume/{name}: server {server} is an IP — the "
-                "*.esweiss.com certificate has no IP SAN, so the TLS handshake fails"
+                "%s: server %s is an IP — the %s has no IP SAN, "
+                "so the TLS handshake fails" % (name, server, certificate)
             )
-        elif not server:
-            out.append(f"PersistentVolume/{name}: spec.nfs.server is empty")
     return out, seen
 
 
-def main() -> int:
-    try:
-        docs = [d for d in yaml.safe_load_all(sys.stdin.read()) if isinstance(d, dict)]
-    except yaml.YAMLError as exc:
-        print(f"ERROR: could not parse the corpus on stdin: {exc}", file=sys.stderr)
-        return 2
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--required-option", default=DEFAULT_OPTION)
+    parser.add_argument(
+        "--cert-domain", default="",
+        help="wildcard cert domain, named in the IP-server message",
+    )
+    parser.add_argument(
+        "--allow-ip-server", action="store_true",
+        help="the server certificate carries an IP SAN, so an IP in "
+             "spec.nfs.server is allowed",
+    )
+    parser.add_argument(
+        "--allow-empty", action="store_true",
+        help="a corpus with no NFS PersistentVolume is a pass, for a consumer "
+             "with no NFS storage",
+    )
+    args = parser.parse_args(argv)
 
-    if not docs:
-        print(
-            "ERROR: empty corpus on stdin — a gate that checks nothing is not a "
-            "gate. Pipe the accumulated `kustomize build | envsubst` output in.",
-            file=sys.stderr,
-        )
-        return 2
+    docs = load_corpus()
 
-    found, seen = nfs_violations(docs)
+    found, seen = nfs_violations(
+        docs, args.required_option, args.cert_domain, args.allow_ip_server
+    )
     if found:
         print(
-            "ERROR: NFS PersistentVolumes that cannot mount against the "
-            "TLS-only nas_storage exports:",
-            file=sys.stderr,
+            "ERROR: NFS PersistentVolumes that cannot mount against the TLS-only "
+            "exports:", file=sys.stderr,
         )
         print("\n".join(found), file=sys.stderr)
         return 1
 
-    if not seen:
+    if not seen and not args.allow_empty:
         print(
-            f"ERROR: inspected 0 NFS PersistentVolumes in {len(docs)} document(s) — "
-            "check that the `kustomize build` paths feeding stdin cover the stages "
-            "that declare NFS storage.",
-            file=sys.stderr,
+            "ERROR: inspected 0 NFS PersistentVolumes in %d document(s) — check "
+            "that the `kustomize build` paths feeding stdin cover the stages that "
+            "declare NFS storage, or pass --allow-empty if this cluster has none."
+            % len(docs), file=sys.stderr,
         )
         return 2
 
     print(
-        f"NFS TLS policy OK — {seen} NFS PersistentVolume(s) across {len(docs)} "
-        f"document(s) (every one mounts {REQUIRED_OPTION} by hostname)"
+        "NFS TLS policy OK — %d NFS PersistentVolume(s) across %d document(s) "
+        "(every one mounts %s%s)"
+        % (seen, len(docs), args.required_option,
+           "" if args.allow_ip_server else " by hostname")
     )
     return 0
 

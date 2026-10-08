@@ -1,17 +1,6 @@
 ---
-# Immich deployment playbook.
-#
-# Provisions the Immich VM (proxmox_vm) and deploys the docker-compose stack.
-#
-# Prerequisites:
-#   - Authentik OAuth2/OpenID provider + application configured (SSO)
-#   - 1Password items created ("Immich Secrets", "Immich SSO")
-#   - The wildcard cert distributed to the VM (task dns:deploy) — see
-#     docs/36-immich.md for the first-deploy order and the SSO bootstrap flow.
-#
-# Usage:
-#   task immich:deploy              # Full deployment (VM + stack)
-#   task immich:deploy-check        # Dry-run
+# Provisions the Immich VM and deploys the docker-compose stack. Prerequisites,
+# the first-deploy order and the SSO bootstrap flow: docs/36-immich.md.
 
 - name: Provision Immich VM
   hosts: immich
@@ -41,9 +30,9 @@
     - weisssrv.infra.postfix_null_client
     # Exposes the backup wrapper's immich_backup.prom textfile; ordered before
     # immich so the exporter is in place first.
-    # Also in site.yml; listed here so a standalone deploy stays in sync.
+    # Shared with site.yml; scripts/test_shared_role_playbook_sync.py keeps the two in step.
     - weisssrv.infra.node_exporter_host
-    # Also in site.yml; listed here so a standalone deploy stays in sync.
+    # Shared with site.yml; scripts/test_shared_role_playbook_sync.py keeps the two in step.
     - weisssrv.infra.alloy_host
     # tlshd for the xprtsec=tls backup mount; must precede the app role, which
     # mounts by hostname. Client-only.
@@ -52,3 +41,16 @@
         nfs_tls_enabled: "{{ immich_backup_nfs_enabled | default(false) }}"
     - weisssrv.infra.immich
     - weisssrv.infra.proxmox_firewall
+
+# weisssrv.infra.base above rewrites authorized_keys, so a re-provisioned guest
+# loses the pinned cert-distribution key. Re-seed it from the cert authority
+# here, before the next renewal strands the target (docs/15).
+- name: Re-seed the cert-distribution key on immich
+  hosts: dns_primary
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Re-seed immich as a cert-distribution target
+      ansible.builtin.include_tasks: tasks/_reseed-cert-target.yml
+      vars:
+        reseed_cert_target_host: immich

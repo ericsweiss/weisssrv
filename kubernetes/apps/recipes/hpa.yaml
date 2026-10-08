@@ -1,8 +1,7 @@
 ---
-# salt-rim is a stateless nginx frontend, so min=2 is an HA floor and anything
-# above it is burst headroom. The Deployment omits .spec.replicas so Flux's
-# server-side apply does not contend with this HPA, and salt-rim's VPA is
-# memory-only so CPU is owned here alone.
+# salt-rim is a stateless nginx frontend: min=2 is an HA floor, above it is burst
+# headroom. The Deployment omits .spec.replicas so server-side apply does not
+# fight this HPA, and salt-rim's VPA is memory-only so CPU is owned here.
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
@@ -38,16 +37,3 @@ spec:
         - type: Pods
           value: 1
           periodSeconds: 120
----
-# Keep at least one salt-rim replica during voluntary disruption (node drains,
-# rolling upgrades) so the Bar Assistant UI stays reachable.
-apiVersion: policy/v1
-kind: PodDisruptionBudget
-metadata:
-  name: salt-rim
-  namespace: recipes
-spec:
-  minAvailable: 1
-  selector:
-    matchLabels:
-      app.kubernetes.io/name: salt-rim

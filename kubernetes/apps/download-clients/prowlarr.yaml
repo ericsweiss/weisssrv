@@ -33,10 +33,9 @@ spec:
                     operator: DoesNotExist
       nodeSelector:
         ${cluster_node_label_domain}/general: "true"
-      # Pod hardening: Prowlarr does not talk to the kube-API. Only the universally-
-      # safe subset is applied — this is a LinuxServer.io image (s6 + PUID/PGID)
-      # that MUST start as root to drop privileges, so runAsNonRoot / drop-ALL /
-      # aPE:false are deliberately NOT set (they would break the s6 privilege drop).
+      # Pod hardening: only the universally-safe subset. This LinuxServer.io
+      # image (s6 + PUID/PGID) must start as root to drop privileges, so
+      # runAsNonRoot / drop-ALL / aPE:false would break it and are not set.
       automountServiceAccountToken: false
       securityContext:
         seccompProfile:
@@ -58,21 +57,23 @@ spec:
             - name: PGID
               value: "2000"
             - name: TZ
-              value: America/Los_Angeles
+              value: ${cluster_timezone}
             - name: UMASK
               value: "002"
           ports:
             - name: http
               containerPort: 9696
               protocol: TCP
+          # 5-minute liveness budget, as in _arr/deployment.yaml: an indexer
+          # rescan stalls /ping and a shorter budget SIGKILLs a healthy app.
           livenessProbe:
             httpGet:
               path: /ping
               port: http
             initialDelaySeconds: 30
             periodSeconds: 30
-            timeoutSeconds: 10
-            failureThreshold: 3
+            timeoutSeconds: 30
+            failureThreshold: 10
           readinessProbe:
             httpGet:
               path: /ping
@@ -84,11 +85,9 @@ spec:
           resources:
             requests:
               cpu: 50m
-              # Above the 30d working-set peak (257Mi) but BELOW the limit:
-              # request == limit leaves zero burst headroom, which is how
-              # prowlarr OOMKilled on search/backup spikes. The VPA's
-              # maxAllowed (vpa.yaml) is held under the limit for the same
-              # reason — a capped recommendation must not close the gap.
+              # Above the 30d working-set peak (257Mi) and below the limit —
+              # request == limit leaves no burst headroom. vpa.yaml caps the
+              # recommendation at 384Mi, under the 512Mi limit.
               memory: 320Mi
             limits:
               memory: 512Mi
