@@ -34,6 +34,14 @@ STDIN_GATES = (
 )
 
 
+def _assert_no_traceback(gate: str, result: subprocess.CompletedProcess) -> None:
+    """A traceback is not a gate message: the operator gets one ERROR line."""
+    assert "Traceback" not in result.stderr, (
+        f"{gate} printed a traceback instead of reporting why it could not "
+        f"inspect:\n{result.stderr}"
+    )
+
+
 def _run(args: list[str], stdin: str | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, *args],
@@ -54,6 +62,7 @@ def test_an_empty_tree_is_exit_2_not_a_finding(gate, tmp_path):
         f"{gate} exited {result.returncode} over an empty tree; 1 would read as a "
         f"finding:\n{result.stdout}{result.stderr}"
     )
+    _assert_no_traceback(gate, result)
 
 
 @pytest.mark.parametrize("gate", STDIN_GATES)
@@ -65,6 +74,7 @@ def test_an_empty_corpus_is_exit_2_not_a_finding(gate):
         f"{gate} exited {result.returncode} over an empty corpus; 1 would read as "
         f"a finding:\n{result.stdout}{result.stderr}"
     )
+    _assert_no_traceback(gate, result)
 
 
 def test_a_clean_gate_still_exits_0():

@@ -141,6 +141,16 @@ def _stub_helm(tmp_path: Path) -> Path:
     return bin_dir
 
 
+def _stub_shell_helm(tmp_path: Path, body: str) -> Path:
+    """A `helm` that runs one shell body, for the failure paths below."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    stub = bin_dir / "helm"
+    stub.write_text(f"#!/bin/sh\n{body}\n")
+    stub.chmod(0o755)
+    return bin_dir
+
+
 def _run(root: Path, bin_dir: Path, env_extra=None) -> subprocess.CompletedProcess:
     import os
     env = dict(os.environ)
@@ -179,15 +189,65 @@ def test_a_missing_manifest_is_exit_2_not_a_finding(tmp_path):
 def test_a_render_with_no_init_sidecar_is_exit_2_not_a_pass(tmp_path):
     """A gate that inspects nothing is not a gate: a renamed container is an
     operator error, not silent coverage loss."""
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    stub = bin_dir / "helm"
-    stub.write_text("#!/bin/sh\necho 'apiVersion: v1'\necho 'kind: ConfigMap'\n"
-                    "echo 'metadata:'\necho '  name: nothing'\n")
-    stub.chmod(0o755)
+    bin_dir = _stub_shell_helm(
+        tmp_path,
+        "echo 'apiVersion: v1'\necho 'kind: ConfigMap'\necho 'metadata:'\n"
+        "echo '  name: nothing'",
+    )
     result = _run(_fixture_repo(tmp_path / "tree", "LIST"), bin_dir)
     assert result.returncode == 2, result.stdout + result.stderr
     assert "checked nothing" in result.stderr
+
+
+class TestCannotInspect:
+    """Every read, render and parse failure is exit 2 with one ERROR line.
+
+    Exit 1 means a watching init container, so a broken environment reaching it
+    reads as a policy violation; a traceback is not a gate message either.
+    """
+
+    @staticmethod
+    def _assert_clean_exit_2(result):
+        assert result.returncode == 2, result.stdout + result.stderr
+        assert "Traceback" not in result.stderr, result.stderr
+        assert result.stderr.strip().startswith("ERROR:"), result.stderr
+        assert len(result.stderr.strip().splitlines()) == 1, result.stderr
+
+    def test_a_non_yaml_render_is_not_a_finding(self, tmp_path):
+        bin_dir = _stub_shell_helm(tmp_path, "echo 'spec: [unclosed'")
+        self._assert_clean_exit_2(_run(_fixture_repo(tmp_path / "tree", "LIST"), bin_dir))
+
+    def test_a_failing_helm_is_not_a_finding(self, tmp_path):
+        bin_dir = _stub_shell_helm(tmp_path, "echo 'Error: chart not found' >&2\nexit 1")
+        self._assert_clean_exit_2(_run(_fixture_repo(tmp_path / "tree", "LIST"), bin_dir))
+
+    def test_a_malformed_versions_configmap_is_not_a_finding(self, tmp_path):
+        """The reused validator exits 1 by itself, so its failures need wrapping."""
+        root = _fixture_repo(tmp_path / "tree", "LIST")
+        (root / "kubernetes/infrastructure/sources/versions-configmap.yaml").write_text(
+            "data: [unclosed\n"
+        )
+        self._assert_clean_exit_2(_run(root, _stub_helm(tmp_path)))
+
+    def test_a_versions_configmap_that_is_not_a_mapping_is_not_a_finding(self, tmp_path):
+        root = _fixture_repo(tmp_path / "tree", "LIST")
+        (root / "kubernetes/infrastructure/sources/versions-configmap.yaml").write_text(
+            "- a list, not a ConfigMap\n"
+        )
+        self._assert_clean_exit_2(_run(root, _stub_helm(tmp_path)))
+
+    def test_a_malformed_cluster_config_is_not_a_finding(self, tmp_path):
+        root = _fixture_repo(tmp_path / "tree", "LIST")
+        (root / "kubernetes/infrastructure/sources/cluster-config.yaml").write_text(
+            "data: [unclosed\n"
+        )
+        self._assert_clean_exit_2(_run(root, _stub_helm(tmp_path)))
+
+    def test_a_manifest_that_is_not_a_helmrelease_is_not_a_finding(self, tmp_path):
+        root = _fixture_repo(tmp_path / "tree", "LIST")
+        (root / "kubernetes/infrastructure/observability/kube-prometheus-stack"
+         / "release.yaml").write_text("---\nkind: ConfigMap\nmetadata:\n  name: nope\n")
+        self._assert_clean_exit_2(_run(root, _stub_helm(tmp_path)))
 
 
 def test_the_real_release_pins_list_for_every_init_sidecar():

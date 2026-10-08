@@ -235,6 +235,9 @@ weisssrv-lib next to the code. What runs here:
 | `test_vendored_smoke.py` | The vendored copies are runnable |
 | `test_vendored_byte_identity.py` | The vendored copies are unmodified. Drives the library's `check-vendored-copies.py` against a weisssrv-lib checkout at the pinned ref, and never skips when that checkout is missing |
 | `test_scripts_have_tests.py` | Every local script is exercised by some suite |
+| `test_gate_exit_contract.py` | Every non-vendored gate exits 2 with one `ERROR` line, never 1 and never a traceback, when it cannot inspect its subject |
+| `test_playbook_extra_var_bools.py` | Every `when:` reading a pipeline `-e` extra var coerces it with `\| bool`. Walks each caller's whole extra-vars argument and every playbook, task file and role the call reaches, resolving `weisssrv.infra.<role>` to the installed collection |
+| `test_check_grafana_sidecar_init.py` | `check-grafana-sidecar-init.py` reports a watching init container and separates that finding from a render or parse failure |
 | `test_site_configs.py` | The site configuration files above parse and match their consumers |
 | `test_prometheus_rule_coverage.py` | Every alert has a promtool rule unit test in `prometheus-rule-tests/`, or a declared exemption |
 

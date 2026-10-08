@@ -445,7 +445,7 @@ hosts.
 - [ ] User `eric` created
 - [ ] SSH key deployed for `eric`
 - [ ] Passwordless SSH working from laptop (`ssh eric@<host>`)
-- [ ] Passwordless sudo configured (`sudo -v`)
+- [ ] Passwordless sudo configured (`sudo -n true`)
 - [ ] SSH access available for `eric` user with passwordless sudo
 
 ### System Updates

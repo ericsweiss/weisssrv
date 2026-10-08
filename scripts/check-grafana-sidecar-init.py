@@ -41,6 +41,35 @@ class GateError(RuntimeError):
     """The gate could not inspect its subject: exit 2, never a finding."""
 
 
+# The reused validator reports by `raise SystemExit("ERROR: ...")`, which exits
+# 1 on its own; a parse or read failure likewise reads as a finding uncaught.
+_CANNOT_INSPECT = (SystemExit, yaml.YAMLError, OSError, ValueError)
+
+
+def _one_line(exc: BaseException) -> str:
+    """One line of an exception, so the gate never prints a traceback."""
+    first = str(exc).strip().splitlines()
+    return first[0] if first else type(exc).__name__
+
+
+def _inspect(step: str, call, *args, **kwargs):
+    """Run one inspection step; a failure inside it is exit 2, not a finding."""
+    try:
+        return call(*args, **kwargs)
+    except GateError:
+        raise
+    except _CANNOT_INSPECT as exc:
+        raise GateError(f"{step}: {_one_line(exc)}") from exc
+
+
+def _yaml_file(path: Path) -> dict:
+    return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+
+
+def _documents(text: str) -> list[dict]:
+    return [d for d in yaml.safe_load_all(text) if isinstance(d, dict)]
+
+
 def _validator():
     """Reuse the sibling gate's substitution and HelmRelease extraction."""
     src = Path(__file__).resolve().parent / _VALIDATOR
@@ -48,17 +77,18 @@ def _validator():
         raise GateError(f"{_VALIDATOR} must sit next to this script")
     spec = importlib.util.spec_from_file_location("validate_helm_values", str(src))
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    _inspect(f"loading {_VALIDATOR}", spec.loader.exec_module, module)
     return module
 
 
 def substitutions(root: Path, validator) -> dict:
     """Both Flux substitution ConfigMaps, which the manifest's ${vars} resolve from."""
-    versions = validator.load_versions(str(root), str(root / VERSIONS_CONFIGMAP))
+    versions = _inspect(f"reading {VERSIONS_CONFIGMAP}", validator.load_versions,
+                        str(root), str(root / VERSIONS_CONFIGMAP))
     config_path = root / CLUSTER_CONFIG
     if not config_path.is_file():
         raise GateError(f"cluster identity ConfigMap not found: {CLUSTER_CONFIG}")
-    config = (yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}).get("data") or {}
+    config = _inspect(f"parsing {CLUSTER_CONFIG}", _yaml_file, config_path).get("data") or {}
     if not config:
         raise GateError(f"no cluster identity keys in {CLUSTER_CONFIG}")
     return {**versions, **config}
@@ -69,16 +99,18 @@ def render(root: Path, validator) -> list[dict]:
     manifest = root / MANIFEST
     if not manifest.is_file():
         raise GateError(f"HelmRelease not found: {MANIFEST}")
-    text, missing = validator.substitute(manifest.read_text(encoding="utf-8"),
-                                         substitutions(root, validator))
+    source = _inspect(f"reading {MANIFEST}", manifest.read_text, encoding="utf-8")
+    text, missing = validator.substitute(source, substitutions(root, validator))
     if missing:
         raise GateError(f"{MANIFEST} references unknown ConfigMap key(s): {missing}")
-    spec = validator.extract_helmrelease_from_text(text, str(manifest)).get("spec", {})
+    spec = _inspect(f"parsing {MANIFEST}", validator.extract_helmrelease_from_text,
+                    text, str(manifest)).get("spec", {})
     version = str(spec.get("chart", {}).get("spec", {}).get("version", ""))
     if not version:
         raise GateError(f"could not determine the chart version pinned in {MANIFEST}")
     with tempfile.NamedTemporaryFile("w", suffix=".yaml") as values_file:
-        yaml.safe_dump(spec.get("values", {}), values_file, sort_keys=False)
+        _inspect(f"serialising the values in {MANIFEST}", yaml.safe_dump,
+                 spec.get("values", {}), values_file, sort_keys=False)
         values_file.flush()
         cmd = [
             "helm", "template", CHART, CHART,
@@ -96,11 +128,9 @@ def render(root: Path, validator) -> list[dict]:
         except subprocess.TimeoutExpired as exc:
             raise GateError(f"`helm template {CHART}@{version}` timed out") from exc
     if proc.returncode != 0:
-        raise GateError(
-            f"`helm template {CHART}@{version}` failed: "
-            f"{(proc.stderr or proc.stdout).strip().splitlines()[-1:] or ['no output']}"
-        )
-    return [d for d in yaml.safe_load_all(proc.stdout) if isinstance(d, dict)]
+        tail = (proc.stderr or proc.stdout).strip().splitlines()[-1:] or ["no output"]
+        raise GateError(f"`helm template {CHART}@{version}` failed: {tail[0]}")
+    return _inspect(f"parsing the rendered {CHART}@{version}", _documents, proc.stdout)
 
 
 def init_sidecars(docs: list[dict]) -> list[tuple[str, str, str | None]]:
@@ -146,6 +176,10 @@ def main(argv=None):
         problems = check(args.repo_root)
     except GateError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    except (Exception, SystemExit) as exc:
+        # Nothing escapes as a traceback: exit 1 would read as a finding.
+        print(f"ERROR: {type(exc).__name__}: {_one_line(exc)}", file=sys.stderr)
         return 2
     if problems:
         print("ERROR: a k8s-sidecar INIT container does not terminate, so the pod "
