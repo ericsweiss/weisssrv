@@ -336,11 +336,17 @@
       - tank/share
       - ssd/appdata
       - nvme/media
-    # tlshd: every k3s NFS PV mounts with xprtsec=tls, so a down handshake
-    # daemon fails new TLS mounts cluster-wide even while nfsd itself is up.
+    # Each unit is verified only under the nas_storage flags that actually start
+    # it, so a component the role converges away is not asserted active. tlshd:
+    # every k3s NFS PV mounts xprtsec=tls, so a down handshake daemon fails them.
     postflight_active_units: >-
-      {{ ['nfs-kernel-server', 'smbd', 'nmbd']
-         + (['smartd'] if (nas_storage_smartd_enabled | default(true)) else [])
+      {{ (['nfs-kernel-server'] if (nas_storage_exports is defined
+            and not (nas_storage_skip_nfs_reload | default(false))) else [])
+         + (['smbd'] if (nas_storage_samba_shares is defined) else [])
+         + (['nmbd'] if (nas_storage_samba_shares is defined
+              and not (nas_storage_samba_disable_netbios | default(true))) else [])
+         + (['smartd'] if ((nas_storage_smartd_enabled | default(true))
+              and not (nas_storage_skip_smartd_service | default(false))) else [])
          + (['tlshd'] if (nfs_tls_enabled | default(false)) else []) }}
   tasks:
     - name: Assert the inventory declares at least one ZFS pool
