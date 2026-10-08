@@ -175,13 +175,15 @@ _SERVICES: list[dict] = [
     },
     {
         # Baked into the hermes-agent image so the 1Password skill can drive
-        # `op`. Shipped only via 1Password's signed apt repo, and the pin is the
-        # full DEB version, hence manual: `apt-cache madison 1password-cli`.
+        # `op`. The pin is the full DEB version from 1Password's signed apt repo,
+        # which carries only the current release, so a stale pin breaks the build.
         "name": "1Password CLI (Hermes)",
         "var_name": "hermes_op_version",
-        "category": "manual",
+        "category": "apt_repo",
+        "apt_index_url": "https://downloads.1password.com/linux/debian/amd64/dists/stable/main/binary-amd64/Packages.gz",
+        "apt_package": "1password-cli",
         "source_url": "https://app-updates.agilebits.com/product_history/CLI2",
-        "notes": "op CLI baked into the hermes image (docker/hermes-agent). Full DEB version pin — bump via `apt-cache madison 1password-cli` against 1Password's signed apt repo, sync-versions, commit; CI rebuilds the wrapper. The pods pull IfNotPresent, so a new pin needs a new hermes_image_version revision.",
+        "notes": "op CLI baked into the hermes image (docker/hermes-agent). Full DEB version pin from 1Password's apt repo; sync-versions, commit; CI rebuilds the wrapper. The pods pull IfNotPresent, so a new pin needs a new hermes_image_version revision.",
         "coupled_vars": ["hermes_image_version"],
     },
     {

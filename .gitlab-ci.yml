@@ -43,8 +43,8 @@ variables:
   # Single source for the kustomize pin (flux-lint, deploy-verify) and the
   # pytest/PyYAML/ruff pins the lint and test jobs install. Include inputs repeat
   # the literals, and check-repo-policies' ci-pin-parity check fails on drift.
-  KUSTOMIZE_VERSION: "5.8.2"
-  KUSTOMIZE_SHA256: "06af0a202c2b831207d0173f9c9cdb1b30abceca0747cb3fbb72792d26055c95"
+  KUSTOMIZE_VERSION: "5.8.3"
+  KUSTOMIZE_SHA256: "cb9e31198d3f63b44848bd0afc4c8efc56e6cfef9c93a4a39a211940e6decd61"
   # promtool + amtool for prometheus-config-lint, pinned with the sha256 the job
   # verifies each downloaded tarball against.
   PROMTOOL_VERSION: "3.6.0"
@@ -1360,8 +1360,8 @@ include:
       substitute: true
       kubeconform_version: "0.8.0"
       kubeconform_sha256: "9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883"
-      kustomize_version: "5.8.2"
-      kustomize_sha256: "06af0a202c2b831207d0173f9c9cdb1b30abceca0747cb3fbb72792d26055c95"
+      kustomize_version: "5.8.3"
+      kustomize_sha256: "cb9e31198d3f63b44848bd0afc4c8efc56e6cfef9c93a4a39a211940e6decd61"
       helm_version: "3.22.0"
       helm_sha256: "1e4ab49e429626cf6c6958d914248b78c9730803c2751b87627e171dc800e7bb"
       pyyaml_version: "6.0.2"

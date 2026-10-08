@@ -279,11 +279,11 @@ hermes_codex_version: "0.161.0"
 # Claude Code CLI, baked into the hermes image alongside the Codex CLI so Hermes
 # can delegate coding tasks headlessly, authenticated with a long-lived OAuth
 # token via ESO rather than an API key. Build-time only (docs/37).
-hermes_claude_version: "2.1.293"
+hermes_claude_version: "2.1.294"
 # 1Password CLI (op), baked into the hermes image for Hermes' 1Password skill
 # (docs/37). Full DEB version string. NOT optional: upstream keeps exactly ONE
 # version, so a stale pin FAILS the build and version-check cannot see it.
-hermes_op_version: "2.39.0-1"
+hermes_op_version: "2.40.0-1"
 # Camofox browser server - the sidecar behind Hermes' camofox tool. Upstream
 # publishes no image; build-camofox-browser clones the repo at tag v<version>,
 # so the pin is the bare semver. https://github.com/jo-inc/camofox-browser/releases
@@ -295,7 +295,7 @@ hermes_camofox_git_sha: "39c82094013480b373df6600d44c7f036f58356e"
 # Hindsight agent-memory server - Hermes' long-term memory backend
 # (kubernetes/apps/hindsight, docs/37). The pin is the ghcr.io image tag.
 # https://github.com/vectorize-io/hindsight/releases
-hindsight_version: "0.10.2"
+hindsight_version: "0.10.3"
 # llama.cpp server sidecar for Hindsight's local LLM, built as
 # ghcr.io/ggml-org/llama.cpp:server-cuda-<pin> for GPU offload (docs/43). Not
 # every upstream build publishes an image, so this is bumped opportunistically.
@@ -366,11 +366,11 @@ helm_chart_versions:
   # the apiserver, enough to trip KubeAPIErrorBudgetBurn. The cluster's v0.16
   # CRDs are compatible with the 0.15.3 images. Re-evaluate after chart 0.16.1.
   metallb: "0.15.3"
-  traefik: "41.6.1"  # App version v3.7.13 (chart 41.x: logs.general->log, logs.access->accessLog)
+  traefik: "41.7.0"  # App version v3.7.14 (chart 41.x: logs.general->log, logs.access->accessLog)
   cert_manager: "v1.21.2"
   external_dns: "1.23.0"  # App version 0.23.0
   external_secrets: "2.12.0"  # ESO with 1Password Connect provider
-  kube_prometheus_stack: "92.1.0"  # prometheus-operator v0.94.1 (92.x major = kubernetes.io/os=linux nodeSelector default)
+  kube_prometheus_stack: "92.1.1"  # prometheus-operator v0.94.1 (92.x major = kubernetes.io/os=linux nodeSelector default)
   # prometheus-community/prometheus-operator-crds. Owns the monitoring.coreos.com
   # CRDs in the infrastructure-crds stage (docs/29). COUPLING: its appVersion must
   # equal the pinned kube_prometheus_stack's operator appVersion (docs/12).

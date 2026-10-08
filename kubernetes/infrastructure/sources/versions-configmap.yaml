@@ -29,7 +29,7 @@ data:
   helm_chart_versions_cert_manager: v1.21.2
   helm_chart_versions_external_dns: 1.23.0
   helm_chart_versions_external_secrets: 2.12.0
-  helm_chart_versions_kube_prometheus_stack: 92.1.0
+  helm_chart_versions_kube_prometheus_stack: 92.1.1
   helm_chart_versions_kured: 6.1.0
   helm_chart_versions_loki: 18.14.0
   helm_chart_versions_metallb: 0.15.3
@@ -40,16 +40,16 @@ data:
   helm_chart_versions_prometheus_operator_crds: 32.0.1
   helm_chart_versions_reloader: 2.2.18
   helm_chart_versions_tailscale_operator: 1.102.4
-  helm_chart_versions_traefik: 41.6.1
+  helm_chart_versions_traefik: 41.7.0
   helm_chart_versions_vpa: 5.1.0
   hermes_camofox_version: 1.18.1
-  hermes_claude_version: 2.1.293
+  hermes_claude_version: 2.1.294
   hermes_codex_version: 0.161.0
   hermes_image_version: v2026.9.24-r2
-  hermes_op_version: 2.39.0-1
+  hermes_op_version: 2.40.0-1
   hermes_version: v2026.9.24
   hindsight_llamacpp_version: b10068
-  hindsight_version: 0.10.2
+  hindsight_version: 0.10.3
   homarr_version: v1.77.1
   immich_postgres_version: 14-vectorchord0.4.3-pgvectors0.2.0
   immich_valkey_version: '9'
