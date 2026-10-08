@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Drift-check the console-owned UniFi IPS settings against scripts/unifi-settings.json.
+"""Drift-check a console-owned UniFi settings section against a declared expectation.
 
-Terraform sets ips_mode once and ignores the block after that (docs/46). Exit 0 clean,
-1 drift, 2 error. Env: UNIFI_API_URL, UNIFI_API_KEY, UNIFI_ALLOW_INSECURE=1 opt-in.
+Reads one section-addressed settings endpoint and compares the keys the config
+declares. Exit 0 clean, 1 drift, 2 error. Contract: docs/SCRIPTS.md.
 """
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ from pathlib import Path
 
 DEFAULT_CONFIG = Path(__file__).resolve().parent / "unifi-settings.json"
 REQUIRED_CONFIG_KEYS = ("site", "desired")
+DEFAULT_SECTION = "ips"
 _VALUE_CHARS = 80
 
 
@@ -29,17 +30,22 @@ def load_config(path: Path) -> dict:
         raise ValueError(f"{path}: missing {missing}")
     if not isinstance(cfg["desired"], dict) or not cfg["desired"]:
         raise ValueError(f"{path}: desired must be a non-empty object")
+    section = cfg.get("section", DEFAULT_SECTION)
+    if not isinstance(section, str) or not section or "/" in section:
+        raise ValueError(f"{path}: section must be a single path segment")
+    cfg["section"] = section
     return cfg
 
 
-def settings_url(base: str, site: str) -> str:
-    """The section-addressed IPS endpoint, never the unsectioned /rest/setting."""
-    return f"{base.rstrip('/')}/proxy/network/api/s/{site}/get/setting/ips"
+def settings_url(base: str, site: str, section: str = DEFAULT_SECTION) -> str:
+    """The section-addressed settings endpoint, never the unsectioned /rest/setting."""
+    return f"{base.rstrip('/')}/proxy/network/api/s/{site}/get/setting/{section}"
 
 
-# CRITICAL: read only the section-addressed /get/setting/ips. The unsectioned
-# /rest/setting returns the device SSH password, its hash and the site API token in
-# cleartext, so the response body is never printed and values are truncated.
+# CRITICAL: read only the section-addressed /get/setting/<section>. The
+# unsectioned /rest/setting returns the device SSH password, its hash and the
+# site API token in cleartext, so the response body is never printed and values
+# are truncated.
 def fetch_section(url: str, api_key: str, verify: bool = True) -> dict:
     req = urllib.request.Request(url, headers={"X-API-KEY": api_key, "Accept": "application/json"})
     context = ssl.create_default_context()
@@ -50,7 +56,7 @@ def fetch_section(url: str, api_key: str, verify: bool = True) -> dict:
         payload = json.load(response)
     data = payload.get("data")
     if not isinstance(data, list) or len(data) != 1 or not isinstance(data[0], dict):
-        raise RuntimeError("unexpected response shape for the ips settings section")
+        raise RuntimeError("unexpected response shape for the requested settings section")
     return data[0]
 
 
@@ -96,7 +102,9 @@ def main(argv: list[str] | None = None) -> int:
         print("WARNING: TLS verification off (UNIFI_ALLOW_INSECURE)", file=sys.stderr)
 
     try:
-        live = fetch_section(settings_url(base, cfg["site"]), api_key, verify=verify)
+        live = fetch_section(
+            settings_url(base, cfg["site"], cfg["section"]), api_key, verify=verify
+        )
     except (urllib.error.URLError, OSError, ValueError, RuntimeError) as e:
         # The exception type, not the body: a controller error page can quote
         # the request.
@@ -105,13 +113,19 @@ def main(argv: list[str] | None = None) -> int:
 
     drift = diff_settings(live, cfg["desired"])
     if not drift:
-        print(f"OK: site {cfg['site']} matches the codified console settings.")
+        print(
+            f"OK: site {cfg['site']} section {cfg['section']} matches the codified "
+            "console settings."
+        )
         return 0
 
-    print(f"DRIFT: site {cfg['site']} differs from the codified console settings:")
+    print(
+        f"DRIFT: site {cfg['site']} section {cfg['section']} differs from the "
+        "codified console settings:"
+    )
     for line in drift:
         print(f"  - {line}")
-    print("Reconcile in the console (Settings → CyberSecure), or update the config.")
+    print("Reconcile in the console, or update the config to the new intent.")
     return 1
 
 

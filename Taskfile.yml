@@ -255,6 +255,9 @@ tasks:
       - task: lint:sync-checks
       - task: lint:lib-pins
       - task: lint:version-coverage
+      - task: lint:version-checksums
+      - task: lint:partner-pins
+      - task: lint:helm-repo-parity
       - task: lint:flux-version-pin
       - task: lint:kubectl-version-pin
       - task: lint:busybox-version-pin
@@ -265,6 +268,9 @@ tasks:
       - task: lint:vpn-provider-parity
       - task: lint:kustomization-coverage
       - task: lint:cluster-literals
+      - task: lint:cluster-invariants
+      - task: lint:dashboards
+      - task: lint:role-inputs
       - task: lint:comment-length
       - task: lint:tailnet-dns-parity
       - task: lint:tailscale-policy
@@ -298,6 +304,8 @@ tasks:
         msg: "pytest not installed. pip install pytest"
       - sh: command -v jq
         msg: "jq not installed. brew install jq (the deploy-verify classifiers in scripts/test_deploy_verify_lib.py need it)"
+      - sh: python3 -c "import jinja2" 2>/dev/null
+        msg: "Jinja2 not installed. pip install jinja2 (test_vendored_smoke.py imports check-role-inputs.py, which requires it)"
       # test_vendored_byte_identity.py compares this repo's vendored script
       # copies against weisssrv-lib and NEVER skips, so a sibling checkout is a
       # hard requirement of this task, checked in the gate's resolution order.

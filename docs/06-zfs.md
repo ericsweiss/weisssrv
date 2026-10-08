@@ -538,7 +538,14 @@ ordered candidate list (immich, then GitLab, then nextcloud), only as many as
 needed, does the swapoff, and restarts every guest it stopped. A cleanup trap
 fires on any exit, so a crash mid-reclaim can never strand a guest. Stops are
 always `qm shutdown`; a guest that will not stop within its timeout aborts the
-reclaim instead of being forced.
+reclaim instead of being forced. Each stop releases the guest's swap as well as
+its RAM, so the headroom target is re-read after every one.
+
+The escalation refuses a goal it cannot reach. If stopping every running
+candidate still would not cover the swap, it stops no guest, records
+`swap_clean_skip_reason_info{reason="escalation unreachable"}` with
+`swap_clean_last_run_success` 0, and exits. `SwapCleanFailed` is the alert; the
+reason label says which arm it was.
 
 A pre-flight check skips the whole run when one of
 `nas_storage_swap_clean_conflicting_units` is still active, so a nightly backup
@@ -550,12 +557,16 @@ alert's `reason` label names the unit that blocked it.
 
 The levers above manage reclaimable pressure. The merged 192-byte slab leaks
 about 2.7-4 GiB/day on the NAS and 230-380 MB/day on every other Proxmox host.
-The tenant is `skbuff_ext_cache`, allocated by br_netfilter per bridged frame,
-so it tracks NFS volume on this host. Only a reboot reclaims it. The library's
-`proxmox_firewall_nftables` option (v0.18.0) moves a node to the nftables
-firewall, which takes br_netfilter out of the bridged path; it is the
-mitigation to validate on one opt host before the NAS, with the reboot pager
-kept until a week of flat slab proves it.
+The tenant is `skbuff_ext_cache`: about 0.5% of the skb extensions
+`br_nf_pre_routing` allocates per bridged frame are never freed, which is ~4
+GB/day at this host's NFS volume. Only a reboot reclaims it.
+
+The mitigation is `proxmox_firewall_nftables: true`, which renders `nftables: 1`
+into the node's `host.fw`. That option selects the `proxmox-firewall` package,
+which programs nftables and takes the bridge-netfilter hook out of the node's
+bridged path. The package must be installed on the node first, and the choice is
+per node, so it goes in `host_vars`. Validate it on one opt host before the NAS
+and keep the reboot pager until a week of flat slab proves it.
 
 - `HostSlabLeakSuspected` (SUnreclaim minus ARC above 16 GiB for 24 h) is the
   reboot pager. It fires roughly weekly, and firing means schedule the NAS

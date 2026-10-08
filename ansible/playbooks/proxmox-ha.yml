@@ -9,9 +9,8 @@
   gather_facts: false
 
   roles:
-    # /etc/pve is clustered, so the role reconciles HA once for the whole cluster,
-    # probing for a reachable host itself. That contract arrives with the v0.18.0
-    # collection pin; do not run this play until the pin lands.
+    # /etc/pve is clustered, so the role reconciles HA once for the whole
+    # cluster and probes for a reachable host itself.
     - role: weisssrv.infra.proxmox_ha
       tags: [proxmox_ha]
 

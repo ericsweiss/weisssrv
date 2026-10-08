@@ -47,9 +47,11 @@ def test_the_manifest_was_readable():
 
 @pytest.mark.parametrize("name", PY_SCRIPTS)
 def test_python_script_imports(name):
-    """Import (never run) each copy: syntax errors and import-time failures are
-    the whole failure class a byte-comparison cannot see."""
-    load_script(name)
+    """Import (never run) each copy: an import-time failure is the whole class a
+    byte-comparison cannot see. `register`: a module defining a dataclass has to
+    be in sys.modules while its string annotations resolve.
+    """
+    load_script(name, register=True)
 
 
 @pytest.mark.parametrize("name", SH_SCRIPTS)

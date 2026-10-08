@@ -80,9 +80,9 @@ Traefik needs more than an IngressRoute.
   `kubernetes/infrastructure/sources/cluster-config.yaml`, plus its registration
   in `scripts/check-cluster-literals.py` and the matching inventory mirror.
 - `externalTrafficPolicy: Local` when the source IP matters.
-- A **guest** firewall allow, not a `cluster.fw` rule: see
-  `references/add-vm-app.md` § Firewall — VIP-destined frames are filtered by
-  the guest firewall of the announcing node.
+- A **guest** firewall allow, not a `cluster.fw` rule: VIP-destined frames are
+  filtered by the guest firewall of the announcing node, which
+  `references/add-vm-app.md` walks through.
 
 ## Alert rules
 

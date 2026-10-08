@@ -942,6 +942,10 @@ class TestLintMirrorsTheCiLintStage:
     # cannot see: a library template's body, or another test. The `/ci/...yml`
     # values are checked against the live include: list below.
     CI_RUNS_IT_ELSEWHERE = {
+        "scripts/check-comment-length.py": (
+            "the library's /ci/lint/comment-length.yml job runs it; the script "
+            "path lives in that template, not here"
+        ),
         "scripts/check-doc-links.py": (
             "the library's /ci/lint/docs-link-check.yml job runs it; the script "
             "name lives in that template, not here"
@@ -960,9 +964,11 @@ class TestLintMirrorsTheCiLintStage:
     # run_check entries whose command is an inline shell function rather than a
     # script — each maps to the `task lint` sub-task that runs the same logic.
     INLINE_CHECKS = {
+        "cluster-invariants": "lint:cluster-invariants",
         "flux-version-pin": "lint:flux-version-pin",
         "busybox-version-pin": "lint:busybox-version-pin",
         "tailscale-policy-syntax": "lint:tailscale-policy",
+        "partner-pins": "lint:partner-pins",
         "taskfile-smoke": "lint:taskfile-smoke",
         "hosts-env-sync": "lint:sync-checks",
         "flux-versions-sync": "lint:sync-checks",
@@ -1191,97 +1197,127 @@ class TestLivePolicyKindParity:
 
 
 class TestTerraformDriftPlanJobs:
-    """The three terraform drift-plan jobs are detectors, never reconcilers: the
-    apply stays supervised, and `-detailed-exitcode` is what makes drift exit 2
-    so `allow_failure: exit_codes: [2]` can render it yellow."""
+    """The three terraform drift-plan jobs are detectors, never reconcilers.
 
-    ANCHOR = ".terraform-drift-plan"
+    They come from the library template, so what this repo owns is the include
+    inputs. The exit-code contract lives in the template, checked at the pin.
+    """
+
+    TEMPLATE = "/ci/validate/terraform-drift-plan.yml"
     CONSUMERS = ("tailscale-drift-plan", "authentik-drift-plan", "unifi-drift-plan")
     APPLY = re.compile(r"\bterraform\s+apply\b")
 
     @classmethod
-    def _blocks(cls) -> dict[str, list[str]]:
-        """Every before_script/script line of the anchor and its consumers."""
+    def _includes(cls) -> dict[str, dict]:
+        """{job_name: that include's inputs} for every drift-plan include."""
         doc = load_ci_doc(REPO / ".gitlab-ci.yml")
-        out: dict[str, list[str]] = {}
-        for name in (cls.ANCHOR, *cls.CONSUMERS):
-            job = doc.get(name)
-            assert job, f".gitlab-ci.yml has no {name} job"
-            lines: list[str] = []
-            for key in ("before_script", "script"):
-                block = job.get(key) or []
-                lines.extend(
-                    str(line) for line in (block if isinstance(block, list) else [block])
-                )
-            out[name] = lines
-        return out
-
-    @classmethod
-    def _jobs_extending_the_anchor(cls) -> set[str]:
-        """Every job that extends the drift-plan anchor, derived from the
-        pipeline so a fourth one cannot join it without joining this gate."""
-        doc = load_ci_doc(REPO / ".gitlab-ci.yml")
-        found = set()
-        for name, job in doc.items():
-            if name.startswith(".") or not isinstance(job, dict):
+        found: dict[str, dict] = {}
+        for include in doc.get("include") or []:
+            if not isinstance(include, dict):
                 continue
-            extends = job.get("extends") or []
-            if cls.ANCHOR in ([extends] if isinstance(extends, str) else extends):
-                found.add(name)
+            files = include.get("file")
+            files = files if isinstance(files, list) else [files]
+            if cls.TEMPLATE not in files:
+                continue
+            inputs = include.get("inputs") or {}
+            name = inputs.get("job_name")
+            assert name, f"a {cls.TEMPLATE} include passes no job_name"
+            assert name not in found, f"two includes share job_name {name}"
+            found[name] = inputs
         return found
 
-    def test_every_job_extending_the_anchor_is_listed(self):
-        derived = self._jobs_extending_the_anchor()
-        assert derived, f"no job extends {self.ANCHOR} — the parser stopped matching"
-        unlisted = sorted(derived - set(self.CONSUMERS))
-        assert not unlisted, (
-            f"jobs extending {self.ANCHOR} but absent from CONSUMERS: {unlisted} — "
-            "add them, or the never-applies and -detailed-exitcode arms skip them."
+    @classmethod
+    def _template_doc(cls) -> dict:
+        """The library template's job body at the pinned ref."""
+        from test_vendored_byte_identity import (
+            _CILoader, _lib_root, _pinned_ref, _ref_available,
         )
 
-    def test_every_listed_consumer_still_extends_the_anchor(self):
-        stale = sorted(set(self.CONSUMERS) - self._jobs_extending_the_anchor())
-        assert not stale, f"CONSUMERS names jobs that no longer exist: {stale}"
+        lib = _lib_root()
+        ref = _pinned_ref()
+        relpath = cls.TEMPLATE.lstrip("/")
+        if _ref_available(lib, ref):
+            blob = subprocess.run(
+                ["git", "-C", str(lib), "show", f"{ref}:{relpath}"],
+                capture_output=True, text=True,
+            )
+            assert blob.returncode == 0, blob.stderr
+            text = blob.stdout
+        else:
+            text = (lib / relpath).read_text()
+        docs = [d for d in yaml.load_all(text, Loader=_CILoader) if isinstance(d, dict)]
+        assert len(docs) == 2, f"{relpath} is not a spec header plus a job body"
+        return docs[1]
+
+    def test_every_module_is_included_exactly_once(self):
+        found = self._includes()
+        assert set(found) == set(self.CONSUMERS), (
+            f"drift-plan includes are {sorted(found)} but CONSUMERS names "
+            f"{sorted(self.CONSUMERS)} — a module with no include is undetected, "
+            "and a job absent from CONSUMERS skips every arm below."
+        )
+
+    def test_each_include_names_its_own_module_and_state(self):
+        found = self._includes()
+        modules = [inputs.get("module_dir") for inputs in found.values()]
+        states = [inputs.get("state_name") for inputs in found.values()]
+        assert all(modules) and len(set(modules)) == len(modules), modules
+        assert all(states) and len(set(states)) == len(states), (
+            f"two drift plans share a terraform state: {states}"
+        )
+        for name, inputs in found.items():
+            module = str(inputs["module_dir"])
+            assert (REPO / module).is_dir(), f"{name} plans a missing {module}"
+
+    def test_each_include_runs_on_the_infrastructure_runner(self):
+        """The template default is `[]` — any runner, including tagless ones."""
+        for name, inputs in self._includes().items():
+            assert inputs.get("tags") == ["infrastructure"], (
+                f"{name} passes tags {inputs.get('tags')!r}"
+            )
 
     def test_the_jobs_never_apply(self):
         applies = {
-            name: [line for line in lines if self.APPLY.search(line)]
-            for name, lines in self._blocks().items()
+            name: self.APPLY.findall(str(inputs.get("secrets_exports") or ""))
+            for name, inputs in self._includes().items()
         }
         assert not any(applies.values()), {k: v for k, v in applies.items() if v}
+        body = yaml.safe_dump(self._template_doc())
+        assert not self.APPLY.search(body), "the library template now applies"
 
     def test_the_never_applies_assertion_is_load_bearing(self):
-        lines = self._blocks()["unifi-drift-plan"] + ["terraform apply -auto-approve"]
-        assert [line for line in lines if self.APPLY.search(line)]
+        assert self.APPLY.search("terraform apply -auto-approve")
 
-    def test_every_plan_asks_for_a_detailed_exit_code(self):
-        blocks = self._blocks()
-        for name in self.CONSUMERS:
-            plans = [line for line in blocks[name] if "terraform plan" in line]
-            assert plans, f"{name} runs no terraform plan"
-            assert all("-detailed-exitcode" in line for line in plans), (
-                f"{name}'s plan drops -detailed-exitcode, so drift exits 0 and "
-                "the advisory-yellow allow_failure never fires"
-            )
+    def test_every_secret_read_is_assigned_then_exported(self):
+        """`export X=$(op read ...)` returns export's status, so a failed read
+        plans with an empty credential instead of failing the job."""
+        bad = {}
+        for name, inputs in self._includes().items():
+            offenders = [
+                line.strip()
+                for line in str(inputs.get("secrets_exports") or "").splitlines()
+                if re.match(r"\s*export\s+\w+=", line)
+            ]
+            if offenders:
+                bad[name] = offenders
+        assert not bad, bad
 
-    def test_the_detailed_exit_code_assertion_is_load_bearing(self):
-        lines = [
-            line.replace(" -detailed-exitcode", "")
-            for line in self._blocks()["unifi-drift-plan"]
-        ]
-        plans = [line for line in lines if "terraform plan" in line]
-        assert plans
-        assert not all("-detailed-exitcode" in line for line in plans)
+    def test_the_template_still_asks_for_a_detailed_exit_code(self):
+        body = yaml.safe_dump(self._template_doc())
+        assert "terraform plan" in body, "the template runs no terraform plan"
+        assert "-detailed-exitcode" in body, (
+            "the library template dropped -detailed-exitcode, so drift exits 0 "
+            "and the advisory-yellow allow_failure never fires"
+        )
 
     def test_only_the_drift_exit_code_is_tolerated(self):
-        doc = load_ci_doc(REPO / ".gitlab-ci.yml")
-        allow_failure = doc[self.ANCHOR]["allow_failure"]
-        assert allow_failure == {"exit_codes": [2]}, allow_failure
+        job = next(iter(self._template_doc().values()))
+        assert job["allow_failure"] == {"exit_codes": [2]}, job.get("allow_failure")
 
-    # Every drift job materializes provider credentials in `before_script`, so
-    # these two arms are about WHERE that read is allowed to happen.
-    VAULT_JOBS = (*CONSUMERS, "b2-drift-plan")
+    # Every drift job materializes provider credentials, so these arms are about
+    # WHERE that read is allowed to happen.
     SCHEDULE_ANCHOR = ".drift-schedule-rule"
+    LOCAL_VAULT_JOBS = ("b2-drift-plan",)
 
     @staticmethod
     def _job_text(name: str) -> str:
@@ -1306,17 +1342,22 @@ class TestTerraformDriftPlanJobs:
             if isinstance(rule, dict) and "merge_request_event" in str(rule.get("if", ""))
         ]
 
-    def test_no_drift_job_reads_the_vault_on_a_merge_request_pipeline(self):
+    def test_the_template_has_no_merge_request_rule(self):
+        """A vault read in a job running an unmerged branch's code (docs/13)."""
+        job = next(iter(self._template_doc().values()))
+        assert not self._mr_rules(job.get("rules"))
+
+    def test_no_local_drift_job_reads_the_vault_on_a_merge_request_pipeline(self):
         doc = load_ci_doc(REPO / ".gitlab-ci.yml")
         offenders = {
             name: found
-            for name in self.VAULT_JOBS
+            for name in self.LOCAL_VAULT_JOBS
             if (found := self._mr_rules((doc.get(name) or {}).get("rules")))
         }
         assert not offenders, (
             f"these drift jobs read provider credentials on an MR pipeline: {offenders} "
             "— that runs an unmerged branch's code with the vault token (docs/13 "
-            "\u00a7 Vault reads on merge-request pipelines)"
+            "§ Vault reads on merge-request pipelines)"
         )
 
     def test_the_merge_request_arm_is_load_bearing(self):
@@ -1326,16 +1367,24 @@ class TestTerraformDriftPlanJobs:
         )
         assert not self._mr_rules([{"if": '$CI_COMMIT_BRANCH == "main"'}])
 
-    def test_every_drift_job_keeps_the_scheduled_detector(self):
-        for name in self.VAULT_JOBS:
+    def test_every_local_drift_job_keeps_the_scheduled_detector(self):
+        for name in self.LOCAL_VAULT_JOBS:
             assert f"!reference [{self.SCHEDULE_ANCHOR}, rules]" in self._job_text(name), (
                 f"{name} dropped the scheduled detector, so out-of-band console "
                 "drift is only seen when something in-repo changes"
             )
 
-    def test_the_schedule_rule_is_not_conjoined_with_a_credential(self):
+    def test_no_included_drift_plan_conjoins_its_schedule_with_a_credential(self):
         """A credential guard REMOVES the job when the token is revoked, so drift
         goes undetected behind a green pipeline instead of reding the job."""
+        for name, inputs in self._includes().items():
+            guard = str(inputs.get("secrets_guard", "true"))
+            assert "$" not in guard, (
+                f"{name} passes secrets_guard {guard!r}; a variable there deletes "
+                "the scheduled detector when the credential goes away"
+            )
+
+    def test_the_schedule_rule_is_not_conjoined_with_a_credential(self):
         doc = load_ci_doc(REPO / ".gitlab-ci.yml")
         rules = (doc.get(self.SCHEDULE_ANCHOR) or {}).get("rules")
         assert rules == [{"if": '$CI_PIPELINE_SOURCE == "schedule"'}], rules
@@ -1389,48 +1438,6 @@ class TestYamlLintTargetParity:
         """A parity test that cannot fail is worse than none."""
         dropped = self._task_targets("yamllint -c lint/yamllint-relaxed.yml ansible/")
         assert dropped != self._ci_targets() - self.CI_ONLY
-
-
-class TestKubeconfigDecodeGuard:
-    """The .kubectl-setup bootstrap must test the decoded kubeconfig structurally.
-
-    A truncated or un-base64'd field otherwise fails later as an opaque kubectl
-    connection error.
-    """
-
-    @staticmethod
-    def _setup_body() -> str:
-        doc = load_ci_doc(REPO / ".gitlab-ci.yml")
-        anchor = doc.get(".kubectl-setup")
-        assert anchor, ".gitlab-ci.yml has no .kubectl-setup anchor"
-        return "\n".join(anchor["before_script"])
-
-    def test_the_decode_is_followed_by_a_structural_check(self):
-        body = self._setup_body()
-        decode = body.index("base64 -d > ~/.kube/config")
-        guard = body.find("grep -q '^[[:space:]]*server:' ~/.kube/config")
-        assert guard > decode, (
-            "the decoded kubeconfig is not grepped for a server: entry after "
-            "the base64 decode — port the library kubectl-setup guard"
-        )
-
-    def test_the_parser_would_notice_a_missing_guard(self):
-        """A parity test that cannot fail is worse than none."""
-        body = self._setup_body()
-        stripped = body.replace("grep -q '^[[:space:]]*server:'", "true #", 1)
-        assert stripped.find("grep -q '^[[:space:]]*server:' ~/.kube/config") == -1
-
-    def test_the_download_lands_in_a_private_dir(self):
-        """A fixed /tmp path lets two jobs on one runner clobber each other."""
-        body = self._setup_body()
-        assert "dl=$(mktemp -d)" in body, (
-            "the kubectl download does not use a per-job mktemp -d dir — "
-            "port the library kubectl-setup download path"
-        )
-        assert "/tmp/kubectl" not in body, (
-            "the kubectl download still names the world-writable /tmp/kubectl"
-        )
-        assert 'rm -rf "$dl"' in body, "the kubectl download dir is never removed"
 
 
 class TestVerifiedDownloadBlocksUseErrexit:
@@ -1523,7 +1530,7 @@ class TestInputsHeaderParsing:
         assert set(doc) == {"variables", ".acme-script", "deploy-acme"}
 
     def test_the_reference_preserving_parser_takes_the_jobs_document(self):
-        from ci_playbook_invocations import parse_ci, script_lines
+        from ci_yaml import parse_ci, script_lines
 
         doc = parse_ci(self.PIPELINE)
         assert list(script_lines(doc["deploy-acme"], doc)) == [
@@ -1611,9 +1618,10 @@ GATED_STAGES = {"lint", "validate", "test", "build", "security"}
 # GitLab's default when a job names no stage.
 DEFAULT_STAGE = "test"
 # Advisory jobs, exempt because allow_failure means they can never block.
+# The three terraform drift plans come from a library include, so they are not
+# in this document at all and the sweep below never sees them.
 ADVISORY_JOBS = (
     "b2-drift-plan", "cluster-drift-plan", "unifi-settings-drift",
-    "tailscale-drift-plan", "authentik-drift-plan", "unifi-drift-plan",
 )
 
 

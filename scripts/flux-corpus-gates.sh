@@ -86,7 +86,11 @@ fi
 # workloads each carry a memory-only VPA in the rendered corpus.
 echo "=== Checking HPA/VPA invariant ==="
 RC=0
+# --allow-unjudged-vpa-caps: a chart renders most of these targets, so the
+# corpus carries no limit to compare the cap against. validate-helm-values.py
+# judges those caps against the chart-rendered limits.
 python3 scripts/check-hpa-vpa-invariant.py --require-chart-native-vpas \
+    --allow-unjudged-vpa-caps \
     --policy-config scripts/autoscaling-policy.yaml < "$RENDER_ALL" || RC=$?
 note_rc "check-hpa-vpa-invariant.py" "$RC"
 
@@ -121,6 +125,13 @@ RC=0
 python3 scripts/check-pvc-storageclass.py < "$RENDER_ALL" || RC=$?
 note_rc "check-pvc-storageclass.py" "$RC"
 
+# A sized emptyDir outside its container's ephemeral-storage limit is evicted
+# before the volume it sized ever fills.
+echo "=== Checking sized emptyDir vs ephemeral-storage limits ==="
+RC=0
+python3 scripts/check-ephemeral-storage-cap.py < "$RENDER_ALL" || RC=$?
+note_rc "check-ephemeral-storage-cap.py" "$RC"
+
 # A registry-pull payload is assembled as a string inside a block scalar, so
 # kustomize, kubeconform and yamllint all see an opaque blob: a lost brace ships
 # a Secret the kubelet rejects as ImagePullBackOff on the next pull.
@@ -134,7 +145,10 @@ note_rc "check-dockerconfigjson.py" "$RC"
 # it fails to mount, after the pod is already scheduled.
 echo "=== Checking NFS PersistentVolume TLS ==="
 RC=0
-python3 scripts/check-nfs-tls.py < "$RENDER_ALL" || RC=$?
+# --cert-domain only names the wildcard domain in the IP-server message, so a
+# config this cannot read costs wording, never the verdict.
+CERT_DOMAIN=$(scripts/cluster-config-value.sh cluster_internal_domain || true)
+python3 scripts/check-nfs-tls.py --cert-domain "$CERT_DOMAIN" < "$RENDER_ALL" || RC=$?
 note_rc "check-nfs-tls.py" "$RC"
 
 if [ -z "$VERSIONS_CONFIGMAP" ]; then

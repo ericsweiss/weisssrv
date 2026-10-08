@@ -1,37 +1,8 @@
 #!/usr/bin/env python3
-"""Drift check (and supervised apply) for a Backblaze B2 bucket's settings.
+"""Drift check (and supervised --apply) for a Backblaze B2 bucket's settings.
 
-Stands in for a terraform module: the Backblaze terraform provider's READ path
-returns empty attributes against B2's current API (verified 0.12.0 and 0.13.1,
-2026-07: writes apply, every refresh/data source nulls bucket_type / SSE /
-lifecycle), so a plan reports a permanent phantom "1 to change". The raw B2 API
-reads and writes the same settings flawlessly, and a handful of settings on one
-bucket do not need provider machinery — this script IS the codified config.
-
-The bucket identity and desired state are consumer data, read from a JSON config
-(--config, default b2-bucket.json under the CWD):
-
-    {
-      "account_id": "...",
-      "bucket_id": "...",
-      "bucket_name": "...",
-      "desired": {
-        "bucketType": "allPrivate",
-        "defaultServerSideEncryption": {"mode": "SSE-B2", "algorithm": "AES256"},
-        "lifecycleRules": [
-          {"fileNamePrefix": "", "daysFromHidingToDeleting": 30,
-           "daysFromUploadingToHiding": null}
-        ],
-        "defaultRetention": {"mode": null, "period": null}
-      }
-    }
-
-Usage:
-  b2-bucket-drift.py [--config FILE]            # exit 0 clean, 1 drift, 2 error
-  b2-bucket-drift.py [--config FILE] --apply    # SUPERVISED: reconcile the bucket
-
-Credentials: B2_APPLICATION_KEY_ID / B2_APPLICATION_KEY env vars (a bucket-scoped
-key carrying the bucket-settings read/write capabilities).
+Exit 0 clean, 1 drift, 2 error. Config schema: examples/b2-bucket.example.json.
+Credentials, rationale and usage: docs/SCRIPTS.md.
 """
 from __future__ import annotations
 
@@ -40,6 +11,7 @@ import base64
 import json
 import os
 import sys
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -134,11 +106,15 @@ def diff_bucket(b: dict, desired: dict) -> list[str]:
     return drift
 
 
-def apply_bucket(api_url: str, token: str, cfg: dict) -> dict:
-    # defaultRetention is deliberately NOT in the update payload: file lock is a
-    # create-time option, so where it is disabled retention cannot drift —
-    # diff_bucket checks it only to surface capability-read gaps, and the
-    # post-apply re-diff fails loudly if anything is left.
+def is_revision_conflict(exc: urllib.error.HTTPError) -> bool:
+    """B2 answers a stale `ifRevisionIs` with 409."""
+    return exc.code == 409
+
+
+def apply_bucket(api_url: str, token: str, cfg: dict, revision: int | None = None) -> dict:
+    # defaultRetention stays out of the update payload: file lock is a
+    # create-time option, so it cannot drift. diff_bucket checks it only to
+    # surface capability-read gaps.
     desired = cfg["desired"]
     body = {
         "accountId": cfg["account_id"],
@@ -150,6 +126,10 @@ def apply_bucket(api_url: str, token: str, cfg: dict) -> dict:
             for r in desired["lifecycleRules"]
         ],
     }
+    # Optimistic concurrency: a console edit between the read and this write
+    # loses the write rather than being clobbered.
+    if revision is not None:
+        body["ifRevisionIs"] = revision
     return _api(f"{api_url}/b2api/v3/b2_update_bucket", token=token, body=body)
 
 
@@ -184,6 +164,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: B2 API access failed: {e}")
         return 2
 
+    revision = bucket.get("revision")
     if bucket.get("bucketName") != name:
         print(f"ERROR: bucket {cfg['bucket_id']} is named {bucket.get('bucketName')!r}, "
               f"expected {name!r} — refusing to touch it")
@@ -212,8 +193,14 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     try:
-        apply_bucket(api_url, token, cfg)
+        apply_bucket(api_url, token, cfg, revision)
         remaining = diff_bucket(read_bucket(api_url, token, cfg), cfg["desired"])
+    except urllib.error.HTTPError as e:
+        if is_revision_conflict(e):
+            print("ERROR: the bucket changed since it was read; re-run the drift check")
+            return 2
+        print(f"ERROR: apply failed: {e}")
+        return 2
     except Exception as e:  # noqa: BLE001
         print(f"ERROR: apply failed: {e}")
         return 2

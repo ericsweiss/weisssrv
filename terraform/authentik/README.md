@@ -339,12 +339,9 @@ Adding the new import blocks to `imports.tf` as you go shortens step 2 next time
    attributes also gets an entry in `local.group_secret_attributes` — mirror
    `media-admins` / `dns-admins`.)
 4. For a **proxy** provider, append its key to the embedded outpost's
-   `proxy_provider_keys` list (`outpost.tf` — no Admin-UI step). Terraform
-   cannot catch a miss here: the module builds the outpost's provider list
-   purely from that list, so a provider defined but never appended plans clean
-   and then 404s at the outpost. This checklist step is the only control. Then
-   add the
-   Traefik forward-auth middleware/ingress on the k8s side
+   `proxy_provider_keys` list (`outpost.tf` — no Admin-UI step; the module
+   fails the plan if you skip it). Then add the Traefik forward-auth
+   middleware/ingress on the k8s side
    (`kubernetes/apps/authentik/README.md` + the app's own doc; upstreams that
    expect injected credentials take the `authentik-auth-basic` variant).
 5. `task terraform:authentik-plan` → review → supervised apply.

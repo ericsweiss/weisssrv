@@ -7,7 +7,7 @@
 # The `?ref=` is bumped by hand with `variables.WEISSSRV_LIB_REF`.
 # Segmentation and what stays console-owned: docs/46-unifi-network.md.
 module "network" {
-  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/unifi-network?ref=v0.17.1"
+  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/unifi-network?ref=v0.18.0"
 
   networks = local.networks
   zones    = local.zones
@@ -64,8 +64,8 @@ module "network" {
   port_forwards = local.port_forwards
 
   # Hardened posture pinned here, not inherited: a library default flip must not
-  # re-enable UPnP or auto-firmware on a ref bump. `ips_mode = "ips"` is inline
-  # blocking and create-time only; day-2 mode is console-owned (docs/46).
+  # re-enable UPnP or auto-firmware on a ref bump. `ips_mode` is inline blocking
+  # on this site, recorded here rather than left to the console (docs/46).
   site_settings = {
     # Device firmware is hands-off: the switch and AP take it nightly. Console
     # and application updates are a separate, console-owned surface (docs/46).

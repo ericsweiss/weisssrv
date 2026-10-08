@@ -331,8 +331,27 @@ def _zfs_passphrase_items() -> set[str]:
     return items
 
 
+def _include_input_items() -> set[str]:
+    """Item titles passed as a library include's `*_item:` input.
+
+    An adopted include names the item by title and builds the `op://` URI
+    itself, so the URI scan above never sees it.
+    """
+    items: set[str] = set()
+    for entry in (load_ci_doc(REPO / ".gitlab-ci.yml").get("include") or []):
+        if not isinstance(entry, dict):
+            continue
+        for key, value in (entry.get("inputs") or {}).items():
+            if key.endswith("_item") and isinstance(value, str) and _OP_ITEM_RE.match(value):
+                items.add(value.strip())
+    return items
+
+
 def _referenced_1p_items() -> set[str]:
-    return _eso_item_keys() | _op_uri_items() | _zfs_passphrase_items()
+    return (
+        _eso_item_keys() | _op_uri_items() | _zfs_passphrase_items()
+        | _include_input_items()
+    )
 
 
 def test_every_referenced_1p_item_is_documented():
@@ -357,10 +376,11 @@ def test_every_documented_1p_item_is_referenced_or_declared_doc_only():
 
 
 def test_the_1p_reference_scan_sees_each_source():
-    """Guard the three scanners: each really does find references."""
+    """Guard the four scanners: each really does find references."""
     assert len(_eso_item_keys()) >= 20
     assert len(_op_uri_items()) >= 20
     assert _zfs_passphrase_items()
+    assert _include_input_items()
 
 
 def test_every_doc_only_item_carries_a_reason_and_is_documented():

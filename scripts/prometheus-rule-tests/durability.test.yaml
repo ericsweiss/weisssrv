@@ -32,6 +32,33 @@ tests:
         alertname: CertRenewalFailed
         exp_alerts: []
 
+  # Second arm: a local renewal that succeeded while a distribution target
+  # failed leaves the run bit at 1, so only the failed-target count sees it.
+  - interval: 1m
+    input_series:
+      - series: 'cert_renewal_last_run_success{instance="10.0.10.150:9101"}'
+        values: '1+0x70'
+      - series: 'cert_distribution_last_run_failed_targets{instance="10.0.10.150:9101"}'
+        values: '1+0x70'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: CertRenewalFailed
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: '10.0.10.150:9101'
+
+  - interval: 1m
+    input_series:
+      - series: 'cert_renewal_last_run_success{instance="10.0.10.150:9101"}'
+        values: '1+0x70'
+      - series: 'cert_distribution_last_run_failed_targets{instance="10.0.10.150:9101"}'
+        values: '0+0x70'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: CertRenewalFailed
+        exp_alerts: []
+
   # FluxReconciliationFailure keys on the error RATE, so a counter that stopped
   # advancing must stop firing — otherwise one historic error alerts forever.
   - interval: 1m

@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 import yaml
+from ci_yaml import NullTagCILoader as _CILoader
+from ci_yaml import load_ci, parse_ci
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO / "scripts"
@@ -42,27 +44,21 @@ def _lib_root() -> Path:
     )
 
 
-class _CILoader(yaml.SafeLoader):
-    """SafeLoader tolerating GitLab's `!reference` tags, subclassed so the
-    constructor is not registered on the global SafeLoader."""
-
-
-_CILoader.add_multi_constructor("!", lambda loader, suffix, node: None)
-
-
 def parse_ci_doc(text: str) -> dict:
-    """The jobs document of pipeline YAML in memory, `!` tags nulled.
-
-    GitLab's inputs syntax makes a pipeline file two documents, `spec:` then the
-    jobs, so the last mapping document is the one a caller wants.
-    """
-    docs = [d for d in yaml.load_all(text, Loader=_CILoader) if isinstance(d, dict)]
-    return docs[-1] if docs else {}
+    """The jobs document of pipeline YAML in memory, `!` tags nulled."""
+    return parse_ci(text, loader=_CILoader)
 
 
 def load_ci_doc(path) -> dict:
     """The jobs document of a pipeline file, `!` tags nulled."""
-    return parse_ci_doc(Path(path).read_text(encoding="utf-8"))
+    return load_ci(path, loader=_CILoader)
+
+
+def test_the_loader_nulls_every_gitlab_tag():
+    """The suites importing _CILoader read `!reference` as absent, not as data:
+    a loader that kept the node would change what they assert."""
+    doc = parse_ci_doc('job:\n  rules: !reference [.anchor, rules]\n  tags: !mine [a]\n')
+    assert doc["job"] == {"rules": None, "tags": None}
 
 
 def _pinned_ref() -> str:
@@ -342,7 +338,7 @@ _SIBLING_IMPORT = re.compile(
 )
 _SIBLING_LOAD = re.compile(r'parent\s*/\s*"([A-Za-z0-9_.-]+\.py)"')
 # Imported by a gate but shipped by the environment, not by scripts/.
-_NOT_SIBLINGS = frozenset({"yaml", "pytest", "requests", "urllib3"})
+_NOT_SIBLINGS = frozenset({"yaml", "jinja2", "pytest", "requests", "urllib3"})
 
 
 def companion_modules(text: str) -> set[str]:
@@ -387,6 +383,47 @@ def test_every_companion_of_a_vendored_gate_is_registered(registered):
         f"scripts/vendored-manifest.yml: {gaps} — vendor the companion and add "
         "it to the `vendored:` list in the same commit as the pin bump, or the "
         "gate exits on a missing module."
+    )
+
+
+def test_a_vendored_gate_run_without_its_companion_exits_two(registered, tmp_path):
+    """Registration is a manifest claim; this is the runtime half.
+
+    Each gate runs from a directory holding only itself, so the guard naming
+    the missing module is the path under test. rc 2 is the operator contract.
+    """
+    vendored = {path for kind, path, _lib in registered if kind == "vendored"}
+    checked = []
+    for path in sorted(vendored):
+        name = Path(path).name
+        if not name.endswith(".py") or name.startswith("test_"):
+            continue
+        source = (REPO / path).read_text(encoding="utf-8")
+        companions = sorted(
+            c for c in companion_modules(source)
+            if c != name and f"scripts/{c}" in vendored
+        )
+        if not companions:
+            continue
+        alone = tmp_path / name
+        alone.write_text(source)
+        run = subprocess.run(
+            [sys.executable, str(alone), "--help"],
+            capture_output=True, text=True, cwd=str(REPO),
+        )
+        alone.unlink()
+        assert run.returncode == 2, (
+            f"{path} run without {companions} exited {run.returncode}; the "
+            "import guard must print to stderr and exit 2:\n"
+            + run.stdout + run.stderr
+        )
+        assert any(c in run.stderr for c in companions), (
+            f"{path} does not name the missing companion {companions}:\n{run.stderr}"
+        )
+        checked.append(path)
+    assert checked, (
+        "no vendored gate imports a registered companion — this arm inspected "
+        "nothing, so the guards are unproven"
     )
 
 

@@ -1,0 +1,5 @@
+---
+# Guest Ansible never connects to: ansible_connection is local, and every
+# proxmox_vm task declares its own become, so no escalation on the controller.
+# Group-level for the same reason as group_vars/services.yml.
+ansible_become: false

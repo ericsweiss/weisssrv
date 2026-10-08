@@ -29,7 +29,7 @@ The scenarios pull the published `molecule-test` image from weisssrv-lib's
 registry. Override it for a local build:
 
 ```bash
-export MOLECULE_TEST_IMAGE=registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:v0.17.1
+export MOLECULE_TEST_IMAGE=registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:v0.18.0
 ```
 
 The collection itself is installed by molecule's `galaxy` dependency step from
@@ -178,11 +178,24 @@ from a task outside the block with `| default(false)`.
 
 Each line of the file is a case-sensitive substring matched against the junit
 testcase name, and declares one testcase. A line ending in ` ::<n>` declares
-that it may match n of them. Blank lines and `#` comments are ignored.
+that it matches exactly n of them, where `<n>` is a positive integer. Blank
+lines and `#` comments are ignored.
 
-Keep every pattern narrow. Under `--strict` the gate fails when a declaration
-matches more testcases than it declares, so a broad pattern cannot green-wash a
-real failure elsewhere in the scenario.
+Keep every pattern narrow. CI passes `--strict`, so a declaration that matches
+no testcase, or a number of them other than its ` ::<n>` count, fails the job
+instead of warning. A renamed or deleted guard is then a finding, a pattern that
+stops firing cannot sit there unnoticed, and a broad pattern cannot green-wash a
+real failure elsewhere in the scenario. Without `--strict` the count is only a
+cap and a mismatch is a warning, so declare the number the run records rather
+than a margin.
+
+Count what the run records, not what the scenario reads like. The junit callback
+writes one testcase per task per host, so a guard that fires on two platforms
+counts twice. A scenario whose `test_sequence` includes `idempotence` replays
+converge, so a converge-driven guard counts twice unless its task or an
+enclosing block carries the `molecule-idempotence-notest` tag. A case driven
+under `ignore_errors: true` is recorded as passed, so it is never observed and
+must not be declared.
 
 ## Pre-deployment checklist
 

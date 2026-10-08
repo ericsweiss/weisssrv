@@ -1,7 +1,7 @@
-"""Import the hyphenated gates under scripts/ by path, from a test or a gate.
+"""Loader for the hyphenated scripts under scripts/.
 
-Suites bind `gate = load_script(...)` at module level because hyphenated names
-are not importable; vendored test_check_lib_pins.py keeps its own loader.
+Not a conftest: cli/tests ships its own and the two would shadow each other.
+tests/test_check_lib_pins.py keeps its own copy, being vendored elsewhere.
 """
 from __future__ import annotations
 
@@ -9,17 +9,16 @@ import importlib.util
 import sys
 from pathlib import Path
 
-SCRIPTS = Path(__file__).resolve().parent
-REPO = SCRIPTS.parent
+REPO = Path(__file__).resolve().parent.parent
+SCRIPTS = REPO / "scripts"
 
 
-def load_path(path: Path | str, *, register: bool = False):
+def load_path(path: Path, *, register: bool = False):
     """Import any file by path, under its stem with `-` and `.` stripped.
 
     `register` puts the module in sys.modules, which a script needs when it
     pickles or re-imports itself.
     """
-    path = Path(path)
     module_name = path.stem.replace("-", "_").replace(".", "_")
     spec = importlib.util.spec_from_file_location(module_name, path)
     if spec is None or spec.loader is None:

@@ -179,21 +179,27 @@ spec:
               (timer not run, or node_exporter on dns-01 unreachable). dns-02's
               AdGuard config is drifting from dns-01.
 
+        # The run-success bit covers the local renewal and reload only, so the
+        # failed-target count is the second arm: a dead distribution target
+        # leaves the bit at 1.
         - alert: CertRenewalFailed
-          expr: cert_renewal_last_run_success == 0
+          expr: cert_renewal_last_run_success == 0 or cert_distribution_last_run_failed_targets > 0
           for: 1h
           labels:
             severity: warning
           annotations:
             runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#certificate-renewal-issues'
-            summary: 'Certificate renewal failed'
-            description: 'The certificate renewal and distribution script has not completed successfully.'
+            summary: 'Certificate renewal or distribution failed'
+            description: >-
+              The local renewal and reload failed, or at least one distribution
+              target did not take the new cert. CertDistributionTargetFailed
+              names the target.
 
         # A renewal pipeline broken for three days is an incident, not a nudge:
         # CertExpiringSoon* is only the expiry backstop, and a renewal that has
         # been failing for weeks burns the whole ~60d acme.sh cycle of margin.
         - alert: CertRenewalFailedProlonged
-          expr: cert_renewal_last_run_success == 0
+          expr: cert_renewal_last_run_success == 0 or cert_distribution_last_run_failed_targets > 0
           for: 72h
           labels:
             severity: critical
@@ -201,10 +207,11 @@ spec:
             runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#certificate-renewal-issues'
             summary: 'Certificate renewal has been failing for over 3 days'
             description: >-
-              acme.sh renewal/distribution on {{ $labels.instance }} has failed
-              continuously for 3 days. The wildcard cert still has margin, but
-              nothing is renewing it — fix the pipeline before CertExpiringSoon
-              is the only thing left.
+              acme.sh local renewal and reload on {{ $labels.instance }}, or
+              distribution to at least one target, has failed continuously for
+              3 days. The wildcard cert still has margin, but nothing is
+              renewing it — fix the pipeline before CertExpiringSoon is the only
+              thing left.
 
         # The run-success bit only moves when the script runs, so a dead acme.sh
         # cron neither renews nor fails and only time-since-success sees it. 75d

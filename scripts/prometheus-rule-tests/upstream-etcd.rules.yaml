@@ -3,7 +3,7 @@
 # chart ships where extract-prometheus-config cannot reach. Re-take the expr and
 # the version line below on a chart bump; check-upstream-rule-mirror.py gates it.
 
-# Taken from kube-prometheus-stack 91.4.1
+# Taken from kube-prometheus-stack 92.0.0
 groups:
   - name: etcd.upstream
     rules:

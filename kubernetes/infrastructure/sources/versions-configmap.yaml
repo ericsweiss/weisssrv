@@ -7,9 +7,9 @@ data:
   adguard_exporter_version: v1.2.1
   adguard_home_version: 0.107.79
   adguard_sync_version: 0.9.3
-  alloy_host_version: 1.19.2-1
-  authentik_version: 2026.8.2
-  bar_assistant_version: 6.7.0
+  alloy_host_version: 1.20.1-1
+  authentik_version: 2026.8.3
+  bar_assistant_version: 6.8.1
   busybox_version: '1.38'
   coredns_tailnet_version: 1.14.7
   dcgm_exporter_version: 4.6.0-4.8.3-distroless
@@ -21,44 +21,44 @@ data:
   exportarr_version: v2.3.0
   flux_version: 2.9.0
   garage_version: v2.4.1
-  gitlab_agent_helm_version: 2.31.0
-  gitlab_runner_helm_version: 0.92.1
-  gitlab_version: 19.3.2-ee.0
+  gitlab_agent_helm_version: 2.32.0
+  gitlab_runner_helm_version: 0.93.0
+  gitlab_version: 19.4.1-ee.0
   gluetun_version: v3.41.3
-  helm_chart_versions_alloy: 1.12.1
+  helm_chart_versions_alloy: 1.13.0
   helm_chart_versions_cert_manager: v1.21.2
-  helm_chart_versions_external_dns: 1.22.0
-  helm_chart_versions_external_secrets: 2.10.0
-  helm_chart_versions_kube_prometheus_stack: 91.4.1
+  helm_chart_versions_external_dns: 1.23.0
+  helm_chart_versions_external_secrets: 2.12.0
+  helm_chart_versions_kube_prometheus_stack: 92.0.0
   helm_chart_versions_kured: 6.1.0
-  helm_chart_versions_loki: 18.13.1
+  helm_chart_versions_loki: 18.13.8
   helm_chart_versions_metallb: 0.15.3
   helm_chart_versions_metrics_server: 3.14.0
-  helm_chart_versions_nvidia_device_plugin: 0.20.0
-  helm_chart_versions_onepassword_connect: 2.4.1
-  helm_chart_versions_prometheus_blackbox_exporter: 11.18.0
-  helm_chart_versions_prometheus_operator_crds: 32.0.0
-  helm_chart_versions_reloader: 2.2.17
-  helm_chart_versions_tailscale_operator: 1.102.3
-  helm_chart_versions_traefik: 41.5.0
-  helm_chart_versions_vpa: 5.0.1
-  hermes_camofox_version: 1.16.0
-  hermes_claude_version: 2.1.270
-  hermes_codex_version: 0.154.0
-  hermes_image_version: v2026.9.14-r1
+  helm_chart_versions_nvidia_device_plugin: 0.20.1
+  helm_chart_versions_onepassword_connect: 2.4.2
+  helm_chart_versions_prometheus_blackbox_exporter: 11.19.1
+  helm_chart_versions_prometheus_operator_crds: 32.0.1
+  helm_chart_versions_reloader: 2.2.18
+  helm_chart_versions_tailscale_operator: 1.102.4
+  helm_chart_versions_traefik: 41.6.1
+  helm_chart_versions_vpa: 5.1.0
+  hermes_camofox_version: 1.18.1
+  hermes_claude_version: 2.1.292
+  hermes_codex_version: 0.160.1
+  hermes_image_version: v2026.9.24-r1
   hermes_op_version: 2.39.0-1
-  hermes_version: v2026.9.14
+  hermes_version: v2026.9.24
   hindsight_llamacpp_version: b10068
-  hindsight_version: 0.10.0
+  hindsight_version: 0.10.2
   homarr_version: v1.77.1
   immich_postgres_version: 14-vectorchord0.4.3-pgvectors0.2.0
   immich_valkey_version: '9'
-  immich_version: v3.2.2
-  k3s_version: v1.36.4+k3s1
-  kube_vip_version: v1.2.3
+  immich_version: v3.2.4
+  k3s_version: v1.37.1+k3s1
+  kube_vip_version: v1.2.4
   lidarr_version: 3.1.0.4875
   mealie_postgresql_version: 18.6-alpine
-  mealie_version: v3.26.0
+  mealie_version: v3.28.0
   meilisearch_version: v1.15.2
   nextcloud_exporter_version: 0.9.1
   nextcloud_postgres_version: 18.6-trixie
@@ -70,24 +70,24 @@ data:
   plex_version: 1.43.4.10903-e5521bd8c
   postgres_exporter_version: v0.20.1
   postgresql_version: 18.6-trixie
-  prowlarr_version: 2.5.2.5491
-  proxmox_exporter_version: 3.10.0
+  prowlarr_version: 2.6.5.5623
+  proxmox_exporter_version: 3.10.1
   proxmox_vm_virtio_win_version: 0.1.285
-  pulsarr_version: 0.19.2
-  qbittorrent_version: 5.2.3
+  pulsarr_version: 0.19.4
+  qbittorrent_version: 5.2.4
   qol_vundle_version: v0.10.2
-  radarr_version: 6.3.0.10514
-  redis_exporter_version: v1.91.1
+  radarr_version: 6.4.4.10685
+  redis_exporter_version: v1.93.0
   redis_version: 8.10.1-alpine
-  registry_cache_version: 3.1.1
+  registry_cache_version: 3.1.2
   restic_offsite_rclone_version: 1.74.4
-  salt_rim_version: 5.6.0
-  sonarr_version: 4.0.19.2979
-  tailscale_version: 1.102.4
+  salt_rim_version: 5.7.0
+  sonarr_version: 4.0.20.3014
+  tailscale_version: 1.102.5
   unbound_exporter_version: 0.6.0
-  uptime_kuma_version: 2.5.4
+  uptime_kuma_version: 2.5.5
   wg_easy_version: 15.4.0
-  zfs_exporter_version: 2.4.1
+  zfs_exporter_version: 2.4.2
 kind: ConfigMap
 metadata:
   name: cluster-versions

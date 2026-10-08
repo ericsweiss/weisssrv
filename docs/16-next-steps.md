@@ -190,11 +190,13 @@ start as an entry in this section.
   displayed under the `file_lock_cache` alias; with `slub_nomerge` armed it
   reports as `skbuff_ext_cache`. Arming `slub_nomerge` on the other five hosts,
   to settle the fleet-wide 230-380 MB/host/day claim, is an owner decision and
-  its own MR. Mitigation to trial after the v0.18.0 pin bump:
-  `proxmox_firewall_nftables: true` in one opt host's `host_vars` (nftables
-  firewall, no br_netfilter on the bridged path), verify the guest firewall and
-  the slab trend for a week, then the NAS. Mechanism, fingerprint, bpftrace
-  recipe and the reboot procedure:
+  its own MR. Mitigation to trial, staged: install `proxmox-firewall` and set
+  `proxmox_firewall_nftables: true` in one opt host's `host_vars`, verify the
+  guest firewall still filters (including `sg-syslog-vip` on the ingress
+  agents), watch the slab trend for a week, then the NAS. Keep the
+  `HostSlabLeakSuspected` weekly reboot pager until a week of flat
+  `node_memory_SUnreclaim_bytes - node_zfs_arc_size`. Mechanism, fingerprint,
+  bpftrace recipe and the reboot procedure:
   [docs/06 § Kernel 192-byte slab leak](06-zfs.md).
 - [ ] **CoreDNS pod topology spread.** The HPA pin (`configs/coredns/hpa.yaml`,
   min == max == 2) guarantees two replicas but not that they land on different
@@ -841,7 +843,7 @@ implementation story.
 | AdGuard sync over HTTPS | `adguardhome-sync` targets the Traefik-fronted hostnames, so the dns-01 → dns-02 hop is end-to-end TLS | [08](08-dns.md) |
 | CI kubectl setup | One `.kubectl-setup` fragment replaces the duplicated kubectl and kubeconfig install blocks in the deploy jobs | [13](13-ci-cd.md) |
 | Flux substitution exports | `scripts/flux-render.sh` behind `scripts/flux-env.sh` is the single entry point for the substitution variables the Taskfile, deploy-verify and CI flux-lint all read | [29](29-flux-operations.md) |
-| deploy-preflight extraction | The CI job's playbook parser lives in `scripts/deploy-preflight.py` and `scripts/ci_playbook_invocations.py`, covered by `scripts/test_deploy_preflight.py` and `scripts/test_ci_playbook_invocations.py` | [13](13-ci-cd.md) |
+| deploy-preflight extraction | The gate is the library's `scripts/check-deploy-preflight.py`, vendored here with `scripts/ci_playbook_invocations.py` and `scripts/ci_yaml.py`, covered by `scripts/test_deploy_preflight.py` and `scripts/test_ci_playbook_invocations.py` | [13](13-ci-cd.md) |
 
 **Related repositories.** The family is four repos: this one, the shared CI
 library `eric/weisssrv-lib`, the cluster scaffold `eric/weisssrv-cluster-template`

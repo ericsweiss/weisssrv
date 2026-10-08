@@ -35,9 +35,10 @@ def _ts(minutes_ago: int) -> str:
 
 def pod(name, uid="pod-uid", *, created_minutes_ago=90, reason="UnexpectedAdmissionError",
         bad_timestamp=False, no_timestamp=False, owner="ReplicaSet",
-        terminated_reason=None):
-    """A Failed pod. `terminated_reason` sets the container-level terminated
-    reason, which is the only place Kubernetes ever writes OOMKilled.
+        terminated_reason=None, status_list="containerStatuses"):
+    """A Failed pod. `terminated_reason` sets the terminated reason on
+    `status_list`, the container-level list that is the only place Kubernetes
+    ever writes OOMKilled.
     """
     meta = {"name": name, "uid": uid}
     if not no_timestamp:
@@ -46,7 +47,7 @@ def pod(name, uid="pod-uid", *, created_minutes_ago=90, reason="UnexpectedAdmiss
         meta["ownerReferences"] = [{"kind": owner, "name": name.rsplit("-", 1)[0]}]
     status = {"phase": "Failed", "reason": reason}
     if terminated_reason is not None:
-        status["containerStatuses"] = [
+        status[status_list] = [
             {"name": "app", "state": {"terminated": {"reason": terminated_reason}}}
         ]
     return {"metadata": meta, "status": status}
@@ -182,6 +183,29 @@ def test_preserves_oomkilled_pod(reaper):
     out = reaper.reap(api, _cfg(reaper), NOW, _never_over)
     assert out.deleted == 0
     assert api.deleted == []
+
+
+@pytest.mark.parametrize("status_list", ["initContainerStatuses", "ephemeralContainerStatuses"])
+def test_preserves_oomkilled_init_or_ephemeral_container(reaper, status_list):
+    # An init container and a debug ephemeral container get their own status
+    # list, so the preserve check reads all three.
+    api = FakeApi([{"items": [pod("hindsight-oom", reason="Error",
+                                  terminated_reason="OOMKilled",
+                                  status_list=status_list,
+                                  created_minutes_ago=300)]}])
+    out = reaper.reap(api, _cfg(reaper), NOW, _never_over)
+    assert out.deleted == 0
+    assert api.deleted == []
+
+
+def test_sweeps_a_pod_whose_init_container_reason_is_not_preserved(reaper):
+    # Proves the init-container read is a filter, not a blanket keep.
+    api = FakeApi([{"items": [pod("hindsight-initerr", reason="Error",
+                                  terminated_reason="Error",
+                                  status_list="initContainerStatuses",
+                                  created_minutes_ago=300)]}])
+    out = reaper.reap(api, _cfg(reaper), NOW, _never_over)
+    assert out.deleted == 1
 
 
 def test_sweeps_a_pod_whose_container_reason_is_not_preserved(reaper):

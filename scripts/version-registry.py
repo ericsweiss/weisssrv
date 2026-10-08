@@ -70,6 +70,14 @@ _SERVICES: list[dict] = [
         "version_prefix": "v",
         "strip_prefix": False,
         "tag_filter": r"^v\d+\.\d+\.\d+$",
+        "held": True,
+        "notes": (
+            "Held on 1.x. v2 migrates the SQLite database in place and 1.x "
+            "cannot read it afterwards, so putting the old image back is not a "
+            "rollback. Unholding needs a snapshot of the /appdata PV, the "
+            "SECRET_ENCRYPTION_KEY retained, and a board re-layout for v2's "
+            "200px fixed cells. Rationale in docs/41."
+        ),
     },
     {
         # Tracked on Docker Hub because the manifest pins the Docker tag
@@ -116,6 +124,13 @@ _SERVICES: list[dict] = [
         "strip_prefix": False,
         "tag_filter": r"^v\d{4}\.\d+\.\d+(\.\d+)?$",
         "coupled_vars": ["hermes_git_sha", "hermes_image_version"],
+        # The checker writes both companions itself: the PEELED annotated-tag
+        # commit, and the image revision restarted at -r1.
+        "revision_var": "hermes_image_version",
+        "sha_var": {
+            "var": "hermes_git_sha",
+            "repo": "https://github.com/NousResearch/hermes-agent",
+        },
         "notes": (
             "hermes_git_sha is the PEELED annotated-tag commit "
             "(`git ls-remote 'refs/tags/<tag>*'`, the ^{} row); hermes_image_version "
@@ -173,6 +188,12 @@ _SERVICES: list[dict] = [
             "(`git ls-remote 'refs/tags/<tag>*'`, the ^{} row)."
         ),
         "coupled_vars": ["hermes_camofox_git_sha"],
+        # The pin strips the tag's "v", so the ref puts it back.
+        "sha_var": {
+            "var": "hermes_camofox_git_sha",
+            "repo": "https://github.com/jo-inc/camofox-browser",
+            "ref": "refs/tags/v{version}",
+        },
     },
     {
         # Hindsight agent-memory server, Hermes' memory backend. The pin is the
@@ -486,7 +507,10 @@ _SERVICES: list[dict] = [
         "name": "GitLab EE",
         "var_name": "gitlab_version",
         "category": "apt_repo",
-        "apt_url": "https://packages.gitlab.com/gitlab/gitlab-ee/debian/dists/trixie/main/binary-amd64/Packages",
+        "apt_url": [
+            "https://packages.gitlab.com/gitlab/gitlab-ee/debian/dists/trixie/main/binary-amd64/Packages",
+            "https://packages.gitlab.com/gitlab/gitlab-ee/debian/dists/bookworm/main/binary-amd64/Packages",
+        ],
         "apt_package": "gitlab-ee",
         "apt_exclude_regex": r"(rc|beta|alpha)",
         "source_url": "https://packages.gitlab.com/gitlab/gitlab-ee",
@@ -758,9 +782,9 @@ _SERVICES: list[dict] = [
         "category": "dockerhub",
         "docker_image": "pragent/pr-agent",
         "tag_regex": r"^(\d+\.\d+(?:\.\d+)?)$",
-        # held keeps the row non-fatal: `current` is unreadable from here, so
-        # every upstream release would otherwise report as an update forever.
-        "held": True,
+        # unreadable_current keeps the row non-fatal and reports it as such:
+        # `current` cannot be read from this repo at all.
+        "unreadable_current": True,
         "notes": (
             "current is UNREADABLE here — the tag+digest lives in weisssrv-lib "
             "ci/review/pr-agent.yml. Compare Latest against that file, bump it "
@@ -780,10 +804,12 @@ _SERVICES: list[dict] = [
         "tag_regex": r"^(3\.\d+)-slim$",
         "dockerhub_name_filter": "-slim",
         "version_file": ".gitlab-ci.yml",
+        "held": True,
         "notes": (
-            "Bump the tag AND re-pin PY_JOB_IMAGE's @sha256 together in the "
-            ".gitlab-ci.yml variables block. ansible-core 2.18 caps the "
-            "controller at 3.13, so a newer minor waits for the ansible bump."
+            "Held at 3.13: ansible-core 2.18 caps the controller there, so a "
+            "newer minor waits for the ansible bump. Unholding bumps the tag "
+            "AND re-pins PY_JOB_IMAGE's @sha256 together in the .gitlab-ci.yml "
+            "variables block."
         ),
         "source_url": "https://hub.docker.com/_/python",
     },
@@ -802,6 +828,85 @@ _SERVICES: list[dict] = [
             "terraform roots' required_version floor moves with it."
         ),
         "source_url": "https://hub.docker.com/r/hashicorp/terraform/tags",
+    },
+    {
+        # KUSTOMIZE_VERSION in the .gitlab-ci.yml variables block; the flux-lint
+        # include repeats it as a literal input and ci-pin-parity holds the two
+        # equal, so the pin is read once here.
+        "name": "kustomize (CI tooling)",
+        "var_name": "kustomize_version",
+        "category": "github",
+        "github_repo": "kubernetes-sigs/kustomize",
+        "version_prefix": "kustomize/v",
+        "strip_prefix": True,
+        "tag_filter": r"^kustomize/v\d+\.\d+\.\d+$",
+        "version_file": "ci",
+        "pin_regex": r'^\s*KUSTOMIZE_VERSION:\s*"([^"]+)"',
+        "notes": (
+            "Bump KUSTOMIZE_VERSION with KUSTOMIZE_SHA256, and the flux-lint "
+            "include's kustomize_version/kustomize_sha256 inputs with them."
+        ),
+    },
+    {
+        # Spelled only as the flux-lint include's kubeconform_version input.
+        "name": "kubeconform (CI tooling)",
+        "var_name": "kubeconform_version",
+        "category": "github",
+        "github_repo": "yannh/kubeconform",
+        "version_prefix": "v",
+        "strip_prefix": True,
+        "tag_filter": r"^v\d+\.\d+\.\d+$",
+        "version_file": "ci",
+        "pin_regex": r'^\s*kubeconform_version:\s*"([^"]+)"',
+        "notes": "Bump kubeconform_version with kubeconform_sha256 on the flux-lint include.",
+    },
+    {
+        # Spelled only as the flux-lint include's helm_version input. The tag
+        # filter keeps the bot on the 3.x line: helm 4 is a migration, not a bump.
+        "name": "Helm (CI tooling)",
+        "var_name": "helm_version",
+        "category": "github",
+        "github_repo": "helm/helm",
+        "version_prefix": "v",
+        "strip_prefix": True,
+        "tag_filter": r"^v3\.\d+\.\d+$",
+        "version_file": "ci",
+        "pin_regex": r'^\s*helm_version:\s*"([^"]+)"',
+        "notes": "Bump helm_version with helm_sha256 on the flux-lint include.",
+    },
+    {
+        # ANSIBLE_VERSION: the community `ansible` package the deploy jobs pip
+        # install. PyPI is its only feed, so the check is manual.
+        "name": "ansible (CI control node)",
+        "var_name": "ansible_version",
+        "category": "manual",
+        "version_file": "ci",
+        "pin_regex": r'^\s*ANSIBLE_VERSION:\s*"([^"]+)"',
+        "source_url": "https://pypi.org/project/ansible/#history",
+        "notes": (
+            "requirements.txt pins the same version for host-side gates and the "
+            "deploy-base include repeats it as a literal input; move all three "
+            "together, and the collection's requires_ansible floor allows it."
+        ),
+    },
+    {
+        # The privileged dind service of .build-image-base. Its embedded BuildKit
+        # frontend accepts upstream hermes' symbolic `COPY --chmod`, which the
+        # 27.x frontend rejects, so the tag is held.
+        "name": "docker (dind service)",
+        "var_name": "docker_dind_version",
+        "category": "dockerhub",
+        "docker_image": "library/docker",
+        "tag_regex": r"^(\d+\.\d+(?:\.\d+)?-dind)$",
+        "dockerhub_name_filter": "-dind",
+        "version_file": "ci",
+        "pin_regex": r"^\s*- name: docker:([\w.+-]+)@sha256:",
+        "held": True,
+        "notes": (
+            "Held at 24.0-dind for the BuildKit frontend .build-image-base "
+            "needs; the tag and its @sha256 move together. The integration jobs "
+            "carry their own newer dind pin in .gitlab/ci/integration-jobs.yml."
+        ),
     },
     # Manifest-pinned container images: tag+digest `image:` pins living in
     # kubernetes/ manifests with no ${...} substitution. version_file names
@@ -999,8 +1104,8 @@ CONFIG = {
     "report_title": "Homelab Version Check Report",
     # Everything with no more specific rollout path.
     "default_deploy_command": "task infra:deploy",
-    # Short names for `version_file` paths outside the vars file; none in use.
-    "version_file_aliases": {},
+    # Short names for `version_file` paths outside the vars file.
+    "version_file_aliases": {"ci": ".gitlab-ci.yml"},
     # Pins deliberately outside the checker: no independent upstream feed, or a
     # release-coupled value that must never be bumped on its own.
     "untracked_allowlist": [
@@ -1014,8 +1119,6 @@ CONFIG = {
         # Release-coupled to immich_version (vectorchord/pgvectors build).
         "immich_postgres_version",
         "immich_valkey_version",
-        # Built here, not pulled: the -rN suffix rebuilds the same upstream tag.
-        "hermes_image_version",
         # Pinned with its .deb sha256 in all.yml; bumped as a pair by hand.
         "restic_offsite_rclone_version",
     ],

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Usage: maintenance-run-with-verify.sh <command> [args...] - runs one program
-# (wrap a pipeline in `bash -c`), then VERIFY_SCRIPT (default
-# scripts/post-maintenance-verify.sh) whatever the outcome; exits with the first failure's rc.
+# Run a maintenance command, then run the verify script whatever the outcome.
+# Exits with the command's rc if it failed, else the verify's.
+# Usage and VERIFY_SCRIPT: docs/SCRIPTS.md.
 
 # No `-e`: a failing command must still reach the verify below.
 set -uo pipefail

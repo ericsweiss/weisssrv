@@ -172,11 +172,14 @@ Read the live result with `pve-firewall compile`, or
 | `sg-windows` | site | RDP `:3389` | `admin_ts`, `admin_lan` | Windows VM (.155) |
 
 A `proxmox_firewall_security_groups` entry must use a name pve-firewall accepts
-(leading alphanumeric, then letters, digits, `-` or `_`, 2 to 18 characters), it
+(a leading letter, then letters, digits, `-` or `_`, 2 to 18 characters), it
 must be unique within the list, and it must not reuse one of the `lib` names in
 the table above. pve-firewall keys groups by name, so two `[group <name>]`
 sections render and one of the two rule sets is silently discarded. No name in
-use today collides.
+use today collides. The role asserts all three before it renders anything
+(`tasks/assert_port_lists.yml`, against `_proxmox_firewall_builtin_groups` and
+`_proxmox_firewall_group_name_re` in its `vars/main.yml`), so a collision is a
+failed play rather than a silently dropped rule set.
 
 `sg-syslog-vip` has to be a **guest** group, not a `cluster.fw` rule: a frame
 addressed to a MetalLB VIP is forwarded to the announcing node's VM and filtered

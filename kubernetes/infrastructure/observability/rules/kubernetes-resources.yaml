@@ -11,7 +11,7 @@ spec:
   groups:
     - name: homelab.kubernetes-resources
       rules:
-        # Taken from kube-prometheus-stack 91.4.1
+        # Taken from kube-prometheus-stack 92.0.0
         # Upstream's shape minus the gitlab-runner* namespaces, which
         # over-request CPU for burst CI against a sized ResourceQuota.
         - alert: KubeCPUOvercommit

@@ -35,11 +35,11 @@ variables:
   # Single source for the weisssrv-lib pin. `include:` cannot read it (includes
   # resolve before job variables exist), so each entry repeats the tag as a
   # literal; check-lib-pins.py holds them equal. Bump here, then `--fix`.
-  WEISSSRV_LIB_REF: "v0.17.1"
+  WEISSSRV_LIB_REF: "v0.18.0"
   # Single source for the Ansible pin. deploy-preflight reads it as a variable;
   # the deploy-base include repeats it as a literal input (includes resolve
   # before this block), which check-ci-pin-parity.sh holds equal to this value.
-  ANSIBLE_VERSION: "11.6.0"
+  ANSIBLE_VERSION: "14.4.0"
   # Single source for the kustomize pin (flux-lint, deploy-verify) and the
   # pytest/PyYAML/ruff pins the lint and test jobs install. Include inputs repeat
   # the literals, and repo-policy-checks' ci-pin-parity check fails on drift.
@@ -54,17 +54,17 @@ variables:
   PYTEST_VERSION: "9.1.1"
   PYYAML_VERSION: "6.0.2"
   RUFF_VERSION: "0.16.0"
-  # Pre-seeded for check-doc-links' backticked-path pass; inert until the lib
-  # pin ships it.
+  # check-doc-links' backticked-path pass: a cited repo path must resolve.
   CHECK_DOC_LINKS_PATHS: "1"
   # fnmatch exceptions for cited paths that are not files here: the library's
-  # own docs, the GitLab-hosted terraform states, a gitignored plan file.
-  CHECK_DOC_LINKS_IGNORE: "docs/[A-Z]* terraform/state/* */tfplan */check-vendored-copies.py"
+  # own docs, lint profiles and molecule scaffolding, the GitLab-hosted
+  # terraform states, a gitignored plan file. Keep equal to taskfiles/lint.yml.
+  CHECK_DOC_LINKS_IGNORE: "docs/[A-Z]* lint/* molecule/default/expected-junit-failures.txt docker/molecule-ci/requirements.txt terraform/state/* */tfplan */check-vendored-copies.py"
   # Digest-pinned: these images run in jobs that have already been handed vault
   # credentials, so a repointed upstream tag would execute there. Lint-only jobs
   # float. CI is on 3.13, ansible-core's newest controller; CronJobs run 3.14.
   PY_JOB_IMAGE: "python:3.13-slim@sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0"
-  TF_JOB_IMAGE: "hashicorp/terraform:1.15.9@sha256:fd5debae63188975d6febc6aa5bd1a982a588f55e4a4ddb7de28be923f250456"
+  TF_JOB_IMAGE: "hashicorp/terraform:1.16.5@sha256:c7926feace05d0f7e73542842bf3945924e955a1f782cf000ccbb8d18fa42d77"
   # git reads these three as config, so ansible-galaxy's clone of the
   # weisssrv.infra collection authenticates with the job token and no
   # ~/.gitconfig. Only credential-less URLs are rewritten.
@@ -149,7 +149,6 @@ workflow:
     - ansible/**/*
     - scripts/**/*
     - .gitlab-ci.yml
-    # integration-matrix-coverage reads the matrix out of .gitlab/ci/.
     - .gitlab/**/*
     # netpol-except-parity, backup-artifact-apps and cluster-literals all read
     # manifests under kubernetes/.
@@ -162,15 +161,13 @@ workflow:
     - terraform/tailscale/policy.hujson
     # unifi-doc-parity reads terraform/unifi/main.tf against docs/46.
     - terraform/unifi/**/*
-    # comment-length scans the whole tree, so the roots below fire the job too.
-    - docker/**/*
-    - terraform/**/*
-    - .github/**/*
-    - .claude/**/*
-    - "*.md"
-    - .ansible-lint
-    - .gitattributes
-    - .gitignore
+.paths-role-inputs:
+  changes:
+    - ansible/inventories/prod/**/*
+    - ansible/playbooks/**/*
+    - ansible/requirements.yml
+    - scripts/check-role-inputs.py
+    - .gitlab-ci.yml
 # The Cloudflare-only jobs gate on just that module, so an unrelated tailscale
 # change cannot fire a Cloudflare plan+apply. terraform-fmt/validate come from
 # the library and cover terraform/**/*.
@@ -182,15 +179,6 @@ workflow:
 .paths-terraform-cloudflare:
   changes:
     - terraform/cloudflare/**/*
-.paths-terraform-tailscale:
-  changes:
-    - terraform/tailscale/**/*
-.paths-terraform-authentik:
-  changes:
-    - terraform/authentik/**/*
-.paths-terraform-unifi:
-  changes:
-    - terraform/unifi/**/*
 .paths-b2-drift:
   changes:
     - scripts/b2-bucket-drift.py
@@ -219,6 +207,15 @@ workflow:
     # The job's own definition — the promtool/amtool image and the script argv
     # live here, so an MR that changes how the gate runs must re-run the gate.
     - .gitlab-ci.yml
+# The matrix-coverage gate's inputs: the scenario tree it walks, the matrix file
+# it parses, the gate itself and the ci_yaml helper it imports.
+.paths-integration-matrix-coverage:
+  changes:
+    - ansible/integration-tests/**/*
+    - .gitlab/ci/integration-jobs.yml
+    - scripts/check-integration-matrix-coverage.py
+    - scripts/ci_yaml.py
+    - .gitlab-ci.yml
 .paths-deploy-preflight:
   # Everything deploy-preflight's answer depends on: the playbooks and tags it
   # walks, the inventory `--list-tasks` parses, the collection pin it installs,
@@ -228,43 +225,14 @@ workflow:
     - ansible/inventories/prod/**/*
     - ansible/requirements.yml
     - ansible/ansible.cfg
-    - scripts/deploy-preflight.py
+    - scripts/check-deploy-preflight.py
+    # Imported from its own directory by the gate.
+    - scripts/ci_yaml.py
+    - scripts/ci_playbook_invocations.py
     - .gitlab-ci.yml
 # .deploy-base comes from the library (see the include: block). .dep-cache,
 # which it extends, also sets ANSIBLE_COLLECTIONS_PATH — the path the playbooks'
 # FQCN roles resolve from, so dropping it moves collection resolution silently.
-
-# Local render of weisssrv-lib `/ci/deploy/kubectl-setup.yml`. Change behaviour
-# in the library, never here. Not adopted as an include because the vendored
-# check-kubectl-version-pin.py reads the pin from this file (docs/13).
-.kubectl-setup:
-  before_script:
-    - |
-      set -eo pipefail
-      # CRITICAL: the runner checks only a block's LAST command, so without
-      # errexit a sha256 mismatch still installs the binary. The per-job
-      # download dir keeps two jobs sharing /tmp from clobbering each other.
-      dl=$(mktemp -d)
-      curl -fsSL "https://dl.k8s.io/release/v1.36.2/bin/linux/amd64/kubectl" -o "$dl/kubectl"
-      echo "1e9045ec32bea85da43de85f0065358529ea7c7a152eca78154fba5b58c27d82  $dl/kubectl" | sha256sum -c -
-      install -m 0755 "$dl/kubectl" /usr/local/bin/kubectl
-      rm -rf "$dl"
-    - |
-      # Kubeconfig from 1Password (base64-encoded to preserve YAML formatting).
-      set -eo pipefail
-      mkdir -p ~/.kube
-      KUBECONFIG_B64=$(op read "op://Homelab/K3s Kubeconfig/kubeconfig")
-      if [ -z "$KUBECONFIG_B64" ]; then
-        echo "ERROR: op read returned an empty kubeconfig. Is OP_SERVICE_ACCOUNT_TOKEN set?" >&2
-        exit 1
-      fi
-      # umask 077 subshell: never create the kubeconfig world-readable.
-      (umask 077; echo "$KUBECONFIG_B64" | base64 -d > ~/.kube/config)
-      # Structural, not just non-empty: catches a field stored un-base64'd or
-      # truncated, which otherwise fails later as "connection refused".
-      grep -q '^[[:space:]]*server:' ~/.kube/config || { echo "ERROR: the decoded kubeconfig has no server: entry; check that op://Homelab/K3s Kubeconfig/kubeconfig holds base64 of a kubeconfig" >&2; exit 1; }
-      export KUBECONFIG="$HOME/.kube/config"
-      echo "Kubeconfig written ($(wc -c < ~/.kube/config) bytes), KUBECONFIG=$KUBECONFIG"
 
 # Ansible (from .deploy-base) plus kubectl, so each maintenance job can call
 # scripts/post-maintenance-verify.sh after its playbook.
@@ -279,7 +247,6 @@ workflow:
   timeout: 70m
   before_script:
     - !reference [.deploy-base, before_script]
-    - apt-get install -y -qq jq
     - !reference [.kubectl-setup, before_script]
   after_script:
     # Re-arm a DETACHED self-host reboot to fire at job end (+60s) and disarm the
@@ -299,8 +266,6 @@ workflow:
   interruptible: false
   before_script:
     - !reference [.install-1password, before_script]
-    # jq parses the kubectl JSON scripts/deploy-verify.sh reads (Flux CR readiness).
-    - apt-get install -y -qq jq
     - !reference [.kubectl-setup, before_script]
     # Not `kubectl cluster-info`: it needs list perms on kube-system services
     # that the runner ServiceAccount lacks.
@@ -308,10 +273,11 @@ workflow:
 
 # BUILD STAGE - Container images
 
-# Shared by the two app-image builds (hermes-agent, camofox-browser): pinned
-# docker CLI + buildx, the dind-ready wait, registry login. A pin bump rolls
-# Flux before the build finishes, so brief ImagePullBackOff is expected (docs/37).
+# Shared by the two app-image builds (hermes-agent, camofox-browser). The docker
+# CLI, buildx, the dind-ready wait and the registry login come from the library
+# fragment; a pin bump rolls Flux before the build finishes (docs/37).
 .build-image-base:
+  extends: .docker-dind
   # Pushes images consumed later in this pipeline; do not interrupt.
   interruptible: false
   # Infra-class retries only. NOT script_failure: a broken Dockerfile must fail
@@ -324,62 +290,6 @@ workflow:
       - scheduler_failure
   stage: build
   image: python:3.13
-  services:
-    # PRIVILEGED daemon, held at 24.0 (digest-pinned): its embedded BuildKit
-    # frontend accepts upstream hermes' symbolic `COPY --chmod`, which the 27.x
-    # builtin frontend rejects. The static CLI installed below is 27.5.1.
-    - name: docker:24.0-dind@sha256:167bad11bade46d4d9a88646ed7f9b11014dfdb898ba75c5a390eb03f21f0c45
-      # The runner derives the service alias from the image name, and a
-      # digest-bearing name must still answer at the host DOCKER_HOST names.
-      alias: docker
-  variables:
-    DOCKER_HOST: tcp://docker:2375
-    DOCKER_TLS_CERTDIR: ""
-    # Daemon-embedded BuildKit; enables --cache-from + inline cache.
-    DOCKER_BUILDKIT: "1"
-  before_script:
-    # Static docker CLI, pinned + sha256 like every other downloaded binary here.
-    # NOT the docker.io Debian package: it ships the daemon, no CLI.
-    - |
-      set -eo pipefail
-      # errexit so a sha256 mismatch fails the block, and a per-job download
-      # dir so two jobs sharing /tmp cannot clobber each other.
-      ARCH=$(dpkg --print-architecture)
-      case "$ARCH" in
-        amd64) DOCKER_ARCH=x86_64; DOCKER_SHA256=4f798b3ee1e0140eab5bf30b0edc4e84f4cdb53255a429dc3bbae9524845d640 ;;
-        arm64) DOCKER_ARCH=aarch64; DOCKER_SHA256=e6b53725a73763ab3f988c73f8772eaed429754c1a579db5ff11f21990fd1817 ;;
-        *) echo "unsupported arch: $ARCH"; exit 1 ;;
-      esac
-      dl=$(mktemp -d)
-      curl -fsSL "https://download.docker.com/linux/static/stable/${DOCKER_ARCH}/docker-27.5.1.tgz" -o "$dl/docker.tgz"
-      echo "${DOCKER_SHA256}  $dl/docker.tgz" | sha256sum -c -
-      tar xz --strip-components=1 -C /usr/local/bin -f "$dl/docker.tgz" docker/docker
-      rm -rf "$dl"
-      docker --version
-      # The dind service can lag the job start; build would fail with
-      # "Cannot connect to the Docker daemon at tcp://docker:2375".
-      for i in $(seq 1 30); do docker info >/dev/null 2>&1 && break; echo "waiting for docker daemon ($i/30)..."; sleep 2; done
-      docker info >/dev/null 2>&1 || { echo "docker daemon did not become ready"; exit 1; }
-    - |
-      set -eo pipefail
-      # buildx plugin (pinned + sha256). Required by both builds: DOCKER_BUILDKIT=1
-      # routes every `docker build` through BuildKit, which fails with "buildx
-      # component is missing" without it.
-      BUILDX_ARCH=$(dpkg --print-architecture)
-      BUILDX_VERSION=v0.35.0
-      case "$BUILDX_ARCH" in
-        amd64) BUILDX_SHA256=d41ece72044243b4f58b343441ae37446d9c29a7d6b5e11c61847bbcf8f7dfda ;;
-        arm64) BUILDX_SHA256=c4248d6cbc4a619a7e0b4609c11e509ad4ac0b475e1c64817c0ac20c5d90c766 ;;
-        *) echo "unsupported arch: $BUILDX_ARCH"; exit 1 ;;
-      esac
-      dl=$(mktemp -d)
-      curl -fsSL "https://github.com/docker/buildx/releases/download/${BUILDX_VERSION}/buildx-${BUILDX_VERSION}.linux-${BUILDX_ARCH}" -o "$dl/docker-buildx"
-      echo "${BUILDX_SHA256}  $dl/docker-buildx" | sha256sum -c -
-      mkdir -p "$HOME/.docker/cli-plugins"
-      install -m 0755 "$dl/docker-buildx" "$HOME/.docker/cli-plugins/docker-buildx"
-      rm -rf "$dl"
-      docker buildx version
-    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
 
 # Upstream Hermes Agent publishes no container image: this clones it at the
 # pinned tag, builds their Dockerfile, then layers docker/hermes-agent/
@@ -701,11 +611,20 @@ repo-policy-checks:
       # parse it; the only other reader is the Tailscale API at apply time.
       check_tailscale_policy() { task lint:tailscale-policy; }
 
+      # MR-only: the comparison needs the diff base, and no other pipeline
+      # source sets it. A version pin that moved without its paired checksum,
+      # digest or git SHA builds something nobody verified.
+      check_partner_pins() {
+        if [ -z "${CI_MERGE_REQUEST_DIFF_BASE_SHA:-}" ]; then
+          echo "not a merge-request pipeline — no diff base to compare against"
+          return 0
+        fi
+        python3 scripts/check-versions.py --check-partner-pins "$CI_MERGE_REQUEST_DIFF_BASE_SHA"
+      }
+
       run_check deploy-coverage bash scripts/check-deploy-coverage.sh
       run_check deploy-host-coverage python3 scripts/check-deploy-host-coverage.py
       run_check collection-pin-trigger python3 scripts/check-collection-pin-trigger.py
-      # --ci-file: the matrix lives in its own included file (see .paths-integration).
-      run_check integration-matrix-coverage python3 scripts/check-integration-matrix-coverage.py --ci-file .gitlab/ci/integration-jobs.yml
       # --host-vars/--rules: the script is vendored, so which file holds each
       # side of the pair is site layout rather than a script default.
       run_check backup-artifact-apps python3 scripts/check-backup-artifact-apps.py --host-vars ansible/inventories/prod/host_vars/pve-nas-01.yml --rules kubernetes/infrastructure/observability/rules/scripts.yaml
@@ -713,7 +632,10 @@ repo-policy-checks:
       # peer-less-egress allowlist are site data.
       run_check netpol-except-parity python3 scripts/check-netpol-except-parity.py --config scripts/netpol-except.yaml
       run_check cluster-literals python3 scripts/check-cluster-literals.py
-      run_check comment-length python3 scripts/check-comment-length.py --config scripts/comment-length.yaml
+      # Via the task: the rules directory and the probe-target allowlist are
+      # one argv, kept in taskfiles/lint.yml.
+      run_check cluster-invariants task lint:cluster-invariants
+      run_check dashboards python3 scripts/check-dashboards.py
       run_check runbook-anchors python3 scripts/check-runbook-anchors.py
       run_check upstream-rule-mirror python3 scripts/check-upstream-rule-mirror.py
       run_check unifi-doc-parity python3 scripts/check-unifi-doc-parity.py
@@ -724,6 +646,10 @@ repo-policy-checks:
       run_check tailnet-dns-parity python3 scripts/check-tailnet-dns-parity.py
       run_check vpn-provider-parity python3 scripts/check-vpn-provider-parity.py
       run_check lib-pins python3 scripts/check-lib-pins.py
+      # Network: re-downloads each checksum-coupled artefact and re-hashes it.
+      run_check version-checksums python3 scripts/check-version-checksums.py
+      run_check partner-pins check_partner_pins
+      run_check helm-repo-parity python3 scripts/check-helm-repo-parity.py
       run_check ansible-service-names python3 scripts/check-ansible-service-names.py
       run_check image-gc-threshold python3 scripts/check-image-gc-threshold.py
       run_check kubectl-version-pin python3 scripts/check-kubectl-version-pin.py
@@ -744,6 +670,28 @@ repo-policy-checks:
     - if: '$CI_PIPELINE_SOURCE == "web"'
       when: manual
       allow_failure: true
+
+# A scenario directory with no `parallel:matrix` entry never runs, and reads as
+# green because nothing executed it. Its own job so a failure names itself and
+# an unrelated repo-policy edit does not re-run it.
+integration-matrix-coverage:
+  needs: []
+  stage: lint
+  image: python:3.13-slim
+  before_script:
+    - pip install --no-cache-dir --quiet "PyYAML==${PYYAML_VERSION}"
+  script:
+    # --ci-file: the matrix lives in its own included file, so its `changes:`
+    # trigger can name a file that only it lives in.
+    - python3 scripts/check-integration-matrix-coverage.py --ci-file .gitlab/ci/integration-jobs.yml
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes: !reference [.paths-integration-matrix-coverage, changes]
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes: !reference [.paths-integration-matrix-coverage, changes]
+    - if: '$CI_PIPELINE_SOURCE == "web"'
 
 # tflint over all four roots, mirroring `task lint`'s terraform:tflint. It
 # catches what fmt/validate do not: deprecated syntax, unused declarations and
@@ -769,6 +717,40 @@ terraform-tflint:
       when: manual
       allow_failure: true
 
+# The collection's roles assert their required inputs, and an opt-in role whose
+# flag is set nowhere runs anyway. Both fail on every host the role touches, so
+# the hand-edited inventory is gated here. Mirrors `task lint:role-inputs`.
+role-inputs:
+  needs: []
+  stage: lint
+  # Full image, not slim: ansible-galaxy installs weisssrv.infra from a git+ URL.
+  image: python:3.13
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq --no-install-recommends git
+    - pip install --quiet "ansible==${ANSIBLE_VERSION}" "pyyaml==${PYYAML_VERSION}"
+    # --force: galaxy skips an already-installed collection, so a warm cache
+    # would check against the previous release's roles after a pin bump.
+    - for i in 1 2 3; do ansible-galaxy collection install --force -r ansible/requirements.yml -p .ansible-home/collections && break; [ "$i" = 3 ] && exit 1; echo "galaxy install failed (attempt $i) — retrying in 20s"; sleep 20; done
+  script:
+    # --allow-unknown: chart versions the Flux substitution reads, whose names
+    # carry a role's prefix. Same argv as `task lint:role-inputs`.
+    - >-
+      python3 scripts/check-role-inputs.py
+      --roles-dir .ansible-home/collections/ansible_collections/weisssrv/infra/roles
+      --inventory ansible/inventories/prod
+      --playbooks ansible/playbooks
+      --allow-unknown "gitlab_runner_helm_version=a chart version the Flux substitution reads, not a role variable"
+      --allow-unknown "gitlab_agent_helm_version=a chart version the Flux substitution reads, not a role variable"
+      --allow-unknown "tailscale_operator=a chart version the Flux substitution reads, not a role variable"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes: !reference [.paths-role-inputs, changes]
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes: !reference [.paths-role-inputs, changes]
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+
 # Validates the alert rules (PromQL in HelmRelease values and PrometheusRule
 # CRs) and the Alertmanager config, which kubeconform and flux-lint cannot
 # parse. A bad expr otherwise fails the HelmRelease upgrade post-merge (docs/33).
@@ -784,6 +766,10 @@ prometheus-config-lint:
     # promtool unit-tests the extracted rules against this directory's
     # *.test.yaml; `task lint:prometheus-config` points at the same one.
     RULE_TESTS_DIR: "scripts/prometheus-rule-tests"
+    # Every custom alert is a standalone PrometheusRule here, so a renamed or
+    # moved tree must red the gate instead of extracting zero rules.
+    RULES_DIR: "kubernetes/infrastructure/observability/rules"
+    REQUIRE_RULES_DIR: "1"
   # Cache promtool + amtool across runs, keyed on .gitlab-ci.yml (the versions
   # and sha256s live here).
   cache:
@@ -904,31 +890,9 @@ terraform-plan:
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes: !reference [.paths-terraform-cloudflare, changes]
 
-# Shared shape of the three read-only terraform drift-plan jobs. Each job adds
-# TF_DRIFT_DIR, its own TF_HTTP_*ADDRESS state paths, the vault reads and plan,
-# and its own rules.
-.terraform-drift-plan:
-  extends: .terraform-http-backend
-  needs: []
-  stage: validate
-  image:
-    name: $TF_JOB_IMAGE
-    entrypoint: [""]
-  before_script:
-    - !reference [.install-1password-alpine, before_script]
-    - cd "$TF_DRIFT_DIR"
-    # -lockfile=readonly: CI must not rewrite .terraform.lock.hcl (committed
-    # provider hashes; a CI-side change would mask supply-chain drift).
-    - terraform init -lockfile=readonly
-  # Exit 2 (drift) is the advisory yellow. A BROKEN detector — plan error,
-  # expired creds, state lock — exits 1, and a blanket allow_failure would paint
-  # that the same yellow, masking real drift behind a dead plan.
-  allow_failure:
-    exit_codes: [2]
-
 # Schedule is the real detector: no changes: filter, so it catches out-of-band
-# console edits when nothing in-repo changed. `extends` REPLACES rules: rather
-# than merging, so each job references this entry instead of inheriting it.
+# console edits when nothing in-repo changed. Referenced, not extended:
+# `extends` REPLACES a job's own rules: rather than merging.
 
 # CRITICAL: no $OP_SERVICE_ACCOUNT_TOKEN guard here. A guard REMOVES the job
 # when the credential is revoked or rescoped, so out-of-band drift goes
@@ -936,124 +900,6 @@ terraform-plan:
 .drift-schedule-rule:
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
-
-# Read-only drift plan for the tailscale ACL module. Never applies: the apply is
-# supervised (terraform/tailscale/README.md). A non-empty plan means the live
-# tailnet ACL drifted from policy.hujson.
-tailscale-drift-plan:
-  extends: .terraform-drift-plan
-  variables:
-    TF_DRIFT_DIR: "terraform/tailscale"
-    # ${CI_API_V4_URL}, not a literal host: TF_HTTP_PASSWORD is ${CI_JOB_TOKEN},
-    # which only the issuing instance accepts.
-    TF_HTTP_ADDRESS: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/tailscale"
-    TF_HTTP_LOCK_ADDRESS: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/tailscale/lock"
-    TF_HTTP_UNLOCK_ADDRESS: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/tailscale/lock"
-  script:
-    - |
-      # Assign, then export: `export VAR=$(...)` returns export's status, so a
-      # failed vault read would pass silently.
-      set -eo pipefail
-      TF_VAR_tailscale_oauth_client_id=$(op read "op://Homelab/Tailscale OAuth/client id")
-      TF_VAR_tailscale_oauth_client_secret=$(op read "op://Homelab/Tailscale OAuth/credential")
-      export TF_VAR_tailscale_oauth_client_id TF_VAR_tailscale_oauth_client_secret
-      # -detailed-exitcode: drift exits 2 (a plain plan exits 0 on a non-empty
-      # diff), so allow_failure can render it yellow.
-      terraform plan -input=false -no-color -lock-timeout=120s -detailed-exitcode
-  rules:
-    - !reference [.drift-schedule-rule, rules]
-    # Post-merge, before the supervised apply. No merge_request_event rule: this
-    # job materializes vault secrets into a job running the branch's own code
-    # (docs/13 § Vault reads on merge-request pipelines).
-    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
-      changes: !reference [.paths-terraform-tailscale, changes]
-
-# Read-only drift plan for the authentik SSO module. Never applies from CI: the
-# apply is `task terraform:authentik-apply`, which refuses to run
-# non-interactively. A non-empty plan means an Admin-UI edit drifted.
-authentik-drift-plan:
-  extends: .terraform-drift-plan
-  variables:
-    TF_DRIFT_DIR: "terraform/authentik"
-    # ${CI_API_V4_URL}, not a literal host: TF_HTTP_PASSWORD is ${CI_JOB_TOKEN},
-    # which only the issuing instance accepts.
-    TF_HTTP_ADDRESS: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/authentik"
-    TF_HTTP_LOCK_ADDRESS: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/authentik/lock"
-    TF_HTTP_UNLOCK_ADDRESS: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/authentik/lock"
-  script:
-    - |
-      # Assign, then export: `export VAR=$(...)` returns export's status, so a
-      # failed vault read would pass silently and surface later as a provider
-      # auth error instead of "the vault read failed".
-      set -eo pipefail
-      TF_VAR_authentik_token=$(op read "op://Homelab/Authentik Terraform Token/credential")
-      TF_VAR_oauth2_client_secret_mealie=$(op read "op://Homelab/Mealie SSO/oidc-client-secret")
-      TF_VAR_oauth2_client_secret_bar_assistant=$(op read "op://Homelab/Bar Assistant SSO/authentik-client-secret")
-      TF_VAR_oauth2_client_secret_home_assistant=$(op read "op://Homelab/Home Assistant SSO/authentik-client-secret")
-      TF_VAR_oauth2_client_secret_grafana=$(op read "op://Homelab/Grafana SSO/oidc-client-secret")
-      TF_VAR_oauth2_client_secret_nextcloud=$(op read "op://Homelab/Nextcloud SSO/client-secret")
-      TF_VAR_oauth2_client_secret_immich=$(op read "op://Homelab/Immich SSO/client-secret")
-      TF_VAR_oauth2_client_secret_hermes_dashboard=$(op read "op://Homelab/Hermes Secrets/hermes-dashboard-oidc-client-secret")
-      TF_VAR_oauth2_client_secret_homarr=$(op read "op://Homelab/Homarr SSO/client-secret")
-      TF_VAR_basic_auth_nzbget_username=$(op read "op://Homelab/NZBGet/username")
-      TF_VAR_basic_auth_nzbget_password=$(op read "op://Homelab/NZBGet/password")
-      TF_VAR_basic_auth_adguard_username=$(op read "op://Homelab/AdGuard Home/username")
-      TF_VAR_basic_auth_adguard_password=$(op read "op://Homelab/AdGuard Home/password")
-      TF_VAR_user_identities=$(op read "op://Homelab/Authentik User Identities/notesPlain")
-      export TF_VAR_authentik_token TF_VAR_oauth2_client_secret_mealie \
-        TF_VAR_oauth2_client_secret_bar_assistant TF_VAR_oauth2_client_secret_home_assistant \
-        TF_VAR_oauth2_client_secret_grafana TF_VAR_oauth2_client_secret_nextcloud \
-        TF_VAR_oauth2_client_secret_immich TF_VAR_oauth2_client_secret_hermes_dashboard \
-        TF_VAR_oauth2_client_secret_homarr TF_VAR_basic_auth_nzbget_username \
-        TF_VAR_basic_auth_nzbget_password TF_VAR_basic_auth_adguard_username \
-        TF_VAR_basic_auth_adguard_password TF_VAR_user_identities
-      # -detailed-exitcode: drift exits 2 (a plain plan exits 0 on a non-empty
-      # diff), so allow_failure can render it yellow.
-      terraform plan -input=false -no-color -lock-timeout=120s -detailed-exitcode
-  rules:
-    - !reference [.drift-schedule-rule, rules]
-    # Post-merge, before the supervised apply. No merge_request_event rule: this
-    # job reads every OIDC client secret and must not do that in a job running an
-    # unmerged branch's code (docs/13 § Vault reads on merge-request pipelines).
-    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
-      changes: !reference [.paths-terraform-authentik, changes]
-
-# Read-only drift plan for the UniFi network module. Never applies from CI: the
-# apply is `task terraform:unifi-apply`, which refuses to run non-interactively.
-# A non-empty plan means a console edit drifted from the codified network.
-unifi-drift-plan:
-  extends: .terraform-drift-plan
-  variables:
-    TF_DRIFT_DIR: "terraform/unifi"
-    # ${CI_API_V4_URL}, not a literal host: TF_HTTP_PASSWORD is ${CI_JOB_TOKEN},
-    # which only the issuing instance accepts.
-    TF_HTTP_ADDRESS: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/unifi"
-    TF_HTTP_LOCK_ADDRESS: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/unifi/lock"
-    TF_HTTP_UNLOCK_ADDRESS: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/unifi/lock"
-  script:
-    - |
-      # Assign, then export: `export VAR=$(...)` returns export's status, so a
-      # failed vault read would pass silently. One variable per SSID; keep in
-      # step with the Taskfile's &tf_unifi_env anchor.
-      set -eo pipefail
-      TF_VAR_unifi_api_url=$(op read "op://Homelab/UniFi Controller/url")
-      TF_VAR_unifi_api_key=$(op read "op://Homelab/UniFi Controller/api-key")
-      TF_VAR_wlan_passphrase_home=$(op read "op://Homelab/WiFi TheRevengers/password")
-      TF_VAR_wlan_passphrase_iot=$(op read "op://Homelab/WiFi Panopticon/password")
-      TF_VAR_wlan_passphrase_guest=$(op read "op://Homelab/WiFi kugel-tikka-masala/password")
-      TF_VAR_wlan_passphrase_work=$(op read "op://Homelab/WiFi DunderMiffLAN/password")
-      export TF_VAR_unifi_api_url TF_VAR_unifi_api_key TF_VAR_wlan_passphrase_home \
-        TF_VAR_wlan_passphrase_iot TF_VAR_wlan_passphrase_guest TF_VAR_wlan_passphrase_work
-      # -detailed-exitcode: drift exits 2 (a plain plan exits 0 on a non-empty
-      # diff), so allow_failure can render it yellow.
-      terraform plan -input=false -no-color -lock-timeout=120s -detailed-exitcode
-  rules:
-    - !reference [.drift-schedule-rule, rules]
-    # Post-merge, before the supervised apply. NO merge_request_event rule: this
-    # job reads the controller API key and all four WLAN pre-shared keys, and
-    # must not do that in a job running an unmerged branch's code.
-    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
-      changes: !reference [.paths-terraform-unifi, changes]
 
 # Read-only drift check for the B2 backup-bucket settings against the raw B2 API
 # rather than terraform, whose provider read path returns empty attributes.
@@ -1163,10 +1009,10 @@ deploy-preflight:
     # would preflight against the previous release's roles after a pin bump.
     - for i in 1 2 3; do ansible-galaxy collection install --force -r ansible/requirements.yml && break; [ "$i" = 3 ] && exit 1; echo "galaxy install failed (attempt $i) — retrying in 20s"; sleep 20; done
   script:
-    # In scripts/ rather than inline, so `task lint` and pytest reach the same
-    # code. It does not cover an op:// variable a job forgets to declare, or
-    # invocations a job delegates to a wrapper script.
-    - python3 scripts/deploy-preflight.py
+    # --require-tag-selections: every deploy job here is tag-driven, so a run
+    # that resolved no selection inspected nothing. It does not cover an op://
+    # variable a job forgets to declare, or a call inside a wrapper script.
+    - python3 scripts/check-deploy-preflight.py --require-tag-selections
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
@@ -1192,7 +1038,7 @@ include:
   # describe this instance and the cloudflare state; the three drift-plan jobs
   # override the TF_HTTP_*ADDRESS vars for their own state names.
   - project: eric/weisssrv-lib
-    ref: v0.17.1
+    ref: v0.18.0
     file:
       - /ci/templates/dep-cache.yml
       - /ci/templates/install-1password.yml
@@ -1202,40 +1048,133 @@ include:
   # extends — op CLI, ansible, a 0600 ansible.cfg, the SSH key, a TOFU keyscan
   # of hosts.env, the collection install. ci-pin-parity holds ansible_version equal.
   - project: eric/weisssrv-lib
-    ref: v0.17.1
+    ref: v0.18.0
     file: /ci/deploy/deploy-base.yml
     inputs:
       op_vault: "Homelab"
-      ansible_version: "11.6.0"
+      ansible_version: "14.4.0"
       apt_packages: "git"
       ansible_dir: "ansible"
       hosts_env: "scripts/hosts.env"
       tags: ["infrastructure"]
 
+  # docker-dind: the `.docker-dind` fragment both image builds extend.
+  # dind_service is held at 24.0 — its embedded BuildKit frontend accepts
+  # upstream hermes' symbolic `COPY --chmod`, which 27.x rejects.
+  - project: eric/weisssrv-lib
+    ref: v0.18.0
+    file: /ci/templates/docker-dind.yml
+    inputs:
+      dind_service: "docker:24.0-dind@sha256:167bad11bade46d4d9a88646ed7f9b11014dfdb898ba75c5a390eb03f21f0c45"
+
+  # kubectl-setup: the `.kubectl-setup` fragment every kubectl-using job pulls
+  # into its before_script. The vendored check-kubectl-version-pin.py reads
+  # kubectl_version from here and holds it within one minor of k3s_version.
+  - project: eric/weisssrv-lib
+    ref: v0.18.0
+    file: /ci/deploy/kubectl-setup.yml
+    inputs:
+      op_vault: "Homelab"
+      kubeconfig_item: "K3s Kubeconfig"
+      kubectl_version: "v1.37.1"
+      kubectl_sha256: "65691ff77eb6fa44c908b77a1082c9f092c3b9733b5cefabec0d1104890e21a8"
+
   # secret_detection overrides GitLab's managed job: MR/main/schedule rules, and
   # cpu_selector pins the scan to modern-CPU nodes (gitleaks SIGILLs without
   # POPCNT). Findings block the merge via allow_failure: false, not a needs:.
   - project: eric/weisssrv-lib
-    ref: v0.17.1
+    ref: v0.18.0
     file:
       - /ci/security/secret-detection.yml
     inputs:
       cpu_selector: "esweiss.com/cpu=modern"
 
-  # terraform validate: pinned to the exact patch release the plan/apply jobs
-  # run. A floating :1.15 tag plus per-node IfNotPresent image caches is how a
-  # plan written by 1.15.9 gets refused by a 1.15.8 apply.
+  # terraform validate/fmt: an exact patch of the 1.15 line the workstation
+  # toolchain runs, so local and CI agree on formatting. A floating tag plus
+  # per-node IfNotPresent image caches is how the two disagree.
   - project: eric/weisssrv-lib
-    ref: v0.17.1
+    ref: v0.18.0
     file: /ci/validate/terraform.yml
     inputs:
       image: hashicorp/terraform:1.15.9
+
+  # terraform-drift-plan: one read-only `terraform plan -detailed-exitcode` per
+  # supervised module. tags is explicit — the template default is any runner,
+  # and these need the infrastructure runner's network reach.
+  - project: eric/weisssrv-lib
+    ref: v0.18.0
+    file: /ci/validate/terraform-drift-plan.yml
+    inputs:
+      job_name: tailscale-drift-plan
+      module_dir: "terraform/tailscale"
+      state_name: "tailscale"
+      tags: ["infrastructure"]
+      changes:
+        - "terraform/tailscale/**/*"
+      secrets_exports: |
+        TF_VAR_tailscale_oauth_client_id=$(op read "op://Homelab/Tailscale OAuth/client id")
+        TF_VAR_tailscale_oauth_client_secret=$(op read "op://Homelab/Tailscale OAuth/credential")
+        export TF_VAR_tailscale_oauth_client_id TF_VAR_tailscale_oauth_client_secret
+
+  - project: eric/weisssrv-lib
+    ref: v0.18.0
+    file: /ci/validate/terraform-drift-plan.yml
+    inputs:
+      job_name: authentik-drift-plan
+      module_dir: "terraform/authentik"
+      state_name: "authentik"
+      tags: ["infrastructure"]
+      changes:
+        - "terraform/authentik/**/*"
+      secrets_exports: |
+        TF_VAR_authentik_token=$(op read "op://Homelab/Authentik Terraform Token/credential")
+        TF_VAR_oauth2_client_secret_mealie=$(op read "op://Homelab/Mealie SSO/oidc-client-secret")
+        TF_VAR_oauth2_client_secret_bar_assistant=$(op read "op://Homelab/Bar Assistant SSO/authentik-client-secret")
+        TF_VAR_oauth2_client_secret_home_assistant=$(op read "op://Homelab/Home Assistant SSO/authentik-client-secret")
+        TF_VAR_oauth2_client_secret_grafana=$(op read "op://Homelab/Grafana SSO/oidc-client-secret")
+        TF_VAR_oauth2_client_secret_nextcloud=$(op read "op://Homelab/Nextcloud SSO/client-secret")
+        TF_VAR_oauth2_client_secret_immich=$(op read "op://Homelab/Immich SSO/client-secret")
+        TF_VAR_oauth2_client_secret_hermes_dashboard=$(op read "op://Homelab/Hermes Secrets/hermes-dashboard-oidc-client-secret")
+        TF_VAR_oauth2_client_secret_homarr=$(op read "op://Homelab/Homarr SSO/client-secret")
+        TF_VAR_basic_auth_nzbget_username=$(op read "op://Homelab/NZBGet/username")
+        TF_VAR_basic_auth_nzbget_password=$(op read "op://Homelab/NZBGet/password")
+        TF_VAR_basic_auth_adguard_username=$(op read "op://Homelab/AdGuard Home/username")
+        TF_VAR_basic_auth_adguard_password=$(op read "op://Homelab/AdGuard Home/password")
+        TF_VAR_user_identities=$(op read "op://Homelab/Authentik User Identities/notesPlain")
+        export TF_VAR_authentik_token TF_VAR_oauth2_client_secret_mealie \
+          TF_VAR_oauth2_client_secret_bar_assistant TF_VAR_oauth2_client_secret_home_assistant \
+          TF_VAR_oauth2_client_secret_grafana TF_VAR_oauth2_client_secret_nextcloud \
+          TF_VAR_oauth2_client_secret_immich TF_VAR_oauth2_client_secret_hermes_dashboard \
+          TF_VAR_oauth2_client_secret_homarr TF_VAR_basic_auth_nzbget_username \
+          TF_VAR_basic_auth_nzbget_password TF_VAR_basic_auth_adguard_username \
+          TF_VAR_basic_auth_adguard_password TF_VAR_user_identities
+
+  # One variable per SSID; keep in step with the Taskfile's &tf_unifi_env anchor.
+  - project: eric/weisssrv-lib
+    ref: v0.18.0
+    file: /ci/validate/terraform-drift-plan.yml
+    inputs:
+      job_name: unifi-drift-plan
+      module_dir: "terraform/unifi"
+      state_name: "unifi"
+      tags: ["infrastructure"]
+      changes:
+        - "terraform/unifi/**/*"
+      secrets_exports: |
+        TF_VAR_unifi_api_url=$(op read "op://Homelab/UniFi Controller/url")
+        TF_VAR_unifi_api_key=$(op read "op://Homelab/UniFi Controller/api-key")
+        TF_VAR_wlan_passphrase_home=$(op read "op://Homelab/WiFi TheRevengers/password")
+        TF_VAR_wlan_passphrase_iot=$(op read "op://Homelab/WiFi Panopticon/password")
+        TF_VAR_wlan_passphrase_guest=$(op read "op://Homelab/WiFi kugel-tikka-masala/password")
+        TF_VAR_wlan_passphrase_work=$(op read "op://Homelab/WiFi DunderMiffLAN/password")
+        export TF_VAR_unifi_api_url TF_VAR_unifi_api_key TF_VAR_wlan_passphrase_home \
+          TF_VAR_wlan_passphrase_iot TF_VAR_wlan_passphrase_guest TF_VAR_wlan_passphrase_work
 
   # yaml-lint: the family profile at lint/yamllint-relaxed.yml, not the template
   # default `-d relaxed` (yamllint's own shipped profile). `targets:` and
   # `changes:` must name the same surface — widen both together.
   - project: eric/weisssrv-lib
-    ref: v0.17.1
+    ref: v0.18.0
     file: /ci/lint/yaml-lint.yml
     inputs:
       config: "-c lint/yamllint-relaxed.yml"
@@ -1251,11 +1190,23 @@ include:
         - "taskfiles/**/*"
         - "lint/**/*"
 
+  # comment-length: the whole tree at the library's limits, with this repo's
+  # scope config. `changes:` takes the library default `["**/*"]`: the
+  # convention applies to every file.
+  - project: eric/weisssrv-lib
+    ref: v0.18.0
+    file: /ci/lint/comment-length.yml
+    inputs:
+      # `paths` empty so the config is the only source of roots, which is the
+      # invocation `task lint:comment-length` runs.
+      paths: ""
+      config: "--config scripts/comment-length.yaml"
+
   # shellcheck: `find_dir` empty and no `ansible/*.sh` — the roles' shell ships
   # in the collection, where the library's own pipeline checks it. What is left
   # is scripts/ plus the terraform helper scripts.
   - project: eric/weisssrv-lib
-    ref: v0.17.1
+    ref: v0.18.0
     file: /ci/lint/shellcheck.yml
     inputs:
       direct_globs: "scripts/*.sh terraform/*/*.sh"
@@ -1271,7 +1222,7 @@ include:
   # syntax-check rule runs `ansible-playbook --syntax-check` per playbook. No
   # `config:` input: ansible-lint finds ./.ansible-lint from its own cwd.
   - project: eric/weisssrv-lib
-    ref: v0.17.1
+    ref: v0.18.0
     file: /ci/lint/ansible-lint.yml
     inputs:
       targets: "ansible/"
@@ -1292,7 +1243,7 @@ include:
   # ruff_version is explicit so a library default bump cannot move CI off
   # requirements.txt. `changes:` must name the same surface as `targets:` — widen both.
   - project: eric/weisssrv-lib
-    ref: v0.17.1
+    ref: v0.18.0
     file: /ci/lint/python-lint.yml
     inputs:
       targets: "scripts kubernetes"
@@ -1304,47 +1255,45 @@ include:
         - "ruff.toml"
         - ".gitlab-ci.yml"
 
-  # docs-link-check: the local scripts/check-doc-links.py scans every TRACKED
-  # *.md, so the trigger list is `**/*.md`-wide — the library default covers
-  # only docs/ and the top-level READMEs.
+  # docs-link-check: `changes:` is the library default plus this file, which
+  # carries the job's image, ref and CHECK_DOC_LINKS_* inputs.
   - project: eric/weisssrv-lib
-    ref: v0.17.1
+    ref: v0.18.0
     file: /ci/lint/docs-link-check.yml
     inputs:
       changes:
         - "**/*.md"
         - "scripts/check-doc-links.py"
-        # The job's image, ref and CHECK_DOC_LINKS_* inputs live here, so a
-        # change to how the gate runs has to re-run it.
         - ".gitlab-ci.yml"
 
   # version-check: reports available pin updates and changes nothing. `changes`
-  # is not passed: the library default `["**/*"]` matches every MR, while `[]`
-  # would match nothing and delete the job silently.
+  # is not passed — the library default `["**/*"]` matches every MR, `[]` would
+  # delete the job. rc=1 (updates available) stays yellow; rc=2 reds the sweep.
   - project: eric/weisssrv-lib
-    ref: v0.17.1
+    ref: v0.18.0
     file: /ci/maintenance/version-check.yml
     inputs:
       setup_command: 'pip install --quiet "pyyaml==${PYYAML_VERSION}" requests==2.34.2'
       check_command: "python3 ./scripts/version-check-ci.py"
+      soft_fail_exit_codes: [1]
 
   # python-tests: pytest scripts/. Most of the suite are drift guards reading
   # files outside scripts/, so the `changes:` list below is hand-maintained by
   # tracing opens under `pytest scripts/`. setup_command clones the library.
   - project: eric/weisssrv-lib
-    ref: v0.17.1
+    ref: v0.18.0
     file: /ci/test/python-tests.yml
     inputs:
       pytest_version: "9.1.1"
       pyyaml_version: "6.0.2"
-      # git for the setup_command clone; jq for test_deploy_verify_lib.py, whose
-      # classifiers fall back to a sentinel without it, and the warning-events
-      # coverage in test_collect_state_lib.py, which skips itself without it.
-      apt_packages: "git jq"
+      # git for the setup_command clone. jq comes from ci-fetch-tools.py, which
+      # drops it in $CI_PROJECT_DIR/.bin: test_deploy_verify_lib.py falls back to
+      # a sentinel without it, and test_collect_state_lib.py skips itself.
+      apt_packages: "git"
       # ansible-core via the ansible pin: test_deploy_preflight.py drives
       # `ansible-playbook --list-tasks` and FAILS rather than skips without it.
       pip_packages: "ansible==$ANSIBLE_VERSION"
-      setup_command: 'git clone --depth 1 --branch "$WEISSSRV_LIB_REF" "$CI_SERVER_URL/eric/weisssrv-lib.git" "$WEISSSRV_LIB_PATH"'
+      setup_command: 'git clone --depth 1 --branch "$WEISSSRV_LIB_REF" "$CI_SERVER_URL/eric/weisssrv-lib.git" "$WEISSSRV_LIB_PATH" && python3 scripts/ci-fetch-tools.py jq'
       changes:
         - "scripts/**/*"
         - "ansible/inventories/prod/**/*"
@@ -1392,7 +1341,7 @@ include:
   # ConfigMap; needs a root runner for gettext-base). extra_validation runs
   # scripts/flux-corpus-gates.sh, the same gates `task flux:lint` runs.
   - project: eric/weisssrv-lib
-    ref: v0.17.1
+    ref: v0.18.0
     file: /ci/validate/flux-lint.yml
     inputs:
       substitute: true
@@ -1409,6 +1358,12 @@ include:
       # ConfigMap (cluster-config) this cluster needs (docs/13-ci-cd.md).
       flux_render_script: "scripts/flux-env.sh"
       skipped_script: "scripts/kubeconform-skipped.py"
+      # Same CRD-catalog commit taskfiles/flux.yml pins, so the local gate and
+      # this job accept one schema set. test_site_configs.py holds them equal.
+      crd_catalog_ref: "ad3b08c5045129d7bb1eeffd8e61719b2c8dd1e2"
+      # Baseline of kinds allowed to validate against no schema. Set, so an
+      # unreachable catalog reds the job instead of degrading it to core kinds.
+      expected_skipped_file: "scripts/kubeconform-expected-skipped.txt"
       # The library default is the first two entries only; the rest are the gate
       # scripts and site data this job's behaviour is defined by. Without them an
       # MR that loosens a policy file skips flux-lint and merges green.
@@ -1423,11 +1378,15 @@ include:
         - "scripts/check-dockerconfigjson.py"
         - "scripts/check-secretstore-scope.py"
         - "scripts/check-pvc-storageclass.py"
+        - "scripts/check-ephemeral-storage-cap.py"
         - "scripts/check-nfs-tls.py"
+        # Imported from its own directory by the corpus gates above.
+        - "scripts/gate_common.py"
         - "scripts/validate-helm-values.py"
         - "scripts/flux-render.sh"
         - "scripts/flux-env.sh"
         - "scripts/kubeconform-skipped.py"
+        - "scripts/kubeconform-expected-skipped.txt"
         - "scripts/flux-corpus-gates.sh"
         # This file carries the job's own inputs: the extra_validation argv and
         # the kubeconform/kustomize/helm pins. ci-pin-parity covers the kustomize
@@ -1439,7 +1398,7 @@ include:
   # CI variables rather than 1Password. `gate` decides whether the job is
   # created, so it must name an unprotected variable (docs/13).
   - project: eric/weisssrv-lib
-    ref: v0.17.1
+    ref: v0.18.0
     file: /ci/review/pr-agent.yml
     inputs:
       secrets_source: "env"
@@ -1468,6 +1427,14 @@ python-tests:
   variables:
     WEISSSRV_LIB_PATH: "$CI_PROJECT_DIR/.tmp/weisssrv-lib"
     WEISSSRV_INFRA_ROLES: "$CI_PROJECT_DIR/.tmp/weisssrv-lib/ansible_collections/weisssrv/infra/roles"
+
+# Additive override: the library job carries `needs: []`, which makes it a
+# second fan-out root competing for the runner pod quota. Queued behind
+# yaml-lint instead, optional because yaml-lint is path-filtered.
+comment-length:
+  needs:
+    - job: yaml-lint
+      optional: true
 
 # GATE STAGE - validation gate for deploy jobs. Every deploy job needs it
 # non-optionally, and it needs every applicable lint/validate/test/build/security
@@ -1527,9 +1494,15 @@ validation-gate:
       optional: true
     - job: repo-policy-checks
       optional: true
+    - job: integration-matrix-coverage
+      optional: true
     - job: docs-link-check
       optional: true
     - job: python-lint
+      optional: true
+    - job: comment-length
+      optional: true
+    - job: role-inputs
       optional: true
     # Image builds: both are path-gated (optional), and both trigger on the same
     # all.yml that drives the deploys — without these, the pipeline that bumps
@@ -2399,8 +2372,8 @@ maintenance-verify:
     - !reference [.maintenance-manual-rules, rules]
 
 # Deliberate fork of weisssrv-lib's ci/maintenance/version-bump-bot.yml, and the
-# only library job this repo defines locally: the library job exposes none of
-# the four inputs this bot needs (docs/13 § Version bump bot).
+# only library job this repo defines locally: the library job takes no
+# variables / before_script / rules inputs (docs/13 § Version bump bot).
 version-bump-bot:
   # Consumes no artifacts (every input comes from the repo + 1Password at
   # runtime), so it starts immediately instead of waiting out earlier stages.

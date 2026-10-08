@@ -10,6 +10,7 @@ import argparse
 import ast
 import fnmatch
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -63,15 +64,68 @@ NAME_MARKERS = {
 
 
 # Copier renders a template by dropping this suffix, so `main.tf.jinja` is
-# resolved as `main.tf`.
+# resolved as `main.tf`. A conditional path component goes with it: left in
+# place, `{% if x %}ci.yml{% endif %}` reads as the suffix `.yml{% endif %}`.
 TEMPLATE_SUFFIX = ".jinja"
+JINJA_STATEMENT = re.compile(r"\{%.*?%\}", re.S)
+JINJA_EXPRESSION = re.compile(r"\{\{.*?\}\}", re.S)
+# `${#` is bash's array length, not a comment opener.
+JINJA_COMMENT_TAG = re.compile(r"(?<!\$)\{#.*?#\}", re.S)
+# A `{% raw %}` body is literal text: jinja reads no tags inside it, and an
+# f-string's `{{` there is Python.
+JINJA_RAW = re.compile(
+    r"(?P<open>\{%-?\s*raw\s*-?%\})(?P<body>.*?)(?P<close>\{%-?\s*endraw\s*-?%\})",
+    re.S,
+)
+# A .jinja source carries `{# #}` comments whatever language it renders into.
+JINJA_BLOCK = (("{#", "#}"),)
+
+# Fenced-code languages resolved to the suffix the marker tables are keyed on.
+# A language absent here is skipped, so a new one opts in deliberately.
+FENCE_LANGUAGES = {
+    "bash": ".sh",
+    "cfg": ".cfg",
+    "conf": ".conf",
+    "console": ".sh",
+    "dockerfile": "Dockerfile",
+    "go": ".go",
+    "hcl": ".tf",
+    "ini": ".ini",
+    "javascript": ".js",
+    "jinja": ".j2",
+    "js": ".js",
+    "j2": ".j2",
+    "py": ".py",
+    "python": ".py",
+    "sh": ".sh",
+    "shell": ".sh",
+    "terraform": ".tf",
+    "tf": ".tf",
+    "toml": ".toml",
+    "ts": ".ts",
+    "typescript": ".ts",
+    "yaml": ".yaml",
+    "yml": ".yaml",
+    "zsh": ".sh",
+}
+# Markdown carries no comments of its own; `--scan-fenced-code` reaches the
+# snippets inside it, which are copied into real files.
+MARKDOWN_SUFFIXES = (".md", ".markdown")
+FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})\s*([^\s`]*)")
+
+# A Dockerfile's leading `# syntax=` / `# escape=` lines are parser directives:
+# machine-readable config, so they neither count as content nor join the header
+# block beneath them. The format allows them only at the top of the file.
+PARSER_DIRECTIVE = re.compile(r"^#\s*(?:syntax|escape)\s*=", re.IGNORECASE)
+JINJA_TAG_LINE = re.compile(r"^\{[%#].*[%#]\}$")
 
 
 def _rendered_name(path: Path) -> Path:
-    """The name a template source renders into: `main.tf.jinja` -> `main.tf`."""
+    """The name a template source renders into: `main.tf.jinja` -> `main.tf`,
+    `{% if x %}ci.yml{% endif %}.jinja` -> `ci.yml`."""
     name = path.name
     if name.endswith(TEMPLATE_SUFFIX) and len(name) > len(TEMPLATE_SUFFIX):
-        name = name[: -len(TEMPLATE_SUFFIX)]
+        name = JINJA_STATEMENT.sub("", name[: -len(TEMPLATE_SUFFIX)]) or name
     return Path(name)
 
 
@@ -90,6 +144,13 @@ def markers_for(path: Path):
     if name.name.startswith("Dockerfile."):
         return NAME_MARKERS["Dockerfile"]
     return None
+
+
+def takes_parser_directives(path: Path) -> bool:
+    """Whether this file's format reads leading `# syntax=` / `# escape=` lines
+    as parser directives rather than as comments."""
+    name = _rendered_name(path).name
+    return name == "Dockerfile" or name.startswith("Dockerfile.")
 
 # Tool caches, scratch trees and third-party trees a repo does not author.
 # Written without a leading `*/` so they also match at the root of a relative
@@ -156,7 +217,7 @@ def _record(findings: list, path: Path, line: int, body: list, limits: Limits) -
 
 
 def line_comment_findings(
-    path: Path, text: str, markers: tuple, limits: Limits
+    path: Path, text: str, markers: tuple, limits: Limits, directives: bool = False
 ) -> list:
     """Runs of whole-line comments longer than their limit.
 
@@ -166,11 +227,21 @@ def line_comment_findings(
     findings: list = []
     run: list = []
     start = 0
+    preamble = directives
+    before_body = True
     for number, raw in enumerate(text.splitlines(), start=1):
         stripped = raw.strip()
+        if preamble:
+            if PARSER_DIRECTIVE.match(stripped):
+                continue
+            preamble = False
         is_comment = bool(stripped) and stripped.startswith(markers)
-        if number == 1 and stripped.startswith("#!"):
+        # A shebang is a shebang while only blank lines or jinja statements
+        # (`{% %}`, the secrets seam a *.sh.jinja opens with) precede it.
+        if before_body and stripped.startswith("#!"):
             is_comment = False
+        if stripped and not JINJA_TAG_LINE.match(stripped):
+            before_body = False
         if is_comment:
             if not run:
                 start = number
@@ -251,13 +322,75 @@ def block_comment_findings(
     return findings
 
 
+def _newlines(text: str) -> str:
+    """Only the line breaks `text` spanned, so a line number still holds."""
+    return "\n" * text.count("\n")
+
+
+def _neutralize_tags(text: str) -> str:
+    """One stretch of template with its jinja tags replaced.
+
+    A statement and a comment leave their line breaks; a `{{ }}` expression
+    also leaves a `_` name, because the code around it needs one.
+    """
+    def newlines(match) -> str:
+        return _newlines(match.group(0))
+
+    def name(match) -> str:
+        return "_" + newlines(match)
+
+    text = JINJA_COMMENT_TAG.sub(newlines, text)
+    text = JINJA_STATEMENT.sub(newlines, text)
+    return JINJA_EXPRESSION.sub(name, text)
+
+
+def _neutralize_jinja(text: str) -> str:
+    """A template with its jinja tags replaced so it parses as Python.
+
+    A `{% raw %}` body is kept verbatim, only its tags dropped: jinja reads no
+    tags inside it, so its `{{` belongs to the Python it renders.
+    """
+    pieces: list = []
+    cursor = 0
+    for raw in JINJA_RAW.finditer(text):
+        pieces.append(_neutralize_tags(text[cursor:raw.start()]))
+        pieces.append(
+            _newlines(raw.group("open"))
+            + raw.group("body")
+            + _newlines(raw.group("close"))
+        )
+        cursor = raw.end()
+    pieces.append(_neutralize_tags(text[cursor:]))
+    return "".join(pieces)
+
+
+def parse_python(text: str, template: bool = False):
+    """The AST of Python source, or None when it does not parse.
+
+    A template source is retried with its jinja neutralized, so a
+    `main.py.jinja` has its docstrings checked like the file it renders into.
+    """
+    try:
+        return ast.parse(text)
+    except SyntaxError:
+        if not template:
+            return None
+    try:
+        return ast.parse(_neutralize_jinja(text))
+    except SyntaxError:
+        return None
+
+
 def docstring_findings(
-    path: Path, text: str, limits: Limits, unparsed: list | None = None
+    path: Path,
+    text: str,
+    limits: Limits,
+    unparsed: list | None = None,
+    template: bool = False,
 ) -> list:
     """Python module, class and function docstrings longer than their limit."""
-    try:
-        tree = ast.parse(text)
-    except SyntaxError:
+    tree = parse_python(text, template)
+    if tree is None:
         if unparsed is not None:
             unparsed.append(path)
         return []
@@ -278,17 +411,81 @@ def docstring_findings(
     return findings
 
 
+def _shift(findings: list, offset: int) -> list:
+    """The same findings, numbered against the enclosing document."""
+    return [
+        Finding(f.path, f.line + offset, f.length, f.limit, f.first) for f in findings
+    ]
+
+
+def fenced_blocks(text: str) -> list:
+    """(language, body, first body line number) per fenced code block."""
+    blocks: list = []
+    lines = text.splitlines()
+    number = 0
+    while number < len(lines):
+        opener = FENCE.match(lines[number])
+        if not opener:
+            number += 1
+            continue
+        marker, language = opener.group(1), opener.group(2).lower()
+        start = number + 1
+        number = start
+        while number < len(lines):
+            closer = FENCE.match(lines[number])
+            # The closer repeats the opener's character, at least as long.
+            if closer and closer.group(1)[0] == marker[0] and len(closer.group(1)) >= len(marker):
+                break
+            number += 1
+        blocks.append((language, lines[start:number], start))
+        number += 1
+    return blocks
+
+
+def fenced_findings(path: Path, text: str, limits: Limits) -> list:
+    """Over-long comment blocks inside the fenced code of a Markdown document."""
+    findings: list = []
+    for language, body, start in fenced_blocks(text):
+        suffix = FENCE_LANGUAGES.get(language)
+        if not suffix:
+            continue
+        markers = LINE_MARKERS.get(suffix) or NAME_MARKERS.get(suffix)
+        delimiters = BLOCK_DELIMITERS.get(suffix) or ()
+        if not markers and not delimiters:
+            continue
+        snippet = "\n".join(body)
+        if markers:
+            findings += _shift(
+                line_comment_findings(path, snippet, markers, limits), start
+            )
+        if delimiters:
+            findings += _shift(
+                block_comment_findings(path, snippet, delimiters, limits), start
+            )
+    return findings
+
+
+def is_markdown(path: Path) -> bool:
+    """Whether the path renders into a Markdown document."""
+    return suffix_for(path).lower() in MARKDOWN_SUFFIXES
+
+
 def check_file(
     path: Path,
     limits: Limits,
     unreadable: list | None = None,
     unparsed: list | None = None,
+    fenced: bool = False,
 ) -> list:
     """Every over-long comment block in one file."""
     suffix = suffix_for(path)
     markers = markers_for(path)
-    delimiters = BLOCK_DELIMITERS.get(suffix)
-    if not markers and not delimiters:
+    delimiters = BLOCK_DELIMITERS.get(suffix) or ()
+    template = path.name.endswith(TEMPLATE_SUFFIX)
+    if template:
+        delimiters = tuple(dict.fromkeys(delimiters + JINJA_BLOCK))
+    scan_fences = fenced and is_markdown(path)
+    if not markers and not delimiters and not scan_fences:
         return []
     try:
         text = path.read_text(encoding="utf-8")
@@ -297,12 +494,20 @@ def check_file(
             unreadable.append(path)
         return []
     findings: list = []
+    if scan_fences:
+        findings.extend(fenced_findings(path, text, limits))
     if markers:
-        findings.extend(line_comment_findings(path, text, markers, limits))
+        findings.extend(
+            line_comment_findings(
+                path, text, markers, limits, takes_parser_directives(path)
+            )
+        )
     if delimiters:
         findings.extend(block_comment_findings(path, text, delimiters, limits))
     if suffix == ".py":
-        findings.extend(docstring_findings(path, text, limits, unparsed))
+        findings.extend(
+            docstring_findings(path, text, limits, unparsed, template)
+        )
     return sorted(findings, key=lambda f: (str(f.path), f.line))
 
 
@@ -334,7 +539,7 @@ def matches(path: Path, patterns: tuple) -> bool:
     )
 
 
-def collect(roots: list, include: tuple, exclude: tuple) -> list:
+def collect(roots: list, include: tuple, exclude: tuple, fenced: bool = False) -> list:
     """Every candidate file under `roots`, filtered by the glob sets."""
     found: list = []
     seen: set = set()
@@ -343,7 +548,12 @@ def collect(roots: list, include: tuple, exclude: tuple) -> list:
         for candidate in candidates:
             if not candidate.is_file():
                 continue
-            if not markers_for(candidate) and suffix_for(candidate) not in BLOCK_DELIMITERS:
+            scannable = (
+                markers_for(candidate)
+                or suffix_for(candidate) in BLOCK_DELIMITERS
+                or (fenced and is_markdown(candidate))
+            )
+            if not scannable:
                 continue
             if exclude and matches(candidate, exclude):
                 continue
@@ -361,9 +571,16 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         description="Fail a comment block over three content lines.",
         epilog=(
-            "Blank lines and comment markers do not count; a block whose first "
-            "line starts with 'CRITICAL:' may run to eight. Config keys: paths, "
-            "include, exclude, max_lines, critical_max_lines."
+            "Blank lines and comment markers do not count, and a blank line is "
+            "what ends a block: a bare '#' keeps the same block going. A block "
+            "whose first line starts with 'CRITICAL:' may run to eight. A "
+            "Dockerfile's leading '# syntax=' / '# escape=' parser directives "
+            "are not comments. A .py.jinja template has its jinja tags "
+            "neutralized before it is parsed, and one that still does not "
+            "parse is a warning unless --strict-jinja. Markdown is scanned "
+            "only with --scan-fenced-code, "
+            "which reads the comments inside its fenced snippets. Config keys: "
+            "paths, include, exclude, max_lines, critical_max_lines, scan_fenced_code."
         ),
     )
     parser.add_argument("paths", nargs="*", type=Path, help="files or directories to scan")
@@ -375,6 +592,19 @@ def main(argv=None) -> int:
         "--critical-max",
         type=int,
         help=f"lines for a CRITICAL: block (default {CRITICAL_MAX_LINES})",
+    )
+    parser.add_argument(
+        "--strict-jinja",
+        action="store_true",
+        help="exit 2 when a .jinja template source still does not parse as "
+             "Python once its jinja tags are neutralized, rather than warning",
+    )
+    parser.add_argument(
+        "--scan-fenced-code",
+        action="store_true",
+        default=None,
+        help="also apply the limit inside Markdown fenced code blocks, so a "
+             "wiring snippet people copy into a real file is held to it",
     )
     args = parser.parse_args(argv)
 
@@ -405,6 +635,10 @@ def main(argv=None) -> int:
         print("ERROR: max_lines must be >= 1 and <= critical_max_lines", file=sys.stderr)
         return 2
 
+    fenced = (
+        args.scan_fenced_code if args.scan_fenced_code is not None
+        else bool(config.get("scan_fenced_code", False))
+    )
     include = tuple(args.include) + tuple(config.get("include", ()))
     exclude = tuple(args.exclude) + tuple(config.get("exclude", ())) + DEFAULT_EXCLUDES
     roots = args.paths or [Path(p) for p in config.get("paths", ())] or [Path(".")]
@@ -413,7 +647,7 @@ def main(argv=None) -> int:
             print(f"ERROR: path not found: {root}", file=sys.stderr)
             return 2
 
-    files = collect(roots, include, exclude)
+    files = collect(roots, include, exclude, fenced)
     if not files:
         print("ERROR: no scannable files found", file=sys.stderr)
         return 2
@@ -422,7 +656,7 @@ def main(argv=None) -> int:
     unreadable: list = []
     unparsed: list = []
     for path in files:
-        findings.extend(check_file(path, limits, unreadable, unparsed))
+        findings.extend(check_file(path, limits, unreadable, unparsed, fenced))
 
     if unreadable:
         print(f"ERROR: {len(unreadable)} file(s) could not be decoded and were "
@@ -431,10 +665,22 @@ def main(argv=None) -> int:
             print(f"  {path}", file=sys.stderr)
         return 2
 
-    if unparsed:
-        print(f"ERROR: {len(unparsed)} file(s) could not be parsed as Python; "
+    templates = [] if args.strict_jinja else [
+        path for path in unparsed if path.name.endswith(TEMPLATE_SUFFIX)
+    ]
+    if templates:
+        # A template the gate cannot parse is the template's problem, not the
+        # consumer's pipeline: its comment blocks are still checked.
+        names = ", ".join(str(path) for path in templates)
+        print(f"WARNING: {len(templates)} jinja template(s) do not parse as "
+              f"Python even with their tags neutralized; their docstrings were "
+              f"NOT checked: {names}", file=sys.stderr)
+
+    unparsable = [path for path in unparsed if path not in templates]
+    if unparsable:
+        print(f"ERROR: {len(unparsable)} file(s) could not be parsed as Python; "
               "their docstrings were NOT checked:", file=sys.stderr)
-        for path in unparsed:
+        for path in unparsable:
             print(f"  {path}", file=sys.stderr)
         return 2
 

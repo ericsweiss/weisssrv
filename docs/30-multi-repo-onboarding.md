@@ -262,7 +262,7 @@ reason `tenant ESO bootstrap (docs/30)` in the same MR as the wiring file.
 ### 4. Add the Wiring File
 
 Create `kubernetes/clusters/weisssrv/tenants/<repo-slug>.yaml`.
-`kubernetes/clusters/weisssrv/tenants/README.md` § *1Password-backed tenant*
+`kubernetes/clusters/weisssrv/tenants/README.md` § Example: 1Password-backed tenant (Option C — shared Connect, shared vault)
 holds the canonical template — copy it and substitute `<repo-slug>` throughout.
 It wires, in one file: the Namespace with its PSA labels, a `ClusterSecretStore`
 scoped to that namespace by `conditions` (a cluster-scoped store without them is

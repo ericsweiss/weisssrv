@@ -24,10 +24,6 @@ EXEMPT = {
     "scripts/verify-nextcloud.sh": (
         "smoke probe URLs; convert with cluster-config-value.sh"
     ),
-    "scripts/check-nfs-tls.py": (
-        "failure messages naming the wildcard cert, not an address the gate "
-        "resolves"
-    ),
     "taskfiles/home-assistant.yml": (
         "smoke probe URLs; convert with cluster-config-value.sh"
     ),

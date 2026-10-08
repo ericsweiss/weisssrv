@@ -418,16 +418,16 @@ spec:
         # Collector meta-failure. The absent() arm makes an undeployed collector
         # loud instead of silently blind (mirrors the other *CollectorStale).
         - alert: SMARTCollectorStale
-          # The success arm catches the collector refreshing its sentinel while
-          # publishing zero device series (smartctl gone, no device enumerated).
-          # The max_over_time guard keeps a host with no SMART devices quiet.
+          # The success arm catches a refreshed sentinel with a failed scan or
+          # unparsed devices. The devices_scanned guard keeps a host with no
+          # SMART devices quiet.
           expr: >-
             (time() - smartmon_collector_last_success_seconds > 900)
             or absent(smartmon_collector_last_success_seconds)
             or (
               smartmon_collector_success == 0
               and on(instance) (
-                max_over_time(smartmon_collector_success[7d]) > 0
+                smartmon_collector_devices_scanned > 0
               )
             )
           for: 5m
@@ -439,7 +439,7 @@ spec:
             description: >-
               smartmon_collector_last_success_seconds is stale (>15m),
               entirely absent, or the collector reports success 0
-              (smartctl unrunnable or no device enumerated) — the SMART
+              (smartctl unrunnable, scan failed, or no device parsed) — the SMART
               device alerts on this host are serving stale or no
               inputs. Check
               `journalctl -u smartmon-collector.service` and

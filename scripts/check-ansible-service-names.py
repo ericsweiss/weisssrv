@@ -16,6 +16,18 @@ except ImportError:  # pragma: no cover - environment guard
     print("ERROR: PyYAML required: pip install pyyaml", file=sys.stderr)
     raise SystemExit(2) from None
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+try:
+    from ci_yaml import NullTagCILoader  # noqa: E402  (from this script's own directory)
+except ImportError:
+    print(
+        "ERROR: ci_yaml.py must sit next to this script — vendor both "
+        "(see weisssrv-lib scripts/vendorable-paths.yml).",
+        file=sys.stderr,
+    )
+    raise SystemExit(2) from None
+
 SERVICE_MODULES = {
     "service",
     "systemd",
@@ -32,13 +44,6 @@ UNIT_SUFFIXES = (
     ".service", ".socket", ".target", ".device", ".mount", ".automount",
     ".swap", ".path", ".timer", ".slice", ".scope",
 )
-
-
-class Loader(yaml.SafeLoader):
-    """SafeLoader tolerating the `!vault` tag inventory files may carry."""
-
-
-Loader.add_multi_constructor("!", lambda loader, suffix, node: None)
 
 
 def unit_names(args) -> list[str]:
@@ -97,7 +102,7 @@ def main() -> int:
     unparseable: list[str] = []
     for path in files:
         try:
-            docs = list(yaml.load_all(path.read_text(), Loader=Loader))
+            docs = list(yaml.load_all(path.read_text(), Loader=NullTagCILoader))
         except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
             # A file the gate cannot read is not scanned, so it cannot pass.
             unparseable.append(f"{path}: {exc}")

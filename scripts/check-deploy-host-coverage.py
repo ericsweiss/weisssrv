@@ -22,11 +22,8 @@ except ImportError:  # pragma: no cover - environment guard
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 try:
     import inventory_tree  # noqa: E402
-    from ci_playbook_invocations import (  # noqa: E402
-        load_ci,
-        parse_invocations,
-        script_lines,
-    )
+    from ci_playbook_invocations import parse_invocations  # noqa: E402
+    from ci_yaml import load_ci, script_lines  # noqa: E402
 except ImportError as exc:  # pragma: no cover - environment guard
     sys.exit(f"{exc.name}.py must sit next to this script")
 

@@ -54,7 +54,12 @@
       # Required: a digest-bearing image name must still answer at the `docker`
       # host DOCKER_HOST points at.
       alias: docker
-      command: ["--insecure-registry=registry-cache.registry-cache.svc.cluster.local:5000"]
+      # --mtu: the daemon's bridge inside a pod must not exceed the pod
+      # interface MTU (1420 on flannel over WireGuard); 1500 black-holes large
+      # TLS frames.
+      command:
+        - "--insecure-registry=registry-cache.registry-cache.svc.cluster.local:5000"
+        - "--mtu=1420"
   variables:
     DOCKER_HOST: tcp://docker:2375
     DOCKER_TLS_CERTDIR: ""
@@ -98,6 +103,10 @@
     - mkdir -p "$CI_PROJECT_DIR/junit"
   artifacts:
     when: always
+    # The junit report glob does not match a subdirectory, so the attempts
+    # molecule-retry.sh stashes survive only as an artifact path.
+    paths:
+      - junit/failed-attempt-*/
     reports:
       junit: junit/*.xml
   # Above MOL_MAX x worst-case attempt, not at it: with no headroom a retry
@@ -115,6 +124,7 @@
     - python3 "$CI_PROJECT_DIR/scripts/sanitize-junit-expected-failures.py"
       --junit-dir "$CI_PROJECT_DIR/junit"
       --expectations "$CI_PROJECT_DIR/ansible/integration-tests/$TEST/molecule/default/expected-junit-failures.txt"
+      --strict
 
 integration-tests:
   extends: .integration-test-job

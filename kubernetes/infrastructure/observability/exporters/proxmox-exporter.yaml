@@ -86,6 +86,9 @@ spec:
               # No CPU limit (docs/33): the exporter bursts during scrape and CFS
               # throttling trips CPUThrottlingHigh. The memory limit stays.
               memory: 256Mi
+              # Above the emptyDir cap, which shares this budget with the rotated
+              # container logs; at the cap the kubelet evicts first.
+              ephemeral-storage: 128Mi
       volumes:
         - name: tmp
           emptyDir:

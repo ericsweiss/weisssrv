@@ -147,15 +147,17 @@ def preserve_reason(pod: dict) -> str:
     """The PRESERVE_REASONS reason to keep this pod for, or "" if it is sweepable.
 
     Checked at both levels: Kubernetes sets Evicted on the pod, while OOMKilled
-    only ever appears on a container status.
+    only ever appears on a container status, in any of the three status lists.
     """
-    reason = pod.get("status", {}).get("reason", "")
+    status_block = pod.get("status") or {}
+    reason = status_block.get("reason", "")
     if reason in PRESERVE_REASONS:
         return reason
-    for status in pod.get("status", {}).get("containerStatuses") or []:
-        terminated = (status.get("state") or {}).get("terminated") or {}
-        if terminated.get("reason") in PRESERVE_REASONS:
-            return terminated["reason"]
+    for key in ("containerStatuses", "initContainerStatuses", "ephemeralContainerStatuses"):
+        for status in status_block.get(key) or []:
+            terminated = (status.get("state") or {}).get("terminated") or {}
+            if terminated.get("reason") in PRESERVE_REASONS:
+                return terminated["reason"]
     return ""
 
 

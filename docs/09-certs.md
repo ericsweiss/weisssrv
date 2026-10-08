@@ -65,14 +65,23 @@ You must manually issue the certificate once:
 
 ```bash
 # From the workstation, where the 1Password CLI is signed in - dns-01 has no `op`
-CF_Token=$(op read "op://Homelab/Cloudflare DNS Token/credential")
-CF_Account_ID=$(op read "op://Homelab/Cloudflare DNS Token/username")
+CF_TOKEN=$(op read "op://Homelab/Cloudflare DNS Token/credential")
+CF_ACCOUNT_ID=$(op read "op://Homelab/Cloudflare DNS Token/username")
 
-ssh eric@10.0.10.150 "sudo CF_Token='$CF_Token' CF_Account_ID='$CF_Account_ID' \
-  /root/.acme.sh/acme.sh --issue --dns dns_cf \
-  -d esweiss.com \
-  -d '*.esweiss.com' \
-  --keylength ec-256"
+# The credentials reach the host on stdin as a mode-0600 env file that the remote
+# shell sources and then deletes. They never appear in ssh or sudo argv, so `ps`
+# on either side and the sudo log never see them.
+ssh eric@10.0.10.150 'sudo sh -s' <<EOF
+umask 077
+rm -f /root/cf-dns.env
+cat > /root/cf-dns.env <<'ENV'
+CF_Token=$CF_TOKEN
+CF_Account_ID=$CF_ACCOUNT_ID
+ENV
+set -a; . /root/cf-dns.env; set +a
+rm -f /root/cf-dns.env
+/root/.acme.sh/acme.sh --issue --dns dns_cf -d esweiss.com -d '*.esweiss.com' --keylength ec-256
+EOF
 ```
 
 The credentials are only needed for the first issuance or after the Cloudflare

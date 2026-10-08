@@ -152,6 +152,33 @@ tasks:
     cmds:
       - python3 scripts/check-versions.py --check-coverage
 
+  version-checksums:
+    desc: Re-hash every checksum-coupled pin against the artefact it names (downloads them)
+    preconditions:
+      - *needs_pyyaml
+    cmds:
+      - python3 scripts/check-version-checksums.py
+
+  partner-pins:
+    desc: "Assert no coupled pin moved without its paired checksum, digest or git SHA (mirrors the partner-pins check in CI repo-policy-checks)"
+    # BASE defaults to the merge base with main, the same comparison the CI job
+    # makes against $CI_MERGE_REQUEST_DIFF_BASE_SHA.
+    vars:
+      BASE: '{{.BASE | default "origin/main"}}'
+    cmds:
+      - python3 scripts/check-versions.py --check-partner-pins "$(git merge-base HEAD {{.BASE}})"
+    preconditions:
+      - *needs_pyyaml
+      - sh: git rev-parse --verify {{.BASE}}
+        msg: "{{.BASE}} is not a known ref — pass BASE=<ref> (e.g. BASE=main)"
+
+  helm-repo-parity:
+    desc: Hold every chart-repo URL equal to the HelmRepository Flux pulls from
+    preconditions:
+      - *needs_pyyaml
+    cmds:
+      - python3 scripts/check-helm-repo-parity.py
+
   flux-version-pin:
     desc: Assert the CI flux CLI pin, the versions ConfigMap and gotk-components agree (mirrors the flux-version-pin check in CI repo-policy-checks)
     # A CLI newer than the committed gotk-components installs a control plane
@@ -210,6 +237,47 @@ tasks:
     cmds:
       - python3 scripts/check-cluster-literals.py
 
+  cluster-invariants:
+    desc: "The inventory's addresses are consistent: no duplicate vmid or address, no host on a VIP or off the LAN, every alert-rule instance a real host"
+    preconditions:
+      - *needs_pyyaml
+    cmds:
+      # --allow-instance: blackbox probe targets, not Ansible-managed hosts —
+      # the internet witness and the two switches on the management VLAN.
+      - >-
+        python3 scripts/check-cluster-invariants.py
+        --rules-dir kubernetes/infrastructure/observability/rules
+        --allow-instance 1.1.1.1
+        --allow-instance 10.0.1.2
+        --allow-instance 10.0.1.3
+
+  dashboards:
+    desc: Validate every Grafana dashboard JSON and its configMapGenerator registration
+    preconditions:
+      - *needs_pyyaml
+    cmds:
+      - python3 scripts/check-dashboards.py
+
+  role-inputs:
+    desc: "Every invoked collection role has its asserted inputs set (mirrors the CI role-inputs job)"
+    preconditions:
+      - *needs_pyyaml
+      - sh: python3 -c "import jinja2" 2>/dev/null
+        msg: "Jinja2 not installed (pip install jinja2)"
+      - sh: test -d .ansible-home/collections/ansible_collections/weisssrv/infra/roles
+        msg: "the collection is not installed. Run: task ansible:lint"
+    cmds:
+      # --allow-unknown: chart versions the Flux substitution reads, whose
+      # names carry a role's prefix. Same argv as the CI role-inputs job.
+      - >-
+        python3 scripts/check-role-inputs.py
+        --roles-dir .ansible-home/collections/ansible_collections/weisssrv/infra/roles
+        --inventory ansible/inventories/prod
+        --playbooks ansible/playbooks
+        --allow-unknown "gitlab_runner_helm_version=a chart version the Flux substitution reads, not a role variable"
+        --allow-unknown "gitlab_agent_helm_version=a chart version the Flux substitution reads, not a role variable"
+        --allow-unknown "tailscale_operator=a chart version the Flux substitution reads, not a role variable"
+
   tailnet-dns-parity:
     desc: "tailnet-dns override zone matches the direct-IP AdGuard rewrites"
     preconditions:
@@ -254,7 +322,7 @@ tasks:
   deploy-preflight:
     desc: Assert every CI deploy job's playbook + --tags selection resolves to real tasks (mirrors the CI deploy-preflight job)
     cmds:
-      - python3 scripts/deploy-preflight.py
+      - python3 scripts/check-deploy-preflight.py --require-tag-selections
     preconditions:
       - sh: command -v ansible-playbook
         msg: "ansible-playbook not installed (pip install ansible)"
@@ -262,11 +330,12 @@ tasks:
 
   doc-links:
     desc: Resolve relative Markdown cross-links (mirrors CI docs-link-check)
-    # CHECK_DOC_LINKS_PATHS/IGNORE are pre-seeded for check-doc-links'
-    # backticked-path pass; inert until the lib pin ships it.
+    # CHECK_DOC_LINKS_PATHS turns on the backticked-path pass; the IGNORE list
+    # is the cited paths that are not files here. Keep both equal to the
+    # variables block in .gitlab-ci.yml.
     env:
       CHECK_DOC_LINKS_PATHS: "1"
-      CHECK_DOC_LINKS_IGNORE: "docs/[A-Z]* terraform/state/* */tfplan */check-vendored-copies.py"
+      CHECK_DOC_LINKS_IGNORE: "docs/[A-Z]* lint/* molecule/default/expected-junit-failures.txt docker/molecule-ci/requirements.txt terraform/state/* */tfplan */check-vendored-copies.py"
     cmds:
       - python3 scripts/check-doc-links.py
     preconditions:
@@ -334,6 +403,11 @@ tasks:
       - sh: command -v amtool
         msg: "amtool not installed (ships in the alertmanager release tarball)"
       - *needs_pyyaml
+    env:
+      # Every custom alert is a standalone PrometheusRule here, so a renamed or
+      # moved tree must red the gate instead of extracting zero rules.
+      RULES_DIR: kubernetes/infrastructure/observability/rules
+      REQUIRE_RULES_DIR: "1"
     cmds:
       - bash scripts/lint-prometheus-config.sh
       # Syntax vs behaviour: check-config proves the file parses, this proves

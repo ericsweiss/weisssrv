@@ -91,6 +91,9 @@ spec:
               ephemeral-storage: 25Gi
             limits:
               memory: 1Gi
+              # Above the emptyDir cap below, which shares this budget with the
+              # rotated container logs; at the cap the kubelet evicts first.
+              ephemeral-storage: 28Gi
           volumeMounts:
             - {name: config, mountPath: /etc/garage.toml, subPath: garage.toml, readOnly: true}
             - {name: data, mountPath: /var/lib/garage}

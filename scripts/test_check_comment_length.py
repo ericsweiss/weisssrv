@@ -214,6 +214,53 @@ class TestSelection:
         assert proc.returncode == 1
         assert "Dockerfile.codex:1:" in proc.stdout
 
+    def test_a_jinja_template_source_resolves_to_the_rendered_markers(self, tmp_path):
+        """A copier `.jinja` source is the only copy of the rendered comment."""
+        write(tmp_path, "main.tf.jinja", "# a\n# b\n# c\n# d\nlocals {}\n")
+        write(tmp_path, "Dockerfile.jinja", "# a\n# b\n# c\n# d\nFROM scratch\n")
+        proc = run(str(tmp_path))
+        assert proc.returncode == 1
+        assert "main.tf.jinja:1:" in proc.stdout
+        assert "Dockerfile.jinja:1:" in proc.stdout
+
+    def test_a_jinja_source_of_an_unknown_language_is_still_skipped(self, tmp_path):
+        write(tmp_path, "notes.md.jinja", "# a\n# b\n# c\n# d\n")
+        write(tmp_path, "ok.sh", "echo hi\n")
+        assert run(str(tmp_path)).returncode == 0
+
+    def test_a_conditional_copier_path_resolves_to_the_rendered_suffix(self, tmp_path):
+        """Left in place, `{% endif %}` reads as the suffix and skips the file."""
+        name = "{% if ci_shape == 'gitlab' %}.gitlab-ci.yml{% endif %}.jinja"
+        write(tmp_path, name, "# a\n# b\n# c\n# d\nstages: []\n")
+        proc = run(str(tmp_path))
+        assert proc.returncode == 1
+        assert "%s:1:" % name in proc.stdout
+
+    def test_a_jinja_block_comment_is_checked_whatever_the_file_renders_into(
+        self, tmp_path
+    ):
+        """`.yaml` has no block delimiters, so only the .jinja source adds them."""
+        write(tmp_path, "deployment.yaml.jinja", "{#\na\nb\nc\nd\n#}\nkind: X\n")
+        proc = run(str(tmp_path))
+        assert proc.returncode == 1
+        assert "deployment.yaml.jinja:1:" in proc.stdout
+
+    def test_a_short_jinja_block_comment_passes(self, tmp_path):
+        write(tmp_path, "deployment.yaml.jinja", "{#\na\nb\n#}\nkind: X\n")
+        assert run(str(tmp_path)).returncode == 0
+
+    def test_a_j2_jinja_source_reports_one_block_not_two(self, tmp_path):
+        """`.j2` already carries the jinja delimiters, so a `.j2.jinja` source
+        must not double-count the same block."""
+        write(tmp_path, "unit.service.j2.jinja", "{#\na\nb\nc\nd\n#}\n[Unit]\n")
+        proc = run(str(tmp_path))
+        assert proc.returncode == 1
+        assert proc.stdout.count("unit.service.j2.jinja:1:") == 1
+
+    def test_a_gitattributes_block_over_the_limit_fails(self, tmp_path):
+        write(tmp_path, ".gitattributes", "# a\n# b\n# c\n# d\n* text=auto\n")
+        assert run(str(tmp_path)).returncode == 1
+
     def test_overlapping_roots_report_a_finding_once(self, tmp_path):
         write(tmp_path, "src/a.sh", "# a\n# b\n# c\n# d\necho hi\n")
         proc = run(str(tmp_path), str(tmp_path / "src"))
@@ -373,6 +420,66 @@ class TestBashParameterExpansionIsNotAJinjaComment:
             'case "$x" in\n  "$src"/*)\n    echo hit\n    ;;\nesac\n',
         )
         assert run(str(tmp_path)).returncode == 0
+
+
+class TestDockerfileParserDirectives:
+    """A leading `# syntax=` / `# escape=` line is machine-readable config, so
+    it neither counts toward the limit nor joins the header block below it."""
+
+    def test_a_directive_plus_a_three_line_header_passes(self, tmp_path):
+        write(
+            tmp_path,
+            "Dockerfile",
+            "# syntax=docker/dockerfile:1\n# one\n# two\n# three\nFROM scratch\n",
+        )
+        assert run(str(tmp_path)).returncode == 0
+
+    def test_a_genuine_four_line_header_still_fails(self, tmp_path):
+        """Mutation guard: the directive is exempt, the prose below it is not."""
+        write(
+            tmp_path,
+            "Dockerfile",
+            "# syntax=docker/dockerfile:1\n# one\n# two\n# three\n# four\n"
+            "FROM scratch\n",
+        )
+        proc = run(str(tmp_path))
+        assert proc.returncode == 1
+        assert "Dockerfile:2:" in proc.stdout
+
+    def test_an_escape_directive_is_exempt_too(self, tmp_path):
+        write(
+            tmp_path,
+            "Dockerfile",
+            "# escape=`\n# one\n# two\n# three\nFROM scratch\n",
+        )
+        assert run(str(tmp_path)).returncode == 0
+
+    def test_a_directive_spelling_later_in_the_file_is_a_comment(self, tmp_path):
+        """Only the preamble carries directives, so a later `# syntax=` line is
+        prose and counts."""
+        write(
+            tmp_path,
+            "Dockerfile",
+            "FROM scratch\n# one\n# two\n# three\n# syntax=docker/dockerfile:1\n",
+        )
+        proc = run(str(tmp_path))
+        assert proc.returncode == 1
+        assert "Dockerfile:2:" in proc.stdout
+
+    def test_a_stage_suffixed_dockerfile_gets_the_same_exemption(self, tmp_path):
+        write(
+            tmp_path,
+            "Dockerfile.build",
+            "# syntax=docker/dockerfile:1\n# one\n# two\n# three\nFROM scratch\n",
+        )
+        assert run(str(tmp_path)).returncode == 0
+
+    def test_a_shell_script_directive_spelling_is_still_a_comment(self, tmp_path):
+        """The exemption is Dockerfile-only: the same line in a .sh is prose."""
+        write(tmp_path, "a.sh", "# syntax=x\n# one\n# two\n# three\necho hi\n")
+        proc = run(str(tmp_path))
+        assert proc.returncode == 1
+        assert "a.sh:1:" in proc.stdout
 
 
 def test_the_gate_is_clean_on_its_own_source():

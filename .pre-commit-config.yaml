@@ -24,24 +24,45 @@ repos:
       # test_vendored_byte_identity.py, and the fix is upstream + re-vendor.
       - id: end-of-file-fixer
         exclude: &vendored_copies >-
-          (?x)^( lint/yamllint-relaxed\.yml | ruff\.toml | scripts/(
-          b2-bucket-drift\.py | check-alertmanager-behaviour\.py |
-          check-backup-artifact-apps\.py |
-          check-default-deny-coverage\.py | check-deploy-coverage\.sh |
-          check-doc-links\.py | check-hpa-vpa-invariant\.py |
-          check-kubectl-version-pin\.py | check-lib-pins\.py |
-          check-netpol-except-parity\.py | check-pvc-storageclass\.py |
-          check-scrape-netpol\.py | check-secretstore-scope\.py |
-          check-taskfile\.sh | check-versions\.py |
-          find-pve-host-for-vm\.sh | find-reachable-host\.sh |
-          flux-env\.sh | flux-render\.sh | generate-hosts-env\.py |
-          generate-versions-configmap\.py | kubeconform-skipped\.py |
-          lint-prometheus-config\.sh | molecule-retry\.sh |
-          resolve-tool\.sh | sanitize-junit-expected-failures\.py |
-          shell-lib\.sh | test_check_lib_pins\.py |
-          validate-helm-values\.py | version-bump-mr\.py |
-          version-check-ci\.py
-          ) )$
+          (?x)^(
+          \.gitattributes |
+          ansible/molecule/prepare\-common\.yml |
+          ansible/molecule/tasks/container\-warmup\.yml |
+          ansible/molecule/tasks/prepare\-apt\-disable\.yml |
+          ansible/molecule/tasks/prepare\-base\.yml | lint/yamllint\-relaxed\.yml | ruff\.toml |
+          scripts/b2\-bucket\-drift\.py | scripts/check\-alertmanager\-behaviour\.py |
+          scripts/check\-backup\-artifact\-apps\.py |
+          scripts/check\-cluster\-invariants\.py | scripts/check\-comment\-length\.py |
+          scripts/check\-dashboards\.py |
+          scripts/check\-default\-deny\-coverage\.py | scripts/check\-deploy\-coverage\.sh |
+          scripts/check\-deploy\-preflight\.py |
+          scripts/check\-doc\-links\.py | scripts/check\-ephemeral\-storage\-cap\.py |
+          scripts/check\-helm\-repo\-parity\.py |
+          scripts/check\-hpa\-vpa\-invariant\.py |
+          scripts/check\-kubectl\-version\-pin\.py | scripts/check\-lib\-pins\.py |
+          scripts/check\-live\-cpu\-limits\.py | scripts/check\-molecule\-image\-pin\.py |
+          scripts/check\-netpol\-except\-parity\.py | scripts/check\-nfs\-tls\.py |
+          scripts/check\-pvc\-storageclass\.py | scripts/check\-role\-inputs\.py |
+          scripts/check\-runbook\-anchors\.py |
+          scripts/check\-scrape\-netpol\.py | scripts/check\-secretstore\-scope\.py |
+          scripts/check\-taskfile\.sh | scripts/check\-version\-checksums\.py |
+          scripts/check\-versions\.py |
+          scripts/ci\-fetch\-tools\.py | scripts/ci_playbook_invocations\.py |
+          scripts/ci_yaml\.py | scripts/cluster\-config\-value\.sh |
+          scripts/extract\-prometheus\-config\.py | scripts/find\-pve\-host\-for\-vm\.sh |
+          scripts/find\-reachable\-host\.sh | scripts/flux\-env\.sh | scripts/flux\-render\.sh |
+          scripts/gate_common\.py | scripts/generate\-hosts\-env\.py |
+          scripts/generate\-versions\-configmap\.py | scripts/inventory_tree\.py |
+          scripts/kubeconform\-skipped\.py | scripts/lint\-prometheus\-config\.sh |
+          scripts/maintenance\-run\-with\-verify\.sh | scripts/molecule\-retry\.sh |
+          scripts/resolve\-tool\.sh | scripts/sanitize\-junit\-expected\-failures\.py |
+          scripts/script_loader\.py | scripts/shell\-lib\.sh | scripts/smoke\-lib\.sh |
+          scripts/supervised\-apply\-guard\.sh | scripts/test_check_lib_pins\.py |
+          scripts/test_check_netpol_except_parity\.py |
+          scripts/unifi\-settings\-drift\.py | scripts/validate\-helm\-values\.py |
+          scripts/version\-bump\-mr\.py | scripts/version\-check\-ci\.py |
+          scripts/wait\-for\-reloader\-roll\.sh
+          )$
       - id: trailing-whitespace
         args: [--markdown-linebreak-ext=md]
         exclude: *vendored_copies

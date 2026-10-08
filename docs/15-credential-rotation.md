@@ -1122,7 +1122,7 @@ op read "op://Homelab-Boot/ZFS Pool <pool> Passphrase/passphrase"
 #    Each dataset is its own encryption root (Model B) and the plaintext pool
 #    root is NOT a key holder, so change-key every encryption root in the pool —
 #    `zfs change-key <pool>` alone fails ("not an encryption root"). See
-#    docs/32-zfs-encryption.md §4.
+#    docs/32-zfs-encryption.md § Architecture.
 for root in $(zfs get -H -t filesystem,volume -o name,value -r encryptionroot <pool> \
                 | awk -F'\t' '$1==$2{print $1}'); do
   sudo zfs change-key -o keyformat=passphrase -o keylocation=prompt "$root"  # paste new passphrase

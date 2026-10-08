@@ -36,3 +36,8 @@ proxmox_lxc_startup_delay: 10
 # LXC (152): passthrough bind-mounts the device nodes non-exclusively, so the xe
 # driver arbitrates between Plex transcode and ML inference.
 proxmox_lxc_gpu_passthrough: true
+
+# The inference API is authless, so publish it only on the LAN address the
+# Immich VM reaches, on top of the sg-immich-ml rule. Probe it from the VM or
+# from this guest at its own address, not at 127.0.0.1.
+immich_ml_bind: "{{ ansible_host }}"

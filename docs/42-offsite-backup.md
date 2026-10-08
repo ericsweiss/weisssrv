@@ -171,6 +171,11 @@ restic-offsitectl verify --full  # restic check --read-data (reads ALL data)
 # (restic_offsite_verify_group in restic_offsite_verify.prom), advanced only on
 # success. A wall-clock form (ISO week % 12) would skip a group for a full cycle
 # whenever a week failed or the timer did not run; the cursor retries it.
+# A week whose `verify --auto-subset` collides with a still-running nightly
+# upload is skipped with status 0 and writes no metric, so it shows only as the
+# verify timestamp not advancing — ResticOffsiteVerifyStale is the real signal.
+# An operator-invoked prune, unlock or restore still exits non-zero on a held
+# lock.
 # There is no traditional "re-baseline": restic is content-addressed, every
 # snapshot is logically a full, and the nightly forget --prune continuously
 # repacks.
@@ -191,6 +196,12 @@ present and fresh — logging `already-uploaded` and exiting 0 without touching 
 metrics. The freshness condition is load-bearing: a source
 that is stale or missing (i.e. archsync itself failed) must NOT be skipped — it
 falls through to the freshness guard and aborts loudly with `success=0`.
+
+**The swap-clean interlock runs both ways.** swap-clean skips its night while
+`restic-offsite.service` is active, because it stops the guests whose zvol clones
+a run is reading. And `restic-offsitectl run` skips, exit 0, when a unit in
+`restic_offsite_conflicting_units` is active; the last-success timestamp is
+neither refreshed nor cleared, so the staleness alerts stay the signal.
 
 **Restore** (see also docs/17):
 

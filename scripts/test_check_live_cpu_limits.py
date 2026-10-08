@@ -4,6 +4,7 @@ from __future__ import annotations
 import io
 import json
 
+import pytest
 from script_loader import load_script
 
 
@@ -255,19 +256,25 @@ def test_quantity_parses_the_forms_kubectl_emits():
 
 def test_malformed_input_is_an_operator_error(monkeypatch, capsys):
     monkeypatch.setattr("sys.stdin", io.StringIO("{not json"))
-    assert mod.main() == 2
-    assert "Failed to parse" in capsys.readouterr().err
+    with pytest.raises(SystemExit) as exc:
+        mod.main()
+    assert exc.value.code == 2
+    assert "failed to parse" in capsys.readouterr().err
 
 
 def test_non_pod_list_input_is_an_operator_error(monkeypatch, capsys):
     monkeypatch.setattr("sys.stdin", io.StringIO('{"kind": "Pod"}'))
-    assert mod.main() == 2
-    assert "not a pod list" in capsys.readouterr().err
+    with pytest.raises(SystemExit) as exc:
+        mod.main()
+    assert exc.value.code == 2
+    assert "not a pods list" in capsys.readouterr().err
 
 
 def test_an_empty_item_list_is_an_operator_error(monkeypatch, capsys):
     """A filtered API response or a wrong context must stay red, not read as a
     clean cluster: the callers treat rc 0 as "no drift"."""
     monkeypatch.setattr("sys.stdin", io.StringIO('{"items": []}'))
-    assert mod.main() == 2
+    with pytest.raises(SystemExit) as exc:
+        mod.main()
+    assert exc.value.code == 2
     assert "no pods on stdin" in capsys.readouterr().err

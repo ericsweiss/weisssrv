@@ -49,7 +49,6 @@ EXEMPT: set[tuple[str, str]] = {
     ("NodeExporterHealthcheckRestartLoop", "12-runbooks.md"),
     ("PodLogShippingStale", "31-observability.md"),
     ("ResticOffsitePruneNeverRan", "42-offsite-backup.md"),
-    ("SwapCleanFailed", "06-zfs.md"),
     ("SwapCleanGuestRestartFailed", "06-zfs.md"),
     ("SwapCleanStoppedGuests", "06-zfs.md"),
     ("TailscaleOperatorDown", "19-k3s-deployment.md"),

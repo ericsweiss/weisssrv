@@ -1,13 +1,26 @@
 #!/usr/bin/env python3
 """Assert the live cluster imposes no CPU limits, and warn on memory limits a
-pod was never admitted with. Reads `kubectl get ... -o json` on stdin (docs/33);
-exits 0 clean, 1 violations, 2 on an operator error or an empty corpus.
+pod was never admitted with. Reads `kubectl get ... -o json` on stdin.
+Invocations and the exit contract: weisssrv-lib docs/SCRIPTS.md.
 """
 from __future__ import annotations
 
-import json
 import sys
+from pathlib import Path
 from typing import NamedTuple
+
+_HERE = str(Path(__file__).resolve().parent)
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
+try:
+    from gate_common import load_live_items  # noqa: E402  (from this script's own directory)
+except ImportError:
+    print(
+        "ERROR: gate_common.py must be vendored beside this gate "
+        "(see scripts/vendorable-paths.yml)", file=sys.stderr,
+    )
+    raise SystemExit(2) from None
 
 # Containers permitted a live CPU limit despite the repo-wide policy, as
 # "namespace/pod-name-prefix/container". Empty by design — an entry here is a
@@ -214,30 +227,12 @@ limit they were admitted with. Restart the workload to pick up the declared one:
 
 def main() -> int:
     # Exit 2 is "the gate could not inspect its subject" — an operator error on
-    # the left of the pipe, never a clean tree and never a violation.
-    try:
-        payload = json.load(sys.stdin)
-    except json.JSONDecodeError as exc:
-        print(f"Failed to parse `kubectl get pods -o json` input: {exc}", file=sys.stderr)
-        return 2
-    items = payload.get("items") if isinstance(payload, dict) else payload
-    if not isinstance(items, list):
-        print(
-            "Input is not a pod list (expected `kubectl get pods -A -o json`)",
-            file=sys.stderr,
-        )
-        return 2
+    # the left of the pipe, never a clean tree and never a violation. The shared
+    # loader owns that arm, including the valid-but-empty item list.
+    items = load_live_items(what="pods")
 
     # A single-type `kubectl get pods` strips `kind` from each item; asking for
     # several types keeps it. So an item without a kind is a pod.
-    items = [i for i in items if isinstance(i, dict)]
-    if not items:
-        print(
-            "ERROR: no pods on stdin — a gate that checks nothing is not a gate; "
-            "check the kubectl on the left of the pipe.",
-            file=sys.stderr,
-        )
-        return 2
     pods = [i for i in items if i.get("kind") in (None, "Pod")]
     workloads = [i for i in items if i.get("kind") in WORKLOAD_KINDS]
     vpas = [i for i in items if i.get("kind") == VPA_KIND]
@@ -246,9 +241,9 @@ def main() -> int:
     if violations:
         print(
             "Live CPU-limit policy violated — these containers are running with a "
-            "CPU limit that the repo does not declare (docs/33-autoscaling.md). "
-            "CFS throttling hurts tail latency and, on a VPA-managed workload, the "
-            "limit shrinks with every request revision:",
+            "CPU limit that the repo does not declare. CFS throttling hurts tail "
+            "latency and, on a VPA-managed workload, the limit shrinks with every "
+            "request revision:",
             file=sys.stderr,
         )
         print("\n".join(violations), file=sys.stderr)
@@ -270,7 +265,7 @@ def main() -> int:
         print(
             "WARNING: live memory limits diverge from their workload templates — "
             "these pods were admitted before the current commit and a mutating VPA "
-            "froze the old pair (docs/33 § Live drift):",
+            "froze the old pair:",
             file=sys.stderr,
         )
         print("\n".join(drift.lines), file=sys.stderr)

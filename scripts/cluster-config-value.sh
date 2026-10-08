@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
-# Read keys out of kubernetes/infrastructure/sources/cluster-config.yaml, the
-# single source for domains, CIDRs and VIPs. Only the `data:` scalars are read.
-# Usage: cluster-config-value.sh <key> [key...] -> one value per key, space-separated.
+# Read one or more keys out of the cluster-config ConfigMap, the cluster's
+# identity source of truth for domains, CIDRs and VIPs.
+
+# Usage:
+#   cluster-config-value.sh cluster_k3s_api_vip
+#   CLUSTER_CONFIG=path/to/cluster-config.yaml cluster-config-value.sh a b
+
+# Prints one value per key, space-separated, and fails if any key is absent: an
+# empty value silently becomes a no-op sed or an empty probe list. Only the
+# `data:` scalars are read.
 
 set -euo pipefail
 
@@ -23,8 +30,8 @@ import sys
 import yaml
 
 path = sys.argv[1]
-with open(path) as fh:
-    doc = yaml.safe_load(fh)
+with open(path) as f:
+    doc = yaml.safe_load(f)
 data = (doc or {}).get("data") or {}
 values = []
 for key in sys.argv[2:]:

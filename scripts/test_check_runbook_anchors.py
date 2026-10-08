@@ -148,8 +148,8 @@ def test_an_empty_rules_dir_fails_rather_than_passing_vacuously(tmp_path):
     rules_dir = tmp_path / "empty-rules"
     rules_dir.mkdir()
     result = _run(rules_dir, tmp_path)
-    assert result.returncode == 1
-    assert "no runbook_url annotations" in result.stdout
+    assert result.returncode == 2
+    assert "no runbook_url annotations" in result.stdout + result.stderr
 
 
 def test_a_fenced_heading_is_not_an_anchor(gate, tmp_path):

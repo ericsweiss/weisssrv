@@ -64,6 +64,13 @@ class TestVersionRegistry:
                 problems.append(f"{svc['name']}: unknown category {svc['category']!r}")
             if svc.get("held") and not svc.get("notes"):
                 problems.append(f"{svc['name']}: held without a note saying why")
+            # The flag makes the row non-fatal, so the note has to say where
+            # the real pin lives or the row reads as an unexplained blank.
+            if svc.get("unreadable_current") and not svc.get("notes"):
+                problems.append(
+                    f"{svc['name']}: unreadable_current without a note saying "
+                    "where the pin lives"
+                )
             # A half-declared pin has no renderable checksum URL, and a
             # version_file pin has no vars-file version to render one at.
             if bool(svc.get("checksum_var")) != bool(svc.get("checksum_url")):
@@ -78,9 +85,13 @@ class TestVersionRegistry:
             # network decide what gets hashed or which version is "latest".
             # `source_url` is a reference link nothing fetches and is exempt.
             for field in ("checksum_url", "apt_url", "apt_index_url", "helm_repo"):
-                url = svc.get(field)
-                if url and not str(url).startswith("https://"):
-                    problems.append(f"{svc['name']}: {field} is not https: {url}")
+                value = svc.get(field)
+                # apt_url takes a list of fallback indexes; every entry is held
+                # to the same rule as a single URL.
+                urls = value if isinstance(value, list) else ([value] if value else [])
+                for url in urls:
+                    if not str(url).startswith("https://"):
+                        problems.append(f"{svc['name']}: {field} is not https: {url}")
         assert not problems, problems
 
     @pytest.mark.parametrize(
@@ -104,6 +115,15 @@ class TestVersionRegistry:
     def test_a_malformed_checksum_pin_is_reported(self, registry, entry):
         broken = dict(registry)
         broken["services"] = [{"name": "half-pinned", "category": "github", **entry}]
+        with pytest.raises(AssertionError):
+            self.test_entries_are_well_formed(broken)
+
+    @pytest.mark.parametrize("flag", ["held", "unreadable_current"])
+    def test_a_non_actionable_flag_without_a_note_is_reported(self, registry, flag):
+        """Both flags drop the row out of the actionable count, so an unexplained
+        one hides a stale pin behind a blank reason."""
+        broken = dict(registry)
+        broken["services"] = [{"name": "silent", "category": "github", flag: True}]
         with pytest.raises(AssertionError):
             self.test_entries_are_well_formed(broken)
 
@@ -236,6 +256,8 @@ class TestDeployCoverageConfig:
         (repo / "ansible/playbooks").mkdir(parents=True)
         (repo / "ansible/inventories/prod").mkdir(parents=True)
         (repo / "scripts/check-deploy-coverage.sh").write_bytes(self.GATE.read_bytes())
+        # The gate imports ci_yaml from its own directory and exits 2 without it.
+        (repo / "scripts/ci_yaml.py").write_bytes((SCRIPTS / "ci_yaml.py").read_bytes())
         (repo / ".gitlab-ci.yml").write_text(
             "deploy-dns:\n"
             "  stage: deploy\n"
@@ -1410,6 +1432,133 @@ def test_the_ruff_pin_matches_the_ci_variable_and_the_include_input():
     off = [v for v in inputs if v != str(ci_pin)]
     assert not off, (
         f"python-lint's ruff_version input is {off} but RUFF_VERSION is {ci_pin!r}."
+    )
+
+
+_ANSIBLE_LINT_INCLUDE = "/ci/lint/ansible-lint.yml"
+
+
+def _lib_file_text(relpath: str) -> str:
+    """A library file at the ref .gitlab-ci.yml pins, else the checkout's copy."""
+    from test_vendored_byte_identity import _lib_root, _ref_available
+
+    lib = _lib_root()
+    ref = _pinned_ref()
+    if not _ref_available(lib, ref):
+        return (lib / relpath).read_text()
+    blob = subprocess.run(
+        ["git", "-C", str(lib), "show", f"{ref}:{relpath}"],
+        capture_output=True, text=True,
+    )
+    assert blob.returncode == 0, blob.stderr
+    return blob.stdout
+
+
+def _lib_input_default(relpath: str, name: str) -> str:
+    """An include template's `spec.inputs.<name>.default` at the pinned ref."""
+    header = next(
+        (
+            doc for doc in yaml.load_all(_lib_file_text(relpath), Loader=_CILoader)
+            if isinstance(doc, dict) and "spec" in doc
+        ),
+        {},
+    )
+    inputs = (header.get("spec") or {}).get("inputs") or {}
+    assert name in inputs, f"{relpath} no longer declares a {name} input"
+    default = (inputs[name] or {}).get("default")
+    assert default, f"{relpath}'s {name} input has no default"
+    return str(default)
+
+
+def _ansible_lint_job_version() -> str:
+    """The ansible-lint the CI job installs: the include's own
+    `ansible_lint_version` input, else the library template's default."""
+    ci = load_ci_doc(REPO / ".gitlab-ci.yml")
+    includes = [
+        entry for entry in ci.get("include") or []
+        if isinstance(entry, dict)
+        and str(entry.get("file", "")).endswith(_ANSIBLE_LINT_INCLUDE)
+    ]
+    assert includes, f".gitlab-ci.yml no longer includes {_ANSIBLE_LINT_INCLUDE}"
+    overrides = set()
+    for entry in includes:
+        passed = (entry.get("inputs") or {}).get("ansible_lint_version")
+        if passed is not None:
+            overrides.add(str(passed))
+    assert len(overrides) <= 1, (
+        f"the ansible-lint includes pass conflicting versions: {sorted(overrides)}"
+    )
+    if overrides:
+        return overrides.pop()
+    return _lib_input_default(_ANSIBLE_LINT_INCLUDE.lstrip("/"), "ansible_lint_version")
+
+
+def _ansible_lint_drift(requirements_text: str, job_version: str) -> list[str]:
+    """The local ansible-lint pin when it disagrees with the CI job's."""
+    match = re.search(r"^ansible-lint==([^\s#]+)", requirements_text, re.MULTILINE)
+    assert match, "requirements.txt no longer pins `ansible-lint==`"
+    local = match.group(1)
+    if local == job_version:
+        return []
+    return [
+        f"requirements.txt pins ansible-lint=={local} but the CI job installs "
+        f"{job_version}"
+    ]
+
+
+def test_the_ansible_lint_pin_matches_the_library_input_default():
+    """`task ansible:lint` and the CI job run one ansible-lint version.
+
+    The include passes no `ansible_lint_version`, so CI takes the library
+    template's default and a drifted local pin applies a different rule set.
+    """
+    stale = _ansible_lint_drift(
+        (REPO / "requirements.txt").read_text(), _ansible_lint_job_version()
+    )
+    assert not stale, (
+        "\n  ".join(stale)
+        + "\n  They are one pin — bump requirements.txt, or pass "
+        "ansible_lint_version on the include."
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("ansible-lint==26.8.0\n", []),
+        (
+            "ansible-lint==26.7.0\n",
+            [
+                "requirements.txt pins ansible-lint==26.7.0 but the CI job "
+                "installs 26.8.0"
+            ],
+        ),
+    ],
+    ids=["matching", "drifted"],
+)
+def test_a_drifted_ansible_lint_pin_is_reported(text, expected):
+    """Mutation case: the comparison fires on a stale local pin, and only then."""
+    assert _ansible_lint_drift(text, "26.8.0") == expected
+
+
+def test_the_crd_catalog_ref_matches_the_taskfile_var():
+    """The flux-lint include and taskfiles/flux.yml pin one CRD-catalog ref.
+
+    A drift between them means `task flux:lint` and CI accept different schemas.
+    """
+    ci = load_ci_doc(REPO / ".gitlab-ci.yml")
+    refs = [
+        (entry.get("inputs") or {}).get("crd_catalog_ref")
+        for entry in ci.get("include") or []
+        if isinstance(entry, dict) and str(entry.get("file", "")).endswith("flux-lint.yml")
+    ]
+    assert refs and all(refs), "the flux-lint include no longer passes crd_catalog_ref"
+    task_vars = yaml.safe_load((REPO / "taskfiles/flux.yml").read_text())["vars"]
+    expected = str(task_vars["CRD_CATALOG_REF"])
+    off = [r for r in refs if str(r) != expected]
+    assert not off, (
+        f"flux-lint's crd_catalog_ref is {off} but taskfiles/flux.yml pins "
+        f"{expected!r}. They are one pin — bump both."
     )
 
 

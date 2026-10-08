@@ -11,9 +11,21 @@ import sys
 from pathlib import Path
 
 try:
-    import yaml
+    import yaml  # noqa: F401  (ci_yaml needs it; imported here to name it)
 except ImportError:  # pragma: no cover - environment guard
     print("ERROR: PyYAML required: pip install pyyaml", file=sys.stderr)
+    raise SystemExit(2) from None
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+try:
+    from ci_yaml import Reference, load_ci  # noqa: E402  (from this script's own directory)
+except ImportError:
+    print(
+        "ERROR: ci_yaml.py must sit next to this script — vendor both "
+        "(see weisssrv-lib scripts/vendorable-paths.yml).",
+        file=sys.stderr,
+    )
     raise SystemExit(2) from None
 
 REPO = Path(__file__).resolve().parent.parent
@@ -21,47 +33,9 @@ CI_FILE = REPO / ".gitlab-ci.yml"
 PIN = "ansible/requirements.yml"
 
 
-class Reference:
-    """A `!reference [target, key, ...]` node, kept as data so it can be
-    resolved against the document instead of collapsing to None."""
-
-    def __init__(self, path: list):
-        self.path = [p for p in path if isinstance(p, str)]
-
-    def resolve(self, doc: dict):
-        node = doc
-        for step in self.path:
-            if not isinstance(node, dict) or step not in node:
-                return None
-            node = node[step]
-        return node
-
-
-class CILoader(yaml.SafeLoader):
-    """SafeLoader tolerating GitLab's !reference tags, subclassed so the
-    constructor is not registered on the global SafeLoader."""
-
-
-def _tag(loader, suffix, node):
-    if suffix == "reference" and isinstance(node, yaml.SequenceNode):
-        return Reference(loader.construct_sequence(node))
-    return None
-
-
-CILoader.add_multi_constructor("!", _tag)
-
-
 def _load_ci(path: Path) -> dict:
-    """The jobs document of a pipeline file.
-
-    GitLab's inputs syntax makes a pipeline file two documents, `spec:` then
-    the jobs, so the last mapping document is the one this gate wants.
-    """
-    docs = [
-        d for d in yaml.load_all(path.read_text(encoding="utf-8"), Loader=CILoader)
-        if isinstance(d, dict)
-    ]
-    return docs[-1] if docs else {}
+    """The jobs document of a pipeline file, `!reference` nodes kept as data."""
+    return load_ci(path)
 
 
 def _changes_of(rule, doc: dict) -> list:

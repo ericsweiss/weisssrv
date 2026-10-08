@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# Shared smoke-test helpers for the per-guest verify-*.sh scripts.
-#
-# Sourced, never executed. Counters live in SMOKE_PASS / SMOKE_FAIL; every probe
-# goes through smoke_check so one dead endpoint cannot abort the run.
+# Guest-smoke helpers a consumer's per-guest verify-*.sh sources. Function-only
+# apart from the two counters, so sourcing is safe under a caller's `set -e`.
+# Contract: weisssrv-lib docs/SCRIPTS.md - Shell helpers.
 
 SMOKE_PASS=0
 SMOKE_FAIL=0
@@ -11,7 +10,7 @@ SMOKE_FAIL=0
 # Always returns 0: a bare pipeline here would kill an errexit caller.
 http_status() {
     local status
-    status=$(curl -sI --max-time 10 "$1" 2>/dev/null | head -1 |
+    status=$(curl -sI --max-time "${SMOKE_LIB_CURL_MAX_TIME:-10}" "$1" 2>/dev/null | head -1 |
         grep -oE 'HTTP/[0-9.]+ [0-9]+' | grep -oE '[0-9]+$') || true
     printf '%s\n' "${status:-000}"
 }
@@ -23,7 +22,7 @@ check_http_ok() {
     [ "$status" -ge 200 ] && [ "$status" -lt 400 ]
 }
 
-# 401 counts: it proves the container registry is running without credentials.
+# 401 counts: it proves a container registry is running without credentials.
 check_registry_ok() {
     local status
     status=$(http_status "$1")
@@ -42,26 +41,27 @@ check_tcp_port() {
     nc -z -w 5 "$1" "$2" 2>/dev/null
 }
 
-# Capture then test: `| grep -q` exits on the first match and the writer's
-# SIGPIPE would invert a PASS into a FAIL under pipefail. Needles are literal,
-# so a `.` or `[` in one cannot match output the caller did not mean.
+# CRITICAL: capture then test. `| grep -q` exits on the first match and the
+# writer's SIGPIPE would invert a PASS into a FAIL under pipefail. Needles are
+# literal, unlike shell-lib.sh's url_contains/ssh_contains, so a `.` or `[` in
+# one cannot match output the caller did not mean.
 smoke_url_contains() {
     local out
-    out=$(curl -s --max-time 10 "$1" 2>/dev/null) || return 1
-    printf '%s' "$out" | grep -qF "$2"
+    out=$(curl -s --max-time "${SMOKE_LIB_CURL_MAX_TIME:-10}" "$1" 2>/dev/null) || return 1
+    printf '%s' "$out" | grep -qF -- "$2"
 }
 
 smoke_ssh_contains() {
     local out
     out=$(ssh "$1" "$2" 2>/dev/null) || return 1
-    printf '%s' "$out" | grep -qF "$3"
+    printf '%s' "$out" | grep -qF -- "$3"
 }
 
 # smoke_ssh_contains with a deliberate extended regex, for an anchored needle.
 smoke_ssh_matches() {
     local out
     out=$(ssh "$1" "$2" 2>/dev/null) || return 1
-    printf '%s' "$out" | grep -qE "$3"
+    printf '%s' "$out" | grep -qE -- "$3"
 }
 
 smoke_check() {

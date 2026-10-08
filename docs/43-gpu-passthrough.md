@@ -245,6 +245,28 @@ the pod Pending until the GPU is reattached. If GPU binding cannot be made to
 work after two systematic-debugging passes, roll back the hostpci, keep the RAM
 raise, uncordon, and report — do **not** leave the node cordoned.
 
+### Releasing the host drop-ins
+
+The `vfio_passthrough` role reconciles both ways. With `vfio_passthrough_enabled`
+false or unset, its disabled arm removes the three files it writes:
+
+- `/etc/default/grub.d/vfio-iommu.cfg`
+- `/etc/modprobe.d/vfio.conf`
+- `/etc/modules-load.d/vfio-pci.conf`
+
+Those are the conventional VFIO names, not role-namespaced, so ownership is
+decided by a marker substring inside the file. A drop-in carrying no marker is
+reported and left in place by design. A file written by a role version from
+before the marker shipped is removed by hand.
+
+Removal is staged exactly like the writes: grub and the initramfs are rebuilt,
+nothing is rebooted, and the host releases the card on its next boot.
+
+`site.yml` composes the role on every Proxmox host, with
+`vfio_passthrough_enabled` set only on pve-prec-01, so every other host runs the
+disabled arm. Read the play output for a "left in place" report and clear those
+files by hand.
+
 ## Machine type (future work)
 
 Proper PCIe passthrough (`--machine q35 --hostpci0 …,pcie=1`) is intentionally

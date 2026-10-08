@@ -1,7 +1,8 @@
-# CRITICAL: proxy_provider_keys is the outpost's entire provider list. A proxy
-# provider missing from it plans clean and then 404s at the outpost. The list is
-# ORDERED, so append new keys at the end. Setting embedded_outpost to null is a
-# DESTROY of authentik's own outpost. See README.md § Adding a new application.
+# CRITICAL: proxy_provider_keys is the outpost's entire provider list. The
+# module fails the plan when a proxy provider is missing from this list. The
+# list is ORDERED, so append new keys at the end. Setting embedded_outpost to
+# null is a DESTROY of authentik's own outpost. See README.md § Adding a new
+# application.
 locals {
   embedded_outpost = {
     name = "authentik Embedded Outpost"

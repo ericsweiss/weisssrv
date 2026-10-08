@@ -1,17 +1,10 @@
 ---
-# Relaxed yamllint profile — the baseline syntax check for a whole-tree
-# yaml-lint job. yamllint's shipped `relaxed` keeps line-length at warning level
-# and disables the comment rules outright; the rules block below then disables
-# line-length as well, because inline documentation comments run long, and
-# re-enables document-start as a warning.
-#
-# Nothing applies this file unless the consumer VENDORS it. The yaml-lint
-# template's default `config: "-d relaxed"` selects yamllint's OWN shipped
-# relaxed profile, which is not this one — it keeps line-length as a warning and
-# has no document-start rule. Both templates vendor this file as `.yamllint` and
-# pass `-c .yamllint`; weisssrv does not, and lints on the shipped `-d relaxed`.
-# Copy it into a consumer repo as `.yamllint` and point the job's `config` input
-# at it.
+# yamllint's `relaxed` (comment rules off, line-length and most style rules at
+# warning level) with line-length off outright, document-start back on as a
+# warning, and the rules ansible-lint's yaml rule requires. See lint/README.md.
+
+# CRITICAL: never vendor this as a repo-root `.yamllint`. ansible-lint discovers
+# one there and merges it over its own yaml[*] rules.
 extends: relaxed
 
 rules:
@@ -19,3 +12,21 @@ rules:
   document-start:
     present: true
     level: warning
+  # ansible-lint rejects a config it discovers without these and turns fix mode
+  # off. Warning level, so re-vendoring cannot red a consumer's yaml-lint job.
+  comments:
+    min-spaces-from-content: 1
+    level: warning
+  octal-values:
+    forbid-implicit-octal: true
+    forbid-explicit-octal: true
+    level: warning
+  # One blank line between blocks (warning, as in `relaxed`).
+  empty-lines:
+    max: 1
+
+# Provider checkouts are not the repo's YAML, and a local tree has them
+# wherever `terraform init` ran.
+ignore: |
+  .terraform/
+  terraform/**/.terraform/

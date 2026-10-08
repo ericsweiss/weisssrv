@@ -489,13 +489,17 @@ tasks:
           FAILED=1
         fi
 
-        # Informational, as the CI job runs it: which kinds no schema validated.
-        # Never sets FAILED — a local gate stricter than CI inverts the mirror.
+        # Which kinds no schema validated, against the same baseline the CI
+        # flux-lint job passes: a pair outside it fails here too. Through a
+        # file, so kubeconform's own status is not read as a skip verdict.
+        SKIPPED_JSON=$(mktemp)
         kubeconform -verbose -ignore-missing-schemas -kubernetes-version "$K8S_VER" \
           -schema-location default \
           -schema-location '{{.CRD_CATALOG}}' \
-          -output json < "$RENDER_ALL" \
-          | python3 scripts/kubeconform-skipped.py || true
+          -output json < "$RENDER_ALL" > "$SKIPPED_JSON" || true
+        python3 scripts/kubeconform-skipped.py scripts/kubeconform-expected-skipped.txt \
+          < "$SKIPPED_JSON" || FAILED=1
+        rm -f "$SKIPPED_JSON"
 
         if ! scripts/flux-corpus-gates.sh "$RENDER_ALL" "$VERSIONS_CONFIGMAP"; then
           FAILED=1

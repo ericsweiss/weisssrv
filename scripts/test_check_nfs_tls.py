@@ -136,15 +136,22 @@ def test_a_pv_inside_a_kind_list_is_still_inspected():
     assert "appdata-plaintext" in result.stderr
 
 
-def test_a_bare_list_document_is_flattened(gate):
+def test_a_bare_list_document_is_flattened():
+    import io
+
+    import yaml
+
+    shared = load_path(SCRIPT.parent / "gate_common.py")
     nested = {
         "kind": "PersistentVolume",
         "metadata": {"name": "appdata-ip"},
         "spec": {"mountOptions": ["xprtsec=tls"], "nfs": {"server": "10.0.10.102"}},
     }
-    assert gate._flatten([nested]) == [nested]
-    assert gate._flatten({"kind": "List", "items": [nested]}) == [nested]
-    assert gate._flatten("not a document") == []
+    assert shared.load_docs(io.StringIO(yaml.safe_dump([nested]))) == [nested]
+    assert shared.load_docs(
+        io.StringIO(yaml.safe_dump({"kind": "List", "items": [nested]}))
+    ) == [nested]
+    assert shared.load_docs(io.StringIO("not a document")) == []
 
 
 def test_an_empty_corpus_is_an_error_not_a_pass():
@@ -156,7 +163,7 @@ def test_unparseable_yaml_is_an_error_not_a_pass():
     # the gate silently.
     result = _run("kind: PersistentVolume\nspec: [unclosed\n")
     assert result.returncode == 2
-    assert "could not parse the corpus" in result.stderr
+    assert "failed to parse YAML input" in result.stderr
 
 
 def test_a_corpus_with_no_nfs_pv_is_an_error_not_a_pass():

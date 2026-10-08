@@ -1665,6 +1665,29 @@ and sits **above** `--timeout` so it never cuts the wait's watch short, and
 180 < 190 < 200, three attempts, about ten minutes worst case, then the run
 fails. Raise them together.
 
+#### Supervised kube-vip window
+
+A kube-vip manifest change moves the API VIP (10.0.10.161), and the rendered
+server config changes with it, so the servers converge one at a time in a
+watched window.
+
+1. Open a second shell on a kubeconfig pointed at a server's own address
+   (10.0.10.222 or 10.0.10.227). That is the fallback while the VIP is in
+   flight.
+2. Converge the servers: `task k3s:deploy -- --limit k3s_servers`. Each one
+   restarts k3s in turn.
+3. Force a leader move: `kubectl -n kube-system delete pod <kube-vip pod on the
+   VIP holder>`.
+4. Watch the surviving pods take it:
+   `kubectl -n kube-system logs -l app.kubernetes.io/name=kube-vip -f | grep "New leader"`,
+   with a loop on `kubectl --server https://10.0.10.161:6443 get nodes` beside
+   it.
+5. Sign the window off once the VIP answers through the new leader.
+
+The escape hatch is `k3s_kube_vip_host_kubeconfig: true` in inventory: kube-vip
+mounts the node's cluster-admin kubeconfig instead of its ServiceAccount token.
+It re-renders the DaemonSet and restarts the kube-vip pod on every server.
+
 ### Rollback Procedures
 
 #### Rolling back k3s version

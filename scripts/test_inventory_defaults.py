@@ -37,11 +37,8 @@ ACKNOWLEDGED: set[tuple[str, str]] = {
     ("group_vars/gitlab_servers.yml", "gitlab_backup_nfs_options"),
     ("group_vars/immich_servers.yml", "immich_nginx_real_ip_groups"),
     ("group_vars/k3s.yml", "k3s_api_port"),
-    ("group_vars/k3s.yml", "nfs_tls_scrub_client_cert"),
     ("group_vars/k3s.yml", "k3s_flannel_backend"),
     ("group_vars/nextcloud_servers.yml", "nextcloud_mail_from_address"),
-    ("group_vars/nextcloud_servers.yml", "nextcloud_oidc_allow_local_remote_servers"),
-    ("group_vars/proxmox.yml", "nfs_tls_scrub_client_cert"),
     ("group_vars/proxmox.yml", "tailscale_accept_routes"),
     ("host_vars/dns-01.yml", "adguard_sync_schedule"),
     ("host_vars/dns-01.yml", "proxmox_lxc_onboot"),
@@ -49,13 +46,13 @@ ACKNOWLEDGED: set[tuple[str, str]] = {
     ("host_vars/plex.yml", "plex_config_dir"),
     ("host_vars/plex.yml", "plex_media_dir"),
     ("host_vars/plex.yml", "plex_transcode_dir"),
+    ("host_vars/pve-nas-01.yml", "nas_storage_export_root"),
     ("host_vars/pve-nas-01.yml", "nas_storage_media_mover_schedule"),
     ("host_vars/pve-nas-01.yml", "nas_storage_nfs_disable_delegations"),
     ("host_vars/pve-nas-01.yml", "nas_storage_smartd_enabled"),
     ("host_vars/pve-nas-01.yml", "nas_storage_swap_clean_schedule"),
     ("host_vars/pve-nas-01.yml", "nas_storage_zfs_scrub_enabled"),
     ("host_vars/pve-nas-01.yml", "nas_storage_zfs_scrub_schedule"),
-    ("host_vars/pve-nas-01.yml", "restic_offsite_timer_calendar"),
     ("host_vars/smtp-relay.yml", "proxmox_lxc_onboot"),
 }
 
@@ -72,25 +69,7 @@ NOT_ROLE_VARS: set[tuple[str, str]] = {
 
 # Variables staged ahead of the collection release that consumes them: inert
 # until the pin moves. Each entry expires at that bump, enforced below.
-PRESTAGED: set[tuple[str, str]] = {
-    ("group_vars/all.yml", "proxmox_firewall_host_egress_extra_ports"),
-    ("group_vars/all.yml", "proxmox_firewall_smtp_relay_extra_egress_ports"),
-    ("group_vars/all.yml", "proxmox_firewall_smtp_relay_sources"),
-    ("group_vars/all.yml", "resolv_conf_options"),
-    ("group_vars/all.yml", "tailscale_require_authkey"),
-    ("group_vars/bonded_hosts.yml", "nic_tuning_bond_primary"),
-    ("group_vars/gitlab_servers.yml", "gitlab_bundled_alertmanager_enabled"),
-    ("group_vars/gitlab_servers.yml", "gitlab_bundled_prometheus_enabled"),
-    ("group_vars/immich_servers.yml", "immich_server_mem_limit"),
-    ("group_vars/proxmox.yml", "node_exporter_host_processes_collector"),
-    ("host_vars/pve-nas-01.yml", "nas_storage_archive_backup_exclude"),
-    ("host_vars/pve-nas-01.yml", "nas_storage_archive_backup_on_success_units"),
-    ("host_vars/pve-nas-01.yml", "nas_storage_export_root"),
-    ("host_vars/pve-nas-01.yml", "nas_storage_swap_clean_conflicting_units"),
-    ("host_vars/pve-nas-01.yml", "node_exporter_host_slab_caches"),
-    ("host_vars/pve-nas-01.yml", "node_exporter_host_slabinfo_collector"),
-    ("host_vars/pve-nas-01.yml", "restic_offsite_conflicting_units"),
-}
+PRESTAGED: set[tuple[str, str]] = set()
 
 
 def _load(name: str):

@@ -778,7 +778,7 @@ spec:
               cluster still has quorum but cannot survive another server loss —
               restore the missing k3s server node now (docs/19).
 
-        # Taken from kube-prometheus-stack 91.4.1
+        # Taken from kube-prometheus-stack 92.0.0
         # Upstream's expr at for: 15m. The inner `> 0` is upstream's too: min()
         # ignores replicas with no failures, so one failing replica fires it.
         - alert: AlertmanagerClusterFailedToSendAlerts

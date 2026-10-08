@@ -202,6 +202,9 @@ spec:
               ephemeral-storage: 64Mi
             limits:
               memory: 256Mi
+              # Above the emptyDir cap, which shares this budget with the rotated
+              # container logs; at the cap the kubelet evicts first.
+              ephemeral-storage: 128Mi
           volumeMounts:
             - name: data
               subPath: pg0

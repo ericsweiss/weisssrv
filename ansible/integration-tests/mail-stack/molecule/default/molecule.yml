@@ -9,7 +9,7 @@ platforms:
   - name: smtp-relay
     # Shared systemd-container shape; only name/groups differ per platform.
     <<: &systemd_platform
-      image: "${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:v0.17.1}"
+      image: "${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:v0.18.0}"
       pre_build_image: true
       privileged: true
       cgroupns_mode: host

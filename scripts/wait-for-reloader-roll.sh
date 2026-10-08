@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Wait for Reloader to roll a Deployment after its ConfigMap was patched.
-# Usage: wait-for-reloader-roll.sh <namespace> <deployment> <generation-before> \
-#            [timeout-seconds] [what-was-patched]
+# Waits for Reloader to roll a Deployment after its ConfigMap was patched.
+# Usage: <namespace> <deployment> <generation-before> [timeout] [what-patched].
+# Contract: weisssrv-lib docs/SCRIPTS.md - Shell helpers.
 
 # CRITICAL: a generation that has not moved when the timeout expires is a
 # FAILURE. The caller's `kubectl rollout status` would otherwise run against

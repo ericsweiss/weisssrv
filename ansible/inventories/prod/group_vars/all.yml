@@ -141,8 +141,8 @@ adguard_home_version: "0.107.79"
 adguard_sync_version: "0.9.3"
 # Host-side Alloy apt package (alloy_host role; distinct from the in-cluster
 # helm_chart_versions.alloy chart pin below).
-alloy_host_version: "1.19.2-1"
-tailscale_version: "1.102.4"
+alloy_host_version: "1.20.1-1"
+tailscale_version: "1.102.5"
 # qol shell/editor pins. Oh My Zsh publishes no release tags, so the clone is
 # pinned to a commit (https://github.com/ohmyzsh/ohmyzsh/commits/master);
 # Vundle is tagged. Host-side only — not Flux versions.
@@ -163,18 +163,18 @@ proxmox_vm_cloud_image_url: "https://cloud.debian.org/images/cloud/trixie/202609
 proxmox_vm_cloud_image_name: "debian-13-generic-amd64-20260914-2601.qcow2"
 # yamllint disable-line rule:line-length
 proxmox_vm_cloud_image_checksum: "sha512:a733e7d49442a03e70d03e4eb5aaf3967f3efc69ef70952f9bb10fc1ee2c4876eb95956b5ad2d31350e5fada768feb651352535fb8cd1233f61998a5a7d2e93c"
-k3s_version: "v1.36.4+k3s1"
+k3s_version: "v1.37.1+k3s1"
 # sha256 of install.sh for the k3s_version tag: get_url verifies the root-run
 # installer before exec. Recompute in lockstep with every k3s_version bump:
 #   curl -sfL https://raw.githubusercontent.com/k3s-io/k3s/<k3s_version>/install.sh | sha256sum
-k3s_install_script_checksum: "sha256:46177d4c99440b4c0311b67233823a8e8a2fc09693f6c89af1a7161e152fbfad"
-kube_vip_version: "v1.2.3"
+k3s_install_script_checksum: "sha256:ed01f89fd977bf20ac1516bbebf8370bf3ddbaa55dac8aba610956a4c78cc00b"
+kube_vip_version: "v1.2.4"
 # Flux CLI used by CI deploy-verify; the job pins a matching sha256 —
 # update both together when bumping.
 flux_version: "2.9.0"
 
 # Authentik SSO identity provider
-authentik_version: "2026.8.2"
+authentik_version: "2026.8.3"
 
 # Postgres for Authentik (bundled with the Helm chart); trixie base.
 # https://hub.docker.com/_/postgres/tags
@@ -189,12 +189,12 @@ mealie_postgresql_version: "18.6-alpine"
 busybox_version: "1.38"
 gluetun_version: "v3.41.3"
 nzbget_version: "26.3"
-qbittorrent_version: "5.2.3"
-prowlarr_version: "2.5.2.5491"
-sonarr_version: "4.0.19.2979"
-radarr_version: "6.3.0.10514"
+qbittorrent_version: "5.2.4"
+prowlarr_version: "2.6.5.5623"
+sonarr_version: "4.0.20.3014"
+radarr_version: "6.4.4.10685"
 lidarr_version: "3.1.0.4875"
-pulsarr_version: "0.19.2"
+pulsarr_version: "0.19.4"
 
 # wg-easy WireGuard VPN (internet-exit VPN for the user + friends/family).
 # Container tag has NO leading "v" (upstream convention: :15.3.0, not :v15.3.0).
@@ -203,9 +203,9 @@ wg_easy_version: "15.4.0"
 
 # Recipe management stack. Upstream feeds per component:
 # scripts/version-registry.py. Meilisearch stays on 1.15.x for Bar Assistant.
-mealie_version: "v3.26.0"
-bar_assistant_version: "6.7.0"
-salt_rim_version: "5.6.0"
+mealie_version: "v3.28.0"
+bar_assistant_version: "6.8.1"
+salt_rim_version: "5.7.0"
 meilisearch_version: "v1.15.2"
 redis_version: "8.10.1-alpine"
 
@@ -215,17 +215,17 @@ plex_version: "1.43.4.10903-e5521bd8c"
 # GitLab EE (using CE features) - Omnibus package.
 # https://packages.gitlab.com/gitlab/gitlab-ee
 # The maintenance apt-upgrade honours the gitlab-ee hold and will not bump it.
-gitlab_version: "19.3.2-ee.0"
+gitlab_version: "19.4.1-ee.0"
 
 # https://gitlab.com/gitlab-org/charts/gitlab-runner/tags
-gitlab_runner_helm_version: "0.92.1"
+gitlab_runner_helm_version: "0.93.0"
 
 # https://gitlab.com/gitlab-org/charts/gitlab-agent/tags
-gitlab_agent_helm_version: "2.31.0"
+gitlab_agent_helm_version: "2.32.0"
 
 # In-cluster pull-through registry cache for CI (docs/27 § Registry pull-through
 # cache). Bare X.Y.Z tag. https://hub.docker.com/_/registry/tags
-registry_cache_version: "3.1.1"
+registry_cache_version: "3.1.2"
 
 # Nextcloud (compose stack on the VM — consumed by the nextcloud Ansible role;
 # the VM-only pins ride the versions ConfigMap as a harmless superset).
@@ -243,7 +243,7 @@ nextcloud_exporter_version: "0.9.1"
 # Immich (compose stack on the VM). The Postgres + Valkey images (tag AND
 # digest) are whatever Immich's pinned release pins in its own compose file - the
 # DB is release-coupled, so NEVER bump it independently of immich_version.
-immich_version: "v3.2.2"
+immich_version: "v3.2.4"
 immich_postgres_version: "14-vectorchord0.4.3-pgvectors0.2.0"
 immich_postgres_digest: "sha256:bcf63357191b76a916ae5eb93464d65c07511da41e3bf7a8416db519b40b1c23"
 immich_valkey_version: "9"
@@ -264,22 +264,22 @@ proxmox_vm_virtio_win_checksum: "sha256:e14cf2b94492c3e925f0070ba7fdfedeb2048c91
 # Hermes Agent. Upstream ships no image; build-hermes-agent clones the repo at
 # this RELEASE TAG and builds THEIR Dockerfile, so the value is the tag, not the
 # semver whl version. https://github.com/NousResearch/hermes-agent/releases
-hermes_version: "v2026.9.14"
+hermes_version: "v2026.9.24"
 # Immutable commit the pinned tag must resolve to - build-hermes-agent refuses to
 # build on a mismatch (moved/compromised tag defence). Lockstep with the tag.
-hermes_git_sha: "345cd2b057a452236de401d3534b8502a7465e8d"
+hermes_git_sha: "f97608f178d1ffeca59860195ab7da295f7c8e5f"
 # PUBLISHED image tag = <hermes_version>-r<N>. The image is upstream + our
 # patches, so a patch change without an upstream bump MUST produce a new tag or
 # the IfNotPresent cache serves the unpatched image. Reset to -r1 on a bump.
-hermes_image_version: "v2026.9.14-r1"
+hermes_image_version: "v2026.9.24-r1"
 # OpenAI Codex CLI, baked into the hermes image by Dockerfile.codex. Requires
 # >=0.130.0 for the Hermes runtime. Build-time only — not substituted into any
 # manifest. https://github.com/openai/codex/releases (npm @openai/codex)
-hermes_codex_version: "0.154.0"
+hermes_codex_version: "0.160.1"
 # Claude Code CLI, baked into the hermes image alongside the Codex CLI so Hermes
 # can delegate coding tasks headlessly, authenticated with a long-lived OAuth
 # token via ESO rather than an API key. Build-time only (docs/37).
-hermes_claude_version: "2.1.270"
+hermes_claude_version: "2.1.292"
 # 1Password CLI (op), baked into the hermes image for Hermes' 1Password skill
 # (docs/37). Full DEB version string. NOT optional: upstream keeps exactly ONE
 # version, so a stale pin FAILS the build and version-check cannot see it.
@@ -287,15 +287,15 @@ hermes_op_version: "2.39.0-1"
 # Camofox browser server - the sidecar behind Hermes' camofox tool. Upstream
 # publishes no image; build-camofox-browser clones the repo at tag v<version>,
 # so the pin is the bare semver. https://github.com/jo-inc/camofox-browser/releases
-hermes_camofox_version: "1.16.0"
+hermes_camofox_version: "1.18.1"
 # Immutable commit tag v${hermes_camofox_version} must resolve to; the build
 # refuses on a mismatch. Lockstep with hermes_camofox_version.
-hermes_camofox_git_sha: "79d425be26743883a06613eaa3be5e38e7ab5409"
+hermes_camofox_git_sha: "39c82094013480b373df6600d44c7f036f58356e"
 
 # Hindsight agent-memory server - Hermes' long-term memory backend
 # (kubernetes/apps/hindsight, docs/37). The pin is the ghcr.io image tag.
 # https://github.com/vectorize-io/hindsight/releases
-hindsight_version: "0.10.0"
+hindsight_version: "0.10.2"
 # llama.cpp server sidecar for Hindsight's local LLM, built as
 # ghcr.io/ggml-org/llama.cpp:server-cuda-<pin> for GPU offload (docs/43). Not
 # every upstream build publishes an image, so this is bumped opportunistically.
@@ -326,7 +326,7 @@ homarr_version: "v1.77.1"
 # Uptime Kuma (docs/45). BARE semver tag on Docker Hub; the manifest appends
 # "-rootless", the same release built with USER node, which is what lets the
 # namespace enforce PSA restricted.
-uptime_kuma_version: "2.5.4"
+uptime_kuma_version: "2.5.5"
 
 # Garage - the runners' S3 cache backend (kubernetes/apps/ci-cache, docs/13).
 # Docker Hub dxflrs/garage; the pin is the full upstream tag (vX.Y.Z).
@@ -341,19 +341,19 @@ restic_offsite_rclone_deb_sha256: "a9da2eaa70428c6dcc5acbb0b7eac0faec4c61643e0b4
 # Observability stack. Chart versions live in helm_chart_versions below; the
 # standalone exporters' upstream feeds are in scripts/version-registry.py.
 exportarr_version: "v2.3.0"
-proxmox_exporter_version: "3.10.0"
-zfs_exporter_version: "2.4.1"
+proxmox_exporter_version: "3.10.1"
+zfs_exporter_version: "2.4.2"
 # sha256 of zfs_exporter-<version>.linux-amd64.tar.gz from the release's
 # sha256sums.txt — the binary runs as root with /dev/zfs access, so get_url
 # fails closed on a mismatch. Update on every version bump.
-zfs_exporter_checksum: "sha256:60489e74e8f41eadff4f313fb16e94fc0964d37b9cf1be79c25c927b285a3228"
+zfs_exporter_checksum: "sha256:6b6539e091b6fb1a4cf6cc74c501e793d21da50b1e1d7f7c4b7f837db136fa90"
 adguard_exporter_version: "v1.2.1"
 # Installed from the release .deb (prometheus_exporter_artifact_type: deb) —
 # check a new release still publishes one. Upstream ships no checksum file, so
 # the sha256 is our own: `shasum -a 256` the .deb and bump both lines.
 unbound_exporter_version: "0.6.0"
 unbound_exporter_checksum: "sha256:4f61876a292b49f918baf6b6b57d17dcf94f97513787282b0dadb88b95084890"
-redis_exporter_version: "v1.91.1"
+redis_exporter_version: "v1.93.0"
 # postgres_exporter for the VM compose stacks (immich, nextcloud). The mealie
 # sidecar pins the same exporter by tag+digest in
 # kubernetes/apps/recipes/mealie.yaml - bump both together.
@@ -366,30 +366,30 @@ helm_chart_versions:
   # the apiserver, enough to trip KubeAPIErrorBudgetBurn. The cluster's v0.16
   # CRDs are compatible with the 0.15.3 images. Re-evaluate after chart 0.16.1.
   metallb: "0.15.3"
-  traefik: "41.5.0"  # App version v3.7.12 (chart 41.x: logs.general->log, logs.access->accessLog)
+  traefik: "41.6.1"  # App version v3.7.13 (chart 41.x: logs.general->log, logs.access->accessLog)
   cert_manager: "v1.21.2"
-  external_dns: "1.22.0"  # App version 0.22.0
-  external_secrets: "2.10.0"  # ESO with 1Password Connect provider
-  kube_prometheus_stack: "91.4.1"  # prometheus-operator v0.94.0 (91.x major = operator bump only; crds: CreateReplace)
+  external_dns: "1.23.0"  # App version 0.23.0
+  external_secrets: "2.12.0"  # ESO with 1Password Connect provider
+  kube_prometheus_stack: "92.0.0"  # prometheus-operator v0.94.1 (92.x major = kubernetes.io/os=linux nodeSelector default)
   # prometheus-community/prometheus-operator-crds. Owns the monitoring.coreos.com
   # CRDs in the infrastructure-crds stage (docs/29). COUPLING: its appVersion must
   # equal the pinned kube_prometheus_stack's operator appVersion (docs/12).
-  prometheus_operator_crds: "32.0.0"
-  loki: "18.13.1"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0)
-  alloy: "1.12.1"
-  prometheus_blackbox_exporter: "11.18.0"
-  onepassword_connect: "2.4.1"
-  vpa: "5.0.1"  # chart major = app 1.7.1; every values key this repo sets is unchanged in 5.x
+  prometheus_operator_crds: "32.0.1"
+  loki: "18.13.8"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0)
+  alloy: "1.13.0"
+  prometheus_blackbox_exporter: "11.19.1"
+  onepassword_connect: "2.4.2"
+  vpa: "5.1.0"  # app 1.7.1; every values key this repo sets exists in the 5.x chart
   kured: "6.1.0"  # Kubernetes Reboot Daemon (app 1.22.1); owns k3s-node reboots flagged by maintenance
-  reloader: "2.2.17"  # stakater/Reloader (app v1.4.20); auto-restarts annotated workloads on ConfigMap change (Secrets excluded via ignoreSecrets)
-  # Tailscale K8s operator (appVersion v1.102.3; tracks the host
+  reloader: "2.2.18"  # stakater/Reloader (app v1.4.22); auto-restarts annotated workloads on ConfigMap change (Secrets excluded via ignoreSecrets)
+  # Tailscale K8s operator (appVersion v1.102.4; tracks the host
   # tailscale_version, but only once the chart actually publishes — flux-lint's
   # helm-values gate fails a phantom chart version)
-  tailscale_operator: "1.102.3"
+  tailscale_operator: "1.102.4"
   # NVIDIA k8s device plugin — advertises nvidia.com/gpu on the labelled GPU node
   # (kubernetes/infrastructure/controllers/nvidia-device-plugin). Chart tracks the
   # plugin appVersion. https://github.com/NVIDIA/k8s-device-plugin/releases
-  nvidia_device_plugin: "0.20.0"
+  nvidia_device_plugin: "0.20.1"
   # kubernetes-sigs/metrics-server (chart 3.14.0 = app v0.9.0). Replaces the k3s
   # packaged AddOn, which is disabled on the servers — see
   # kubernetes/infrastructure/controllers/metrics-server/release.yaml.
@@ -508,9 +508,8 @@ proxmox_firewall_smtp_relay_extra_egress_ports:
     proto: tcp
     comment: Loki push NodePort
 
-# IPSets allowed at the relay's :25/:587 in sg-smtp-relay. weisssrv.infra reads
-# this input from v0.18.0 on; the pinned v0.17.1 hard-codes core-cluster, so this
-# value and the collection bump land in the same MR.
+# CRITICAL: the IPSets allowed at the relay's :25/:587 in sg-smtp-relay. The
+# role default is empty, which renders no inbound rule and closes both ports.
 proxmox_firewall_smtp_relay_sources:
   - core-cluster
 
