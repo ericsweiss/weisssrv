@@ -113,6 +113,7 @@ def in_tree_problems(root: Path, pinned: dict[str, str]) -> list[str]:
             "in-tree check would pass vacuously"
         )
     rules_root = root / RULES_DIR
+    seen: set[str] = set()
     for path in sorted({*rules_root.rglob("*.yaml"), *rules_root.rglob("*.yml")}):
         rel = path.relative_to(root)
         lines = path.read_text(encoding="utf-8").splitlines()
@@ -121,6 +122,7 @@ def in_tree_problems(root: Path, pinned: dict[str, str]) -> list[str]:
             if not match or match.group("name") not in required:
                 continue
             name = match.group("name")
+            seen.add(name)
             marker = _marker_above(lines, index)
             if marker is None:
                 problems.append(
@@ -132,6 +134,14 @@ def in_tree_problems(root: Path, pinned: dict[str, str]) -> list[str]:
             problem = _version_problem(rel, name, marker, pinned)
             if problem:
                 problems.append(problem)
+    # A marker check only covers the replacements it finds, so a deleted or
+    # renamed mirror of a still-disabled alert would drop the alert silently.
+    for name in sorted(required - seen):
+        problems.append(
+            f"{CHART_RELEASE} disables {name} but no rule under {RULES_DIR} "
+            f"defines it, so nothing alerts on it — restore the mirror, or add "
+            f"{name} to NOT_MIRRORED with the reason it needs none"
+        )
     return problems
 
 

@@ -26,6 +26,8 @@ EXTRA_TREES = ("kubernetes/components",)
 
 # Non-YAML generator sources kustomize renders into a substituted manifest.
 GENERATOR_SUFFIXES = (".json", ".py", ".toml", ".tpl")
+# Both spellings kustomize reads, so a .yml manifest is still scanned.
+MANIFEST_SUFFIXES = (".yaml", ".yml")
 
 CLUSTER_CONFIG = "kubernetes/infrastructure/sources/cluster-config.yaml"
 ANSIBLE_ALL = "ansible/inventories/prod/group_vars/all.yml"
@@ -136,6 +138,12 @@ def _read_yaml(path: Path, rel: str, *, multi: bool = False):
         raise Vacuous(f"{rel} could not be read ({exc.__class__.__name__}: {exc})") from exc
 
 
+def manifests(base: Path, *, recurse: bool = False) -> list[Path]:
+    """Manifest files under `base`, in either YAML spelling."""
+    walk = base.rglob("*") if recurse else base.glob("*")
+    return sorted(p for p in walk if p.is_file() and p.suffix in MANIFEST_SUFFIXES)
+
+
 def substituted_trees(root: Path) -> tuple[str, ...]:
     """Every tree a Flux Kustomization renders with a cluster-config substitution.
 
@@ -146,7 +154,7 @@ def substituted_trees(root: Path) -> tuple[str, ...]:
     if not cluster.is_dir():
         raise Vacuous(f"{CLUSTER_DIR} not found — cannot derive the substituted trees")
     derived: set[str] = set()
-    for path in sorted(cluster.glob("*.yaml")):
+    for path in manifests(cluster):
         for doc in _read_yaml(path, path.relative_to(root).as_posix(), multi=True):
             if not isinstance(doc, dict) or doc.get("kind") != "Kustomization":
                 continue
@@ -298,7 +306,7 @@ def check_literals(root: Path, config: dict, trees: tuple[str, ...]) -> list[str
             violations += scan_text(
                 rel, _read_text(path, rel), domains, {**addresses, **values}
             )
-        for path in sorted(base.rglob("*.yaml")):
+        for path in manifests(base, recurse=True):
             rel = path.relative_to(root).as_posix()
             in_rules = rel.startswith(RULES_TREE)
             # A manifest the gate cannot parse is a subject it did not inspect,

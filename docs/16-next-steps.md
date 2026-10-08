@@ -177,10 +177,6 @@ start as an entry in this section.
 
 ### Platform and applications
 
-- [ ] **Lift `immich_version` to v3.3.0 when it is released.** It carries the
-  remote-ML memory-leak fix (immich-app/immich#31488). The 8 GiB cgroup cap on
-  immich-server is the interim: the container restarts instead of walking the VM
-  into `HostMemAvailableLow` ([docs/36](36-immich.md) § Observability).
 - [ ] **NAS 192B-slab kernel leak — wait for a fixed kernel.** The running
   7.0.14-line kernel leaks an unreclaimable merged 192 B slab at ~4 GiB/day on
   pve-nas-01. The tenant is `skbuff_ext_cache`, leaked by br_netfilter per

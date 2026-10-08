@@ -32,9 +32,9 @@ immich_nginx_real_ip_groups:
 # 8081/8082 plus the 9187 exporter), so loopback would break the scrape.
 immich_metrics_bind: "{{ ansible_host }}"
 
-# cgroup cap on immich-server, 8 GiB of the VM's 12 GiB. Remote-ML leaks
-# (immich-app/immich#31488) otherwise walk the whole VM into HostMemAvailableLow;
-# the container restarts instead of the host swapping.
+# cgroup cap on immich-server, 8 GiB of the VM's 12 GiB. Bounds a remote-ML
+# memory leak (immich-app/immich#31488, fixed in v3.3.0) to a container restart
+# instead of the whole VM swapping into HostMemAvailableLow.
 immich_server_mem_limit: "8g"
 
 # postgres_exporter sidecar for the in-cluster Prometheus. Unauthenticated —

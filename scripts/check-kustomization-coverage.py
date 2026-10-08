@@ -49,11 +49,25 @@ _PATH_LIST_KEYS = (
 _GENERATOR_KEYS = ("configMapGenerator", "secretGenerator")
 _GENERATOR_FILE_KEYS = ("files", "envs", "env")
 
-# A kustomization contributes through any of these, so an empty resource list is
-# inert only when every one of them is empty too.
+# Fields that put objects INTO the render. A kustomization carrying none of them
+# builds empty however many transformers it lists.
+_RESOURCE_KEYS = (
+    "resources",
+    "bases",
+    "components",
+    "generators",
+    *_GENERATOR_KEYS,
+    "helmCharts",
+)
+
+# Any key through which a Component contributes. A Component only reshapes what
+# its parent lists, so a transformer alone is content there.
 _CONTENT_KEYS = _PATH_LIST_KEYS + _GENERATOR_KEYS + (
     "images",
     "labels",
+    "commonLabels",
+    "commonAnnotations",
+    "replicas",
     "helmCharts",
     "openapi",
 )
@@ -195,12 +209,19 @@ def empty_listed_manifests(root: Path) -> list[str]:
 
 
 def inert_kustomizations(root: Path) -> list[str]:
-    """Kustomizations that contribute nothing, so kustomize renders an empty stage."""
+    """Kustomizations that contribute no objects, so kustomize renders an empty
+    stage. A regular kustomization needs a resource-producing key; a Component
+    only reshapes its parent's list, so transformers alone are content there."""
     inert = []
     for kustomization in _walk(root):
         doc = load_kustomization(kustomization)
-        if not any(doc.get(key) for key in _CONTENT_KEYS):
-            inert.append(str(kustomization.relative_to(root.parent)))
+        component = doc.get("kind") == "Component"
+        keys = _CONTENT_KEYS if component else _RESOURCE_KEYS
+        if any(doc.get(key) for key in keys):
+            continue
+        rel = str(kustomization.relative_to(root.parent))
+        transformers = any(doc.get(key) for key in _CONTENT_KEYS)
+        inert.append(f"{rel}: lists only transformers" if transformers else rel)
     return inert
 
 ARMS = (

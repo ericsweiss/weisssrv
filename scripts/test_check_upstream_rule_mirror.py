@@ -120,7 +120,9 @@ def test_a_copy_in_a_subdirectory_or_a_yml_file_is_still_checked(tmp_path, relat
 
 def test_a_not_mirrored_alert_needs_no_marker(tmp_path):
     """The NodeSystemd replacements select a different job, so they track nothing."""
-    root = _tree(tmp_path, rule_text=_rule(None, alert="NodeSystemdServiceFailed"))
+    root = _tree(tmp_path)
+    exempt = root / gate.RULES_DIR / "node-exporter-host.yaml"
+    exempt.write_text(_rule(None, alert="NodeSystemdServiceFailed"))
     assert gate.check(root) == []
 
 
@@ -171,6 +173,29 @@ def test_an_unreadable_version_file_exits_two(tmp_path):
     root = _tree(tmp_path)
     (root / gate.VARS_FILE).unlink()
     assert gate.main(["--repo-root", str(root)]) == 2
+
+
+def test_a_disabled_alert_with_no_replacement_is_reported(tmp_path):
+    """Mutation case: renaming the mirror while the chart still disables the
+    original leaves nothing alerting on it, and the marker arm sees no subject."""
+    root = _tree(
+        tmp_path,
+        rule_text=_rule(
+            "Taken from kube-prometheus-stack 91.4.1", alert="KubeCPUOvercommitRenamed"
+        ),
+    )
+    assert any(
+        "KubeCPUOvercommit but no rule under" in problem for problem in gate.check(root)
+    )
+
+
+def test_an_exempt_disabled_alert_needs_no_replacement(tmp_path):
+    """NOT_MIRRORED is the exemption: an exempt alert needs no rule at all, while
+    a non-exempt one the tree never defines is named."""
+    root = _tree(tmp_path, release_text=RELEASE + "        KubeMemoryOvercommit: true\n")
+    problems = gate.check(root)
+    assert any("KubeMemoryOvercommit but no rule under" in p for p in problems)
+    assert all("NodeSystemdService" not in p for p in problems)
 
 
 def test_the_live_repo_is_in_step():

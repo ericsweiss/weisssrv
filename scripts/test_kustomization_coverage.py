@@ -254,3 +254,33 @@ def test_an_unparseable_listed_manifest_names_itself(tmp_path: Path):
     (app / "kustomization.yaml").write_text("resources:\n  - release.yaml\n")
     with pytest.raises(Vacuous, match=str(broken)):
         empty_listed_manifests(tmp_path / "kubernetes")
+
+
+def test_a_transformer_only_kustomization_is_reported(tmp_path: Path):
+    """Mutation case: transformers reshape what a kustomization lists, so one
+    that lists only transformers builds empty and the stage is pruned."""
+    stage = tmp_path / "kubernetes" / "infrastructure" / "demo"
+    stage.mkdir(parents=True)
+    (stage / "patch.yaml").write_text("kind: Deployment\n")
+    (stage / "kustomization.yaml").write_text(
+        "resources: []\n"
+        "images:\n  - name: demo\n    newTag: v1\n"
+        "commonLabels:\n  app: demo\n"
+        "patches:\n  - path: patch.yaml\n"
+    )
+    assert inert_kustomizations(tmp_path / "kubernetes") == [
+        "kubernetes/infrastructure/demo/kustomization.yaml: lists only transformers"
+    ]
+
+
+def test_a_transformer_only_component_is_not_reported(tmp_path: Path):
+    """A Component only reshapes its parent's list, so patches alone are content."""
+    component = tmp_path / "kubernetes" / "components" / "demo"
+    component.mkdir(parents=True)
+    (component / "patch.yaml").write_text("kind: Deployment\n")
+    (component / "kustomization.yaml").write_text(
+        "apiVersion: kustomize.config.k8s.io/v1alpha1\n"
+        "kind: Component\n"
+        "patches:\n  - path: patch.yaml\n"
+    )
+    assert inert_kustomizations(tmp_path / "kubernetes") == []

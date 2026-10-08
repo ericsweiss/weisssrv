@@ -375,10 +375,10 @@ pin still needs a one-off `apt install --allow-downgrades docker-ce=<ver> …`.
 ## Observability
 
 immich-server runs under a cgroup memory cap (`immich_server_mem_limit: "8g"` in
-`group_vars/immich_servers.yml`, 8 GiB of the VM's 12 GiB). The remote-ML path
-leaks (immich-app/immich#31488), so the cap makes the container restart instead
-of walking the VM into `HostMemAvailableLow`. The fix ships in v3.3.0, which is
-unreleased; the site is on v3.2.2.
+`group_vars/immich_servers.yml`, 8 GiB of the VM's 12 GiB). The remote-ML leak
+that motivated it (immich-app/immich#31488) is fixed in v3.3.0, which is the
+current `immich_version` pin. The cap stays, so any future leak costs a
+container restart instead of walking the VM into `HostMemAvailableLow`.
 
 - **Logs**: `alloy_host` ships the VM's journald (including docker container logs
   — the daemon uses the `journald` log driver) to Loki. The `immich-ml` LXC is

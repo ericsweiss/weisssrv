@@ -475,6 +475,12 @@ always exists is what keeps the needs set non-empty and the stage order real.
 deploy job: a deploy job needing a gate that was not created fails pipeline
 **creation**, so keep the two rule sets in step when you change either.
 
+Every deploy job's rule also gates on `$OP_SERVICE_ACCOUNT_TOKEN`, so an unset
+token creates no deploy job at all. The gate's own rule carries no token clause
+and its script exits 1 on an empty value, so a fork or a restored project reds
+`main` until the variable is set instead of reporting a green pipeline that
+deployed nothing.
+
 Ansible/Terraform deploy jobs depend on `validation-gate` as a required `needs`.
 **Kubernetes workloads are not gated by CI** — Flux reconciles from git regardless of
 pipeline state. CI's job for k8s is to validate (`flux-lint`, `kubeconform`,

@@ -267,6 +267,9 @@ workflow:
   before_script:
     - !reference [.install-1password, before_script]
     - !reference [.kubectl-setup, before_script]
+    # The gates these jobs pipe `kubectl -o json` into import PyYAML through
+    # gate_common.py, and the slim image ships none.
+    - pip install --quiet "pyyaml==${PYYAML_VERSION}"
     # Not `kubectl cluster-info`: it needs list perms on kube-system services
     # that the runner ServiceAccount lacks.
     - kubectl version --output=yaml --request-timeout=5s
@@ -1293,14 +1296,17 @@ include:
       image: $PY_JOB_IMAGE
       pytest_version: "9.1.1"
       pyyaml_version: "6.0.2"
-      # git for the setup_command clone. jq comes from ci-fetch-tools.py, which
-      # drops it in $CI_PROJECT_DIR/.bin: test_deploy_verify_lib.py falls back to
-      # a sentinel without it, and test_collect_state_lib.py skips itself.
+      # git for the setup_command clone. jq and kustomize come from
+      # ci-fetch-tools.py into $CI_PROJECT_DIR/.bin: the deploy-verify and
+      # collect-state suites read jq, test_flux_corpus_gates.py runs kustomize.
       apt_packages: "git"
       # ansible-core via the ansible pin: test_deploy_preflight.py drives
       # `ansible-playbook --list-tasks` and FAILS rather than skips without it.
       pip_packages: "ansible==$ANSIBLE_VERSION"
-      setup_command: 'git clone --depth 1 --branch "$WEISSSRV_LIB_REF" "$CI_SERVER_URL/eric/weisssrv-lib.git" "$WEISSSRV_LIB_PATH" && python3 scripts/ci-fetch-tools.py jq'
+      # setup_command runs BEFORE the template's pip install, so it installs the
+      # same ansible pin to get ansible-galaxy, then the collection the
+      # playbooks' weisssrv.infra.* roles resolve from. No -p: the default path.
+      setup_command: 'git clone --depth 1 --branch "$WEISSSRV_LIB_REF" "$CI_SERVER_URL/eric/weisssrv-lib.git" "$WEISSSRV_LIB_PATH" && python3 scripts/ci-fetch-tools.py jq kustomize && pip install --user --quiet "ansible==$ANSIBLE_VERSION" && ansible-galaxy collection install "$WEISSSRV_LIB_PATH/ansible_collections/weisssrv/infra"'
       changes:
         - "scripts/**/*"
         - "ansible/inventories/prod/**/*"

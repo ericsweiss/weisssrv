@@ -2108,3 +2108,399 @@ class TestBuildStageRunsAfterSecurity:
     def test_a_reordered_stage_list_is_detected(self):
         assert not build_runs_after(["lint", "build", "security", "deploy"])
         assert build_runs_after(["lint", "security", "build", "deploy"])
+
+
+# Tool provisioning for the jobs that touch live infrastructure
+# A script that calls a binary no job image ships, and that the job's
+# before_script never installs, fails at runtime rather than at lint.
+
+# Tools a job has to install, because no image in this pipeline ships them. A
+# name outside this set (shell keywords, coreutils) is never asked about, so a
+# newly-used tool enters the gate by being added here.
+PROVISIONED_TOOLS = frozenset({
+    "amtool", "ansible", "ansible-galaxy", "ansible-lint", "ansible-playbook",
+    "curl", "dig", "envsubst", "flux", "git", "gpg", "helm", "jq", "kubeconform",
+    "kubectl", "kustomize", "nc", "nslookup", "op", "promtool", "shellcheck",
+    "ssh", "task", "terraform", "yamllint", "yq",
+})
+
+# Package -> what it puts on PATH, for `apt-get install` and `apk add`.
+PACKAGE_TOOLS = {
+    "1password-cli": {"op"}, "bind-tools": {"dig", "nslookup"}, "curl": {"curl"},
+    "dnsutils": {"dig", "nslookup"}, "gettext": {"envsubst"},
+    "gettext-base": {"envsubst"}, "git": {"git"}, "gnupg": {"gpg"}, "jq": {"jq"},
+    "netcat-openbsd": {"nc"}, "openssh": {"ssh"}, "openssh-client": {"ssh"},
+}
+
+# pip requirement -> the CLIs it installs.
+PIP_TOOLS = {
+    "ansible": {"ansible", "ansible-galaxy", "ansible-playbook"},
+    "ansible-core": {"ansible", "ansible-galaxy", "ansible-playbook"},
+    "ansible-lint": {"ansible-lint"}, "yamllint": {"yamllint"},
+}
+
+# Third-party module a gate imports -> the pip requirements that satisfy it.
+# ansible pulls PyYAML in, which is why the maintenance jobs need no pyyaml pin.
+PIP_MODULES = {"yaml": {"pyyaml", "ansible", "ansible-core"}, "requests": {"requests"}}
+
+# What each job image ships. An image absent here provides nothing from this
+# vocabulary, so a job moved onto a new image installs what its scripts call.
+IMAGE_TOOLS = {
+    "python:3.11-slim": frozenset(),
+    "python:3.13-slim": frozenset(),
+    "python:3.13": frozenset({"curl", "git", "ssh"}),
+    "hashicorp/terraform:1.16.5": frozenset({"terraform", "git", "ssh"}),
+}
+
+# A tool a sourced helper offers on a branch the CI caller never takes, keyed
+# "<script>:<tool>" with why the job need not install it.
+OFF_CI_PATH = {
+    "smoke-lib.sh:nc": "deploy-gitlab-verify passes --http-only, which skips the TCP probes",
+    "smoke-lib.sh:ssh": "verify-gitlab.sh calls no ssh probe",
+}
+
+# Fragments whose descendants deploy, verify or maintain the live estate.
+LIVE_BASES = (".deploy-base", ".k3s-deploy-base", ".maintenance-base")
+LIVE_STAGES = ("deploy", "verify", "maintenance")
+# Anchors, so a rename cannot leave the gate inspecting an empty job set.
+LIVE_ANCHORS = ("cluster-drift-plan", "deploy-verify", "maintenance-verify")
+
+_TOOL_TOKEN = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*")
+# Command-position separators. Quoting is not tracked, so a `bash -c '...; ...'`
+# payload splits like any other list and its commands are seen.
+_SEGMENT = re.compile(r"\|\||&&|\$\(|<<<|[|;()`&{}\n]")
+_SHELL_WORDS = frozenset({
+    "case", "do", "done", "elif", "else", "esac", "env", "eval", "exec", "fi",
+    "for", "if", "in", "nohup", "sudo", "then", "time", "until", "while", "!",
+})
+_SCRIPT_REF = re.compile(
+    r"(?:scripts/|\$\{?[A-Za-z_][A-Za-z0-9_]*\}?/)([A-Za-z0-9_.-]+\.(?:sh|py))"
+)
+_VAR_REF = re.compile(
+    r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-[^}]*)?\}|\$([A-Za-z_][A-Za-z0-9_]*)"
+)
+_INPUT_REF = re.compile(r"\$\[\[\s*inputs\.([A-Za-z0-9_]+)\s*\]\]")
+
+
+def strip_shell_comments(text: str) -> str:
+    """Shell text with `#` comments dropped, so prose naming a tool is not read
+    as a call. A `#` inside a quoted string goes with them."""
+    return "\n".join(re.sub(r"(^|\s)#.*$", "", line) for line in text.splitlines())
+
+
+def shell_commands(text: str) -> set:
+    """Tools from PROVISIONED_TOOLS the text calls: the first word of each
+    command segment, plus the word after `--` and after `command -v`. A command
+    handed to another runtime (`kubectl run -- sh -c ...`) is not counted."""
+    found = set()
+    for segment in _SEGMENT.split(strip_shell_comments(text)):
+        words = [word.strip("\"'") for word in segment.split()]
+        head = 0
+        while head < len(words) and (
+            words[head] in _SHELL_WORDS
+            or ("=" in words[head] and not words[head].startswith("-"))
+        ):
+            head += 1
+        if head < len(words) and _TOOL_TOKEN.fullmatch(words[head]):
+            found.add(words[head])
+        for index, word in enumerate(words[:-1]):
+            nxt = words[index + 1]
+            if word == "--" and _TOOL_TOKEN.fullmatch(nxt):
+                found.add(nxt)
+            if word == "command" and nxt == "-v" and index + 2 < len(words):
+                if _TOOL_TOKEN.fullmatch(words[index + 2]):
+                    found.add(words[index + 2])
+    return found & PROVISIONED_TOOLS
+
+
+def shell_installs(text: str) -> set:
+    """What the text puts on PATH: package installs, pip requirements, a
+    verified binary dropped in /usr/local/bin, a ci-fetch-tools.py fetch.
+    Modules appear as `py:<module>`; install ordering is not modelled."""
+    got = set()
+    body = strip_shell_comments(text)
+    pattern = r"(?:apt-get|apk)\s+(?:install|add)((?:\s+-{1,2}[A-Za-z-]+)*(?:\s+[^\n;&|]*))"
+    for match in re.finditer(pattern, body):
+        for word in match.group(1).split():
+            if not word.startswith("-"):
+                got |= PACKAGE_TOOLS.get(word.strip("\"'"), set())
+    for match in re.finditer(r"pip\s+install([^\n;&|]*)", body):
+        for word in match.group(1).split():
+            if word.startswith("-") or word.startswith("$"):
+                continue
+            name = re.split(r"[=<>!~\[]", word.strip("\"'"))[0].strip().lower()
+            got |= PIP_TOOLS.get(name, set())
+            got |= {f"py:{mod}" for mod, reqs in PIP_MODULES.items() if name in reqs}
+    for match in re.finditer(r"install\s+-m\s+\S+\s+\S+\s+/usr/local/bin/(\S+)", body):
+        got.add(match.group(1))
+    for match in re.finditer(r"tar\s+[a-z]+\s+\S+\s+-C\s+/usr/local/bin\s+(\S+)", body):
+        got.add(match.group(1))
+    for match in re.finditer(r"ci-fetch-tools\.py([^\n;&|'\"]*)", body):
+        got |= {word for word in match.group(1).split() if not word.startswith("-")}
+    if "1password-cli" in body:
+        got.add("op")
+    return got
+
+
+def unprovisioned(image: str, text: str, also_required=(), excused=()) -> list:
+    """Tools and modules the job needs and nothing in it provides."""
+    provided = set(IMAGE_TOOLS.get(image, frozenset())) | shell_installs(text)
+    required = (shell_commands(text) | set(also_required)) - set(excused)
+    return sorted(required - provided)
+
+
+def python_modules(path, seen=None) -> set:
+    """Third-party modules a gate needs, as `py:<module>`, following the sibling
+    modules it imports — gate_common.py is where a `kubectl -o json` gate picks
+    PyYAML up."""
+    import ast
+
+    path = Path(path)
+    seen = set() if seen is None else seen
+    if not path.is_file() or path in seen:
+        return set()
+    seen.add(path)
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except SyntaxError:
+        return set()
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names |= {alias.name.split(".")[0] for alias in node.names}
+        elif isinstance(node, ast.ImportFrom) and not node.level and node.module:
+            names.add(node.module.split(".")[0])
+    need = set()
+    for name in names:
+        sibling = path.parent / f"{name}.py"
+        if sibling.is_file():
+            need |= python_modules(sibling, seen)
+        elif name in PIP_MODULES:
+            need.add(f"py:{name}")
+    return need
+
+
+def script_closure(names, seen=None, found=None) -> dict:
+    """Every repo script reached from `names`: the shell text to scan, the
+    modules its python gates import, and the off-path tools to excuse."""
+    seen = set() if seen is None else seen
+    found = {"text": [], "modules": set(), "excused": set()} if found is None else found
+    for name in sorted(names):
+        path = SCRIPTS / name
+        if name in seen or not path.is_file():
+            continue
+        seen.add(name)
+        if name.endswith(".py"):
+            found["modules"] |= python_modules(path)
+            continue
+        text = path.read_text(encoding="utf-8")
+        found["text"].append(text)
+        used = shell_commands(text)
+        found["excused"] |= {
+            tool for tool in used if f"{name}:{tool}" in OFF_CI_PATH
+        }
+        script_closure(set(_SCRIPT_REF.findall(strip_shell_comments(text))), seen, found)
+    return found
+
+
+def _substitute_inputs(node, inputs: dict):
+    """A library template with its `$[[ inputs.x ]]` resolved."""
+    from ci_yaml import Reference
+
+    if isinstance(node, str):
+        return _INPUT_REF.sub(
+            lambda m: "" if inputs.get(m.group(1)) is None else str(inputs[m.group(1)]),
+            node,
+        )
+    if isinstance(node, Reference):
+        return Reference([_substitute_inputs(item, inputs) for item in node])
+    if isinstance(node, list):
+        return [_substitute_inputs(item, inputs) for item in node]
+    if isinstance(node, dict):
+        return {
+            _substitute_inputs(key, inputs): _substitute_inputs(value, inputs)
+            for key, value in node.items()
+        }
+    return node
+
+
+def library_fragments(doc: dict) -> dict:
+    """The hidden jobs the library include: block contributes, so a `!reference`
+    into one resolves to the fragment this pipeline actually gets."""
+    from ci_yaml import CILoader
+
+    frags = {}
+    for entry in doc.get("include") or []:
+        if not isinstance(entry, dict) or "file" not in entry:
+            continue
+        files = entry["file"] if isinstance(entry["file"], list) else [entry["file"]]
+        for spec_file in files:
+            text = _lib_ci_text(str(spec_file).lstrip("/"))
+            docs = [d for d in yaml.load_all(text, Loader=CILoader) if isinstance(d, dict)]
+            if not docs:
+                continue
+            inputs = {}
+            if "spec" in docs[0]:
+                for name, decl in ((docs[0].get("spec") or {}).get("inputs") or {}).items():
+                    inputs[name] = decl.get("default") if isinstance(decl, dict) else None
+            inputs.update(entry.get("inputs") or {})
+            for key, body in docs[-1].items():
+                if not isinstance(key, str) or not isinstance(body, dict):
+                    continue
+                name = _substitute_inputs(key, inputs)
+                if name:
+                    frags.setdefault(name, _substitute_inputs(body, inputs))
+    return frags
+
+
+def pipeline_doc() -> dict:
+    """.gitlab-ci.yml with `!reference` kept and the library fragments merged in."""
+    from ci_yaml import load_ci
+
+    doc = load_ci(REPO / ".gitlab-ci.yml")
+    for name, body in library_fragments(doc).items():
+        doc.setdefault(name, body)
+    return doc
+
+
+def extends_chain(doc: dict, name: str, seen=()) -> list:
+    """A job's `extends` ancestry, least derived first."""
+    body = doc.get(name)
+    if not isinstance(body, dict) or name in seen:
+        return []
+    parents = body.get("extends")
+    parents = [parents] if isinstance(parents, str) else (parents or [])
+    chain = []
+    for parent in parents:
+        chain += extends_chain(doc, parent, seen + (name,))
+    return chain + [name]
+
+
+def job_shell(doc: dict, name: str) -> tuple:
+    """A job's image and the shell it runs. A job-level `before_script` replaces
+    the inherited one, so the most derived definition of each block wins."""
+    from ci_yaml import script_lines
+
+    chain = extends_chain(doc, name)
+    variables = {k: str(v) for k, v in (doc.get("variables") or {}).items()}
+    image = None
+    for link in chain:
+        variables.update({k: str(v) for k, v in (doc[link].get("variables") or {}).items()})
+        if doc[link].get("image"):
+            image = doc[link]["image"]
+    if isinstance(image, dict):
+        image = image.get("name")
+    lines = []
+    for block in ("before_script", "script", "after_script"):
+        for link in reversed(chain):
+            if block in doc[link]:
+                lines += script_lines(doc[link], doc, block)
+                break
+    def expand(raw: str) -> str:
+        return _VAR_REF.sub(
+            lambda m: variables.get(m.group(1) or m.group(2), m.group(0)), raw
+        )
+
+    text = "\n".join(lines)
+    for _ in range(3):
+        text = expand(text)
+    return expand(str(image or "")).split("@")[0], text
+
+
+def live_jobs(doc: dict) -> list:
+    """Jobs that deploy, verify or maintain the live estate."""
+    return sorted(
+        name for name, body in doc.items()
+        if isinstance(body, dict) and not name.startswith(".")
+        and name not in CI_RESERVED
+        and (body.get("stage") in LIVE_STAGES
+             or any(base in LIVE_BASES for base in extends_chain(doc, name)))
+    )
+
+
+def job_missing_tools(doc: dict, name: str) -> list:
+    image, text = job_shell(doc, name)
+    reached = script_closure(set(_SCRIPT_REF.findall(strip_shell_comments(text))))
+    return unprovisioned(
+        image, "\n".join([text] + reached["text"]),
+        also_required=reached["modules"], excused=reached["excused"],
+    )
+
+
+class TestLiveJobToolProvisioning:
+    def test_every_live_job_provides_what_its_scripts_call(self):
+        doc = pipeline_doc()
+        jobs = live_jobs(doc)
+        missing = {name: job_missing_tools(doc, name) for name in jobs}
+        missing = {name: tools for name, tools in missing.items() if tools}
+        assert not missing, (
+            "these jobs run a script that calls a tool or imports a module "
+            "nothing in the job installs, so they fail at runtime rather than "
+            f"at lint: {missing}. Install it in the job's before_script "
+            "(scripts/ci-fetch-tools.py for a pinned static binary), or record "
+            "it in IMAGE_TOOLS if the job image ships it."
+        )
+
+    def test_the_subject_set_covers_the_live_jobs(self):
+        doc = pipeline_doc()
+        jobs = live_jobs(doc)
+        assert len(jobs) > 10, f"only {len(jobs)} live jobs found — the gate read almost nothing"
+        for anchor in LIVE_ANCHORS:
+            assert anchor in jobs, f"{anchor} is no longer a live job; fix LIVE_BASES/LIVE_STAGES"
+
+    def test_the_library_fragments_resolve(self):
+        """`!reference [.kubectl-setup, before_script]` must resolve, or every
+        tool the fragment installs reads as absent and the gate is noise."""
+        doc = pipeline_doc()
+        for fragment in (".deploy-base", ".kubectl-setup", ".install-1password"):
+            assert isinstance(doc.get(fragment), dict), (
+                f"{fragment} did not resolve from the library include block"
+            )
+        _, text = job_shell(doc, "deploy-verify")
+        assert "kubectl" in shell_installs(text), (
+            ".kubectl-setup no longer installs a kubectl the gate can see"
+        )
+
+    def test_an_argument_is_not_read_as_a_command(self):
+        """The precision the gate depends on: a tool name in an argument
+        position is not a call."""
+        assert shell_commands('git diff --quiet -- "ansible/inventories/prod/all.yml"') == {"git"}
+        assert shell_commands("flux reconcile source git flux-system") == {"flux"}
+        assert shell_commands("# run task hosts:sync first") == set()
+        assert shell_commands("op run -- ansible-playbook -i inventories/prod site.yml") == {
+            "op", "ansible-playbook",
+        }
+
+    def test_a_dropped_install_is_detected(self):
+        """The mutation: the fragment that installed jq stops installing it."""
+        with_jq = 'apt-get install -y -qq jq\nkubectl get pods -o json | jq .items'
+        assert unprovisioned("python:3.13-slim", with_jq) == ["kubectl"]
+        without_jq = "kubectl get pods -o json | jq .items"
+        assert unprovisioned("python:3.13-slim", without_jq) == ["jq", "kubectl"]
+
+    def test_a_dropped_fetch_is_detected(self):
+        """The repo's own provisioning path: scripts/ci-fetch-tools.py."""
+        fetched = "python3 scripts/ci-fetch-tools.py jq amtool\namtool check-config x\njq ."
+        assert unprovisioned("python:3.13-slim", fetched) == []
+        assert unprovisioned("python:3.13-slim", "amtool check-config x\njq .") == [
+            "amtool", "jq",
+        ]
+
+    def test_a_missing_python_module_is_detected(self):
+        """The class the drift job hit: a gate imports PyYAML through
+        gate_common.py and the slim image ships none."""
+        assert unprovisioned("python:3.13-slim", "true", also_required={"py:yaml"}) == [
+            "py:yaml"
+        ]
+        pinned = 'pip install --quiet "pyyaml==6.0.2"'
+        assert unprovisioned("python:3.13-slim", pinned, also_required={"py:yaml"}) == []
+        assert unprovisioned(
+            "python:3.13-slim", 'pip install --quiet "ansible==14.4.0"',
+            also_required={"py:yaml"},
+        ) == []
+
+    def test_an_off_path_tool_is_excused_only_when_declared(self):
+        probe = "nc -z -w 5 host 22"
+        assert unprovisioned("python:3.13-slim", probe) == ["nc"]
+        assert unprovisioned("python:3.13-slim", probe, excused={"nc"}) == []
+        assert set(OFF_CI_PATH) == {"smoke-lib.sh:nc", "smoke-lib.sh:ssh"}

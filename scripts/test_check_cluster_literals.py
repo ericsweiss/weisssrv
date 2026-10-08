@@ -500,3 +500,26 @@ def test_an_undecodable_generator_source_is_vacuous_not_a_traceback(repo: Path) 
     with pytest.raises(gate.Vacuous):
         run(repo)
     assert gate.main(["--repo-root", str(repo)]) == 2
+
+
+def test_a_domain_literal_in_a_yml_manifest_is_reported(repo: Path) -> None:
+    """kustomize reads both spellings, so a .yml manifest is a scanned subject."""
+    write(repo, "kubernetes/apps/demo/route.yml", """\
+        apiVersion: traefik.io/v1alpha1
+        kind: IngressRoute
+        spec:
+          routes:
+            - match: Host(`app.example.lan`)
+        """)
+    assert any("route.yml" in v and "example.lan" in v for v in run(repo))
+
+
+def test_a_stage_declared_in_a_yml_file_is_still_derived(repo: Path) -> None:
+    """A stage whose Kustomization file is .yml must still bring its tree in."""
+    (repo / "kubernetes/infrastructure/configs").mkdir(parents=True)
+    write(
+        repo,
+        f"{gate.CLUSTER_DIR}/infrastructure-configs.yml",
+        stage("infrastructure-configs", "kubernetes/infrastructure/configs"),
+    )
+    assert "kubernetes/infrastructure/configs" in gate.substituted_trees(repo)
