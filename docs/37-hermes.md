@@ -58,8 +58,9 @@ The in-cluster image ref is
 **internal** registry host — AdGuard rewrite → Traefik `.101` → GitLab VM
 registry, no hairpin NAT). Note the pulled tag is `hermes_image_version`
 (`<hermes_version>-r<N>`), **not** `hermes_version`: the image is upstream plus
-this repo's reviewed patches, so a patch-only change still needs a fresh tag to
-defeat the nodes' `IfNotPresent` cache. CI fails the build if the two drift.
+the baked CLIs and any reviewed patches, so a local-only change still needs a
+fresh tag to defeat the nodes' `IfNotPresent` cache. CI fails the build if the
+two drift.
 
 ### Runtime user / security context
 
@@ -379,8 +380,20 @@ built-in memory with a knowledge-graph store (entity resolution, observation
 consolidation, multi-strategy recall). It runs as its own app —
 [`kubernetes/apps/hindsight/`](../kubernetes/apps/hindsight/) (see that
 README for the two-container hindsight + llama.cpp architecture, the fully
-local LLM, and the Postgres-on-NFS storage decision). Hermes talks to it via
-the bundled `hindsight` memory plugin in **`local_external`** mode.
+local LLM, and the Postgres-on-NFS storage decision). Hermes talks to it
+through the `hindsight` memory plugin in **`local_external`** mode.
+
+The plugin is not part of the Hermes image. Hermes clones it from
+`vectorize-io/hindsight`, at the commit its plugin catalog pins, into
+`$HERMES_HOME/plugins/hindsight` on the NFS volume. That happens the first time
+the selected provider is not already installed, over the existing public `:443`
+egress. The plugin therefore lives outside the image and cannot be changed by
+the build's `patches/`.
+
+Known upstream gap: the explicit `hindsight_retain` tool does not pass the
+configured `retain_async`. A manual retain can therefore run synchronously
+against minutes-long extraction and hit Hermes' 120s tool timeout. Automatic
+per-turn capture is unaffected.
 
 The `llama.cpp` sidecar runs inference on the **GTX 1660 Ti passed through to the
 prec-01 agent** (`server-cuda-` image, `-ngl 99`, `nvidia.com/gpu`); its timeout
@@ -413,9 +426,9 @@ One-time operator steps, after the hindsight pod is `Running`:
    explicit `hindsight_*` tools for the LLM. No API key — the hindsight
    NetworkPolicy admits only this namespace.
 
-2. **Select the provider + restart.** The first enable pip-installs the
-   plugin's `hindsight-client` dependency via `uv` (rides the existing
-   public-`:443` egress):
+2. **Select the provider + restart.** The first enable installs the plugin from
+   the catalog and pip-installs its `hindsight-client` dependency via `uv` (both
+   ride the existing public-`:443` egress):
 
    ```bash
    kubectl exec -n hermes deploy/hermes -c gateway -- hermes config set memory.provider hindsight
@@ -643,7 +656,9 @@ kube-state alert — see `kubernetes/apps/hindsight/README.md`.)
    resolves to any other commit — so a stale or mismatched `hermes_git_sha` fails
    the pipeline loudly rather than building a moved/compromised tag — and it also
    hard-fails unless `hermes_image_version` is exactly `${hermes_version}-r<N>`.
-   A patches-only change bumps just the `-rN`.
+   A local-only change (a CLI pin or a patch) bumps just the `-rN`.
+   Re-verify every file in `docker/hermes-agent/patches/` against the new tag:
+   a patch whose target moved fails the build job, not lint.
 3. Commit both files on a branch → MR → merge.
 4. On `main`, `build-hermes-agent` verifies the tag→SHA, rebuilds the image,
    pushes the new tags and then verifies the registry resolves

@@ -152,10 +152,12 @@ spec:
                 ts=$(date +%Y%m%d-%H%M%S)
                 out=/backups/hindsight-$ts.sql.gz
                 if "$bin/pg_dump" --clean --if-exists | gzip -c > "$out.tmp"; then
-                  mv "$out.tmp" "$out"
-                  ls -1t /backups/hindsight-*.sql.gz | tail -n +$((RETENTION + 1)) \
-                    | while IFS= read -r f; do rm -f "$f"; done
+                  mv "$out.tmp" "$out" \
+                    || { rm -f "$out.tmp"; echo "pg-dump publish failed" >&2; return 1; }
                   echo "wrote $out"
+                  ls -1t /backups/hindsight-*.sql.gz | tail -n +$((RETENTION + 1)) \
+                    | while IFS= read -r f; do rm -f "$f"; done \
+                    || { echo "pg-dump prune failed" >&2; return 1; }
                 else
                   rm -f "$out.tmp"; echo "pg-dump failed" >&2; return 1
                 fi

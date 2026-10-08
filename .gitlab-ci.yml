@@ -2121,15 +2121,21 @@ deploy-gitlab-verify:
   # skip this job whenever that deploy failed, i.e. when it matters most.
   stage: verify
   when: always
-  # curl only: no Ansible, SSH key, kubeconfig or 1Password, so it does not
-  # extend the heavy .deploy-base. `--http-only` drops the two nc probes this
-  # image has no netcat for, and needs no GITLAB_IP.
+  # curl and netcat only: no Ansible, SSH key, kubeconfig or 1Password, so it
+  # does not extend the heavy .deploy-base. Infrastructure runner pods egress
+  # unrestricted and SNAT to a node IP, which sg-gitlab admits on :22 and :2222.
   image: python:3.13-slim
   interruptible: false
   before_script:
-    - apt-get update -qq && apt-get install -y -qq --no-install-recommends curl ca-certificates
+    - apt-get update -qq && apt-get install -y -qq --no-install-recommends curl ca-certificates netcat-openbsd
   script:
-    - bash scripts/verify-gitlab.sh --http-only
+    - |
+      set -eo pipefail
+      # GITLAB_IP for the two SSH probes comes from the generated host roster,
+      # the same file .deploy-base sources; `set -a` exports it to the script.
+      set -a; . ./scripts/hosts.env; set +a
+      [ -n "${GITLAB_IP:-}" ] || { echo "ERROR: scripts/hosts.env exported no GITLAB_IP" >&2; exit 1; }
+      bash scripts/verify-gitlab.sh
   environment:
     name: production/gitlab-verify
   rules:

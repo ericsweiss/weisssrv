@@ -2,9 +2,9 @@
 # GitLab smoke tests: web UI on both hosts, registry, pages, SSH, readiness and
 # the Web IDE extension host. Exits non-zero when any probe FAILs.
 
-# GITLAB_IP comes from scripts/hosts.env, which `task gitlab:verify` loads.
-# --http-only drops the two nc probes for callers with no netcat (the CI
-# verify job): GITLAB_IP is then read if set and never required.
+# GITLAB_IP comes from scripts/hosts.env, which `task gitlab:verify` loads and
+# the CI verify job sources. --http-only drops the two nc probes for a caller
+# with no netcat: GITLAB_IP is then read if set and never required.
 set -uo pipefail
 
 _SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

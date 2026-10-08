@@ -264,7 +264,7 @@ class TestVerifyScripts:
         assert "=== Results: 1 passed, 0 failed ===" in proc.stdout
 
     def _gitlab_http_only(self, tmp_path: Path) -> subprocess.CompletedProcess:
-        """--http-only with no working nc and no GITLAB_IP: the CI job's shape."""
+        """--http-only with no working nc and no GITLAB_IP: a netcat-less caller."""
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
         _stub(

@@ -571,7 +571,7 @@ to re-run the pipeline, or `task infra:deploy` — not to assume convergence.
 
 > **Note:** Both jobs block. `deploy-verify` fails the pipeline on any
 > `NotReady` node, non-Ready Flux resource, or GitLab outage;
-> `deploy-gitlab-verify` no longer carries `allow_failure`.
+> `deploy-gitlab-verify` blocks the same way, with no `allow_failure`.
 
 #### Maintenance Stage
 All manual buttons except `version-bump-bot`, which is the one **scheduled** job

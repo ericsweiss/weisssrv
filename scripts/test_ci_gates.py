@@ -2155,7 +2155,6 @@ IMAGE_TOOLS = {
 # A tool a sourced helper offers on a branch the CI caller never takes, keyed
 # "<script>:<tool>" with why the job need not install it.
 OFF_CI_PATH = {
-    "smoke-lib.sh:nc": "deploy-gitlab-verify passes --http-only, which skips the TCP probes",
     "smoke-lib.sh:ssh": "verify-gitlab.sh calls no ssh probe",
 }
 
@@ -2503,4 +2502,4 @@ class TestLiveJobToolProvisioning:
         probe = "nc -z -w 5 host 22"
         assert unprovisioned("python:3.13-slim", probe) == ["nc"]
         assert unprovisioned("python:3.13-slim", probe, excused={"nc"}) == []
-        assert set(OFF_CI_PATH) == {"smoke-lib.sh:nc", "smoke-lib.sh:ssh"}
+        assert set(OFF_CI_PATH) == {"smoke-lib.sh:ssh"}
