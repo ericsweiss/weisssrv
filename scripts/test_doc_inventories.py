@@ -480,3 +480,213 @@ def test_readme_index_scan_finds_the_real_docs():
     section = _readme_documentation_section()
     assert "](docs/01-overview.md)" in section
     assert section.count("](docs/") >= 40
+
+
+# --- docs/17's restore names vs the NAS backup inventory ---------------------
+
+DR_DOC = REPO / "docs" / "17-disaster-recovery.md"
+NAS_HOST_VARS = REPO / "ansible" / "inventories" / "prod" / "host_vars" / "pve-nas-01.yml"
+
+# `— today `a`, `b` ... and the two data zvol trees` in the full-restore table.
+_STEP_RESTIC_RE = re.compile(
+    r"for every name in `restic_offsite_sources`.*?— today (?P<names>.*?)"
+    r" and the two data zvol trees",
+    re.S,
+)
+# `#   names: a | b |` + its `#   ` continuation lines in the worked example.
+_CTL_NAMES_RE = re.compile(r"#\s+names:(?P<names>[^:]*?)\n#\s+\(", re.S)
+# `Targets are `a`, `b`, ..., or `all`.` above the archive restore procedures.
+_ARCHIVE_TARGETS_RE = re.compile(r"Targets are\s+(?P<names>.*?), or `all`\.", re.S)
+# ``tank/{a,b}` + `ssd/{c}`` after "replication of", which the unrelated
+# `tank/{nextcloud,immich}-data` brace spelling elsewhere must not satisfy.
+_ARCHIVE_SET_RE = re.compile(
+    r"replication of\s+(?P<sets>(?:`(?:tank|ssd)/\{[^}]*\}`(?:\s*\+\s*)?)+)", re.S
+)
+_BACKTICKED = re.compile(r"`([A-Za-z0-9][A-Za-z0-9/_-]*)`")
+
+
+def _nas_backup_inventory() -> dict:
+    return yaml.safe_load(NAS_HOST_VARS.read_text(encoding="utf-8"))
+
+
+def _inventory_restic_file_sources() -> set[str]:
+    return {s["name"] for s in _nas_backup_inventory()["restic_offsite_sources"]}
+
+
+def _inventory_restic_names() -> set[str]:
+    inventory = _nas_backup_inventory()
+    return {
+        s["name"]
+        for key in ("restic_offsite_sources", "restic_offsite_zvol_sources")
+        for s in inventory[key]
+    }
+
+
+def _inventory_archive_datasets() -> set[str]:
+    return set(_nas_backup_inventory()["nas_storage_archive_backup_sources"])
+
+
+def _documented(pattern: re.Pattern, text: str, what: str) -> set[str]:
+    match = pattern.search(text)
+    assert match, f"docs/17 no longer spells its {what} the way this gate reads it"
+    return set(_BACKTICKED.findall(match.group("names")))
+
+
+def _documented_restic_file_sources(text: str) -> set[str]:
+    return _documented(_STEP_RESTIC_RE, text, "full-restore restic source list")
+
+
+def _documented_restic_ctl_names(text: str) -> set[str]:
+    match = _CTL_NAMES_RE.search(text)
+    assert match, "docs/17 no longer spells its restic-offsitectl restore names"
+    names = (n.strip(" \n#`") for n in match.group("names").split("|"))
+    return {n for n in names if n}
+
+
+def _documented_archive_targets(text: str) -> set[str]:
+    return _documented(_ARCHIVE_TARGETS_RE, text, "archive-backupctl target list")
+
+
+def _documented_archive_datasets(text: str) -> set[str]:
+    match = _ARCHIVE_SET_RE.search(text)
+    assert match, "docs/17 no longer spells its archive replication set"
+    datasets = set()
+    for pool, body in re.findall(r"(tank|ssd)/\{([^}]*)\}", match.group("sets")):
+        datasets.update(f"{pool}/{m.strip()}" for m in body.split(",") if m.strip())
+    return datasets
+
+
+def test_dr_doc_restore_names_match_the_backup_inventory():
+    text = DR_DOC.read_text(encoding="utf-8")
+    assert _documented_restic_file_sources(text) == _inventory_restic_file_sources()
+    assert _documented_restic_ctl_names(text) == _inventory_restic_names()
+    assert _documented_archive_datasets(text) == _inventory_archive_datasets()
+    assert _documented_archive_targets(text) == {
+        ds.split("/")[-1] for ds in _inventory_archive_datasets()
+    }
+
+
+def test_dr_doc_restore_name_scan_finds_the_real_lists():
+    """Guard the four extractors: an empty match would pass vacuously."""
+    text = DR_DOC.read_text(encoding="utf-8")
+    assert len(_documented_restic_file_sources(text)) >= 4
+    assert len(_documented_restic_ctl_names(text)) >= 6
+    assert len(_documented_archive_targets(text)) >= 6
+    assert len(_documented_archive_datasets(text)) >= 6
+    assert "tank/{nextcloud,immich}-data" in text
+    assert "tank/nextcloud" not in _documented_archive_datasets(text)
+
+
+def test_dr_doc_restore_name_scan_catches_a_retired_source():
+    """A name dropped from the inventory but left in docs/17 must fail the gate."""
+    text = DR_DOC.read_text(encoding="utf-8")
+    stale = text.replace("`appdata`,", "`appdata`, `databases`,").replace(
+        "| appdata |", "| appdata | databases |"
+    ).replace("ssd/{appdata,", "ssd/{appdata,databases,")
+    assert "databases" in _documented_restic_file_sources(stale)
+    assert "databases" in _documented_restic_ctl_names(stale)
+    assert "databases" in _documented_archive_targets(stale)
+    assert "ssd/databases" in _documented_archive_datasets(stale)
+
+
+# --- docs/32's archive replication set -------------------------------------
+
+ENC_DOC = REPO / "docs" / "32-zfs-encryption.md"
+# ``archive/{a,b,...}`` — docs/32 names the DESTINATIONS, so the basenames of
+# nas_storage_archive_backup_sources, and the list wraps mid-brace.
+_ENC_ARCHIVE_SET_RE = re.compile(r"`archive/\{(?P<names>[^}]*)\}`", re.S)
+_COUNT_WORDS = {
+    1: "one", 2: "two", 3: "three", 4: "four", 5: "five",
+    6: "six", 7: "seven", 8: "eight", 9: "nine", 10: "ten",
+}
+
+
+def _documented_enc_archive_datasets(text: str) -> set[str]:
+    match = _ENC_ARCHIVE_SET_RE.search(text)
+    assert match, "docs/32 no longer spells its archive replication set"
+    names = match.group("names").replace("\n", " ").split(",")
+    return {n.strip() for n in names if n.strip()}
+
+
+def _enc_count_word_mismatches(text: str, count: int) -> list[str]:
+    """Count words docs/32 spells where the replication set size belongs."""
+    word = _COUNT_WORDS[count]
+    found = set(re.findall(r"\b([a-z]+) replicated\b", text))
+    found |= set(re.findall(r"\bthose ([a-z]+) datasets\b", text))
+    return sorted(w for w in found if w != word)
+
+
+def test_encryption_doc_archive_set_matches_the_backup_inventory():
+    text = ENC_DOC.read_text(encoding="utf-8")
+    expected = {ds.split("/")[-1] for ds in _inventory_archive_datasets()}
+    assert _documented_enc_archive_datasets(text) == expected, (
+        "docs/32's archive replication set and "
+        "nas_storage_archive_backup_sources name different datasets"
+    )
+    assert not _enc_count_word_mismatches(text, len(expected)), (
+        "docs/32 counts the replicated datasets as something other than "
+        f"{_COUNT_WORDS[len(expected)]}"
+    )
+    assert f"{_COUNT_WORDS[len(expected)]} replicated" in text
+
+
+def test_encryption_doc_archive_set_scan_catches_drift():
+    """Both mutations the gate exists for: an extra dataset, and a stale count."""
+    text = ENC_DOC.read_text(encoding="utf-8")
+    assert len(_documented_enc_archive_datasets(text)) >= 6
+    extra = text.replace("`archive/{share,", "`archive/{databases,share,")
+    assert "databases" in _documented_enc_archive_datasets(extra)
+    count = len(_documented_enc_archive_datasets(text))
+    stale = text.replace(f"{_COUNT_WORDS[count]} replicated", "eleven replicated")
+    assert _enc_count_word_mismatches(stale, count) == ["eleven"]
+
+
+# --- scripts/ data files the Taskfiles read --------------------------------
+
+SCRIPTS_DIR = REPO / "scripts"
+SCRIPTS_README = SCRIPTS_DIR / "README.md"
+_TASKFILES = (REPO / "Taskfile.yml", *sorted((REPO / "taskfiles").glob("*.yml")))
+# `scripts/<name>` anywhere in a Taskfile; the caller drops the executables.
+_SCRIPTS_PATH_RE = re.compile(r"scripts/([A-Za-z0-9][\w.\-]*)")
+_BACKTICKED_TOKEN = re.compile(r"`([^`\n]+)`")
+
+
+def _taskfile_data_files() -> set[str]:
+    """Files under scripts/ a Taskfile names by path that are not scripts."""
+    text = "\n".join(p.read_text(encoding="utf-8") for p in _TASKFILES)
+    return {
+        name
+        for name in set(_SCRIPTS_PATH_RE.findall(text))
+        if not name.endswith((".py", ".sh")) and (SCRIPTS_DIR / name).is_file()
+    }
+
+
+def _readme_tokens() -> set[str]:
+    return set(_BACKTICKED_TOKEN.findall(SCRIPTS_README.read_text(encoding="utf-8")))
+
+
+def _undocumented_data_files(documented: set[str]) -> list[str]:
+    """Data files scripts/README.md names nowhere, so nothing says what they hold."""
+    return sorted(n for n in _taskfile_data_files() if n not in documented)
+
+
+def test_every_taskfile_data_file_is_documented():
+    missing = _undocumented_data_files(_readme_tokens())
+    assert not missing, (
+        "scripts/README.md names none of these files the Taskfiles read, so a "
+        f"reader cannot tell what they hold: {missing}"
+    )
+
+
+def test_the_data_file_scan_finds_the_real_files():
+    """An empty or script-polluted scan would make the gate above vacuous."""
+    files = _taskfile_data_files()
+    assert {"netpol-except.yaml", "hosts.env"} <= files
+    assert not [f for f in files if f.endswith((".py", ".sh"))]
+
+
+def test_an_undocumented_data_file_is_reported():
+    """The mutation the gate exists for: a data file no README row covers."""
+    assert _undocumented_data_files(_readme_tokens() - {"netpol-except.yaml"}) == [
+        "netpol-except.yaml"
+    ]

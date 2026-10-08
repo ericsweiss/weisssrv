@@ -65,7 +65,7 @@ python3 ../weisssrv-lib/scripts/check-vendored-copies.py --repo-root . --list
 | `check-nfs-tls.py` | Every NFS PersistentVolume mounts `xprtsec=tls`, by hostname (the cert has no IP SAN) | vendored |
 | `check-pvc-storageclass.py` | Every claim pins a `storageClassName` | vendored |
 | `check-role-default-flips.py` | No role default changes between the installed and the new `weisssrv.infra` tag without the inventory declaring it — the collection's variables are default-guarded, so a flip is adopted silently (`--from`/`--to`, run at a pin bump) | local |
-| `check-role-inputs.py` | An opt-in collection role invoked with its flag set nowhere, and an asserted role input with no default and no assignment (`task lint:role-inputs` and the CI role-inputs job) | vendored |
+| `check-role-inputs.py` | An opt-in collection role invoked with its flag set nowhere, and an asserted role input with no default and no assignment (`task lint:role-inputs` and the CI check-role-inputs job) | vendored |
 | `check-runbook-anchors.py` | Every alert's `runbook_url` resolves to a real docs file and heading | vendored |
 | `check-guest-endpoint-parity.py` | Every LAN address a hand-written EndpointSlice names is a real `ansible_host` in the prod inventory, or the LAN gateway | local |
 | `check-secret-rotation-coverage.py` | Every `remoteRef.key` is named in docs/15, and every ExternalSecret is reached by a rotation path or declared manual | forked |
@@ -197,6 +197,7 @@ re-vendor never has to be re-edited. Each is covered by `test_site_configs.py`.
 | `unifi-settings.json` | `unifi-settings-drift.py` | The console-owned UniFi site settings and their expected values |
 | `netpol-except.yaml` | `check-netpol-except-parity.py` | The reserved-CIDR except-list + the peer-less egress policies allowed to omit it |
 | `alertmanager-behaviour.yaml` | `check-alertmanager-behaviour.py` | The alert→receiver route cases and the upstream alerts that must stay routable |
+| `kubeconform-expected-skipped.txt` | `kubeconform-skipped.py` | The apiVersion/Kind pairs flux-lint accepts unvalidated |
 
 ## Vendored files outside `scripts/`
 

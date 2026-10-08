@@ -137,5 +137,5 @@ invariant, or canonical-doc pointer** — `.claude/skills/weisssrv-development/`
 cover the skill: `scripts/test_doc_inventories.py` asserts every
 `` `task <ns>:<name>` `` it names still exists, and `scripts/check-skill-refs.py`
 asserts every backticked repo path it cites still resolves (the skill carries no
-Markdown links, so `docs-link-check` sees nothing in it). Nothing validates the
+Markdown links, so `lint-docs-links` sees nothing in it). Nothing validates the
 *prose*, so a stale procedure is doc rot CI cannot catch.

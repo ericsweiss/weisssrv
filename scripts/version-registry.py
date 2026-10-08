@@ -148,6 +148,12 @@ _SERVICES: list[dict] = [
         "version_prefix": "rust-v",
         "strip_prefix": True,
         "tag_filter": r"^rust-v\d+\.\d+\.\d+$",
+        "coupled_vars": ["hermes_image_version"],
+        "notes": (
+            "Baked into the image, which the pods pull IfNotPresent: a new CLI "
+            "pin needs a new hermes_image_version revision or the cache serves "
+            "the old CLI."
+        ),
     },
     {
         # Baked into the hermes-agent image alongside Codex (npm
@@ -160,6 +166,12 @@ _SERVICES: list[dict] = [
         "version_prefix": "v",
         "strip_prefix": True,
         "tag_filter": r"^v\d+\.\d+\.\d+$",
+        "coupled_vars": ["hermes_image_version"],
+        "notes": (
+            "Baked into the image, which the pods pull IfNotPresent: a new CLI "
+            "pin needs a new hermes_image_version revision or the cache serves "
+            "the old CLI."
+        ),
     },
     {
         # Baked into the hermes-agent image so the 1Password skill can drive
@@ -169,7 +181,8 @@ _SERVICES: list[dict] = [
         "var_name": "hermes_op_version",
         "category": "manual",
         "source_url": "https://app-updates.agilebits.com/product_history/CLI2",
-        "notes": "op CLI baked into the hermes image (docker/hermes-agent). Full DEB version pin — bump via `apt-cache madison 1password-cli` against 1Password's signed apt repo, sync-versions, commit; CI rebuilds the wrapper.",
+        "notes": "op CLI baked into the hermes image (docker/hermes-agent). Full DEB version pin — bump via `apt-cache madison 1password-cli` against 1Password's signed apt repo, sync-versions, commit; CI rebuilds the wrapper. The pods pull IfNotPresent, so a new pin needs a new hermes_image_version revision.",
+        "coupled_vars": ["hermes_image_version"],
     },
     {
         # Built from source by build-camofox-browser (upstream publishes no
@@ -806,10 +819,12 @@ _SERVICES: list[dict] = [
         "version_file": ".gitlab-ci.yml",
         "held": True,
         "notes": (
-            "Held at 3.13: ansible-core 2.18 caps the controller there, so a "
-            "newer minor waits for the ansible bump. Unholding bumps the tag "
-            "AND re-pins PY_JOB_IMAGE's @sha256 together in the .gitlab-ci.yml "
-            "variables block."
+            "Held at 3.13, the minor the library job images run and every "
+            "python job here is proven on. It is also above ansible 14's "
+            ">= 3.12 floor, which the python-tests pip install needs. Unholding "
+            "is a pipeline-wide move and bumps the tag AND re-pins "
+            "PY_JOB_IMAGE's @sha256 together in the .gitlab-ci.yml variables "
+            "block."
         ),
         "source_url": "https://hub.docker.com/_/python",
     },
@@ -890,9 +905,9 @@ _SERVICES: list[dict] = [
         ),
     },
     {
-        # The privileged dind service of .build-image-base. Its embedded BuildKit
-        # frontend accepts upstream hermes' symbolic `COPY --chmod`, which the
-        # 27.x frontend rejects, so the tag is held.
+        # The privileged dind service of .build-image-base, spelled as the
+        # docker-dind include's dind_service input. Its embedded BuildKit frontend
+        # accepts upstream hermes' symbolic `COPY --chmod`, which 27.x rejects.
         "name": "docker (dind service)",
         "var_name": "docker_dind_version",
         "category": "dockerhub",
@@ -900,7 +915,7 @@ _SERVICES: list[dict] = [
         "tag_regex": r"^(\d+\.\d+(?:\.\d+)?-dind)$",
         "dockerhub_name_filter": "-dind",
         "version_file": "ci",
-        "pin_regex": r"^\s*- name: docker:([\w.+-]+)@sha256:",
+        "pin_regex": r'^\s*dind_service:\s*"docker:([\w.+-]+)@sha256:',
         "held": True,
         "notes": (
             "Held at 24.0-dind for the BuildKit frontend .build-image-base "

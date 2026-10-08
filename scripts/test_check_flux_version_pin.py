@@ -176,7 +176,7 @@ def test_a_non_utf8_pipeline_reports_that_it_inspected_nothing(tmp_path):
 
 
 def test_this_repository_passes_on_the_real_tree():
-    """The subject `task lint:flux-version-pin` and repo-policy-checks hand it:
+    """The subject `task lint:flux-version-pin` and check-repo-policies hand it:
     this repo's own pipeline, versions ConfigMap and committed gotk-components."""
     res = _run(Path(__file__).resolve().parent.parent)
     assert res.returncode == 0, res.stdout + res.stderr

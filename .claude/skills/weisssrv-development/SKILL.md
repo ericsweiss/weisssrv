@@ -209,7 +209,7 @@ out the per-change-type checklist.
   name that no longer resolves. Integration scenarios: `task ansible:test-integration`
   (Docker required) — see `references/debugging.md` for local caveats.
 - Versions touched → `task flux:sync-versions`, commit both files (else
-  the versions-sync check in `repo-sync-checks` reds the pipeline).
+  the versions-sync check in `check-generated-files` reds the pipeline).
 - `hosts.yml` touched → `task hosts:sync`, commit `scripts/hosts.env`.
 - `kubernetes/` touched → `task flux:lint` (kustomize build + envsubst with zero
   unsubstituted `${...}` + kubeconform + helm-template). Optionally preview with
@@ -237,7 +237,7 @@ out the per-change-type checklist.
   the deploy plan, and a test section describing what WAS run.
 - An MR pipeline runs the **path-filtered** lint/validate/test/security/ai-review
   gates only — **no deploy on MRs**. A gate runs only if its paths changed. The
-  closest thing to a pre-merge deploy signal is `deploy-preflight`: it is
+  closest thing to a pre-merge deploy signal is `check-deploy-playbooks`: it is
   credential-free by construction (an MR job must never hold prod credentials),
   so it proves the collection pin installs, every deploy
   job's playbook exists and every `--tags` selection reaches a real task —

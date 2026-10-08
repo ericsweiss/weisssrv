@@ -80,13 +80,13 @@ reference, and NFS export path — are unchanged by encryption.
 - `tank/pve` — ephemeral Proxmox VM/LXC images. (`tank/proxmox` is in
   the encrypted list above because it holds VM backup tarballs that
   contain persistent app state.)
-- `archive` pool — the pool itself is plaintext, but the eight replicated
+- `archive` pool — the pool itself is plaintext, but the seven replicated
   datasets (`archive/{share,backups,nextcloud-data,proxmox,immich-data,appdata,
-  databases,k3s-etcd}`) arrive as **raw** `zfs send -w` streams from their
-  encrypted tank/ssd sources (`archive-backupctl`). Raw replication is the
-  at-rest protection for those eight datasets: they are encrypted under the
-  source's own key, archive never loads a key, and a restore needs
-  `zfs load-key`. Archive data outside those eight datasets stays plaintext.
+  k3s-etcd}`) arrive as **raw** `zfs send -w` streams from their encrypted
+  tank/ssd sources (`archive-backupctl`). Raw replication is the at-rest
+  protection for those seven datasets: they are encrypted under the source's
+  own key, archive never loads a key, and a restore needs `zfs load-key`.
+  Archive data outside those seven datasets stays plaintext.
 
   **Never `zfs load-key` + mount an `archive/<dataset>` in place** — it dirties
   the raw incremental chain and forces a full re-seed. To read a backup, restore
@@ -570,7 +570,7 @@ ansible -i ansible/inventories/prod proxmox -m shell -a \
 
 | Threat | Protected? |
 |--------|-----------|
-| Stolen offline drive (RMA, disposal, theft from rack) | Yes — `tank`/`ssd` are ZFS-encrypted; `archive`'s eight replicated datasets are raw-encrypted under their source keys (`nvme` and `tank/media` are plaintext by design) |
+| Stolen offline drive (RMA, disposal, theft from rack) | Yes — `tank`/`ssd` are ZFS-encrypted; `archive`'s seven replicated datasets are raw-encrypted under their source keys (`nvme` and `tank/media` are plaintext by design) |
 | Stolen offline drive bundled with stolen Proxmox host (no LAN) | Yes (Connect token unusable without LAN reach to `connect.esweiss.com`) |
 | Stolen running NAS still on the same LAN | No (running root extracts both token and key) |
 | Compromised root via remote exploit on running host | No (same as above) |

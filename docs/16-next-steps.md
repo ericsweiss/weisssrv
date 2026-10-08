@@ -146,11 +146,15 @@ remote address, not the header).
 
 ### The container registry has no offsite copy
 
-GitLab's container registry is backed up only by the nightly GitLab tarball and
-the guest image, both of which stay on-site. Registry images are rebuildable
-from the Dockerfiles in this repo and from upstream, and the payload data behind
-them is covered by the restic offsite chain. Losing the registry costs a rebuild,
-not data. Accepted.
+The registry blobs live on the `gitlab-repos` zvol, and neither of the two
+copies a GitLab restore usually leans on holds them: the nightly tarball skips
+them (`gitlab_backup_skip: "registry,artifacts"`) and `hosts.yml` keeps the zvol
+out of vzdump (`vzdump_backup: false`). Their one copy is the on-site
+raw-encrypted `ssd/appdata` to `archive` ZFS replication. Nothing reaches B2
+either, because restic walks `/mnt/ssd/appdata` on the NAS, where that zvol
+child is an empty mountpoint. Images are re-pushable from the Dockerfiles in
+this repo, from the weisssrv-lib CI images and from upstream, so losing the
+archive copy as well costs a rebuild, not data. Accepted.
 
 ### Network fabric is a single point of failure
 
@@ -658,14 +662,12 @@ dependency, so none of it belongs in a general MR.
   `gitlab-runner-privileged/release.yaml`), and the molecule-test/molecule-ci
   base images are pinned by manifest-list digest. Still open: the mutable-tag
   CI *job* images in `.gitlab-ci.yml` (`python:3.11-slim`, `alpine:3.23`,
-  `hashicorp/terraform:1.15`, `koalaman/shellcheck-alpine` — `docker:24.0-dind`
-  is already digest-pinned) and
+  `koalaman/shellcheck-alpine` — `docker:24.0-dind` and the terraform job
+  image are already digest-pinned) and
   the unpinned apt packages in the molecule-test image.
-  Resolved manifest-list digests for the secret-bearing subset, ready to use:
+  Resolved manifest-list digest for the secret-bearing subset, ready to use:
   `python:3.11-slim` =
-  `sha256:9534e5a8e315485d4061ed659af0fd78a284c015f9b73661b41d6bab25604534`,
-  `hashicorp/terraform:1.15.9` =
-  `sha256:fd5debae63188975d6febc6aa5bd1a982a588f55e4a4ddb7de28be923f250456`.
+  `sha256:9534e5a8e315485d4061ed659af0fd78a284c015f9b73661b41d6bab25604534`.
   Pinning them needs a matching `scripts/version-registry.py` entry so the
   digests are refreshed rather than left to rot.
 - **CI optimizations** — `ci-gitlab-broad-trigger` (move `gitlab_version` to a
@@ -710,7 +712,7 @@ dependency, so none of it belongs in a general MR.
 - **No parity gate for the two secret environments.** The Taskfile task `env:`
   blocks and the matching CI job `variables:` were reconciled by hand; the
   pytest asserting set equality was never written, so nothing prevents re-drift.
-- **`deploy-preflight` cannot catch a job that forgot an `op://` variable.**
+- **`check-deploy-playbooks` cannot catch a job that forgot an `op://` variable.**
   Stated in the job header; closing it needs a different check.
 
 ### Live ops

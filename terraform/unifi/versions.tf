@@ -1,5 +1,5 @@
 terraform {
-  # Floor matches the CI image (hashicorp/terraform:1.15) and the local
+  # Floor admits the CI image (hashicorp/terraform:1.16) and the workstation
   # toolchain, consistent with terraform/cloudflare, terraform/tailscale and
   # terraform/authentik.
   required_version = ">= 1.15, < 2.0"

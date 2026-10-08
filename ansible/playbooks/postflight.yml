@@ -15,6 +15,9 @@
   hosts: base_managed
   become: true
   check_mode: false
+  vars:
+    postflight_active_units:
+      - ssh
   tasks:
     - name: Check disk space (fail if root <10% free)
       ansible.builtin.assert:
@@ -25,13 +28,28 @@
       loop_control:
         label: "{{ item.mount }}"
 
-    - name: Verify SSH service is running
-      ansible.builtin.service:
-        name: ssh
-        state: started
-      check_mode: true
-      register: postflight_service_check
-      failed_when: postflight_service_check is changed
+    # Unit state is asserted, never enforced, so a unit a deploy left stopped
+    # fails this verification instead of being started by it.
+    - name: Read the state of the units this play verifies  # noqa: command-instead-of-module
+      ansible.builtin.command: "systemctl is-active {{ item }}"
+      changed_when: false
+      failed_when: false
+      register: postflight_unit_state
+      loop: "{{ postflight_active_units }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Assert every verified unit is active
+      ansible.builtin.assert:
+        that:
+          - item.stdout | trim == 'active'
+        fail_msg: >-
+          {{ inventory_hostname }}: {{ item.item }} is
+          {{ item.stdout | trim | default('not loaded', true) }}, not active.
+        quiet: true
+      loop: "{{ postflight_unit_state.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item }}"
 
     - name: Verify admin user can sudo
       ansible.builtin.command: sudo -n true
@@ -43,6 +61,9 @@
   hosts: proxmox
   become: true
   check_mode: false
+  vars:
+    postflight_active_units:
+      - postfix
   tasks:
     - name: Verify Tailscale is running
       ansible.builtin.command: tailscale status
@@ -74,40 +95,62 @@
           0x40000/0xff0000 -j ACCEPT
       when: tailscale_advertise_routes | default([]) | length > 0
 
-    - name: Verify Postfix is running
-      ansible.builtin.service:
-        name: postfix
-        state: started
-      check_mode: true
-      register: postflight_service_check
-      failed_when: postflight_service_check is changed
+    - name: Read the state of the units this play verifies  # noqa: command-instead-of-module
+      ansible.builtin.command: "systemctl is-active {{ item }}"
+      changed_when: false
+      failed_when: false
+      register: postflight_unit_state
+      loop: "{{ postflight_active_units }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Assert every verified unit is active
+      ansible.builtin.assert:
+        that:
+          - item.stdout | trim == 'active'
+        fail_msg: >-
+          {{ inventory_hostname }}: {{ item.item }} is
+          {{ item.stdout | trim | default('not loaded', true) }}, not active.
+        quiet: true
+      loop: "{{ postflight_unit_state.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item }}"
 
 - name: Verify DNS services
   hosts: dns
   become: true
   check_mode: false
+  vars:
+    postflight_active_units:
+      - unbound
+      - AdGuardHome
   tasks:
-    - name: Verify Unbound is running
-      ansible.builtin.service:
-        name: unbound
-        state: started
-      check_mode: true
-      register: postflight_service_check
-      failed_when: postflight_service_check is changed
+    - name: Read the state of the units this play verifies  # noqa: command-instead-of-module
+      ansible.builtin.command: "systemctl is-active {{ item }}"
+      changed_when: false
+      failed_when: false
+      register: postflight_unit_state
+      loop: "{{ postflight_active_units }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Assert every verified unit is active
+      ansible.builtin.assert:
+        that:
+          - item.stdout | trim == 'active'
+        fail_msg: >-
+          {{ inventory_hostname }}: {{ item.item }} is
+          {{ item.stdout | trim | default('not loaded', true) }}, not active.
+        quiet: true
+      loop: "{{ postflight_unit_state.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item }}"
 
     - name: Test DNS resolution via Unbound
       ansible.builtin.command: dig @127.0.0.1 -p {{ unbound_port }} google.com +short
       changed_when: false
       register: dns_test
       failed_when: dns_test.rc != 0 or dns_test.stdout == ""
-
-    - name: Verify AdGuard Home is running
-      ansible.builtin.service:
-        name: AdGuardHome
-        state: started
-      check_mode: true
-      register: postflight_service_check
-      failed_when: postflight_service_check is changed
 
     - name: Test AdGuard Home API (401 is OK - means it's running)
       ansible.builtin.uri:
@@ -164,13 +207,22 @@
       loop_control:
         label: "{{ item.host }} ({{ item.ip }})"
 
-    - name: Verify AdGuard Home Sync timer is enabled
-      ansible.builtin.systemd:
-        name: adguardhome-sync.timer
-        enabled: true
-      check_mode: true
-      register: postflight_service_check
-      failed_when: postflight_service_check is changed
+    - name: Read whether the AdGuard Home Sync timer is enabled  # noqa: command-instead-of-module
+      ansible.builtin.command: systemctl is-enabled adguardhome-sync.timer
+      changed_when: false
+      failed_when: false
+      register: postflight_sync_timer
+      when: adguard_sync_enabled | default(false) | bool
+
+    - name: Assert the AdGuard Home Sync timer is enabled
+      ansible.builtin.assert:
+        that:
+          - postflight_sync_timer.stdout | trim == 'enabled'
+        fail_msg: >-
+          {{ inventory_hostname }}: adguardhome-sync.timer is
+          {{ postflight_sync_timer.stdout | trim | default('not loaded', true) }},
+          not enabled.
+        quiet: true
       when: adguard_sync_enabled | default(false) | bool
 
     # Only way to prove the DynamicUser/LoadCredential/StateDirectory sandbox
@@ -237,14 +289,30 @@
   hosts: mail
   become: true
   check_mode: false
+  vars:
+    postflight_active_units:
+      - postfix
   tasks:
-    - name: Verify Postfix is running
-      ansible.builtin.service:
-        name: postfix
-        state: started
-      check_mode: true
-      register: postflight_service_check
-      failed_when: postflight_service_check is changed
+    - name: Read the state of the units this play verifies  # noqa: command-instead-of-module
+      ansible.builtin.command: "systemctl is-active {{ item }}"
+      changed_when: false
+      failed_when: false
+      register: postflight_unit_state
+      loop: "{{ postflight_active_units }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Assert every verified unit is active
+      ansible.builtin.assert:
+        that:
+          - item.stdout | trim == 'active'
+        fail_msg: >-
+          {{ inventory_hostname }}: {{ item.item }} is
+          {{ item.stdout | trim | default('not loaded', true) }}, not active.
+        quiet: true
+      loop: "{{ postflight_unit_state.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item }}"
 
     - name: Test Postfix is accepting connections on submission port
       ansible.builtin.wait_for:
@@ -268,6 +336,12 @@
       - tank/share
       - ssd/appdata
       - nvme/media
+    # tlshd: every k3s NFS PV mounts with xprtsec=tls, so a down handshake
+    # daemon fails new TLS mounts cluster-wide even while nfsd itself is up.
+    postflight_active_units: >-
+      {{ ['nfs-kernel-server', 'smbd', 'nmbd']
+         + (['smartd'] if (nas_storage_smartd_enabled | default(true)) else [])
+         + (['tlshd'] if (nfs_tls_enabled | default(false)) else []) }}
   tasks:
     - name: Assert the inventory declares at least one ZFS pool
       ansible.builtin.assert:
@@ -382,14 +456,26 @@
         label: "{{ item | basename }}"
       when: nas_storage_smartd_enabled | default(true)
 
-    - name: Verify smartd service is running
-      ansible.builtin.service:
-        name: smartd
-        state: started
-      check_mode: true
-      register: postflight_service_check
-      failed_when: postflight_service_check is changed
-      when: nas_storage_smartd_enabled | default(true)
+    - name: Read the state of the units this play verifies  # noqa: command-instead-of-module
+      ansible.builtin.command: "systemctl is-active {{ item }}"
+      changed_when: false
+      failed_when: false
+      register: postflight_unit_state
+      loop: "{{ postflight_active_units }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Assert every verified unit is active
+      ansible.builtin.assert:
+        that:
+          - item.stdout | trim == 'active'
+        fail_msg: >-
+          {{ inventory_hostname }}: {{ item.item }} is
+          {{ item.stdout | trim | default('not loaded', true) }}, not active.
+        quiet: true
+      loop: "{{ postflight_unit_state.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item }}"
 
     - name: Check Proxmox backup job status
       ansible.builtin.command: pvesh get /cluster/backup --output-format=json
@@ -402,25 +488,6 @@
         msg: "{{ backup_jobs.stdout | from_json }}"
       when: backup_jobs.rc == 0
 
-    - name: Verify NFS server is running
-      ansible.builtin.service:
-        name: nfs-kernel-server
-        state: started
-      check_mode: true
-      register: postflight_service_check
-      failed_when: postflight_service_check is changed
-
-    # Every k3s NFS PV mounts with xprtsec=tls; if the handshake daemon is
-    # down, new TLS mounts fail cluster-wide even though nfsd itself is up.
-    - name: Verify tlshd is running (NFS-over-TLS handshake daemon)
-      ansible.builtin.service:
-        name: tlshd
-        state: started
-      check_mode: true
-      register: postflight_service_check
-      failed_when: postflight_service_check is changed
-      when: nfs_tls_enabled | default(false)
-
     - name: Check NFS exports are active
       ansible.builtin.command: showmount -e localhost
       changed_when: false
@@ -429,30 +496,28 @@
       register: postflight_nfs_exports_check
       failed_when: "'/export' not in postflight_nfs_exports_check.stdout"
 
-    - name: Verify Samba is running
-      ansible.builtin.service:
-        name: "{{ item }}"
-        state: started
-      check_mode: true
-      register: postflight_service_check
-      failed_when: postflight_service_check is changed
-      loop:
-        - smbd
-        - nmbd
-
     - name: Verify nas user exists in Samba
       ansible.builtin.command: pdbedit -L
       changed_when: false
       register: samba_users
       failed_when: "'nas' not in samba_users.stdout"
 
-    - name: Verify media-mover timer is enabled
-      ansible.builtin.systemd:
-        name: media-mover.timer
-        enabled: true
-      check_mode: true
-      register: postflight_service_check
-      failed_when: postflight_service_check is changed
+    - name: Read whether the media-mover timer is enabled  # noqa: command-instead-of-module
+      ansible.builtin.command: systemctl is-enabled media-mover.timer
+      changed_when: false
+      failed_when: false
+      register: postflight_mover_timer
+      when: nas_storage_media_mover_enabled | default(false)
+
+    - name: Assert the media-mover timer is enabled
+      ansible.builtin.assert:
+        that:
+          - postflight_mover_timer.stdout | trim == 'enabled'
+        fail_msg: >-
+          {{ inventory_hostname }}: media-mover.timer is
+          {{ postflight_mover_timer.stdout | trim | default('not loaded', true) }},
+          not enabled.
+        quiet: true
       when: nas_storage_media_mover_enabled | default(false)
 
     - name: Check last media-mover run status
@@ -500,15 +565,30 @@
   hosts: k3s
   become: true
   check_mode: false
+  vars:
+    postflight_active_units: >-
+      {{ ['tlshd'] if (nfs_tls_enabled | default(false)) else [] }}
   tasks:
-    - name: Verify tlshd handshake daemon is running
-      ansible.builtin.service:
-        name: tlshd
-        state: started
-      check_mode: true
-      register: postflight_service_check
-      failed_when: postflight_service_check is changed
-      when: nfs_tls_enabled | default(false)
+    - name: Read the state of the units this play verifies  # noqa: command-instead-of-module
+      ansible.builtin.command: "systemctl is-active {{ item }}"
+      changed_when: false
+      failed_when: false
+      register: postflight_unit_state
+      loop: "{{ postflight_active_units }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Assert every verified unit is active
+      ansible.builtin.assert:
+        that:
+          - item.stdout | trim == 'active'
+        fail_msg: >-
+          {{ inventory_hostname }}: {{ item.item }} is
+          {{ item.stdout | trim | default('not loaded', true) }}, not active.
+        quiet: true
+      loop: "{{ postflight_unit_state.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item }}"
 
     # Pods (and their NFS PVs) float across agents, so an agent may legitimately
     # carry zero NAS mounts. Read /proc/mounts directly (xprtsec surfaces there);

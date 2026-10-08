@@ -36,15 +36,15 @@ variables:
   # resolve before job variables exist), so each entry repeats the tag as a
   # literal; check-lib-pins.py holds them equal. Bump here, then `--fix`.
   WEISSSRV_LIB_REF: "v0.18.0"
-  # Single source for the Ansible pin. deploy-preflight reads it as a variable;
-  # the deploy-base include repeats it as a literal input (includes resolve
-  # before this block), which check-ci-pin-parity.sh holds equal to this value.
+  # Single source for the Ansible pin. check-deploy-playbooks reads it as a
+  # variable; the deploy-base include repeats it as a literal input (includes
+  # resolve before this block), which check-ci-pin-parity.sh holds equal to it.
   ANSIBLE_VERSION: "14.4.0"
   # Single source for the kustomize pin (flux-lint, deploy-verify) and the
   # pytest/PyYAML/ruff pins the lint and test jobs install. Include inputs repeat
-  # the literals, and repo-policy-checks' ci-pin-parity check fails on drift.
-  KUSTOMIZE_VERSION: "5.4.3"
-  KUSTOMIZE_SHA256: "3669470b454d865c8184d6bce78df05e977c9aea31c30df3c669317d43bcc7a7"
+  # the literals, and check-repo-policies' ci-pin-parity check fails on drift.
+  KUSTOMIZE_VERSION: "5.8.2"
+  KUSTOMIZE_SHA256: "06af0a202c2b831207d0173f9c9cdb1b30abceca0747cb3fbb72792d26055c95"
   # promtool + amtool for prometheus-config-lint, pinned with the sha256 the job
   # verifies each downloaded tarball against.
   PROMTOOL_VERSION: "3.6.0"
@@ -62,7 +62,7 @@ variables:
   CHECK_DOC_LINKS_IGNORE: "docs/[A-Z]* lint/* molecule/default/expected-junit-failures.txt docker/molecule-ci/requirements.txt terraform/state/* */tfplan */check-vendored-copies.py"
   # Digest-pinned: these images run in jobs that have already been handed vault
   # credentials, so a repointed upstream tag would execute there. Lint-only jobs
-  # float. CI is on 3.13, ansible-core's newest controller; CronJobs run 3.14.
+  # float. CI is on 3.13, above ansible 14's floor; CronJobs run 3.14.
   PY_JOB_IMAGE: "python:3.13-slim@sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0"
   TF_JOB_IMAGE: "hashicorp/terraform:1.16.5@sha256:c7926feace05d0f7e73542842bf3945924e955a1f782cf000ccbb8d18fa42d77"
   # git reads these three as config, so ansible-galaxy's clone of the
@@ -128,9 +128,9 @@ workflow:
     # are the only real inputs, and .gitlab-ci.yml is not one.
     - docker/camofox-browser/**/*
     - ansible/inventories/prod/group_vars/all.yml
-.paths-repo-sync:
-  # Union for repo-sync-checks (generated-file freshness): each check inside
-  # the job is cheap enough that firing both on either trigger set is free.
+.paths-generated-files:
+  # Union for check-generated-files: each check inside the job is cheap enough
+  # that firing both on either trigger set is free.
   changes:
     - ansible/inventories/prod/hosts.yml
     - scripts/hosts.env
@@ -142,7 +142,7 @@ workflow:
     # The job's own script block, so an edit to it re-runs it.
     - .gitlab-ci.yml
 .paths-repo-policy:
-  # Union for repo-policy-checks, a superset of every constituent check's own
+  # Union for check-repo-policies, a superset of every constituent check's own
   # trigger set: a check may run on a path it does not care about (seconds), but
   # can never be missed on one it does.
   changes:
@@ -207,19 +207,19 @@ workflow:
     # The job's own definition — the promtool/amtool image and the script argv
     # live here, so an MR that changes how the gate runs must re-run the gate.
     - .gitlab-ci.yml
-# The matrix-coverage gate's inputs: the scenario tree it walks, the matrix file
-# it parses, the gate itself and the ci_yaml helper it imports.
-.paths-integration-matrix-coverage:
+# The integration-matrix gate's inputs: the scenario tree it walks, the matrix
+# file it parses, the gate itself and the ci_yaml helper it imports.
+.paths-integration-matrix:
   changes:
     - ansible/integration-tests/**/*
     - .gitlab/ci/integration-jobs.yml
     - scripts/check-integration-matrix-coverage.py
     - scripts/ci_yaml.py
     - .gitlab-ci.yml
-.paths-deploy-preflight:
-  # Everything deploy-preflight's answer depends on: the playbooks and tags it
-  # walks, the inventory `--list-tasks` parses, the collection pin it installs,
-  # the gate itself, and the deploy jobs it reads the invocations out of.
+.paths-deploy-playbooks:
+  # Everything check-deploy-playbooks' answer depends on: the playbooks and
+  # tags it walks, the inventory `--list-tasks` parses, the collection pin it
+  # installs, the gate itself, and the deploy jobs it reads the invocations of.
   changes:
     - ansible/playbooks/**/*
     - ansible/inventories/prod/**/*
@@ -479,7 +479,7 @@ build-camofox-browser:
 # Two consolidated micro-check jobs: generated-file freshness and repo-policy
 # invariants. Each job's paths anchor is the union of its checks' inputs, and
 # the driver runs every check before failing.
-repo-sync-checks:
+check-generated-files:
   needs: []
   stage: lint
   image: python:3.13-slim
@@ -549,12 +549,12 @@ repo-sync-checks:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      changes: !reference [.paths-repo-sync, changes]
+      changes: !reference [.paths-generated-files, changes]
     - if: '$CI_COMMIT_BRANCH == "main"'
-      changes: !reference [.paths-repo-sync, changes]
+      changes: !reference [.paths-generated-files, changes]
     - if: '$CI_PIPELINE_SOURCE == "web"'
 
-repo-policy-checks:
+check-repo-policies:
   needs: []
   stage: lint
   # python:3.13-slim (not alpine): these checks need bash + coreutils.
@@ -673,8 +673,8 @@ repo-policy-checks:
 
 # A scenario directory with no `parallel:matrix` entry never runs, and reads as
 # green because nothing executed it. Its own job so a failure names itself and
-# an unrelated repo-policy edit does not re-run it.
-integration-matrix-coverage:
+# a path only check-repo-policies triggers on does not re-run it.
+check-integration-matrix:
   needs: []
   stage: lint
   image: python:3.13-slim
@@ -688,9 +688,9 @@ integration-matrix-coverage:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      changes: !reference [.paths-integration-matrix-coverage, changes]
+      changes: !reference [.paths-integration-matrix, changes]
     - if: '$CI_COMMIT_BRANCH == "main"'
-      changes: !reference [.paths-integration-matrix-coverage, changes]
+      changes: !reference [.paths-integration-matrix, changes]
     - if: '$CI_PIPELINE_SOURCE == "web"'
 
 # tflint over all four roots, mirroring `task lint`'s terraform:tflint. It
@@ -720,7 +720,7 @@ terraform-tflint:
 # The collection's roles assert their required inputs, and an opt-in role whose
 # flag is set nowhere runs anyway. Both fail on every host the role touches, so
 # the hand-edited inventory is gated here. Mirrors `task lint:role-inputs`.
-role-inputs:
+check-role-inputs:
   needs: []
   stage: lint
   # Full image, not slim: ansible-galaxy installs weisssrv.infra from a git+ URL.
@@ -997,7 +997,7 @@ cluster-drift-plan:
 # Pre-merge dry run of what the deploy jobs will do, which are otherwise
 # main-only (docs/13 § Validate Stage). Credential-free by design: it never runs
 # `op run`, so it runs on a merge-request ref where the vault token is absent.
-deploy-preflight:
+check-deploy-playbooks:
   needs: []
   stage: validate
   # Full image, not slim: ansible-galaxy installs weisssrv.infra from a git+ URL.
@@ -1017,9 +1017,9 @@ deploy-preflight:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      changes: !reference [.paths-deploy-preflight, changes]
+      changes: !reference [.paths-deploy-playbooks, changes]
     - if: '$CI_COMMIT_BRANCH == "main"'
-      changes: !reference [.paths-deploy-preflight, changes]
+      changes: !reference [.paths-deploy-playbooks, changes]
     - if: '$CI_PIPELINE_SOURCE == "web"'
 
 # TEST STAGE - Integration tests. The matrix and its `.paths-integration`
@@ -1089,14 +1089,14 @@ include:
     inputs:
       cpu_selector: "esweiss.com/cpu=modern"
 
-  # terraform validate/fmt: an exact patch of the 1.15 line the workstation
-  # toolchain runs, so local and CI agree on formatting. A floating tag plus
-  # per-node IfNotPresent image caches is how the two disagree.
+  # terraform validate/fmt: the exact patch the plan/apply jobs run, pinned by
+  # digest so a per-node image cache cannot serve a different one. The roots'
+  # required_version floor admits both this image and the workstation toolchain.
   - project: eric/weisssrv-lib
     ref: v0.18.0
     file: /ci/validate/terraform.yml
     inputs:
-      image: hashicorp/terraform:1.15.9
+      image: hashicorp/terraform:1.16.5@sha256:c7926feace05d0f7e73542842bf3945924e955a1f782cf000ccbb8d18fa42d77
 
   # terraform-drift-plan: one read-only `terraform plan -detailed-exitcode` per
   # supervised module. tags is explicit — the template default is any runner,
@@ -1105,6 +1105,7 @@ include:
     ref: v0.18.0
     file: /ci/validate/terraform-drift-plan.yml
     inputs:
+      image: $TF_JOB_IMAGE
       job_name: tailscale-drift-plan
       module_dir: "terraform/tailscale"
       state_name: "tailscale"
@@ -1120,6 +1121,7 @@ include:
     ref: v0.18.0
     file: /ci/validate/terraform-drift-plan.yml
     inputs:
+      image: $TF_JOB_IMAGE
       job_name: authentik-drift-plan
       module_dir: "terraform/authentik"
       state_name: "authentik"
@@ -1154,6 +1156,7 @@ include:
     ref: v0.18.0
     file: /ci/validate/terraform-drift-plan.yml
     inputs:
+      image: $TF_JOB_IMAGE
       job_name: unifi-drift-plan
       module_dir: "terraform/unifi"
       state_name: "unifi"
@@ -1255,12 +1258,13 @@ include:
         - "ruff.toml"
         - ".gitlab-ci.yml"
 
-  # docs-link-check: `changes:` is the library default plus this file, which
+  # lint-docs-links: `changes:` is the library default plus this file, which
   # carries the job's image, ref and CHECK_DOC_LINKS_* inputs.
   - project: eric/weisssrv-lib
     ref: v0.18.0
     file: /ci/lint/docs-link-check.yml
     inputs:
+      job_name: lint-docs-links
       changes:
         - "**/*.md"
         - "scripts/check-doc-links.py"
@@ -1284,6 +1288,9 @@ include:
     ref: v0.18.0
     file: /ci/test/python-tests.yml
     inputs:
+      # The template default is 3.11-slim; ansible 14 needs >= 3.12, so the job
+      # runs this pipeline's digest-pinned python image.
+      image: $PY_JOB_IMAGE
       pytest_version: "9.1.1"
       pyyaml_version: "6.0.2"
       # git for the setup_command clone. jq comes from ci-fetch-tools.py, which
@@ -1345,12 +1352,12 @@ include:
     file: /ci/validate/flux-lint.yml
     inputs:
       substitute: true
-      kubeconform_version: "0.6.7"
-      kubeconform_sha256: "95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73"
-      kustomize_version: "5.4.3"
-      kustomize_sha256: "3669470b454d865c8184d6bce78df05e977c9aea31c30df3c669317d43bcc7a7"
-      helm_version: "3.18.4"
-      helm_sha256: "f8180838c23d7c7d797b208861fecb591d9ce1690d8704ed1e4cb8e2add966c1"
+      kubeconform_version: "0.8.0"
+      kubeconform_sha256: "9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883"
+      kustomize_version: "5.8.2"
+      kustomize_sha256: "06af0a202c2b831207d0173f9c9cdb1b30abceca0747cb3fbb72792d26055c95"
+      helm_version: "3.22.0"
+      helm_sha256: "1e4ab49e429626cf6c6958d914248b78c9730803c2751b87627e171dc800e7bb"
       pyyaml_version: "6.0.2"
       cluster_dir: "kubernetes/clusters/weisssrv"
       versions_configmap: "kubernetes/infrastructure/sources/versions-configmap.yaml"
@@ -1414,7 +1421,7 @@ include:
           optional: true
         - job: terraform-fmt
           optional: true
-        - job: repo-sync-checks
+        - job: check-generated-files
           optional: true
         - job: flux-lint
           optional: true
@@ -1484,25 +1491,25 @@ validation-gate:
       optional: true
     - job: terraform-plan
       optional: true
-    - job: repo-sync-checks
+    - job: check-generated-files
       optional: true
     - job: flux-lint
       optional: true
     - job: prometheus-config-lint
       optional: true
-    - job: deploy-preflight
+    - job: check-deploy-playbooks
       optional: true
-    - job: repo-policy-checks
+    - job: check-repo-policies
       optional: true
-    - job: integration-matrix-coverage
+    - job: check-integration-matrix
       optional: true
-    - job: docs-link-check
+    - job: lint-docs-links
       optional: true
     - job: python-lint
       optional: true
     - job: comment-length
       optional: true
-    - job: role-inputs
+    - job: check-role-inputs
       optional: true
     # Image builds: both are path-gated (optional), and both trigger on the same
     # all.yml that drives the deploys — without these, the pipeline that bumps
@@ -2421,7 +2428,7 @@ version-bump-bot:
     - pip install --no-cache-dir --quiet "PyYAML==${PYYAML_VERSION}"
     - |
       set -eo pipefail
-      # go-task, pinned + sha256 (same pair as repo-policy-checks — keep them in
+      # go-task, pinned + sha256 (same pair as check-repo-policies — keep them in
       # step). The bot drives the Taskfile, not the scripts, so the unattended
       # path and the operator path cannot drift.
       TASK_VERSION="v3.52.0"

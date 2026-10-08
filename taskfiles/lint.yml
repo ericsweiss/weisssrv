@@ -98,11 +98,11 @@ tasks:
     cmds:
       # The module reads policy.hujson with file(), so terraform fmt/validate
       # never parse it and the only other reader is the Tailscale API during the
-      # supervised apply. CI's repo-policy-checks runs this same task.
+      # supervised apply. CI's check-repo-policies runs this same task.
       - python3 scripts/check-tailscale-policy.py
 
   sync-checks:
-    desc: Generated-file freshness (hosts.env, versions-configmap) — mirrors the CI repo-sync-checks job
+    desc: Generated-file freshness (hosts.env, versions-configmap) — mirrors the CI check-generated-files job
     preconditions:
       - *needs_pyyaml
     cmds:
@@ -160,7 +160,7 @@ tasks:
       - python3 scripts/check-version-checksums.py
 
   partner-pins:
-    desc: "Assert no coupled pin moved without its paired checksum, digest or git SHA (mirrors the partner-pins check in CI repo-policy-checks)"
+    desc: "Assert no coupled pin moved without its paired checksum, digest or git SHA (mirrors the partner-pins check in CI check-repo-policies)"
     # BASE defaults to the merge base with main, the same comparison the CI job
     # makes against $CI_MERGE_REQUEST_DIFF_BASE_SHA.
     vars:
@@ -180,7 +180,7 @@ tasks:
       - python3 scripts/check-helm-repo-parity.py
 
   flux-version-pin:
-    desc: Assert the CI flux CLI pin, the versions ConfigMap and gotk-components agree (mirrors the flux-version-pin check in CI repo-policy-checks)
+    desc: Assert the CI flux CLI pin, the versions ConfigMap and gotk-components agree (mirrors the flux-version-pin check in CI check-repo-policies)
     # A CLI newer than the committed gotk-components installs a control plane
     # nobody reviewed, so the three pins are one gate.
     cmds:
@@ -196,7 +196,7 @@ tasks:
       - *needs_pyyaml
 
   kubectl-version-pin:
-    desc: Check the CI kubectl pin stays within +/-1 minor of k3s_version (mirrors the kubectl-version-pin check in CI repo-policy-checks)
+    desc: Check the CI kubectl pin stays within +/-1 minor of k3s_version (mirrors the kubectl-version-pin check in CI check-repo-policies)
     cmds:
       - python3 scripts/check-kubectl-version-pin.py
     preconditions:
@@ -259,7 +259,7 @@ tasks:
       - python3 scripts/check-dashboards.py
 
   role-inputs:
-    desc: "Every invoked collection role has its asserted inputs set (mirrors the CI role-inputs job)"
+    desc: "Every invoked collection role has its asserted inputs set (mirrors the CI check-role-inputs job)"
     preconditions:
       - *needs_pyyaml
       - sh: python3 -c "import jinja2" 2>/dev/null
@@ -268,7 +268,7 @@ tasks:
         msg: "the collection is not installed. Run: task ansible:lint"
     cmds:
       # --allow-unknown: chart versions the Flux substitution reads, whose
-      # names carry a role's prefix. Same argv as the CI role-inputs job.
+      # names carry a role's prefix. Same argv as the CI check-role-inputs job.
       - >-
         python3 scripts/check-role-inputs.py
         --roles-dir .ansible-home/collections/ansible_collections/weisssrv/infra/roles
@@ -286,13 +286,13 @@ tasks:
       - python3 scripts/check-tailnet-dns-parity.py
 
   ci-policy:
-    desc: "CI-file policy: deploy jobs trigger on the collection pin, and include-input pins match variables: (mirrors the collection-pin-trigger + ci-pin-parity checks in CI repo-policy-checks)"
+    desc: "CI-file policy: deploy jobs trigger on the collection pin, and include-input pins match variables: (mirrors the collection-pin-trigger + ci-pin-parity checks in CI check-repo-policies)"
     preconditions:
       - *needs_pyyaml
     cmds:
       # Both gates fire only on a .gitlab-ci.yml edit, the change where a green
       # `task lint` is most likely to be read as proof the pipeline is clean.
-      # They live in scripts/ so this task and repo-policy-checks share code.
+      # They live in scripts/ so this task and check-repo-policies share code.
       - python3 scripts/check-collection-pin-trigger.py
       - bash scripts/check-ci-pin-parity.sh
 
@@ -320,7 +320,7 @@ tasks:
       - *needs_python3
 
   deploy-preflight:
-    desc: Assert every CI deploy job's playbook + --tags selection resolves to real tasks (mirrors the CI deploy-preflight job)
+    desc: Assert every CI deploy job's playbook + --tags selection resolves to real tasks (mirrors the CI check-deploy-playbooks job)
     cmds:
       - python3 scripts/check-deploy-preflight.py --require-tag-selections
     preconditions:
@@ -329,7 +329,7 @@ tasks:
       - *needs_pyyaml
 
   doc-links:
-    desc: Resolve relative Markdown cross-links (mirrors CI docs-link-check)
+    desc: Resolve relative Markdown cross-links (mirrors CI lint-docs-links)
     # CHECK_DOC_LINKS_PATHS turns on the backticked-path pass; the IGNORE list
     # is the cited paths that are not files here. Keep both equal to the
     # variables block in .gitlab-ci.yml.
@@ -391,7 +391,7 @@ tasks:
       - *needs_pyyaml
 
   taskfile-smoke:
-    desc: Assert every Taskfile-referenced script + the hosts.env dotenv target exists (mirrors the taskfile check in CI repo-policy-checks)
+    desc: Assert every Taskfile-referenced script + the hosts.env dotenv target exists (mirrors the taskfile check in CI check-repo-policies)
     cmds:
       - bash scripts/check-taskfile.sh
 

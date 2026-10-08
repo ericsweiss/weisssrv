@@ -1,4 +1,4 @@
-"""Prove the repo-sync-checks / repo-policy-checks driver reports every check.
+"""Prove both consolidated gate jobs' driver reports every check.
 
 The driver is inline in .gitlab-ci.yml, so the text is extracted and run under
 the same errexit preamble gitlab-runner's bash executor emits.
@@ -52,7 +52,7 @@ def run(driver: str) -> subprocess.CompletedProcess[str]:
 
 
 def test_both_gate_jobs_carry_the_driver():
-    assert len(drivers()) == 2, "expected repo-sync-checks and repo-policy-checks"
+    assert len(drivers()) == 2, "expected check-generated-files and check-repo-policies"
 
 
 @pytest.mark.parametrize("index", [0, 1])

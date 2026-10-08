@@ -164,7 +164,7 @@ flood).
    tooling, so the bootstrap copy is the **read-only GitHub mirror**
    (`github.com/ericsweiss/weisssrv`). `weisssrv-lib` and both templates are
    mirrored too, with their release tags — which matters, because since the
-   collection migration this repo has no `ansible/roles/` and every playbook
+   collection migration this repo has no local roles directory and every playbook
    needs `weisssrv.infra` at the pinned tag. Install it from the mirror:
 
    ```bash
@@ -187,7 +187,7 @@ flood).
 | 1 | Install Proxmox on the replacement hosts, restore `/etc/pve` from the `pve-cluster` archive once B2 is readable (or rebuild the cluster and re-add nodes) | hardware | 2–4 h |
 | 2 | Clone the IaC from the **GitHub mirror**; sign in to 1Password; restore the offline `restic_repo_password` | GitHub + 1Password | 15 min |
 | 3 | Create the ZFS pools by hand (never automated — docs/06), then run the [storage bootstrap](44-storage-bootstrap.md). **`nvme` lives on partition 4 of the Proxmox boot disk you installed in step 1** — create it against `...-part4`, never the whole device | 1, 2 | 1–2 h |
-| 4 | Restore from B2: `restic-offsitectl restore <source>` for every name in `restic_offsite_sources` + `restic_offsite_zvol_sources` (`ansible/inventories/prod/host_vars/pve-nas-01.yml`) — today `backups`, `backups-apps` (the logical dumps), `share`, `appdata`, `databases`, `k3s-etcd` and the two data zvol trees. `restic-offsitectl` is role-shipped, so before step 3 has run it does not exist — the fallback is raw `restic -r rclone:b2:weisssrv-backup/restic restore` with the offline repo password | 3 | hours–days (data-volume bound; 621 GB raw at review time) |
+| 4 | Restore from B2: `restic-offsitectl restore <source>` for every name in `restic_offsite_sources` + `restic_offsite_zvol_sources` (`ansible/inventories/prod/host_vars/pve-nas-01.yml`) — today `backups`, `backups-apps` (the logical dumps), `share`, `appdata`, `k3s-etcd` and the two data zvol trees. `restic-offsitectl` is role-shipped, so before step 3 has run it does not exist — the fallback is raw `restic -r rclone:b2:weisssrv-backup/restic restore` with the offline repo password | 3 | hours–days (data-volume bound; 621 GB raw at review time) |
 | 5 | Rebuild the k3s VMs + cluster (`task k3s:deploy`), restoring etcd from the off-node snapshot if a same-identity cluster is wanted. **Never `qmrestore` a k3s guest** — no image exists, and a stale server image corrupts etcd quorum | 3, 4 | 1–2 h |
 | 6 | Bootstrap Flux + ESO (the two manual secrets — `docs/29-flux-operations.md`), let Flux reconcile everything in `kubernetes/` | 5 | 30–60 min |
 | 7 | Rebuild the VM/LXC apps via their playbooks, then replay logical dumps from the restored `backups-apps` source (`gitlab-backup restore`, `pg_restore`, HAOS tar import — the HA tars need `backup_encryption_key`); the container registry is in no offsite tier, so re-push images from `docker/` and the weisssrv-lib CI images | 4, 6 | 2–4 h |
@@ -233,7 +233,7 @@ Two paths feed the `archive` pool (see "What vzdump does and does not cover"
 above): the nightly
 `vzdump` of every VM/CT into `tank/proxmox`, and `archive-backupctl`'s direct
 raw/encrypted replication of `tank/{share,backups,nextcloud-data,proxmox,
-immich-data}` + `ssd/{appdata,databases,k3s-etcd}`. **Everything in `archive` is raw
+immich-data}` + `ssd/{appdata,k3s-etcd}`. **Everything in `archive` is raw
 (`zfs send -w`) and encrypted under its source's key** — `archive` never holds a
 loaded key, so any restored dataset needs `zfs load-key` before it can be read
 (passphrase in 1Password; see `docs/32-zfs-encryption.md` and
@@ -244,7 +244,7 @@ loaded key, so any restored dataset needs `zfs load-key` before it can be read
 `archive-backupctl` is the restore tool for every directly-replicated dataset.
 Import the pool first if it is detached (`archive-backupctl plug`). Targets are
 `share`, `backups`, `nextcloud-data`, `proxmox`, `immich-data`, `appdata`,
-`databases`, `k3s-etcd`, or `all`.
+`k3s-etcd`, or `all`.
 
 #### Safe restore to a clone (default)
 
@@ -406,7 +406,7 @@ restic snapshots                      # find the snapshot to restore
 restic-offsitectl verify              # (optional) restic check integrity first
 
 # Whole-source restore (default target /mnt/restore/restic/<name>/<ts>):
-#   names: backups | backups-apps | share | appdata | databases | k3s-etcd |
+#   names: backups | backups-apps | share | appdata | k3s-etcd |
 #          immich-data | nextcloud-data
 #   (source of truth: restic_offsite_sources / restic_offsite_zvol_sources in
 #    ansible/inventories/prod/host_vars/pve-nas-01.yml)

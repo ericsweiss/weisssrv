@@ -35,7 +35,7 @@ unbound_legacy_dropins:
 
 # Deltas over the adguard_home role defaults only. These two ARE the default
 # value, kept because playbooks outside the role dereference them with no
-# fallback: postflight.yml and maintenance/update-applications.yml.
+# fallback: update-applications.yml the path, postflight.yml the port.
 adguard_home_install_path: /opt/AdGuardHome
 adguard_home_http_port: 3000
 adguard_home_admin_user: eric

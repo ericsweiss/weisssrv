@@ -113,7 +113,7 @@ cd weisssrv
 ### 4. Install Ansible Collections
 
 Every role these playbooks address ships in the **`weisssrv.infra`** collection
-(`eric/weisssrv-lib`) — this repo has no `ansible/roles/` directory. Nothing runs
+(`eric/weisssrv-lib`) — this repo has no local roles directory under `ansible/`. Nothing runs
 until the collection is installed.
 
 ```bash

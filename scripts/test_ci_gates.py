@@ -982,7 +982,7 @@ class TestLintMirrorsTheCiLintStage:
         """{check name: the rest of its run_check line} across both gate jobs."""
         found: dict[str, str] = {}
         jobs = self._ci_jobs()
-        for job in ("repo-policy-checks", "repo-sync-checks"):
+        for job in ("check-repo-policies", "check-generated-files"):
             script = jobs[job]["script"]
             body = "\n".join(script if isinstance(script, list) else [script])
             for match in re.finditer(r"^\s*run_check\s+(\S+)\s+(.*)$", body, re.M):
@@ -1110,7 +1110,7 @@ class TestLintMirrorsTheCiLintStage:
             "gates `task lint` runs that no CI job can reach: "
             + ", ".join(missing)
             + "\n\nAdd each to .gitlab-ci.yml (a run_check line in "
-            "repo-policy-checks, or the flux-lint extra_validation input for a "
+            "check-repo-policies, or the flux-lint extra_validation input for a "
             "corpus check), or record it in NOT_A_GATE / CI_RUNS_IT_ELSEWHERE "
             "with the reason."
         )

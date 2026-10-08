@@ -440,7 +440,7 @@ the external name (auth.ericsweiss.com) even for an internal-only app.
   current stays in its topical group instead, carries the banner at the point
   the superseded procedure begins rather than at the top, and is annotated in
   its index row — `docs/23-recipes-sso-setup.md` is that variant.
-- Every relative `.md` link is CI-checked (`docs-link-check` over every tracked
+- Every relative `.md` link is CI-checked (`lint-docs-links` over every tracked
   Markdown file), so a rename that breaks a cross-link fails the pipeline.
 
 **Agent guidance**: coding agents should start from the

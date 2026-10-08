@@ -1,6 +1,6 @@
 terraform {
-  # Floor matches the CI image (hashicorp/terraform:1.15) and the local
-  # toolchain — state written by 1.15 is unreadable by older binaries.
+  # Floor admits the CI image (hashicorp/terraform:1.16) and the workstation
+  # toolchain alike — state written by 1.15 is unreadable by older binaries.
   required_version = ">= 1.15, < 2.0"
 
   # State stored in GitLab-managed Terraform state (HTTP backend)

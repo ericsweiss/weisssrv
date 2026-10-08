@@ -61,7 +61,7 @@ This repo consumes four things from the library, all pinned:
    matches it and is a release tag.
 2. **The `weisssrv.infra` collection**, pinned in `ansible/requirements.yml`.
    Playbooks reference roles as `weisssrv.infra.<role>`; there is no
-   `ansible/roles/` here any more.
+   local roles directory under `ansible/` any more.
 3. **Vendored files** — byte-identical copies of library files, and they are
    **many more than the two an agent usually assumes**. Never keep a list or a
    count here: `scripts/README.md`'s **Origin** column is the human inventory
