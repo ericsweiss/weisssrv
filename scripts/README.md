@@ -55,6 +55,7 @@ python3 ../weisssrv-lib/scripts/check-vendored-copies.py --repo-root . --list
 | `check-helm-repo-parity.py` | Every chart-repo URL in `helm-values-releases.yaml` and the version registry equals the HelmRepository Flux pulls from | vendored |
 | `check-hpa-vpa-invariant.py` | No workload has both an HPA and a CPU-controlling VPA | vendored |
 | `check-flux-version-pin.py` | The CI `flux` CLI pin, `flux_version` in the versions ConfigMap and every `gotk-components.yaml` header name one version and the four stock controllers | forked |
+| `check-grafana-sidecar-init.py` | Every k8s-sidecar init container the Grafana chart renders runs `METHOD=LIST`, so it lists once and exits instead of watching forever and hanging the pod in PodInitializing | local |
 | `check-image-gc-threshold.py` | `KubeletImageGCIneffective` fires at the kubelet `image-gc-high-threshold` from `group_vars/k3s.yml` | local |
 | `check-integration-matrix-coverage.py` | Every integration-test dir has a CI matrix entry, and every matrix entry names a dir | local |
 | `check-kubectl-version-pin.py` | The CI kubectl pin stays within ±1 minor of `k3s_version` | vendored |

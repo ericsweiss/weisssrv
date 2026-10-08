@@ -217,7 +217,7 @@
         prompt: |
           {{ inventory_hostname }} requires a reboot.
           Press ENTER to reboot now, or Ctrl+C then 'A' to abort and reboot manually later.
-      when: not (auto_reboot | default(false))
+      when: not (auto_reboot | default(false) | bool)
 
     # CRITICAL: etcd-quorum trap. Never reboot an etcd-server host while kured is
     # mid-reboot of ANOTHER server - that drops two of three members at once.

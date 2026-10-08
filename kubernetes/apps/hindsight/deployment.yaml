@@ -279,7 +279,7 @@ spec:
               cpu: 900m
               memory: 2Gi
             limits:
-              memory: 4Gi
+              memory: 5Gi
               # Integer extended resource: the request mirrors this.
               nvidia.com/gpu: "1"
           # Runs as root — the image caches the GGUF under /root — but with no

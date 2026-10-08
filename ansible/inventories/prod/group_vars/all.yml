@@ -375,7 +375,7 @@ helm_chart_versions:
   # CRDs in the infrastructure-crds stage (docs/29). COUPLING: its appVersion must
   # equal the pinned kube_prometheus_stack's operator appVersion (docs/12).
   prometheus_operator_crds: "32.0.1"
-  loki: "18.14.0"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0)
+  loki: "18.15.0"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0)
   alloy: "1.13.0"
   prometheus_blackbox_exporter: "11.20.0"
   onepassword_connect: "2.4.2"
