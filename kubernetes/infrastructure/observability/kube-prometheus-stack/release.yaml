@@ -235,6 +235,10 @@ spec:
           # before Grafana starts rather than pushed in afterwards.
           skipReload: true
           initDatasources: true
+          # The init container inherits this. The chart default WATCH never
+          # exits, so the pod hangs in PodInitializing and the Helm upgrade
+          # times out; init mode must list once and exit.
+          watchMethod: LIST
           extraMounts:
             - name: sidecar-kube-api-access
               mountPath: /var/run/secrets/kubernetes.io/serviceaccount

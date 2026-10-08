@@ -255,20 +255,13 @@ spec:
       image:
         tag: "${postgresql_version}"
       # postgres_exporter sidecar; its only scrape is the chart-rendered
-      # ServiceMonitor, its ingress allow is in networkpolicy.yaml. extraEnvVars
-      # re-point it at the `authentik` role (the subchart hardcodes `postgres`).
+      # ServiceMonitor, its ingress allow is in networkpolicy.yaml. It connects
+      # as the postgres superuser, with the admin password the ExternalSecret holds.
       metrics:
         enabled: true
         serviceMonitor:
           enabled: true
           interval: 30s
-        extraEnvVars:
-          - name: DATA_SOURCE_USER
-            value: authentik
-          - name: DATA_SOURCE_PASS_FILE
-            value: /opt/bitnami/postgresql/secrets/postgresql-password
-          - name: DATA_SOURCE_URI
-            value: 127.0.0.1:5432/authentik?sslmode=disable
         resources:
           requests:
             cpu: 10m

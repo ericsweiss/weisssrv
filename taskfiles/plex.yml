@@ -16,6 +16,8 @@ tasks:
       # plex.yml runs alloy_host, which asserts the Loki push creds.
       LOKI_PUSH_USER: op://Homelab/Loki Push Auth/username
       LOKI_PUSH_PASSWORD: op://Homelab/Loki Push Auth/password
+      # plex.yml re-seeds the cert-distribution key the LXC key reconcile drops.
+      DNS01_SSH_PUBLIC_KEY: op://Homelab/DNS-01 SSH Key/public key
     cmds:
       - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/plex.yml {{.CLI_ARGS}}
 

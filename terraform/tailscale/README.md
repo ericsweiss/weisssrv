@@ -199,7 +199,7 @@ lockout. From a tailnet-connected client:
 ```bash
 for h in pve-nas-01 pve-opt-01 pve-opt-02 pve-opt-03 pve-prec-01 pve-laptop-01; do
   echo "== $h =="
-  ssh "eric@${h}" 'sudo -v && echo "sudo OK on $(hostname)"' || echo "FAIL: $h"
+  ssh "eric@${h}" 'sudo -n true && echo "sudo OK on $(hostname)"' || echo "FAIL: $h"
 done
 ```
 
