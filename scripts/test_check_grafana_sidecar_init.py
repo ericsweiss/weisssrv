@@ -1,7 +1,7 @@
 """Failure-path tests for scripts/check-grafana-sidecar-init.py.
 
-A k8s-sidecar init container that watches instead of listing never exits, so the
-gate must report it; helm is stubbed, so these cases need no chart pull.
+An init container that watches never exits and a long-running one that lists
+crash-loops, so the gate must report either; helm is stubbed, no chart pull.
 """
 from __future__ import annotations
 
@@ -24,62 +24,72 @@ def gate():
     return load_path(GATE)
 
 
-def _deployment(method: str | None, container: str = "grafana-init-sc-datasources") -> dict:
+def _container(name: str, method: str | None) -> dict:
     env = [{"name": "RESOURCE", "value": "configmap"}]
     if method is not None:
         env.append({"name": "METHOD", "value": method})
+    return {"name": name, "env": env}
+
+
+def _deployment(
+    init_method: str | None,
+    container: str = "grafana-init-sc-datasources",
+    dashboard_method: str | None = "WATCH",
+) -> dict:
+    """The Grafana Deployment as the chart renders it: one sidecar in each position."""
     return {
         "apiVersion": "apps/v1",
         "kind": "Deployment",
         "metadata": {"name": "kube-prometheus-stack-grafana"},
         "spec": {"template": {"spec": {
-            "initContainers": [{"name": container, "env": env}],
-            "containers": [{"name": "grafana"}],
+            "initContainers": [_container(container, init_method)],
+            "containers": [
+                {"name": "grafana"},
+                _container("grafana-sc-dashboard", dashboard_method),
+            ],
         }}},
     }
 
 
-class TestInitSidecarScan:
-    def test_a_listing_init_container_is_clean(self, gate):
-        found = gate.init_sidecars([_deployment("LIST")])
-        assert found == [("kube-prometheus-stack-grafana",
-                          "grafana-init-sc-datasources", "LIST")]
+class TestSidecarScan:
+    def test_both_positions_are_scanned_with_their_own_required_mode(self, gate):
+        assert gate.sidecars([_deployment("LIST")]) == [
+            ("kube-prometheus-stack-grafana", "grafana-init-sc-datasources",
+             "initContainers", "LIST"),
+            ("kube-prometheus-stack-grafana", "grafana-sc-dashboard",
+             "containers", "WATCH"),
+        ]
 
     def test_a_watching_init_container_is_reported(self, gate):
-        (_, _, method), = gate.init_sidecars([_deployment("WATCH")])
-        assert method == "WATCH"
+        found = {name: method for _, name, _, method in
+                 gate.sidecars([_deployment("WATCH")])}
+        assert found["grafana-init-sc-datasources"] == "WATCH"
 
     def test_a_container_without_the_sidecar_marker_is_not_scanned(self, gate):
         """Mirrors the chart: only `*-sc-*` containers are k8s-sidecar."""
-        assert gate.init_sidecars([_deployment("WATCH", container="init-chown-data")]) == []
-
-    def test_a_long_running_sidecar_is_not_scanned(self, gate):
-        """The dashboards sidecar is meant to WATCH; only INIT mode must list."""
-        doc = {
-            "kind": "Deployment",
-            "metadata": {"name": "grafana"},
-            "spec": {"template": {"spec": {"containers": [
-                {"name": "grafana-sc-dashboard",
-                 "env": [{"name": "METHOD", "value": "WATCH"}]},
-            ]}}},
-        }
-        assert gate.init_sidecars([doc]) == []
+        names = [name for _, name, _, _ in
+                 gate.sidecars([_deployment("WATCH", container="init-chown-data")])]
+        assert names == ["grafana-sc-dashboard"]
 
 
-# A values block small enough to read, carrying the one knob under test.
+# A values block small enough to read, carrying the two knobs under test.
 VALUES = {
-    "grafana": {"sidecar": {"datasources": {
-        "resource": "configmap",
-        "initDatasources": True,
-    }}},
+    "grafana": {"sidecar": {
+        "datasources": {"resource": "configmap", "initDatasources": True},
+        "dashboards": {"resource": "configmap", "enabled": True},
+    }},
 }
 
 
-def _fixture_repo(tmp_path: Path, watch_method: str | None) -> Path:
+def _fixture_repo(
+    tmp_path: Path, watch_method: str | None, dashboard_method: str | None = None
+) -> Path:
     """A tree with just the three files the gate reads."""
     values = yaml.safe_load(yaml.safe_dump(VALUES))
     if watch_method is not None:
         values["grafana"]["sidecar"]["datasources"]["watchMethod"] = watch_method
+    if dashboard_method is not None:
+        values["grafana"]["sidecar"]["dashboards"]["watchMethod"] = dashboard_method
     release = {
         "apiVersion": "helm.toolkit.fluxcd.io/v2",
         "kind": "HelmRelease",
@@ -111,7 +121,7 @@ def _fixture_repo(tmp_path: Path, watch_method: str | None) -> Path:
 
 
 def _stub_helm(tmp_path: Path) -> Path:
-    """A `helm` that renders the init container METHOD straight from the values.
+    """A `helm` that renders both sidecar METHODs straight from the values.
 
     Stands in for the chart's own template, so these cases exercise the gate
     rather than the network.
@@ -124,16 +134,24 @@ def _stub_helm(tmp_path: Path) -> Path:
         import sys, yaml
         argv = sys.argv[1:]
         values = yaml.safe_load(open(argv[argv.index("-f") + 1]).read()) or {}
-        sidecar = values["grafana"]["sidecar"]["datasources"]
-        env = [{"name": "RESOURCE", "value": sidecar["resource"]}]
-        # The chart's own default for an unset watchMethod.
-        env.append({"name": "METHOD", "value": sidecar.get("watchMethod", "WATCH")})
+        sidecar = values["grafana"]["sidecar"]
+
+        def env(block):
+            # WATCH is the chart's own default for an unset watchMethod.
+            return [{"name": "RESOURCE", "value": block["resource"]},
+                    {"name": "METHOD", "value": block.get("watchMethod", "WATCH")}]
+
         print(yaml.safe_dump({
             "apiVersion": "apps/v1", "kind": "Deployment",
             "metadata": {"name": "kube-prometheus-stack-grafana"},
             "spec": {"template": {"spec": {
-                "initContainers": [{"name": "grafana-init-sc-datasources", "env": env}],
-                "containers": [{"name": "grafana"}],
+                "initContainers": [{"name": "grafana-init-sc-datasources",
+                                    "env": env(sidecar["datasources"])}],
+                "containers": [
+                    {"name": "grafana"},
+                    {"name": "grafana-sc-dashboard",
+                     "env": env(sidecar["dashboards"])},
+                ],
             }}},
         }))
         '''))
@@ -166,6 +184,7 @@ def test_an_unset_watch_method_is_a_finding(tmp_path):
     """Mutation case: the shape that wedged the grafana pod on 92.1.1."""
     result = _run(_fixture_repo(tmp_path / "tree", None), _stub_helm(tmp_path))
     assert result.returncode == 1, result.stdout + result.stderr
+    assert "init container grafana-init-sc-datasources" in result.stdout
     assert "METHOD=WATCH, not LIST" in result.stdout
 
 
@@ -175,7 +194,21 @@ def test_an_explicit_watch_is_a_finding(tmp_path):
 
 
 def test_list_passes(tmp_path):
+    """The shape the real render has today: LIST in init, WATCH long-running."""
     result = _run(_fixture_repo(tmp_path / "tree", "LIST"), _stub_helm(tmp_path))
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_a_listing_long_running_sidecar_is_a_finding(tmp_path):
+    """LIST exits at once, so a long-running sidecar in it restarts in a loop."""
+    result = _run(_fixture_repo(tmp_path / "tree", "LIST", "LIST"), _stub_helm(tmp_path))
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "long-running container grafana-sc-dashboard" in result.stdout
+    assert "METHOD=LIST, not WATCH" in result.stdout
+
+
+def test_an_explicitly_watching_long_running_sidecar_passes(tmp_path):
+    result = _run(_fixture_repo(tmp_path / "tree", "LIST", "WATCH"), _stub_helm(tmp_path))
     assert result.returncode == 0, result.stdout + result.stderr
 
 
@@ -186,7 +219,7 @@ def test_a_missing_manifest_is_exit_2_not_a_finding(tmp_path):
     assert result.returncode == 2, result.stdout + result.stderr
 
 
-def test_a_render_with_no_init_sidecar_is_exit_2_not_a_pass(tmp_path):
+def test_a_render_with_no_sidecar_at_all_is_exit_2_not_a_pass(tmp_path):
     """A gate that inspects nothing is not a gate: a renamed container is an
     operator error, not silent coverage loss."""
     bin_dir = _stub_shell_helm(
@@ -197,6 +230,39 @@ def test_a_render_with_no_init_sidecar_is_exit_2_not_a_pass(tmp_path):
     result = _run(_fixture_repo(tmp_path / "tree", "LIST"), bin_dir)
     assert result.returncode == 2, result.stdout + result.stderr
     assert "checked nothing" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("missing", "rendered", "method"),
+    [
+        ("containers", "initContainers", "LIST"),
+        ("initContainers", "containers", "WATCH"),
+    ],
+)
+def test_a_render_missing_one_position_is_exit_2_not_a_pass(
+    tmp_path, missing, rendered, method
+):
+    """Half the subject is still coverage lost in silence: the values enable a
+    sidecar in both positions, and the one that renders is in the right mode."""
+    bin_dir = _stub_shell_helm(tmp_path, textwrap.dedent(f"""\
+        cat <<'EOF'
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: kube-prometheus-stack-grafana
+        spec:
+          template:
+            spec:
+              {rendered}:
+                - name: grafana-sc-only
+                  env:
+                    - name: METHOD
+                      value: {method}
+        EOF"""))
+    result = _run(_fixture_repo(tmp_path / "tree", "LIST"), bin_dir)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "checked nothing" in result.stderr
+    assert missing in result.stderr
 
 
 class TestCannotInspect:

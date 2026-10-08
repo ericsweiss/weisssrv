@@ -279,7 +279,7 @@ hermes_codex_version: "0.162.0"
 # Claude Code CLI, baked into the hermes image alongside the Codex CLI so Hermes
 # can delegate coding tasks headlessly, authenticated with a long-lived OAuth
 # token via ESO rather than an API key. Build-time only (docs/37).
-hermes_claude_version: "2.1.294"
+hermes_claude_version: "2.1.295"
 # 1Password CLI (op), baked into the hermes image for Hermes' 1Password skill
 # (docs/37). Full DEB version string. NOT optional: upstream keeps exactly ONE
 # version, so a stale pin FAILS the build and version-check cannot see it.

@@ -55,7 +55,7 @@ python3 ../weisssrv-lib/scripts/check-vendored-copies.py --repo-root . --list
 | `check-helm-repo-parity.py` | Every chart-repo URL in `helm-values-releases.yaml` and the version registry equals the HelmRepository Flux pulls from | vendored |
 | `check-hpa-vpa-invariant.py` | No workload has both an HPA and a CPU-controlling VPA | vendored |
 | `check-flux-version-pin.py` | The CI `flux` CLI pin, `flux_version` in the versions ConfigMap and every `gotk-components.yaml` header name one version and the four stock controllers | forked |
-| `check-grafana-sidecar-init.py` | Every k8s-sidecar init container the Grafana chart renders runs `METHOD=LIST`, so it lists once and exits instead of watching forever and hanging the pod in PodInitializing | local |
+| `check-grafana-sidecar-init.py` | Every k8s-sidecar container the Grafana chart renders runs the `METHOD` its position requires: `LIST` in an init container, so it lists once and exits instead of hanging the pod in PodInitializing, and `WATCH` in a long-running one, because `LIST` there exits at once and restarts in a loop | local |
 | `check-image-gc-threshold.py` | `KubeletImageGCIneffective` fires at the kubelet `image-gc-high-threshold` from `group_vars/k3s.yml` | local |
 | `check-integration-matrix-coverage.py` | Every integration-test dir has a CI matrix entry, and every matrix entry names a dir | local |
 | `check-kubectl-version-pin.py` | The CI kubectl pin stays within ±1 minor of `k3s_version` | vendored |
@@ -236,8 +236,8 @@ weisssrv-lib next to the code. What runs here:
 | `test_vendored_byte_identity.py` | The vendored copies are unmodified. Drives the library's `check-vendored-copies.py` against a weisssrv-lib checkout at the pinned ref, and never skips when that checkout is missing |
 | `test_scripts_have_tests.py` | Every local script is exercised by some suite |
 | `test_gate_exit_contract.py` | Every non-vendored gate exits 2 with one `ERROR` line, never 1 and never a traceback, when it cannot inspect its subject |
-| `test_playbook_extra_var_bools.py` | Every `when:` reading a pipeline `-e` extra var coerces it with `\| bool`. Walks each caller's whole extra-vars argument and every playbook, task file and role the call reaches, resolving `weisssrv.infra.<role>` to the installed collection |
-| `test_check_grafana_sidecar_init.py` | `check-grafana-sidecar-init.py` reports a watching init container and separates that finding from a render or parse failure |
+| `test_playbook_extra_var_bools.py` | Every `when:` reading a pipeline `-e` extra var coerces it with `\| bool`. Walks each caller's whole extra-vars argument and every playbook, task file and role the call reaches, resolving `weisssrv.infra.<role>` to the installed collection. The walk fails closed: an edge it cannot follow raises instead of narrowing the set, and a templated include target globs its `{{ ... }}` to `*` so every candidate sibling is inspected |
+| `test_check_grafana_sidecar_init.py` | `check-grafana-sidecar-init.py` reports a watching init container and a listing long-running one, and separates those findings from a render or parse failure |
 | `test_site_configs.py` | The site configuration files above parse and match their consumers |
 | `test_prometheus_rule_coverage.py` | Every alert has a promtool rule unit test in `prometheus-rule-tests/`, or a declared exemption |
 

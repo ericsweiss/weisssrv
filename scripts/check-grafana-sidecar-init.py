@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Assert every k8s-sidecar INIT container the Grafana chart renders lists once
-and exits, rather than watching forever and hanging the pod in PodInitializing.
-Exit 0 clean, 1 a watching init container, 2 the gate could not inspect it.
+"""Assert every k8s-sidecar container runs the METHOD its position requires: LIST
+in an init container, so it exits; WATCH long-running, where LIST crash-loops it.
+Exit 0 clean, 1 a container in the wrong mode, 2 the gate could not inspect it.
 """
 from __future__ import annotations
 
@@ -28,9 +28,11 @@ CHART_REPO = "https://prometheus-community.github.io/helm-charts"
 # The chart names every k8s-sidecar container <release>-sc-<kind>, and the init
 # variant <release>-init-sc-<kind>.
 SIDECAR_MARKER = "-sc-"
-# k8s-sidecar reads its mode from METHOD. Only LIST terminates.
+# k8s-sidecar reads its mode from METHOD. Only LIST terminates, so the required
+# mode is the opposite of the container's position in the pod spec.
 METHOD_ENV = "METHOD"
-LIST_METHOD = "LIST"
+REQUIRED_METHOD = {"initContainers": "LIST", "containers": "WATCH"}
+POSITION = {"initContainers": "init", "containers": "long-running"}
 RENDER_TIMEOUT_SECONDS = 300
 
 # A stalled chart repo must fail with a message, not hang until the job timeout.
@@ -133,42 +135,46 @@ def render(root: Path, validator) -> list[dict]:
     return _inspect(f"parsing the rendered {CHART}@{version}", _documents, proc.stdout)
 
 
-def init_sidecars(docs: list[dict]) -> list[tuple[str, str, str | None]]:
-    """(workload, container, METHOD) for every k8s-sidecar INIT container."""
+def sidecars(docs: list[dict]) -> list[tuple[str, str, str, str | None]]:
+    """(workload, container, pod-spec field, METHOD) for every k8s-sidecar container."""
     found = []
     for doc in docs:
         pod = ((doc.get("spec") or {}).get("template") or {}).get("spec") or {}
-        for container in pod.get("initContainers") or []:
-            name = str(container.get("name", ""))
-            if SIDECAR_MARKER not in name:
-                continue
-            env = {e.get("name"): e.get("value") for e in container.get("env") or []}
-            found.append((str(doc.get("metadata", {}).get("name", "?")), name,
-                          env.get(METHOD_ENV)))
+        workload = str(doc.get("metadata", {}).get("name", "?"))
+        for field in REQUIRED_METHOD:
+            for container in pod.get(field) or []:
+                name = str(container.get("name", ""))
+                if SIDECAR_MARKER not in name:
+                    continue
+                env = {e.get("name"): e.get("value") for e in container.get("env") or []}
+                found.append((workload, name, field, env.get(METHOD_ENV)))
     return found
 
 
 def check(root: Path = REPO) -> list[str]:
-    containers = init_sidecars(render(root, _validator()))
-    # A gate that inspects nothing is not a gate: the values enable an init
-    # sidecar, so a render with none means the knob or the chart moved.
-    if not containers:
-        raise GateError(
-            f"{MANIFEST} renders no `*{SIDECAR_MARKER}*` init container, so this gate "
-            "checked nothing. Either the chart renamed it or initDatasources is off; "
-            "update this gate with whichever it is."
-        )
+    containers = sidecars(render(root, _validator()))
+    # A gate that inspects nothing is not a gate: the values enable a sidecar in
+    # both positions, so a render missing either means the knob or the chart moved.
+    for field in REQUIRED_METHOD:
+        if not any(place == field for _, _, place, _ in containers):
+            raise GateError(
+                f"{MANIFEST} renders no `*{SIDECAR_MARKER}*` {POSITION[field]} "
+                f"container, so this gate checked nothing in {field}. Either the "
+                "chart renamed it or its sidecar knob is off; update this gate "
+                "with whichever it is."
+            )
     return [
-        f"{workload}: init container {name} runs with {METHOD_ENV}="
-        f"{method or '<unset>'}, not {LIST_METHOD}"
-        for workload, name, method in containers
-        if method != LIST_METHOD
+        f"{workload}: {POSITION[field]} container {name} runs with {METHOD_ENV}="
+        f"{method or '<unset>'}, not {REQUIRED_METHOD[field]}"
+        for workload, name, field, method in containers
+        if method != REQUIRED_METHOD[field]
     ]
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Grafana's k8s-sidecar init containers must list once and exit.",
+        description="Grafana's k8s-sidecar containers must run the METHOD their "
+                    "position requires: LIST in init, WATCH long-running.",
     )
     parser.add_argument("--repo-root", default=REPO, type=Path)
     args = parser.parse_args(argv)
@@ -182,13 +188,16 @@ def main(argv=None):
         print(f"ERROR: {type(exc).__name__}: {_one_line(exc)}", file=sys.stderr)
         return 2
     if problems:
-        print("ERROR: a k8s-sidecar INIT container does not terminate, so the pod "
-              "stays in PodInitializing and the Helm upgrade times out:")
+        print("ERROR: a k8s-sidecar container runs the wrong mode. An init container "
+              "that watches never exits, so the pod stays in PodInitializing and the "
+              "Helm upgrade times out; a long-running one that lists exits at once "
+              "and crash-loops:")
         for problem in problems:
             print(f"  - {problem}")
-        print(f"  Set the matching sidecar's watchMethod to {LIST_METHOD} in {MANIFEST}.")
+        print(f"  Set the matching sidecar's watchMethod in {MANIFEST}.")
         return 1
-    print(f"Every rendered k8s-sidecar init container runs {METHOD_ENV}={LIST_METHOD}.")
+    print(f"Every rendered k8s-sidecar container runs the {METHOD_ENV} its position "
+          "requires.")
     return 0
 
 

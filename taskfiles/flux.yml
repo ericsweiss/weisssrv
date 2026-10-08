@@ -505,8 +505,8 @@ tasks:
           FAILED=1
         fi
 
-        # Chart-rendered, so the corpus above cannot see it: the Grafana
-        # k8s-sidecar init containers must terminate.
+        # Chart-rendered, so the corpus above cannot see it: each Grafana
+        # k8s-sidecar must run the METHOD its position requires.
         if ! python3 scripts/check-grafana-sidecar-init.py; then
           FAILED=1
         fi

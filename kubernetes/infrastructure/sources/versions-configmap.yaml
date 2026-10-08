@@ -43,7 +43,7 @@ data:
   helm_chart_versions_traefik: 41.7.0
   helm_chart_versions_vpa: 5.1.0
   hermes_camofox_version: 1.18.1
-  hermes_claude_version: 2.1.294
+  hermes_claude_version: 2.1.295
   hermes_codex_version: 0.162.0
   hermes_image_version: v2026.9.24-r3
   hermes_op_version: 2.40.0-1

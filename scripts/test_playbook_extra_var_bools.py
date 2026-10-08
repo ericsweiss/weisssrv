@@ -1,7 +1,7 @@
-"""An extra var a pipeline passes with `-e` arrives as a string.
+"""An `-e` extra var arrives as a string, which ansible-core refuses in a `when:`.
 
-ansible-core refuses a str-derived `when:`, so a conditional naming such a var
-ends its filter chain in `| bool` or compares it.
+A conditional naming one ends its chain in `| bool` or compares it. The walk fails
+closed, globbing a templated include to every candidate (see `_glob_candidates`).
 """
 from __future__ import annotations
 
@@ -61,6 +61,11 @@ ROLE_META = Path("meta/main.yml")
 # A reference that yields a real boolean on its own, so `| bool` is redundant.
 COMPARISON = re.compile(r"^\s*(==|!=|<=|>=|<|>|\bin\b|\bis\b|\bnot\s+in\b)")
 
+# A `{{ ... }}` in an include target becomes `*`, so the walk inspects every
+# sibling the expression could name rather than guessing the runtime value.
+TEMPLATE_EXPRESSION = re.compile(r"\{\{.*?\}\}")
+TASK_FILE_SUFFIXES = (".yml", ".yaml")
+
 
 class Uninspectable(RuntimeError):
     """A reachable file or role the walk cannot read, so a pass would be a lie."""
@@ -80,7 +85,8 @@ def _extra_vars_value(tokens: list[str], index: int) -> tuple[str | None, int]:
         return attached, index + 1
     if token in EXTRA_VAR_FLAGS:
         if index + 1 >= len(tokens):
-            return None, index + 1
+            # A trailing bare flag names nothing, so report it rather than skip it.
+            return token, index + 1
         return tokens[index + 1], index + 2
     if token.startswith("-e") and len(token) > 2:
         return token[2:], index + 1
@@ -135,6 +141,14 @@ def extra_vars_by_playbook(repo: Path = REPO) -> dict[str, set[str]]:
 def unreadable_extra_vars(repo: Path = REPO) -> list[tuple[str, str]]:
     """(caller, value) for every `-e @file` or JSON blob hiding its names."""
     return _scan_callers(repo)[1]
+
+
+def _label(path: Path, repo: Path) -> str:
+    """A path for a failure message: repo-relative, or the role's own tail."""
+    try:
+        return path.relative_to(repo).as_posix()
+    except ValueError:
+        return "/".join(path.parts[-4:])
 
 
 def _resolve(playbook: str, repo: Path, base: Path | None = None) -> Path | None:
@@ -217,15 +231,62 @@ def _walk(node, key_wanted: str):
             yield from _walk(item, key_wanted)
 
 
-def _include_targets(doc) -> list[str]:
+def _include_targets(doc, origin: str) -> list[str]:
     """Every task file or playbook an include or import names, as written."""
     targets = []
     for key in INCLUDE_KEYS:
         for value in _walk(doc, key):
             target = value.get("file") if isinstance(value, dict) else value
-            if isinstance(target, str) and "{{" not in target:
-                targets.append(target)
+            if not isinstance(target, str) or not target.strip():
+                raise Uninspectable(
+                    f"{origin}: {key} names no file this gate can read ({target!r}), "
+                    "so what it runs goes unchecked"
+                )
+            targets.append(target.strip())
     return targets
+
+
+def _glob_candidates(target: str, repo: Path, base: Path) -> list[Path]:
+    """Every `.yml` a templated include target could name, by static-prefix glob.
+
+    Each `{{ ... }}` becomes `*`, so `disks-{{ backend }}.yml` yields every
+    `disks-*.yml`. Over-approximating is safe; matching nothing is Uninspectable.
+    """
+    pattern = TEMPLATE_EXPRESSION.sub("*", target)
+    for root in (base, repo / ANSIBLE, repo):
+        try:
+            matches = sorted(root.glob(pattern))
+        except (ValueError, NotImplementedError, OSError):
+            continue
+        found = [
+            path.resolve()
+            for path in matches
+            if path.is_file() and path.suffix in TASK_FILE_SUFFIXES
+        ]
+        if found:
+            return found
+    return []
+
+
+def _resolve_target(target: str, repo: Path, origin: Path) -> list[Path]:
+    """One include target to the file(s) it can run; unresolvable fails the gate."""
+    label = _label(origin, repo)
+    if "{{" in target:
+        candidates = _glob_candidates(target, repo, origin.parent)
+        if candidates:
+            return candidates
+        raise Uninspectable(
+            f"{label}: templated include target `{target}` matches no file, so what "
+            "it runs goes unchecked. Give the candidates one static prefix that "
+            f"`{TEMPLATE_EXPRESSION.sub('*', target)}` finds, or inline the include"
+        )
+    resolved = _resolve(target, repo, base=origin.parent)
+    if resolved is None:
+        raise Uninspectable(
+            f"{label}: include target `{target}` resolves to no file, so what it "
+            "runs goes unchecked"
+        )
+    return [resolved]
 
 
 def _entry_role(entry) -> str | None:
@@ -238,41 +299,65 @@ def _entry_role(entry) -> str | None:
     return None
 
 
-def _role_names(doc, meta: bool = False) -> list[str]:
-    """Every role a file names: `roles:`, include_role, or a meta dependency."""
-    names = []
-    keys = ["roles", "dependencies"] if meta else ["roles"]
-    for key in keys:
+def _role_entries(doc, meta: bool) -> list[tuple[str, object]]:
+    """(key, entry) for every role a file names, before any of them is read."""
+    entries = []
+    for key in ["roles", "dependencies"] if meta else ["roles"]:
         for value in _walk(doc, key):
-            names += [_entry_role(e) for e in value] if isinstance(value, list) else []
+            # ansible requires a list here, so any other value is unrelated data.
+            if isinstance(value, list):
+                entries += [(key, entry) for entry in value]
     for key in ROLE_KEYS:
-        for value in _walk(doc, key):
-            names.append(_entry_role(value))
-    return [n for n in names if isinstance(n, str) and "{{" not in n]
+        entries += [(key, value) for value in _walk(doc, key)]
+    return entries
+
+
+def _role_names(doc, origin: str, meta: bool = False) -> list[str]:
+    """Every role a file names; one this gate cannot name fails it."""
+    names = []
+    for key, entry in _role_entries(doc, meta):
+        name = _entry_role(entry)
+        if name is None:
+            raise Uninspectable(
+                f"{origin}: {key} entry {entry!r} names no role, so the role it "
+                "runs goes unchecked"
+            )
+        if "{{" in name:
+            raise Uninspectable(
+                f"{origin}: {key} names the templated role `{name}`, so the role it "
+                "runs goes unchecked. Name the role literally"
+            )
+        names.append(name)
+    return names
 
 
 def reachable_files(playbook: str, repo: Path = REPO) -> list[Path]:
     """The playbook plus every task file, playbook and role it transitively runs."""
     start = _resolve(playbook, repo)
     if start is None:
-        return []
+        raise Uninspectable(
+            f"playbook {playbook} resolves to no file, so every conditional its "
+            "`-e` caller reaches goes unchecked"
+        )
     seen: dict[Path, None] = {start: None}
     queue = [start]
     roles_seen: set[str] = set()
     while queue:
         current = queue.pop()
         doc = _load(current)
+        label = _label(current, repo)
         targets = [
-            _resolve(target, repo, base=current.parent)
-            for target in _include_targets(doc)
+            resolved
+            for target in _include_targets(doc, label)
+            for resolved in _resolve_target(target, repo, current)
         ]
-        for name in _role_names(doc, meta=current.match(str(ROLE_META))):
+        for name in _role_names(doc, label, meta=current.match(str(ROLE_META))):
             if name in roles_seen:
                 continue
             roles_seen.add(name)
             targets += _role_files(resolve_role(name, repo))
         for target in targets:
-            if target is not None and target not in seen:
+            if target not in seen:
                 seen[target] = None
                 queue.append(target)
     return list(seen)
@@ -317,14 +402,6 @@ def unbooled_conditionals(repo: Path = REPO) -> list[tuple[str, str, str]]:
     return offenders
 
 
-def _label(path: Path, repo: Path) -> str:
-    """A path for a failure message: repo-relative, or the role's own tail."""
-    try:
-        return path.relative_to(repo).as_posix()
-    except ValueError:
-        return "/".join(path.parts[-4:])
-
-
 class TestDiscovery:
     """Guards against a vacuous pass: the walk must find real work to check."""
 
@@ -339,6 +416,12 @@ class TestDiscovery:
             for p in reachable_files("playbooks/maintenance/update-packages.yml")
         }
         assert "ansible/playbooks/maintenance/_reboot-if-needed.yml" in reached, reached
+
+    def test_every_caller_playbook_walks_clean(self):
+        """The fail-closed walk must still cover the real tree end to end: an
+        edge it cannot follow now raises instead of narrowing the set."""
+        for playbook in sorted(extra_vars_by_playbook()):
+            assert reachable_files(playbook), playbook
 
     def test_a_collection_role_is_reached(self):
         """`roles:` is a reachability edge too: an uncoerced role conditional
@@ -407,7 +490,7 @@ def _fixture_role(repo: Path, body: str, part: str = "tasks") -> Path:
     return role / "main.yml"
 
 
-ROLE_TASKS = """---
+TASK_FILE = """---
 - name: Exercise something
   ansible.builtin.command: /bin/true
   when: probe_exercise | default(true){suffix}
@@ -467,6 +550,11 @@ class TestExtraVarParsing:
         )
         assert found == {"playbooks/probe.yml": {"probe_exercise"}}
 
+    def test_a_trailing_bare_flag_is_reported_unreadable(self, tmp_path):
+        """`-e` with no value sets nothing this gate can name."""
+        repo = _fixture_repo(tmp_path, BUGGY_PLAYBOOK, "-e")
+        assert unreadable_extra_vars(repo) == [(".gitlab-ci.yml", "-e")]
+
     @pytest.mark.parametrize("args", ["-e @extra.json", "--extra-vars=@extra.json"])
     def test_a_file_valued_extra_var_is_reported_unreadable(self, tmp_path, args):
         repo = _fixture_repo(tmp_path, BUGGY_PLAYBOOK, args)
@@ -479,7 +567,7 @@ class TestRoleWalk:
 
     def test_a_string_typed_role_conditional_is_reported(self, tmp_path):
         repo = _fixture_repo(tmp_path, ROLE_PLAYBOOK)
-        _fixture_role(repo, ROLE_TASKS.format(suffix=""))
+        _fixture_role(repo, TASK_FILE.format(suffix=""))
         assert unbooled_conditionals(repo) == [
             ("ansible/roles/probe_role/tasks/main.yml", "probe_exercise",
              "probe_exercise | default(true)"),
@@ -487,13 +575,13 @@ class TestRoleWalk:
 
     def test_a_coerced_role_conditional_passes(self, tmp_path):
         repo = _fixture_repo(tmp_path, ROLE_PLAYBOOK)
-        _fixture_role(repo, ROLE_TASKS.format(suffix=" | bool"))
+        _fixture_role(repo, TASK_FILE.format(suffix=" | bool"))
         assert unbooled_conditionals(repo) == []
 
     def test_a_role_handler_is_walked(self, tmp_path):
         repo = _fixture_repo(tmp_path, ROLE_PLAYBOOK)
-        _fixture_role(repo, ROLE_TASKS.format(suffix=" | bool"))
-        _fixture_role(repo, ROLE_TASKS.format(suffix=""), part="handlers")
+        _fixture_role(repo, TASK_FILE.format(suffix=" | bool"))
+        _fixture_role(repo, TASK_FILE.format(suffix=""), part="handlers")
         assert [f for f, _, _ in unbooled_conditionals(repo)] == [
             "ansible/roles/probe_role/handlers/main.yml",
         ]
@@ -508,20 +596,20 @@ class TestRoleWalk:
         name: probe_role
 """
         repo = _fixture_repo(tmp_path, body)
-        _fixture_role(repo, ROLE_TASKS.format(suffix=""))
+        _fixture_role(repo, TASK_FILE.format(suffix=""))
         assert [f for f, _, _ in unbooled_conditionals(repo)] == [
             "ansible/roles/probe_role/tasks/main.yml",
         ]
 
     def test_a_meta_dependency_is_walked(self, tmp_path):
         repo = _fixture_repo(tmp_path, ROLE_PLAYBOOK)
-        _fixture_role(repo, ROLE_TASKS.format(suffix=" | bool"))
+        _fixture_role(repo, TASK_FILE.format(suffix=" | bool"))
         meta = repo / "ansible/roles/probe_role/meta"
         meta.mkdir(parents=True)
         (meta / "main.yml").write_text("---\ndependencies:\n  - role: probe_dep\n")
         dependency = repo / "ansible/roles/probe_dep/tasks"
         dependency.mkdir(parents=True)
-        (dependency / "main.yml").write_text(ROLE_TASKS.format(suffix=""))
+        (dependency / "main.yml").write_text(TASK_FILE.format(suffix=""))
         assert [f for f, _, _ in unbooled_conditionals(repo)] == [
             "ansible/roles/probe_dep/tasks/main.yml",
         ]
@@ -545,3 +633,101 @@ class TestRoleWalk:
         _fixture_role(repo, "---\n- name: broken\n  when: [\n")
         with pytest.raises(Uninspectable, match="does not parse"):
             unbooled_conditionals(repo)
+
+
+INCLUDE_PLAYBOOK = """---
+- name: Probe
+  hosts: all
+  tasks:
+    - name: Run the backend steps
+      ansible.builtin.include_tasks: "{target}"
+"""
+
+class TestFailClosedWalk:
+    """Every edge the walk cannot follow raises: a narrowed set reads as a pass."""
+
+    def test_a_templated_include_inspects_every_candidate(self, tmp_path):
+        """The one convention that bends the rule: `disks-{{ x }}.yml` globs to
+        `disks-*.yml`, and all of them are checked."""
+        repo = _fixture_repo(
+            tmp_path, INCLUDE_PLAYBOOK.format(target="disks-{{ probe_backend }}.yml")
+        )
+        playbooks = repo / "ansible/playbooks"
+        (playbooks / "disks-zfs.yml").write_text(TASK_FILE.format(suffix=" | bool"))
+        (playbooks / "disks-lvm.yml").write_text(TASK_FILE.format(suffix=""))
+        reached = {p.name for p in reachable_files("playbooks/probe.yml", repo)}
+        assert {"disks-zfs.yml", "disks-lvm.yml"} <= reached, reached
+        assert [f for f, _, _ in unbooled_conditionals(repo)] == [
+            "ansible/playbooks/disks-lvm.yml",
+        ]
+
+    def test_a_templated_include_matching_nothing_fails_the_gate(self, tmp_path):
+        repo = _fixture_repo(
+            tmp_path, INCLUDE_PLAYBOOK.format(target="{{ probe_backend }}-steps.yml")
+        )
+        with pytest.raises(Uninspectable, match=r"probe.yml: templated include"):
+            unbooled_conditionals(repo)
+
+    def test_a_templated_absolute_include_fails_the_gate(self, tmp_path):
+        """An absolute pattern is one `Path.glob` refuses, not one that matched."""
+        repo = _fixture_repo(
+            tmp_path, INCLUDE_PLAYBOOK.format(target="/opt/{{ probe_backend }}.yml")
+        )
+        with pytest.raises(Uninspectable, match="templated include target"):
+            unbooled_conditionals(repo)
+
+    def test_a_wholly_templated_include_inspects_every_sibling(self, tmp_path):
+        """`{{ x }}` globs to `*`: over-approximating is the conservative read."""
+        repo = _fixture_repo(tmp_path, INCLUDE_PLAYBOOK.format(target="{{ probe_file }}"))
+        (repo / "ansible/playbooks/steps.yml").write_text(TASK_FILE.format(suffix=""))
+        assert [f for f, _, _ in unbooled_conditionals(repo)] == [
+            "ansible/playbooks/steps.yml",
+        ]
+
+    def test_an_unresolvable_include_fails_the_gate(self, tmp_path):
+        repo = _fixture_repo(tmp_path, INCLUDE_PLAYBOOK.format(target="_missing.yml"))
+        with pytest.raises(Uninspectable, match="_missing.yml` resolves to no file"):
+            unbooled_conditionals(repo)
+
+    def test_an_include_naming_no_file_fails_the_gate(self, tmp_path):
+        """The dict form without `file:`, which carried no readable target."""
+        body = """---
+- name: Probe
+  hosts: all
+  tasks:
+    - name: Run something
+      ansible.builtin.include_tasks:
+        apply:
+          become: true
+"""
+        with pytest.raises(Uninspectable, match="names no file this gate can read"):
+            unbooled_conditionals(_fixture_repo(tmp_path, body))
+
+    def test_an_unresolvable_playbook_fails_the_gate(self, tmp_path):
+        """A caller naming a playbook this gate cannot find checked nothing."""
+        repo = _fixture_repo(tmp_path, BUGGY_PLAYBOOK)
+        (repo / ".gitlab-ci.yml").write_text(
+            CI_CALL.format(args="-e probe_exercise=false").replace(
+                "playbooks/probe.yml", "playbooks/gone.yml"
+            )
+        )
+        with pytest.raises(Uninspectable, match="playbooks/gone.yml resolves to no file"):
+            unbooled_conditionals(repo)
+
+    def test_a_templated_role_name_fails_the_gate(self, tmp_path):
+        repo = _fixture_repo(
+            tmp_path, ROLE_PLAYBOOK.replace("probe_role", '"{{ probe_role_name }}"')
+        )
+        with pytest.raises(Uninspectable, match="templated role"):
+            unbooled_conditionals(repo)
+
+    def test_a_role_entry_naming_no_role_fails_the_gate(self, tmp_path):
+        body = """---
+- name: Probe
+  hosts: all
+  roles:
+    - tags:
+        - probe
+"""
+        with pytest.raises(Uninspectable, match="names no role"):
+            unbooled_conditionals(_fixture_repo(tmp_path, body))
