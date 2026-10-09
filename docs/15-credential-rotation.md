@@ -164,7 +164,7 @@ them.
 
 | Item | Fields | Consumed by |
 |---|---|---|
-| Authentik Secrets | `secret-key`, `postgresql-password`, `postgresql-admin-password` | Authentik server/worker |
+| Authentik Secrets | `secret-key`, `postgresql-password`, `postgresql-admin-password` | Authentik server/worker; `postgresql-admin-password` is also the password of the hand-created `postgres` superuser the exporter sidecar connects as, so rotating it needs a matching `ALTER ROLE` — see `kubernetes/apps/authentik/README.md` § 1Password items |
 | Authentik Terraform Token | `credential` (admin API token) | `terraform/authentik` — see [detail](#authentik-terraform-token) |
 | Authentik User Identities | the item's **Notes** (`notesPlain`) holds ONLY a JSON object: `{"<username>": {"name": …, "email": …}, …}` covering every username in `terraform/authentik/users.tf` | `terraform/authentik` — keeps managed-user names + emails out of the public-mirrored repo (docs/40 § Managed users) |
 | Mealie SSO | `oidc-client-id`, `oidc-client-secret` | Mealie (password login disabled) |

@@ -1,7 +1,7 @@
 """An `-e` extra var arrives as a string, which ansible-core refuses in a `when:`.
 
-A conditional naming one ends its chain in `| bool` or compares it. The walk fails
-closed, globbing a templated include to every candidate (see `_glob_candidates`).
+A conditional naming one ENDS its chain in `| bool` or compares it. The fail-closed
+walk globs a templated include (`_glob_candidates`) and follows `action:` forms.
 """
 from __future__ import annotations
 
@@ -50,6 +50,13 @@ ROLE_KEYS = frozenset(
         "import_role",
     }
 )
+
+# `action:` and `local_action:` name their module in the value, so an include or
+# role invoked that way is an edge the key-form walk above never sees.
+ACTION_KEYS = frozenset({"action", "local_action"})
+# The parameter each module form carries its target in.
+INCLUDE_TARGET_PARAMS = ("file", "_raw_params")
+ROLE_TARGET_PARAMS = ("name", "_raw_params")
 
 COLLECTION = "weisssrv.infra"
 COLLECTION_ROLES = Path("ansible_collections/weisssrv/infra/roles")
@@ -331,6 +338,69 @@ def _role_names(doc, origin: str, meta: bool = False) -> list[str]:
     return names
 
 
+def _action_module(value) -> tuple[str, dict] | None:
+    """(module, parameters) for one `action:` value, or None if it names none.
+
+    Both spellings: the free-form string `include_tasks foo.yml` (or
+    `file=foo.yml`) and the dict form carrying `module:`.
+    """
+    if isinstance(value, str):
+        module, _, rest = value.strip().partition(" ")
+        params: dict = {}
+        rest = rest.strip()
+        if rest and "=" in rest:
+            for token in rest.split():
+                name, separator, assigned = token.partition("=")
+                if separator:
+                    params[name] = assigned
+        elif rest:
+            params["_raw_params"] = rest
+        return module, params
+    if isinstance(value, dict) and isinstance(value.get("module"), str):
+        return value["module"].strip(), {
+            key: item for key, item in value.items() if key != "module"
+        }
+    return None
+
+
+def _action_target(module: str, params: dict, origin: str, key: str, names) -> str:
+    """The target one action form carries; anything else fails the gate."""
+    for param in names:
+        target = params.get(param)
+        if isinstance(target, str) and target.strip():
+            return target.strip()
+    raise Uninspectable(
+        f"{origin}: {key} invokes {module} with no plain-string target "
+        f"({params!r}), so what it runs goes unchecked. Use the `{module}:` key "
+        "form, or name the target literally"
+    )
+
+
+def _action_edges(doc, origin: str) -> tuple[list[str], list[str]]:
+    """(include targets, role names) reached through `action:`/`local_action:`."""
+    targets: list[str] = []
+    roles: list[str] = []
+    for key in sorted(ACTION_KEYS):
+        for value in _walk(doc, key):
+            found = _action_module(value)
+            if found is None:
+                continue
+            module, params = found
+            if module in INCLUDE_KEYS:
+                targets.append(
+                    _action_target(module, params, origin, key, INCLUDE_TARGET_PARAMS)
+                )
+            elif module in ROLE_KEYS:
+                name = _action_target(module, params, origin, key, ROLE_TARGET_PARAMS)
+                if "{{" in name:
+                    raise Uninspectable(
+                        f"{origin}: {key} names the templated role `{name}`, so "
+                        "the role it runs goes unchecked. Name the role literally"
+                    )
+                roles.append(name)
+    return targets, roles
+
+
 def reachable_files(playbook: str, repo: Path = REPO) -> list[Path]:
     """The playbook plus every task file, playbook and role it transitively runs."""
     start = _resolve(playbook, repo)
@@ -346,12 +416,14 @@ def reachable_files(playbook: str, repo: Path = REPO) -> list[Path]:
         current = queue.pop()
         doc = _load(current)
         label = _label(current, repo)
+        action_targets, action_roles = _action_edges(doc, label)
         targets = [
             resolved
-            for target in _include_targets(doc, label)
+            for target in _include_targets(doc, label) + action_targets
             for resolved in _resolve_target(target, repo, current)
         ]
-        for name in _role_names(doc, label, meta=current.match(str(ROLE_META))):
+        named = _role_names(doc, label, meta=current.match(str(ROLE_META)))
+        for name in named + action_roles:
             if name in roles_seen:
                 continue
             roles_seen.add(name)
@@ -374,15 +446,20 @@ def _conditions(doc) -> list[str]:
 
 
 def _is_booled(expression: str, name: str) -> bool:
-    """Does every reference to `name` in one clause yield a real boolean?"""
+    """Does every reference to `name` in one clause yield a real boolean?
+
+    `bool` must END the chain: `x | bool | string` is a string again, and a
+    later filter can undo the coercion just as readily.
+    """
     pattern = re.compile(
         r"\b" + re.escape(name) + r"\b((?:\s*\|\s*\w+(?:\([^()]*\))?)*)"
     )
     for match in pattern.finditer(expression):
         chain = [f.strip() for f in match.group(1).split("|") if f.strip()]
-        filters = {f.split("(")[0] for f in chain}
-        if "bool" in filters:
+        last = chain[-1].split("(")[0] if chain else ""
+        if last == "bool":
             continue
+        # A comparison yields a boolean whatever the chain ended in.
         if COMPARISON.match(expression[match.end():]):
             continue
         return False
@@ -515,11 +592,28 @@ def test_a_string_typed_conditional_is_reported(tmp_path):
         "probe_exercise | default(true) | bool",
         "not (probe_exercise | default(true) | bool)",
         "probe_exercise | default('') == 'yes'",
+        # A comparison yields a boolean whatever the chain ended in.
+        "probe_exercise | default(true) | bool | string == 'True'",
     ],
 )
 def test_a_boolean_valued_conditional_passes(tmp_path, clause):
     body = BUGGY_PLAYBOOK.replace("probe_exercise | default(true)", clause)
     assert unbooled_conditionals(_fixture_repo(tmp_path, body)) == []
+
+
+@pytest.mark.parametrize(
+    "clause",
+    [
+        "probe_exercise | default(true) | bool | string",
+        "probe_exercise | default(true) | bool | lower",
+        "probe_exercise | bool | default(true)",
+    ],
+)
+def test_a_bool_undone_by_a_later_filter_is_reported(tmp_path, clause):
+    """`| bool` must END the chain: a filter after it re-derives a string."""
+    body = BUGGY_PLAYBOOK.replace("probe_exercise | default(true)", clause)
+    offenders = unbooled_conditionals(_fixture_repo(tmp_path, body))
+    assert [name for _, name, _ in offenders] == ["probe_exercise"], offenders
 
 
 class TestExtraVarParsing:
@@ -731,3 +825,115 @@ class TestFailClosedWalk:
 """
         with pytest.raises(Uninspectable, match="names no role"):
             unbooled_conditionals(_fixture_repo(tmp_path, body))
+
+
+ACTION_TASK = """---
+- name: Probe
+  hosts: all
+  tasks:
+    - name: Run the backend steps
+{body}
+"""
+
+
+def _action_playbook(body: str) -> str:
+    """A one-task playbook whose task is written in the `action:` form."""
+    return ACTION_TASK.format(body="\n".join(f"      {line}" for line in body))
+
+
+class TestActionFormWalk:
+    """`action:`/`local_action:` hide the module in the value, so the key-form
+    walk never sees the edge. Each is resolved, or fails the gate."""
+
+    @pytest.mark.parametrize("key", ["action", "local_action"])
+    def test_a_free_form_include_is_resolved(self, tmp_path, key):
+        repo = _fixture_repo(tmp_path, _action_playbook([f"{key}: include_tasks steps.yml"]))
+        (repo / "ansible/playbooks/steps.yml").write_text(TASK_FILE.format(suffix=""))
+        assert [f for f, _, _ in unbooled_conditionals(repo)] == [
+            "ansible/playbooks/steps.yml",
+        ]
+
+    def test_a_free_form_include_with_a_named_file_is_resolved(self, tmp_path):
+        repo = _fixture_repo(
+            tmp_path, _action_playbook(["action: include_tasks file=steps.yml"])
+        )
+        (repo / "ansible/playbooks/steps.yml").write_text(TASK_FILE.format(suffix=""))
+        assert [f for f, _, _ in unbooled_conditionals(repo)] == [
+            "ansible/playbooks/steps.yml",
+        ]
+
+    def test_a_dict_form_include_is_resolved(self, tmp_path):
+        repo = _fixture_repo(
+            tmp_path,
+            _action_playbook(["action:", "  module: import_tasks", "  file: steps.yml"]),
+        )
+        (repo / "ansible/playbooks/steps.yml").write_text(TASK_FILE.format(suffix=""))
+        assert [f for f, _, _ in unbooled_conditionals(repo)] == [
+            "ansible/playbooks/steps.yml",
+        ]
+
+    def test_a_templated_include_target_globs_like_the_key_form(self, tmp_path):
+        repo = _fixture_repo(
+            tmp_path,
+            _action_playbook(["action: include_tasks disks-{{ probe_backend }}.yml"]),
+        )
+        playbooks = repo / "ansible/playbooks"
+        (playbooks / "disks-zfs.yml").write_text(TASK_FILE.format(suffix=" | bool"))
+        (playbooks / "disks-lvm.yml").write_text(TASK_FILE.format(suffix=""))
+        assert [f for f, _, _ in unbooled_conditionals(repo)] == [
+            "ansible/playbooks/disks-lvm.yml",
+        ]
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            ["action: import_role probe_role"],
+            ["action: include_role name=probe_role"],
+            ["action:", "  module: import_role", "  name: probe_role"],
+        ],
+    )
+    def test_a_role_invoked_through_the_action_form_is_walked(self, tmp_path, body):
+        repo = _fixture_repo(tmp_path, _action_playbook(body))
+        _fixture_role(repo, TASK_FILE.format(suffix=""))
+        assert [f for f, _, _ in unbooled_conditionals(repo)] == [
+            "ansible/roles/probe_role/tasks/main.yml",
+        ]
+
+    def test_an_include_with_no_readable_target_fails_the_gate(self, tmp_path):
+        repo = _fixture_repo(
+            tmp_path, _action_playbook(["action:", "  module: include_tasks"])
+        )
+        with pytest.raises(Uninspectable, match="no plain-string target"):
+            unbooled_conditionals(repo)
+
+    def test_a_role_with_no_readable_name_fails_the_gate(self, tmp_path):
+        repo = _fixture_repo(
+            tmp_path,
+            _action_playbook(["action:", "  module: include_role", "  apply:", "    become: true"]),
+        )
+        with pytest.raises(Uninspectable, match="no plain-string target"):
+            unbooled_conditionals(repo)
+
+    def test_a_templated_role_name_fails_the_gate(self, tmp_path):
+        repo = _fixture_repo(
+            tmp_path,
+            _action_playbook(
+                ["action:", "  module: import_role", '  name: "{{ probe_role_name }}"']
+            ),
+        )
+        with pytest.raises(Uninspectable, match="templated role"):
+            unbooled_conditionals(repo)
+
+    def test_an_unresolvable_include_target_fails_the_gate(self, tmp_path):
+        repo = _fixture_repo(
+            tmp_path, _action_playbook(["action: include_tasks _missing.yml"])
+        )
+        with pytest.raises(Uninspectable, match="_missing.yml` resolves to no file"):
+            unbooled_conditionals(repo)
+
+    def test_an_action_naming_another_module_is_left_alone(self, tmp_path):
+        """Only include, import and role modules are reachability edges."""
+        repo = _fixture_repo(
+            tmp_path, _action_playbook(["action: ansible.builtin.command /bin/true"])
+        )
+        assert unbooled_conditionals(repo) == []

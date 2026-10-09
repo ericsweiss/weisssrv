@@ -78,6 +78,13 @@ Homelab vault. The exact field list and the rotation procedure are in
 source of truth: every `remoteRef` in it must exist in the item, or the whole
 Secret fails to sync.
 
+The database was bootstrapped before the chart managed it, with `authentik` as
+its only superuser. The `postgres` role the exporter sidecar connects as is
+therefore created by hand — `CREATE ROLE postgres SUPERUSER LOGIN PASSWORD …`,
+run as `authentik`, using the `postgresql-admin-password` the ExternalSecret
+declares. Rotating that field in 1Password needs a matching `ALTER ROLE postgres
+PASSWORD …` in the same pass, or the exporter stops reporting `pg_up 1`.
+
 ## DNS
 
 Both sides are codified; never edit AdGuard by hand. `auth.esweiss.com` and

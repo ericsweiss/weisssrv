@@ -243,7 +243,7 @@ nextcloud_exporter_version: "0.9.1"
 # Immich (compose stack on the VM). The Postgres + Valkey images (tag AND
 # digest) are whatever Immich's pinned release pins in its own compose file - the
 # DB is release-coupled, so NEVER bump it independently of immich_version.
-immich_version: "v3.3.0"
+immich_version: "v3.3.1"
 immich_postgres_version: "14-vectorchord0.4.3-pgvectors0.2.0"
 immich_postgres_digest: "sha256:bcf63357191b76a916ae5eb93464d65c07511da41e3bf7a8416db519b40b1c23"
 immich_valkey_version: "9"

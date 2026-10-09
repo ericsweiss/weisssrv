@@ -254,9 +254,9 @@ spec:
       enabled: true
       image:
         tag: "${postgresql_version}"
-      # postgres_exporter sidecar; its only scrape is the chart-rendered
-      # ServiceMonitor, its ingress allow is in networkpolicy.yaml. It connects
-      # as the postgres superuser, with the admin password the ExternalSecret holds.
+      # postgres_exporter sidecar; its scrape is the chart-rendered ServiceMonitor
+      # and its ingress allow is in networkpolicy.yaml. It connects as the postgres
+      # superuser, which exists with the admin password the ExternalSecret declares.
       metrics:
         enabled: true
         serviceMonitor:
