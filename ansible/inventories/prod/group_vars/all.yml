@@ -138,7 +138,7 @@ tailscale_require_authkey: true
 # *_git_sha / *_checksum, run `task flux:sync-versions`, commit; CI verifies and
 # rebuilds, Flux rolls the pods (docs/12).
 adguard_home_version: "0.107.79"
-adguard_sync_version: "0.9.3"
+adguard_sync_version: "0.9.4"
 # Host-side Alloy apt package (alloy_host role; distinct from the in-cluster
 # helm_chart_versions.alloy chart pin below).
 alloy_host_version: "1.20.1-1"
@@ -326,7 +326,7 @@ homarr_version: "v1.77.1"
 # Uptime Kuma (docs/45). BARE semver tag on Docker Hub; the manifest appends
 # "-rootless", the same release built with USER node, which is what lets the
 # namespace enforce PSA restricted.
-uptime_kuma_version: "2.5.5"
+uptime_kuma_version: "2.5.6"
 
 # Garage - the runners' S3 cache backend (kubernetes/apps/ci-cache, docs/13).
 # Docker Hub dxflrs/garage; the pin is the full upstream tag (vX.Y.Z).
@@ -366,7 +366,7 @@ helm_chart_versions:
   # the apiserver, enough to trip KubeAPIErrorBudgetBurn. The cluster's v0.16
   # CRDs are compatible with the 0.15.3 images. Re-evaluate after chart 0.16.1.
   metallb: "0.15.3"
-  traefik: "41.7.0"  # App version v3.7.14 (chart 41.x: logs.general->log, logs.access->accessLog)
+  traefik: "41.7.1"  # App version v3.7.14 (chart 41.x: logs.general->log, logs.access->accessLog)
   cert_manager: "v1.21.2"
   external_dns: "1.23.0"  # App version 0.23.0
   external_secrets: "2.12.0"  # ESO with 1Password Connect provider
@@ -375,7 +375,7 @@ helm_chart_versions:
   # CRDs in the infrastructure-crds stage (docs/29). COUPLING: its appVersion must
   # equal the pinned kube_prometheus_stack's operator appVersion (docs/12).
   prometheus_operator_crds: "32.0.1"
-  loki: "18.15.0"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0)
+  loki: "18.15.1"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0)
   alloy: "1.13.1"
   prometheus_blackbox_exporter: "11.20.0"
   onepassword_connect: "2.4.2"

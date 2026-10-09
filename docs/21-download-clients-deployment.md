@@ -499,8 +499,13 @@ client. So the init container sets **both** elements: `External`, and
 or the tailnet would not help, because the proxy would still be untrusted.
 
 The **`seed-external-auth` init container** (`_arr/deployment.yaml`, plus
-`prowlarr.yaml`'s own copy) holds both on every start: idempotent, a no-op once
-current, and it fails the pod rather than booting into that form. The CIDR comes
+`prowlarr.yaml`'s own copy) holds both on every start. It normalizes rather than
+patches — every copy and spelling of the two elements is stripped and exactly one
+of each is reinserted, so a stale duplicate cannot sit in front of the live value
+— writes the result to a temporary file it moves into place, and fails the pod
+rather than booting into that form. On a fresh install it seeds a minimal
+`config.xml` holding only those two elements, which each app merges its own
+defaults into, so a new install never starts on a `Forms` default. The CIDR comes
 from `cluster-config` as the `TRUSTED_NETWORKS` env var, because `config.xml` is
 not Flux-substituted. Lidarr's older build has no `TrustedNetworks` support at
 all, so there the element is inert and `External` alone carries the fix. API-key

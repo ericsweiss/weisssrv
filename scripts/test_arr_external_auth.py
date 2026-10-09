@@ -1,11 +1,12 @@
 """The *arr apps present no login of their own: config.xml says External.
 
-Left on `Forms` they show their own form after Authentik for every request a
-proxy forwards. Rendered with kustomize here, then the script is executed.
+Left on `Forms` they show their own form after Authentik for any request a
+proxy forwards. Rendered with kustomize here, then the script is run.
 """
 from __future__ import annotations
 
 import ipaddress
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -105,9 +106,17 @@ def test_prowlarr_has_not_drifted_from_the_shared_skeleton(rendered):
     assert len(set(envs.values())) == 1, "the seeder env differs between apps"
 
 
+def test_the_replacement_is_atomic(rendered):
+    """A truncate-then-copy loses config.xml outright if the write is cut short,
+    so the new content is staged beside the target and moved onto it."""
+    script = _seeder(rendered["sonarr"])["command"][-1]
+    assert "mv -f" in script
+    assert 'cat "$tmp" > "$conf"' not in script
+
+
 # --- the script's own behaviour ---------------------------------------------
-# POSIX sh + grep/awk only, so the rendered command runs here unmodified apart
-# from the config path, which is redirected into tmp_path.
+# POSIX sh + grep/awk/stat only, so the rendered command runs here unmodified
+# apart from the config path, which is redirected into tmp_path.
 
 # config.xml shapes seen in the wild: sonarr/radarr/prowlarr ship an EMPTY
 # TrustedNetworks element, lidarr's older build ships none at all.
@@ -125,14 +134,55 @@ NO_ELEMENT = (
 )
 SELF_CLOSING = "<Config>\n  <AuthenticationMethod />\n  <TrustedNetworks />\n</Config>"
 COMPACT = "<Config><Port>8989</Port><AuthenticationMethod>Basic</AuthenticationMethod></Config>"
+# Several copies of each, which the apps answer from the FIRST one they parse.
+DUPLICATES = (
+    "<Config>\n  <AuthenticationMethod>Forms</AuthenticationMethod>\n"
+    "  <Port>8989</Port>\n"
+    "  <AuthenticationMethod>Basic</AuthenticationMethod>\n"
+    "  <TrustedNetworks>1.2.3.0/24</TrustedNetworks>\n"
+    "  <AuthenticationMethod />\n"
+    "  <TrustedNetworks>9.9.9.0/24</TrustedNetworks>\n</Config>"
+)
+# The nastiest shape: a stale pair SITS BEFORE a correct one, so a seeder that
+# only checked "is the wanted text present" would leave the stale pair winning.
+STALE_BEFORE_DESIRED = (
+    "<Config>\n  <AuthenticationMethod>Forms</AuthenticationMethod>\n"
+    "  <TrustedNetworks>1.2.3.0/24</TrustedNetworks>\n"
+    "  <AuthenticationMethod>External</AuthenticationMethod>\n"
+    "  <TrustedNetworks>10.42.0.0/16</TrustedNetworks>\n</Config>"
+)
 NO_ROOT = "<Nope/>"
-SHAPES = [EMPTY_ELEMENT, NO_ELEMENT, SELF_CLOSING, COMPACT]
+SHAPES = [EMPTY_ELEMENT, NO_ELEMENT, SELF_CLOSING, COMPACT, DUPLICATES,
+          STALE_BEFORE_DESIRED]
 
 
-def _run(script: str, conf: Path, cidr: str) -> subprocess.CompletedProcess:
+@pytest.fixture(scope="module")
+def shim_path(tmp_path_factory) -> str:
+    """PATH for running the script. The container runs busybox, whose `stat -c`
+    a BSD host lacks; on such a host a translating shim goes in front so the rest
+    of the script still runs. chown/chmod to their current values work as-is."""
+    probe = subprocess.run(["stat", "-c", "%a", str(REPO)], capture_output=True)
+    if probe.returncode == 0:
+        return os.environ.get("PATH", "/usr/bin:/bin")
+    shim_dir = tmp_path_factory.mktemp("statshim")
+    stat_shim = shim_dir / "stat"
+    stat_shim.write_text(
+        '#!/bin/sh\n'
+        'if [ "$1" = "-c" ]; then\n'
+        '  fmt=$(printf "%s" "$2" | sed "s/%a/%Lp/g"); shift 2\n'
+        '  exec /usr/bin/stat -f "$fmt" "$@"\n'
+        'fi\n'
+        'exec /usr/bin/stat "$@"\n'
+    )
+    stat_shim.chmod(0o755)
+    return f"{shim_dir}:{os.environ.get('PATH', '/usr/bin:/bin')}"
+
+
+def _run(script: str, conf: Path, cidr: str, path: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["sh", "-ec", script.replace(CONFIG_PATH, str(conf))],
-        capture_output=True, text=True, check=False, env={"TRUSTED_NETWORKS": cidr},
+        capture_output=True, text=True, check=False,
+        env={"TRUSTED_NETWORKS": cidr, "PATH": path},
     )
 
 
@@ -159,35 +209,54 @@ def _elements(conf: Path) -> tuple[list[str], list[str]]:
     )
 
 
+def _any_spelling(conf: Path) -> tuple[int, int]:
+    """How many of each element the file holds, self-closing ones included."""
+    text = conf.read_text()
+    return (text.count("<AuthenticationMethod"), text.count("<TrustedNetworks"))
+
+
 @pytest.mark.parametrize("before", SHAPES)
-def test_both_elements_land_exactly_once(script, tmp_path, pod_cidr, before):
-    """A duplicate element would be silently ignored in favour of the first."""
+def test_both_elements_land_exactly_once(script, tmp_path, pod_cidr, shim_path, before):
+    """A duplicate is read from the first copy, so a stale one would still win."""
     conf = tmp_path / "config.xml"
     conf.write_text(before)
-    result = _run(script, conf, pod_cidr)
+    result = _run(script, conf, pod_cidr, shim_path)
     assert result.returncode == 0, result.stderr
     assert _elements(conf) == (["External"], [pod_cidr])
+    assert _any_spelling(conf) == (1, 1)
+
+
+def test_a_stale_pair_before_a_correct_one_is_removed(script, tmp_path, pod_cidr, shim_path):
+    """The mutation this guards: a seeder that only asks 'is the wanted text
+    present' takes the fast path here and leaves the stale pair in front."""
+    conf = tmp_path / "config.xml"
+    conf.write_text(STALE_BEFORE_DESIRED)
+    assert _run(script, conf, pod_cidr, shim_path).returncode == 0
+    assert "1.2.3.0/24" not in conf.read_text()
+    assert "Forms" not in conf.read_text()
 
 
 @pytest.mark.parametrize("before", SHAPES)
-def test_a_second_run_changes_nothing(script, tmp_path, pod_cidr, before):
+def test_a_second_run_changes_nothing(script, tmp_path, pod_cidr, shim_path, before):
     conf = tmp_path / "config.xml"
     conf.write_text(before)
-    assert _run(script, conf, pod_cidr).returncode == 0
+    assert _run(script, conf, pod_cidr, shim_path).returncode == 0
     after_first = conf.read_text()
-    second = _run(script, conf, pod_cidr)
+    second = _run(script, conf, pod_cidr, shim_path)
     assert second.returncode == 0, second.stderr
     assert conf.read_text() == after_first
     assert "no change" in second.stdout
 
 
-def test_the_trusted_network_is_the_proxy_not_the_clients(script, tmp_path, cluster_config):
+def test_the_trusted_network_is_the_proxy_not_the_clients(
+    script, tmp_path, cluster_config, shim_path
+):
     """Naming a client range instead would leave the proxy untrusted and the
     forwarded address still unread."""
     conf = tmp_path / "config.xml"
     conf.write_text(EMPTY_ELEMENT)
     pod_cidr = cluster_config["cluster_pod_cidr"]
-    assert _run(script, conf, pod_cidr).returncode == 0
+    assert _run(script, conf, pod_cidr, shim_path).returncode == 0
     written = _elements(conf)[1]
     assert written == [pod_cidr]
     for key in ("cluster_lan_cidr", "cluster_tailnet_cidr", "cluster_home_cidr"):
@@ -196,11 +265,11 @@ def test_the_trusted_network_is_the_proxy_not_the_clients(script, tmp_path, clus
     assert ipaddress.ip_address("10.42.3.70") in ipaddress.ip_network(pod_cidr)
 
 
-def test_everything_else_in_the_file_survives(script, tmp_path, pod_cidr):
+def test_everything_else_in_the_file_survives(script, tmp_path, pod_cidr, shim_path):
     """The ApiKey in this file is what every API client authenticates with."""
     conf = tmp_path / "config.xml"
     conf.write_text(EMPTY_ELEMENT)
-    assert _run(script, conf, pod_cidr).returncode == 0
+    assert _run(script, conf, pod_cidr, shim_path).returncode == 0
     kept = conf.read_text()
     for line in ("<Port>8989</Port>", "<ApiKey>abc</ApiKey>",
                  "<AuthenticationRequired>DisabledForLocalAddresses"):
@@ -208,26 +277,44 @@ def test_everything_else_in_the_file_survives(script, tmp_path, pod_cidr):
     assert "Forms" not in kept
 
 
-def test_no_leftover_temp_file(script, tmp_path, pod_cidr):
-    """A stray config.xml.seed-tmp beside the real one confuses a restore."""
+def test_the_file_mode_survives_the_rewrite(script, tmp_path, pod_cidr, shim_path):
+    """The replacement is a fresh file moved into place, so it has to carry the
+    original's mode or the app loses access to its own config."""
     conf = tmp_path / "config.xml"
     conf.write_text(EMPTY_ELEMENT)
-    assert _run(script, conf, pod_cidr).returncode == 0
+    conf.chmod(0o640)
+    assert _run(script, conf, pod_cidr, shim_path).returncode == 0
+    assert conf.stat().st_mode & 0o777 == 0o640
+
+
+@pytest.mark.parametrize("before", [*SHAPES, NO_ROOT])
+def test_no_leftover_temp_file(script, tmp_path, pod_cidr, shim_path, before):
+    """A stray config.xml.seed-tmp beside the real one confuses a restore."""
+    conf = tmp_path / "config.xml"
+    conf.write_text(before)
+    _run(script, conf, pod_cidr, shim_path)
     assert [p.name for p in tmp_path.iterdir()] == ["config.xml"]
 
 
-def test_a_fresh_install_is_a_no_op(script, tmp_path, pod_cidr):
-    """Nothing to patch before the app's first boot; the next start applies it."""
-    result = _run(script, tmp_path / "config.xml", pod_cidr)
-    assert result.returncode == 0
-    assert "fresh install" in result.stdout
+def test_a_fresh_install_is_seeded_not_skipped(script, tmp_path, pod_cidr, shim_path):
+    """Skipping would let the app write a Forms default and keep its own login
+    until the next restart. The apps merge their defaults into this file."""
+    conf = tmp_path / "config.xml"
+    result = _run(script, conf, pod_cidr, shim_path)
+    assert result.returncode == 0, result.stderr
+    assert conf.exists(), "a fresh install was left with no config.xml"
+    assert _elements(conf) == (["External"], [pod_cidr])
+    assert _any_spelling(conf) == (1, 1)
+    assert [p.name for p in tmp_path.iterdir()] == ["config.xml"]
+    # Only the two elements, so nothing here can contradict an app default.
+    assert conf.read_text().count("<") == 6
 
 
-def test_an_unpatchable_config_fails_the_pod(script, tmp_path, pod_cidr):
-    """Starting the app anyway would serve a second login prompt instead."""
+def test_an_unpatchable_config_fails_the_pod(script, tmp_path, pod_cidr, shim_path):
+    """Starting the app anyway would serve its own login prompt instead."""
     conf = tmp_path / "config.xml"
     conf.write_text(NO_ROOT)
-    result = _run(script, conf, pod_cidr)
+    result = _run(script, conf, pod_cidr, shim_path)
     assert result.returncode == 1
     assert "ERROR" in result.stderr
     assert conf.read_text() == NO_ROOT

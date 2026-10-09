@@ -63,47 +63,64 @@ spec:
             - -ec
             - |
               conf=/config/config.xml
-              if [ ! -f "$conf" ]; then
-                echo "[seed-external-auth] no config yet (fresh install); applies on next start"
-                exit 0
-              fi
               auth='<AuthenticationMethod>External</AuthenticationMethod>'
               net="<TrustedNetworks>$TRUSTED_NETWORKS</TrustedNetworks>"
-              if grep -qF "$auth" "$conf" && grep -qF "$net" "$conf"; then
-                echo "[seed-external-auth] already current; no change"
+              # Beside the target, so the replacing mv stays on one filesystem.
+              tmp="$conf.seed-tmp"
+              if [ ! -f "$conf" ]; then
+                printf '<Config>\n  %s\n  %s\n</Config>\n' "$auth" "$net" > "$tmp"
+                # Owned like the config directory, so the app's own uid can
+                # rewrite what this seeds.
+                chown "$(stat -c '%u:%g' "${conf%/*}")" "$tmp"
+                mv -f "$tmp" "$conf"
+                echo "[seed-external-auth] seeded a minimal config.xml; the app merges its own defaults"
                 exit 0
               fi
-              tmp="$conf.seed-tmp"
+              # Normalize rather than patch: strip every spelling and every copy
+              # of both elements, then insert exactly one of each.
               awk -v auth="$auth" -v net="$net" '
                 {
                   line = $0
-                  if (sub(/<AuthenticationMethod>[^<]*<\/AuthenticationMethod>/, auth, line)) have_auth = 1
-                  if (sub(/<AuthenticationMethod[ \t]*\/>/, auth, line))                      have_auth = 1
-                  if (sub(/<TrustedNetworks>[^<]*<\/TrustedNetworks>/, net, line))            have_net = 1
-                  if (sub(/<TrustedNetworks[ \t]*\/>/, net, line))                            have_net = 1
+                  blank = (line ~ /^[ \t]*$/)
+                  gsub(/<AuthenticationMethod>[^<]*<\/AuthenticationMethod>/, "", line)
+                  gsub(/<AuthenticationMethod[ \t]*\/>/, "", line)
+                  gsub(/<TrustedNetworks>[^<]*<\/TrustedNetworks>/, "", line)
+                  gsub(/<TrustedNetworks[ \t]*\/>/, "", line)
+                  if (!blank && line ~ /^[ \t]*$/) next
                   buf[++n] = line
                 }
                 END {
-                  ins = ""
-                  if (!have_auth) ins = ins "\n  " auth
-                  if (!have_net)  ins = ins "\n  " net
                   for (i = 1; i <= n; i++) {
                     line = buf[i]
-                    if (ins != "" && !done && sub(/<Config>/, "<Config>" ins, line)) done = 1
-                    print line
+                    idx = done ? 0 : index(line, "<Config>")
+                    if (idx == 0) { print line; continue }
+                    # Rest of the line goes to its own line, so normalizing an
+                    # already-normalized file reproduces it byte for byte.
+                    print substr(line, 1, idx + 7)
+                    print "  " auth
+                    print "  " net
+                    rest = substr(line, idx + 8)
+                    if (rest != "") print rest
+                    done = 1
                   }
                 }
               ' "$conf" > "$tmp"
-              # Write in place so the app's own uid keeps owning config.xml.
-              if grep -qF "$auth" "$tmp" && grep -qF "$net" "$tmp"; then
-                cat "$tmp" > "$conf"
-                rm -f "$tmp"
-                echo "[seed-external-auth] External auth, trusted proxy $TRUSTED_NETWORKS"
-              else
+              if ! grep -qF "$auth" "$tmp" || ! grep -qF "$net" "$tmp"; then
                 rm -f "$tmp"
                 echo "[seed-external-auth] ERROR: no <Config> root to patch" >&2
                 exit 1
               fi
+              if cmp -s "$tmp" "$conf"; then
+                rm -f "$tmp"
+                echo "[seed-external-auth] already current; no change"
+                exit 0
+              fi
+              # Keep the app's own uid and mode, then replace atomically: a
+              # truncate-then-copy loses config.xml if the write is interrupted.
+              chown "$(stat -c '%u:%g' "$conf")" "$tmp"
+              chmod "$(stat -c '%a' "$conf")" "$tmp"
+              mv -f "$tmp" "$conf"
+              echo "[seed-external-auth] External auth, trusted proxy $TRUSTED_NETWORKS"
           resources:
             requests:
               cpu: 5m
