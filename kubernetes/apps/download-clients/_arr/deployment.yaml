@@ -75,7 +75,7 @@ spec:
                 printf '<Config>\n  %s\n  %s\n</Config>\n' "$auth" "$net" > "$tmp"
                 # Owned like the config directory, so the app's own uid can
                 # rewrite what this seeds.
-                chown "$(stat -c '%u:%g' "${conf%/*}")" "$tmp"
+                chown "$(stat -c '%u:%g' "$(dirname "$conf")")" "$tmp"
                 mv -f "$tmp" "$conf"
                 echo "[seed-external-auth] seeded a minimal config.xml; the app merges its own defaults"
                 exit 0
