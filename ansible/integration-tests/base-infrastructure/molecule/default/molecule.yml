@@ -10,7 +10,7 @@ platforms:
     # Shared systemd-container shape including group membership; only the
     # name differs per platform.
     <<: &systemd_platform
-      image: "${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:v0.18.0}"
+      image: "${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:v0.18.1}"
       pre_build_image: true
       privileged: true
       cgroupns_mode: host

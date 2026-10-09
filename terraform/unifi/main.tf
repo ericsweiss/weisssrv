@@ -7,7 +7,7 @@
 # The `?ref=` is bumped by hand with `variables.WEISSSRV_LIB_REF`.
 # Segmentation and what stays console-owned: docs/46-unifi-network.md.
 module "network" {
-  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/unifi-network?ref=v0.18.0"
+  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/unifi-network?ref=v0.18.1"
 
   networks = local.networks
   zones    = local.zones
