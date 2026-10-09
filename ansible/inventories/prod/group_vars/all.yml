@@ -271,15 +271,15 @@ hermes_git_sha: "f97608f178d1ffeca59860195ab7da295f7c8e5f"
 # PUBLISHED image tag = <hermes_version>-r<N>. The image is upstream + our
 # patches, so a patch change without an upstream bump MUST produce a new tag or
 # the IfNotPresent cache serves the unpatched image. Reset to -r1 on a bump.
-hermes_image_version: "v2026.9.24-r3"
+hermes_image_version: "v2026.9.24-r4"
 # OpenAI Codex CLI, baked into the hermes image by Dockerfile.codex. Requires
 # >=0.130.0 for the Hermes runtime. Build-time only — not substituted into any
 # manifest. https://github.com/openai/codex/releases (npm @openai/codex)
-hermes_codex_version: "0.162.0"
+hermes_codex_version: "0.162.1"
 # Claude Code CLI, baked into the hermes image alongside the Codex CLI so Hermes
 # can delegate coding tasks headlessly, authenticated with a long-lived OAuth
 # token via ESO rather than an API key. Build-time only (docs/37).
-hermes_claude_version: "2.1.295"
+hermes_claude_version: "2.1.296"
 # 1Password CLI (op), baked into the hermes image for Hermes' 1Password skill
 # (docs/37). Full DEB version string. NOT optional: upstream keeps exactly ONE
 # version, so a stale pin FAILS the build and version-check cannot see it.
