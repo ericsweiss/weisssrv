@@ -65,8 +65,11 @@ spec:
               conf=/config/config.xml
               auth='<AuthenticationMethod>External</AuthenticationMethod>'
               net="<TrustedNetworks>$TRUSTED_NETWORKS</TrustedNetworks>"
-              # Beside the target, so the replacing mv stays on one filesystem.
-              tmp="$conf.seed-tmp"
+              # Unguessable name beside the target: a symlink planted at a
+              # predictable path would be followed, and the mv must not cross a
+              # filesystem. The trap clears it on every exit path.
+              tmp=$(mktemp "$conf.seed-tmp.XXXXXX")
+              trap 'rm -f "$tmp"' EXIT
               if [ ! -f "$conf" ]; then
                 printf '<Config>\n  %s\n  %s\n</Config>\n' "$auth" "$net" > "$tmp"
                 # Owned like the config directory, so the app's own uid can
@@ -76,42 +79,42 @@ spec:
                 echo "[seed-external-auth] seeded a minimal config.xml; the app merges its own defaults"
                 exit 0
               fi
-              # Normalize rather than patch: strip every spelling and every copy
-              # of both elements, then insert exactly one of each.
+              # Normalize rather than patch, over the file as ONE string so an
+              # element split across lines is stripped too, then reinsert
+              # exactly one of each.
               awk -v auth="$auth" -v net="$net" '
-                {
-                  line = $0
-                  blank = (line ~ /^[ \t]*$/)
-                  gsub(/<AuthenticationMethod>[^<]*<\/AuthenticationMethod>/, "", line)
-                  gsub(/<AuthenticationMethod[ \t]*\/>/, "", line)
-                  gsub(/<TrustedNetworks>[^<]*<\/TrustedNetworks>/, "", line)
-                  gsub(/<TrustedNetworks[ \t]*\/>/, "", line)
-                  if (!blank && line ~ /^[ \t]*$/) next
-                  buf[++n] = line
-                }
+                { all = all $0 "\n" }
                 END {
-                  for (i = 1; i <= n; i++) {
-                    line = buf[i]
-                    idx = done ? 0 : index(line, "<Config>")
-                    if (idx == 0) { print line; continue }
+                  gsub(/<AuthenticationMethod[ \t\n]*\/>/, "", all)
+                  gsub(/<AuthenticationMethod[ \t\n]*>[^<]*<\/AuthenticationMethod[ \t\n]*>/, "", all)
+                  gsub(/<TrustedNetworks[ \t\n]*\/>/, "", all)
+                  gsub(/<TrustedNetworks[ \t\n]*>[^<]*<\/TrustedNetworks[ \t\n]*>/, "", all)
+                  m = split(all, line, "\n")
+                  for (i = 1; i <= m; i++) {
+                    if (line[i] ~ /^[ \t]*$/) continue
+                    idx = done ? 0 : index(line[i], "<Config>")
+                    if (idx == 0) { print line[i]; continue }
                     # Rest of the line goes to its own line, so normalizing an
                     # already-normalized file reproduces it byte for byte.
-                    print substr(line, 1, idx + 7)
+                    print substr(line[i], 1, idx + 7)
                     print "  " auth
                     print "  " net
-                    rest = substr(line, idx + 8)
+                    rest = substr(line[i], idx + 8)
                     if (rest != "") print rest
                     done = 1
                   }
                 }
               ' "$conf" > "$tmp"
-              if ! grep -qF "$auth" "$tmp" || ! grep -qF "$net" "$tmp"; then
-                rm -f "$tmp"
-                echo "[seed-external-auth] ERROR: no <Config> root to patch" >&2
+              # Fail closed: replace the live file only when the result holds
+              # exactly one of each element, counting every spelling.
+              a_seen=$(grep -o '<AuthenticationMethod' "$tmp" | wc -l | tr -d ' \n')
+              n_seen=$(grep -o '<TrustedNetworks' "$tmp" | wc -l | tr -d ' \n')
+              if [ "$a_seen" != 1 ] || [ "$n_seen" != 1 ] \
+                 || ! grep -qF "$auth" "$tmp" || ! grep -qF "$net" "$tmp"; then
+                echo "[seed-external-auth] ERROR: refusing to replace config.xml — AuthenticationMethod x$a_seen, TrustedNetworks x$n_seen" >&2
                 exit 1
               fi
               if cmp -s "$tmp" "$conf"; then
-                rm -f "$tmp"
                 echo "[seed-external-auth] already current; no change"
                 exit 0
               fi

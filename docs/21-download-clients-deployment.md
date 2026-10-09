@@ -485,8 +485,13 @@ passthrough mechanisms:
 
 Sonarr/Radarr/Lidarr/Prowlarr present no login of their own: `config.xml` says
 `External`, so the app trusts the reverse proxy. That is safe because the
-`authentik-auth` middleware is the only path in from outside the cluster
-(NetworkPolicy), which makes forward-auth the login rather than an extra gate.
+NetworkPolicy makes Traefik the only way in from outside the cluster, and every
+route through it carries `authentik-auth` — with one documented exception.
+`ingress-routes-ha-bypass.yaml` serves the API path prefixes with NO
+forward-auth, scoped by `ClientIP` to Home Assistant's `10.0.10.154/32`
+(docs/24). Both of that route's gates still hold under `External`: the source
+restriction, and the app's own API key, which `External` does not relax — with
+the UI open, an unauthenticated `GET /api/v3/system/status` is still `401`.
 
 Left on `Forms`, these apps show their own form after Authentik on **every**
 browser request, LAN included — not just over Tailscale. A request carrying

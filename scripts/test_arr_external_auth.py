@@ -106,12 +106,15 @@ def test_prowlarr_has_not_drifted_from_the_shared_skeleton(rendered):
     assert len(set(envs.values())) == 1, "the seeder env differs between apps"
 
 
-def test_the_replacement_is_atomic(rendered):
+def test_the_replacement_is_atomic_and_the_temp_name_unguessable(rendered):
     """A truncate-then-copy loses config.xml outright if the write is cut short,
-    so the new content is staged beside the target and moved onto it."""
+    so the new content is staged beside the target and moved onto it. The staging
+    name comes from mktemp, since a predictable one can be pre-planted."""
     script = _seeder(rendered["sonarr"])["command"][-1]
     assert "mv -f" in script
     assert 'cat "$tmp" > "$conf"' not in script
+    assert 'mktemp "$conf.seed-tmp.XXXXXX"' in script
+    assert "trap 'rm -f \"$tmp\"' EXIT" in script
 
 
 # --- the script's own behaviour ---------------------------------------------
@@ -151,9 +154,32 @@ STALE_BEFORE_DESIRED = (
     "  <AuthenticationMethod>External</AuthenticationMethod>\n"
     "  <TrustedNetworks>10.42.0.0/16</TrustedNetworks>\n</Config>"
 )
+# Valid XML a pretty-printer or a restore can produce: the element spans lines,
+# so a single-line strip pattern leaves the stale value in front of the live one.
+MULTILINE = (
+    "<Config>\n  <AuthenticationMethod>\n    Forms\n  </AuthenticationMethod>\n"
+    "  <Port>8989</Port>\n"
+    "  <TrustedNetworks>\n    1.2.3.0/24\n  </TrustedNetworks>\n</Config>\n"
+)
+WHITESPACE_IN_TAGS = (
+    "<Config>\n  <AuthenticationMethod >  Forms  </AuthenticationMethod >\n"
+    "  <Port>8989</Port>\n</Config>\n"
+)
+MIXED = (
+    "<Config>\n  <AuthenticationMethod>\n Forms\n</AuthenticationMethod>\n"
+    "  <AuthenticationMethod>External</AuthenticationMethod>\n"
+    "  <TrustedNetworks />\n  <TrustedNetworks>\n 9.9.9.0/24\n</TrustedNetworks>\n"
+    "  <Port>8989</Port>\n</Config>\n"
+)
 NO_ROOT = "<Nope/>"
+# A value holding a bare `<` is not valid XML and defeats the strip, which is
+# what the fail-closed count guard is for.
+UNSTRIPPABLE = (
+    "<Config>\n  <AuthenticationMethod>a<b</AuthenticationMethod>\n"
+    "  <TrustedNetworks></TrustedNetworks>\n</Config>\n"
+)
 SHAPES = [EMPTY_ELEMENT, NO_ELEMENT, SELF_CLOSING, COMPACT, DUPLICATES,
-          STALE_BEFORE_DESIRED]
+          STALE_BEFORE_DESIRED, MULTILINE, WHITESPACE_IN_TAGS, MIXED]
 
 
 @pytest.fixture(scope="module")
@@ -287,9 +313,10 @@ def test_the_file_mode_survives_the_rewrite(script, tmp_path, pod_cidr, shim_pat
     assert conf.stat().st_mode & 0o777 == 0o640
 
 
-@pytest.mark.parametrize("before", [*SHAPES, NO_ROOT])
+@pytest.mark.parametrize("before", [*SHAPES, NO_ROOT, UNSTRIPPABLE])
 def test_no_leftover_temp_file(script, tmp_path, pod_cidr, shim_path, before):
-    """A stray config.xml.seed-tmp beside the real one confuses a restore."""
+    """A stray staging file beside the real one confuses a restore. The trap has
+    to clear it on the error paths too, which is where one would survive."""
     conf = tmp_path / "config.xml"
     conf.write_text(before)
     _run(script, conf, pod_cidr, shim_path)
@@ -308,6 +335,36 @@ def test_a_fresh_install_is_seeded_not_skipped(script, tmp_path, pod_cidr, shim_
     assert [p.name for p in tmp_path.iterdir()] == ["config.xml"]
     # Only the two elements, so nothing here can contradict an app default.
     assert conf.read_text().count("<") == 6
+
+
+def test_an_unstrippable_element_is_refused_not_duplicated(
+    script, tmp_path, pod_cidr, shim_path
+):
+    """Fail closed: when the strip cannot remove a stale element the result would
+    carry two, and the app answers from the first. Refuse instead of replacing."""
+    conf = tmp_path / "config.xml"
+    conf.write_text(UNSTRIPPABLE)
+    result = _run(script, conf, pod_cidr, shim_path)
+    assert result.returncode == 1
+    assert "AuthenticationMethod x2" in result.stderr
+    assert conf.read_text() == UNSTRIPPABLE
+
+
+def test_a_planted_symlink_at_the_predictable_path_is_not_followed(
+    script, tmp_path, pod_cidr, shim_path
+):
+    """Anything that can write /config could pre-create the old fixed staging
+    path; writing through it would clobber whatever it points at."""
+    conf = tmp_path / "config.xml"
+    conf.write_text(EMPTY_ELEMENT)
+    victim = tmp_path / "victim"
+    victim.write_text("do not clobber")
+    planted = tmp_path / "config.xml.seed-tmp"
+    planted.symlink_to(victim)
+    assert _run(script, conf, pod_cidr, shim_path).returncode == 0
+    assert victim.read_text() == "do not clobber"
+    assert planted.is_symlink()
+    assert _elements(conf) == (["External"], [pod_cidr])
 
 
 def test_an_unpatchable_config_fails_the_pod(script, tmp_path, pod_cidr, shim_path):
