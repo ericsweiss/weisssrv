@@ -257,10 +257,10 @@ the app looks healthy.
 ### 7. Authentik objects (Terraform)
 
 wg-easy's native OIDC (generic `OAUTH_PROVIDERS`) is not used: the UI is
-protected by Traefik ForwardAuth via the shared `authentik-auth` outpost — the
-same pattern the `*arr` apps use. Re-evaluate the design if a pin bump is ever
-taken specifically to adopt native OIDC; check the running tag against
-`wg_easy_version` in `group_vars/all.yml` first.
+protected by Traefik ForwardAuth via the shared `authentik-auth` outpost.
+Re-evaluate the design if a pin bump is ever taken specifically to adopt native
+OIDC; check the running tag against `wg_easy_version` in `group_vars/all.yml`
+first.
 
 The proxy provider, application and `vpn-admins` group are declared in
 `terraform/authentik/` (`providers_proxy.tf`, `applications.tf`, `groups.tf`,
@@ -281,8 +281,14 @@ embedded outpost (`authentik Embedded Outpost`), which is what the
 `authentik-auth` middleware points at.
 
 
-This is the same forward-auth pattern the `*arr` apps use; see
-`kubernetes/apps/authentik/README.md` and `docs/23-recipes-sso-setup.md`.
+Forward-auth is the front door, not the only login: wg-easy 15.x seeds a
+mandatory account from `INIT_USERNAME`/`INIT_PASSWORD` and ships no switch to
+disable it, so its own form follows Authentik on every request. That is the
+deliberate two-factor class Uptime Kuma is in ([docs/45](45-uptime-kuma.md)
+§ Authentik objects), NOT the single-login *arr pattern
+([docs/21](21-download-clients-deployment.md) § Authentik SSO Integration). Outpost
+and middleware detail: `kubernetes/apps/authentik/README.md` and
+[docs/23](23-recipes-sso-setup.md).
 
 ---
 

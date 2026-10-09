@@ -481,13 +481,42 @@ upstream limitation — see [Sonarr #2477](https://github.com/Sonarr/Sonarr/issu
 the single-login experience is achieved per app with one of four
 passthrough mechanisms:
 
-### 1. *arr apps — `Authentication: External` (in-app setting)
+### 1. *arr apps — `AuthenticationMethod=External` (declarative init container)
 
-Sonarr/Radarr/Lidarr/Prowlarr: Settings > General > Security >
-**Authentication = External**. The app skips its own login entirely and
-trusts the reverse proxy. Safe because the only route in from outside the
-cluster is Traefik (NetworkPolicy) and every Traefik route carries
-forward-auth.
+Sonarr/Radarr/Lidarr/Prowlarr present no login of their own: `config.xml` says
+`External`, so the app trusts the reverse proxy. That is safe because the
+NetworkPolicy makes Traefik the only way in from outside the cluster, and every
+route through it carries `authentik-auth` — with one documented exception.
+`ingress-routes-ha-bypass.yaml` serves the API path prefixes with NO
+forward-auth, scoped by `ClientIP` to Home Assistant's `10.0.10.154/32`
+(docs/24). Both of that route's gates still hold under `External`: the source
+restriction, and the app's own API key, which `External` does not relax — with
+the UI open, an unauthenticated `GET /api/v3/system/status` is still `401`.
+
+Left on `Forms`, these apps show their own form after Authentik on **every**
+browser request, LAN included — not just over Tailscale. A request carrying
+`X-Forwarded-For` from a proxy that is neither loopback nor named in
+`<TrustedNetworks>` is read as non-local whatever address it forwards, and the
+same configuration logs `Auth-Success ip <Traefik pod IP>` instead of the real
+client. So the init container sets **both** elements: `External`, and
+`<TrustedNetworks>` = the pod CIDR, which Traefik forwards from.
+**`TrustedNetworks` names the PROXY, not the clients** — widening it to the LAN
+or the tailnet would not help, because the proxy would still be untrusted.
+
+The **`seed-external-auth` init container** (`_arr/deployment.yaml`, plus
+`prowlarr.yaml`'s own copy) holds both on every start. It normalizes rather than
+patches — every copy and spelling of the two elements is stripped and exactly one
+of each is reinserted, so a stale duplicate cannot sit in front of the live value
+— writes the result to a temporary file it moves into place, and fails the pod
+rather than booting into that form. On a fresh install it seeds a minimal
+`config.xml` holding only those two elements, which each app merges its own
+defaults into, so a new install never starts on a `Forms` default. The CIDR comes
+from `cluster-config` as the `TRUSTED_NETWORKS` env var, because `config.xml` is
+not Flux-substituted. Lidarr's older build has no `TrustedNetworks` support at
+all, so there the element is inert and `External` alone carries the fix. API-key
+clients (Homarr, Pulsarr, exportarr, intra-*arr) are untouched. Trust model is
+Pulsarr's below — NetworkPolicy plus `authentik-auth` and the `media-admins`
+binding, with `kubectl port-forward` as break-glass.
 
 ### 2. NZBGet — basic-auth credential injection (codified)
 

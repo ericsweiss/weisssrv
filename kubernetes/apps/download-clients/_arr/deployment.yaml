@@ -48,6 +48,92 @@ spec:
           # ClusterFirst pod on the DNAT'd kube-dns path - fresh socket for the
           # second parallel A/AAAA query avoids the ~5s conntrack DNAT race.
           - name: single-request-reopen
+      initContainers:
+        # SSO-only: External turns the app's own login off (the forward-auth
+        # middleware is the only path in) and TrustedNetworks names Traefik as
+        # the proxy, so the real client address is honoured. Both hidden in UI.
+        - name: seed-external-auth
+          image: busybox:${busybox_version}
+          env:
+            # The proxy's own network, NOT a client allowlist: a forwarded
+            # request from outside it is non-local whatever address it carries.
+            - name: TRUSTED_NETWORKS
+              value: ${cluster_pod_cidr}
+          command:
+            - sh
+            - -ec
+            - |
+              conf=/config/config.xml
+              auth='<AuthenticationMethod>External</AuthenticationMethod>'
+              net="<TrustedNetworks>$TRUSTED_NETWORKS</TrustedNetworks>"
+              # Unguessable name beside the target: a symlink planted at a
+              # predictable path would be followed, and the mv must not cross a
+              # filesystem. The trap clears it on every exit path.
+              tmp=$(mktemp "$conf.seed-tmp.XXXXXX")
+              trap 'rm -f "$tmp"' EXIT
+              if [ ! -f "$conf" ]; then
+                printf '<Config>\n  %s\n  %s\n</Config>\n' "$auth" "$net" > "$tmp"
+                # Owned like the config directory, so the app's own uid can
+                # rewrite what this seeds.
+                chown "$(stat -c '%u:%g' "${conf%/*}")" "$tmp"
+                mv -f "$tmp" "$conf"
+                echo "[seed-external-auth] seeded a minimal config.xml; the app merges its own defaults"
+                exit 0
+              fi
+              # Normalize rather than patch, over the file as ONE string so an
+              # element split across lines is stripped too, then reinsert
+              # exactly one of each.
+              awk -v auth="$auth" -v net="$net" '
+                { all = all $0 "\n" }
+                END {
+                  gsub(/<AuthenticationMethod[ \t\n]*\/>/, "", all)
+                  gsub(/<AuthenticationMethod[ \t\n]*>[^<]*<\/AuthenticationMethod[ \t\n]*>/, "", all)
+                  gsub(/<TrustedNetworks[ \t\n]*\/>/, "", all)
+                  gsub(/<TrustedNetworks[ \t\n]*>[^<]*<\/TrustedNetworks[ \t\n]*>/, "", all)
+                  m = split(all, line, "\n")
+                  for (i = 1; i <= m; i++) {
+                    if (line[i] ~ /^[ \t]*$/) continue
+                    idx = done ? 0 : index(line[i], "<Config>")
+                    if (idx == 0) { print line[i]; continue }
+                    # Rest of the line goes to its own line, so normalizing an
+                    # already-normalized file reproduces it byte for byte.
+                    print substr(line[i], 1, idx + 7)
+                    print "  " auth
+                    print "  " net
+                    rest = substr(line[i], idx + 8)
+                    if (rest != "") print rest
+                    done = 1
+                  }
+                }
+              ' "$conf" > "$tmp"
+              # Fail closed: replace the live file only when the result holds
+              # exactly one of each element, counting every spelling.
+              a_seen=$(grep -o '<AuthenticationMethod' "$tmp" | wc -l | tr -d ' \n')
+              n_seen=$(grep -o '<TrustedNetworks' "$tmp" | wc -l | tr -d ' \n')
+              if [ "$a_seen" != 1 ] || [ "$n_seen" != 1 ] \
+                 || ! grep -qF "$auth" "$tmp" || ! grep -qF "$net" "$tmp"; then
+                echo "[seed-external-auth] ERROR: refusing to replace config.xml — AuthenticationMethod x$a_seen, TrustedNetworks x$n_seen" >&2
+                exit 1
+              fi
+              if cmp -s "$tmp" "$conf"; then
+                echo "[seed-external-auth] already current; no change"
+                exit 0
+              fi
+              # Keep the app's own uid and mode, then replace atomically: a
+              # truncate-then-copy loses config.xml if the write is interrupted.
+              chown "$(stat -c '%u:%g' "$conf")" "$tmp"
+              chmod "$(stat -c '%a' "$conf")" "$tmp"
+              mv -f "$tmp" "$conf"
+              echo "[seed-external-auth] External auth, trusted proxy $TRUSTED_NETWORKS"
+          resources:
+            requests:
+              cpu: 5m
+              memory: 8Mi
+            limits:
+              memory: 16Mi
+          volumeMounts:
+            - name: config
+              mountPath: /config
       containers:
         # Sentinel tag, NOT deployable: every overlay MUST `- op: replace` this
         # with its pinned lscr.io/linuxserver/<app>:version-${..._version} image.
