@@ -1,0 +1,233 @@
+"""The *arr apps present no login of their own: config.xml says External.
+
+Left on `Forms` they show their own form after Authentik for every request a
+proxy forwards. Rendered with kustomize here, then the script is executed.
+"""
+from __future__ import annotations
+
+import ipaddress
+import re
+import subprocess
+from pathlib import Path
+
+import pytest
+import yaml
+
+from conftest import require_tool
+
+REPO = Path(__file__).resolve().parent.parent
+OVERLAY = REPO / "kubernetes" / "apps" / "download-clients"
+CLUSTER_CONFIG = REPO / "kubernetes" / "infrastructure" / "sources" / "cluster-config.yaml"
+
+# Every *arr app behind the authentik-auth middleware. sonarr/radarr/lidarr come
+# from the _arr component; prowlarr carries its own copy of the same container.
+ARR_APPS = ("sonarr", "radarr", "lidarr", "prowlarr")
+
+INIT_NAME = "seed-external-auth"
+METHOD = "<AuthenticationMethod>External</AuthenticationMethod>"
+# The manifest spells the CIDR as the env var the script reads, never a literal.
+NETWORKS = "<TrustedNetworks>$TRUSTED_NETWORKS</TrustedNetworks>"
+CONFIG_PATH = "/config/config.xml"
+
+
+@pytest.fixture(scope="module")
+def cluster_config() -> dict:
+    return yaml.safe_load(CLUSTER_CONFIG.read_text())["data"]
+
+
+@pytest.fixture(scope="module")
+def rendered() -> dict[str, dict]:
+    """name -> pod spec, for every Deployment the download-clients overlay builds."""
+    require_tool("kustomize", "arr External-auth gate",
+                 "python3 scripts/ci-fetch-tools.py kustomize")
+    build = subprocess.run(
+        ["kustomize", "build", str(OVERLAY)],
+        capture_output=True, text=True, check=False,
+    )
+    assert build.returncode == 0, f"kustomize build failed:\n{build.stderr}"
+    pods = {}
+    for doc in yaml.safe_load_all(build.stdout):
+        if isinstance(doc, dict) and doc.get("kind") == "Deployment":
+            pods[doc["metadata"]["name"]] = doc["spec"]["template"]["spec"]
+    assert set(ARR_APPS) <= set(pods), (
+        f"overlay rendered no Deployment for {sorted(set(ARR_APPS) - set(pods))}"
+    )
+    return pods
+
+
+def _seeder(pod: dict) -> dict:
+    found = [c for c in pod.get("initContainers") or [] if c["name"] == INIT_NAME]
+    assert len(found) == 1, f"expected one {INIT_NAME} init container, got {len(found)}"
+    return found[0]
+
+
+@pytest.mark.parametrize("app", ARR_APPS)
+def test_every_arr_runs_the_seeder_before_the_app(rendered, app):
+    """Without it the app boots on its stored Forms setting and prompts again."""
+    script = _seeder(rendered[app])["command"][-1]
+    assert METHOD in script, f"{app}'s {INIT_NAME} does not set External"
+    assert NETWORKS in script, f"{app}'s {INIT_NAME} does not set TrustedNetworks"
+    assert CONFIG_PATH in script
+
+
+@pytest.mark.parametrize("app", ARR_APPS)
+def test_the_trusted_network_is_the_proxys_own(rendered, app):
+    """It names the forwarding proxy, so it must be the pod CIDR, by placeholder."""
+    env = {e["name"]: e.get("value") for e in _seeder(rendered[app]).get("env") or []}
+    assert env.get("TRUSTED_NETWORKS") == "${cluster_pod_cidr}"
+
+
+@pytest.mark.parametrize("app", ARR_APPS)
+def test_the_seeder_writes_the_file_the_app_reads(rendered, app):
+    """A seeder on a different volume would rewrite a config nothing reads."""
+    pod = rendered[app]
+    seeder_mounts = {(m["name"], m["mountPath"]) for m in _seeder(pod)["volumeMounts"]}
+    app_container = next(c for c in pod["containers"] if c["name"] == app)
+    app_mounts = {(m["name"], m["mountPath"]) for m in app_container["volumeMounts"]}
+    assert ("config", "/config") in seeder_mounts & app_mounts
+
+
+@pytest.mark.parametrize("app", ARR_APPS)
+def test_the_seeder_image_is_the_pinned_busybox(rendered, app):
+    """`:latest` would silently change the shell this rewrite depends on."""
+    assert _seeder(rendered[app])["image"] == "busybox:${busybox_version}"
+
+
+def test_prowlarr_has_not_drifted_from_the_shared_skeleton(rendered):
+    """Prowlarr is standalone, so its copy is where a fix gets forgotten."""
+    seeders = {app: _seeder(rendered[app]) for app in ARR_APPS}
+    scripts = {app: c["command"][-1] for app, c in seeders.items()}
+    assert len(set(scripts.values())) == 1, (
+        "the seeder script differs between apps: " + ", ".join(sorted(scripts))
+    )
+    envs = {app: str(sorted((e["name"], e.get("value")) for e in c.get("env") or []))
+            for app, c in seeders.items()}
+    assert len(set(envs.values())) == 1, "the seeder env differs between apps"
+
+
+# --- the script's own behaviour ---------------------------------------------
+# POSIX sh + grep/awk only, so the rendered command runs here unmodified apart
+# from the config path, which is redirected into tmp_path.
+
+# config.xml shapes seen in the wild: sonarr/radarr/prowlarr ship an EMPTY
+# TrustedNetworks element, lidarr's older build ships none at all.
+EMPTY_ELEMENT = (
+    "<Config>\n  <Port>8989</Port>\n"
+    "  <ApiKey>abc</ApiKey>\n"
+    "  <AuthenticationMethod>Forms</AuthenticationMethod>\n"
+    "  <AuthenticationRequired>DisabledForLocalAddresses</AuthenticationRequired>\n"
+    "  <TrustedNetworks></TrustedNetworks>\n"
+    "</Config>"
+)
+NO_ELEMENT = (
+    "<Config>\n  <Port>8686</Port>\n"
+    "  <AuthenticationMethod>Forms</AuthenticationMethod>\n</Config>"
+)
+SELF_CLOSING = "<Config>\n  <AuthenticationMethod />\n  <TrustedNetworks />\n</Config>"
+COMPACT = "<Config><Port>8989</Port><AuthenticationMethod>Basic</AuthenticationMethod></Config>"
+NO_ROOT = "<Nope/>"
+SHAPES = [EMPTY_ELEMENT, NO_ELEMENT, SELF_CLOSING, COMPACT]
+
+
+def _run(script: str, conf: Path, cidr: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["sh", "-ec", script.replace(CONFIG_PATH, str(conf))],
+        capture_output=True, text=True, check=False, env={"TRUSTED_NETWORKS": cidr},
+    )
+
+
+@pytest.fixture(scope="module")
+def script(rendered) -> str:
+    return _seeder(rendered["sonarr"])["command"][-1]
+
+
+@pytest.fixture(scope="module")
+def pod_cidr(cluster_config) -> str:
+    return cluster_config["cluster_pod_cidr"]
+
+
+def _elements(conf: Path) -> tuple[list[str], list[str]]:
+    """(AuthenticationMethod values, TrustedNetworks values) as written.
+
+    Read with a regex rather than an XML parser: the subject is exactly the text
+    the script emits, and counting occurrences is what catches a duplicate.
+    """
+    text = conf.read_text()
+    return tuple(
+        re.findall(rf"<{tag}>([^<]*)</{tag}>", text)
+        for tag in ("AuthenticationMethod", "TrustedNetworks")
+    )
+
+
+@pytest.mark.parametrize("before", SHAPES)
+def test_both_elements_land_exactly_once(script, tmp_path, pod_cidr, before):
+    """A duplicate element would be silently ignored in favour of the first."""
+    conf = tmp_path / "config.xml"
+    conf.write_text(before)
+    result = _run(script, conf, pod_cidr)
+    assert result.returncode == 0, result.stderr
+    assert _elements(conf) == (["External"], [pod_cidr])
+
+
+@pytest.mark.parametrize("before", SHAPES)
+def test_a_second_run_changes_nothing(script, tmp_path, pod_cidr, before):
+    conf = tmp_path / "config.xml"
+    conf.write_text(before)
+    assert _run(script, conf, pod_cidr).returncode == 0
+    after_first = conf.read_text()
+    second = _run(script, conf, pod_cidr)
+    assert second.returncode == 0, second.stderr
+    assert conf.read_text() == after_first
+    assert "no change" in second.stdout
+
+
+def test_the_trusted_network_is_the_proxy_not_the_clients(script, tmp_path, cluster_config):
+    """Naming a client range instead would leave the proxy untrusted and the
+    forwarded address still unread."""
+    conf = tmp_path / "config.xml"
+    conf.write_text(EMPTY_ELEMENT)
+    pod_cidr = cluster_config["cluster_pod_cidr"]
+    assert _run(script, conf, pod_cidr).returncode == 0
+    written = _elements(conf)[1]
+    assert written == [pod_cidr]
+    for key in ("cluster_lan_cidr", "cluster_tailnet_cidr", "cluster_home_cidr"):
+        assert cluster_config[key] not in written
+    # Traefik forwards from a pod address, so that address must fall inside it.
+    assert ipaddress.ip_address("10.42.3.70") in ipaddress.ip_network(pod_cidr)
+
+
+def test_everything_else_in_the_file_survives(script, tmp_path, pod_cidr):
+    """The ApiKey in this file is what every API client authenticates with."""
+    conf = tmp_path / "config.xml"
+    conf.write_text(EMPTY_ELEMENT)
+    assert _run(script, conf, pod_cidr).returncode == 0
+    kept = conf.read_text()
+    for line in ("<Port>8989</Port>", "<ApiKey>abc</ApiKey>",
+                 "<AuthenticationRequired>DisabledForLocalAddresses"):
+        assert line in kept
+    assert "Forms" not in kept
+
+
+def test_no_leftover_temp_file(script, tmp_path, pod_cidr):
+    """A stray config.xml.seed-tmp beside the real one confuses a restore."""
+    conf = tmp_path / "config.xml"
+    conf.write_text(EMPTY_ELEMENT)
+    assert _run(script, conf, pod_cidr).returncode == 0
+    assert [p.name for p in tmp_path.iterdir()] == ["config.xml"]
+
+
+def test_a_fresh_install_is_a_no_op(script, tmp_path, pod_cidr):
+    """Nothing to patch before the app's first boot; the next start applies it."""
+    result = _run(script, tmp_path / "config.xml", pod_cidr)
+    assert result.returncode == 0
+    assert "fresh install" in result.stdout
+
+
+def test_an_unpatchable_config_fails_the_pod(script, tmp_path, pod_cidr):
+    """Starting the app anyway would serve a second login prompt instead."""
+    conf = tmp_path / "config.xml"
+    conf.write_text(NO_ROOT)
+    result = _run(script, conf, pod_cidr)
+    assert result.returncode == 1
+    assert "ERROR" in result.stderr
+    assert conf.read_text() == NO_ROOT

@@ -481,13 +481,32 @@ upstream limitation — see [Sonarr #2477](https://github.com/Sonarr/Sonarr/issu
 the single-login experience is achieved per app with one of four
 passthrough mechanisms:
 
-### 1. *arr apps — `Authentication: External` (in-app setting)
+### 1. *arr apps — `AuthenticationMethod=External` (declarative init container)
 
-Sonarr/Radarr/Lidarr/Prowlarr: Settings > General > Security >
-**Authentication = External**. The app skips its own login entirely and
-trusts the reverse proxy. Safe because the only route in from outside the
-cluster is Traefik (NetworkPolicy) and every Traefik route carries
-forward-auth.
+Sonarr/Radarr/Lidarr/Prowlarr present no login of their own: `config.xml` says
+`External`, so the app trusts the reverse proxy. That is safe because the
+`authentik-auth` middleware is the only path in from outside the cluster
+(NetworkPolicy), which makes forward-auth the login rather than an extra gate.
+
+Left on `Forms`, these apps show their own form after Authentik on **every**
+browser request, LAN included — not just over Tailscale. A request carrying
+`X-Forwarded-For` from a proxy that is neither loopback nor named in
+`<TrustedNetworks>` is read as non-local whatever address it forwards, and the
+same configuration logs `Auth-Success ip <Traefik pod IP>` instead of the real
+client. So the init container sets **both** elements: `External`, and
+`<TrustedNetworks>` = the pod CIDR, which Traefik forwards from.
+**`TrustedNetworks` names the PROXY, not the clients** — widening it to the LAN
+or the tailnet would not help, because the proxy would still be untrusted.
+
+The **`seed-external-auth` init container** (`_arr/deployment.yaml`, plus
+`prowlarr.yaml`'s own copy) holds both on every start: idempotent, a no-op once
+current, and it fails the pod rather than booting into that form. The CIDR comes
+from `cluster-config` as the `TRUSTED_NETWORKS` env var, because `config.xml` is
+not Flux-substituted. Lidarr's older build has no `TrustedNetworks` support at
+all, so there the element is inert and `External` alone carries the fix. API-key
+clients (Homarr, Pulsarr, exportarr, intra-*arr) are untouched. Trust model is
+Pulsarr's below — NetworkPolicy plus `authentik-auth` and the `media-admins`
+binding, with `kubectl port-forward` as break-glass.
 
 ### 2. NZBGet — basic-auth credential injection (codified)
 

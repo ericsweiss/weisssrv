@@ -78,6 +78,10 @@ spec:
   updatePolicy: {updateMode: Initial}
   resourcePolicy:
     containerPolicies:
+      # One-shot init container with a 16Mi limit: mode Off so the app-sized
+      # "*" caps are never applied to it.
+      - containerName: seed-external-auth
+        mode: "Off"
       # The one measured exception to "cap == limit": 384Mi sits under
       # prowlarr's 512Mi limit, above the 30d working-set peak (257Mi), so a
       # capped request still leaves burst headroom.
@@ -96,6 +100,10 @@ spec:
   updatePolicy: {updateMode: Initial}
   resourcePolicy:
     containerPolicies:
+      # One-shot init container with a 16Mi limit: mode Off so the app-sized
+      # "*" caps are never applied to it.
+      - containerName: seed-external-auth
+        mode: "Off"
       # Cap == the container's 1Gi limit (_arr/deployment.yaml); RequestsOnly,
       # so the hand-set limit stays the ceiling.
       - containerName: "*"
@@ -113,6 +121,10 @@ spec:
   updatePolicy: {updateMode: Initial}
   resourcePolicy:
     containerPolicies:
+      # One-shot init container with a 16Mi limit: mode Off so the app-sized
+      # "*" caps are never applied to it.
+      - containerName: seed-external-auth
+        mode: "Off"
       # Cap == the container's 1Gi limit (_arr/deployment.yaml). The working set
       # is dominated by reclaimable NFS page cache (30d RSS peak ~290Mi), so the
       # memory series is excluded from both VPA sizing alerts (docs/33).
@@ -131,6 +143,10 @@ spec:
   updatePolicy: {updateMode: Initial}
   resourcePolicy:
     containerPolicies:
+      # One-shot init container with a 16Mi limit: mode Off so the app-sized
+      # "*" caps are never applied to it.
+      - containerName: seed-external-auth
+        mode: "Off"
       # Cap == the container's 1Gi limit (_arr/deployment.yaml). The working set
       # is dominated by reclaimable NFS page cache (30d RSS peak ~290Mi), so the
       # memory series is excluded from both VPA sizing alerts (docs/33).

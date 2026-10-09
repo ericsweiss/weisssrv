@@ -48,6 +48,72 @@ spec:
           # ClusterFirst pod on the DNAT'd kube-dns path - fresh socket for the
           # second parallel A/AAAA query avoids the ~5s conntrack DNAT race.
           - name: single-request-reopen
+      initContainers:
+        # SSO-only: External turns the app's own login off (the forward-auth
+        # middleware is the only path in) and TrustedNetworks names Traefik as
+        # the proxy, so the real client address is honoured. Both hidden in UI.
+        - name: seed-external-auth
+          image: busybox:${busybox_version}
+          env:
+            # The proxy's own network, NOT a client allowlist: a forwarded
+            # request from outside it is non-local whatever address it carries.
+            - name: TRUSTED_NETWORKS
+              value: ${cluster_pod_cidr}
+          command:
+            - sh
+            - -ec
+            - |
+              conf=/config/config.xml
+              if [ ! -f "$conf" ]; then
+                echo "[seed-external-auth] no config yet (fresh install); applies on next start"
+                exit 0
+              fi
+              auth='<AuthenticationMethod>External</AuthenticationMethod>'
+              net="<TrustedNetworks>$TRUSTED_NETWORKS</TrustedNetworks>"
+              if grep -qF "$auth" "$conf" && grep -qF "$net" "$conf"; then
+                echo "[seed-external-auth] already current; no change"
+                exit 0
+              fi
+              tmp="$conf.seed-tmp"
+              awk -v auth="$auth" -v net="$net" '
+                {
+                  line = $0
+                  if (sub(/<AuthenticationMethod>[^<]*<\/AuthenticationMethod>/, auth, line)) have_auth = 1
+                  if (sub(/<AuthenticationMethod[ \t]*\/>/, auth, line))                      have_auth = 1
+                  if (sub(/<TrustedNetworks>[^<]*<\/TrustedNetworks>/, net, line))            have_net = 1
+                  if (sub(/<TrustedNetworks[ \t]*\/>/, net, line))                            have_net = 1
+                  buf[++n] = line
+                }
+                END {
+                  ins = ""
+                  if (!have_auth) ins = ins "\n  " auth
+                  if (!have_net)  ins = ins "\n  " net
+                  for (i = 1; i <= n; i++) {
+                    line = buf[i]
+                    if (ins != "" && !done && sub(/<Config>/, "<Config>" ins, line)) done = 1
+                    print line
+                  }
+                }
+              ' "$conf" > "$tmp"
+              # Write in place so the app's own uid keeps owning config.xml.
+              if grep -qF "$auth" "$tmp" && grep -qF "$net" "$tmp"; then
+                cat "$tmp" > "$conf"
+                rm -f "$tmp"
+                echo "[seed-external-auth] External auth, trusted proxy $TRUSTED_NETWORKS"
+              else
+                rm -f "$tmp"
+                echo "[seed-external-auth] ERROR: no <Config> root to patch" >&2
+                exit 1
+              fi
+          resources:
+            requests:
+              cpu: 5m
+              memory: 8Mi
+            limits:
+              memory: 16Mi
+          volumeMounts:
+            - name: config
+              mountPath: /config
       containers:
         # Sentinel tag, NOT deployable: every overlay MUST `- op: replace` this
         # with its pinned lscr.io/linuxserver/<app>:version-${..._version} image.
