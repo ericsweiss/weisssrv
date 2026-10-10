@@ -96,6 +96,26 @@ forward-zone:
 
 Deploy with: the `weisssrv.infra.unbound` role (`ansible/playbooks/dns.yml`)
 
+### Unbound alerts
+
+`unbound_exporter` (`:9167`, the `weisssrv.infra.unbound_exporter` role) reads
+Unbound's local control socket on each resolver. The rule group is
+`kubernetes/infrastructure/observability/rules/dns.yaml`; the Grafana view is
+the **Unbound** dashboard.
+
+| Alert | Fires when | What to do |
+|---|---|---|
+| `UnboundDown` | `unbound_up == 0` for 5m — the exporter is scraped but cannot read the control socket | AdGuard on that guest still serves cached names and SERVFAILs everything else. `systemctl status unbound`, then `unbound-checkconf` and `dig @127.0.0.1 -p 5335 google.com` on the guest. |
+| `UnboundExporterDown` | the `unbound-exporter` scrape fails, or the series is absent, for 15m | `UnboundDown` cannot fire while the exporter is dark, so this arm is the only coverage. `systemctl status unbound_exporter`, then the EndpointSlice addresses in `observability/exporters/unbound-exporter.yaml`. |
+| `UnboundSERVFAILRatioHigh` | over 5% of answers are SERVFAIL for 15m | The DNS-over-TLS upstreams are unreachable, their certificates no longer validate, or DNSSEC validation is failing. `journalctl -u unbound`, then `dig @127.0.0.1 -p 5335 dnssec-failed.org`. |
+
+Nothing alerts on the Unbound cache-hit ratio: AdGuard caches in front of it, so
+the repeat queries never reach Unbound and a low ratio is this cluster's normal
+shape rather than a fault.
+
+AdGuard's own `:53` availability is covered separately, by the blackbox probes
+behind `DNSResolutionDown` / `DNSResolverProbeMissing` (docs/31).
+
 ## AdGuard Home
 
 AdGuard Home provides:

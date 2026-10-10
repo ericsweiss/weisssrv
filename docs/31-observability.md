@@ -768,6 +768,17 @@ group interval). `instance` is in the key so host-level alerts — thermals,
 ZFS/corosync, node-exporter-host — group per host instead of collapsing into one
 empty-namespace bucket.
 
+`HostLogShippingStale` is the one exception, with its own branch above the
+severity branches that groups on `alertname` alone (60s group wait). It ships as
+one generated rule per `alloy_host` host, and its trigger — the Loki push path —
+takes the whole fleet out at once, so the default key would make one Discord
+POST per host inside a single flush and the webhook answers 429. The thermal,
+ZFS and SMART families keep the per-instance key: each is an independent
+per-host fault, and their per-drive and per-sensor dimensions already collapse
+into one group per host. `scripts/test_host_log_staleness.py` asserts the
+branch, its `group_by` and its position, none of which
+`amtool config routes test` can show.
+
 **Inhibition.** The generic rule pairs `severity: critical` over
 `severity: warning` on `alertname`+`namespace`. Every pair that uses distinct
 alertnames is inhibited explicitly on its own identity labels instead, because
@@ -1048,6 +1059,7 @@ The offsite chain these metrics come from is documented in
 - **`homelab.temperature`** — SATA/NVMe drive, CPU, host GPU (`HostGpuTemp*`, hwmon on the Proxmox host) and NIC temperature warning/critical pairs (drivetemp + hwmon via node_exporter_host), all scoped to the six physical hosts so the LXC guests do not double-page their host's sensors. The 1660 Ti's own telemetry is the DCGM `GpuTemp*` pair in `homelab.gpu`.
 - **`homelab.gpu`** — GpuExporterDown, GpuTempWarning/Critical, HindsightGpuOffloadIdle, GpuTelemetryMissing (DCGM exporter on the pve-prec-01 1660 Ti; GpuTelemetryMissing catches "exporter up but zero GPU series"). See [docs/43](43-gpu-passthrough.md).
 - **`homelab.mail`** — PostfixQueueBacklog, PostfixDown, PostfixQueueCollectorStale (smtp-relay queue textfile collector).
+- **`homelab.dns`** — UnboundDown, UnboundExporterDown, UnboundSERVFAILRatioHigh (unbound_exporter on dns-01/dns-02; the exporter arm exists because `unbound_up` simply stops existing when the scrape dies). Nothing alerts on the cache-hit ratio: AdGuard caches in front, so a low ratio is this cluster's normal shape. AdGuard's own `:53` availability is `DNSResolutionDown` / `DNSResolverProbeMissing` in `homelab.monitoring`. See [docs/08](08-dns.md#unbound-alerts).
 - **`homelab.kubernetes-resources`** — the tuned KubeCPUOvercommit replacement (see Built-in Alerts below), plus ContainerMemoryNearLimit, PageCacheWorkloadRSSNearLimit (observability RSS within 10% of its limit, page cache excluded), HindsightLlamaMemoryNearLimit and ContainerOOMKilled (docs/33). The authentik-postgresql limit these
   watch was sized from a real OOMKill.
 
