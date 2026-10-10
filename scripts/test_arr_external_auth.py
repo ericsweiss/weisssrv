@@ -171,7 +171,23 @@ MIXED = (
     "  <TrustedNetworks />\n  <TrustedNetworks>\n 9.9.9.0/24\n</TrustedNetworks>\n"
     "  <Port>8989</Port>\n</Config>\n"
 )
+# A commented-out root tag ABOVE the real one, and an element commented out in
+# place: a scan blind to comment spans inserts inside the comment.
+COMMENTED_ROOT = (
+    "<!--\n<Config>\n  <AuthenticationMethod>Forms</AuthenticationMethod>\n"
+    "</Config>\n-->\n<Config>\n  <Port>8989</Port>\n"
+    "  <AuthenticationMethod>Forms</AuthenticationMethod>\n</Config>\n"
+)
+COMMENTED_ELEMENT = (
+    "<Config>\n  <!-- <AuthenticationMethod>Basic</AuthenticationMethod> -->\n"
+    "  <Port>8989</Port>\n  <TrustedNetworks>1.2.3.0/24</TrustedNetworks>\n</Config>\n"
+)
 NO_ROOT = "<Nope/>"
+# No real root tag at all, so there is nothing to patch and nothing to keep.
+ONLY_COMMENTS = (
+    "<!-- <Config>\n  <AuthenticationMethod>Forms</AuthenticationMethod>\n"
+    "</Config> -->\n"
+)
 # A value holding a bare `<` is not valid XML and defeats the strip, which is
 # what the fail-closed count guard is for.
 UNSTRIPPABLE = (
@@ -179,7 +195,8 @@ UNSTRIPPABLE = (
     "  <TrustedNetworks></TrustedNetworks>\n</Config>\n"
 )
 SHAPES = [EMPTY_ELEMENT, NO_ELEMENT, SELF_CLOSING, COMPACT, DUPLICATES,
-          STALE_BEFORE_DESIRED, MULTILINE, WHITESPACE_IN_TAGS, MIXED]
+          STALE_BEFORE_DESIRED, MULTILINE, WHITESPACE_IN_TAGS, MIXED,
+          COMMENTED_ROOT, COMMENTED_ELEMENT]
 
 
 @pytest.fixture(scope="module")
@@ -313,7 +330,7 @@ def test_the_file_mode_survives_the_rewrite(script, tmp_path, pod_cidr, shim_pat
     assert conf.stat().st_mode & 0o777 == 0o640
 
 
-@pytest.mark.parametrize("before", [*SHAPES, NO_ROOT, UNSTRIPPABLE])
+@pytest.mark.parametrize("before", [*SHAPES, NO_ROOT, UNSTRIPPABLE, ONLY_COMMENTS])
 def test_no_leftover_temp_file(script, tmp_path, pod_cidr, shim_path, before):
     """A stray staging file beside the real one confuses a restore. The trap has
     to clear it on the error paths too, which is where one would survive."""
@@ -365,6 +382,36 @@ def test_a_planted_symlink_at_the_predictable_path_is_not_followed(
     assert victim.read_text() == "do not clobber"
     assert planted.is_symlink()
     assert _elements(conf) == (["External"], [pod_cidr])
+
+
+@pytest.mark.parametrize("before", [COMMENTED_ROOT, COMMENTED_ELEMENT])
+def test_a_commented_span_is_never_the_insertion_point(
+    script, tmp_path, pod_cidr, shim_path, before
+):
+    """The mutation this guards: a scan that does not strip comment spans takes
+    a commented-out root tag as the insertion point, so both elements land
+    inside the comment and the app boots on its stored Forms setting."""
+    conf = tmp_path / "config.xml"
+    conf.write_text(before)
+    assert _run(script, conf, pod_cidr, shim_path).returncode == 0
+    text = conf.read_text()
+    assert "<!--" not in text and "-->" not in text
+    assert "Forms" not in text and "Basic" not in text
+    assert _elements(conf) == (["External"], [pod_cidr])
+    assert "<Port>8989</Port>" in text
+
+
+def test_a_file_of_only_comments_is_refused_not_emptied(
+    script, tmp_path, pod_cidr, shim_path
+):
+    """No real root tag survives the strip, so there is nowhere to insert and
+    replacing would hand the app a config with neither element."""
+    conf = tmp_path / "config.xml"
+    conf.write_text(ONLY_COMMENTS)
+    result = _run(script, conf, pod_cidr, shim_path)
+    assert result.returncode == 1
+    assert "AuthenticationMethod x0" in result.stderr
+    assert conf.read_text() == ONLY_COMMENTS
 
 
 def test_an_unpatchable_config_fails_the_pod(script, tmp_path, pod_cidr, shim_path):

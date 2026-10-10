@@ -85,6 +85,14 @@ spec:
               awk -v auth="$auth" -v net="$net" '
                 { all = all $0 "\n" }
                 END {
+                  # Comment spans go first, newlines included: a commented-out
+                  # root tag would otherwise be taken as the insertion point.
+                  while ((c = index(all, "<!--")) > 0) {
+                    tail = substr(all, c + 4)
+                    e = index(tail, "-->")
+                    if (e == 0) { all = substr(all, 1, c - 1); break }
+                    all = substr(all, 1, c - 1) substr(tail, e + 3)
+                  }
                   gsub(/<AuthenticationMethod[ \t\n]*\/>/, "", all)
                   gsub(/<AuthenticationMethod[ \t\n]*>[^<]*<\/AuthenticationMethod[ \t\n]*>/, "", all)
                   gsub(/<TrustedNetworks[ \t\n]*\/>/, "", all)
