@@ -315,6 +315,15 @@ weisssrv project — never an instance runner**. Tags are cooperative routing
 scope is the isolation boundary that keeps other projects' jobs away from
 root+DinD execution.
 
+> **Live state:** the running privileged runner is registered instance-wide, so
+> the boundary above is the target posture and not yet the estate — any project
+> on this GitLab can reach root+DinD by declaring `tags: [infrastructure]`.
+> Closing it is an owner action: create the project runner with the steps below,
+> store its new `glrt-*` token in the 1Password `GitLab Runner Privileged` item
+> ([docs/15](15-credential-rotation.md)) so ESO re-renders the Secret, then
+> delete the old instance runner in the Admin Area. Tracked in
+> [docs/16](16-next-steps.md) § Pending supervised steps.
+
 1. In the **weisssrv project**, navigate to **Settings → CI/CD → Runners**
 2. Click **New project runner**
 3. Configure: Tags = `infrastructure`, Run untagged jobs = **No**, Lock to

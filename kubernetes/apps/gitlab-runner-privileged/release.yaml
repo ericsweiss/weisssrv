@@ -32,7 +32,7 @@ spec:
 
       # This privileged root+DinD runner accepts UNPROTECTED branches. The
       # isolation boundary is the REGISTRATION SCOPE, not the tag: the token
-      # must stay a PROJECT runner locked to weisssrv (docs/27 Step 8).
+      # must be a PROJECT runner locked to weisssrv, and is not (docs/27 Step 8).
       protected: false
 
       executor: kubernetes

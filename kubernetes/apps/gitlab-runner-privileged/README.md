@@ -5,8 +5,9 @@ The infrastructure GitLab Runner: tag `infrastructure`, privileged root+DinD,
 
 - **Isolation**: the separate namespace is the boundary, not the tag. Tags are
   cooperative and any project can claim one, so the registration scope is what
-  confines this runner — its token must stay a project runner locked to
-  weisssrv. PSS enforce is `privileged` because DinD job pods need it.
+  confines this runner — its token must be a project runner locked to weisssrv,
+  which the live registration is not yet (docs/27 Step 8 carries the gap). PSS
+  enforce is `privileged` because DinD job pods need it.
 - **Workload**: `release.yaml`, a HelmRelease sharing the common fields with the
   unprivileged runner via `kubernetes/components/gitlab-runner-common`.
 - **Job pods**: run as the token-less `gitlab-runner-privileged-jobs`

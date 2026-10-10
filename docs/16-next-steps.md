@@ -237,6 +237,15 @@ One-off operator actions, each removable from this list once applied.
   already declares 128G; `proxmox_vm` applies disk size at qm-create only, so
   this needs a drain in the next scheduled host window.
   `KubeletImageGCIneffective` is a true positive until then.
+- [ ] **Re-register the privileged runner as a project runner.** The
+  `gitlab-runner-privileged` token is registered instance-wide, so any project
+  on this GitLab can claim root+DinD execution by declaring
+  `tags: [infrastructure]` — the registration scope, not the tag, is the
+  isolation boundary. Create a project runner locked to weisssrv (tags
+  `infrastructure`, untagged no), store its `glrt-*` token in the 1Password
+  `GitLab Runner Privileged` item so ESO re-renders the Secret, restart the
+  runner Deployment, then delete the old instance runner. Steps:
+  [docs/27](27-gitlab-deployment.md) § Step 8.
 
 ### UniFi network follow-ups
 
