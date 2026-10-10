@@ -855,6 +855,14 @@ additionally guards ~2-day staleness.
 - **ArchiveBackupStale** — no fully successful run within the freshness
   window. Confirm the timer is enabled (`systemctl status archive-backup.timer`)
   and that the `archive` pool is imported and healthy (`zpool status archive`).
+- **ArchiveBackupExcludedOrphans** — one or more children in
+  `nas_storage_archive_backup_exclude` still have an archive-pool copy. A
+  `send -R -X` stream does not remove it, `receive -F` included, so the space is
+  never reclaimed. `journalctl -u archive-backup.service` on pve-nas-01 names
+  each orphan; destroy it with `zfs destroy -r archive/<path>`, or set
+  `nas_storage_archive_backup_exclude_destroy_ok: true` in pve-nas-01 host_vars
+  and let the next run do it. An excluded child also keeps no source-side
+  `archsync-*` snapshot, so neither copy is a backup tier (docs/06).
 - **ArchiveBackupDatasetStale / ArchiveBackupChronicallyDeferred** — one
   dataset's copy is aging (>2 days) or was deferred 3+ consecutive runs while
   the rest of the run succeeds. Almost always `tank/proxmox`: the 03:30 vzdump

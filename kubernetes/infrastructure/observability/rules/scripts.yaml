@@ -127,6 +127,24 @@ spec:
               `journalctl -u archive-backup.service` on pve-nas-01 for the failed
               `zfs destroy`, then re-run `archive-backupctl` (docs/42).
 
+        # An exclusion leaves the child's archive-side copy in place, so the
+        # space is never reclaimed and no other metric names it. 24h, so one
+        # deploy's warning does not page before the next run confirms it.
+        - alert: ArchiveBackupExcludedOrphans
+          expr: archive_backup_excluded_orphans > 0
+          for: 24h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#backup-and-recovery'
+            summary: '{{ $value | printf "%.0f" }} excluded archive copies are holding space'
+            description: >-
+              {{ $value | printf "%.0f" }} excluded child dataset(s) still have
+              an archive-pool copy the stream does not refresh, so that space is
+              never reclaimed. `journalctl -u archive-backup.service` on
+              pve-nas-01 names each one; destroy it with `zfs destroy -r`, or set
+              nas_storage_archive_backup_exclude_destroy_ok to let the run do it.
+
         - alert: MediaMoverFailed
           expr: media_mover_last_run_success == 0
           for: 1h

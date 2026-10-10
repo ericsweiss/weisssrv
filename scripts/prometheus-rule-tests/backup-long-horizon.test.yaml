@@ -270,6 +270,40 @@ tests:
         alertname: ArchiveBackupFailed
         exp_alerts: []
 
+  # ArchiveBackupExcludedOrphans: an excluded child's archive copy the stream
+  # leaves behind. No other metric names it, so a leftover copy would otherwise
+  # only be a line in the timer unit's journal.
+  - interval: 5m
+    input_series:
+      - series: 'archive_backup_excluded_orphans{instance="10.0.10.102:9101"}'
+        values: '2+0x400'
+    alert_rule_test:
+      - eval_time: 26h
+        alertname: ArchiveBackupExcludedOrphans
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: 10.0.10.102:9101
+  # The 24h `for:` is what keeps one deploy's warning off the pager: the same
+  # count, 12h in, is pending and must not have fired.
+  - interval: 5m
+    input_series:
+      - series: 'archive_backup_excluded_orphans{instance="10.0.10.102:9101"}'
+        values: '2+0x400'
+    alert_rule_test:
+      - eval_time: 12h
+        alertname: ArchiveBackupExcludedOrphans
+        exp_alerts: []
+  # A reconciled run publishes 0, which must not fire however long it holds.
+  - interval: 5m
+    input_series:
+      - series: 'archive_backup_excluded_orphans{instance="10.0.10.102:9101"}'
+        values: '0+0x700'
+    alert_rule_test:
+      - eval_time: 50h
+        alertname: ArchiveBackupExcludedOrphans
+        exp_alerts: []
+
   # ResticOffsitePruneNeverRan: a host uploading to B2 that has published no
   # prune result at all. Its healthy peer, which has one, must not fire.
   - interval: 5m
