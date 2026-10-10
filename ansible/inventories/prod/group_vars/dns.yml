@@ -53,10 +53,14 @@ adguard_home_tls_server_name: "dns.{{ internal_domain }}"
 adguard_home_upstream_dns:
   - "127.0.0.1:{{ unbound_port }}"
 
-# Per-client-IP limiter for the client VLANs; AdGuard DROPS the excess, so the
-# client waits out its resolver timeout. Managed homelab hosts are whitelisted.
+# Request limiter for the client VLANs; AdGuard DROPS the excess, so the client
+# waits out its resolver timeout. Managed homelab hosts are whitelisted.
 # Plain IPs only, and the order must match GET /control/dns_info.
 adguard_home_ratelimit: 20
+# AdGuard counts the limit per subnet, so the whitelist below only has bite per
+# address at 32: at the default 24 one noisy client consumes the bucket for the
+# whole homelab /24. A query forwarded by a k3s node arrives as that node.
+adguard_home_ratelimit_subnet_len_ipv4: 32
 # Every inventory host that has an address, so a host add, removal or renumber
 # cannot leave one rate-limited. Sorted for idempotence against the API order.
 _dns_addressed_hosts: >-
