@@ -161,5 +161,6 @@ forked:
     consumer: scripts/deploy-verify-lib.sh
     reason: >-
       Carries gitlab_health_code, the curl-only GitLab probe this cluster's
-      post-maintenance verify sources.
+      post-maintenance verify sources, and gitlab_health_verdict, which maps
+      its whitelist-gated codes to a not-probeable-from-here sentinel.
     reconciled_sha256: 58c27c6af182fd5c76d8e020911135100d1ee71c1a9346681651234414b952b3

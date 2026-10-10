@@ -15,7 +15,7 @@ tests:
       - series: 'up{job="unbound-exporter", instance="10.0.10.150:9167"}'
         values: '1+0x35'
     alert_rule_test:
-      # Inside the 5m hold — a unbound restart must not page.
+      # Inside the 5m hold — an unbound restart must not page.
       - eval_time: 8m
         alertname: UnboundDown
         exp_alerts: []
