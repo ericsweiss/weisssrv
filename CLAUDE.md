@@ -151,7 +151,7 @@ Each row is canonical; do not restate it here or in the skill.
 | ZFS pools, datasets, tiers | `docs/06-zfs.md`; bootstrap `docs/44-storage-bootstrap.md` |
 | DNS stack | `docs/08-dns.md` |
 | Proxmox firewall sets + security groups | `docs/11-firewall.md` |
-| UniFi network tier | `docs/46-unifi-network.md` (current state), `docs/48-unifi-audit-and-migration.md` (audit + renumber record) |
+| UniFi network tier | `docs/46-unifi-network.md` |
 | Runbooks, upgrade workflow | `docs/12-runbooks.md` |
 | CI/CD pipeline | `docs/13-ci-cd.md` |
 | Credentials, 1Password items, rotation | `docs/15-credential-rotation.md` |
@@ -171,8 +171,7 @@ Addresses here are a quick reference; `docs/01-overview.md` is canonical. What
 no other doc owns: the VIP-forwarding trap, the `${cluster_*}` invariant and the
 IP-set hierarchy.
 
-- The homelab is `10.0.10.0/24` (UniFi VLAN 10 — docs/46 for current state,
-  docs/48 for the 2026-08 audit and the renumber record). Proxmox hosts `.102-.107`;
+- The homelab is `10.0.10.0/24` (UniFi VLAN 10 — docs/46). Proxmox hosts `.102-.107`;
   DNS `.150`/`.160`; SMTP `.151`; service guests `.152-.158`. Per-host detail is
   `docs/01-overview.md`.
 - K3s: 9 nodes (3 servers forming the etcd quorum + 6 agents), API VIP `.161`

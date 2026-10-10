@@ -514,8 +514,7 @@ a procedure, and each stays wrong silently.
 - **UniFi device Configure-IP** — each device's `config_network` keeps whatever
   static address it was adopted with, inert while it is DHCP but stranding the
   device on the retired subnet at the next static flip. The switch and AP still
-  carry theirs ([docs/46](46-unifi-network.md) § Client housekeeping,
-  [docs/48](48-unifi-audit-and-migration.md) § Post-cutover checklist).
+  carry theirs ([docs/46](46-unifi-network.md) § Client housekeeping).
 - **`known_hosts`** — an entry keyed by the old address keeps answering for a
   host that has moved, and the new address prompts as unknown:
 

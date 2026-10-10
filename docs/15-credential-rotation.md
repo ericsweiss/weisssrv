@@ -65,10 +65,9 @@ every input it requires.
 
 This is the canonical, authoritative inventory of every item the deployment
 expects. Each subsection names its vault; unless stated otherwise the item lives
-in **Homelab**. CLAUDE.md, `docs/02-install.md`,
-`docs/13-ci-cd.md`, `docs/27-gitlab-deployment.md`, and
-`docs/28-gitlab-migration.md` all point here; update this list (not those files)
-when an item is added or its fields change.
+in **Homelab**. CLAUDE.md, `docs/02-install.md`, `docs/13-ci-cd.md` and
+`docs/27-gitlab-deployment.md` all point here; update this list (not those
+files) when an item is added or its fields change.
 
 The **Inventory** table below is the complete list. Items whose handling needs
 more than a table cell have a subsection under
@@ -262,8 +261,8 @@ converged the root, the empty plan is again the pass condition and any diff
 during a rotation is real drift, not an accepted exception. The key is also read by `unifi-drift-plan`. That job's `allow_failure` is scoped
 to `exit_codes: [2]`, so only real drift renders yellow — a revoked key (401) or
 a renamed field fails the job red and is visible on the next scheduled pipeline.
-See docs/48 § Expected breakage (all closed) for the "must be green after the
-first apply" rule.
+Once a supervised apply has converged the root, a yellow `unifi-drift-plan` is
+real drift (`terraform/unifi/README.md` owns the plan/apply rules).
 
 #### WiFi SSID pre-shared keys
 

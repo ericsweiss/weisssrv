@@ -76,14 +76,13 @@ documented fallback.
 ## Accepted Risk: Network Fabric SPOF
 
 The network fabric is a single point of failure the rest of this analysis
-otherwise omits, and the UniFi migration ([docs/48](48-unifi-audit-and-migration.md)) did not
-remove it — it segmented the estate without adding redundancy. Both legs of every
-active-backup bond plug into **one switch** (now the USW-Pro-XG-8-PoE; see
+otherwise omits: the UniFi tier segments the estate without adding redundancy.
+Both legs of every active-backup bond plug into **one switch** (the
+USW-Pro-XG-8-PoE; see
 [docs/34-bond-mac-flapping.md](34-bond-mac-flapping.md)), and there is **one
 router/gateway** (the UCG-Fiber, `10.0.10.1` on VLAN 10 and `10.0.1.1` on the
-management VLAN, which is also DHCP and the Cloudflare-origin port-forwarder;
-before the cutover this was an Asus GT-AX11000 in the same role). The homelab
-still rides one `vmbr0` — now VLAN 10 rather than a flat /24 — with **no second
+management VLAN, which is also DHCP and the Cloudflare-origin port-forwarder).
+The homelab rides one `vmbr0` on VLAN 10, with **no second
 corosync ring** (`cluster.fw.j2` reserves 5406/ring1 for a future knet link, but
 only 5405/ring0 is configured). A switch or gateway failure does not merely drop
 internet: it collapses Proxmox corosync quorum and k3s etcd traffic
