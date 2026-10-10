@@ -763,9 +763,9 @@ proxmox_ha_replication_jobs:
   # smtp-relay (151), home pve-opt-01, offset 3.
   - id: "151-0"
     source_node: pve-opt-01
-    target_node: pve-laptop-01
+    target_node: pve-opt-03
     schedule: "3,18,33,48"
-    comment: "smtp-relay -> pve-laptop-01"
+    comment: "smtp-relay -> pve-opt-03"
     enabled: true
   - id: "151-1"
     source_node: pve-opt-01
@@ -775,15 +775,15 @@ proxmox_ha_replication_jobs:
     enabled: true
   - id: "151-2"
     source_node: pve-opt-01
-    target_node: pve-opt-03
-    schedule: "3,18,33,48"
-    comment: "smtp-relay -> pve-opt-03"
-    enabled: true
-  - id: "151-3"
-    source_node: pve-opt-01
     target_node: pve-prec-01
     schedule: "3,18,33,48"
     comment: "smtp-relay -> pve-prec-01"
+    enabled: true
+  - id: "151-3"
+    source_node: pve-opt-01
+    target_node: pve-laptop-01
+    schedule: "3,18,33,48"
+    comment: "smtp-relay -> pve-laptop-01"
     enabled: true
 
   # dns-02 (160), home pve-opt-03, offset 6.
@@ -795,9 +795,9 @@ proxmox_ha_replication_jobs:
     enabled: true
   - id: "160-1"
     source_node: pve-opt-03
-    target_node: pve-opt-01
+    target_node: pve-prec-01
     schedule: "6,21,36,51"
-    comment: "dns-02 -> pve-opt-01"
+    comment: "dns-02 -> pve-prec-01"
     enabled: true
   - id: "160-2"
     source_node: pve-opt-03
@@ -807,9 +807,9 @@ proxmox_ha_replication_jobs:
     enabled: true
   - id: "160-3"
     source_node: pve-opt-03
-    target_node: pve-prec-01
+    target_node: pve-opt-01
     schedule: "6,21,36,51"
-    comment: "dns-02 -> pve-prec-01"
+    comment: "dns-02 -> pve-opt-01"
     enabled: true
 
   # home-assistant (154), home pve-prec-01, offset 9.
