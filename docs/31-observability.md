@@ -768,6 +768,17 @@ group interval). `instance` is in the key so host-level alerts — thermals,
 ZFS/corosync, node-exporter-host — group per host instead of collapsing into one
 empty-namespace bucket.
 
+`HostLogShippingStale` is the one exception, with its own branch above the
+severity branches that groups on `alertname` alone (60s group wait). It ships as
+one generated rule per `alloy_host` host, and its trigger — the Loki push path —
+takes the whole fleet out at once, so the default key would make one Discord
+POST per host inside a single flush and the webhook answers 429. The thermal,
+ZFS and SMART families keep the per-instance key: each is an independent
+per-host fault, and their per-drive and per-sensor dimensions already collapse
+into one group per host. `scripts/test_host_log_staleness.py` asserts the
+branch, its `group_by` and its position, none of which
+`amtool config routes test` can show.
+
 **Inhibition.** The generic rule pairs `severity: critical` over
 `severity: warning` on `alertname`+`namespace`. Every pair that uses distinct
 alertnames is inhibited explicitly on its own identity labels instead, because
