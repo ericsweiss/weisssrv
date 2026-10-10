@@ -54,7 +54,7 @@ list while `inputs:` binds per entry.
 | `/ci/lint/comment-length.yml` | `comment-length` | `config: "--config scripts/comment-length.yaml"` — the scope file listing the vendored copies, whose comments only a re-vendor can change |
 | `/ci/validate/terraform-drift-plan.yml` | `tailscale-drift-plan`, `authentik-drift-plan`, `unifi-drift-plan` (one include each) | `image: $TF_JOB_IMAGE` (the template default is an older patch, and a plan cannot read state an apply wrote with a newer one), `job_name`, `module_dir`, `state_name`, `changes`, `secrets_exports` (that module's `op read` block) and `tags: ["infrastructure"]`. `secrets_guard` stays at the default `"true"`: a credential in it would delete the scheduled detector instead of reding it |
 | `/ci/validate/terraform.yml` | `terraform-fmt` **and** `terraform-validate` | `image: hashicorp/terraform:1.16.5`, digest-pinned — the exact patch the plan/apply jobs run, so a plan cannot be refused by a different patch |
-| `/ci/validate/flux-lint.yml` | `flux-lint` | `substitute: true`, the kubeconform/kustomize/helm/PyYAML pins + sha256s, cluster/ConfigMap/script paths, `expected_skipped_file` (the committed unvalidated-kind baseline, so an unreachable catalog reds the job), a widened `changes`, and `extra_validation` (the weisssrv-local corpus gates) |
+| `/ci/validate/flux-lint.yml` | `flux-lint` | `substitute: true`, the kubeconform/kustomize/helm/flux/PyYAML pins + sha256s, cluster/ConfigMap/script paths, `expected_skipped_file` (the committed unvalidated-kind baseline, so an unreachable catalog reds the job), a widened `changes`, and `extra_validation` (the weisssrv-local corpus gates) |
 | `/ci/security/secret-detection.yml` | `secret_detection` | `cpu_selector: "esweiss.com/cpu=modern"` — gitleaks SIGILLs without POPCNT, so the scan is pinned off the Core 2 Quad opt nodes |
 | `/ci/test/python-tests.yml` | `python-tests` | `image: $PY_JOB_IMAGE` (the template default is below the Python ansible 14 needs), `changes` (adds the ansible + docs paths the suite validates), `setup_command` (clones weisssrv-lib so the vendored-byte-identity gate can run, then fetches jq with `scripts/ci-fetch-tools.py`), and `pytest_version` / `pyyaml_version`, so the repo `variables:` block stays the single source those pins are checked against |
 | `/ci/review/pr-agent.yml` | `pr-agent-review` | `secrets_source: env`, `gate: "$OPENAI__KEY && $GITLAB__PERSONAL_ACCESS_TOKEN"`, plus a `needs:` override limiting it to the lint + secret-detection jobs so the review does not wait on the DinD suite. Model, effort and timeouts are the template defaults, which already equal this repo's values |
@@ -316,6 +316,11 @@ The `run_check` list in the job is authoritative.
   hard-failing where the chart ships a `values.schema.json`.
 - Substitution comes from both the `cluster-versions` and `cluster-config`
   ConfigMaps, which is why `flux_render_script` is `scripts/flux-env.sh`.
+- Every render passes `flux envsubst --strict`, the authority on what
+  kustomize-controller's post-build accepts: the `flux_version`/`flux_sha256`
+  inputs fetch the cluster's own flux CLI, and the job fails when that pin and
+  the ConfigMap's `flux_version` disagree. `scripts/test_site_configs.py` holds
+  the include, the ConfigMap and `taskfiles/flux.yml` to one strict render.
 - Substitution keys come from `scripts/flux-env.sh`, which `deploy-verify` also
   uses, so both resolve `${cluster_*}` the same way; `flux-env.sh` delegates
   per-file parsing to the vendored `scripts/flux-render.sh`.

@@ -1392,6 +1392,11 @@ include:
       kustomize_sha256: "cb9e31198d3f63b44848bd0afc4c8efc56e6cfef9c93a4a39a211940e6decd61"
       helm_version: "3.22.0"
       helm_sha256: "1e4ab49e429626cf6c6958d914248b78c9730803c2751b87627e171dc800e7bb"
+      # The strict parser must be the release kustomize-controller runs, so this
+      # is the cluster's own flux_version; the job fails on a mismatch.
+      # scripts/test_site_configs.py holds it equal to the versions ConfigMap.
+      flux_version: "2.9.0"
+      flux_sha256: "7aa9779fc7ec6d030e609dab7dbed8c6fc9e3a7f4670834ad02369268aaf341f"
       pyyaml_version: "6.0.2"
       cluster_dir: "kubernetes/clusters/weisssrv"
       versions_configmap: "kubernetes/infrastructure/sources/versions-configmap.yaml"

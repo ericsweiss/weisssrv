@@ -1563,6 +1563,67 @@ def test_the_crd_catalog_ref_matches_the_taskfile_var():
     )
 
 
+def _flux_lint_inputs() -> dict:
+    """The flux-lint include's inputs, which the substitute-mode job runs on."""
+    ci = load_ci_doc(REPO / ".gitlab-ci.yml")
+    entries = [
+        entry.get("inputs") or {}
+        for entry in ci.get("include") or []
+        if isinstance(entry, dict) and str(entry.get("file", "")).endswith("flux-lint.yml")
+    ]
+    assert len(entries) == 1, f"expected one flux-lint include, found {len(entries)}"
+    return entries[0]
+
+
+def test_the_flux_lint_include_pins_the_clusters_own_flux():
+    """CI's strict render must parse with the release kustomize-controller runs.
+
+    Without flux_version the job fetches no CLI and falls back to GNU envsubst,
+    which reads none of the bash modifiers Flux treats as variables.
+    """
+    inputs = _flux_lint_inputs()
+    pinned = str(inputs.get("flux_version") or "")
+    assert pinned, (
+        "the flux-lint include passes no flux_version, so CI renders without "
+        "`flux envsubst --strict` and a modifier expression merges green"
+    )
+    configmap = yaml.safe_load(
+        (REPO / "kubernetes/infrastructure/sources/versions-configmap.yaml").read_text()
+    )
+    expected = str((configmap.get("data") or {})["flux_version"])
+    assert pinned == expected, (
+        f"flux-lint pins flux {pinned} but the versions ConfigMap declares "
+        f"{expected} — the strict parser must be the cluster's own"
+    )
+    sha = str(inputs.get("flux_sha256") or "")
+    verify_sha = re.search(
+        r"^\s*echo \"([0-9a-f]{64})  \$dl/flux\.tar\.gz\"",
+        (REPO / ".gitlab-ci.yml").read_text(),
+        re.MULTILINE,
+    )
+    assert verify_sha, ".gitlab-ci.yml no longer verifies the deploy-verify flux tarball"
+    assert sha == verify_sha.group(1), (
+        f"flux-lint's flux_sha256 is {sha!r} but deploy-verify checks "
+        f"{verify_sha.group(1)!r} for the same tarball"
+    )
+
+
+def test_both_render_paths_run_fluxs_strict_substitution():
+    """`task flux:lint` and the CI job are one authority on what Flux accepts.
+
+    Either path losing `flux envsubst --strict` leaves the other as the only
+    place a `${conf%/*}` class of expression is caught.
+    """
+    strict = "flux envsubst --strict"
+    local = (REPO / "taskfiles/flux.yml").read_text()
+    assert strict in local, f"taskfiles/flux.yml no longer runs `{strict}`"
+    job = _lib_file_text("ci/validate/flux-lint.yml")
+    assert strict in job, (
+        f"the pinned flux-lint template no longer runs `{strict}` — CI would "
+        "render with GNU envsubst alone"
+    )
+
+
 def test_the_dind_service_matches_the_library_input_default():
     """.gitlab/ci/integration-jobs.yml matches the library's dind service.
 
