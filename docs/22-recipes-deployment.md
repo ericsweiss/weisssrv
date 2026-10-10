@@ -290,6 +290,16 @@ curl -k https://bar.ericsweiss.com/api/server/version
    - Units and measurements
    - Default ingredients
 
+### Bar Assistant URL scheme
+
+`APP_URL` is what makes the API return `https://` absolute URLs: the `uploads`
+and `catalog` filesystem disks build their URLs from it rather than from the
+incoming request, so the plain-HTTP hop from Traefik never reaches a response.
+The image's `TrustProxies` middleware leaves `$proxies` null and ships no
+`config/trustedproxy.php`, so a `TRUSTED_PROXIES` env is inert here — do not
+add one back as a control. `ASSET_URL` reaches only the `asset()` helper, which
+a JSON API never calls.
+
 ### Restoring from Backup
 
 Both applications support backup/restore. If you have backups from previous instances:
