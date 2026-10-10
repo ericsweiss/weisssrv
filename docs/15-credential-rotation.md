@@ -721,6 +721,13 @@ authority. A guest that was down at re-seed time is named in the playbook
 output; re-run it, or `task infra:deploy -- --tags acme_certs`, once it is back.
 Without the re-seed the loss is invisible until the next renewal fails.
 
+The pubkey the re-seed pins comes from `DNS01_SSH_PUBLIC_KEY` when the job
+carries it, and otherwise from `id_ed25519_certs.pub` on the authority host,
+which `acme_certs` wrote there. A deploy job that does not pass the env variable
+therefore still re-seeds; the loud skip in the playbook output means both
+sources were empty, and `task infra:deploy -- --tags acme_certs` (under `op
+run`) rewrites the key file.
+
 **Surfaces step 8 does not reach**: HAOS (.154) keeps the key in
 `/root/.ssh/authorized_keys` over port 22222 — remove it through the Files
 add-on (docs/24). The LXC guests' file is additionally rewritten wholesale by

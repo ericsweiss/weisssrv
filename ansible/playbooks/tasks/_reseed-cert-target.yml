@@ -11,6 +11,35 @@
          | first | default({}) }}
     # seed-target.yml appends to this fact; main.yml normally initialises it.
     acme_certs_unreachable_targets: []
+    # Mirrors the acme_certs default: this play carries no roles, so the role's
+    # own acme_certs_ssh_key_path is out of scope here.
+    reseed_cert_pubkey_path: >-
+      {{ ('/root/.ssh' if (acme_certs_ssh_user | default('root')) == 'root'
+          else '/home/' ~ (acme_certs_ssh_user | default('root')) ~ '/.ssh')
+         ~ '/id_ed25519_certs.pub' }}
+
+# acme_certs_ssh_public_key needs DNS01_SSH_PUBLIC_KEY in the job's env, which
+# not every guest deploy job carries. acme_certs has already written the pubkey
+# here on the authority host, so read it rather than skip the re-seed.
+- name: Read the cert-distribution pubkey from the authority host
+  ansible.builtin.slurp:
+    src: "{{ reseed_cert_pubkey_path }}"
+  register: reseed_cert_authority_pubkey
+  # An absent file leaves the loud skip below as the outcome, not a failed play.
+  failed_when: false
+  when:
+    - acme_certs_enabled | default(false) | bool
+    - acme_certs_ssh_public_key | default('') | length == 0
+    - reseed_cert_public_key is not defined
+
+# Resolved once per run: base.yml includes this file once per target, and a
+# skipped task overwrites its own register.
+- name: Select the pubkey to re-seed with
+  ansible.builtin.set_fact:
+    reseed_cert_public_key: >-
+      {{ acme_certs_ssh_public_key | default('')
+         or (reseed_cert_authority_pubkey.content | default('') | b64decode | trim) }}
+  when: reseed_cert_public_key is not defined
 
 - name: Re-seed the cert-distribution key on {{ reseed_cert_target_host }}
   ansible.builtin.include_role:
@@ -18,24 +47,26 @@
     tasks_from: seed-target
   vars:
     acme_certs_target: "{{ reseed_cert_target }}"
+    acme_certs_ssh_public_key: "{{ reseed_cert_public_key }}"
   when:
     - acme_certs_enabled | default(false) | bool
-    - acme_certs_ssh_public_key | default('') | length > 0
+    - reseed_cert_public_key | default('') | length > 0
     - reseed_cert_target.host is defined
     - not (reseed_cert_target.ssh_no_sudo | default(false))
 
-# acme_certs_ssh_public_key comes from DNS01_SSH_PUBLIC_KEY, so a run without
-# `op run` cannot re-seed. Say so rather than skipping silently.
+# Both sources gone: no env value and no key file on the authority host.
 - name: Report a re-seed skipped for want of the distribution pubkey
   ansible.builtin.debug:
     msg: >-
-      {{ reseed_cert_target_host }} was not re-seeded: DNS01_SSH_PUBLIC_KEY is
-      not in the environment. Re-run under `op run` once the guest is up, or the
-      next cert push to it will fail.
+      {{ reseed_cert_target_host }} was not re-seeded: neither
+      DNS01_SSH_PUBLIC_KEY nor {{ reseed_cert_pubkey_path }} on
+      {{ inventory_hostname }} holds the distribution pubkey. Re-run under
+      `op run`, or `task infra:deploy -- --tags acme_certs` to rewrite the key
+      file, before the next cert push to this target fails.
   when:
     - acme_certs_enabled | default(false) | bool
     - reseed_cert_target.host is defined
-    - acme_certs_ssh_public_key | default('') | length == 0
+    - reseed_cert_public_key | default('') | length == 0
 
 - name: Report a target that could not be re-seeded
   ansible.builtin.debug:
