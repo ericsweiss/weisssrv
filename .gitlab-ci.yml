@@ -1741,6 +1741,9 @@ deploy-ansible-firewall:
         # coverage on a group_vars file. `services` is the HAOS group, which
         # only this job reaches (delegating to a Proxmox host to write the .fw).
         - ansible/inventories/prod/group_vars/services.yml
+        # Same reason: pve-opt-02 host_vars selects that node's firewall
+        # implementation, which only this job renders into host.fw.
+        - ansible/inventories/prod/host_vars/pve-opt-02.yml
 
 deploy-ansible-dns:
   stage: deploy
