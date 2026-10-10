@@ -50,12 +50,12 @@ loses the `acme_certs` distribution key pinned there. Each guest that is a cert
 target (`plex.yml`, `immich.yml`, `nextcloud.yml`, `gitlab.yml`) ends with a
 play on the `dns_primary` group (dns-01, the cert authority) that includes
 `tasks/_reseed-cert-target.yml` with `reseed_cert_target_host` set to that
-guest. Two more playbooks carry the same re-seed: `base.yml` loops every
-`acme_certs_distribution_targets` entry after the fleet-wide base run, and
-`mail.yml` re-seeds the relay from its own inline block. Adding a new
-cert-target guest means adding the same play. `dns-02` needs none: `dns.yml`
-already runs `acme_certs` in full. Details are in
-`docs/15-credential-rotation.md`.
+guest. `base.yml` and `mail.yml` include the same task over a loop — every
+`acme_certs_distribution_targets` entry, and the `mail` group's. Adding a new
+cert-target guest means adding the same play, and
+`scripts/test_cert_reseed_coverage.py` fails one that applies base without it.
+`dns-02` needs none: `dns.yml` already runs `acme_certs` in full. Details are
+in `docs/15-credential-rotation.md`.
 
 ## Code conventions
 
