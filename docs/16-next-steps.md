@@ -414,6 +414,16 @@ Design, runbook and the codified-vs-manual contract:
   scrape). Add a recording rule or extend the existing alert once the join is
   confirmed in prod.
 
+- [ ] **Throttle the WAN scanner noise on git-over-SSH 2222.** The rule in
+  `group_vars/all.yml` opens 2222 to the WAN on purpose and carries `nolog`, so
+  the firewall logs nothing — but sshd logs every pre-auth attempt before the
+  gitlab-ssh jail bans the source, and `alloy_host` ships the gitlab guest's
+  whole journal, so the volume lands in Loki with no diagnostic value. Neither
+  throttle is weisssrv-local: a drop or sample stage needs a journal-stage input
+  on the library's `alloy_host` role (its `config.alloy.j2` has none), and a
+  fail2ban `recidive` jail needs the library's `gitlab` role. Keep successful
+  and post-auth lines intact either way.
+
 - [ ] **Push the `*.esweiss.com` wildcard to pveproxy on the scraped Proxmox
   nodes** (`acme_certs_distribution_targets`, `cert_dir /etc/pve/local`,
   `pveproxy-ssl.pem`/`.key`) and switch the proxmox-exporter ServiceMonitor
