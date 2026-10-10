@@ -729,12 +729,12 @@ proxmox_ha_resources:
     comment: "home-assistant (HAOS VM)"
     enabled: true
 
-# Storage replication, every 15 minutes. Each service replicates to ALL 4 other
-# local-ssd nodes so HA can fail over to any of them; pve-nas-01 has no
-# local-ssd. Schedules are explicit times so the four offsets stay deterministic.
+# Storage replication every 15 minutes to all 4 other local-ssd nodes (docs/25);
+# explicit times keep the four offsets deterministic. Proxmox permutes the
+# job-id<->target pairing on migration, so only the per-vmid target SET is read.
 proxmox_ha_replication_jobs:
-  # dns-01 (150), offset 0. source_node MUST track the affinity-dns-01 home and
-  # can never also be a target - asserted by scripts/test_inventory_invariants.py.
+  # dns-01 (150), offset 0. source_node tracks the affinity-dns-01 home and is
+  # never also a target - asserted by scripts/test_inventory_invariants.py.
   - id: "150-0"
     source_node: pve-prec-01
     target_node: pve-opt-02

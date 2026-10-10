@@ -577,7 +577,10 @@ task proxmox:ha-status
 
 Run these ON the source node — `pvesr create-local-job` creates the job where the
 guest currently runs, and the source node can never also be a target. dns-01
-sources from pve-prec-01, so its four targets are the other local-ssd nodes:
+sources from pve-prec-01, so its four targets are the other local-ssd nodes. A
+job's identity is `(VMID, target)`: Proxmox permutes which id carries which
+target when the guest migrates, so read the live pairing from
+`pvesh get /cluster/replication` and never edit the inventory to chase it.
 
 ```bash
 # Create a multi-target replication job (repeat for each target)
