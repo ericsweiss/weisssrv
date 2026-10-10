@@ -493,9 +493,36 @@ Also anchored here:
 
 Old addresses survive in stored state that nothing reconciles. Sweep 1Password
 item URLs, kubeconfigs, and any daemon still running with the old address in its
-config. Home Assistant is the trap worth naming: its `.storage/http` file
-regenerates on update, so a hand-edit can come back with the old address
-([docs/24](24-home-assistant-deployment.md)).
+config, then walk the holders below — each one was found by audit rather than by
+a procedure, and each stays wrong silently.
+
+- **Home Assistant trusted proxies** — `/config/.storage/http` on the HAOS
+  guest, not YAML, and it regenerates on update, so a hand-edit can come back
+  with the old address
+  ([docs/24](24-home-assistant-deployment.md) § Step 3: Configure HTTP Settings).
+- **Plex LAN Networks** — `Settings > Network > LAN Networks`, stored as
+  `LanNetworksBandwidth` in the server's `Preferences.xml`. A stale CIDR
+  classifies every current-VLAN client as *remote*
+  ([docs/20](20-plex-deployment.md) § LAN Networks (segmented VLANs)):
+
+  ```bash
+  ssh eric@10.0.10.152 \
+    "grep -o 'LanNetworksBandwidth=\"[^\"]*\"' \
+     '/var/lib/plexmediaserver/Library/Application Support/Plex Media Server/Preferences.xml'"
+  ```
+
+- **UniFi device Configure-IP** — each device's `config_network` keeps whatever
+  static address it was adopted with, inert while it is DHCP but stranding the
+  device on the retired subnet at the next static flip. The switch and AP still
+  carry theirs ([docs/46](46-unifi-network.md) § Client housekeeping,
+  [docs/48](48-unifi-audit-and-migration.md) § Post-cutover checklist).
+- **`known_hosts`** — an entry keyed by the old address keeps answering for a
+  host that has moved, and the new address prompts as unknown:
+
+  ```bash
+  ssh-keygen -F 10.0.10.153            # the new address: expect a hit
+  ssh-keygen -R 192.168.0.153          # drop the retired one
+  ```
 
 ### Cannot Reach Service
 

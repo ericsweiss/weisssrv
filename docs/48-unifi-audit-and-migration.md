@@ -633,7 +633,9 @@ those entries test.
 
 Every item in § Expected breakage was true *on purpose* before the window. Each
 has to be actively retired, or the next person reads a stale allowance as a
-sanctioned state. Status as of 2026-08-31:
+sanctioned state. The generic holder sweep this list instantiates — app-stored
+CIDR allowlists, `known_hosts`, device Configure-IP fields — is
+[docs/12](12-runbooks.md) § After an addressing change. Status as of 2026-08-31:
 
 - [x] **`router.esweiss.com` serves the UCG UI** over the `unifi-self-signed`
   transport — the 502 cleared when the UCG took the gateway address, with no

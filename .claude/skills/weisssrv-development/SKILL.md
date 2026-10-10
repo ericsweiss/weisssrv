@@ -214,6 +214,11 @@ out the per-change-type checklist.
 - `kubernetes/` touched → `task flux:lint` (kustomize build + envsubst with zero
   unsubstituted `${...}` + kubeconform + helm-template). Optionally preview with
   `task flux:dev-apply -- kubernetes/apps/<app>` (reverted next reconcile).
+  - **Flux's envsubst reads bash modifier forms as variable names** — `${conf%/*}`,
+    a bare `${1}` — and kustomize-controller runs with
+    `StrictPostBuildSubstitutions=true`, so an undefined name fails the whole
+    Kustomization. Escape them `$${...}` or assemble the value at runtime;
+    `task flux:lint` renders through `flux envsubst --strict`, the authority.
 - Prometheus/alert rules touched → `task lint:prometheus-config` (promtool and
   amtool must be on PATH; it also runs inside `task lint`).
 - A new guest or deploy target needs its `deploy-*` CI job wiring; the

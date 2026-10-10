@@ -290,18 +290,20 @@ After deployment, enable hardware transcoding in Plex:
 **Settings > Network > LAN Networks** must list every client VLAN:
 
 ```
-10.0.10.0/24,10.0.20.0/24,10.0.30.0/24
+10.0.10.0/24,10.0.20.0/24,10.0.30.0/24,100.64.0.0/10
 ```
 
 Plex treats a client as local only if its address falls in that list. The network
 is segmented into homelab VLAN 10, Home VLAN 20 and IoT VLAN 30
 ([docs/46](46-unifi-network.md)), so phones, laptops and TVs reach the server
-from a different subnet. Without this they count as *remote*: remote quality
-caps, transcoding where there used to be direct play, and sessions charged
-against the remote-streaming limits.
+from a different subnet, and the tailnet `100.64.0.0/10` is the fourth local
+range — a Tailscale client left out of it is charged as a remote stream. Without
+this they count as *remote*: remote quality caps, transcoding where there used
+to be direct play, and sessions charged against the remote-streaming limits.
 
 This value is Plex UI state, not code — nothing in this repo reconciles it.
-Re-check it after any renumber.
+Re-check it after any renumber, alongside the other stored-address holders in
+[docs/12](12-runbooks.md) § After an addressing change.
 
 ### Monitoring GPU Usage
 

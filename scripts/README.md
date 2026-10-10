@@ -85,7 +85,7 @@ python3 ../weisssrv-lib/scripts/check-vendored-copies.py --repo-root . --list
 | `validate-helm-values.py` | The value-heavy Flux HelmReleases still `helm template` cleanly | vendored |
 | `lint-prometheus-config.sh` | promtool/amtool over the alert rules and the rule unit tests | vendored |
 
-## Live-cluster gates (need a kubeconfig)
+## Out-of-band state gates (need a kubeconfig or a vault session)
 
 | Script | What it asserts | Origin |
 |---|---|---|
@@ -93,6 +93,7 @@ python3 ../weisssrv-lib/scripts/check-vendored-copies.py --repo-root . --list
 | `check-unmanaged-secrets.py` | Every live Secret is owned by ESO, Flux, Helm, or a controller | local |
 | `b2-bucket-drift.py` | The Backblaze B2 bucket's settings match the declared ones (with a supervised apply) | vendored |
 | `unifi-settings-drift.py` | The live UniFi console still holds the IPS posture terraform sets only at create time (docs/46) | vendored |
+| `check-credential-age.py` | Every 1Password item's `updated_at` is within the age docs/15 § Scheduled Rotation Policy declares (`task secrets:age`; reads titles and timestamps, never a field value) | local |
 
 ## Generators and sync
 

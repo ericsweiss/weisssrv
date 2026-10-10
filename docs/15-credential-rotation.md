@@ -1013,24 +1013,31 @@ ssh eric@10.0.10.150 "sudo systemctl status adguardhome-sync"
 
 ## Scheduled Rotation Policy
 
-**Recommended Schedule**:
+The table below is the policy *and* the input `scripts/check-credential-age.py`
+reads. The first column holds backticked 1Password item titles, `*` and `?`
+glob; the most specific pattern that matches a title owns it, a literal beating
+a glob. The second column is `<N>d` or `exempt`.
 
-| Credential Type | Rotation Frequency | Reason |
-|-----------------|-------------------|--------|
-| SSH Keys | Annually | Low risk, high impact if rotated incorrectly |
-| SMTP Passwords | Every 6 months | Medium risk, Gmail app passwords |
-| API Tokens | Every 6 months | Medium risk, scoped permissions |
-| AdGuard Password | Annually | Low exposure, local network only |
-| Samba NAS Password | Every 6 months | Medium risk, network file sharing |
-| Tailscale Auth Keys | Generate new for each node | One-time use |
+| Item (1Password title, glob) | Max age | Reason |
+|---|---|---|
+| `*` | 180d | Default for a scoped token, password or key pair |
+| `*SSH Key*` | 365d | Low risk, high impact if rotated incorrectly |
+| `AdGuard Home` | 365d | Low exposure, local network only |
+| `WiFi *` | 365d | A PSK rotation re-onboards every device on that SSID — see § WiFi SSID pre-shared keys |
+| `ZFS Pool * Passphrase` | 730d | Offline unlock material, and a rotation re-keys the pool |
+| `B2 Archive Backup` | 365d | Holds the restic repository password, rotated against the offsite repo itself |
+| `Email Config` | exempt | A mail alias, not a credential |
+| `Authentik User Identities` | exempt | Managed-user names and emails, not a credential |
+| `Tailscale Auth Key` | exempt | Minted per node and consumed at join, so the item holds no standing credential |
 
-**Automation** (future):
-
-```bash
-# Add to crontab or calendar reminder
-# Every 6 months: Review and rotate SMTP and API credentials
-# Every 12 months: Review and rotate SSH keys
-```
+**Measurement.** `task secrets:age` lists every `Homelab` item with its
+`updated_at` and flags the ones past the age above. It reads titles and
+timestamps only, never a field value, and exits 1 on a finding. `Homelab-Boot`
+and `Homelab-Admin` are separate grants, so they are opt-in:
+`python3 scripts/check-credential-age.py --vault Homelab --vault Homelab-Boot`.
+The `credential-age` CI job runs the default scope on the scheduled pipeline as
+an advisory check — the clock moves without a commit, so no merge gate can catch
+this. Rotating is still owner work; each item's procedure is § Item detail.
 
 ---
 
