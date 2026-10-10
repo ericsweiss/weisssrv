@@ -10,7 +10,7 @@ Design decisions, and why:
 - **emptyDir storage, deliberately** (registry-cache precedent): the content
   is a cache the runners re-derive; node-local storage also avoids
   sqlite-on-NFS locking entirely. A pod reschedule costs one cold pipeline.
-  `sizeLimit: 25Gi` evicts a runaway cache instead of filling the node.
+  `sizeLimit: 8Gi` evicts a runaway cache instead of filling the node.
 - **Self-initializing**: v2.3.0's `--single-node --default-bucket` creates
   the bucket and imports the key pair from `GARAGE_DEFAULT_*` env on first
   boot — no init Job, and the 1Password item **CI Cache Garage** stays the

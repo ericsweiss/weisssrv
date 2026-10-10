@@ -167,6 +167,11 @@ Grafana uses an NFS-backed PV for its SQLite database (user preferences, service
 |-----------|----------|------|--------|
 | Grafana SQLite DB | `/appdata/grafana` (NFS) | 1Gi | `pve-nas-01.esweiss.com` (hostname only — `xprtsec=tls`, the cert has no IP SAN) |
 
+Grafana's liveness probe is `httpGet /api/health`, not an exec: the chart's
+grafana image is distroless, so an exec probe has no shell to run and reports
+`unknown state` forever. A stale NFS handle on that PV answers 503, so the
+restart still covers it.
+
 ### Log Collection
 
 **In-cluster:** Alloy runs as a DaemonSet on all 9 k8s nodes (tolerates all taints). It tails pod logs from `/var/log/pods` and ships them to Loki's ClusterIP service.

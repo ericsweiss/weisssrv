@@ -285,12 +285,11 @@ spec:
             # 500s instead of OOM-killing the pod and every other request on it.
             - name: PHP_MEMORY_LIMIT
               value: 256M
+            # The scheme of every absolute URL the API returns: the uploads
+            # and catalog disks build theirs from this, not from the request, so
+            # the plain-HTTP hop from Traefik never reaches a response.
             - name: APP_URL
               value: https://bar.${cluster_external_domain}
-            # Without a trusted proxy Laravel builds absolute URLs from the
-            # scheme it sees (plain HTTP from Traefik) and redirects to http://.
-            - name: TRUSTED_PROXIES
-              value: "*"
             - name: SESSION_SECURE_COOKIE
               value: "true"
             - name: MEILISEARCH_HOST
