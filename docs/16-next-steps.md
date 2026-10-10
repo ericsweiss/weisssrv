@@ -496,11 +496,14 @@ Design, runbook and the codified-vs-manual contract:
   `concurrent`, lower per-job requests, or more hardware), not an edit, and no
   new overcommit rule is warranted. Both quota headers point here.
 - [ ] **Move the k8s-touching CI jobs off the 1Password kubeconfig** onto the
-  GitLab agent's scoped, short-lived credential. The agent config declares no
-  `ci_access` grant, and its ServiceAccount is cluster-admin, so a standing
-  grant would hand every MR pipeline that identity — this MR adds one narrowed
-  by the RBAC in `kubernetes/apps/gitlab-agent/release.yaml`. The agent config
-  comment points here.
+  GitLab agent's scoped, short-lived credential. Today the agent config declares
+  no `ci_access` grant and the agent's ServiceAccount is cluster-admin (the
+  chart default `rbac.create` in `kubernetes/apps/gitlab-agent/release.yaml`),
+  so a standing grant would hand every MR pipeline that identity. The order is
+  therefore fixed: scope that RBAC below cluster-admin first, then grant
+  `ci_access` narrowed to the resources those jobs actually touch, and drop the
+  long-lived kubeconfig from the jobs' `variables:`. The agent config comment
+  points here.
 - [ ] **Whole-pipeline deploy atomicity via a deploy child pipeline.** Today's
   `resource_group`s are per target, so pipeline A's fleet-wide
   `deploy-ansible-base` can run concurrently with pipeline B's
