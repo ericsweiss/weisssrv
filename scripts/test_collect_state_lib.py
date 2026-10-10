@@ -962,3 +962,38 @@ class TestFluxCallSitesCoerce:
         assert 'coerce_int "$ALERTS_FIRING_REG" 1' in self.SRC
         assert 'coerce_int "$ALERTS_FIRING" 0' not in self.SRC
         assert 'coerce_int "$ALERTS_FIRING_REG" 0' not in self.SRC
+
+
+class TestGitlabCallSitesCoerce:
+    """A health endpoint the collector is not whitelisted for must not degrade
+    the verdict: both modes route the code through gitlab_health_verdict and
+    coerce the sentinel, and the JSON field stays null rather than false."""
+
+    SRC = _code(COLLECT_STATE.read_text().splitlines())
+
+    def test_neither_mode_compares_the_http_code_itself(self):
+        # The literal-200 test is what reported a 403 collector as a sick GitLab.
+        assert '"$GITLAB_HTTP" = "200"' not in self.SRC
+        assert '"$GITLAB_HTTP_REG" = "200"' not in self.SRC
+
+    def test_both_modes_classify_through_the_shared_verdict(self):
+        assert self.SRC.count("gitlab_health_verdict ") == 2
+
+    def test_an_unprobeable_endpoint_does_not_degrade_either_verdict(self):
+        assert 'coerce_int "$GITLAB_OK_RAW" 1' in self.SRC
+        assert 'coerce_int "$GITLAB_OK_RAW_REG" 1' in self.SRC
+        assert 'coerce_int "$GITLAB_OK_RAW" 0' not in self.SRC
+        assert 'coerce_int "$GITLAB_OK_RAW_REG" 0' not in self.SRC
+
+    def test_the_json_verdict_reads_the_coerced_number(self):
+        assert '"$GITLAB_OK_NUM"' in self.SRC
+        assert '"$ZFS_DEGRADED" "$GITLAB_OK"' not in self.SRC
+
+    def test_the_json_field_is_null_not_false_when_unknown(self):
+        assert 'coerce_int "$GITLAB_OK_RAW" null' in self.SRC
+        assert "gitlab: { healthy: ($gitlab_ok == 1) }" not in self.SRC
+        assert "if $gitlab_ok == null then null" in self.SRC
+
+    def test_the_regular_header_says_why_the_code_was_not_a_fault(self):
+        assert 'GITLAB_HEALTH_NOTE' in self.SRC
+        assert '$GITLAB_HEALTH_NOTE"' in self.SRC

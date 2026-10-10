@@ -118,3 +118,14 @@ gitlab_health_code() {
   fi
   echo "$code"
 }
+
+# gitlab_health_verdict <code>: 1 healthy, 0 unhealthy, "unknown" when the code
+# says the endpoint is not probeable from here. The health paths are
+# monitoring_whitelist-gated, so 401/403/404 is the collector's position.
+gitlab_health_verdict() {
+  case "${1:-}" in
+    200) printf '1' ;;
+    401|403|404) printf 'unknown' ;;
+    *) printf '0' ;;
+  esac
+}
