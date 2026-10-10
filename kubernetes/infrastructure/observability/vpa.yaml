@@ -283,14 +283,14 @@ spec:
   # a topmost controller exposing /scale, or it sits ConfigUnsupported.
   targetRef: {apiVersion: monitoring.coreos.com/v1, kind: Prometheus, name: kube-prometheus-stack-prometheus}
   updatePolicy: {updateMode: "Off"}
-  # maxAllowed.memory tracks the pod's 6Gi limit in release.yaml.
+  # maxAllowed.memory tracks the pod's 8Gi limit in release.yaml.
   # VPARecommendationExceedsLimit reads the larger of the capped and uncapped
   # target, so the clamp cannot hide an outgrown size (docs/33).
   resourcePolicy:
     containerPolicies:
       - containerName: prometheus
         minAllowed: {cpu: 100m, memory: 512Mi}
-        maxAllowed: {cpu: 2, memory: 6Gi}
+        maxAllowed: {cpu: 2, memory: 8Gi}
         controlledResources: [cpu, memory]
       # config-reloader and any future sidecar must not inherit the main
       # container's floor; the cap is the reloader's 96Mi limit (release.yaml).

@@ -99,9 +99,9 @@ spec:
         resources:
           requests:
             cpu: 200m
-            memory: 4608Mi
+            memory: 7168Mi
           limits:
-            memory: 6Gi
+            memory: 8Gi
 
     alertmanager:
       alertmanagerSpec:

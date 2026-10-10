@@ -1,7 +1,7 @@
 ---
 # Shared component: the four overlays (sonarr/radarr/lidarr/prowlarr) patch only
-# name and selector. scrapeTimeout is explicit because exportarr walks the *arr
-# APIs and can exceed Prometheus' 10s global; 45s stays under the 60s interval.
+# name and selector. One scrape walks eight *arr API calls serially and the
+# nightly vzdump slows them past 45s, so the budget is 110s in a 120s interval.
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
@@ -13,5 +13,5 @@ spec:
       app.kubernetes.io/name: exportarr-arr
   endpoints:
     - port: metrics
-      interval: 60s
-      scrapeTimeout: 45s
+      interval: 120s
+      scrapeTimeout: 110s

@@ -1154,6 +1154,7 @@ class TestAlertHostSetsMatchTheInventory:
         "ProxmoxHostIOPressure": ("proxmox", "9101"),
         "ProxmoxHostMemoryPressure": ("proxmox", "9101"),
         "NVMeDriveTempWarning": ("proxmox", "9101"),
+        "NVMeDriveTempHigh": ("proxmox", "9101"),
         "NVMeDriveTempCritical": ("proxmox", "9101"),
         "CPUTempWarning": ("proxmox", "9101"),
         "CPUTempCritical": ("proxmox", "9101"),
