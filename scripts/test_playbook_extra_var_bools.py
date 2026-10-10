@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 from pathlib import Path
 
 import pytest
@@ -29,6 +30,9 @@ CALLER_GLOBS = (
 EXTRA_VAR_FLAGS = frozenset({"-e", "--extra-vars"})
 # One `name=value` pair, the only `-e` form carrying a readable variable name.
 ASSIGNMENT = re.compile(r"^([A-Za-z_]\w*)=")
+# A free-form `action:` token is a module parameter only when its left side
+# reads as one; anything else is the positional target.
+PARAM_NAME = re.compile(r"^[A-Za-z_]\w*$")
 
 INCLUDE_KEYS = frozenset(
     {
@@ -100,25 +104,36 @@ def _extra_vars_value(tokens: list[str], index: int) -> tuple[str | None, int]:
     return None, index + 1
 
 
+def _assignment_names(value: str) -> set[str]:
+    """Every `name=` assignment inside one `-e` value."""
+    return {
+        match.group(1) for piece in value.split() if (match := ASSIGNMENT.match(piece))
+    }
+
+
 def extra_var_names(argv: str) -> tuple[set[str], list[str]]:
     """Every `-e` name in one argv, plus the values carrying no name at all."""
     names: set[str] = set()
     unreadable: list[str] = []
-    # The shared parser rejoins shlex tokens, so a quoted multi-assignment value
-    # arrives as one assignment-shaped token per pair.
-    tokens = argv.split()
+    # shlex, not str.split: a quoted multi-assignment value stays one token and
+    # its pairs are read inside it, while the shared parser's plain rejoin
+    # delivers the same pairs as separate tokens. Both forms are walked.
+    try:
+        tokens = shlex.split(argv)
+    except ValueError:
+        # An unbalanced quote names nothing this gate can read, so report it.
+        return names, [argv]
     index = 0
     while index < len(tokens):
         value, index = _extra_vars_value(tokens, index)
         if value is None:
             continue
-        first = ASSIGNMENT.match(value)
-        if first is None:
+        if ASSIGNMENT.match(value) is None:
             unreadable.append(value)
             continue
-        names.add(first.group(1))
-        while index < len(tokens) and (more := ASSIGNMENT.match(tokens[index])):
-            names.add(more.group(1))
+        names |= _assignment_names(value)
+        while index < len(tokens) and (more := _assignment_names(tokens[index])):
+            names |= more
             index += 1
     return names, unreadable
 
@@ -347,14 +362,17 @@ def _action_module(value) -> tuple[str, dict] | None:
     if isinstance(value, str):
         module, _, rest = value.strip().partition(" ")
         params: dict = {}
-        rest = rest.strip()
-        if rest and "=" in rest:
-            for token in rest.split():
-                name, separator, assigned = token.partition("=")
-                if separator:
-                    params[name] = assigned
-        elif rest:
-            params["_raw_params"] = rest
+        positional: list[str] = []
+        # A mixed `include_tasks foo.yml tags=x` carries both forms, so the
+        # positional target is kept beside the pairs, not dropped for them.
+        for token in rest.split():
+            name, separator, assigned = token.partition("=")
+            if separator and PARAM_NAME.match(name):
+                params[name] = assigned
+            else:
+                positional.append(token)
+        if positional:
+            params["_raw_params"] = " ".join(positional)
         return module, params
     if isinstance(value, dict) and isinstance(value.get("module"), str):
         return value["module"].strip(), {
@@ -655,6 +673,25 @@ class TestExtraVarParsing:
         assert unreadable_extra_vars(repo) == [(".gitlab-ci.yml", "@extra.json")]
         assert extra_vars_by_playbook(repo) == {}
 
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            '-e "probe_exercise=false probe_other=false"',
+            "-e	probe_exercise=false	-e	probe_other=false",
+            "-e 'probe_exercise=false probe_other=false'",
+            "-e probe_exercise=false probe_other=false",
+        ],
+    )
+    def test_the_argv_is_split_like_a_shell_not_on_whitespace(self, argv):
+        """A still-quoted value, and a tab-separated one, name both variables:
+        str.split would read the quote as part of the first name."""
+        assert extra_var_names(argv) == ({"probe_exercise", "probe_other"}, [])
+
+    def test_an_unbalanced_quote_is_reported_rather_than_raised(self):
+        names, unreadable = extra_var_names('-e "probe_exercise=false')
+        assert names == set()
+        assert unreadable == ['-e "probe_exercise=false']
+
 
 class TestRoleWalk:
     """A role is reachable code: its conditionals are checked like a playbook's."""
@@ -860,6 +897,28 @@ class TestActionFormWalk:
         (repo / "ansible/playbooks/steps.yml").write_text(TASK_FILE.format(suffix=""))
         assert [f for f, _, _ in unbooled_conditionals(repo)] == [
             "ansible/playbooks/steps.yml",
+        ]
+
+    def test_a_free_form_include_mixing_a_target_with_a_pair_is_resolved(self, tmp_path):
+        """`include_tasks steps.yml tags=probe` carries both forms; reading only
+        the pairs would leave the target unnamed and the file unwalked."""
+        repo = _fixture_repo(
+            tmp_path,
+            _action_playbook(["action: include_tasks steps.yml tags=probe"]),
+        )
+        (repo / "ansible/playbooks/steps.yml").write_text(TASK_FILE.format(suffix=""))
+        assert [f for f, _, _ in unbooled_conditionals(repo)] == [
+            "ansible/playbooks/steps.yml",
+        ]
+
+    def test_a_free_form_role_mixing_a_name_with_a_pair_is_walked(self, tmp_path):
+        repo = _fixture_repo(
+            tmp_path,
+            _action_playbook(["action: import_role probe_role tags=probe"]),
+        )
+        _fixture_role(repo, TASK_FILE.format(suffix=""))
+        assert [f for f, _, _ in unbooled_conditionals(repo)] == [
+            "ansible/roles/probe_role/tasks/main.yml",
         ]
 
     def test_a_dict_form_include_is_resolved(self, tmp_path):
