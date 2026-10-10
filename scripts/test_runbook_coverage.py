@@ -53,7 +53,6 @@ EXEMPT: set[tuple[str, str]] = {
     ("SwapCleanStoppedGuests", "06-zfs.md"),
     ("TailscaleOperatorDown", "19-k3s-deployment.md"),
     ("TailscaleProxyDown", "19-k3s-deployment.md"),
-    ("VPARecommendationExceedsRequest", "33-autoscaling.md"),
     ("WgEasyEndpointVipMissing", "38-wireguard-vpn.md"),
     ("WgEasyMetricsMissing", "38-wireguard-vpn.md"),
     ("ZfsEncryptedMountStuck", "12-runbooks.md"),
