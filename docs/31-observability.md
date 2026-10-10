@@ -22,7 +22,7 @@ The observability stack runs entirely in the `observability` namespace and is re
 | **ZFS Exporter** | `zfs_exporter` (on pve-nas-01) | ZFS pool and dataset metrics |
 | **AdGuard Exporter** | `adguard-exporter` | DNS query and filter metrics (dns-01 + dns-02) |
 | **Unbound Exporter** | `unbound_exporter` (on dns-01 + dns-02) | Recursive resolver metrics |
-| **Exportarr** | `ghcr.io/onedr0p/exportarr` | *arr application metrics (Sonarr, Radarr, Lidarr, Prowlarr) |
+| **Exportarr** | `ghcr.io/onedr0p/exportarr` | *arr application metrics (Sonarr, Radarr, Lidarr, Prowlarr). Scraped on a 120s interval with a 110s timeout: one scrape walks eight *arr API calls serially, and the nightly vzdump on the NAS slows them enough that a tighter budget reads as `up == 0` and trips the generic `TargetDown` |
 | **Redis Exporter** | `oliver006/redis_exporter` | Redis cache metrics (Bar Assistant) |
 | **DCGM Exporter (GPU)** | `nvcr.io/nvidia/k8s/dcgm-exporter` | NVIDIA GPU telemetry (util, VRAM, temp, power) on the pve-prec-01 1660 Ti — DaemonSet on the GPU node ([docs/43](43-gpu-passthrough.md)) |
 | **Node Exporter (host)** | `prometheus-node-exporter` (on Proxmox hosts) | Bare-metal hardware metrics (thermals, SMART, disk I/O) on port 9101 |
@@ -790,7 +790,8 @@ alertnames is inhibited explicitly on its own identity labels instead, because
 that generic rule cannot match them: CPU/GPU/NIC thermals on
 `instance`+`component`, SATA/NVMe on `instance`+`chip` (one host reports many
 drives under a single component label, so component-level pairing would let one
-drive silence another), disk/inode on `instance`+`mountpoint`, PVC on
+drive silence another; the NVMe ladder carries one entry per step, so each step
+mutes every step below it), disk/inode on `instance`+`mountpoint`, PVC on
 `namespace`+`persistentvolumeclaim`, ZFS space on `instance`+`pool`, and each
 backup/cert `*Prolonged` / `*Critical` on its warning twin.
 
@@ -1061,7 +1062,7 @@ The offsite chain these metrics come from is documented in
 
 #### Other Groups
 
-- **`homelab.temperature`** — SATA/NVMe drive, CPU, host GPU (`HostGpuTemp*`, hwmon on the Proxmox host) and NIC temperature warning/critical pairs (drivetemp + hwmon via node_exporter_host), all scoped to the six physical hosts so the LXC guests do not double-page their host's sensors. The 1660 Ti's own telemetry is the DCGM `GpuTemp*` pair in `homelab.gpu`.
+- **`homelab.temperature`** — SATA/NVMe drive, CPU, host GPU (`HostGpuTemp*`, hwmon on the Proxmox host) and NIC temperature warning/critical pairs (drivetemp + hwmon via node_exporter_host), all scoped to the six physical hosts so the LXC guests do not double-page their host's sensors. NVMe is a three-step ladder rather than a pair: `NVMeDriveTempWarning` at 65C/30m for trends, `NVMeDriveTempHigh` at 75C/10m for the band the nightly vzdump drives the NAS nvme2 chip into, and `NVMeDriveTempCritical` at the 80C throttle point, so only real throttling pages. The 1660 Ti's own telemetry is the DCGM `GpuTemp*` pair in `homelab.gpu`.
 - **`homelab.gpu`** — GpuExporterDown, GpuTempWarning/Critical, HindsightGpuOffloadIdle, GpuTelemetryMissing (DCGM exporter on the pve-prec-01 1660 Ti; GpuTelemetryMissing catches "exporter up but zero GPU series"). See [docs/43](43-gpu-passthrough.md).
 - **`homelab.mail`** — PostfixQueueBacklog, PostfixDown, PostfixQueueCollectorStale (smtp-relay queue textfile collector).
 - **`homelab.dns`** — UnboundDown, UnboundExporterDown, UnboundSERVFAILRatioHigh (unbound_exporter on dns-01/dns-02; the exporter arm exists because `unbound_up` simply stops existing when the scrape dies). Nothing alerts on the cache-hit ratio: AdGuard caches in front, so a low ratio is this cluster's normal shape. AdGuard's own `:53` availability is `DNSResolutionDown` / `DNSResolverProbeMissing` in `homelab.monitoring`. See [docs/08](08-dns.md#unbound-alerts).
