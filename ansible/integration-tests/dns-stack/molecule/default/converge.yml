@@ -18,7 +18,7 @@
           - groups['dns_primary'] | default([]) | length == 1
           - groups['dns_replica'] | default([]) | length == 1
         fail_msg: >-
-          molecule.yml no longer produces dns_primary and dns_replica, so the
+          molecule.yml does not produce dns_primary and dns_replica, so the
           guarded tasks in this scenario skip.
       run_once: true
 

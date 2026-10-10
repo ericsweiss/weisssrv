@@ -16,7 +16,7 @@
           - groups['relay_servers'] | default([]) | length == 1
           - groups['mail_clients'] | default([]) | length == 2
         fail_msg: >-
-          molecule.yml no longer produces relay_servers and mail_clients, so
+          molecule.yml does not produce relay_servers and mail_clients, so
           every assertion in this scenario skips.
       run_once: true
 
