@@ -737,15 +737,15 @@ proxmox_ha_replication_jobs:
   # can never also be a target - asserted by scripts/test_inventory_invariants.py.
   - id: "150-0"
     source_node: pve-prec-01
-    target_node: pve-opt-01
-    schedule: "0,15,30,45"
-    comment: "dns-01 -> pve-opt-01"
-    enabled: true
-  - id: "150-1"
-    source_node: pve-prec-01
     target_node: pve-opt-02
     schedule: "0,15,30,45"
     comment: "dns-01 -> pve-opt-02"
+    enabled: true
+  - id: "150-1"
+    source_node: pve-prec-01
+    target_node: pve-opt-01
+    schedule: "0,15,30,45"
+    comment: "dns-01 -> pve-opt-01"
     enabled: true
   - id: "150-2"
     source_node: pve-prec-01

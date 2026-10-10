@@ -221,6 +221,8 @@ nas_storage_archive_backup_sources:
 nas_storage_archive_backup_exclude:
   - ssd/appdata/prometheus
   - ssd/appdata/loki
+# Lets the -F receive remove the archive-side copies of the excluded children.
+nas_storage_archive_backup_exclude_destroy_ok: true
 
 # Hand off to the offsite run as soon as replication succeeds; the nightly
 # restic timer is only the fallback.

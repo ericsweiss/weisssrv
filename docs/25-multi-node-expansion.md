@@ -581,8 +581,8 @@ sources from pve-prec-01, so its four targets are the other local-ssd nodes:
 
 ```bash
 # Create a multi-target replication job (repeat for each target)
-sudo pvesr create-local-job 150-0 pve-opt-01 --schedule '0,15,30,45' --comment 'dns-01 -> pve-opt-01'
-sudo pvesr create-local-job 150-1 pve-opt-02 --schedule '0,15,30,45' --comment 'dns-01 -> pve-opt-02'
+sudo pvesr create-local-job 150-0 pve-opt-02 --schedule '0,15,30,45' --comment 'dns-01 -> pve-opt-02'
+sudo pvesr create-local-job 150-1 pve-opt-01 --schedule '0,15,30,45' --comment 'dns-01 -> pve-opt-01'
 sudo pvesr create-local-job 150-2 pve-opt-03 --schedule '0,15,30,45' --comment 'dns-01 -> pve-opt-03'
 sudo pvesr create-local-job 150-3 pve-laptop-01 --schedule '0,15,30,45' --comment 'dns-01 -> pve-laptop-01'
 
