@@ -101,7 +101,7 @@ Consequences an agent must not miss:
   `docs/13-ci-cd.md` § Shared CI library. The library's own
   `docs/INCLUDE-CONTRACT.md` / `docs/VERSIONING.md` own the input contract, its
   `docs/EXTENSIBILITY.md` owns which behaviour is a seam and which is the
-  backend, and its collection README + `MIGRATING.md` own the role-variable API.
+  backend, and its collection README owns the role-variable API.
 
 ## Repository Structure
 
@@ -368,8 +368,7 @@ collection (weisssrv-lib), pinned in `ansible/requirements.yml`; playbooks
 address them as `weisssrv.infra.<role>`. What lives here is the site data the
 roles consume: `hosts.yml`, `group_vars`, `host_vars`, the playbooks, and the
 Taskfile/CI wiring. Role behaviour, variables, and defaults are documented in
-the collection (its README + each role's README); `MIGRATING.md` there is the
-old→new variable map.
+the collection (its README + each role's README).
 
 **Changing role behaviour is a two-repo flow:**
 
@@ -383,9 +382,10 @@ old→new variable map.
    image, so only local runs read them), re-vendor the byte-identical scripts,
    then `ansible-galaxy install -r ansible/requirements.yml --force` and re-run
    the gates. The four Terraform `?ref=` pins are still bumped by hand.
-3. Land the inventory changes a renamed/emptied variable requires **in the same
-   MR** — the collection's variables are `| default(...)`-guarded, so a missed
-   rename does not fail, it silently takes the role default.
+3. Land the inventory changes the role's variables require **in the same MR**.
+   Every role variable is role-prefixed and `| default(...)`-guarded, so an
+   inventory name that does not match the role's README does not fail — it
+   silently takes the role default. The role README is the per-variable source.
 
 Site-facing constraints worth knowing before touching inventory:
 

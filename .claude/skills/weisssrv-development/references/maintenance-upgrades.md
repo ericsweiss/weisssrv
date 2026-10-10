@@ -89,9 +89,11 @@ python3 ../weisssrv-lib/scripts/check-vendored-copies.py \
 declared forks are listed there too, and a fork must ABSORB the library's change
 rather than ignore it (the gate compares the library side against the fork's
 `reconciled_sha256`, recorded in the manifest and re-taken there after
-absorbing). Then work the collection's
-`MIGRATING.md` for any variable renamed or emptied in that release and land the
-inventory edits in the same MR, and run the full gate set. Read the library's
+absorbing). Then run
+`scripts/check-role-default-flips.py --from <installed tag> --to <new tag>` for
+the default changes the release carries, read the role READMEs for the
+per-variable detail, land the inventory edits those defaults require in the
+same MR, and run the full gate set. Read the library's
 `docs/VERSIONING.md` before assuming a bump is behaviour-neutral — a changed
 input default silently changes this pipeline.
 

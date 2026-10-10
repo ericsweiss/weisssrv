@@ -212,9 +212,9 @@ exporter and shared-helper roles — ship in the **`weisssrv.infra` collection**
 [ansible/requirements.yml](ansible/requirements.yml). This repo holds the site
 data those roles consume: inventory, playbooks, and the Taskfile/CI wiring.
 
-The collection's own README documents every role, its variables and defaults,
-and `MIGRATING.md` there is the variable map. Layout and conventions for the
-Ansible tree here: [ansible/README.md](ansible/README.md).
+The collection's own README documents every role, its variables and defaults.
+Layout and conventions for the Ansible tree here:
+[ansible/README.md](ansible/README.md).
 
 ## Secrets Management
 

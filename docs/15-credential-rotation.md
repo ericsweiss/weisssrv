@@ -58,8 +58,8 @@ the agent registration in GitLab. It is allowlisted in
 credentials and no `op://` references of their own, so every secret arrives as
 an inventory variable resolved by consumer 1 above. Several roles declare these
 values as required inputs rather than carrying a site default, so the reference
-must exist in this repo's inventory. The collection's migration guide
-§ "Externalized defaults" lists them.
+must exist in this repo's inventory. Each role's README in the collection lists
+every input it requires.
 
 ## Required 1Password Items
 
