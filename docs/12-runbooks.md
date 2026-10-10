@@ -1919,7 +1919,7 @@ This checks:
 
 ## Proxmox HA Post-Failover Reconciliation
 
-When Proxmox HA migrates a VM/container to a different node (due to node failure or manual migration), ZFS replication must be reconfigured. Replication only works FROM the source node, so after failover the service is running on what was previously a target node.
+When Proxmox HA moves a VM or container to one of its replication targets, Proxmox reverses the replication job toward the new node: the job keeps its id, the old source becomes a target and the guest keeps replicating. The `proxmox_ha` role identifies a job by its VMID and target, reconciles its schedule and comment from the inventory entry for that target, and reports an id-to-target permutation instead of rewriting it. What the operator reconciles is the inventory: `source_node` and the HA home must follow a permanent move, and a temporary move is undone by migrating the guest back.
 
 ### Symptoms
 
@@ -2063,6 +2063,8 @@ Job IDs follow the format `<VMID>-<sequence>`:
 - `151-0`, `151-1`, `151-2`, `151-3` - smtp-relay to 4 targets
 - `160-0`, `160-1`, `160-2`, `160-3` - dns-02 to 4 targets
 - `154-0`, `154-1`, `154-2`, `154-3` - home-assistant to 4 targets
+
+Which target a given id points at changes every time Proxmox reverses a job after a migration, so the inventory's ids are labels, not a contract: the role matches on VMID and target, and a `maintenance-proxmox-ha` run prints the current permutation as information. Do not reorder inventory entries to chase it.
 
 ### Troubleshooting
 
