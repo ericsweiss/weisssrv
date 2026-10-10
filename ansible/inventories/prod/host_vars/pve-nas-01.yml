@@ -215,14 +215,14 @@ nas_storage_archive_backup_sources:
   - ssd/appdata
   - ssd/k3s-etcd
 
-# CRITICAL: adding an entry destroys that child's archive-side copy and snapshot
-# history on the next `-F` receive. Both TSDBs are re-derivable, dominate the
-# pool and are already out of restic; needs `zfs send -X` (OpenZFS 2.3+).
+# An excluded child keeps no source-side `archsync-*` snapshot, and the stream
+# leaves whatever archive copy it has: the run warns, counts it in
+# archive_backup_excluded_orphans, and `zfs destroy -r` reclaims it (docs/12).
 nas_storage_archive_backup_exclude:
+  # Both TSDBs are re-derivable, dominate the pool and are already out of
+  # restic. The exclusion needs `zfs send -X` (OpenZFS 2.3+).
   - ssd/appdata/prometheus
   - ssd/appdata/loki
-# Lets the -F receive remove the archive-side copies of the excluded children.
-nas_storage_archive_backup_exclude_destroy_ok: true
 
 # Hand off to the offsite run as soon as replication succeeds; the nightly
 # restic timer is only the fallback.

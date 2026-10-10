@@ -63,10 +63,12 @@ compression: lz4 (ssd/appdata; pool default zstd)
   authentik, gitlab, loki, mealie, nextcloud, prometheus). The `prometheus` and
   `loki` children are dropped from the recursive archive send
   (`nas_storage_archive_backup_exclude`): both TSDBs are re-derivable and huge,
-  and they are already out of restic. Adding an exclusion for a child that is
-  already replicated destroys its archive-side copy and snapshot history on the
-  first `-F` receive after the deploy, so send or snapshot anything worth keeping
-  somewhere else first. The Nextcloud VM
+  and they are already out of restic. An excluded child keeps no source-side
+  `archsync-*` snapshot, and the stream leaves whatever archive-side copy it
+  already had in place: the run warns, names it and counts it in
+  `archive_backup_excluded_orphans`, and reclaiming that space is an explicit
+  `zfs destroy -r` (docs/12 § ArchiveBackupFailed / ArchiveBackupStale). The
+  Nextcloud VM
   (156) adds `ssd/appdata/nextcloud/app` (20G, /mnt/nextcloud-app: compose +
   html/config + backups) and `ssd/appdata/nextcloud/postgres` (16G, PGDATA).
   Its bulk user data is a 2T **sparse** zvol `tank/nextcloud-data/disk` under the
