@@ -42,7 +42,7 @@ Same posture as `terraform/tailscale` and `terraform/authentik`:
 
 ## Audit findings
 
-A configuration audit of this tier assigned each gap an ID. Those IDs are the
+Each configuration finding on this tier carries an ID. Those IDs are the
 shorthand this page and `terraform/unifi/networks.tf` use when a row explains
 *why* it exists; this table is what each one means and where it stands.
 
@@ -60,7 +60,7 @@ shorthand this page and `terraform/unifi/networks.tf` use when a row explains
 | ZBF-06 | The PORT-01 gap seen from the zone-policy side: the All profile lets a device bypass the zone matrix at L2, where no policy can see it | Open — same remediation as PORT-01 |
 | ZBF-07 | The trusted-VLAN half of the gateway-console fencing | Closed — BLOCK rows 24-25 |
 
-Two more items from the same pass are tracked outside this table: gateway
+Two more findings are tracked outside this table: gateway
 SYN-flood protection (`usg.syn_cookies`) is console-owned and off
 (§ Codified vs manual, docs/16), and pve-nas-01's `nic1` IPv6 link-local
 adjacency to the Home VLAN is closed by `nic_tuning_disable_ipv6: [nic1]`.
@@ -121,7 +121,7 @@ regardless — but **UCG 1 carries the Hue bridge, an untrusted IoT appliance**,
 which is the case that actually motivates this, and the ConnA run (port 7) fans
 out to more untrusted devices still. Defence-in-depth wants native-VLAN-only
 profiles wherever a port is a genuine access port. It stays a **console**
-change, not codified: the audit established that `unifi_device.port_override` is
+change, not codified: `unifi_device.port_override` is
 unsafe at provider 0.55.0 (#438 wipes live overrides on an empty set,
 #430/#431). The genuine trunks that must stay
 All are USW **7** (ConnA, native Home + tagged 10/30), **8** (AP) and **10** (the
@@ -315,8 +315,8 @@ except where noted):
 
 | # | From → To | Scope | Why |
 |---|---|---|---|
-| 13-15 | {guest,iot,work} → Gateway | **all tcp**, logged | On a Cloud Gateway the console is a gateway service on *every* VLAN's own gateway address, so without these a guest with the WLAN PSK gets a login form at `https://10.0.40.1`. All of tcp rather than a port list: the 2026-08 audit found five listeners (`8080,8443,8843,8880,6789`) beyond the original `22,80,443`, and nothing on these VLANs has any legitimate TCP need to its gateway. DHCP is broadcast before the client has an address and is unaffected; ICMP stays up for troubleshooting |
-| 16-19 | {guest,iot,work,home} → External | tcp/udp `53,853`, logged | DHCP option 6 is a suggestion: Chromecast hardware queries `8.8.8.8` regardless and most TVs ship a vendor resolver, so `:53`/`:853` outbound is fenced. Home joined the set in the 2026-08 audit (ZBF-03) — it was silently exempt, losing split-horizon to any device that hard-codes a resolver. Homelab stays exempt — Unbound itself has to reach the internet |
+| 13-15 | {guest,iot,work} → Gateway | **all tcp**, logged | On a Cloud Gateway the console is a gateway service on *every* VLAN's own gateway address, so without these a guest with the WLAN PSK gets a login form at `https://10.0.40.1`. All of tcp rather than a port list: the gateway answers on `8080,8443,8843,8880,6789` as well as `22,80,443`, and nothing on these VLANs has any legitimate TCP need to its gateway. DHCP is broadcast before the client has an address and is unaffected; ICMP stays up for troubleshooting |
+| 16-19 | {guest,iot,work,home} → External | tcp/udp `53,853`, logged | DHCP option 6 is a suggestion: Chromecast hardware queries `8.8.8.8` regardless and most TVs ship a vendor resolver, so `:53`/`:853` outbound is fenced. Home is in the set (ZBF-03): exempting it loses split-horizon to any device that hard-codes a resolver. Homelab stays exempt — Unbound itself has to reach the internet |
 | 20-23 | {guest,iot,work,home} → Gateway | tcp/udp `53,853`, logged | The other way off the resolvers: a UniFi OS gateway answers DNS on *every* VLAN's own `.1` and forwards to the WAN DNS servers (`1.1.1.1`/`9.9.9.9`, § Site settings), i.e. straight past AdGuard. Rows 16-19 and these together are what make "the weisssrv resolvers or nothing" true on all four client VLANs. DHCP (udp `67`/`68`) is untouched |
 | 24-25 | {home,homelab} → Gateway | **tcp `1-442,444-65535`** (all tcp except 443), logged | The trusted-VLAN half: exactly `:443` stays open (console UI from admin devices, the CI drift plan, the `router.esweiss.com` Traefik backend); all other tcp is blocked as the complement of 443, so a listener a future firmware opens is fenced without a rule edit. DHCP/NTP are udp, homelab resolves via `.150`/`.160`, and `:22` has no listener |
 
@@ -681,8 +681,8 @@ entry in `local.port_forwards`, not re-enabling UPnP.
 
 **"Drift plan is green" is not "the controller matches the repo."** The table
 above is the *manageable* surface; Terraform neither writes nor watches most of
-the console. The rest of `rest/setting` was read during the audit
-and the following are set as intended: UPnP/NAT-PMP off,
+the console. The rest of `rest/setting` is console-owned, and the following are
+set as intended: UPnP/NAT-PMP off,
 `broadcast_ping` off, ICMP redirects off both ways, DoH off, SSL inspection
 off, DPI on, netflow off, and no scheduled reboot/upgrade task
 (kured owns k3s reboots; `auto_upgrade` owns Wi-Fi-gear firmware). Two Ubiquiti
