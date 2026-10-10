@@ -17,6 +17,7 @@ SCRIPTS = Path(__file__).resolve().parent
 # read is absent, which is the operator error the contract names.
 ROOT_ARG_GATES = (
     "check-cluster-literals.py",
+    "check-credential-age.py",
     "check-grafana-sidecar-init.py",
     "check-guest-endpoint-parity.py",
     "check-image-gc-threshold.py",

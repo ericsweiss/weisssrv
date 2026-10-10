@@ -31,6 +31,7 @@ includes:
   plex: taskfiles/plex.yml
   proxmox: taskfiles/proxmox.yml
   recipes: taskfiles/recipes.yml
+  secrets: taskfiles/secrets.yml
   terraform: taskfiles/terraform.yml
   uptime-kuma: taskfiles/uptime-kuma.yml
   wg-easy: taskfiles/wg-easy.yml

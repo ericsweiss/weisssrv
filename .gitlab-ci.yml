@@ -189,6 +189,11 @@ workflow:
     - scripts/unifi-settings-drift.py
     # The codified console-owned settings the script compares against.
     - scripts/unifi-settings.json
+.paths-credential-age:
+  changes:
+    - scripts/check-credential-age.py
+    # The schedule table the script reads as its policy input.
+    - docs/15-credential-rotation.md
 .paths-prometheus-config:
   changes:
     - kubernetes/infrastructure/observability/kube-prometheus-stack/release.yaml
@@ -939,6 +944,29 @@ b2-drift-plan:
     # above; the script and its config are covered pre-merge by python-tests.
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes: !reference [.paths-b2-drift, changes]
+
+# Credential AGE, which no merge gate can catch: the clock moves without a
+# commit. Reads item titles and updated_at only, never a field value.
+credential-age:
+  needs: []
+  stage: validate
+  image: $PY_JOB_IMAGE
+  before_script:
+    - !reference [.install-1password, before_script]
+  script:
+    - python3 scripts/check-credential-age.py
+  # 0 within policy, 1 an overdue or unscheduled item, 2 the report could not
+  # inspect the vault. Advisory on 1; an auth error (2) stays RED.
+  allow_failure:
+    exit_codes: [1]
+  rules:
+    # Schedule is the real detector: ages advance with no change to the repo.
+    - !reference [.drift-schedule-rule, rules]
+    # Post-merge validation of a change to the script or its schedule table. No
+    # merge_request_event rule, for the same credential reason as the drift
+    # plans above; the parsing is covered pre-merge by python-tests.
+    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
+      changes: !reference [.paths-credential-age, changes]
 
 # The console-owned UniFi settings terraform ignores (IPS posture), compared
 # against scripts/unifi-settings.json (docs/46).
