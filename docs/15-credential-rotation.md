@@ -713,11 +713,12 @@ breaking cert pushes until `acme_certs` re-seeds it.
 Re-provisioning a guest strands the same key for the same reason: the guest
 playbook runs `weisssrv.infra.base`, which rewrites `authorized_keys`. Each
 cert-target guest playbook (`plex.yml`, `immich.yml`, `nextcloud.yml`,
-`gitlab.yml`, `mail.yml`) therefore ends with a play on the `dns` group that
-includes `tasks/_reseed-cert-target.yml`, re-pinning that target from the cert
-authority; `scripts/test_cert_reseed_coverage.py` fails a playbook that applies
-base to a target without it. A guest that was down at re-seed time is named in the playbook
-output; re-run it, or `task infra:deploy -- --tags acme_certs`, once it is back.
+`gitlab.yml`, `mail.yml`) therefore ends with a play on the `dns_primary`
+group that includes `tasks/_reseed-cert-target.yml`, re-pinning that target
+from the cert authority; `scripts/test_cert_reseed_coverage.py` fails a
+playbook that applies base to a target without it. A guest that is down at
+re-seed time is named in the playbook output; re-run it, or
+`task infra:deploy -- --tags acme_certs`, once it is back.
 Without the re-seed the loss is invisible until the next renewal fails.
 
 The pubkey the re-seed pins comes from `DNS01_SSH_PUBLIC_KEY` when the job

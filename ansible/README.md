@@ -51,7 +51,7 @@ target (`plex.yml`, `immich.yml`, `nextcloud.yml`, `gitlab.yml`) ends with a
 play on the `dns_primary` group (dns-01, the cert authority) that includes
 `tasks/_reseed-cert-target.yml` with `reseed_cert_target_host` set to that
 guest. `base.yml` and `mail.yml` include the same task over a loop — every
-`acme_certs_distribution_targets` entry, and the `mail` group's. Adding a new
+sudo `acme_certs_distribution_targets` entry, and the `mail` group's. Adding a new
 cert-target guest means adding the same play, and
 `scripts/test_cert_reseed_coverage.py` fails one that applies base without it.
 `dns-02` needs none: `dns.yml` already runs `acme_certs` in full. Details are
