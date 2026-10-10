@@ -14,3 +14,4 @@ resources:
   - temperature.yaml
   - mail.yaml
   - kubernetes-resources.yaml
+  - dns.yaml

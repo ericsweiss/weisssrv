@@ -208,6 +208,8 @@ METRIC_SOURCES: dict[str, tuple[tuple[str, str], ...]] = {
     "pve_": (("infrastructure/observability/exporters/proxmox-exporter.yaml",
               "ServiceMonitor"),),
     "traefik_": (("infrastructure/controllers/traefik/release.yaml", "serviceMonitor:"),),
+    "unbound_": (("infrastructure/observability/exporters/unbound-exporter.yaml",
+                  "ServiceMonitor"),),
 }
 
 # PromQL words that can precede a `{`, so the selector pattern reads them as
