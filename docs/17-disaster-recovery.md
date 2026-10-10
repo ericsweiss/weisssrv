@@ -162,9 +162,9 @@ flood).
    Its nightly tarball reaches B2 — but you cannot read B2 without the repo's
    tooling, so the bootstrap copy is the **read-only GitHub mirror**
    (`github.com/ericsweiss/weisssrv`). `weisssrv-lib` and both templates are
-   mirrored too, with their release tags — which matters, because since the
-   collection migration this repo has no local roles directory and every playbook
-   needs `weisssrv.infra` at the pinned tag. Install it from the mirror:
+   mirrored too, with their release tags — which matters, because this repo has
+   no local roles directory and every playbook needs `weisssrv.infra` at the
+   pinned tag. Install it from the mirror:
 
    ```bash
    ansible-galaxy install -r <(sed 's#git.ericsweiss.com/eric#github.com/ericsweiss#' ansible/requirements.yml)
@@ -485,11 +485,10 @@ backups-apps` puts them at
   (`docs/22-recipes-deployment.md`).
 - **Home Assistant** — full-VM recovery rides the monitored nightly vzdump of the
   HAOS VM (.154) via `VzdumpBackupStale`. The HAOS built-in backups
-  (`docs/24-home-assistant-deployment.md`) are **no longer unmonitored**: they
+  (`docs/24-home-assistant-deployment.md`) are **monitored**: they
   land on `tank/backups/apps/home-assistant` over the HAOS network-storage mount,
   ride archsync into B2, and are watched by
-  `BackupArtifactStale{app="home-assistant"}` (docs/42 superseded the old
-  best-effort framing). They are **encrypted** — restoring them needs the
+  `BackupArtifactStale{app="home-assistant"}` (docs/42). They are **encrypted** — restoring them needs the
   emergency-kit key stored as `backup_encryption_key` on the "Home Assistant API
   Token" 1Password item (`docs/15-credential-rotation.md`); without it the tars
   are unusable, so verify that field is populated as part of the restore drill.

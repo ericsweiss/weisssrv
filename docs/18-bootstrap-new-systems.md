@@ -421,8 +421,8 @@ which htop neovim git
 VMs (including the entire 9-node k3s fleet and the GitLab/HAOS VMs) are normally
 created and provisioned by Ansible — the `weisssrv.infra.proxmox_vm` role builds them from the
 Debian cloud image with cloud-init, driven by the inventory (`task k3s:provision-vms`,
-`task gitlab:deploy`). The manual `qm` steps below are retained for reference and
-for bootstrapping a VM outside that flow; prefer the automated path for k3s nodes.
+`task gitlab:deploy`). The manual `qm` steps below cover a VM bootstrapped
+outside the Ansible flow; prefer the automated path for k3s nodes.
 
 ### Cloud-Init Method (Recommended)
 

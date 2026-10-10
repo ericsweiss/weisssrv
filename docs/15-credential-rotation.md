@@ -356,10 +356,9 @@ is restarted.
 SQLite-stored integration credentials — **do not lose it**, or those stored
 credentials become unreadable.
 
-`admin-username` / `admin-password` are operator-set, not ESO-injected, and are a
-record of the onboarding bootstrap admin that was deleted at the SSO-only
-cutover. No current auth path consumes them; break-glass DR mints its own
-username and one-time password via `homarr-cli recreate-admin` (docs/41 § SSO).
+`admin-username` / `admin-password` are operator-set, not ESO-injected: a DR
+convenience no auth path consumes. Break-glass DR mints its own username and
+one-time password via `homarr-cli recreate-admin` (docs/41 § SSO).
 
 #### NZBGet
 
@@ -605,11 +604,11 @@ revoked credential is the failure being avoided.
 - Null client passwords: `/etc/postfix/sasl_passwd` updated on all Proxmox hosts
   and DNS LXCs by 4a, on the app VMs and k3s nodes by 4b
 - Postfix reloads on all affected hosts
-- Both roles rebuild the compiled `sasl_passwd.db` / `aliases.db` whenever they
-  no longer match their source, rather than relying on the `notify` handler
-  alone: a play that dies before `flush_handlers` used to leave a correct source
-  next to a stale database, and the host kept authenticating with the OLD
-  credential with nothing reporting changed
+- Both roles assert the compiled `sasl_passwd.db` / `aliases.db` against their
+  source on every run and rebuild on a mismatch, rather than relying on the
+  `notify` handler alone: a play that dies before `flush_handlers` would
+  otherwise leave a correct source next to a stale database, and the host would
+  keep authenticating with the old credential with nothing reporting changed
 
 **Affected Hosts**:
 - `smtp-relay` - Both passwords

@@ -386,11 +386,10 @@ truth for the capture and rotation procedures.
 
 **Step 2: Verify SMTP Notifications**
 
-SMTP notifications are no longer defined in `configuration.yaml` — the YAML
-`smtp` notify platform is removed in HA 2027.1.0, and HA auto-imported the
-former config into a UI entry that now owns `notify.smtp_notify` (stored in
-HAOS `.storage`, captured by HA backups; manage it under Settings > Devices &
-Services). A from-scratch HAOS rebuild must re-add SMTP via the UI or restore
+SMTP notifications live in a UI entry that owns `notify.smtp_notify`, not in
+`configuration.yaml` — the YAML `smtp` notify platform is removed in HA
+2027.1.0. The entry is stored in HAOS `.storage` and captured by HA backups;
+manage it under Settings > Devices & Services. A from-scratch HAOS rebuild must re-add SMTP via the UI or restore
 from a backup. After a deploy, confirm the imported entry still works via
 Developer Tools > Actions:
 
