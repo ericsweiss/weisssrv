@@ -68,7 +68,7 @@ python3 ../weisssrv-lib/scripts/check-vendored-copies.py --repo-root . --list
 | `check-role-default-flips.py` | No role default changes between the installed and the new `weisssrv.infra` tag without the inventory declaring it — the collection's variables are default-guarded, so a flip is adopted silently (`--from`/`--to`, run at a pin bump) | local |
 | `check-role-inputs.py` | An opt-in collection role invoked with its flag set nowhere, and an asserted role input with no default and no assignment (`task lint:role-inputs` and the CI check-role-inputs job) | vendored |
 | `check-runbook-anchors.py` | Every alert's `runbook_url` resolves to a real docs file and heading | vendored |
-| `check-guest-endpoint-parity.py` | Every LAN address a hand-written EndpointSlice names is a real `ansible_host` in the prod inventory, or the LAN gateway | local |
+| `check-guest-endpoint-parity.py` | Every LAN address a hand-written EndpointSlice names is a real `ansible_host` in the prod inventory, or the LAN gateway | vendored |
 | `check-secret-rotation-coverage.py` | Every `remoteRef.key` is named in docs/15, and every ExternalSecret is reached by a rotation path or declared manual | forked |
 | `check-scrape-netpol.py` | Every scraped namespace admits Prometheus through its NetworkPolicies | vendored |
 | `check-secretstore-scope.py` | Each ClusterSecretStore is namespace-scoped and covers its consumers | vendored |
@@ -136,7 +136,7 @@ python3 ../weisssrv-lib/scripts/check-vendored-copies.py --repo-root . --list
 | `verify-windows.sh` | Windows VM smoke test: RDP reachability (`task windows:verify`) | local |
 | `wait-for-reloader-roll.sh` | Waits for Reloader to roll a Deployment after its ConfigMap was patched | vendored |
 | `flux-rotate-secret.sh` | Refreshes one app's ExternalSecret and restarts the pods that consume it (`task flux:rotate-secret`) | local |
-| `flux-secret-consumers.py` | The workloads in one namespace that read a named Secret, from a `kubectl get deployment,statefulset,daemonset -o json` dump; `flux-rotate-secret.sh` uses it to name a consumer its arm does not restart | local |
+| `flux-secret-consumers.py` | The workloads in one namespace that read a named Secret, from a `kubectl get deployment,statefulset,daemonset -o json` dump; `flux-rotate-secret.sh` uses it to name a consumer its arm does not restart | vendored |
 | `molecule-retry.sh` | `molecule test` with in-job destroy + jittered retry | vendored |
 | `sanitize-junit-expected-failures.py` | Downgrades declared negative-path junit failures | vendored |
 | `ci-fetch-tools.py` | Installs the pinned CI tool binaries into `$CI_PROJECT_DIR/.bin`, each verified by sha256 | vendored |
@@ -164,7 +164,7 @@ classification), `maintenance-lib.sh` (maintenance-op helpers), `smoke-lib.sh`
 (the probe/counter helpers the `verify-*.sh` scripts share). Function-only: no
 top-level side effects, so they stay unit-testable.
 
-`taskfile_tree.py` (local) is the Python equivalent: it flattens the
+`taskfile_tree.py` (vendored) is the Python equivalent: it flattens the
 `Taskfile.yml` `includes:` tree into one `{task name: definition}` map, so the
 suites that walk task names see the whole tree rather than the root file.
 

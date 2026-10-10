@@ -35,7 +35,7 @@ variables:
   # Single source for the weisssrv-lib pin. `include:` cannot read it (includes
   # resolve before job variables exist), so each entry repeats the tag as a
   # literal; check-lib-pins.py holds them equal. Bump here, then `--fix`.
-  WEISSSRV_LIB_REF: "v0.18.1"
+  WEISSSRV_LIB_REF: "v0.19.0"
   # Single source for the Ansible pin. check-deploy-playbooks reads it as a
   # variable; the deploy-base include repeats it as a literal input (includes
   # resolve before this block), which check-ci-pin-parity.sh holds equal to it.
@@ -1069,7 +1069,7 @@ include:
   # describe this instance and the cloudflare state; the three drift-plan jobs
   # override the TF_HTTP_*ADDRESS vars for their own state names.
   - project: eric/weisssrv-lib
-    ref: v0.18.1
+    ref: v0.19.0
     file:
       - /ci/templates/dep-cache.yml
       - /ci/templates/install-1password.yml
@@ -1079,7 +1079,7 @@ include:
   # extends — op CLI, ansible, a 0600 ansible.cfg, the SSH key, a TOFU keyscan
   # of hosts.env, the collection install. ci-pin-parity holds ansible_version equal.
   - project: eric/weisssrv-lib
-    ref: v0.18.1
+    ref: v0.19.0
     file: /ci/deploy/deploy-base.yml
     inputs:
       op_vault: "Homelab"
@@ -1093,7 +1093,7 @@ include:
   # dind_service is held at 24.0 — its embedded BuildKit frontend accepts
   # upstream hermes' symbolic `COPY --chmod`, which 27.x rejects.
   - project: eric/weisssrv-lib
-    ref: v0.18.1
+    ref: v0.19.0
     file: /ci/templates/docker-dind.yml
     inputs:
       dind_service: "docker:24.0-dind@sha256:167bad11bade46d4d9a88646ed7f9b11014dfdb898ba75c5a390eb03f21f0c45"
@@ -1102,7 +1102,7 @@ include:
   # into its before_script. The vendored check-kubectl-version-pin.py reads
   # kubectl_version from here and holds it within one minor of k3s_version.
   - project: eric/weisssrv-lib
-    ref: v0.18.1
+    ref: v0.19.0
     file: /ci/deploy/kubectl-setup.yml
     inputs:
       op_vault: "Homelab"
@@ -1114,7 +1114,7 @@ include:
   # cpu_selector pins the scan to modern-CPU nodes (gitleaks SIGILLs without
   # POPCNT). Findings block the merge via allow_failure: false, not a needs:.
   - project: eric/weisssrv-lib
-    ref: v0.18.1
+    ref: v0.19.0
     file:
       - /ci/security/secret-detection.yml
     inputs:
@@ -1124,7 +1124,7 @@ include:
   # digest so a per-node image cache cannot serve a different one. The roots'
   # required_version floor admits both this image and the workstation toolchain.
   - project: eric/weisssrv-lib
-    ref: v0.18.1
+    ref: v0.19.0
     file: /ci/validate/terraform.yml
     inputs:
       image: hashicorp/terraform:1.16.5@sha256:c7926feace05d0f7e73542842bf3945924e955a1f782cf000ccbb8d18fa42d77
@@ -1133,7 +1133,7 @@ include:
   # supervised module. tags is explicit — the template default is any runner,
   # and these need the infrastructure runner's network reach.
   - project: eric/weisssrv-lib
-    ref: v0.18.1
+    ref: v0.19.0
     file: /ci/validate/terraform-drift-plan.yml
     inputs:
       image: $TF_JOB_IMAGE
@@ -1149,7 +1149,7 @@ include:
         export TF_VAR_tailscale_oauth_client_id TF_VAR_tailscale_oauth_client_secret
 
   - project: eric/weisssrv-lib
-    ref: v0.18.1
+    ref: v0.19.0
     file: /ci/validate/terraform-drift-plan.yml
     inputs:
       image: $TF_JOB_IMAGE
@@ -1184,7 +1184,7 @@ include:
 
   # One variable per SSID; keep in step with the Taskfile's &tf_unifi_env anchor.
   - project: eric/weisssrv-lib
-    ref: v0.18.1
+    ref: v0.19.0
     file: /ci/validate/terraform-drift-plan.yml
     inputs:
       image: $TF_JOB_IMAGE
@@ -1208,7 +1208,7 @@ include:
   # default `-d relaxed` (yamllint's own shipped profile). `targets:` and
   # `changes:` must name the same surface — widen both together.
   - project: eric/weisssrv-lib
-    ref: v0.18.1
+    ref: v0.19.0
     file: /ci/lint/yaml-lint.yml
     inputs:
       config: "-c lint/yamllint-relaxed.yml"
@@ -1228,7 +1228,7 @@ include:
   # scope config. `changes:` takes the library default `["**/*"]`: the
   # convention applies to every file.
   - project: eric/weisssrv-lib
-    ref: v0.18.1
+    ref: v0.19.0
     file: /ci/lint/comment-length.yml
     inputs:
       # `paths` empty so the config is the only source of roots, which is the
@@ -1240,7 +1240,7 @@ include:
   # in the collection, where the library's own pipeline checks it. What is left
   # is scripts/ plus the terraform helper scripts.
   - project: eric/weisssrv-lib
-    ref: v0.18.1
+    ref: v0.19.0
     file: /ci/lint/shellcheck.yml
     inputs:
       direct_globs: "scripts/*.sh terraform/*/*.sh"
@@ -1256,7 +1256,7 @@ include:
   # syntax-check rule runs `ansible-playbook --syntax-check` per playbook. No
   # `config:` input: ansible-lint finds ./.ansible-lint from its own cwd.
   - project: eric/weisssrv-lib
-    ref: v0.18.1
+    ref: v0.19.0
     file: /ci/lint/ansible-lint.yml
     inputs:
       targets: "ansible/"
@@ -1277,7 +1277,7 @@ include:
   # ruff_version is explicit so a library default bump cannot move CI off
   # requirements.txt. `changes:` must name the same surface as `targets:` — widen both.
   - project: eric/weisssrv-lib
-    ref: v0.18.1
+    ref: v0.19.0
     file: /ci/lint/python-lint.yml
     inputs:
       targets: "scripts kubernetes"
@@ -1292,7 +1292,7 @@ include:
   # lint-docs-links: `changes:` is the library default plus this file, which
   # carries the job's image, ref and CHECK_DOC_LINKS_* inputs.
   - project: eric/weisssrv-lib
-    ref: v0.18.1
+    ref: v0.19.0
     file: /ci/lint/docs-link-check.yml
     inputs:
       job_name: lint-docs-links
@@ -1305,7 +1305,7 @@ include:
   # is not passed — the library default `["**/*"]` matches every MR, `[]` would
   # delete the job. rc=1 (updates available) stays yellow; rc=2 reds the sweep.
   - project: eric/weisssrv-lib
-    ref: v0.18.1
+    ref: v0.19.0
     file: /ci/maintenance/version-check.yml
     inputs:
       setup_command: 'pip install --quiet "pyyaml==${PYYAML_VERSION}" requests==2.34.2'
@@ -1316,7 +1316,7 @@ include:
   # files outside scripts/, so the `changes:` list below is hand-maintained by
   # tracing opens under `pytest scripts/`. setup_command clones the library.
   - project: eric/weisssrv-lib
-    ref: v0.18.1
+    ref: v0.19.0
     file: /ci/test/python-tests.yml
     inputs:
       # The template default is 3.11-slim; ansible 14 needs >= 3.12, so the job
@@ -1382,7 +1382,7 @@ include:
   # ConfigMap; needs a root runner for gettext-base). extra_validation runs
   # scripts/flux-corpus-gates.sh, the same gates `task flux:lint` runs.
   - project: eric/weisssrv-lib
-    ref: v0.18.1
+    ref: v0.19.0
     file: /ci/validate/flux-lint.yml
     inputs:
       substitute: true
@@ -1440,7 +1440,7 @@ include:
   # CI variables rather than 1Password. `gate` decides whether the job is
   # created, so it must name an unprotected variable (docs/13).
   - project: eric/weisssrv-lib
-    ref: v0.18.1
+    ref: v0.19.0
     file: /ci/review/pr-agent.yml
     inputs:
       secrets_source: "env"

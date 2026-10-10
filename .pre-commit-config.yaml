@@ -37,6 +37,7 @@ repos:
           scripts/check\-default\-deny\-coverage\.py | scripts/check\-deploy\-coverage\.sh |
           scripts/check\-deploy\-preflight\.py |
           scripts/check\-doc\-links\.py | scripts/check\-ephemeral\-storage\-cap\.py |
+          scripts/check\-guest\-endpoint\-parity\.py |
           scripts/check\-helm\-repo\-parity\.py |
           scripts/check\-hpa\-vpa\-invariant\.py |
           scripts/check\-kubectl\-version\-pin\.py | scripts/check\-lib\-pins\.py |
@@ -51,13 +52,15 @@ repos:
           scripts/ci_yaml\.py | scripts/cluster\-config\-value\.sh |
           scripts/extract\-prometheus\-config\.py | scripts/find\-pve\-host\-for\-vm\.sh |
           scripts/find\-reachable\-host\.sh | scripts/flux\-env\.sh | scripts/flux\-render\.sh |
+          scripts/flux\-secret\-consumers\.py |
           scripts/gate_common\.py | scripts/generate\-hosts\-env\.py |
           scripts/generate\-versions\-configmap\.py | scripts/inventory_tree\.py |
           scripts/kubeconform\-skipped\.py | scripts/lint\-prometheus\-config\.sh |
           scripts/maintenance\-run\-with\-verify\.sh | scripts/molecule\-retry\.sh |
           scripts/resolve\-tool\.sh | scripts/sanitize\-junit\-expected\-failures\.py |
           scripts/script_loader\.py | scripts/shell\-lib\.sh | scripts/smoke\-lib\.sh |
-          scripts/supervised\-apply\-guard\.sh | scripts/test_check_lib_pins\.py |
+          scripts/supervised\-apply\-guard\.sh | scripts/taskfile_tree\.py |
+          scripts/test_check_lib_pins\.py |
           scripts/test_check_netpol_except_parity\.py |
           scripts/unifi\-settings\-drift\.py | scripts/validate\-helm\-values\.py |
           scripts/version\-bump\-mr\.py | scripts/version\-check\-ci\.py |

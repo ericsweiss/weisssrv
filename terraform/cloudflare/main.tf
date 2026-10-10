@@ -2,7 +2,7 @@
 # `cloudflare-zone` module at a hand-bumped ref; dns.tf holds this site's records, and
 # external-dns owns the service CNAMEs. Keep the ref equal to WEISSSRV_LIB_REF.
 module "zone" {
-  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/cloudflare-zone?ref=v0.18.1"
+  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/cloudflare-zone?ref=v0.19.0"
 
   account_id = var.cloudflare_account_id
   zone_name  = var.external_domain

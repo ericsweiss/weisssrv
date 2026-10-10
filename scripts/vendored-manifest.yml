@@ -27,6 +27,9 @@ vendored:
   - scripts/check-deploy-preflight.py
   - scripts/check-doc-links.py
   - scripts/check-ephemeral-storage-cap.py
+  # Imports gate_common.py and inventory_tree.py from its own directory, both
+  # registered below.
+  - scripts/check-guest-endpoint-parity.py
   - scripts/check-helm-repo-parity.py
   - scripts/check-hpa-vpa-invariant.py
   - scripts/check-kubectl-version-pin.py
@@ -61,6 +64,9 @@ vendored:
   - scripts/find-reachable-host.sh
   - scripts/flux-env.sh
   - scripts/flux-render.sh
+  # Reads a `kubectl get -o json` dump on stdin, so flux-rotate-secret.sh and an
+  # operator's shell both drive it.
+  - scripts/flux-secret-consumers.py
   - scripts/gate_common.py
   - scripts/generate-hosts-env.py
   - scripts/generate-versions-configmap.py
@@ -77,6 +83,9 @@ vendored:
   - scripts/shell-lib.sh
   - scripts/smoke-lib.sh
   - scripts/supervised-apply-guard.sh
+  # Importable module: the Taskfile gates read the flattened `includes:` tree
+  # through it.
+  - scripts/taskfile_tree.py
   - scripts/unifi-settings-drift.py
   - scripts/validate-helm-values.py
   - scripts/version-bump-mr.py
@@ -132,7 +141,7 @@ forked:
     reason: >-
       Host-side toolchain for this repo's own gates: it carries pytest and
       ruff, which the library image does not, and its own ansible-lint pin.
-    reconciled_sha256: 418c11f6f30e046148ddcbccc9e8f50f6ed5496164e25cc30ef0428e3375fac7
+    reconciled_sha256: 64cbb8d3a33b36929655bfc0a68f784e3ff1cbafccd6a38ddf94ccd889ebb042
   - lib: scripts/check-flux-version-pin.py
     consumer: scripts/check-flux-version-pin.py
     reason: >-

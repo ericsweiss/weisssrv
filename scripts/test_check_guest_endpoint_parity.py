@@ -14,6 +14,9 @@ from script_loader import load_script
 REPO = Path(__file__).resolve().parent.parent
 gate = load_script("check-guest-endpoint-parity.py")
 
+HOSTS_YML = f"{gate.DEFAULT_INVENTORY}/hosts.yml"
+CLUSTER_CONFIG = gate.gate_common.CLUSTER_CONFIG
+
 
 HOSTS = textwrap.dedent(
     """\
@@ -69,8 +72,8 @@ def write(root: Path, rel: str, body: str) -> None:
 
 @pytest.fixture
 def repo(tmp_path: Path) -> Path:
-    write(tmp_path, gate.HOSTS_YML, HOSTS)
-    write(tmp_path, gate.CLUSTER_CONFIG, CONFIG)
+    write(tmp_path, HOSTS_YML, HOSTS)
+    write(tmp_path, CLUSTER_CONFIG, CONFIG)
     write(tmp_path, "kubernetes/apps/vm-ingress/services.yaml", SLICE)
     return tmp_path
 
@@ -144,29 +147,43 @@ def test_no_endpoints_at_all_is_vacuous(repo: Path) -> None:
 
 
 def test_a_missing_lan_cidr_is_vacuous(repo: Path) -> None:
-    write(repo, gate.CLUSTER_CONFIG, CONFIG.replace('  cluster_lan_cidr: "10.0.10.0/24"\n', ""))
+    write(repo, CLUSTER_CONFIG, CONFIG.replace('  cluster_lan_cidr: "10.0.10.0/24"\n', ""))
     with pytest.raises(gate.Vacuous):
         gate.check(repo)
 
 
-def test_a_lan_cidr_with_host_bits_set_is_vacuous(repo: Path) -> None:
-    """The strict parse rejects it, so the gate must name the value and exit 2
-    rather than traceback."""
+def test_a_lan_cidr_with_host_bits_set_scopes_to_its_network(repo: Path) -> None:
+    """A /24 written from a host address masks to that network, so the endpoint
+    inside it is still compared rather than silently out of scope."""
     write(
         repo,
-        gate.CLUSTER_CONFIG,
-        CONFIG.replace('cluster_lan_cidr: "10.0.10.0/24"', 'cluster_lan_cidr: "192.0.2.5/24"'),
+        CLUSTER_CONFIG,
+        CONFIG.replace('cluster_lan_cidr: "10.0.10.0/24"', 'cluster_lan_cidr: "10.0.10.5/24"'),
+    )
+    problems, checked = gate.check(repo)
+    assert problems == []
+    assert checked == 1
+
+
+def test_an_unparseable_lan_cidr_names_the_key_and_is_vacuous(repo: Path) -> None:
+    """A value that is no network at all must name the key and exit 2 rather
+    than traceback."""
+    write(
+        repo,
+        CLUSTER_CONFIG,
+        CONFIG.replace('cluster_lan_cidr: "10.0.10.0/24"', 'cluster_lan_cidr: "not-a-cidr"'),
     )
     with pytest.raises(gate.Vacuous) as raised:
         gate.check(repo)
-    assert "192.0.2.5/24" in str(raised.value)
+    assert "cluster_lan_cidr" in str(raised.value)
+    assert "not-a-cidr" in str(raised.value)
     assert gate.main(["--repo-root", str(repo)]) == 2
 
 
 def test_a_cluster_with_no_gateway_key_loses_only_that_allowance(repo: Path) -> None:
     """The gateway is an allowance, not a requirement: without it the gate is
     stricter, never vacuous."""
-    write(repo, gate.CLUSTER_CONFIG, CONFIG.replace('  cluster_lan_gateway: "10.0.10.1"\n', ""))
+    write(repo, CLUSTER_CONFIG, CONFIG.replace('  cluster_lan_gateway: "10.0.10.1"\n', ""))
     problems, _ = gate.check(repo)
     assert any("10.0.10.1" in problem for problem in problems)
 
@@ -204,7 +221,7 @@ def test_a_whole_list_roster_placeholder_is_resolved(repo: Path) -> None:
     )
     write(
         repo,
-        gate.CLUSTER_CONFIG,
+        CLUSTER_CONFIG,
         CONFIG + '  cluster_roster_addresses: \'[{"addresses": ["10.0.10.240"]}]\'\n',
     )
     problems, _ = gate.check(repo)
@@ -261,7 +278,7 @@ MGMT_SLICE = textwrap.dedent(
 def test_a_second_lan_cidr_key_brings_its_range_in_scope(repo: Path) -> None:
     """A cluster with a management VLAN declares a key per range; an address in
     the second one is compared instead of silently out of scope."""
-    write(repo, gate.CLUSTER_CONFIG, CONFIG + '  cluster_mgmt_cidr: "10.0.20.0/24"\n')
+    write(repo, CLUSTER_CONFIG, CONFIG + '  cluster_mgmt_cidr: "10.0.20.0/24"\n')
     write(repo, "kubernetes/apps/vm-ingress/idrac.yaml", MGMT_SLICE)
 
     problems, checked = gate.check(repo)
@@ -313,11 +330,11 @@ def exports(*specs: str) -> str:
 @pytest.fixture
 def nas(repo: Path) -> Path:
     """The endpoint fixture plus a k3s inventory and one NFS export that agrees."""
-    write(repo, gate.HOSTS_YML, EXPORT_HOSTS)
+    write(repo, HOSTS_YML, EXPORT_HOSTS)
     write(repo, "kubernetes/apps/vm-ingress/services.yaml", SLICE.split("---")[1])
     write(
         repo,
-        f"{gate.INVENTORY}/host_vars/nas.yml",
+        f"{gate.DEFAULT_INVENTORY}/host_vars/nas.yml",
         exports("10.0.10.200/29", "10.0.10.220/29", "10.0.10.227/32"),
     )
     return repo
@@ -335,7 +352,7 @@ def test_an_export_that_admits_part_of_a_k3s_group_fails(nas: Path) -> None:
     mounts nothing, which no pod-level symptom names."""
     write(
         nas,
-        f"{gate.INVENTORY}/host_vars/nas.yml",
+        f"{gate.DEFAULT_INVENTORY}/host_vars/nas.yml",
         exports("10.0.10.200/29", "10.0.10.220/29"),
     )
     problems, _ = gate.check(nas)
@@ -346,7 +363,7 @@ def test_an_export_that_admits_part_of_a_k3s_group_fails(nas: Path) -> None:
 def test_an_export_spec_covering_no_inventory_host_fails(nas: Path) -> None:
     write(
         nas,
-        f"{gate.INVENTORY}/host_vars/nas.yml",
+        f"{gate.DEFAULT_INVENTORY}/host_vars/nas.yml",
         exports("10.0.10.200/29", "10.0.10.220/29", "10.0.10.227/32", "10.0.10.240/32"),
     )
     problems, _ = gate.check(nas)
@@ -358,7 +375,7 @@ def test_an_off_lan_export_spec_is_out_of_scope(nas: Path) -> None:
     """A VPN or remote range the gate was not pointed at must not be reported."""
     write(
         nas,
-        f"{gate.INVENTORY}/host_vars/nas.yml",
+        f"{gate.DEFAULT_INVENTORY}/host_vars/nas.yml",
         exports("10.0.10.200/29", "10.0.10.220/29", "10.0.10.227/32", "192.168.9.0/24"),
     )
     problems, _ = gate.check(nas)
@@ -369,7 +386,7 @@ def test_a_hostname_export_spec_is_left_alone(nas: Path) -> None:
     """A hostname or wildcard client is legal and resolves to no address here."""
     write(
         nas,
-        f"{gate.INVENTORY}/host_vars/nas.yml",
+        f"{gate.DEFAULT_INVENTORY}/host_vars/nas.yml",
         exports("10.0.10.200/29", "10.0.10.220/29", "10.0.10.227/32", "*.esweiss.com"),
     )
     problems, _ = gate.check(nas)
@@ -377,7 +394,7 @@ def test_a_hostname_export_spec_is_left_alone(nas: Path) -> None:
 
 
 def test_an_unparseable_inventory_var_file_is_reported_not_skipped(nas: Path) -> None:
-    write(nas, f"{gate.INVENTORY}/group_vars/broken.yml", "a: [1,\n  b: {\n")
+    write(nas, f"{gate.DEFAULT_INVENTORY}/group_vars/broken.yml", "a: [1,\n  b: {\n")
     problems, _ = gate.check(nas)
     assert any("group_vars/broken.yml" in p for p in problems), problems
     assert gate.main(["--repo-root", str(nas)]) == 1
@@ -385,9 +402,9 @@ def test_an_unparseable_inventory_var_file_is_reported_not_skipped(nas: Path) ->
 
 def test_the_live_tree_declares_nfs_exports() -> None:
     """The export arm is only a gate while it has a subject to read."""
-    found, skipped = gate.nfs_exports(REPO)
+    found, skipped = gate.nfs_exports(REPO, gate.DEFAULT_INVENTORY)
     assert skipped == []
-    assert found, f"no {gate.EXPORTS_KEY} found under {gate.INVENTORY}/"
+    assert found, f"no {gate.EXPORTS_KEY} found under {gate.DEFAULT_INVENTORY}/"
 
 
 def test_a_cidr_key_naming_nothing_is_vacuous(repo: Path) -> None:
