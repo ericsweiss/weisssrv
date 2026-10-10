@@ -182,6 +182,44 @@ def test_an_item_no_row_covers_is_a_finding(tmp_path):
     assert "NO POLICY  Orphan Token" in done.stdout
 
 
+def test_a_missing_items_capture_is_exit_2(tmp_path):
+    """A capture the gate cannot read is could-not-inspect, not a finding."""
+    done = subprocess.run(
+        [
+            sys.executable, str(SCRIPT),
+            "--repo-root", str(_doc(tmp_path)),
+            "--items-json", str(tmp_path / "absent.json"),
+            "--now", NOW,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert done.returncode == 2, done.stdout + done.stderr
+    assert "unreadable" in done.stderr
+    assert "Traceback" not in done.stderr
+
+
+def test_an_undecodable_items_capture_is_exit_2(tmp_path):
+    """Bytes that are not UTF-8 never reach the JSON decoder."""
+    capture = tmp_path / "items.json"
+    capture.write_bytes(b"\xff\xfe not utf-8")
+    done = subprocess.run(
+        [
+            sys.executable, str(SCRIPT),
+            "--repo-root", str(_doc(tmp_path)),
+            "--items-json", str(capture),
+            "--now", NOW,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert done.returncode == 2, done.stdout + done.stderr
+    assert "UnicodeDecodeError" in done.stderr
+    assert "Traceback" not in done.stderr
+
+
 def test_an_empty_item_list_is_exit_2(tmp_path):
     done = _run(_doc(tmp_path), [])
     assert done.returncode == 2, done.stdout + done.stderr

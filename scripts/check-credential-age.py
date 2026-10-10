@@ -113,7 +113,10 @@ def claim(rows: list[Row], title: str) -> Row | None:
 def load_items(source: str | None, vaults: list[str]) -> list[dict]:
     """Items as `{title, updated_at}` dicts, from a JSON capture or the CLI."""
     if source is not None:
-        raw = sys.stdin.read() if source == "-" else Path(source).read_text(encoding="utf-8")
+        try:
+            raw = sys.stdin.read() if source == "-" else Path(source).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise Vacuous(f"{source}: unreadable ({exc.__class__.__name__}: {exc})") from exc
         payload = _decode(raw, source)
     else:
         payload = []
