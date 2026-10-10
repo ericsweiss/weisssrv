@@ -131,8 +131,9 @@ spec:
               # No CPU limit (repo policy — docs/33); memory capped. Blob proxying
               # is I/O-bound, not memory-hungry.
               memory: 512Mi
-              # Above the emptyDir cap below, which shares this budget with the
-              # rotated container logs; at the cap the kubelet evicts first.
+              # Above the emptyDir cap below and inside the ~24Gi free on the
+              # fullest node's 62.8Gi image filesystem, so the cap binds before
+              # disk-pressure eviction does.
               ephemeral-storage: 12Gi
           securityContext:
             allowPrivilegeEscalation: false
