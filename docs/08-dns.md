@@ -106,7 +106,7 @@ the **Unbound** dashboard.
 | Alert | Fires when | What to do |
 |---|---|---|
 | `UnboundDown` | `unbound_up == 0` for 5m — the exporter is scraped but cannot read the control socket | AdGuard on that guest still serves cached names and SERVFAILs everything else. `systemctl status unbound`, then `unbound-checkconf` and `dig @127.0.0.1 -p 5335 google.com` on the guest. |
-| `UnboundExporterDown` | the `unbound-exporter` scrape fails, or the series is absent, for 15m | `UnboundDown` cannot fire while the exporter is dark, so this arm is the only coverage. `systemctl status unbound_exporter`, then the EndpointSlice addresses in `observability/exporters/unbound-exporter.yaml`. |
+| `UnboundExporterDown` | fewer than both resolvers are scraped for 15m — a failing scrape, or a target gone from service discovery | `UnboundDown` cannot fire while the exporter is dark, so this arm is the only coverage. `systemctl status unbound_exporter`, then the EndpointSlice addresses in `observability/exporters/unbound-exporter.yaml`. |
 | `UnboundSERVFAILRatioHigh` | over 5% of answers are SERVFAIL for 15m | The DNS-over-TLS upstreams are unreachable, their certificates no longer validate, or DNSSEC validation is failing. `journalctl -u unbound`, then `dig @127.0.0.1 -p 5335 dnssec-failed.org`. |
 
 Nothing alerts on the Unbound cache-hit ratio: AdGuard caches in front of it, so

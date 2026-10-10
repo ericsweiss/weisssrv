@@ -30,23 +30,23 @@ spec:
               `systemctl status unbound` and
               `dig @127.0.0.1 -p 5335 google.com` on the guest.
 
-        # Without this arm a dead exporter looks identical to a healthy
-        # resolver: unbound_up simply stops existing and UnboundDown stops
-        # evaluating.
+        # Counted against the two resolvers expected, so a target dropping out
+        # of service discovery is as loud as a failing scrape. Without this arm
+        # a dead exporter looks healthy: unbound_up just stops existing.
         - alert: UnboundExporterDown
           expr: >-
-            up{job="unbound-exporter"} == 0
-            or absent(up{job="unbound-exporter"})
+            count(up{job="unbound-exporter"} == 1) < 2
+            or absent(up{job="unbound-exporter"} == 1)
           for: 15m
           labels:
             severity: warning
           annotations:
             runbook_url: '${cluster_runbook_base_url}/08-dns.md#unbound-alerts'
-            summary: 'unbound_exporter {{ $labels.instance }} is not being scraped'
+            summary: 'unbound_exporter is not being scraped on both resolvers'
             description: >-
-              Prometheus has not scraped unbound_exporter on
-              {{ $labels.instance }} (:9167) for 15 minutes, so every Unbound
-              alert is blind for this resolver rather than firing. Check
+              Prometheus is scraping unbound_exporter (:9167) on fewer than
+              both resolvers (10.0.10.150 / 10.0.10.160) for 15 minutes, so
+              every Unbound alert is blind for the one it cannot see. Check
               `systemctl status unbound_exporter` on the guest, then the
               EndpointSlice addresses in
               observability/exporters/unbound-exporter.yaml.

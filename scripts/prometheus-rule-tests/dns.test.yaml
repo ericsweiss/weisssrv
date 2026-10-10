@@ -6,13 +6,15 @@ rule_files:
   - rules.yaml
 evaluation_interval: 1m
 tests:
-  # Unbound's control socket stops answering on dns-01 while the exporter is
-  # still scraped: UnboundDown fires, UnboundExporterDown stays quiet.
+  # Unbound's control socket stops answering on dns-01 while both exporters
+  # are still scraped: UnboundDown fires, UnboundExporterDown stays quiet.
   - interval: 1m
     input_series:
       - series: 'unbound_up{job="unbound-exporter", instance="10.0.10.150:9167"}'
         values: '1+0x5 0+0x30'
       - series: 'up{job="unbound-exporter", instance="10.0.10.150:9167"}'
+        values: '1+0x35'
+      - series: 'up{job="unbound-exporter", instance="10.0.10.160:9167"}'
         values: '1+0x35'
     alert_rule_test:
       # Inside the 5m hold — an unbound restart must not page.
@@ -51,6 +53,7 @@ tests:
 
   # The scrape fails on dns-02. unbound_up goes stale with it, so UnboundDown
   # cannot fire for that resolver and only the exporter arm covers the outage.
+  # count() aggregates away the labels, so the alert names no instance.
   - interval: 1m
     input_series:
       - series: 'up{job="unbound-exporter", instance="10.0.10.150:9167"}'
@@ -68,14 +71,52 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
-              job: unbound-exporter
-              instance: 10.0.10.160:9167
       - eval_time: 25m
         alertname: UnboundDown
         exp_alerts: []
 
-  # No target at all: the absent() arm is the only thing that still reports.
-  # absent() carries the selector's own job label and no instance.
+  # dns-02 drops out of service discovery while dns-01 stays healthy: its up
+  # series ends rather than going to 0, which the old per-instance `up == 0`
+  # arm could never see. The count against the expected two still fires.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="unbound-exporter", instance="10.0.10.150:9167"}'
+        values: '1+0x35'
+      - series: 'up{job="unbound-exporter", instance="10.0.10.160:9167"}'
+        values: '1+0x5'
+      - series: 'unbound_up{job="unbound-exporter", instance="10.0.10.150:9167"}'
+        values: '1+0x35'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: UnboundExporterDown
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: UnboundExporterDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+      - eval_time: 30m
+        alertname: UnboundDown
+        exp_alerts: []
+
+  # Both scrapes fail. count() of the healthy targets is empty rather than 0,
+  # so the comparison inside absent() is what keeps the total outage loud.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="unbound-exporter", instance="10.0.10.150:9167"}'
+        values: '0+0x35'
+      - series: 'up{job="unbound-exporter", instance="10.0.10.160:9167"}'
+        values: '0+0x35'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: UnboundExporterDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+
+  # No target at all: count() has nothing to count, so the absent() arm is the
+  # only thing that still reports. Its argument is a comparison rather than a
+  # bare selector, so no job label rides along.
   - interval: 1m
     input_series:
       - series: 'unbound_cache_hits_total{job="unbound-exporter", instance="10.0.10.150:9167", thread="0"}'
@@ -86,7 +127,6 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
-              job: unbound-exporter
 
   # Upstreams wedged: 10 SERVFAIL per 70 answers is 14%, over the 5% threshold.
   # The nodata counter runs alongside at 200/min, so summing it into the
