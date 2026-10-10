@@ -246,8 +246,7 @@ those leave `retention_blocked 0`, so `ResticOffsitePruneFailed` and
 ### Unit start timeouts
 
 systemd disables `TimeoutStartSec` for `Type=oneshot`, so the role sets it on
-every unit from v0.18.0 on; an earlier collection pin leaves every oneshot
-unbounded. A run that exceeds its budget is SIGKILLed, which looks like a hang
+every unit. A run that exceeds its budget is SIGKILLed, which looks like a hang
 in the journal.
 
 | Variable | Default | Governs |

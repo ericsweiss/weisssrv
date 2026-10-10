@@ -65,12 +65,12 @@ compression: lz4 (ssd/appdata; pool default zstd)
   (`nas_storage_archive_backup_exclude`): both TSDBs are re-derivable and huge,
   and they are already out of restic. An excluded child keeps no source-side
   `archsync-*` snapshot, and the stream leaves whatever archive-side copy it
-  already had in place: the run warns, names it and counts it in
+  has in place: the run warns, names it and counts it in
   `archive_backup_excluded_orphans`, and reclaiming that space is an explicit
   `zfs destroy -r` (docs/12 § ArchiveBackupFailed / ArchiveBackupStale). The
-  Nextcloud VM
-  (156) adds `ssd/appdata/nextcloud/app` (20G, /mnt/nextcloud-app: compose +
-  html/config + backups) and `ssd/appdata/nextcloud/postgres` (16G, PGDATA).
+  Nextcloud VM (156) adds `ssd/appdata/nextcloud/app` (20G,
+  /mnt/nextcloud-app: compose + html/config + backups) and
+  `ssd/appdata/nextcloud/postgres` (16G, PGDATA).
   Its bulk user data is a 2T **sparse** zvol `tank/nextcloud-data/disk` under the
   encrypted `tank/nextcloud-data` root (already in the archive SRC_LIST).
 - `ssd/databases` - Empty; an encryption root kept for shape, deliberately out
