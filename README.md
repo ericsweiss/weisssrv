@@ -396,9 +396,9 @@ the external name (auth.ericsweiss.com) even for an internal-only app.
 
 - **Numbered docs (`docs/NN-topic.md`)** are for a subsystem or an application
   someone has to operate. Numbers are assigned in order of creation and are
-  **not** re-used; the grouping above (Getting Started / Infrastructure /
-  Platform / Applications / Operations) is the taxonomy, the number
-  is just an identifier. Do not repeat the number in the document's `#` title —
+  **not** re-used; the grouping above (Getting Started / Infrastructure
+  Services / Platform / Applications / Operations and Planning) is the taxonomy,
+  the number is just an identifier. Do not repeat the number in the document's `#` title —
   that turns a renumber into a content edit.
 - **An app README** (`kubernetes/apps/<app>/README.md`) covers what lives in that
   folder. If a numbered doc owns the subject, say so in the README's first
