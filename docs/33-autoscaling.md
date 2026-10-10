@@ -321,7 +321,10 @@ when a chart injects a limit it must stop re-imposing). alloy and homarr are the
 most recent joiners: they were running on live limits ~4.8x and ~2.3x their
 declared ones, so the ceiling a pod admitted *without* the mutating webhook
 (which is `failurePolicy: Ignore`) would have received sat below their measured
-peak, and their limits were re-derived in the same commit. bar-assistant joined
+peak, and their limits were re-derived in the same commit. homarr's declared
+request tracks its VPA memory target for the same reason — left at the old
+256Mi, a pod admitted during a webhook outage ran at a third of its working set
+and held `VPARecommendationExceedsRequest` on for as long as it lived. bar-assistant joined
 the set after OOMKilling against a 276Mi ceiling its VPA had rescaled down from
 the declared 1Gi; its limit stays at 1Gi rather than the peak +60% figure,
 because the OOM shows the sampled 184Mi 30d peak understates the burst. Flipping one lowers

@@ -146,12 +146,12 @@ spec:
             timeoutSeconds: 10
             failureThreshold: 5
           # Hand-set limit (VPA is RequestsOnly - docs/33): 896Mi = 30d
-          # working-set peak (548Mi) +60%. The VPA webhook is failurePolicy:
-          # Ignore, so a pod admitted while it is down runs at exactly this.
+          # working-set peak (548Mi) +60%. The request tracks the VPA target, so
+          # a pod admitted while that webhook is down is still sized right.
           resources:
             requests:
               cpu: 50m
-              memory: 256Mi
+              memory: 576Mi
             limits:
               # No CPU limit (repo policy — docs/33); memory capped.
               memory: 896Mi
