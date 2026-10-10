@@ -84,9 +84,8 @@ Four fragments emit no job of their own and are consumed via `extends:` /
 `COPY --chmod`).
 
 **Pending adoption.** This table is the authority on what the library has
-extracted but this pipeline does not yet include (the library keeps no
-per-consumer ledger — since v0.9.0 each consumer records its own adoption
-state); each entry is blocked on the local block it would replace:
+extracted but this pipeline does not include. Each row names the local block it
+would replace and the blocker that keeps it local:
 
 | Library file | Local counterpart | Blocker |
 |---|---|---|
@@ -96,10 +95,9 @@ state); each entry is blocked on the local block it would replace:
 | `/ci/deploy/cluster-verify-base.yml` | the `.k3s-deploy-base` definition in `.gitlab-ci.yml` | the local base layers op, kubectl and a reachability probe the fragment does not carry |
 | `/ci/validate/cluster-drift-plan.yml` | the `.k3s-deploy-base` definition in `.gitlab-ci.yml` | depends on adopting `cluster-verify-base.yml` first: the template extends that fragment by name |
 
-Since the library keeps no per-consumer ledger, this table **is** this repo's
-adoption record. `scripts/test_ci_gates.py::TestPendingAdoptionTable` keeps it
-honest: it checks every row's library path and local anchor, and sweeps for
-library templates that are neither included, tabled, nor declared not-consumed.
+`scripts/test_ci_gates.py::TestPendingAdoptionTable` keeps the table honest: it
+checks every row's library path and local anchor, and sweeps for library
+templates that are neither included, tabled, nor declared not-consumed.
 
 Every row names its local counterpart as a backticked `.anchor`, because that is
 what the gate checks: the anchor's DEFINITION still existing is what "not yet
@@ -122,10 +120,9 @@ Rules of engagement:
   automatic) → bump every `ref:` in this repo's `include:` block in one MR.
   The library's `docs/VERSIONING.md` and `docs/INCLUDE-CONTRACT.md` own the
   input contract and the upgrade flow.
-- **The library tag also pins the Ansible roles.** Since the migration to the
-  `weisssrv.infra` collection, `ansible/requirements.yml` pins the same library
-  repo at a release tag. A library bump is therefore a CI change *and* a
-  platform change — bump both, and expect every `deploy-*` job to fire (they all
+- **The library tag also pins the Ansible roles.** `ansible/requirements.yml`
+  pins the same library repo at the same release tag, so a library bump is a CI
+  change *and* a platform change — bump both, and expect every `deploy-*` job to fire (they all
   list `ansible/requirements.yml` in `changes:`).
 - **Prove pipeline parity when bumping the ref**: compare the job list and each
   job's script/rules against the previous pipeline before merging. The library
@@ -247,9 +244,8 @@ Job-level `retry` does not include `script_failure`; transient build/push
 failures are retried by a bounded in-script loop instead, so a genuinely broken
 Dockerfile fails fast.
 
-The **Molecule images are no longer built here** — `molecule-ci` and
-`molecule-test` are published by `weisssrv-lib` and pulled at
-`$WEISSSRV_LIB_REF`.
+The **Molecule images ship from weisssrv-lib** — `molecule-ci` and
+`molecule-test` are published there and pulled at `$WEISSSRV_LIB_REF`.
 
 #### Lint Stage
 | Job | Triggers | Description |
@@ -355,7 +351,7 @@ dependencies — nothing fails.
 |-----|----------|-------------|
 | `terraform-validate` | terraform/** | Terraform syntax |
 | `check-deploy-playbooks` | ansible/playbooks/**, ansible/inventories/prod/**, ansible/requirements.yml, ansible/ansible.cfg, `.gitlab-ci.yml` | Credential-free (no 1Password, no SSH) so it runs on MRs too. Installs the pinned collection, parses every `ansible-playbook` invocation out of each `deploy-*`/`maintenance-*` job's own `script:`, and asserts each playbook exists and each `--tags` selection reaches a real task — a bogus tag exits 0 having deployed nothing. Two known gaps, both stated in the job header: it cannot catch a job that forgot an `op://` variable, and it does not follow a `bash scripts/*.sh` wrapper, so the six invocations inside `scripts/maintenance-all-ops.sh` (which `maintenance-run-all` delegates to) are unchecked — they are duplicates of the individual maintenance jobs today, but a playbook or tag added only there would go unwalked |
-| `terraform-plan` | terraform/cloudflare/** + 1Password | Full Cloudflare plan with credentials (tailscale changes no longer re-plan the Cloudflare module). Its MR rule is **inert** while `OP_SERVICE_ACCOUNT_TOKEN` is protected — see the credential note below |
+| `terraform-plan` | terraform/cloudflare/** + 1Password | Full Cloudflare plan with credentials; its path list is scoped to the Cloudflare root, so a tailscale change does not re-plan it. Its MR rule is **inert** while `OP_SERVICE_ACCOUNT_TOKEN` is protected — see the credential note below |
 | `tailscale-drift-plan` | terraform/tailscale/** on **main** + schedules | Read-only `terraform plan` of the tailnet ACL module against its own state backend; advisory on exit 2 via `allow_failure: exit_codes: [2]`, so drift warns while a broken plan — plan error, expired credentials, unreachable endpoint, state lock — exits 1 and fails red; deliberately outside validation-gate. No MR rule — see the credential note below |
 | `authentik-drift-plan` | terraform/authentik/** on **main** + schedules | Read-only `terraform plan` of the Authentik SSO module against its own state path; catches out-of-band Admin-UI edits. Advisory, outside validation-gate. The apply stays a supervised `task terraform:authentik-apply` (docs/40). No MR rule — see the credential note below |
 | `unifi-drift-plan` | terraform/unifi/** on **main** + schedules | Read-only `terraform plan` of the UniFi network module (VLANs, firewall zones and policies, WLANs) against its own state path; catches out-of-band UniFi-console edits. Advisory, outside validation-gate. The apply stays a supervised `task terraform:unifi-apply` (docs/46). No MR rule — see the credential note below |
@@ -380,9 +376,9 @@ dependencies — nothing fails.
 >   on main; `task terraform:cloudflare-plan` is the local substitute, and the
 >   deploy job's plan output is the human checkpoint.
 > - **`pr-agent-review` gates on `$OPENAI__KEY`,** not on the 1Password token —
->   its own credentials are CI variables (`secrets_source: env`), so it never
->   needed the vault, and gating on a variable that no longer exists on MR refs
->   would have silently deleted the job.
+>   its own credentials are CI variables (`secrets_source: env`), so it needs
+>   no vault. `OP_SERVICE_ACCOUNT_TOKEN` is protected and therefore absent on MR
+>   refs, so gating on it would silently delete the job.
 >
 > The six advisory drift plans do not run on MRs at all: their real detector is
 > the schedule and their applies are supervised, so the MR run bought nothing
@@ -495,8 +491,8 @@ agent's Flux integration (poll is the fallback — see docs/29-flux-operations.m
 
 #### Deploy Stage - Ansible Infrastructure
 
-> **Deploy triggers after the collection migration.** There are no role paths in
-> this repo to key on, so every `deploy-*` job triggers on three things:
+> **Deploy triggers.** Roles live in the collection, so every `deploy-*` job
+> triggers on three things:
 > **`ansible/requirements.yml`** (the collection pin — a library bump redeploys
 > everything), **the playbook(s) it runs**, and **its inventory inputs**
 > (`hosts.yml`, the relevant `group_vars`/`host_vars`, and `all.yml` where the

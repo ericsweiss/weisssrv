@@ -216,5 +216,5 @@ NFS/Samba on the NAS, the certificate-distribution SSH path from dns-01, and
 
 - [Molecule](https://molecule.readthedocs.io/)
 - [molecule-plugins (docker driver)](https://github.com/ansible-community/molecule-plugins)
-- weisssrv-lib: the collection README and `MIGRATING.md` for the role-side
-  contract, and that repo's own testing docs for the per-role scenarios
+- weisssrv-lib: the collection README for the role-side contract, and that
+  repo's own testing docs for the per-role scenarios

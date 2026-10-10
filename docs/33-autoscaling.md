@@ -196,10 +196,7 @@ The mirror image, and the more common one. A mutating VPA rewrites resources at
 **pod admission**, so a pod carries the request/limit pair it was admitted with
 for its whole lifetime. Commit a new limit — or flip `controlledValues` — on an
 `Initial`-tier (or low-churn `Auto`-tier) VPA and Flux applies it to the
-*template* while every running pod keeps the old numbers. external-dns ran for
-days at a 99Mi live ceiling against a declared 256Mi for exactly this reason: its
-pods were admitted under the previous `RequestsAndLimits` shape, which had
-ratio-scaled the limit down with the request, and nothing re-admitted them.
+*template* while every running pod keeps the old numbers.
 
 **So a commit that changes a memory limit or `controlledValues` needs a manual
 rollout restart in the same change window**, e.g.

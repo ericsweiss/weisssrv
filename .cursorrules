@@ -1,4 +1,4 @@
 # Cursor Rules for weisssrv
 
-Legacy Cursor format, superseded by `.cursor/rules/weisssrv-development.mdc`.
-Both defer to [AGENTS.md](AGENTS.md), which is the entry point for every agent.
+This file and `.cursor/rules/weisssrv-development.mdc` both defer to
+[AGENTS.md](AGENTS.md), which is the entry point for every agent.

@@ -58,17 +58,16 @@ the agent registration in GitLab. It is allowlisted in
 credentials and no `op://` references of their own, so every secret arrives as
 an inventory variable resolved by consumer 1 above. Several roles declare these
 values as required inputs rather than carrying a site default, so the reference
-must exist in this repo's inventory. The collection's migration guide
-§ "Externalized defaults" lists them.
+must exist in this repo's inventory. Each role's README in the collection lists
+every input it requires.
 
 ## Required 1Password Items
 
 This is the canonical, authoritative inventory of every item the deployment
 expects. Each subsection names its vault; unless stated otherwise the item lives
-in **Homelab**. CLAUDE.md, `docs/02-install.md`,
-`docs/13-ci-cd.md`, `docs/27-gitlab-deployment.md`, and
-`docs/28-gitlab-migration.md` all point here; update this list (not those files)
-when an item is added or its fields change.
+in **Homelab**. CLAUDE.md, `docs/02-install.md`, `docs/13-ci-cd.md` and
+`docs/27-gitlab-deployment.md` all point here; update this list (not those
+files) when an item is added or its fields change.
 
 The **Inventory** table below is the complete list. Items whose handling needs
 more than a table cell have a subsection under
@@ -262,8 +261,8 @@ converged the root, the empty plan is again the pass condition and any diff
 during a rotation is real drift, not an accepted exception. The key is also read by `unifi-drift-plan`. That job's `allow_failure` is scoped
 to `exit_codes: [2]`, so only real drift renders yellow — a revoked key (401) or
 a renamed field fails the job red and is visible on the next scheduled pipeline.
-See docs/48 § Expected breakage (all closed) for the "must be green after the
-first apply" rule.
+Once a supervised apply has converged the root, a yellow `unifi-drift-plan` is
+real drift (`terraform/unifi/README.md` owns the plan/apply rules).
 
 #### WiFi SSID pre-shared keys
 
@@ -357,10 +356,9 @@ is restarted.
 SQLite-stored integration credentials — **do not lose it**, or those stored
 credentials become unreadable.
 
-`admin-username` / `admin-password` are operator-set, not ESO-injected, and are a
-record of the onboarding bootstrap admin that was deleted at the SSO-only
-cutover. No current auth path consumes them; break-glass DR mints its own
-username and one-time password via `homarr-cli recreate-admin` (docs/41 § SSO).
+`admin-username` / `admin-password` are operator-set, not ESO-injected: a DR
+convenience no auth path consumes. Break-glass DR mints its own username and
+one-time password via `homarr-cli recreate-admin` (docs/41 § SSO).
 
 #### NZBGet
 
@@ -606,11 +604,11 @@ revoked credential is the failure being avoided.
 - Null client passwords: `/etc/postfix/sasl_passwd` updated on all Proxmox hosts
   and DNS LXCs by 4a, on the app VMs and k3s nodes by 4b
 - Postfix reloads on all affected hosts
-- Both roles rebuild the compiled `sasl_passwd.db` / `aliases.db` whenever they
-  no longer match their source, rather than relying on the `notify` handler
-  alone: a play that dies before `flush_handlers` used to leave a correct source
-  next to a stale database, and the host kept authenticating with the OLD
-  credential with nothing reporting changed
+- Both roles assert the compiled `sasl_passwd.db` / `aliases.db` against their
+  source on every run and rebuild on a mismatch, rather than relying on the
+  `notify` handler alone: a play that dies before `flush_handlers` would
+  otherwise leave a correct source next to a stale database, and the host would
+  keep authenticating with the old credential with nothing reporting changed
 
 **Affected Hosts**:
 - `smtp-relay` - Both passwords

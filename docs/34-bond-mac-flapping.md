@@ -1,10 +1,9 @@
 # Host network faults: bond MAC-flap, e1000e TX hang, br_netfilter skb_ext leak
 
 A recurring, intermittent network black-hole on HA-managed guests (dns-01,
-dns-02, smtp-relay, home-assistant) — historically misdiagnosed as a "dumb
-switch / MAC-flapping" hardware problem. The root cause is a bonding option,
-not the switch. This runbook documents the diagnosis, the immediate recovery,
-and the permanent fix (codified in the `nic_tuning` role).
+dns-02, smtp-relay, home-assistant). The cause is the `all_slaves_active`
+bonding option, not the switch. This runbook documents the diagnosis, the
+immediate recovery, and the permanent fix (codified in the `nic_tuning` role).
 
 > **Three host network faults live in this file.** If the *whole host* went
 > dark (dropped out of the Proxmox cluster, needed a power-cycle), this is
@@ -23,8 +22,7 @@ and the permanent fix (codified in the `nic_tuning` role).
 - Traffic to **co-resident** guests on the same host still works, so it looks
   partial/flaky rather than "down".
 - Recurs after reboots and HA relocations. Power-cycling the switch "fixes" it
-  temporarily by flushing its MAC table, which historically pointed the finger
-  at the hardware.
+  temporarily by flushing its MAC table.
 - DNS-specific fallout: CoreDNS round-robins to both `.150` and `.160`, so when
   dns-02 is black-holed, ~half of in-cluster lookups time out and CI/pods flake
   on DNS.
@@ -113,11 +111,10 @@ bond (`nic_tuning_bond_asa_guard`, default `true`) across three layers:
 
 - **Boot-time control** (`/etc/modprobe.d/bonding.conf`): surgically flips a
   stale `all_slaves_active=1` → `0` in the bonding module options, preserving
-  `fail_over_mac`. This is what actually decides the value at boot — the module
-  default is applied when bonding loads, *before* ifupdown2 runs. **This was the
-  missing piece**: the fleet's `bonding.conf` still carried the legacy `=1`, so
-  despite the interfaces rewrite below the kernel value reverted to `1` on every
-  reboot (ifupdown2 does not honor the `bond-all_slaves_active` stanza). Applies
+  `fail_over_mac`. This is what decides the value at boot — the module option is
+  applied when bonding loads, *before* ifupdown2 runs, and ifupdown2 does not
+  honor the `bond-all_slaves_active` stanza, so the module option is the only
+  layer that survives a reboot. Applies
   on the next module load (reboot); no initramfs rebuild — bonding loads at
   network-up from the live `/etc/modprobe.d`.
 - **Interfaces stanza** (belt-and-suspenders): surgically rewrites an explicit

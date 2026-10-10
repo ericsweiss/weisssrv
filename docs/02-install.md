@@ -715,8 +715,7 @@ After successful deployment:
 1. Review [03-ssh-users.md](03-ssh-users.md) for SSH and user management
 2. Configure quality of life improvements: [04-qol.md](04-qol.md)
 3. Set up Tailscale VPN: [05-tailscale.md](05-tailscale.md)
-4. Deploy k3s: [19-k3s-deployment.md](19-k3s-deployment.md) (the k3s layer;
-   [14-post-base-plan.md](14-post-base-plan.md) is the superseded historical plan)
+4. Deploy k3s: [19-k3s-deployment.md](19-k3s-deployment.md) (the k3s layer)
 
 Your homelab is now fully operational and managed via GitOps.
 

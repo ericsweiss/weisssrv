@@ -122,12 +122,11 @@ regain emergency local access before Authentik returns:
 
 Re-running onboarding is **not** an option: Homarr's onboarding completes once
 and cannot be started again, so the CLI (not re-onboarding) is the recovery. The
-"no credentials admin currently exists" precondition holds because the
-onboarding bootstrap admin is deleted at cutover (checklist step 1). The
-recovery mints its own username + one-time password, so the 1P `Homarr SSO`
-`admin-username`/`admin-password` fields are **not** consumed by it (they are a
-historical onboarding record — see §Secrets). Once Authentik is back, log in via
-OIDC and let the reconcile revert to SSO-only.
+"no credentials admin currently exists" precondition holds because the SSO-only
+state has no credentials admin. The recovery mints its own username + one-time
+password, so the 1P `Homarr SSO` `admin-username`/`admin-password` fields are
+**not** consumed by it (§Secrets). Once Authentik is back, log in via OIDC and
+let the reconcile revert to SSO-only.
 
 ## Integrations — direct URLs bypass forward-auth
 
@@ -231,10 +230,8 @@ Homarr consumes these items from the Homelab vault:
   fails the whole Secret sync and the pod waits. The item also carries
   `admin-username` + `admin-password` (operator-set, **not** ESO-injected —
   `externalsecret.yaml` only pulls `client-secret` + `secret-encryption-key`).
-  These are a **historical record** of the onboarding bootstrap admin, which is
-  deleted at the SSO-only cutover (checklist step 1); no current auth path
-  consumes them — the break-glass DR mints its own username + one-time password
-  via `homarr-cli recreate-admin` (§SSO).
+  No current auth path consumes them — the break-glass DR mints its own username
+  + one-time password via `homarr-cli recreate-admin` (§SSO).
 - **`Homarr Proxmox Token`**: `token-id`, `token-secret` — the same
   `monitoring@pve!exporter` pair as the exporter (§ Proxmox read-only API
   token). Entered in the Homarr UI, not ESO.

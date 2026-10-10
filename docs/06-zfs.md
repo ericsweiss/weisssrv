@@ -475,10 +475,7 @@ Proxmox VMs/LXCs back up nightly (`vzdump`, `all`) to:
 The Proxmox `storage.cfg` entry (`tank-proxmox`) and the nightly vzdump job
 are Ansible-managed by the `proxmox_backup` role (config in
 `host_vars/pve-nas-01.yml`). The codified storage entry mounts by hostname
-with `vers=4.2,xprtsec=tls`; migrating the legacy IP-based entry is a
-one-time supervised step (outside a backup window:
-`pvesh delete /storage/tank-proxmox` — config only, data untouched — then
-re-run the role). See weisssrv-lib `ansible_collections/weisssrv/infra/roles/proxmox_backup/README.md`.
+with `vers=4.2,xprtsec=tls`. See weisssrv-lib `ansible_collections/weisssrv/infra/roles/proxmox_backup/README.md`.
 
 ## Ansible Management
 

@@ -141,6 +141,12 @@ When configuring applications (Kubernetes pods, Docker containers, etc.):
 `nas_storage_exports` in `host_vars/pve-nas-01.yml` is the source of truth for
 the export set, its per-client options and `xprtsec`.
 
+> **CRITICAL: never `systemctl stop` an `export-*.mount` unit** — stopping it
+> cascades to `nfs-server` and drops every client. Confirm
+> `systemctl is-active nfs-server` after any storage surgery. A `mount --rbind`
+> captures the read-only flag at bind time, so an export whose dataset was
+> read-only when bound needs the bind redone once the dataset is read-write.
+
 ### Access Control
 
 Transport values are the short form; § Transport Security below is the single
@@ -228,26 +234,11 @@ mount -t nfs4 10.0.10.102:/media /mnt/media
     weisssrv-lib `ansible_collections/weisssrv/infra/roles/nfs_tls/README.md` and
   the in-transit matrix in [docs/47](47-security-posture.md).
 
-### Cutting a node over from plaintext to TLS
-
-A node cannot hold a plaintext mount and an `xprtsec=tls` mount to the same
-server at once. Long-running pods and orphaned kubelet mounts pin a node to
-plaintext, so the cutover is:
-
-1. Scale every Deployment on that node which mounts the server to 0. The
-   `Recreate` strategy keeps a new pod from racing the old one for an RWO mount.
-2. Force-unmount the orphans:
-
-   ```bash
-   mount -t nfs4 | grep -E '<server-host>|<server-ip>' | grep -v xprtsec=tls \
-     | awk '{print $3}' | xargs -rn1 sudo umount -f -l
-   ```
-
-3. Scale back up. The first mount establishes the TLS session and the rest reuse
-   it. Verify with `mount -t nfs4 | grep -c xprtsec=tls`.
-
-Sweep the fleet afterwards. A client that only ever mounts plaintext is fine —
-the rule is per-client internal consistency, not a fleet-wide state.
+  **A node cannot hold a plaintext mount and an `xprtsec=tls` mount to the same
+  server at once**, and long-running pods or orphaned kubelet mounts pin it to
+  whichever it established first. The rule is per-client internal consistency,
+  not a fleet-wide state, which is what lets HAOS stay plaintext while every k3s
+  node is TLS-only. A rebuilt node mounts TLS from the start.
 
 ## Samba Shares
 

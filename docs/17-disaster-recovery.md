@@ -76,14 +76,13 @@ documented fallback.
 ## Accepted Risk: Network Fabric SPOF
 
 The network fabric is a single point of failure the rest of this analysis
-otherwise omits, and the UniFi migration ([docs/48](48-unifi-audit-and-migration.md)) did not
-remove it — it segmented the estate without adding redundancy. Both legs of every
-active-backup bond plug into **one switch** (now the USW-Pro-XG-8-PoE; see
+otherwise omits: the UniFi tier segments the estate without adding redundancy.
+Both legs of every active-backup bond plug into **one switch** (the
+USW-Pro-XG-8-PoE; see
 [docs/34-bond-mac-flapping.md](34-bond-mac-flapping.md)), and there is **one
 router/gateway** (the UCG-Fiber, `10.0.10.1` on VLAN 10 and `10.0.1.1` on the
-management VLAN, which is also DHCP and the Cloudflare-origin port-forwarder;
-before the cutover this was an Asus GT-AX11000 in the same role). The homelab
-still rides one `vmbr0` — now VLAN 10 rather than a flat /24 — with **no second
+management VLAN, which is also DHCP and the Cloudflare-origin port-forwarder).
+The homelab rides one `vmbr0` on VLAN 10, with **no second
 corosync ring** (`cluster.fw.j2` reserves 5406/ring1 for a future knet link, but
 only 5405/ring0 is configured). A switch or gateway failure does not merely drop
 internet: it collapses Proxmox corosync quorum and k3s etcd traffic
@@ -163,9 +162,9 @@ flood).
    Its nightly tarball reaches B2 — but you cannot read B2 without the repo's
    tooling, so the bootstrap copy is the **read-only GitHub mirror**
    (`github.com/ericsweiss/weisssrv`). `weisssrv-lib` and both templates are
-   mirrored too, with their release tags — which matters, because since the
-   collection migration this repo has no local roles directory and every playbook
-   needs `weisssrv.infra` at the pinned tag. Install it from the mirror:
+   mirrored too, with their release tags — which matters, because this repo has
+   no local roles directory and every playbook needs `weisssrv.infra` at the
+   pinned tag. Install it from the mirror:
 
    ```bash
    ansible-galaxy install -r <(sed 's#git.ericsweiss.com/eric#github.com/ericsweiss#' ansible/requirements.yml)
@@ -486,11 +485,10 @@ backups-apps` puts them at
   (`docs/22-recipes-deployment.md`).
 - **Home Assistant** — full-VM recovery rides the monitored nightly vzdump of the
   HAOS VM (.154) via `VzdumpBackupStale`. The HAOS built-in backups
-  (`docs/24-home-assistant-deployment.md`) are **no longer unmonitored**: they
+  (`docs/24-home-assistant-deployment.md`) are **monitored**: they
   land on `tank/backups/apps/home-assistant` over the HAOS network-storage mount,
   ride archsync into B2, and are watched by
-  `BackupArtifactStale{app="home-assistant"}` (docs/42 superseded the old
-  best-effort framing). They are **encrypted** — restoring them needs the
+  `BackupArtifactStale{app="home-assistant"}` (docs/42). They are **encrypted** — restoring them needs the
   emergency-kit key stored as `backup_encryption_key` on the "Home Assistant API
   Token" 1Password item (`docs/15-credential-rotation.md`); without it the tars
   are unusable, so verify that field is populated as part of the restore drill.

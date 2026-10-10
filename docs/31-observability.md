@@ -126,9 +126,8 @@ The `monitoring.coreos.com` CRDs are installed up-front by the
 under `apps/` (the qbittorrent PodMonitor, the authentik chart ServiceMonitor)
 and this stack's own ServiceMonitors render cleanly — no manual CRD pre-apply.
 kube-prometheus-stack runs with `crds.enabled: false` + `install/upgrade.crds:
-Skip` (the CRD stage owns them). See docs/29 (Fresh bootstrap / disaster
-recovery) for the one-time live-cluster CRD adoption. In steady state the CRDs
-persist even if this Kustomization temporarily fails, so apps are unaffected by
+Skip` (the CRD stage owns them — docs/29 § Fresh bootstrap / disaster
+recovery). In steady state the CRDs persist even if this Kustomization temporarily fails, so apps are unaffected by
 observability incidents.
 
 ### Namespace
@@ -511,16 +510,9 @@ automount its token, and only the two sidecars get one — see the comments in t
 file. A Secret-backed dashboard/datasource needs `secrets` added back there AND
 the sidecar `resource:` widened, deliberately two edits.
 
-After the reconcile that first ships this, confirm Helm removed the objects it
-used to own (the replacements carry different names, which is what lets the
-binding change at all — `roleRef` is immutable):
-
-```bash
-kubectl get clusterrole,clusterrolebinding | grep grafana
-# expect ONLY kube-prometheus-stack-grafana-configmaps (role + binding);
-# a surviving kube-prometheus-stack-grafana-clusterrole/-clusterrolebinding
-# still grants cluster-wide secret reads and must be deleted by hand.
-```
+`kube-prometheus-stack-grafana-configmaps` (role + binding) is the only
+cluster-scoped grafana RBAC that should exist: any other grafana ClusterRole
+grants cluster-wide secret reads.
 
 Three more workloads shipped chart-default ClusterRoles granting cluster-wide
 `configmaps` + `secrets` reads: alloy, alloy-syslog and loki. After a reconcile

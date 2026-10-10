@@ -164,8 +164,7 @@ Two tiers plus an application-level DB dump:
    so the dump rides archive and restic B2 rather than the app zvol
    ([docs/42](42-offsite-backup.md)). This is the point-in-time DB recovery path
    and is uniform with the GitLab backup plumbing. `/mnt/backups-offsite` is the
-   sole dump location; the superseded `/mnt/immich-app/backups` (~187 MB, newest
-   2026-07-22) is pruned by nothing and needs a one-time manual sweep.
+   sole dump location.
    Immich's own built-in DB dump is disabled
    (`backup.database.enabled: false` in the config file) to avoid duplication.
    `immich-backup-run.sh` emits node_exporter textfile metrics
