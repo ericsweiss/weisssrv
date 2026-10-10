@@ -1,6 +1,6 @@
 # No ci_access grant: nothing in CI uses the agent's kubeconfig, and its
 # ServiceAccount is cluster-admin — a standing grant hands every MR pipeline
-# that identity. Re-add it with the migration tracked in docs/16.
+# that identity (docs/16).
 observability:
   logging:
     level: warn
