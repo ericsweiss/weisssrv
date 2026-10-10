@@ -20,10 +20,9 @@ app.
 The model is **per-dataset encryption roots, not pool-level**. The tank /
 ssd pool roots stay plaintext; individual child datasets that hold
 sensitive data are each their own encryption root (the dataset name equals
-its `encryptionroot`), all sharing the one per-pool passphrase. New
-datasets are created encrypted from the start (§2a); the datasets that
-predated the rollout were migrated in place via `zfs send | zfs recv` +
-`zfs change-key`.
+its `encryptionroot`), all sharing the one per-pool passphrase. Every
+encrypted dataset was created encrypted (§ Step 2) — ZFS has no in-place
+conversion.
 
 At boot `zfs-load-key.sh` enumerates the encryption roots under the pool
 (`zfs get -r encryptionroot <pool>`, keeping the rows where name == value)
@@ -36,29 +35,27 @@ loaded. The role's per-pool entry in `zfs_encryption_pools` (e.g.
 `name: tank`) therefore covers every encrypted descendant without the pool
 root itself being encrypted.
 
-### Encrypted (post-rollout)
+### Encrypted
 
 All encrypted datasets are their own encryption root (Model B), so the
 dataset names — and therefore every `/dev/zvol` path, Proxmox storage
 reference, and NFS export path — are unchanged by encryption.
 
 - **NAS (`pve-nas-01`)**:
-  - `tank/share` (LAN file share) — migrated via send/recv.
-  - `tank/proxmox` (Proxmox VM backup target, ~3T referenced) — migrated.
-  - `tank/backups` (765G) — migrated via send/recv.
-  - `tank/nextcloud-data` — created encrypted; holds the Nextcloud VM's
-    passthrough zvols (docs/35).
-  - `tank/immich-data` — created encrypted; holds the Immich photo library
-    zvol (docs/36).
+  - `tank/share` — the LAN file share.
+  - `tank/proxmox` — the Proxmox VM backup target (~3T referenced).
+  - `tank/backups` (765G) — the per-app logical-dump targets.
+  - `tank/nextcloud-data` — the Nextcloud VM's passthrough zvols (docs/35).
+  - `tank/immich-data` — the Immich photo library zvol (docs/36).
   - `ssd/appdata` and its children (`authentik` + `authentik/postgres` are
     their own roots; `gitlab`, `loki`, `mealie`, `prometheus` inherit from
-    `ssd/appdata`) — every app PV / DB. Migrated one at a time.
-  - `ssd/databases` — migrated.
+    `ssd/appdata`) — every app PV / DB.
+  - `ssd/databases` — the app databases.
   - `ssd/pve` (`vm-153-disk-0` + `vm-153-cloudinit`, the GitLab VM disks) —
-    migrated; the Proxmox storage `ssd` reference is unchanged.
+    the Proxmox storage `ssd` reference is unchanged.
   - `ssd/k3s-etcd` — own root; holds the off-node k3s etcd snapshot copies
-    (docs/17). Created encrypted at activation (the copies are full cluster
-    state, so they must not land plaintext on the NAS).
+    (docs/17), which are full cluster state and must not land plaintext on
+    the NAS.
 
   GitLab's backup tarball lands on the NFS mount `/mnt/backups-offsite`
   (= `tank/backups/apps/gitlab`), which is an encryption root, so it is
@@ -150,13 +147,10 @@ reference, and NFS export path — are unchanged by encryption.
 
   CT 152 (plex) and CT 158 (immich-ml) carry no quorum constraint, so their
   rootfs lives on the encrypted `ssd` pool (`proxmox_lxc_storage: ssd` in
-  their host_vars; each migrated off `local-lvm` once with
-  `pct move-volume <id> rootfs ssd --delete`, stopped). The trade accepted
-  with the move is the unlock dependency: both CTs are in
-  `zfs_encryption_guest_ctids`, started by pve-start-encrypted-guests after
-  the unlock rather than by pve-guests at boot. CT 152's sensitive `/config`
-  was already a bind from the encrypted `ssd/appdata/plex`; the move closes
-  the remaining rootfs gap for both.
+  their host_vars). The accepted trade is the unlock dependency: both CTs are
+  in `zfs_encryption_guest_ctids`, started by pve-start-encrypted-guests after
+  the unlock rather than by pve-guests at boot. CT 152's sensitive `/config` is
+  a bind from the encrypted `ssd/appdata/plex`.
 
 ### Archive replication is raw (`zfs send -w`)
 
@@ -218,6 +212,12 @@ encrypted exports, and encrypted-storage guests converge LATE and async.
               │     -> Pod (replicas: 2, anti-affinity)  │
               └──────────────────────────────────────────┘
 ```
+
+**CRITICAL: nothing may put a `zfs-load-key@<pool>.service` symlink under
+`/etc/systemd/system/zfs-mount.service.requires/`.** That restores the boot
+ordering cycle this design exists to break: `zfs-mount.service` fails at boot
+and takes the guest starts that depend on the mounts with it. The late
+`zfs-mount-encrypted.service` anchor is the only thing that waits for keys.
 
 ## 1Password items
 
@@ -298,17 +298,14 @@ After this step:
 
 ### Step 2: Encrypt data
 
-There is no in-place ZFS encryption: a dataset is either **created
-encrypted**, or its data is copied into an encrypted dataset. Prefer the
-former — encryption is baked into dataset creation, not bootstrapped on
-afterward.
+There is no in-place ZFS encryption: a dataset is **created encrypted**, or
+its data is copied into one that was. Encryption is baked into dataset
+creation, never bootstrapped on afterward.
 
-#### 2a. New datasets — create encrypted from the start (preferred)
+#### Create a new dataset encrypted from the start
 
 When adding a dataset to a pool already in the encrypted set (`tank`,
 `ssd`), create it as its own encryption root with the per-pool passphrase.
-There is no separate "migrate later" step:
-
 ```bash
 # Paste the passphrase from 1P "ZFS Pool <pool> Passphrase" at the prompt.
 sudo zfs create \
@@ -323,69 +320,6 @@ The dataset's name equals its `encryptionroot`, so the boot unit's
 per-root loop (see Architecture) unlocks it automatically — nothing else to
 configure. Record it in docs/06's pool layout, and if it backs a VM zvol,
 in `vm_additional_disks` in `hosts.yml`.
-
-#### 2b. Migrating an existing plaintext dataset (reference)
-
-This is how the pre-rollout datasets were encrypted **in place while
-preserving their names** (so `/dev/zvol` paths, Proxmox storage refs, and
-NFS export paths did not change — "Model B"). One dataset at a time, with
-the consumer stopped.
-
-```bash
-SRC=ssd/appdata/authentik          # existing plaintext dataset
-ENCPARENT=ssd/enc                  # temporary encrypted staging root
-NAME=$(basename "$SRC")
-MNT=$(zfs get -H -o value mountpoint "$SRC")
-
-# 1. Stop the consumer so the data is quiescent.
-kubectl scale deploy/authentik-server -n authentik --replicas=0
-
-# 2. Snapshot.
-sudo zfs snapshot -r "${SRC}@enc-migrate"
-
-# 3. Encrypted staging root (once per pool), keyed with the per-pool
-#    passphrase from 1P "ZFS Pool <pool> Passphrase".
-sudo zfs list "$ENCPARENT" 2>/dev/null || sudo zfs create \
-  -o encryption=aes-256-gcm -o keyformat=passphrase -o keylocation=prompt \
-  -o mountpoint=none -o canmount=off "$ENCPARENT"
-
-# 4. send | recv into the staging root, EXCLUDING the encryption property so
-#    the copy INHERITS the parent's key (and is therefore encrypted).
-#    Without `-x encryption`, `send -R` replays the source's encryption=off
-#    and you get an UNENCRYPTED copy — the most common mistake here.
-sudo zfs send -R "${SRC}@enc-migrate" | \
-  sudo zfs recv -x encryption "${ENCPARENT}/${NAME}"
-
-# 5. Make the copy its OWN encryption root so it can be renamed out of the
-#    staging parent (an inheriting child cannot be renamed across roots).
-sudo zfs change-key -o keyformat=passphrase -o keylocation=prompt \
-  "${ENCPARENT}/${NAME}"      # paste the same per-pool passphrase
-
-# 6. Preserve the name: park the plaintext original, promote the encrypted
-#    copy into its place, restore the mountpoint, clear readonly.
-sudo zfs set readonly=off -r "${ENCPARENT}/${NAME}"
-sudo zfs rename "${SRC}" "${SRC}-pre-enc"
-sudo zfs rename "${ENCPARENT}/${NAME}" "${SRC}"
-sudo zfs set mountpoint="${MNT}" "${SRC}"
-sudo zfs mount "${SRC}"
-
-# 7. Bring the consumer back and verify it works against the encrypted data.
-kubectl scale deploy/authentik-server -n authentik --replicas=1
-
-# 8. Only after verifying, destroy the parked plaintext copy + its snapshot.
-sudo zfs destroy -r "${SRC}-pre-enc"
-```
-
-> **NFS submounts:** if the dataset is exported, redo the `/export` bind
-> (`mount --rbind`) AFTER the dataset is read-write — `mount --rbind`
-> captures the read-only flag at bind time. Never `systemctl stop` an
-> `export-*.mount` unit; stopping it cascades to `nfs-server`. Always
-> confirm `systemctl is-active nfs-server` after any storage surgery.
->
-> **Large datasets:** a multi-hour `send | recv` over SSH will drop; run it
-> server-side under `nohup`/`systemd-run`. Sustained multi-TB encrypted
-> send/recv has destabilized this host — stage big migrations and avoid
-> encrypting the 14.5T media tier (see "Not encrypted").
 
 ### Step 3: Activate per-pool boot units
 
@@ -549,21 +483,6 @@ systemctl is-active zfs-mount-encrypted.service     # active once mounted
 zfs get -H -o value mounted ssd/appdata tank/share  # yes
 ss -ltn 'sport = :2049'                              # nfsd listening
 qm status 153; qm status 202; pct status 152         # running
-```
-
-### After re-imaging a host or restoring `/etc`
-
-An older revision of the role installed `zfs-load-key@<pool>.service` symlinks
-under `/etc/systemd/system/zfs-mount.service.requires/`. The role no longer
-creates them and does not remove them, and a surviving one restores the boot
-ordering cycle this design exists to break (`zfs-mount.service` fails at boot,
-and with it the guest starts that depend on the mounts). Check after a re-image
-or an `/etc` restore:
-
-```bash
-ansible -i ansible/inventories/prod proxmox -m shell -a \
-  'ls -1 /etc/systemd/system/zfs-mount.service.requires/ 2>/dev/null || echo CLEAN'
-# Anything listed: rm the symlink, then `systemctl daemon-reload`.
 ```
 
 ## Threat model recap

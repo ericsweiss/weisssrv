@@ -381,10 +381,9 @@ Certificate expired or not renewing automatically.
 - **CertRenewalFailed** — the acme.sh renewal/distribution script exited non-zero.
 - **CertExpiringSoon** — the host-distributed `*.esweiss.com` cert is within 14
   days of its real `notAfter` (so renewal/distribution has actually stopped
-  working), or the metric is missing. This fires off
+  working), or the metric is missing. It fires off
   `cert_local_expiry_timestamp_seconds`, which the cert-reload script emits from
-  the live cert — it replaced the old "time since last renewal > 2 days" proxy
-  that false-fired for most of each ~60-day renewal cycle.
+  the live cert.
 - **CertRenewalFailedProlonged** — renewal/distribution on the named host has
   failed for 3 days straight. Same procedure, higher urgency.
 - **CertRenewalStale** — no successful renewal or distribution on the named
@@ -493,8 +492,7 @@ Also anchored here:
 
 Old addresses survive in stored state that nothing reconciles. Sweep 1Password
 item URLs, kubeconfigs, and any daemon still running with the old address in its
-config, then walk the holders below — each one was found by audit rather than by
-a procedure, and each stays wrong silently.
+config, then walk the holders below — each one stays wrong silently.
 
 - **Home Assistant trusted proxies** — `/config/.storage/http` on the HAOS
   guest, not YAML, and it regenerates on update, so a hand-edit can come back
@@ -1438,23 +1436,6 @@ config to dns-02, which the 5-minute timer does anyway; set
 `postflight_exercise_sync=false` to skip it while investigating a divergence
 between the two resolvers.
 
-### One-time cleanups pending
-
-**fail2ban chains on the GitLab guest (.153).** After the collection bump lands
-and deploys, run once on the guest:
-
-```bash
-ssh gitlab
-sudo iptables -F f2b-gitlab-ssh
-sudo systemctl restart fail2ban
-```
-
-Then drop the `f2b-*` chains, their INPUT jumps and the 13 frozen REJECT rules
-from `/etc/iptables/rules.v4`, or delete the file — the role no longer writes or
-reads it. The role re-applies only its own REDIRECT rules at boot through
-`gitlab-ssh-redirect.service`, so nothing else on the guest depends on
-`rules.v4` unless the site added rules by hand.
-
 ---
 
 ## K3s Cluster Maintenance
@@ -2324,9 +2305,7 @@ the LAN).
 Every timestamp collect-state stamps itself is UTC: the `# Generated:` header
 and each `=== <host> - ... ===` banner. Command output inside a section (systemd
 timers, journal excerpts) stays in the host's local time, so each host banner is
-followed by a `Host timezone:` line. Snapshots taken before this change carry
-collector-local and host-local stamps instead, which is why their headers appear
-hours apart from their banners.
+followed by a `Host timezone:` line.
 
 ### Warning-event exclusions
 
