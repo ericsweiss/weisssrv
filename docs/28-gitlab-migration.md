@@ -264,7 +264,8 @@ The weisssrv `.gitlab-ci.yml` has `default: tags: [infrastructure]` so all jobs 
 The privileged runner must be a **project runner locked to the weisssrv
 project — never an instance runner** (tags are cooperative routing; the
 registration scope is what keeps other projects' jobs away from root+DinD —
-see `docs/27-gitlab-deployment.md` § Step 8).
+see `docs/27-gitlab-deployment.md` § Step 8). The running runner is registered
+instance-wide, so that § also carries the gap and the re-registration action.
 
 1. In the **weisssrv project**, navigate to **Settings** > **CI/CD** > **Runners**
 2. Click **New project runner**
