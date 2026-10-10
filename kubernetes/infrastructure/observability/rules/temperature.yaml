@@ -60,8 +60,9 @@ spec:
               archive-pool drives' spec ceiling. Sustained over-temp is the strongest
               accelerant for HDD failure.
 
-        # NVMe via the in-tree nvme hwmon driver. Warning sits below the typical
-        # 80-82C composite warning; critical just below the throttle point.
+        # NVMe via the in-tree nvme hwmon driver, as a three-step ladder: 65C
+        # trends, 75C is the nightly backup-window band on the NAS, and 80C is
+        # the throttle point the drives actually act on.
         - alert: NVMeDriveTempWarning
           expr: >-
             max by (instance, chip) (
@@ -88,13 +89,40 @@ spec:
               NVMe drives throttle around 80C and warn around 82C; investigate before
               that happens.
 
-        - alert: NVMeDriveTempCritical
+        # The 75-80C band is a warning, not a page: the NAS nvme2 chip sits here
+        # for about 15 minutes while the nightly vzdump reads the VM disks, and
+        # the drives neither throttle nor warn until 80C.
+        - alert: NVMeDriveTempHigh
           expr: >-
             max by (instance, chip) (
               node_hwmon_temp_celsius{job="node-exporter-host", instance=~"10\\.0\\.10\\.10[2-7]:9101"}
               * on (instance, chip) group_left(chip_name)
               node_hwmon_chip_names{job="node-exporter-host", chip_name="nvme"}
             ) >= 75
+          for: 10m
+          labels:
+            severity: warning
+            component: storage
+          annotations:
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
+            summary: >-
+              NVMe drive on {{ $labels.instance }}
+              ({{ $labels.chip }}) at
+              {{ $value | printf "%.0f" }}C
+            description: >-
+              NVMe drive {{ $labels.chip }} on {{ $labels.instance }}
+              has been at {{ $value | printf "%.0f" }}C for 10 minutes —
+              above the rest of the fleet's NVMe but below the 80C throttle
+              point. A nightly recurrence on one chip is a bay-airflow
+              question; a new chip joining is a regression.
+
+        - alert: NVMeDriveTempCritical
+          expr: >-
+            max by (instance, chip) (
+              node_hwmon_temp_celsius{job="node-exporter-host", instance=~"10\\.0\\.10\\.10[2-7]:9101"}
+              * on (instance, chip) group_left(chip_name)
+              node_hwmon_chip_names{job="node-exporter-host", chip_name="nvme"}
+            ) >= 80
           for: 2m
           labels:
             severity: critical
@@ -107,8 +135,8 @@ spec:
               {{ $value | printf "%.0f" }}C
             description: >-
               NVMe drive {{ $labels.chip }} on {{ $labels.instance }}
-              is at {{ $value | printf "%.0f" }}C — within a few degrees of
-              thermal throttle.
+              is at {{ $value | printf "%.0f" }}C — at the thermal-throttle
+              point, where the drive starts slowing itself to shed heat.
 
         # CPU package and per-core temps via coretemp. These consumer CPUs spike toward
         # their ~100C TJunction under load, so the thresholds and the long `for:` target

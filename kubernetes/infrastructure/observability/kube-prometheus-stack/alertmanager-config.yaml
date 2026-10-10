@@ -53,8 +53,16 @@ spec:
               equal:
                 - instance
                 - chip
+            # Three-step NVMe ladder, so each step mutes every step below it.
             - source_matchers:
                 - alertname="NVMeDriveTempCritical"
+              target_matchers:
+                - alertname=~"NVMeDriveTempHigh|NVMeDriveTempWarning"
+              equal:
+                - instance
+                - chip
+            - source_matchers:
+                - alertname="NVMeDriveTempHigh"
               target_matchers:
                 - alertname="NVMeDriveTempWarning"
               equal:
