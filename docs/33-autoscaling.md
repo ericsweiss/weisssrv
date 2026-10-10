@@ -560,9 +560,10 @@ All of them are unit-tested in `scripts/prometheus-rule-tests/memory-sizing.test
 ## Hand-tuned request baselines
 
 Set from observed working sets. The `Off`-tier (recommendation-only)
-workloads keep these hand-tuned numbers permanently: Prometheus 4608Mi request /
-6Gi limit (retention is bounded by `retentionSize: 110GB`, with 365d as the outer
-bound); Loki 1Gi/1Gi; authentik-postgresql 640Mi/1Gi (raised
+workloads keep these hand-tuned numbers permanently: Prometheus 7168Mi request /
+8Gi limit (retention is bounded by `retentionSize: 110GB`, with 365d as the outer
+bound; the request tracks the VPA's uncapped memory target, which the mmapped
+TSDB head carries well above the process working set); Loki 1Gi/1Gi; authentik-postgresql 640Mi/1Gi (raised
 from a 512Mi limit that OOMKilled it — the worked example of applying an
 `Off`-tier recommendation). The `Initial`-tier workloads start from
 these baselines but let the VPA right-size them on the next natural restart:
