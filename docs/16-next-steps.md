@@ -190,10 +190,12 @@ start as an entry in this section.
   displayed under the `file_lock_cache` alias; with `slub_nomerge` armed it
   reports as `skbuff_ext_cache`. Arming `slub_nomerge` on the other five hosts,
   to settle the fleet-wide 230-380 MB/host/day claim, is an owner decision and
-  its own MR. Mitigation to trial, staged: install `proxmox-firewall` and set
-  `proxmox_firewall_nftables: true` in one opt host's `host_vars`, verify the
-  guest firewall still filters (including `sg-syslog-vip` on the ingress
-  agents), watch the slab trend for a week, then the NAS. Keep the
+  its own MR. Mitigation under trial, staged: pve-opt-02 carries
+  `proxmox_firewall_nftables: true` in its `host_vars`, so verify the guest
+  firewall still filters there (including `sg-syslog-vip` on the ingress
+  agents), then watch that node's slab trend for a week — the per-host rate
+  flattening is the success metric. The NAS follows in its own supervised MR
+  once opt-02 holds. Keep the
   `HostSlabLeakSuspected` weekly reboot pager until a week of flat
   `node_memory_SUnreclaim_bytes - node_zfs_arc_size`. Mechanism, fingerprint,
   bpftrace recipe and the reboot procedure:
