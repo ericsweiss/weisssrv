@@ -342,7 +342,7 @@ VMs/containers.
 ```bash
 # On the NEW node, join the existing cluster
 # Get the join command from an existing cluster member first:
-ssh eric@10.0.10.102 "sudo pvecm create weisssrv"  # only if cluster does not exist yet (docs/26 Phase 2 owns cluster formation)
+ssh eric@10.0.10.102 "sudo pvecm create weisssrv"  # only if the cluster does not exist yet
 
 # On an existing member, get the join info:
 ssh eric@10.0.10.102 "sudo pvecm status"

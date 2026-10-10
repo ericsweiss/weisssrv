@@ -371,7 +371,7 @@ the external name (auth.ericsweiss.com) even for an internal-only app.
 | [16-next-steps](docs/16-next-steps.md) | TODO and feature roadmap |
 | [17-disaster-recovery](docs/17-disaster-recovery.md) | Disaster recovery and backup procedures |
 | [18-bootstrap-new-systems](docs/18-bootstrap-new-systems.md) | Bootstrapping new LXC containers and VMs |
-| [25-multi-node-expansion](docs/25-multi-node-expansion.md) | Multi-node expansion and Proxmox HA — the current HA-operations reference (docs/26 defers to it) |
+| [25-multi-node-expansion](docs/25-multi-node-expansion.md) | Multi-node expansion and Proxmox HA — the HA-operations reference |
 | [34-bond-mac-flapping](docs/34-bond-mac-flapping.md) | Host network faults: the active-backup bond `all_slaves_active` MAC-flap black-hole, the e1000e TX Hardware Unit Hang, and the br_netfilter skb_ext slab leak — diagnosis, recovery, nic_tuning fixes |
 | [42-offsite-backup](docs/42-offsite-backup.md) | Offsite backup (restic → Backblaze B2, client-side encrypted) + encrypted swap |
 | [44-storage-bootstrap](docs/44-storage-bootstrap.md) | Storage bootstrap: creating the ZFS pools and datasets a rebuilt NAS needs before restore |
