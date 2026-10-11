@@ -26,7 +26,7 @@ tests:
         alertname: VPARecommendationExceedsLimit
         exp_alerts:
           - exp_labels:
-              severity: warning
+              severity: none
               namespace: authentik
               workload: authentik-postgresql
               verticalpodautoscaler: authentik-postgresql
@@ -80,7 +80,7 @@ tests:
         alertname: VPARecommendationExceedsLimit
         exp_alerts:
           - exp_labels:
-              severity: warning
+              severity: none
               namespace: observability
               workload: kube-prometheus-stack-prometheus
               verticalpodautoscaler: prometheus
@@ -108,7 +108,7 @@ tests:
         alertname: VPARecommendationExceedsLimit
         exp_alerts:
           - exp_labels:
-              severity: warning
+              severity: none
               namespace: flux-system
               workload: kustomize-controller
               verticalpodautoscaler: kustomize-controller
@@ -130,7 +130,7 @@ tests:
         alertname: VPARecommendationExceedsLimit
         exp_alerts:
           - exp_labels:
-              severity: warning
+              severity: none
               namespace: observability
               workload: kube-prometheus-stack-prometheus
               verticalpodautoscaler: prometheus
@@ -151,7 +151,7 @@ tests:
         alertname: VPARecommendationExceedsLimit
         exp_alerts:
           - exp_labels:
-              severity: warning
+              severity: none
               namespace: downloads
               workload: pulsarr
               verticalpodautoscaler: pulsarr
@@ -202,7 +202,7 @@ tests:
         alertname: VPARecommendationExceedsLimit
         exp_alerts:
           - exp_labels:
-              severity: warning
+              severity: none
               namespace: authentik
               workload: authentik-server
               verticalpodautoscaler: authentik-server
@@ -242,7 +242,7 @@ tests:
         alertname: VPARecommendationExceedsLimit
         exp_alerts:
           - exp_labels:
-              severity: warning
+              severity: none
               namespace: observability
               workload: blackbox-exporter-prometheus-blackbox-exporter
               verticalpodautoscaler: blackbox-exporter
@@ -253,7 +253,8 @@ tests:
         exp_alerts: []
 
   # grafana and loki are page-cache-dominated: their recommendation outgrows the
-  # declared limit by design, so the exclusion must keep them silent.
+  # declared limit by design. Both tiers are advisory, so both list them
+  # instead of carrying an exclusion.
   - interval: 1m
     input_series:
       - series: 'vpa_recommendation_target{exported_namespace="observability", namespace="observability", verticalpodautoscaler="grafana", target_name="kube-prometheus-stack-grafana", target_kind="Deployment", container="grafana", resource="memory", unit="byte", update_mode="Initial", controlled_values="RequestsOnly"}'
@@ -277,10 +278,36 @@ tests:
     alert_rule_test:
       - eval_time: 7h
         alertname: VPARecommendationExceedsLimit
-        exp_alerts: []
+        exp_alerts:
+          - exp_labels:
+              severity: none
+              namespace: observability
+              workload: kube-prometheus-stack-grafana
+              verticalpodautoscaler: grafana
+              container: grafana
+          - exp_labels:
+              severity: none
+              namespace: observability
+              workload: loki
+              verticalpodautoscaler: loki
+              container: loki
       - eval_time: 30h
         alertname: VPARecommendationCapped
-        exp_alerts: []
+        exp_alerts:
+          - exp_labels:
+              severity: none
+              exported_namespace: observability
+              verticalpodautoscaler: grafana
+              container: grafana
+              resource: memory
+              unit: byte
+          - exp_labels:
+              severity: none
+              exported_namespace: observability
+              verticalpodautoscaler: loki
+              container: loki
+              resource: memory
+              unit: byte
 
   # The mirror of that: minAllowed holds the CAPPED target above the limit while
   # the uncapped one sits below it. Reading the uncapped target alone would lose
@@ -300,15 +327,14 @@ tests:
         alertname: VPARecommendationExceedsLimit
         exp_alerts:
           - exp_labels:
-              severity: warning
+              severity: none
               namespace: recipes
               workload: salt-rim
               verticalpodautoscaler: salt-rim
               container: salt-rim
 
   # nzbget and qbittorrent chase reclaimable unpack-time page cache, so their
-  # uncapped target runs past the limit by design — the same exclusion
-  # VPARecommendationCapped carries, expressed on the joined label set.
+  # uncapped target runs past the limit by design. Advisory, so it lists them.
   - interval: 1m
     input_series:
       - series: 'vpa_recommendation_target{exported_namespace="downloads", namespace="observability", verticalpodautoscaler="nzbget", target_name="nzbget", target_kind="Deployment", container="nzbget", resource="memory", unit="byte", update_mode="Initial", controlled_values="RequestsOnly"}'
@@ -322,11 +348,17 @@ tests:
     alert_rule_test:
       - eval_time: 7h
         alertname: VPARecommendationExceedsLimit
-        exp_alerts: []
+        exp_alerts:
+          - exp_labels:
+              severity: none
+              namespace: downloads
+              workload: nzbget
+              verticalpodautoscaler: nzbget
+              container: nzbget
 
   # radarr and lidarr hold reclaimable NFS page cache against a maxAllowed equal
-  # to their 1Gi limit, so both alerts exclude their MEMORY series. CPU is not
-  # excluded, so a clamped CPU recommendation still fires.
+  # to their 1Gi limit. Advisory, so memory and CPU both list: the memory arm
+  # needs the 1.25x ratio and the 128Mi gap, the CPU arm the ratio alone.
   - interval: 1m
     input_series:
       - series: 'vpa_recommendation_target{exported_namespace="downloads", namespace="observability", verticalpodautoscaler="radarr", target_name="radarr", target_kind="Deployment", container="radarr", resource="memory", unit="byte", update_mode="Initial", controlled_values="RequestsOnly"}'
@@ -344,19 +376,32 @@ tests:
     alert_rule_test:
       - eval_time: 7h
         alertname: VPARecommendationExceedsLimit
-        exp_alerts: []
+        exp_alerts:
+          - exp_labels:
+              severity: none
+              namespace: downloads
+              workload: radarr
+              verticalpodautoscaler: radarr
+              container: radarr
       - eval_time: 30h
         alertname: VPARecommendationCapped
         exp_alerts:
           - exp_labels:
-              severity: warning
+              severity: none
               exported_namespace: downloads
               verticalpodautoscaler: radarr
               container: radarr
               resource: cpu
               unit: core
+          - exp_labels:
+              severity: none
+              exported_namespace: downloads
+              verticalpodautoscaler: radarr
+              container: radarr
+              resource: memory
+              unit: byte
 
-  # lidarr carries the same exclusion; memory alone, and both alerts stay quiet.
+  # lidarr is the same shape with memory alone, so both tiers list it once.
   - interval: 1m
     input_series:
       - series: 'vpa_recommendation_target{exported_namespace="downloads", namespace="observability", verticalpodautoscaler="lidarr", target_name="lidarr", target_kind="Deployment", container="lidarr", resource="memory", unit="byte", update_mode="Initial", controlled_values="RequestsOnly"}'
@@ -370,10 +415,23 @@ tests:
     alert_rule_test:
       - eval_time: 7h
         alertname: VPARecommendationExceedsLimit
-        exp_alerts: []
+        exp_alerts:
+          - exp_labels:
+              severity: none
+              namespace: downloads
+              workload: lidarr
+              verticalpodautoscaler: lidarr
+              container: lidarr
       - eval_time: 30h
         alertname: VPARecommendationCapped
-        exp_alerts: []
+        exp_alerts:
+          - exp_labels:
+              severity: none
+              exported_namespace: downloads
+              verticalpodautoscaler: lidarr
+              container: lidarr
+              resource: memory
+              unit: byte
 
   # VPARecommendationExceedsRequest: the same drift one band earlier, on the
   # REQUEST. Prometheus at a 4524Mi recommendation against a 3Gi request.
@@ -391,7 +449,7 @@ tests:
         alertname: VPARecommendationExceedsRequest
         exp_alerts:
           - exp_labels:
-              severity: info
+              severity: none
               namespace: observability
               workload: kube-prometheus-stack-prometheus
               verticalpodautoscaler: prometheus

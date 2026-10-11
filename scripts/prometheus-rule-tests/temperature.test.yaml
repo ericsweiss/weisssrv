@@ -68,9 +68,8 @@ tests:
         alertname: CPUTempWarning
         exp_alerts: []
 
-  # NVMe: warn at 65C, carrying the chip so the drive is identifiable. The 30m
-  # hold keeps the nightly backup-window burst out of the feed, so both
-  # boundaries are pinned: still pending at 20m, firing at 40m.
+  # NVMe below 75C is a dashboard line, not an alert: nothing in the ladder
+  # fires, which pins the lower edge of the High arm.
   - interval: 1m
     input_series:
       - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="10.0.10.102:9101", chip="nvme_nvme0"}'
@@ -78,40 +77,20 @@ tests:
       - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="10.0.10.102:9101", chip="nvme_nvme0", chip_name="nvme"}'
         values: '1+0x60'
     alert_rule_test:
-      - eval_time: 20m
-        alertname: NVMeDriveTempWarning
-        exp_alerts: []
-      - eval_time: 40m
-        alertname: NVMeDriveTempWarning
-        exp_alerts:
-          - exp_labels:
-              severity: warning
-              component: storage
-              instance: 10.0.10.102:9101
-              chip: nvme_nvme0
-      # 66C is inside the trend band only: the High arm starts at 75C.
       - eval_time: 40m
         alertname: NVMeDriveTempHigh
         exp_alerts: []
-
-  - interval: 1m
-    input_series:
-      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="10.0.10.102:9101", chip="nvme_nvme0"}'
-        values: '55+0x60'
-      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="10.0.10.102:9101", chip="nvme_nvme0", chip_name="nvme"}'
-        values: '1+0x60'
-    alert_rule_test:
       - eval_time: 40m
-        alertname: NVMeDriveTempWarning
+        alertname: NVMeDriveTempCritical
         exp_alerts: []
 
   # SATA: scoped to the NAS (.102) only, because drivetemp is the archive-pool
-  # over-temp signal. 51C is over the 50C floor.
+  # over-temp signal. 51C on an archive HDD chip is over the 50C floor.
   - interval: 1m
     input_series:
-      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="10.0.10.102:9101", chip="platform_drivetemp_1"}'
+      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="10.0.10.102:9101", chip="target0:0:1_0:0:1:0"}'
         values: '51+0x30'
-      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="10.0.10.102:9101", chip="platform_drivetemp_1", chip_name="drivetemp"}'
+      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="10.0.10.102:9101", chip="target0:0:1_0:0:1:0", chip_name="drivetemp"}'
         values: '1+0x30'
     alert_rule_test:
       - eval_time: 20m
@@ -121,22 +100,61 @@ tests:
               severity: warning
               component: storage
               instance: 10.0.10.102:9101
-              chip: platform_drivetemp_1
+              chip: target0:0:1_0:0:1:0
 
   # A hot SATA drive on a NON-NAS host is outside the instance selector.
   - interval: 1m
     input_series:
-      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="10.0.10.104:9101", chip="platform_drivetemp_1"}'
+      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="10.0.10.104:9101", chip="target1:0:0_1:0:0:0"}'
         values: '58+0x30'
-      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="10.0.10.104:9101", chip="platform_drivetemp_1", chip_name="drivetemp"}'
+      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="10.0.10.104:9101", chip="target1:0:0_1:0:0:0", chip_name="drivetemp"}'
         values: '1+0x30'
     alert_rule_test:
       - eval_time: 20m
         alertname: SATADriveTempWarning
         exp_alerts: []
 
-  # The nightly vzdump band on the NAS: 77C for 20 minutes is the High arm and
-  # must never reach the critical one. Both edges of the 10m hold are pinned.
+  # The three 870 EVO SSDs share the drivetemp chip name but spec 70C, so
+  # target5/6/8 must miss both HDD bands at 56C and carry their own at 66C.
+  - interval: 1m
+    input_series:
+      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="10.0.10.102:9101", chip="target6:0:0_6:0:0:0"}'
+        values: '56+0x30'
+      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="10.0.10.102:9101", chip="target6:0:0_6:0:0:0", chip_name="drivetemp"}'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: SATADriveTempWarning
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: SATADriveTempCritical
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: SATASsdTempWarning
+        exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="10.0.10.102:9101", chip="target8:0:0_8:0:0:0"}'
+        values: '66+0x30'
+      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="10.0.10.102:9101", chip="target8:0:0_8:0:0:0", chip_name="drivetemp"}'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SATASsdTempWarning
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: SATASsdTempWarning
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: storage
+              instance: 10.0.10.102:9101
+              chip: target8:0:0_8:0:0:0
+
+  # The monthly Extended Self-Test band on the NAS: 77C for 20 minutes is the
+  # High arm, info only, and must never reach the critical one. Both edges of
+  # the 10m hold are pinned.
   - interval: 1m
     input_series:
       - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="10.0.10.102:9101", chip="nvme_nvme2"}'
@@ -151,7 +169,7 @@ tests:
         alertname: NVMeDriveTempHigh
         exp_alerts:
           - exp_labels:
-              severity: warning
+              severity: none
               component: storage
               instance: 10.0.10.102:9101
               chip: nvme_nvme2
@@ -180,18 +198,17 @@ tests:
         alertname: NVMeDriveTempHigh
         exp_alerts:
           - exp_labels:
-              severity: warning
+              severity: none
               component: storage
               instance: 10.0.10.102:9101
               chip: nvme_nvme2
 
-  # The SATA critical arm at its own floor.
-
+  # The SATA critical arm at its own floor, on an archive HDD chip.
   - interval: 1m
     input_series:
-      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="10.0.10.102:9101", chip="platform_drivetemp_1"}'
+      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="10.0.10.102:9101", chip="target0:0:1_0:0:1:0"}'
         values: '56+0x30'
-      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="10.0.10.102:9101", chip="platform_drivetemp_1", chip_name="drivetemp"}'
+      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="10.0.10.102:9101", chip="target0:0:1_0:0:1:0", chip_name="drivetemp"}'
         values: '1+0x30'
     alert_rule_test:
       - eval_time: 20m
@@ -201,7 +218,7 @@ tests:
               severity: critical
               component: storage
               instance: 10.0.10.102:9101
-              chip: platform_drivetemp_1
+              chip: target0:0:1_0:0:1:0
 
   # Host-side GPU hwmon: the chip_name alternation is what selects a GPU sensor,
   # so a driver rename (xe -> i915 and back) silently retires this arm.

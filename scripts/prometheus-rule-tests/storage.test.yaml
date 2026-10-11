@@ -64,3 +64,47 @@ tests:
               job: node-exporter
               instance: '10.42.1.7:9100'
               mountpoint: /
+
+  # DiskUsageWarning floors the ratio over 1h, so the CI sawtooth on the
+  # privileged-runner node (75% baseline, 15-40m bursts over 80%) is silent and
+  # only a filesystem that stays over 80% for a full hour fires.
+  - interval: 5m
+    input_series:
+      - series: 'node_filesystem_avail_bytes{job="node-exporter", instance="10.0.10.207:9100", mountpoint="/", fstype="ext4"}'
+        values: '25+0x12 15+0x6 25+0x30'
+      - series: 'node_filesystem_size_bytes{job="node-exporter", instance="10.0.10.207:9100", mountpoint="/", fstype="ext4"}'
+        values: '100+0x48'
+    alert_rule_test:
+      # 85m is 20 minutes into the 85% burst, so the un-floored expr fires here
+      # and the 1h floor still reads the 75% baseline. This pins the floor.
+      - eval_time: 85m
+        alertname: DiskUsageWarning
+        exp_alerts: []
+      - eval_time: 100m
+        alertname: DiskUsageWarning
+        exp_alerts: []
+
+  - interval: 5m
+    input_series:
+      - series: 'node_filesystem_avail_bytes{job="node-exporter", instance="10.0.10.207:9100", mountpoint="/", fstype="ext4"}'
+        values: '15+0x48'
+      - series: 'node_filesystem_size_bytes{job="node-exporter", instance="10.0.10.207:9100", mountpoint="/", fstype="ext4"}'
+        values: '100+0x48'
+    alert_rule_test:
+      # Inside the 10m hold the floor is already over 80, so this pins the hold.
+      - eval_time: 5m
+        alertname: DiskUsageWarning
+        exp_alerts: []
+      - eval_time: 100m
+        alertname: DiskUsageWarning
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: node-exporter
+              instance: '10.0.10.207:9100'
+              mountpoint: /
+              fstype: ext4
+      # DiskUsageCritical keeps the un-floored fast path at 90%.
+      - eval_time: 100m
+        alertname: DiskUsageCritical
+        exp_alerts: []

@@ -12,13 +12,47 @@ route_cases:
     labels: [alertname=Watchdog, severity=none]
   - receiver: "null"
     labels: [alertname=InfoInhibitor, severity=none]
+  # The deploy-window source. A severity-bearing synthetic whose destination is
+  # asserted, not assumed: it must never reach Discord.
+  - receiver: "null"
+    labels: [alertname=DeployInProgress, severity=none]
+  # The three VPA tiers are advisory: severity=none keeps them in Grafana and
+  # the Alertmanager UI and out of Discord.
+  - receiver: "null"
+    labels: [alertname=VPARecommendationCapped, severity=none]
+  - receiver: "null"
+    labels: [alertname=VPARecommendationExceedsLimit, severity=none]
+  - receiver: "null"
+    labels: [alertname=VPARecommendationExceedsRequest, severity=none]
   - receiver: email-and-discord
     labels: [alertname=EtcdQuorumAtRisk, severity=critical]
+  # The durability branch keeps the email receiver on a 24h repeat. A case
+  # pins the receiver, never the branch or its repeat_interval, so the two
+  # renamed escalations are here to catch a severity that null-routes them.
+  - receiver: email-and-discord
+    labels: [alertname=ZFSPoolNotOnline, severity=critical]
+  - receiver: email-and-discord
+    labels: [alertname=CertRenewalFailedProlonged, severity=critical]
   - receiver: discord-default
     labels: [alertname=DiskUsageWarning, severity=warning]
+  - receiver: discord-default
+    labels: [alertname=ArchiveBackupFailed, severity=warning]
+  - receiver: discord-default
+    labels: [alertname=SMARTPendingSectorsGrowing, severity=warning]
+  # The 72h latch branch, ahead of the severity=warning branch.
+  - receiver: discord-default
+    labels: [alertname=HostSlabLeakSuspected, severity=warning]
+  - receiver: discord-default
+    labels: [alertname=KubeletImageGCIneffective, severity=warning]
+  # The probe fan-out branch, which groups on alertname alone.
+  - receiver: discord-default
+    labels: [alertname=EndpointDown, severity=warning]
   # severity=info has its own child route ahead of the root, carrying repeat_interval 24h.
   - receiver: discord-default
     labels: [alertname=SwapCleanStoppedGuests, severity=info]
+  # The demoted 75C NVMe step is null-routed, so it reaches no receiver at all.
+  - receiver: "null"
+    labels: [alertname=NVMeDriveTempHigh, severity=none]
   - receiver: discord-default
     labels: [alertname=SomeUnlabelledAlert]
 
@@ -39,7 +73,7 @@ upstream_alerts:
   - KubeDaemonSetMisScheduled
   - KubeDaemonSetRolloutStuck
   - KubeDeploymentReplicasMismatch
+  - KubeDeploymentRolloutStuck
   - KubePodNotReady
   - KubeStatefulSetReplicasMismatch
-  - NodeSystemSaturation
   - Watchdog

@@ -280,6 +280,53 @@ tests:
         alertname: HostMemAvailableLow
         exp_alerts: []
 
+  # HostMemAvailableCritical: the 2% floor the slab latch never mutes. 1.5%
+  # held past 15m fires it; 6% is the warning's ground and must not, or the
+  # critical becomes a second copy of the tier the latch is allowed to mute.
+  - interval: 1m
+    input_series:
+      - series: 'node_memory_MemAvailable_bytes{job="node-exporter-host", instance="10.0.10.102:9101"}'
+        values: '240000000+0x25'
+      - series: 'node_memory_MemTotal_bytes{job="node-exporter-host", instance="10.0.10.102:9101"}'
+        values: '16000000000+0x25'
+      - series: 'node_memory_MemAvailable_bytes{job="node-exporter-host", instance="10.0.10.104:9101"}'
+        values: '1000000000+0x25'
+      - series: 'node_memory_MemTotal_bytes{job="node-exporter-host", instance="10.0.10.104:9101"}'
+        values: '16000000000+0x25'
+    alert_rule_test:
+      # Inside the hold, so shortening it to 5m fails here.
+      - eval_time: 10m
+        alertname: HostMemAvailableCritical
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: HostMemAvailableCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: node-exporter-host
+              instance: '10.0.10.102:9101'
+
+  # The backup-window transient the 15m hold exists for: 1.5% for ten minutes
+  # on top of the standing leak, then back to 6%. The warning tier still
+  # reports it; the critical must not.
+  - interval: 1m
+    input_series:
+      - series: 'node_memory_MemAvailable_bytes{job="node-exporter-host", instance="10.0.10.102:9101"}'
+        values: '240000000+0x9 1000000000+0x30'
+      - series: 'node_memory_MemTotal_bytes{job="node-exporter-host", instance="10.0.10.102:9101"}'
+        values: '16000000000+0x40'
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: HostMemAvailableCritical
+        exp_alerts: []
+      - eval_time: 35m
+        alertname: HostMemAvailableLow
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: node-exporter-host
+              instance: '10.0.10.102:9101'
+
   # HostConntrackEntriesHigh at 75% of the table.
   - interval: 1m
     input_series:
@@ -624,3 +671,65 @@ tests:
       - eval_time: 60m
         alertname: SlabinfoCollectorDegraded
         exp_alerts: []
+
+  # The timer-driven oneshots that own a *_last_run_success alert are excluded,
+  # so one failed archive-backup run is one notification. Every other oneshot
+  # (zfs-load-key@, nftables, ...) keeps its only witness.
+  - interval: 1m
+    input_series:
+      - series: 'node_systemd_unit_state{job="node-exporter-host", instance="10.0.10.102:9101", name="archive-backup.service", state="failed", type="oneshot"}'
+        values: '1+0x30'
+      - series: 'node_systemd_unit_state{job="node-exporter-host", instance="10.0.10.102:9101", name="swap-clean.service", state="failed", type="oneshot"}'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: NodeSystemdServiceFailed
+        exp_alerts: []
+
+  # The exclusion is per-unit, not per-type: a failed nftables.service on the
+  # same host still pages, and the timer unit is never excluded.
+  - interval: 1m
+    input_series:
+      - series: 'node_systemd_unit_state{job="node-exporter-host", instance="10.0.10.102:9101", name="archive-backup.service", state="failed", type="oneshot"}'
+        values: '1+0x30'
+      - series: 'node_systemd_unit_state{job="node-exporter-host", instance="10.0.10.102:9101", name="archive-backup.timer", state="failed", type="oneshot"}'
+        values: '1+0x30'
+      - series: 'node_systemd_unit_state{job="node-exporter-host", instance="10.0.10.102:9101", name="nftables.service", state="failed", type="oneshot"}'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: NodeSystemdServiceFailed
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: node-exporter-host
+              instance: '10.0.10.102:9101'
+              name: archive-backup.timer
+              state: failed
+              type: oneshot
+          - exp_labels:
+              severity: warning
+              job: node-exporter-host
+              instance: '10.0.10.102:9101'
+              name: nftables.service
+              state: failed
+              type: oneshot
+
+  # k3s-etcd-snapshot-copy has no *_last_run_success alert, so it stays in
+  # scope: EtcdSnapshotStale needs 36h of staleness and a run that fails after
+  # touching the timestamp never shows there at all.
+  - interval: 1m
+    input_series:
+      - series: 'node_systemd_unit_state{job="node-exporter-host", instance="10.0.10.222:9101", name="k3s-etcd-snapshot-copy.service", state="failed", type="oneshot"}'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: NodeSystemdServiceFailed
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: node-exporter-host
+              instance: '10.0.10.222:9101'
+              name: k3s-etcd-snapshot-copy.service
+              state: failed
+              type: oneshot

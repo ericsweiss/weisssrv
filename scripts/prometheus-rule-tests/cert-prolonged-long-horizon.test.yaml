@@ -1,0 +1,90 @@
+---
+# CertRenewalFailedProlonged alone: the fortnight is a max_over_time/min_over_time
+# window rather than a `for:`, so the series must run past 14d and this file
+# stays at a 2h interval while the rest of the cert family is elsewhere.
+rule_files:
+  - rules.yaml
+evaluation_interval: 2h
+tests:
+  # Firing arm: continuous renewal failure — silent through 13 days, critical
+  # after 14, so the longest break on record (6.3 days) pages nothing.
+  - interval: 2h
+    input_series:
+      - series: 'cert_renewal_last_run_success{instance="10.0.10.150:9101"}'
+        values: '0+0x250'
+    alert_rule_test:
+      - eval_time: 13d
+        alertname: CertRenewalFailedProlonged
+        exp_alerts: []
+      - eval_time: 15d
+        alertname: CertRenewalFailedProlonged
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              instance: '10.0.10.150:9101'
+
+  # A renewal that recovers inside the fortnight clears the window, and acme.sh's
+  # ~60d cycle still leaves ~45 days of margin at that point.
+  - interval: 2h
+    input_series:
+      - series: 'cert_renewal_last_run_success{instance="10.0.10.150:9101"}'
+        values: '0+0x150 1+0x100'
+    alert_rule_test:
+      - eval_time: 15d
+        alertname: CertRenewalFailedProlonged
+        exp_alerts: []
+
+  # One success in the middle of an otherwise dead fortnight clears it too: the
+  # window is max_over_time, so a single 1 anywhere inside 14d is a renewal.
+  - interval: 2h
+    input_series:
+      - series: 'cert_renewal_last_run_success{instance="10.0.10.150:9101"}'
+        values: '0+0x100 1 0+0x150'
+    alert_rule_test:
+      - eval_time: 15d
+        alertname: CertRenewalFailedProlonged
+        exp_alerts: []
+
+  # The offset arm: a series that only started failing two days ago has no
+  # sample at the start of the window, so a window with nothing before it in
+  # the lookback cannot escalate however long Prometheus has been up.
+  - interval: 2h
+    input_series:
+      - series: 'cert_renewal_last_run_success{instance="10.0.10.150:9101"}'
+        values: '_x180 0+0x70'
+    alert_rule_test:
+      - eval_time: 15d
+        alertname: CertRenewalFailedProlonged
+        exp_alerts: []
+
+  # Second arm: a dead distribution target escalates on its own, with the local
+  # run bit healthy throughout.
+  - interval: 2h
+    input_series:
+      - series: 'cert_renewal_last_run_success{instance="10.0.10.150:9101"}'
+        values: '1+0x250'
+      - series: 'cert_distribution_last_run_failed_targets{instance="10.0.10.150:9101"}'
+        values: '1+0x250'
+    alert_rule_test:
+      - eval_time: 13d
+        alertname: CertRenewalFailedProlonged
+        exp_alerts: []
+      - eval_time: 15d
+        alertname: CertRenewalFailedProlonged
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              instance: '10.0.10.150:9101'
+
+  # One clean distribution run inside the fortnight clears that arm: the window
+  # is min_over_time, so a single 0 is a target that took the cert.
+  - interval: 2h
+    input_series:
+      - series: 'cert_renewal_last_run_success{instance="10.0.10.150:9101"}'
+        values: '1+0x250'
+      - series: 'cert_distribution_last_run_failed_targets{instance="10.0.10.150:9101"}'
+        values: '1+0x100 0 1+0x150'
+    alert_rule_test:
+      - eval_time: 15d
+        alertname: CertRenewalFailedProlonged
+        exp_alerts: []

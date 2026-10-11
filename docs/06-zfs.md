@@ -552,6 +552,16 @@ that never finishes stops the reset without failing it. `SwapCleanSkipped`
 watches for that: it fires when every run across three days skipped, and the
 alert's `reason` label names the unit that blocked it.
 
+Two alerts watch the headroom itself, and they are deliberately split by what
+may mute them. `HostMemAvailableLow` (under 8% of MemTotal for 30m) is the
+warning tier and sits on `HostSlabLeakSuspected`'s inhibit target list, because
+the latch holds for most of the week between reboots and would otherwise repeat
+the same known condition. `HostMemAvailableCritical` (under 2% for 15m) is on
+no target list at all: the floor sits below where the leak alone parks the host
+— MemAvailable's 14-day median here is 18% and its 1st percentile 2.4% — so
+only a transient on top of the leak reaches it, and a standing leak can never
+leave the host without a RAM pager.
+
 #### Kernel 192-byte slab leak
 
 The levers above manage reclaimable pressure. The merged 192-byte slab leaks
@@ -568,8 +578,8 @@ per node, so it goes in `host_vars`. Validate it on one opt host before the NAS
 and keep the reboot pager until a week of flat slab proves it.
 
 - `HostSlabLeakSuspected` (SUnreclaim minus ARC above 16 GiB for 24 h) is the
-  reboot pager. It fires roughly weekly, and firing means schedule the NAS
-  reboot window.
+  reboot pager. It is a latch, not a weekly nudge: it holds from the 16 GiB
+  crossing until the reboot clears it, and repeats every 72 h while it holds.
 - `slub_nomerge` must be on pve-nas-01's kernel cmdline, so that `slabtop -s c`
   names the cache directly instead of the merged `:0000192` alias (which
   `/proc/slabinfo` displays under a `file_lock_cache` name that is not the

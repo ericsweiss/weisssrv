@@ -1,57 +1,11 @@
 ---
-# The long-hold cert alerts: CertRenewalFailedProlonged (72h) and
-# CertDistributionTargetFailed (25h). 30m interval keeps the horizons cheap, and
-# the 1h sibling CertRenewalFailed lives in durability.test.yaml.
+# CertDistributionTargetFailed (25h) and CertRenewalStale. 30m interval keeps
+# the horizons cheap; the 1h CertRenewalFailed lives in durability.test.yaml and
+# the 14d CertRenewalFailedProlonged in cert-prolonged-long-horizon.test.yaml.
 rule_files:
   - rules.yaml
 evaluation_interval: 30m
 tests:
-  # Firing arm: continuous renewal failure — silent through 72h, critical after.
-  - interval: 30m
-    input_series:
-      - series: 'cert_renewal_last_run_success{instance="10.0.10.150:9101"}'
-        values: '0+0x160'
-    alert_rule_test:
-      - eval_time: 71h
-        alertname: CertRenewalFailedProlonged
-        exp_alerts: []
-      - eval_time: 73h
-        alertname: CertRenewalFailedProlonged
-        exp_alerts:
-          - exp_labels:
-              severity: critical
-              instance: '10.0.10.150:9101'
-
-  # A renewal that recovers before the third day must reset the timer, not
-  # escalate: 60h failing, then success.
-  - interval: 30m
-    input_series:
-      - series: 'cert_renewal_last_run_success{instance="10.0.10.150:9101"}'
-        values: '0+0x120 1+0x40'
-    alert_rule_test:
-      - eval_time: 73h
-        alertname: CertRenewalFailedProlonged
-        exp_alerts: []
-
-  # Second arm at the 72h horizon: a dead distribution target escalates to
-  # critical on its own, with the local run bit healthy throughout.
-  - interval: 30m
-    input_series:
-      - series: 'cert_renewal_last_run_success{instance="10.0.10.150:9101"}'
-        values: '1+0x160'
-      - series: 'cert_distribution_last_run_failed_targets{instance="10.0.10.150:9101"}'
-        values: '1+0x160'
-    alert_rule_test:
-      - eval_time: 71h
-        alertname: CertRenewalFailedProlonged
-        exp_alerts: []
-      - eval_time: 73h
-        alertname: CertRenewalFailedProlonged
-        exp_alerts:
-          - exp_labels:
-              severity: critical
-              instance: '10.0.10.150:9101'
-
   # CertRenewalStale: the gauge is a timestamp, so a negative start value is a
   # cert distributed that long before the harness clock. 76d of lag fires.
   - interval: 30m

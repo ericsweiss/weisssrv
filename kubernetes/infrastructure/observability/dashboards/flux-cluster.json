@@ -397,7 +397,7 @@
         "textMode": "auto"
       },
       "title": "Not Ready Resources",
-      "description": "Flux Kustomizations/HelmReleases/GitRepositories currently reporting ready=False (gotk_resource_info). Suspended resources are excluded, matching the FluxResourceNotReady alert.",
+      "description": "Flux Kustomizations/HelmReleases/GitRepositories currently reporting ready=False (gotk_resource_info). Suspended resources are excluded, matching the FluxKustomizationNotReady and FluxResourceNotReady alerts.",
       "type": "stat",
       "targets": [
         {

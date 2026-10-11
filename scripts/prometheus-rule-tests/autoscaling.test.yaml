@@ -18,7 +18,7 @@ tests:
         alertname: VPARecommendationCapped
         exp_alerts:
           - exp_labels:
-              severity: warning
+              severity: none
               exported_namespace: observability
               verticalpodautoscaler: prometheus
               container: prometheus
@@ -64,8 +64,8 @@ tests:
         alertname: VPARecommendationCapped
         exp_alerts: []
 
-  # nzbget and qbittorrent memory clamps are the sizing decision, not a
-  # symptom (docs/33), so both are excluded.
+  # An advisory alert carries no exclusion list, so a clamped nzbget and
+  # qbittorrent both appear as worklist entries at severity: none.
   - interval: 6h
     input_series:
       - series: 'vpa_recommendation_uncappedtarget{exported_namespace="downloads", verticalpodautoscaler="nzbget", container="nzbget", resource="memory", unit="byte"}'
@@ -79,10 +79,24 @@ tests:
     alert_rule_test:
       - eval_time: 30h
         alertname: VPARecommendationCapped
-        exp_alerts: []
+        exp_alerts:
+          - exp_labels:
+              severity: none
+              exported_namespace: downloads
+              verticalpodautoscaler: nzbget
+              container: nzbget
+              resource: memory
+              unit: byte
+          - exp_labels:
+              severity: none
+              exported_namespace: downloads
+              verticalpodautoscaler: qbittorrent
+              container: qbittorrent
+              resource: memory
+              unit: byte
 
-  # Each exclusion is scoped to that VPA's memory series, so a CPU clamp on
-  # the same VPA still alerts. The CPU arm carries the ratio alone.
+  # The memory arm needs both tests, so a CPU clamp on the same VPA alerts on
+  # the ratio alone and the memory clamp beside it alerts too.
   - interval: 6h
     input_series:
       - series: 'vpa_recommendation_uncappedtarget{exported_namespace="downloads", verticalpodautoscaler="nzbget", container="nzbget", resource="cpu", unit="core"}'
@@ -102,14 +116,21 @@ tests:
         alertname: VPARecommendationCapped
         exp_alerts:
           - exp_labels:
-              severity: warning
+              severity: none
               exported_namespace: downloads
               verticalpodautoscaler: nzbget
               container: nzbget
               resource: cpu
               unit: core
           - exp_labels:
-              severity: warning
+              severity: none
+              exported_namespace: downloads
+              verticalpodautoscaler: nzbget
+              container: nzbget
+              resource: memory
+              unit: byte
+          - exp_labels:
+              severity: none
               exported_namespace: downloads
               verticalpodautoscaler: sonarr
               container: sonarr
@@ -147,7 +168,7 @@ tests:
         alertname: VPARecommendationCapped
         exp_alerts:
           - exp_labels:
-              severity: warning
+              severity: none
               exported_namespace: observability
               verticalpodautoscaler: prometheus
               container: prometheus

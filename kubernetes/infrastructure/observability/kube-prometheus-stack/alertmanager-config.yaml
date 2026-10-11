@@ -53,21 +53,24 @@ spec:
               equal:
                 - instance
                 - chip
-            # Three-step NVMe ladder, so each step mutes every step below it.
+            # Two-step NVMe ladder. The 75C step is null-routed, so this pair
+            # only tidies the Alertmanager UI; it delivers no notification.
             - source_matchers:
                 - alertname="NVMeDriveTempCritical"
               target_matchers:
-                - alertname=~"NVMeDriveTempHigh|NVMeDriveTempWarning"
-              equal:
-                - instance
-                - chip
-            - source_matchers:
                 - alertname="NVMeDriveTempHigh"
-              target_matchers:
-                - alertname="NVMeDriveTempWarning"
               equal:
                 - instance
                 - chip
+            # Both SMART attributes increment on the same unrecovered read, so
+            # one sector is one page. equal on device: one host, many drives.
+            - source_matchers:
+                - alertname="SMARTPendingSectorsGrowing"
+              target_matchers:
+                - alertname="SMARTOfflineUncorrectableGrowing"
+              equal:
+                - instance
+                - device
             - source_matchers:
                 - alertname="DiskUsageCritical"
               target_matchers:
@@ -160,14 +163,14 @@ spec:
                 - instance!~"https://(git|registry\\.git|pages\\.git|auth|photos)\\.ericsweiss\\.com"
             # CRITICAL: `equal: [namespace]` is load-bearing — without it one
             # namespace's info condition suppresses every info alert in the cluster.
-            # The exempted names must still reach Discord: one drops the namespace
-            # label, and the other two fire in namespaces that are otherwise healthy.
+            # The exempted names carry no namespace of their own, so they would
+            # pair with any namespace-less source and never reach Discord.
             # Each must resolve to a rule or upstream_alerts; unmatched is inert.
             - source_matchers:
                 - alertname="InfoInhibitor"
               target_matchers:
                 - severity="info"
-                - alertname!~"AlertmanagerNotificationsDropping|SwapCleanStoppedGuests|VPARecommendationExceedsRequest"
+                - alertname!~"AlertmanagerNotificationsDropping|SwapCleanStoppedGuests"
               equal:
                 - namespace
             # CRITICAL: node-outage storm control mutes per-pod and per-workload
@@ -178,6 +181,42 @@ spec:
                 - alertname="NodeOutageStormControl"
               target_matchers:
                 - alertname=~"KubePodNotReady|KubeContainerWaiting|KubeDaemonSetRolloutStuck|KubeDaemonSetMisScheduled|KubeDeploymentReplicasMismatch|KubeStatefulSetReplicasMismatch|KubeAggregatedAPIDown|NodeSystemSaturation|HindsightDown|RegistryCacheDown|TailscaleProxyDown|GitLabAgentDown|AuthentikWorkerDown"
+            # A Recreate rollout on an RWO volume has no overlap window, so
+            # these warnings describe the deploy. The source reads Deployment
+            # generations only, so no other workload kind is on the list.
+            - source_matchers:
+                - alertname="DeployInProgress"
+              target_matchers:
+                - alertname=~"KubePodNotReady|KubeDeploymentReplicasMismatch|KubeDeploymentRolloutStuck|KubeContainerWaiting"
+              equal:
+                - namespace
+            # One remedy, five alerts: the slab leak takes the NAS out of RAM
+            # and keeps swap-clean from completing. equal on instance; the latch
+            # holds 87% of a fortnight, so no critical is on this list.
+            - source_matchers:
+                - alertname="HostSlabLeakSuspected"
+              target_matchers:
+                - alertname=~"HostMemAvailableLow|NASSwapNotClearing|SwapCleanFailed|SwapCleanStoppedGuests"
+              equal:
+                - instance
+            # Distinct alertnames, so the generic critical/warning pair cannot
+            # match them. The critical is never itself a target.
+            - source_matchers:
+                - alertname="HostMemAvailableCritical"
+              target_matchers:
+                - alertname="HostMemAvailableLow"
+              equal:
+                - instance
+            # gotk_resource_info carries no link from a Kustomization to the
+            # objects it applies, so this pairs only a same-named resource —
+            # today just flux-system's own GitRepository. Inert by construction.
+            - source_matchers:
+                - alertname="FluxKustomizationNotReady"
+              target_matchers:
+                - alertname="FluxResourceNotReady"
+              equal:
+                - exported_namespace
+                - name
 
             # Backup-tier escalations: each critical sibling silences the warning it
             # escalates so a multi-day failure pages once, not twice.
@@ -270,6 +309,37 @@ spec:
               - receiver: discord-default
                 matchers:
                   - alertname="HostLogShippingStale"
+                group_by:
+                  - alertname
+                group_wait: 60s
+                group_interval: 10m
+                repeat_interval: 12h
+              # Latches whose remedy is a scheduled window or a part, not an
+              # action now: they hold until the work happens, so they say it
+              # once every three days.
+              - receiver: discord-default
+                matchers:
+                  - alertname=~"HostSlabLeakSuspected|MaintenanceRebootDeferred|KubeletImageGCIneffective"
+                repeat_interval: 72h
+              # Durability faults whose remedy is a hand-run script or a
+              # resilver: one email a day for as long as they last, not six.
+              - receiver: email-and-discord
+                matchers:
+                  - severity="critical"
+                  - alertname=~"ZFSPoolNotOnline|ZFSPoolDataErrors|ArchiveBackupFailedProlonged|ArchiveBackupStaleCritical|CertRenewalFailedProlonged"
+                repeat_interval: 24h
+              # The warning tier of the same families: a drive, a pool, a backup
+              # or a certificate changes daily at most.
+              - receiver: discord-default
+                matchers:
+                  - severity="warning"
+                  - alertname=~"SMART.*|ZFSPool.*|ArchiveBackup.*|CertRenewal.*|CertDistribution.*"
+                repeat_interval: 24h
+              # One app behind several hostnames is several groups under the root
+              # key; grouping on alertname alone makes one rollout one message.
+              - receiver: discord-default
+                matchers:
+                  - alertname="EndpointDown"
                 group_by:
                   - alertname
                 group_wait: 60s

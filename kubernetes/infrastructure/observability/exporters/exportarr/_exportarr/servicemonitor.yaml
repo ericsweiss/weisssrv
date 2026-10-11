@@ -1,7 +1,7 @@
 ---
 # Shared component: the four overlays (sonarr/radarr/lidarr/prowlarr) patch only
-# name and selector. One scrape walks eight *arr API calls serially and the
-# nightly vzdump slows them past 45s, so the budget is 110s in a 120s interval.
+# name and selector. One scrape fires eight *arr API calls in parallel and
+# Sonarr's library scan stalls them, so the budget is 110s in a 120s interval.
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:

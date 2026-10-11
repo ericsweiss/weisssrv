@@ -30,29 +30,93 @@ tests:
               instance: 10.0.10.102:9101
               disk: sda
 
-  # Offline-uncorrectable is an absolute 6h window: any non-zero reading fires,
-  # because the counter is reset-on-clean rather than lifetime-cumulative.
+  # The pending/offline-uncorrectable pair is DIRECTIONAL: latest reading minus
+  # the 24h floor. A sector found days ago and never joined is silent.
   - interval: 5m
     input_series:
-      - series: 'smartmon_offline_uncorrectable_count{instance="10.0.10.102:9101", disk="sdb"}'
-        values: '0+0x100'
+      - series: 'smartmon_current_pending_sector_count{instance="10.0.10.102:9101", device="/dev/sdf"}'
+        values: '1+0x300'
     alert_rule_test:
-      - eval_time: 6h
-        alertname: SMARTOfflineUncorrectable
+      - eval_time: 24h
+        alertname: SMARTPendingSectorsGrowing
         exp_alerts: []
 
+  # A second sector inside the window fires.
   - interval: 5m
     input_series:
-      - series: 'smartmon_offline_uncorrectable_count{instance="10.0.10.102:9101", disk="sdb"}'
-        values: '0+0x50 2+0x50'
+      - series: 'smartmon_current_pending_sector_count{instance="10.0.10.102:9101", device="/dev/sdf"}'
+        values: '1+0x200 2+0x100'
     alert_rule_test:
-      - eval_time: 6h
-        alertname: SMARTOfflineUncorrectable
+      - eval_time: 24h
+        alertname: SMARTPendingSectorsGrowing
         exp_alerts:
           - exp_labels:
               severity: warning
               instance: 10.0.10.102:9101
-              disk: sdb
+              device: /dev/sdf
+
+  # Replacement reset: the counter DROPS to 0 on a new drive. The drop lands
+  # inside the final hour, so max-minus-min reads 8 of growth there and
+  # latest-minus-min reads 0 — the only shape that tells the two apart.
+  - interval: 5m
+    input_series:
+      - series: 'smartmon_current_pending_sector_count{instance="10.0.10.102:9101", device="/dev/sdf"}'
+        values: '8+0x280 0+0x8'
+    alert_rule_test:
+      - eval_time: 24h
+        alertname: SMARTPendingSectorsGrowing
+        exp_alerts: []
+
+  # Self-closing: growth in the first hour still fires at 24h, and goes quiet
+  # once the pre-growth floor has aged out of the 24h window.
+  - interval: 5m
+    input_series:
+      - series: 'smartmon_current_pending_sector_count{instance="10.0.10.102:9101", device="/dev/sdf"}'
+        values: '1+0x6 2+0x320'
+    alert_rule_test:
+      - eval_time: 24h
+        alertname: SMARTPendingSectorsGrowing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: 10.0.10.102:9101
+              device: /dev/sdf
+      - eval_time: 26h
+        alertname: SMARTPendingSectorsGrowing
+        exp_alerts: []
+
+  # Offline-uncorrectable, the same shape on its own attribute.
+  - interval: 5m
+    input_series:
+      - series: 'smartmon_offline_uncorrectable_count{instance="10.0.10.102:9101", device="/dev/sdb"}'
+        values: '2+0x300'
+    alert_rule_test:
+      - eval_time: 24h
+        alertname: SMARTOfflineUncorrectableGrowing
+        exp_alerts: []
+
+  - interval: 5m
+    input_series:
+      - series: 'smartmon_offline_uncorrectable_count{instance="10.0.10.102:9101", device="/dev/sdb"}'
+        values: '0+0x200 2+0x100'
+    alert_rule_test:
+      - eval_time: 24h
+        alertname: SMARTOfflineUncorrectableGrowing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: 10.0.10.102:9101
+              device: /dev/sdb
+
+  # The same reset shape on this attribute, drop inside the final hour.
+  - interval: 5m
+    input_series:
+      - series: 'smartmon_offline_uncorrectable_count{instance="10.0.10.102:9101", device="/dev/sdb"}'
+        values: '4+0x280 0+0x8'
+    alert_rule_test:
+      - eval_time: 24h
+        alertname: SMARTOfflineUncorrectableGrowing
+        exp_alerts: []
 
   # Media errors, same shape, on the NVMe attribute set.
   - interval: 5m

@@ -1,0 +1,116 @@
+---
+# promtool unit tests for DeployInProgress, the null-routed source of the
+# namespace-scoped deploy inhibit. Three arms: a change inside a 30m lookback, a
+# 60m lookback paired with an unobserved gap, and creation inside the hour.
+rule_files:
+  - rules.yaml
+evaluation_interval: 5m
+tests:
+  # The generation bumps at 35m. changes()[30m] sees it until 60m, then
+  # keep_firing_for: 30m carries the window to ~90m and it closes.
+  - interval: 5m
+    input_series:
+      - series: 'kube_deployment_created{job="kube-state-metrics", namespace="hermes", deployment="hermes"}'
+        values: '-86400+0x36'
+      - series: 'kube_deployment_metadata_generation{job="kube-state-metrics", namespace="hermes", deployment="hermes"}'
+        values: '1+0x6 2+0x30'
+      - series: 'kube_deployment_status_observed_generation{job="kube-state-metrics", namespace="hermes", deployment="hermes"}'
+        values: '1+0x6 2+0x30'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: DeployInProgress
+        exp_alerts: []
+      - eval_time: 40m
+        alertname: DeployInProgress
+        exp_alerts:
+          - exp_labels:
+              severity: none
+              namespace: hermes
+      - eval_time: 80m
+        alertname: DeployInProgress
+        exp_alerts:
+          - exp_labels:
+              severity: none
+              namespace: hermes
+      - eval_time: 110m
+        alertname: DeployInProgress
+        exp_alerts: []
+
+  # Second arm: the generation bumps at 35m and the controller never observes
+  # it. The arm outlives the 30m lookback of the first one, but its own 60m
+  # bound closes it, so a rollout stalled for good stops masking the page.
+  - interval: 5m
+    input_series:
+      - series: 'kube_deployment_created{job="kube-state-metrics", namespace="hindsight", deployment="hindsight"}'
+        values: '-86400+0x46'
+      - series: 'kube_deployment_metadata_generation{job="kube-state-metrics", namespace="hindsight", deployment="hindsight"}'
+        values: '1+0x6 2+0x40'
+      - series: 'kube_deployment_status_observed_generation{job="kube-state-metrics", namespace="hindsight", deployment="hindsight"}'
+        values: '1+0x46'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: DeployInProgress
+        exp_alerts:
+          - exp_labels:
+              severity: none
+              namespace: hindsight
+      - eval_time: 80m
+        alertname: DeployInProgress
+        exp_alerts:
+          - exp_labels:
+              severity: none
+              namespace: hindsight
+      # The gap still holds, but the window has closed: KubeDeploymentRolloutStuck
+      # is free to page from here.
+      - eval_time: 180m
+        alertname: DeployInProgress
+        exp_alerts: []
+
+  # A Deployment created at 0m whose first rollout is slow: generation 1 never
+  # changes, so only the creation-age arm can cover it. It holds the hour, then
+  # keep_firing_for carries it to ~90m.
+  - interval: 5m
+    input_series:
+      - series: 'kube_deployment_created{job="kube-state-metrics", namespace="mealie", deployment="mealie"}'
+        values: '0+0x30'
+      - series: 'kube_deployment_metadata_generation{job="kube-state-metrics", namespace="mealie", deployment="mealie"}'
+        values: '1+0x30'
+      - series: 'kube_deployment_status_observed_generation{job="kube-state-metrics", namespace="mealie", deployment="mealie"}'
+        values: '0+0x30'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: DeployInProgress
+        exp_alerts:
+          - exp_labels:
+              severity: none
+              namespace: mealie
+      - eval_time: 55m
+        alertname: DeployInProgress
+        exp_alerts:
+          - exp_labels:
+              severity: none
+              namespace: mealie
+      - eval_time: 80m
+        alertname: DeployInProgress
+        exp_alerts:
+          - exp_labels:
+              severity: none
+              namespace: mealie
+      - eval_time: 95m
+        alertname: DeployInProgress
+        exp_alerts: []
+
+  # Steady state: generation flat and observed on a Deployment created a day
+  # ago, so no arm fires and no namespace is inhibited.
+  - interval: 5m
+    input_series:
+      - series: 'kube_deployment_created{job="kube-state-metrics", namespace="hermes", deployment="hermes"}'
+        values: '-86400+0x30'
+      - series: 'kube_deployment_metadata_generation{job="kube-state-metrics", namespace="hermes", deployment="hermes"}'
+        values: '2+0x30'
+      - series: 'kube_deployment_status_observed_generation{job="kube-state-metrics", namespace="hermes", deployment="hermes"}'
+        values: '2+0x30'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: DeployInProgress
+        exp_alerts: []

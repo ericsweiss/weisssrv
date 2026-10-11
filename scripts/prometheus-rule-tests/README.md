@@ -32,9 +32,10 @@ equal to it — a sparser input goes stale past Prometheus' 5-minute lookback an
 resets the `for:` window mid-test.
 
 When one alert in a family needs a multi-day horizon, split it into its own
-`*-long-horizon.test.yaml` at a 30-minute interval rather than slowing the whole
-family down. The `*-long-horizon.test.yaml` files in this directory are the
-ones already split out this way.
+`*-long-horizon.test.yaml` at the largest interval its own `for:` allows, rather
+than slowing the whole family down. The `*-long-horizon.test.yaml` files in this
+directory are the ones already split out this way, from 30 minutes up to the 2
+hours a 14-day `for:` can afford.
 
 ## Writing a case
 

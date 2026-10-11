@@ -11,12 +11,13 @@ spec:
     - name: homelab.storage
       rules:
         # efivarfs commonly sits above 70% with EFI variables and is not a
-        # disk-usage signal. devtmpfs and iso9660 are virtual or read-only.
+        # disk-usage signal. devtmpfs and iso9660 are virtual or read-only. The
+        # 1h floor means only a sustained fill crosses it, never a CI sawtooth.
         - alert: DiskUsageWarning
           expr: >-
-            (1 - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs|efivarfs|devtmpfs|iso9660"}
+            min_over_time(((1 - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs|efivarfs|devtmpfs|iso9660"}
             / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs|efivarfs|devtmpfs|iso9660"})
-            * 100 > 80
+            * 100)[1h:5m]) > 80
           for: 10m
           labels:
             severity: warning
@@ -368,36 +369,42 @@ spec:
               actively remapping sectors is degrading — watch it closely
               and plan replacement.
 
-        # Pending / offline-uncorrectable sectors are acute: any nonzero
-        # value is a sector currently unreadable or awaiting reallocation,
-        # not a healed-over historical event. max_over_time bridges standby.
-        - alert: SMARTPendingSectors
-          expr: max_over_time(smartmon_current_pending_sector_count[6h]) > 0
+        # A sector found once is a worklist item; a second one is the news. The
+        # delta is directional — latest reading minus the 24h floor — so a
+        # replacement zeroing the counter reads as no growth, not a drop.
+        - alert: SMARTPendingSectorsGrowing
+          expr: >-
+            last_over_time(smartmon_current_pending_sector_count[1h])
+            - min_over_time(smartmon_current_pending_sector_count[24h]) > 0
           for: 15m
           labels:
             severity: warning
           annotations:
             runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#handling-disk-failure-zfs'
-            summary: 'Current pending sectors on {{ $labels.device }} ({{ $labels.instance }})'
+            summary: 'Pending sectors growing on {{ $labels.device }} ({{ $labels.instance }})'
             description: >-
               Current_Pending_Sector on {{ $labels.device }} on
-              {{ $labels.instance }} is {{ $value | printf "%.0f" }} —
-              sectors are unreadable and awaiting reallocation. A scrub
-              of the backing pool will surface any affected data.
+              {{ $labels.instance }} grew by {{ $value | printf "%.0f" }} in
+              the last 24 hours — sectors are unreadable and awaiting
+              reallocation. A scrub of the backing pool will surface any
+              affected data. The alert closes 24h after the count stops moving;
+              a further sector fires it again.
 
-        - alert: SMARTOfflineUncorrectable
-          expr: max_over_time(smartmon_offline_uncorrectable_count[6h]) > 0
+        - alert: SMARTOfflineUncorrectableGrowing
+          expr: >-
+            last_over_time(smartmon_offline_uncorrectable_count[1h])
+            - min_over_time(smartmon_offline_uncorrectable_count[24h]) > 0
           for: 15m
           labels:
             severity: warning
           annotations:
             runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#handling-disk-failure-zfs'
-            summary: 'Offline-uncorrectable sectors on {{ $labels.device }} ({{ $labels.instance }})'
+            summary: 'Offline-uncorrectable sectors growing on {{ $labels.device }} ({{ $labels.instance }})'
             description: >-
               Offline_Uncorrectable on {{ $labels.device }} on
-              {{ $labels.instance }} is {{ $value | printf "%.0f" }} —
-              sectors that could not be corrected on read. Strong
-              replace-soon signal.
+              {{ $labels.instance }} grew by {{ $value | printf "%.0f" }} in
+              the last 24 hours — sectors that could not be corrected on read.
+              Strong replace-soon signal.
 
         # NVMe media & data-integrity errors — the SSD-side equivalent of
         # reallocated/uncorrectable sectors. Any nonzero is worth a look.
@@ -415,19 +422,31 @@ spec:
               NVMe controller has logged uncorrectable data errors —
               investigate and plan replacement.
 
-        # Collector meta-failure. The absent() arm makes an undeployed collector
-        # loud instead of silently blind (mirrors the other *CollectorStale).
+        # Collector meta-failure. absent() makes an undeployed collector loud but
+        # needs every host silent, so the up arm catches one host losing its
+        # series — scoped to the job that serves them, never every target.
         - alert: SMARTCollectorStale
           # The success arm catches a refreshed sentinel with a failed scan or
-          # unparsed devices. The devices_scanned guard keeps a host with no
-          # SMART devices quiet.
+          # unparsed devices. Every arm aggregates to instance, so one host is
+          # one group; the 30d witness lapses a month after the last good scan.
           expr: >-
-            (time() - smartmon_collector_last_success_seconds > 900)
+            max by (instance) (time() - smartmon_collector_last_success_seconds > 900)
             or absent(smartmon_collector_last_success_seconds)
             or (
-              smartmon_collector_success == 0
-              and on(instance) (
-                smartmon_collector_devices_scanned > 0
+              max by (instance) (
+                up{job="node-exporter-host"} == 1
+                unless on (instance) smartmon_collector_last_success_seconds
+              )
+              and on (instance) (
+                max_over_time(smartmon_collector_devices_scanned[30d]) > 0
+              )
+            )
+            or (
+              max by (instance) (
+                smartmon_collector_success == 0
+                and on(instance) (
+                  smartmon_collector_devices_scanned > 0
+                )
               )
             )
           for: 5m
@@ -437,8 +456,9 @@ spec:
             runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#handling-disk-failure-zfs'
             summary: 'smartmon collector is degraded or missing on {{ $labels.instance }}'
             description: >-
-              smartmon_collector_last_success_seconds is stale (>15m),
-              entirely absent, or the collector reports success 0
+              smartmon_collector_last_success_seconds is stale (>15m), gone on a
+              scraped host whose peers still report, entirely absent, or the
+              collector reports success 0
               (smartctl unrunnable, scan failed, or no device parsed) — the SMART
               device alerts on this host are serving stale or no
               inputs. Check

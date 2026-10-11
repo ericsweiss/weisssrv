@@ -366,7 +366,7 @@
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "description": "SATA HDD temperatures on pve-nas-01 (drivetemp). Thresholds are the 55C archive-pool HDD ceiling; SSD sensors are in the Non-CPU hwmon panel.",
+      "description": "SATA drive temperatures on pve-nas-01 (drivetemp), archive HDDs and the three 870 EVO SSDs alike. Thresholds are the 55C archive-pool HDD ceiling; the SSD chips (target5/6/8) are excluded from that pair and carry SATASsdTempWarning at 65C against their 70C spec.",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
@@ -411,7 +411,7 @@
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "description": "NVMe drive temperatures via the in-tree nvme hwmon driver. Sensor 1 is the controller; higher-numbered sensors are NAND temps which run hotter.",
+      "description": "NVMe drive temperatures via the in-tree nvme hwmon driver. Sensor 1 is the controller; higher-numbered sensors are NAND temps which run hotter. The 65C step is the trend line and this panel is its only home: no rule fires there. 75C is the NVMeDriveTempHigh notice, null-routed, the band smartd's monthly Extended Self-Test reaches; 80C is NVMeDriveTempCritical, the throttle point, and the only one that pages.",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },

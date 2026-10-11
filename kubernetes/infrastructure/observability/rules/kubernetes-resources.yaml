@@ -163,3 +163,22 @@ spec:
               the kill was against a moved ceiling. Raise the size in git — the
               limit is a hand-set number, not something the VPA maintains for an
               Off-tier workload.
+
+        # Taken from kube-prometheus-stack 92.3.0
+        # Upstream's expr at for: 1h, same alertname so NodeOutageStormControl
+        # keeps matching. 15m fires on by-design CI burst (docs/31).
+        - alert: NodeSystemSaturation
+          expr: >-
+            node_load1{job="node-exporter"}
+            / count without (cpu, mode) (node_cpu_seconds_total{job="node-exporter", mode="idle"}) > 2
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://runbooks.prometheus-operator.dev/runbooks/node/nodesystemsaturation'
+            summary: 'System saturated, load per core is very high.'
+            description: >-
+              System load per core at {{ $labels.instance }} has been above 2
+              for the last hour, is currently at {{ printf "%.2f" $value }}.
+              This might indicate this instance resources saturation and can
+              cause it becoming unresponsive.

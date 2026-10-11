@@ -587,6 +587,15 @@ spec:
         # 5m pages on a pair of transient webhook timeouts. Replaced by the
         # 15m copy in rules/monitoring.yaml.
         AlertmanagerClusterFailedToSendAlerts: true
+        # 10m pages on a slow *arr API scrape. Replaced by the 30m copy in
+        # rules/monitoring.yaml.
+        TargetDown: true
+        # 15m pages on a planned k3s minor upgrade. Replaced by the 12h copy in
+        # rules/monitoring.yaml.
+        KubeVersionMismatch: true
+        # 15m pages on by-design CI burst on the 2-3 core agents. Replaced by
+        # the 1h copy in rules/kubernetes-resources.yaml.
+        NodeSystemSaturation: true
 
     # Custom alert rules live in observability/rules/ as standalone
     # PrometheusRule CRs, one file per group, discovered through the

@@ -14,6 +14,9 @@ spec:
   replicas: 1
   strategy:
     type: Recreate
+  # A Recreate rollout on an RWO volume has no overlap window, so 600s is the
+  # wrong KubeDeploymentRolloutStuck deadline for a model-loading pod.
+  progressDeadlineSeconds: 2400
   selector:
     matchLabels:
       app.kubernetes.io/name: hindsight

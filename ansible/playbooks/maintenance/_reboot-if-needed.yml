@@ -341,6 +341,29 @@
           # TYPE maintenance_reboot_deferred gauge
           maintenance_reboot_deferred{host="{{ inventory_hostname }}"} 1
 
+    # MaintenanceRebootDeferred reads this file's mtime as the deferral time, and
+    # copy above leaves the mtime alone when the content matches. A marker from
+    # before the latest boot therefore has to be refreshed explicitly.
+    - name: Read the host's boot time
+      ansible.builtin.command: awk '/^btime/ {print $2}' /proc/stat
+      register: deferred_marker_btime
+      changed_when: false
+      check_mode: false
+
+    - name: Stat the deferred-reboot metric
+      ansible.builtin.stat:
+        path: "{{ node_exporter_host_textfile_dir | default('/var/lib/node_exporter') }}/maintenance_reboot_deferred.prom"
+      register: deferred_marker_stat
+
+    - name: Refresh a deferred-reboot metric written before the latest boot
+      ansible.builtin.file:
+        path: "{{ node_exporter_host_textfile_dir | default('/var/lib/node_exporter') }}/maintenance_reboot_deferred.prom"
+        state: touch
+        mode: "0644"
+      when:
+        - deferred_marker_stat.stat.exists
+        - (deferred_marker_stat.stat.mtime | int) < (deferred_marker_btime.stdout | int)
+
 # TRAP: this host set must stay in sync with every group that can reach the defer
 # path (base_managed + app_servers). A group that can write the metric but is not
 # cleared here latches the alert forever.

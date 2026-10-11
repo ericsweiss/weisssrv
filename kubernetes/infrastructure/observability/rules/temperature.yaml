@@ -1,7 +1,7 @@
 ---
 # CRITICAL: hwmon thermals from job="node-exporter-host", scoped by `instance` to the
-# bare-metal Proxmox hosts (10.0.10.102-107:9101); the SATA pair narrows to .102, see its
-# own note. The unprivileged LXCs run the same exporter against their host's
+# bare-metal Proxmox hosts (10.0.10.102-107:9101); the SATA rules narrow to .102, see
+# their own notes. The unprivileged LXCs run the same exporter against their host's
 # /sys/class/hwmon, so an unscoped rule pages twice for one physical sensor.
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
@@ -13,14 +13,15 @@ spec:
     - name: homelab.temperature
       rules:
         # Sized for the archive-pool ST6000NM0024 HDDs (55C ceiling) on pve-nas-01, so
-        # the scope is .102 only: the other hosts' SSDs share the drivetemp chip name
-        # but spec 70-85C. Extend the filter if HDDs are added elsewhere.
+        # the scope is .102 and the chip filter drops target5/6/8, the three 870 EVO
+        # SATA SSDs, which spec 70C and carry SATASsdTempWarning instead.
         - alert: SATADriveTempWarning
           expr: >-
             max by (instance, chip) (
               node_hwmon_temp_celsius{job="node-exporter-host", instance=~"10\\.0\\.10\\.102:.*"}
               * on (instance, chip) group_left(chip_name)
-              node_hwmon_chip_names{job="node-exporter-host", chip_name=~"drivetemp.*"}
+              node_hwmon_chip_names{job="node-exporter-host", chip_name=~"drivetemp.*",
+              chip!~"target[568]:0:0_.*"}
             ) >= 50
           for: 15m
           labels:
@@ -42,7 +43,8 @@ spec:
             max by (instance, chip) (
               node_hwmon_temp_celsius{job="node-exporter-host", instance=~"10\\.0\\.10\\.102:.*"}
               * on (instance, chip) group_left(chip_name)
-              node_hwmon_chip_names{job="node-exporter-host", chip_name=~"drivetemp.*"}
+              node_hwmon_chip_names{job="node-exporter-host", chip_name=~"drivetemp.*",
+              chip!~"target[568]:0:0_.*"}
             ) >= 55
           for: 5m
           labels:
@@ -60,38 +62,35 @@ spec:
               archive-pool drives' spec ceiling. Sustained over-temp is the strongest
               accelerant for HDD failure.
 
-        # NVMe via the in-tree nvme hwmon driver, as a three-step ladder: 65C
-        # trends, 75C is the nightly backup-window band on the NAS, and 80C is
-        # the throttle point the drives actually act on.
-        - alert: NVMeDriveTempWarning
+        # The three 870 EVO SATA SSDs on pve-nas-01, which spec 70C and have a
+        # corruption history, so they keep thermal coverage at their own band
+        # instead of inheriting the archive HDDs' 50/55C pair.
+        - alert: SATASsdTempWarning
           expr: >-
             max by (instance, chip) (
-              node_hwmon_temp_celsius{job="node-exporter-host", instance=~"10\\.0\\.10\\.10[2-7]:9101"}
+              node_hwmon_temp_celsius{job="node-exporter-host", instance=~"10\\.0\\.10\\.102:.*"}
               * on (instance, chip) group_left(chip_name)
-              node_hwmon_chip_names{job="node-exporter-host", chip_name="nvme"}
+              node_hwmon_chip_names{job="node-exporter-host", chip_name=~"drivetemp.*",
+              chip=~"target[568]:0:0_.*"}
             ) >= 65
-          # 30m: the nightly backup window drives one NAS chip over 65C in bursts of
-          # about 15 minutes with nothing actionable. A real airflow regression is
-          # sustained and still clears 30m.
-          for: 30m
+          for: 15m
           labels:
             severity: warning
             component: storage
           annotations:
             runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
             summary: >-
-              NVMe drive on {{ $labels.instance }}
+              SATA SSD on {{ $labels.instance }}
               ({{ $labels.chip }}) at
               {{ $value | printf "%.0f" }}C
             description: >-
-              NVMe drive {{ $labels.chip }} on {{ $labels.instance }}
-              has been at {{ $value | printf "%.0f" }}C for 30 minutes.
-              NVMe drives throttle around 80C and warn around 82C; investigate before
-              that happens.
+              SATA SSD {{ $labels.chip }} on {{ $labels.instance }}
+              has been at {{ $value | printf "%.0f" }}C for 15 minutes
+              (warn threshold 65C, 70C spec). Check airflow for that drive bay.
 
-        # The 75-80C band is a warning, not a page: the NAS nvme2 chip sits here
-        # for about 15 minutes while the nightly vzdump reads the VM disks, and
-        # the drives neither throttle nor warn until 80C.
+        # NVMe via the in-tree nvme hwmon driver, as a two-step ladder: the
+        # 75-80C band is null-routed and 80C is the throttle point the drives
+        # actually act on. The trend line below it is on the Thermals dashboard.
         - alert: NVMeDriveTempHigh
           expr: >-
             max by (instance, chip) (
@@ -101,7 +100,7 @@ spec:
             ) >= 75
           for: 10m
           labels:
-            severity: warning
+            severity: none
             component: storage
           annotations:
             runbook_url: '${cluster_runbook_base_url}/12-runbooks.md'
@@ -113,8 +112,8 @@ spec:
               NVMe drive {{ $labels.chip }} on {{ $labels.instance }}
               has been at {{ $value | printf "%.0f" }}C for 10 minutes —
               above the rest of the fleet's NVMe but below the 80C throttle
-              point. A nightly recurrence on one chip is a bay-airflow
-              question; a new chip joining is a regression.
+              point. Null-routed: visible in Grafana and the Alertmanager UI
+              only. A chip joining the band on its own is the regression.
 
         - alert: NVMeDriveTempCritical
           expr: >-

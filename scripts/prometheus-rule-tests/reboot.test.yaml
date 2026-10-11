@@ -1,7 +1,7 @@
 ---
-# promtool unit test for KuredRebootStuck: a node holding the kured reboot
-# sentinel for over 3h means the reboot cycle is stuck (dead lock / blocking CI
-# job / PDB). 30m interval keeps the 3h `for` to 6 samples.
+# promtool unit tests for the reboot alerts: KuredRebootStuck (a node holding
+# the kured sentinel over 3h) and MaintenanceRebootDeferred (a marker file newer
+# than the boot it survived). 30m interval keeps the 3h `for` to 6 samples.
 rule_files:
   - rules.yaml
 evaluation_interval: 30m
@@ -27,4 +27,85 @@ tests:
     alert_rule_test:
       - eval_time: 210m
         alertname: KuredRebootStuck
+        exp_alerts: []
+
+  # MaintenanceRebootDeferred: the marker file was written an hour after the
+  # last boot, so the deferral is still pending. Silent until the 10m `for`
+  # elapses, then firing.
+  - interval: 30m
+    input_series:
+      - series: 'maintenance_reboot_deferred{instance="10.0.10.102:9101", host="pve-nas-01"}'
+        values: '1+0x10'
+      - series: 'node_textfile_mtime_seconds{job="node-exporter-host", instance="10.0.10.102:9101", file="/var/lib/node_exporter/maintenance_reboot_deferred.prom"}'
+        values: '-860400+0x10'
+      - series: 'node_boot_time_seconds{job="node-exporter-host", instance="10.0.10.102:9101"}'
+        values: '-864000+0x10'
+    alert_rule_test:
+      - eval_time: 0m
+        alertname: MaintenanceRebootDeferred
+        exp_alerts: []
+      - eval_time: 210m
+        alertname: MaintenanceRebootDeferred
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: '10.0.10.102:9101'
+              host: pve-nas-01
+
+  # The reboot the operator ran clears it even though the stale gauge still
+  # reads 1: the marker predates the boot. Uptime is 10 days here, so no
+  # recent-boot window could have covered it.
+  - interval: 30m
+    input_series:
+      - series: 'maintenance_reboot_deferred{instance="10.0.10.102:9101", host="pve-nas-01"}'
+        values: '1+0x10'
+      - series: 'node_textfile_mtime_seconds{job="node-exporter-host", instance="10.0.10.102:9101", file="/var/lib/node_exporter/maintenance_reboot_deferred.prom"}'
+        values: '-1728000+0x10'
+      - series: 'node_boot_time_seconds{job="node-exporter-host", instance="10.0.10.102:9101"}'
+        values: '-864000+0x10'
+    alert_rule_test:
+      - eval_time: 210m
+        alertname: MaintenanceRebootDeferred
+        exp_alerts: []
+      - eval_time: 600m
+        alertname: MaintenanceRebootDeferred
+        exp_alerts: []
+
+  # The join is per host: another host's fresh marker must not arm this one,
+  # whose reboot already happened.
+  - interval: 30m
+    input_series:
+      - series: 'maintenance_reboot_deferred{instance="10.0.10.103:9101", host="pve-opt-01"}'
+        values: '1+0x10'
+      - series: 'node_textfile_mtime_seconds{job="node-exporter-host", instance="10.0.10.103:9101", file="/var/lib/node_exporter/maintenance_reboot_deferred.prom"}'
+        values: '-860400+0x10'
+      - series: 'node_boot_time_seconds{job="node-exporter-host", instance="10.0.10.103:9101"}'
+        values: '-864000+0x10'
+      - series: 'maintenance_reboot_deferred{instance="10.0.10.102:9101", host="pve-nas-01"}'
+        values: '1+0x10'
+      - series: 'node_textfile_mtime_seconds{job="node-exporter-host", instance="10.0.10.102:9101", file="/var/lib/node_exporter/maintenance_reboot_deferred.prom"}'
+        values: '-1728000+0x10'
+      - series: 'node_boot_time_seconds{job="node-exporter-host", instance="10.0.10.102:9101"}'
+        values: '-864000+0x10'
+    alert_rule_test:
+      - eval_time: 210m
+        alertname: MaintenanceRebootDeferred
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: '10.0.10.103:9101'
+              host: pve-opt-01
+
+  # No deferred reboot at all.
+  - interval: 30m
+    input_series:
+      - series: 'maintenance_reboot_deferred{instance="10.0.10.102:9101", host="pve-nas-01"}'
+        values: '0+0x10'
+      - series: 'node_textfile_mtime_seconds{job="node-exporter-host", instance="10.0.10.102:9101", file="/var/lib/node_exporter/maintenance_reboot_deferred.prom"}'
+        values: '-860400+0x10'
+      - series: 'node_boot_time_seconds{job="node-exporter-host", instance="10.0.10.102:9101"}'
+        values: '-864000+0x10'
+    alert_rule_test:
+      - eval_time: 210m
+        alertname: MaintenanceRebootDeferred
         exp_alerts: []

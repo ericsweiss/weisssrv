@@ -518,8 +518,7 @@ the SSO database. Four alerts now close it:
   the container's configured memory limit for 6h. It compares the **larger of
   the capped and uncapped** targets, so the cap-tracking `RequestsOnly` shape
   this doc mandates stays in scope instead of clamping the comparison
-  unsatisfiable. Six workloads are excluded, for the page-cache reason below
-  (§ Hand-tuned request baselines). Scoped to `Off`- and `Initial`-tier VPAs and
+  unsatisfiable. Scoped to `Off`- and `Initial`-tier VPAs and
   to `controlledValues: RequestsOnly`, which kube-state-metrics exports through
   the `update_mode` / `controlled_values` labels. The `controlled_values` label
   reaches only a VPA that declares a `containerName: "*"` policy entry, so the
@@ -553,6 +552,33 @@ the SSO database. Four alerts now close it:
   invisible.
 
 All of them are unit-tested in `scripts/prometheus-rule-tests/memory-sizing.test.yaml`.
+
+## The VPA tier is advisory
+
+`VPARecommendationCapped`, `VPARecommendationExceedsLimit` and
+`VPARecommendationExceedsRequest` all carry `severity: none`: they are
+null-routed, so they appear in Grafana and the Alertmanager UI and never reach
+Discord or email. Read them on the autoscaling dashboard and work the list when
+you choose to, not when it fires.
+
+The reason is the metric. All three descend from `vpa_recommendation_target`,
+which the recommender derives from `container_memory_working_set_bytes` — and
+for most of the workloads here that is reclaimable page cache, not memory the
+process needs. Measured over 14 days: hermes/gateway 1079Mi working set against
+393Mi RSS under a 2048Mi limit, loki 1015 vs 572 under 1024, radarr 679 vs 270
+under 1024, homarr 479 vs 334 under 896, Prometheus 5961 vs 2159. Zero OOMKills
+cluster-wide over the same window. A tier that pages on an inflated estimate
+spends real node reservation on page cache.
+
+Real OOM risk keeps two purpose-built pagers, both in
+`rules/kubernetes-resources.yaml` and both reading non-reclaimable memory:
+`PageCacheWorkloadRSSNearLimit` (RSS above 0.9 of the limit) and
+`ContainerOOMKilled`.
+
+Because none of the three pages, none of them needs an allowlist, and the
+hand-maintained `unless` exclusion arms they carried are gone. The
+page-cache-dominated workloads below now show up on the list, which is the
+honest state: their recommendation really is above their cap.
 
 ## Hand-tuned request baselines
 
@@ -589,9 +615,10 @@ ceiling, raise only the request to meet it, and cap `maxAllowed` there.
 radarr and lidarr are in the same class. Their working set is reclaimable NFS
 page cache against a 30d RSS peak near 290Mi, and `maxAllowed.memory` equals
 their 1Gi container limit. nzbget, qbittorrent, loki, grafana, radarr and lidarr
-therefore sit in `VPARecommendationCapped` permanently by design, which is why
-all six are on that alert's exclusion list alongside
-`VPARecommendationExceedsLimit`.
+therefore sit in `VPARecommendationCapped` permanently by design — and now
+appear on it, because the three `VPARecommendation*` alerts no longer page and
+so no longer carry a hand-maintained exclusion list (§ The VPA tier is
+advisory).
 
 ## Proxmox-level scaling (manual by design)
 

@@ -318,12 +318,16 @@ spec:
               app is slow or timing out. Check authentik-server and -worker CPU,
               and the Postgres backend.
 
-        # postgres_exporter coverage for the production databases; pg_up is 0
-        # when the exporter cannot reach its database. Add a job to the absent()
-        # arm only once its exporter is deployed, or it fires immediately.
+        # pg_up is 0 when the exporter cannot reach its database. Add a job to
+        # the absent() arm only once its exporter is deployed. The 45m grace
+        # skips a sidecar racing its own freshly started database (docs/31).
         - alert: PostgresDown
           expr: >-
-            pg_up == 0
+            (
+              pg_up == 0
+              unless on (namespace, pod)
+              (time() - kube_pod_start_time{job="kube-state-metrics"} < 2700)
+            )
             or absent(pg_up{job="authentik-postgresql-metrics"})
             or absent(pg_up{job="observability/mealie-postgres"})
             or absent(pg_up{job="gitlab"})
@@ -498,12 +502,42 @@ spec:
               has been producing reconciliation errors
               at {{ $value | printf "%.2f" }} errors/s for 15 minutes.
 
-        # Durable Ready=False on a HelmRelease/Kustomization, regardless of error
-        # rate (FluxReconciliationFailure covers the error-rate side).
-        # gotk_resource_info comes from kube-state-metrics customResourceState.
+        # A Kustomization Ready=False is "nothing in this path is reconciling",
+        # so it pages ahead of its own resources. The `max by` drops
+        # kube-state-metrics' scrape identity, which fragments one failure.
+        - alert: FluxKustomizationNotReady
+          expr: >-
+            max by (customresource_group, customresource_kind, customresource_version,
+                    exported_namespace, name) (
+              gotk_resource_info{customresource_kind="Kustomization", ready="False", suspended!="true"}
+            ) == 1
+          for: 5m
+          keep_firing_for: 15m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: '${cluster_runbook_base_url}/29-flux-operations.md#troubleshooting'
+            summary: >-
+              Flux Kustomization {{ $labels.exported_namespace }}/{{ $labels.name }}
+              not Ready
+            description: >-
+              Flux Kustomization {{ $labels.exported_namespace }}/{{ $labels.name }}
+              has had Ready=False for 5 minutes, so nothing under it is being
+              applied. Run `flux get ks -A | grep -v True` and
+              `kubectl describe kustomization {{ $labels.name }}
+              -n {{ $labels.exported_namespace }}` for the build or apply error.
+
+        # Every other Flux kind: a HelmRelease upgrade or a source blip is a
+        # rollout in progress, so 30m. FluxReconciliationFailure covers the
+        # error-rate side; the 30m hold is what stops the double page.
         - alert: FluxResourceNotReady
-          expr: gotk_resource_info{ready="False", suspended!="true"} == 1
-          for: 15m
+          expr: >-
+            max by (customresource_group, customresource_kind, customresource_version,
+                    exported_namespace, name) (
+              gotk_resource_info{customresource_kind!="Kustomization", ready="False", suspended!="true"}
+            ) == 1
+          for: 30m
+          keep_firing_for: 15m
           labels:
             severity: warning
           annotations:
@@ -514,7 +548,7 @@ spec:
             description: >-
               Flux resource {{ $labels.customresource_kind }}
               {{ $labels.exported_namespace }}/{{ $labels.name }}
-              has had Ready=False for 15 minutes. Run
+              has had Ready=False for 30 minutes. Run
               `flux get all -A | grep -v True` and
               `kubectl describe {{ $labels.customresource_kind }} {{ $labels.name }}
               -n {{ $labels.exported_namespace }}` to investigate.
@@ -663,6 +697,8 @@ spec:
               in {{ $labels.namespace }} for an hour. The expiry alerts cannot
               cover it: that series only exists after a first issuance.
 
+        # A cluster-wide ratio with no labels, so 5xx from one stopped backend
+        # reads as a Traefik fault. 15m is past every measured burst.
         - alert: TraefikHighErrorRate
           expr: >-
             sum(rate(traefik_service_requests_total{code=~"5.."}[5m]))
@@ -670,14 +706,14 @@ spec:
             sum(rate(traefik_service_requests_total[5m]))
             > 0.05
             and sum(rate(traefik_service_requests_total[5m])) > 0
-          for: 5m
+          for: 15m
           labels:
             severity: warning
           annotations:
             runbook_url: '${cluster_runbook_base_url}/31-observability.md#alerting'
             summary: 'Traefik 5xx error rate above 5%'
             # $value is a 0-1 ratio; humanizePercentage emits the % sign.
-            description: 'Traefik is returning 5xx errors at {{ $value | humanizePercentage }} over the last 5 minutes.'
+            description: 'Traefik is returning 5xx errors at {{ $value | humanizePercentage }} over the last 15 minutes.'
 
         # Aggregate kube-state-metrics' scrape labels away once, here: raw VPA
         # series carry job/instance/pod/endpoint/service, so a KSM reschedule
@@ -729,8 +765,8 @@ spec:
               "workload", "$1", "workload", "^(?:prometheus|alertmanager)-(.+)$")
 
         # uncappedTarget above target means the recommendation is clamped at
-        # maxAllowed. Memory needs a 1.25x ratio and a flat 128Mi gap, so a
-        # workload growing toward its own limit does not fire forever (docs/33).
+        # maxAllowed. Advisory only (severity: none): the target tracks page
+        # cache, so it is a docs/33 worklist item, not a page.
         - alert: VPARecommendationCapped
           expr: >-
             (
@@ -747,29 +783,9 @@ spec:
                 > 1.25 * vpa:recommendation_target:max{resource="cpu"}
               )
             )
-            unless on (exported_namespace, verticalpodautoscaler, container, resource)
-            (
-              vpa:recommendation_target:max{exported_namespace="downloads",
-                                            verticalpodautoscaler="nzbget",
-                                            container="nzbget",
-                                            resource="memory"}
-              or
-              vpa:recommendation_target:max{exported_namespace="downloads",
-                                            verticalpodautoscaler="qbittorrent",
-                                            container="qbittorrent",
-                                            resource="memory"}
-              or
-              vpa:recommendation_target:max{exported_namespace="downloads",
-                                            verticalpodautoscaler=~"radarr|lidarr",
-                                            resource="memory"}
-              or
-              vpa:recommendation_target:max{exported_namespace="observability",
-                                            verticalpodautoscaler=~"grafana|loki",
-                                            resource="memory"}
-            )
           for: 24h
           labels:
-            severity: warning
+            severity: none
           annotations:
             runbook_url: '${cluster_runbook_base_url}/33-autoscaling.md#operations'
             summary: >-
@@ -784,9 +800,9 @@ spec:
               from the container's limit, so raise the limit in the workload's
               HelmRelease and re-derive the cap in the same commit (docs/33).
 
-        # The recommendation outgrew the container's memory limit, the automated
-        # signal that a hand-applied size fell behind. It reads the larger of the
-        # capped and uncapped target, so 1.1x keeps a few-percent want quiet.
+        # The recommendation outgrew the container's memory limit. Advisory only
+        # (severity: none): the target tracks working set, which is page cache
+        # here. PageCacheWorkloadRSSNearLimit and ContainerOOMKilled page.
         - alert: VPARecommendationExceedsLimit
           expr: >-
             max by (namespace, verticalpodautoscaler, workload, container) (
@@ -794,18 +810,9 @@ spec:
             )
             > on (namespace, workload, container) group_left () 1.1 *
             workload:kube_pod_container_resource_memory:max{kind="limits"}
-            unless on (namespace, workload, container) (
-              workload:kube_pod_container_resource_memory:max{kind="limits",
-                                                              namespace="downloads",
-                                                              container=~"nzbget|qbittorrent|radarr|lidarr"}
-              or
-              workload:kube_pod_container_resource_memory:max{kind="limits",
-                                                              namespace="observability",
-                                                              container=~"grafana|loki"}
-            )
           for: 6h
           labels:
-            severity: warning
+            severity: none
           annotations:
             runbook_url: '${cluster_runbook_base_url}/33-autoscaling.md'
             summary: >-
@@ -815,14 +822,14 @@ spec:
             description: >-
               The VPA memory target for container {{ $labels.container }}
               in {{ $labels.namespace }} is {{ $value | humanize1024 }}B,
-              above the container's configured memory limit — the workload
-              is sized below its own measured need and will OOMKill on the
-              next burst. Apply the recommendation in git (docs/33
+              above the container's configured memory limit. The target reads
+              working set, so reclaimable page cache inflates it — compare RSS
+              before resizing in git (docs/33
               "Applying an Off-tier recommendation").
 
         # The same drift one band earlier, at the request the scheduler and the
-        # kubelet's eviction ranking see. 1.25x with a 128Mi floor keeps this a
-        # worklist rather than standing noise (docs/33).
+        # kubelet's eviction ranking see. Advisory only (severity: none): the
+        # worklist lives in docs/33 and the autoscaling dashboard.
         - alert: VPARecommendationExceedsRequest
           expr: >-
             (
@@ -840,7 +847,7 @@ spec:
             workload:kube_pod_container_resource_memory:max{kind="requests"}
           for: 24h
           labels:
-            severity: info
+            severity: none
           annotations:
             runbook_url: '${cluster_runbook_base_url}/33-autoscaling.md'
             summary: >-

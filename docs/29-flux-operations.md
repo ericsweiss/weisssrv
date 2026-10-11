@@ -679,7 +679,7 @@ kubectl -n observability exec deploy/kube-prometheus-stack-grafana -c grafana \
 
 # The two kube-system scrape allows still work. `up == 1` per target is the
 # proof; an empty result vector or a 0 means the 9153 (CoreDNS) or 8080 (kured)
-# allow is wrong, and TargetDown follows a few minutes later.
+# allow is wrong, and TargetDown follows half an hour later.
 kubectl -n observability exec deploy/kube-prometheus-stack-grafana -c grafana \
   -- wget -qO- 'http://prometheus-operated:9090/api/v1/query?query=up{job=~"coredns|kured"}'
 ```
@@ -806,7 +806,17 @@ Flux automatically retries failed upgrades and rolls back on repeated failure. C
 
 ## Troubleshooting
 
-Alerts: FluxReconciliationFailure, FluxResourceNotReady.
+Alerts: FluxReconciliationFailure, FluxKustomizationNotReady, FluxResourceNotReady.
+
+`FluxKustomizationNotReady` is the fast one (5m): a Kustomization that is
+not Ready means nothing under its path is being applied, so start with
+`flux get ks -A | grep -v True` and read the build or apply error from
+`kubectl describe kustomization <name> -n flux-system`. A BuildFailed is
+almost always a kustomize or `postBuild.substituteFrom` error in the last
+commit. `FluxResourceNotReady` covers every other kind at 30m, and that hold
+is what keeps a Kustomization failure from paging twice — the inhibit between
+the two can only pair resources sharing a namespace and a name, which no
+Kustomization shares with the objects it applies (docs/31).
 
 ### ExternalSecret stuck in `SecretSyncError`
 

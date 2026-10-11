@@ -77,7 +77,7 @@ tests:
       - series: 'zfs_pool_status_errors_total{pool="archive", instance="10.0.10.102:9101", device="sdb", type="read"}'
         values: '0+0x10'
       - series: 'zfs_pool_status_errors_total{pool="archive", instance="10.0.10.102:9101", device="sdc", type="cksum"}'
-        values: '4+0x10'
+        values: '0 4+0x10'
     alert_rule_test:
       - eval_time: 6m
         alertname: ZFSPoolDeviceErrors
@@ -87,6 +87,28 @@ tests:
               pool: archive
               instance: '10.0.10.102:9101'
 
+  # Hysteresis: a count that has not moved inside the 24h window is a worklist
+  # item, not news, so the same non-zero counter standing still is silent.
+  - interval: 1m
+    input_series:
+      - series: 'zfs_pool_status_errors_total{pool="archive", instance="10.0.10.102:9101", device="sdc", type="cksum"}'
+        values: '4+0x10'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: ZFSPoolDeviceErrors
+        exp_alerts: []
+
+  # A pool re-import zeroes the counters. The delta is directional, so that
+  # reads as no growth rather than as a drop the alert could fire on.
+  - interval: 1m
+    input_series:
+      - series: 'zfs_pool_status_errors_total{pool="archive", instance="10.0.10.102:9101", device="sdc", type="cksum"}'
+        values: '0 12+0x5 0+0x10'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: ZFSPoolDeviceErrors
+        exp_alerts: []
+
   # A resilvering vdev still reports its counters: the pool pages as DEGRADED
   # and the per-vdev cksum errors page alongside it.
   - interval: 1m
@@ -94,7 +116,7 @@ tests:
       - series: 'zfs_pool_status_health_code{pool="tank", instance="10.0.10.102:9101"}'
         values: '2+0x10'
       - series: 'zfs_pool_status_errors_total{pool="tank", instance="10.0.10.102:9101", device="sde", type="cksum"}'
-        values: '17+0x10'
+        values: '0 17+0x10'
     alert_rule_test:
       - eval_time: 6m
         alertname: ZFSPoolNotOnline
@@ -118,9 +140,9 @@ tests:
       - series: 'zfs_pool_status_health_code{pool="archive", instance="10.0.10.103:9101"}'
         values: '2+0x10'
       - series: 'zfs_pool_status_errors_total{pool="archive", instance="10.0.10.103:9101", device="sdf", type="read"}'
-        values: '41+0x10'
+        values: '0 41+0x10'
       - series: 'zfs_pool_status_errors_total{pool="archive", instance="10.0.10.103:9101", device="sdf", type="write"}'
-        values: '9+0x10'
+        values: '0 9+0x10'
     alert_rule_test:
       - eval_time: 6m
         alertname: ZFSPoolDeviceErrors
@@ -153,28 +175,4 @@ tests:
     alert_rule_test:
       - eval_time: 18m
         alertname: SMARTDeviceUnhealthy
-        exp_alerts: []
-
-  # SMARTPendingSectors: max_over_time, the mirror image — one non-zero sample
-  # in the window is enough (pending sectors do not un-happen).
-  - interval: 1m
-    input_series:
-      - series: 'smartmon_current_pending_sector_count{device="sdd", instance="10.0.10.102:9101"}'
-        values: '0 0 8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0'
-    alert_rule_test:
-      - eval_time: 18m
-        alertname: SMARTPendingSectors
-        exp_alerts:
-          - exp_labels:
-              severity: warning
-              device: sdd
-              instance: '10.0.10.102:9101'
-
-  - interval: 1m
-    input_series:
-      - series: 'smartmon_current_pending_sector_count{device="sdd", instance="10.0.10.102:9101"}'
-        values: '0+0x20'
-    alert_rule_test:
-      - eval_time: 18m
-        alertname: SMARTPendingSectors
         exp_alerts: []

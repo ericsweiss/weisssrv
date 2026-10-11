@@ -329,8 +329,8 @@ tenant's whole reconcile fails. Escape a literal as `$${...}`.
 The `infrastructure-configs` stage name in `dependsOn` is a contract every
 tenant depends on. Rename or remove that Kustomization and each tenant stalls
 quietly: kustomize-controller retries "dependency not found", `wait: true`
-applies nothing, and the only signal is `FluxResourceNotReady`, fifteen minutes
-later. `scripts/check-tenant-wiring.py` holds every tenant file to that name.
+applies nothing, and the only signal is `FluxKustomizationNotReady`, five
+minutes later. `scripts/check-tenant-wiring.py` holds every tenant file to that name.
 
 ## Example: GitLab-variables-backed tenant (friends without 1P)
 

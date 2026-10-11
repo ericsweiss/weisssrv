@@ -1,6 +1,6 @@
 ---
 # promtool unit tests for UptimeKumaMonitorPersistentlyDown. The 24h window
-# separates an outage blackbox also sees (EndpointDown, 10m) from one only Kuma
+# separates an outage blackbox also sees (EndpointDown, 30m) from one only Kuma
 # reports. monitor_status: 0 DOWN, 1 UP, 2 PENDING, 3 MAINTENANCE; only 0 counts.
 rule_files:
   - rules.yaml

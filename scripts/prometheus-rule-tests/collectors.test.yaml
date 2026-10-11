@@ -104,3 +104,79 @@ tests:
       - eval_time: 10m
         alertname: SMARTCollectorStale
         exp_alerts: []
+
+  # One host's collector series vanish while a peer keeps exporting, so absent()
+  # stays false and the up arm is the only one that sees it. The arm aggregates
+  # to instance, so it lands in the same group the stale-timestamp arm would.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="node-exporter-host", endpoint="metrics", namespace="observability", service="node-exporter-host", instance="10.0.10.102:9101"}'
+        values: '1+0x30'
+      - series: 'smartmon_collector_last_success_seconds{job="node-exporter-host", endpoint="metrics", namespace="observability", service="node-exporter-host", instance="10.0.10.102:9101"}'
+        values: '0+60x10 _x20'
+      - series: 'smartmon_collector_devices_scanned{job="node-exporter-host", endpoint="metrics", namespace="observability", service="node-exporter-host", instance="10.0.10.102:9101"}'
+        values: '4+0x10 _x20'
+      - series: 'up{job="node-exporter-host", endpoint="metrics", namespace="observability", service="node-exporter-host", instance="10.0.10.103:9101"}'
+        values: '1+0x30'
+      - series: 'smartmon_collector_last_success_seconds{job="node-exporter-host", endpoint="metrics", namespace="observability", service="node-exporter-host", instance="10.0.10.103:9101"}'
+        values: '0+60x30'
+      - series: 'smartmon_collector_devices_scanned{job="node-exporter-host", endpoint="metrics", namespace="observability", service="node-exporter-host", instance="10.0.10.103:9101"}'
+        values: '4+0x30'
+    alert_rule_test:
+      # Both collectors fresh.
+      - eval_time: 10m
+        alertname: SMARTCollectorStale
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: SMARTCollectorStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: '10.0.10.102:9101'
+
+  # The stale-timestamp arm on the same host carries the same label set, so one
+  # condition cannot become two Alertmanager groups for one host.
+  - interval: 1m
+    input_series:
+      - series: 'smartmon_collector_last_success_seconds{job="node-exporter-host", endpoint="metrics", namespace="observability", service="node-exporter-host", instance="10.0.10.102:9101"}'
+        values: '-2000+0x10'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: SMARTCollectorStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: '10.0.10.102:9101'
+
+  # A node the collector never served has no devices_scanned witness, so the
+  # guard keeps the up arm off it while a healthy host holds absent() false.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="node-exporter-host", instance="10.0.10.154:9101"}'
+        values: '1+0x30'
+      - series: 'smartmon_collector_last_success_seconds{instance="10.0.10.102:9101"}'
+        values: '0+60x30'
+      - series: 'smartmon_collector_devices_scanned{instance="10.0.10.102:9101"}'
+        values: '4+0x30'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: SMARTCollectorStale
+        exp_alerts: []
+
+  # The in-cluster DaemonSet never serves smartmon_*, and there are 147 such
+  # targets cluster-wide: the job matcher is what keeps the arm off all of
+  # them, not the per-host witness, which an instance collision would defeat.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="node-exporter", instance="10.0.10.102:9101"}'
+        values: '1+0x30'
+      - series: 'smartmon_collector_last_success_seconds{instance="10.0.10.103:9101"}'
+        values: '0+60x30'
+      - series: 'smartmon_collector_devices_scanned{instance="10.0.10.102:9101"}'
+        values: '4+0x30'
+      - series: 'smartmon_collector_devices_scanned{instance="10.0.10.103:9101"}'
+        values: '4+0x30'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: SMARTCollectorStale
+        exp_alerts: []

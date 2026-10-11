@@ -82,25 +82,73 @@ tests:
         alertname: FluxReconciliationFailure
         exp_alerts: []
 
-  # FluxResourceNotReady must ignore SUSPENDED resources: a suspended
-  # Kustomization keeps reporting its last state and would page indefinitely.
+  # Both Flux arms must ignore SUSPENDED resources: a suspended Kustomization
+  # keeps reporting its last state and would page indefinitely. The
+  # Kustomization arm fires at 5m, which is the faster "nothing is reconciling".
   - interval: 1m
     input_series:
-      - series: 'gotk_resource_info{ready="False", suspended="false", name="apps", namespace="flux-system", kind="Kustomization"}'
+      - series: 'gotk_resource_info{job="kube-state-metrics", instance="10.42.7.87:8080", pod="ksm-a", customresource_group="kustomize.toolkit.fluxcd.io", customresource_kind="Kustomization", customresource_version="v1", exported_namespace="flux-system", name="apps", ready="False", suspended="false"}'
         values: '1+0x40'
-      - series: 'gotk_resource_info{ready="False", suspended="true", name="paused", namespace="flux-system", kind="Kustomization"}'
+      - series: 'gotk_resource_info{job="kube-state-metrics", instance="10.42.7.87:8080", pod="ksm-a", customresource_group="kustomize.toolkit.fluxcd.io", customresource_kind="Kustomization", customresource_version="v1", exported_namespace="flux-system", name="paused", ready="False", suspended="true"}'
         values: '1+0x40'
     alert_rule_test:
-      - eval_time: 20m
+      - eval_time: 8m
+        alertname: FluxKustomizationNotReady
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              customresource_group: kustomize.toolkit.fluxcd.io
+              customresource_kind: Kustomization
+              customresource_version: v1
+              exported_namespace: flux-system
+              name: apps
+      # The other arm excludes Kustomizations, so it never doubles the page.
+      - eval_time: 35m
+        alertname: FluxResourceNotReady
+        exp_alerts: []
+
+  # A kube-state-metrics reschedule hands the same resource a new instance/pod
+  # identity. The `max by` aggregates that away, so one failure is one alert and
+  # the `for:` clock is not restarted by a scrape-target change.
+  - interval: 1m
+    input_series:
+      - series: 'gotk_resource_info{job="kube-state-metrics", instance="10.42.7.87:8080", pod="ksm-a", customresource_group="helm.toolkit.fluxcd.io", customresource_kind="HelmRelease", customresource_version="v2", exported_namespace="authentik", name="authentik", ready="False", suspended="false"}'
+        values: '1+0x20 _x30'
+      - series: 'gotk_resource_info{job="kube-state-metrics", instance="10.42.7.91:8080", pod="ksm-b", customresource_group="helm.toolkit.fluxcd.io", customresource_kind="HelmRelease", customresource_version="v2", exported_namespace="authentik", name="authentik", ready="False", suspended="false"}'
+        values: '_x20 1+0x30'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: FluxResourceNotReady
+        exp_alerts: []
+      - eval_time: 45m
         alertname: FluxResourceNotReady
         exp_alerts:
           - exp_labels:
               severity: warning
-              ready: 'False'
-              suspended: 'false'
+              customresource_group: helm.toolkit.fluxcd.io
+              customresource_kind: HelmRelease
+              customresource_version: v2
+              exported_namespace: authentik
+              name: authentik
+
+  # keep_firing_for: 15m bridges a resource that flaps Ready, so one incident is
+  # one Alertmanager group episode instead of a resolve/refire per flap.
+  - interval: 1m
+    input_series:
+      - series: 'gotk_resource_info{job="kube-state-metrics", instance="10.42.7.87:8080", pod="ksm-a", customresource_group="kustomize.toolkit.fluxcd.io", customresource_kind="Kustomization", customresource_version="v1", exported_namespace="flux-system", name="apps", ready="False", suspended="false"}'
+        values: '1+0x10 0+0x5 1+0x30'
+    alert_rule_test:
+      # The condition is false at 13m; keep_firing_for holds the alert firing.
+      - eval_time: 13m
+        alertname: FluxKustomizationNotReady
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              customresource_group: kustomize.toolkit.fluxcd.io
+              customresource_kind: Kustomization
+              customresource_version: v1
+              exported_namespace: flux-system
               name: apps
-              namespace: flux-system
-              kind: Kustomization
 
   # CertificateNotReady is the only arm covering a Certificate cert-manager has
   # never issued: the expiry series does not exist until a first issuance.

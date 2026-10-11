@@ -14,6 +14,9 @@ spec:
   replicas: 1
   strategy:
     type: Recreate
+  # The startupProbes budget 300s per container across three, on top of a
+  # multi-GB pull, so 600s is the wrong KubeDeploymentRolloutStuck deadline.
+  progressDeadlineSeconds: 2400
   selector:
     matchLabels:
       app.kubernetes.io/name: hermes

@@ -35,7 +35,6 @@ UNTESTED = {
     "VPNDown",
     "VPNExporterDown",
     # Single ratio/threshold on one series, both arms of the same ladder.
-    "DiskUsageWarning",
     "DiskUsageCritical",
     "InodeUsageWarning",
     "InodeUsageCritical",
@@ -46,7 +45,6 @@ UNTESTED = {
     "PostfixQueueBacklog",
     "NodeMemoryPressure",
     "NodeStuckCordoned",
-    "MaintenanceRebootDeferred",
     "ExternalSecretSyncFailure",
     # Certificate expiry: a plain `<time> - now` threshold per certificate.
     "CertExpiringWarning",
@@ -186,6 +184,7 @@ METRIC_SOURCES: dict[str, tuple[tuple[str, str], ...]] = {
     "alertmanager_": ((_KPS, "alertmanager:"),),
     "container_": ((_KPS, "kubelet:"),),
     "kube_": ((_KPS, "kube-state-metrics:"),),
+    "kubernetes_build_info": ((_KPS, "kube-prometheus-stack"),),
     "gotk_": ((_KPS, "customResourceState"),),
     "node_": ((_KPS, "nodeExporter:"), (_NODE_HOST, "node-exporter-host")),
     "backup_artifact_": ((_NODE_HOST, "node-exporter-host"),),

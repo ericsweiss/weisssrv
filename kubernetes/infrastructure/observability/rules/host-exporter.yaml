@@ -187,8 +187,8 @@ spec:
               merged :0000192 alias. Fingerprint and procedure: the runbook
               section this alert links.
 
-        # Fleet-wide memory-pressure floor. The NAS swap alerts cover its own
-        # failure modes; nothing else watches a host simply running out of memory.
+        # Fleet-wide memory-pressure floor, muted on the NAS while the slab
+        # latch holds. The critical below is the tier that is never inhibited.
         - alert: HostMemAvailableLow
           expr: >-
             (node_memory_MemAvailable_bytes{job="node-exporter-host"} / node_memory_MemTotal_bytes{job="node-exporter-host"}) < 0.08
@@ -205,6 +205,26 @@ spec:
               ballooning, ARC vs its cap, SUnreclaim for slab growth) before
               the kernel starts swapping or OOM-killing (docs/06 § NAS memory
               management for the NAS levers).
+
+        # The floor the slab leak cannot reach alone: it parks the NAS at a 14d
+        # median of 18% available and a 1st percentile of 2.4%, so only a
+        # transient on top of it crosses 2%. Never on an inhibit target list.
+        - alert: HostMemAvailableCritical
+          expr: >-
+            (node_memory_MemAvailable_bytes{job="node-exporter-host"} / node_memory_MemTotal_bytes{job="node-exporter-host"}) < 0.02
+          for: 15m
+          labels:
+            severity: critical
+          annotations:
+            runbook_url: '${cluster_runbook_base_url}/06-zfs.md#nas-memory-management'
+            summary: 'Available memory below 2% on {{ $labels.instance }} for 15m'
+            description: >-
+              {{ $labels.instance }} has under 2% of RAM available
+              ({{ $value | humanizePercentage }}) for 15 minutes — the kernel
+              is about to swap hard or start OOM-killing. HostMemAvailableLow
+              rides the slab-leak inhibit; this tier never does, so it is the
+              one pager a standing leak cannot mute. Free RAM now: shrink ARC,
+              stop a heavy guest, or reboot (docs/06 § NAS memory management).
 
         - alert: HostConntrackEntriesHigh
           expr: >-
@@ -226,9 +246,13 @@ spec:
         # chart): the host exporter is the sole emitter of node_systemd_*. The
         # excluded gettys restart forever on headless guests.
         - alert: NodeSystemdServiceFailed
+          # The second exclusion is the timer-driven oneshots whose own
+          # *_last_run_success alert in rules/scripts.yaml reports the same
+          # failure with its runbook; every other oneshot stays in scope.
           expr: >-
             node_systemd_unit_state{job="node-exporter-host", state="failed",
-            name!~"getty@tty1\\.service|serial-getty@ttyS0\\.service"} == 1
+            name!~"getty@tty1\\.service|serial-getty@ttyS0\\.service",
+            name!~"(archive-backup|restic-offsite|restic-offsite-verify|gitlab-backup|pve-cluster-backup|immich-backup|nextcloud-backup|media-mover|adguardhome-sync|swap-clean|homelab-cert-check|backup-restore-drill)\\.service"} == 1
           for: 15m
           labels:
             severity: warning

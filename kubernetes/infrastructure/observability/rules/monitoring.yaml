@@ -80,10 +80,16 @@ spec:
               `kubectl uncordon {{ $labels.node }}`.
 
         # maintenance's _reboot-if-needed.yml writes this textfile metric when it
-        # defers a host reboot to an operator. It self-clears once the host no
-        # longer needs a reboot.
+        # defers a host reboot to an operator. The file outlives the reboot, so
+        # only a marker written since the latest boot is a pending reboot.
         - alert: MaintenanceRebootDeferred
-          expr: maintenance_reboot_deferred == 1
+          expr: >-
+            maintenance_reboot_deferred == 1
+            and on (instance) (
+              node_textfile_mtime_seconds{job="node-exporter-host", file=~".*/maintenance_reboot_deferred\\.prom"}
+              > on (instance)
+              node_boot_time_seconds{job="node-exporter-host"}
+            )
           for: 10m
           labels:
             severity: warning
@@ -93,8 +99,8 @@ spec:
             description: >-
               Maintenance deferred a kernel reboot of {{ $labels.host }} to an
               operator. Reboot it manually when convenient (unlock ZFS keys +
-              start its VMs after, for pve-nas-01); the alert clears on the
-              next run once the host no longer needs a reboot.
+              start its VMs after, for pve-nas-01); the reboot leaves the marker
+              older than the boot, which clears this without a maintenance run.
 
         # A serial 9-node rollout clears every node well inside ~2h, so a node
         # still holding kured's sentinel at 3h means the cycle is stuck: a dead
@@ -225,10 +231,14 @@ spec:
               `systemctl status corosync-health-collector.timer`.
 
         # Pool HEALTH alone misses silent corruption: vdev checksum errors
-        # accumulate while the pool stays ONLINE. One row per error type, each the
-        # worst vdev's counter; a truncated count reads as zero vs non-zero.
+        # accumulate while the pool stays ONLINE. The delta is directional, so a
+        # re-import zeroing the counters closes it deliberately, not by accident.
         - alert: ZFSPoolDeviceErrors
-          expr: max by (instance, pool) (zfs_pool_status_errors_total) > 0
+          expr: >-
+            max by (instance, pool) (
+              last_over_time(zfs_pool_status_errors_total[1h])
+              - min_over_time(zfs_pool_status_errors_total[24h])
+            ) > 0
           for: 5m
           labels:
             severity: warning
@@ -236,14 +246,16 @@ spec:
             runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#handling-disk-failure-zfs'
             summary: 'ZFS pool {{ $labels.pool }} on {{ $labels.instance }} has device errors'
             description: >-
-              zpool status reports read/write/cksum errors on pool
+              zpool status reports new read/write/cksum errors on pool
               {{ $labels.pool }} ({{ $labels.instance }}). The exported counter
-              is truncated for suffixed counts, so trust the non-zero signal and
+              is truncated for suffixed counts, so trust the growth signal and
               not the value. The pool may still show
               ONLINE — this is the silent-corruption signature.
               Run `zpool status -v {{ $labels.pool }}` on the host,
               identify affected datasets, and `zpool clear` only
-              after investigating.
+              after investigating. The alert closes 24h after the counters stop
+              moving; ZFSPoolDataErrors and ZFSPoolScrubStale are the durable
+              backstops.
 
         - alert: ZFSPoolDataErrors
           expr: zfs_pool_status_data_errors > 0
@@ -357,25 +369,25 @@ spec:
         - alert: EndpointDown
           # Excludes the Windows RDP target (WindowsRdpDown), the three UniFi
           # ICMP targets (NetworkGearProbeFailed) and the 1.1.1.1 WAN witness
-          # (ExternalIngressDown reads it); 10m absorbs brief probe dips.
+          # (ExternalIngressDown reads it); 30m absorbs a rollout.
           expr: >-
             max by (instance) (
               probe_success{instance!~"10\\.0\\.10\\.155:3389|10\\.0\\.10\\.1|10\\.0\\.1\\.(2|3)|1\\.1\\.1\\.1"}
             ) == 0
-          for: 10m
+          for: 30m
           labels:
             severity: warning
           annotations:
             runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#network-connectivity-issues'
             summary: 'Endpoint {{ $labels.instance }} is down'
-            description: 'Blackbox probe for {{ $labels.instance }} has failed for 10 minutes.'
+            description: 'Blackbox probe for {{ $labels.instance }} has failed for 30 minutes.'
 
         # Both immich-server metrics ports live on one monolithic server, so
         # min by (job) fires if EITHER stops scraping while still yielding a
         # single alert; absent() catches the whole target vanishing.
         - alert: ImmichDown
           expr: min by (job) (up{job="immich-metrics"}) == 0 or absent(up{job="immich-metrics"})
-          for: 5m
+          for: 15m
           labels:
             severity: warning
           annotations:
@@ -383,7 +395,7 @@ spec:
             summary: 'Immich is down'
             description: >-
               Prometheus has been unable to scrape Immich's native metrics
-              (immich-server 8081/8082) for 5 minutes — the compose stack on
+              (immich-server 8081/8082) for 15 minutes — the compose stack on
               the Immich VM (10.0.10.157) is down or unreachable, or the
               scrape target is missing. Photo access is offline.
         # Gated on the VM being powered on: 155 is a desktop an operator shuts
@@ -414,14 +426,14 @@ spec:
             max by (instance) (
               probe_success{instance=~"https://(auth|git|home)\\.esweiss\\.com"}
             ) == 0
-          for: 5m
+          for: 10m
           labels:
             severity: critical
           annotations:
             runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#network-connectivity-issues'
             summary: 'Key endpoint {{ $labels.instance }} is down'
             description: >-
-              Blackbox probe for {{ $labels.instance }} has failed for 5
+              Blackbox probe for {{ $labels.instance }} has failed for 10
               minutes. This endpoint is load-bearing infrastructure
               (SSO front door, GitOps source, or home automation).
 
@@ -744,6 +756,36 @@ spec:
               per-workload warnings are inhibited while it recovers. The
               critical tier is never inhibited.
 
+        # Null-routed source (severity:none) for the deploy-window inhibit in
+        # alertmanager-config.yaml. Each arm expires inside an hour; a Deployment
+        # still at generation 1 has no change to see, so creation age covers it.
+        - alert: DeployInProgress
+          expr: >-
+            max by (namespace) (
+              changes(kube_deployment_metadata_generation{job="kube-state-metrics"}[30m]) > 0
+              or
+              (
+                kube_deployment_status_observed_generation{job="kube-state-metrics"}
+                != kube_deployment_metadata_generation{job="kube-state-metrics"}
+                and on (namespace, deployment)
+                changes(kube_deployment_metadata_generation{job="kube-state-metrics"}[60m]) > 0
+              )
+              or
+              (time() - kube_deployment_created{job="kube-state-metrics"}) < 60 * 60
+            )
+          keep_firing_for: 30m
+          labels:
+            severity: none
+          annotations:
+            runbook_url: '${cluster_runbook_base_url}/12-runbooks.md#a-deploy-is-in-progress'
+            summary: 'Deploy in progress in {{ $labels.namespace }} — pod and rollout warnings inhibited'
+            description: >-
+              A Deployment in {{ $labels.namespace }} changed generation within
+              the last 30 minutes, has not observed a generation it changed
+              inside the last hour, or was created inside that hour. Per-pod and
+              per-rollout warnings in that namespace are inhibited while it
+              settles. The critical tier is never inhibited.
+
         # Past 6h a node outage is an incident, not maintenance churn, so it
         # pages email — and no critical is on any inhibit target list.
         - alert: NodeNotReadyProlonged
@@ -822,3 +864,54 @@ spec:
               Alertmanager dropped notifications on the {{ $labels.integration }}
               integration over the last 6 hours without crossing the 1% ratio
               that pages. Each drop is an alert you were never told about.
+
+        # Taken from kube-prometheus-stack 92.3.0
+        # Upstream's expr at for: 30m with a 15m keep_firing_for. The exportarr
+        # jobs are scoped out to the rule below; longest run here is 64m.
+        - alert: TargetDown
+          expr: >-
+            100 * (count(up{job!~"exportarr-.*"} == 0) BY (cluster, job, namespace, service)
+            / count(up{job!~"exportarr-.*"}) BY (cluster, job, namespace, service)) > 10
+          for: 30m
+          keep_firing_for: 15m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://runbooks.prometheus-operator.dev/runbooks/general/targetdown'
+            summary: 'One or more targets are unreachable.'
+            description: '{{ printf "%.4g" $value }}% of the {{ $labels.job }}/{{ $labels.service }} targets in {{ $labels.namespace }} namespace are down.'
+
+        # The *arr API stalls under Sonarr's library scan and exportarr has no
+        # flag to drop the slow collectors, so this family holds an hour:
+        # longest run in 14d is 54m, and 29 of 31 episodes at 10m are its.
+        - alert: TargetDownExportarr
+          expr: >-
+            100 * (count(up{job=~"exportarr-.*"} == 0) BY (cluster, job, namespace, service)
+            / count(up{job=~"exportarr-.*"}) BY (cluster, job, namespace, service)) > 10
+          for: 1h
+          keep_firing_for: 15m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: '${cluster_runbook_base_url}/31-observability.md#exporter-down'
+            summary: '{{ $labels.job }} has been unreachable for an hour'
+            description: >-
+              {{ printf "%.4g" $value }}% of the {{ $labels.job }} targets in
+              {{ $labels.namespace }} have been down for an hour — past every
+              *arr API stall on record, so the exporter or the app is broken.
+
+        # Taken from kube-prometheus-stack 92.3.0
+        # Upstream's expr at for: 12h. It label_replaces to the minor, so only a
+        # straddle still open after 12h is a node that never came back.
+        - alert: KubeVersionMismatch
+          expr: >-
+            count by (cluster) (count by (git_version, cluster)
+            (label_replace(kubernetes_build_info{job!~"kube-dns|coredns"},
+            "git_version","$1","git_version","(v[0-9]*.[0-9]*).*"))) > 1
+          for: 12h
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: 'https://runbooks.prometheus-operator.dev/runbooks/kubernetes/kubeversionmismatch'
+            summary: 'Different semantic versions of Kubernetes components running.'
+            description: 'There are {{ $value }} different semantic versions of Kubernetes components running on cluster {{ $labels.cluster }}.'

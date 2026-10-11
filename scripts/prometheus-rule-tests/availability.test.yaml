@@ -433,9 +433,88 @@ tests:
               severity: warning
               job: immich
 
+  # PostgresDown's 45-minute post-pod-restart grace, on the live arm only: a
+  # metrics sidecar reads pg_up 0 while its own database starts. promtool starts
+  # at unix 0, so start_time 1000000 is always inside the grace window.
+  - interval: 5m
+    input_series:
+      - series: 'pg_up{job="authentik-postgresql-metrics", instance="10.42.3.11:9187", namespace="authentik", pod="authentik-postgresql-0"}'
+        values: '0+0x20'
+      - series: 'kube_pod_start_time{job="kube-state-metrics", namespace="authentik", pod="authentik-postgresql-0"}'
+        values: '1000000+0x20'
+      - series: 'pg_up{job="gitlab", instance="10.0.10.153:9187"}'
+        values: '1+0x20'
+      - series: 'pg_up{job="nextcloud", instance="10.0.10.156:9187"}'
+        values: '1+0x20'
+      - series: 'pg_up{job="immich", instance="10.0.10.157:9187"}'
+        values: '1+0x20'
+      - series: 'pg_up{job="observability/mealie-postgres", instance="10.42.7.219:9187"}'
+        values: '1+0x20'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: PostgresDown
+        exp_alerts: []
+
+  # The same pod past the grace (start_time 0 is 45m stale at 45m of test time),
+  # so a database that is genuinely down still pages 10 minutes later.
+  - interval: 5m
+    input_series:
+      - series: 'pg_up{job="authentik-postgresql-metrics", instance="10.42.3.11:9187", namespace="authentik", pod="authentik-postgresql-0"}'
+        values: '0+0x20'
+      - series: 'kube_pod_start_time{job="kube-state-metrics", namespace="authentik", pod="authentik-postgresql-0"}'
+        values: '0+0x20'
+      - series: 'pg_up{job="gitlab", instance="10.0.10.153:9187"}'
+        values: '1+0x20'
+      - series: 'pg_up{job="nextcloud", instance="10.0.10.156:9187"}'
+        values: '1+0x20'
+      - series: 'pg_up{job="immich", instance="10.0.10.157:9187"}'
+        values: '1+0x20'
+      - series: 'pg_up{job="observability/mealie-postgres", instance="10.42.7.219:9187"}'
+        values: '1+0x20'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: PostgresDown
+        exp_alerts: []
+      - eval_time: 60m
+        alertname: PostgresDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: authentik-postgresql-metrics
+              instance: 10.42.3.11:9187
+              namespace: authentik
+              pod: authentik-postgresql-0
+
+  # The VM-hosted databases arrive through selectorless Services and carry no
+  # pod label, so no kube_pod_start_time can ever match them: the grace is
+  # scoped to in-cluster pods and a down VM database pages at 10m as before.
+  - interval: 5m
+    input_series:
+      - series: 'pg_up{job="gitlab", instance="10.0.10.153:9187", namespace="observability"}'
+        values: '0+0x20'
+      - series: 'kube_pod_start_time{job="kube-state-metrics", namespace="observability", pod="gitlab-exporter-0"}'
+        values: '1000000+0x20'
+      - series: 'pg_up{job="authentik-postgresql-metrics", instance="10.42.3.11:9187"}'
+        values: '1+0x20'
+      - series: 'pg_up{job="nextcloud", instance="10.0.10.156:9187"}'
+        values: '1+0x20'
+      - series: 'pg_up{job="immich", instance="10.0.10.157:9187"}'
+        values: '1+0x20'
+      - series: 'pg_up{job="observability/mealie-postgres", instance="10.42.7.219:9187"}'
+        values: '1+0x20'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: PostgresDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: gitlab
+              instance: 10.0.10.153:9187
+              namespace: observability
+
   # TraefikHighErrorRate: 5xx as a fraction of all requests over 5m, summed
-  # across every service. The expression aggregates away every label, so the
-  # alert carries only its severity.
+  # across every service, so the alert carries only its severity. Held for 15m,
+  # past the 7-minute burst one stopped backend produces.
   - interval: 1m
     input_series:
       - series: 'traefik_service_requests_total{code="500", service="tv-esweiss@kubernetes"}'
@@ -443,6 +522,9 @@ tests:
       - series: 'traefik_service_requests_total{code="200", service="tv-esweiss@kubernetes"}'
         values: '0+90x40'
     alert_rule_test:
+      - eval_time: 12m
+        alertname: TraefikHighErrorRate
+        exp_alerts: []
       - eval_time: 30m
         alertname: TraefikHighErrorRate
         exp_alerts:
@@ -510,11 +592,15 @@ tests:
 
   # ImmichDown: min by (job) over the two scrape targets, so one down target is
   # enough; absent() covers the target disappearing from the scrape config.
-  - interval: 5m
+  # Held for 15m — the longest gap in 14d is 10 minutes of a k3s drain.
+  - interval: 1m
     input_series:
       - series: 'up{job="immich-metrics", instance="10.0.10.157:8081"}'
-        values: '0+0x20'
+        values: '0+0x40'
     alert_rule_test:
+      - eval_time: 12m
+        alertname: ImmichDown
+        exp_alerts: []
       - eval_time: 25m
         alertname: ImmichDown
         exp_alerts:

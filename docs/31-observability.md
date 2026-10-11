@@ -22,7 +22,7 @@ The observability stack runs entirely in the `observability` namespace and is re
 | **ZFS Exporter** | `zfs_exporter` (on pve-nas-01) | ZFS pool and dataset metrics |
 | **AdGuard Exporter** | `adguard-exporter` | DNS query and filter metrics (dns-01 + dns-02) |
 | **Unbound Exporter** | `unbound_exporter` (on dns-01 + dns-02) | Recursive resolver metrics |
-| **Exportarr** | `ghcr.io/onedr0p/exportarr` | *arr application metrics (Sonarr, Radarr, Lidarr, Prowlarr). Scraped on a 120s interval with a 110s timeout: one scrape walks eight *arr API calls serially, and the nightly vzdump on the NAS slows them enough that a tighter budget reads as `up == 0` and trips the generic `TargetDown` |
+| **Exportarr** | `ghcr.io/onedr0p/exportarr` | *arr application metrics (Sonarr, Radarr, Lidarr, Prowlarr). Scraped on a 120s interval with a 110s timeout: one scrape fires eight *arr API calls in parallel, and Sonarr's twice-daily `RefreshSeriesService` library scan stalls them. exportarr registers all six collectors unconditionally and exposes no API timeout, so the stall is unavoidable and `TargetDownExportarr` holds an hour rather than the generic 30m |
 | **Redis Exporter** | `oliver006/redis_exporter` | Redis cache metrics (Bar Assistant) |
 | **DCGM Exporter (GPU)** | `nvcr.io/nvidia/k8s/dcgm-exporter` | NVIDIA GPU telemetry (util, VRAM, temp, power) on the pve-prec-01 1660 Ti — DaemonSet on the GPU node ([docs/43](43-gpu-passthrough.md)) |
 | **Node Exporter (host)** | `prometheus-node-exporter` (on Proxmox hosts) | Bare-metal hardware metrics (thermals, SMART, disk I/O) on port 9101 |
@@ -600,12 +600,15 @@ gitlab.json/recipes.json style. Nextcloud is an upstream grafana.com export for
 `/metrics` endpoint; its availability is covered by the `dashboard.esweiss.com`
 blackbox probe + the generic `EndpointDown` alert.
 
-Three things about the Thermals dashboard that are not obvious from its panels:
-the 50/55°C thresholds on the SATA drive panel are the archive-pool
-ST6000NM0024 ceiling; `drivetemp` also reports SSDs on the compute hosts, whose
-70-85°C ceiling would make those thresholds misleading, so SSD sensors are read
-on the Non-CPU hwmon panel instead; and the `drivetemp` module is loaded by the
-`node_exporter_host` role.
+Three things about the Thermals dashboard that are not obvious from its panels.
+The 50/55°C thresholds on the SATA drive panel are the archive-pool
+ST6000NM0024 ceiling, and that panel also carries the NAS's three Samsung 870
+EVO SATA SSDs on the `target[568]:0:0` chips, which run to a 70°C spec and so
+read as hot against those steps — the band that matches the hardware is
+`SATASsdTempWarning`, in the temperature group below. The NVMe panel's 65°C step is the only home of
+the NVMe trend line: no rule fires there, 75°C is an `info` notice and 80°C is
+the page. And the `drivetemp` module is loaded by the `node_exporter_host`
+role.
 
 
 ### Silencing Alerts
@@ -621,6 +624,10 @@ kubectl port-forward -n observability svc/kube-prometheus-stack-alertmanager 909
 # Set matchers (e.g., alertname="DiskUsageWarning", instance="k3s-agt-nas-01:9100")
 # Set duration and comment
 ```
+
+A silence covers a maintenance window. It is not the fix for an alert that
+fires too often — that is a rule or route change under § Paging policy, and
+there are no standing silences.
 
 **Silence durability.** Alertmanager's data directory is an `emptyDir` (see the
 comment on `alertmanagerSpec` for why neither local-path nor an NFS PV is the
@@ -750,31 +757,89 @@ To expand a zvol (e.g., Prometheus needs more than 150GB):
 
 ## Alerting
 
+### Paging policy
+
+One bar decides what pages: an alert is a problem the owner has to deal with
+now. Ten rules implement it, and the routing table below is where most of them
+land.
+
+1. **Discord pages only for a condition with an action available now.**
+   Everything else is `severity: none` — null-routed, still visible in Grafana
+   and the Alertmanager UI — or `info`.
+2. **Email is reserved for `severity: critical`**: data loss, a pool not
+   ONLINE, a load-bearing endpoint down, quorum at risk. A critical that is only
+   a louder copy of its warning is wrong; a `*Prolonged` sibling escalates on
+   duration beyond plausible neglect, not on a fixed multiple of the warning.
+3. **A level is not an event.** An alert on an accumulated count — SMART
+   sectors, ZFS cksum errors — fires on a 24h delta and closes itself 24h after
+   the number stops moving. A flat bad number is a worklist item in
+   [docs/16](16-next-steps.md), not a nightly page.
+4. **`for:` is the measured longest benign run of the condition**, replayed
+   against the live Prometheus over a fortnight or more rather than guessed.
+   `retentionSize` binds before `retention` does (§ Retention Tuning), and the
+   window it leaves is weeks, so the replay is always available.
+5. **A known condition is parked on a long repeat, not silenced.** A remedy of
+   "schedule a window" or "order a part" repeats at 72h; a hand-run script or a
+   resilver repeats at 24h. The 4h and 12h repeats are for conditions that
+   change hourly.
+6. **A consequence never pages beside its cause** — one `inhibit_rule` per
+   causal chain, keyed on the narrowest shared label (`instance`, `namespace`,
+   `device`), so the same condition on another host still pages.
+7. **Maintenance windows are detected from metrics, never from the clock**: a
+   rollout from `kube_deployment_metadata_generation` (namespace-scoped and
+   bounded), a node outage from `NodeOutageStormControl`. No critical is ever on
+   an inhibit target list.
+8. **A planned operator action does not page.** A k3s minor upgrade, a
+   `Recreate` rollout on an RWO volume and a VPA recommendation are not faults:
+   their `for:` or their severity is set so the operator driving them hears
+   nothing.
+9. **One notification per incident, not per label.** An alert fragmented by a
+   scrape target's own identity is aggregated in the expression; a multi-target
+   fan-out groups on `alertname` in the route.
+10. **Every alert keeps its runbook, its unit test and its row on this page.**
+    Quieting an alert is a rule or route change under `task lint`, never a UI
+    silence.
+
 ### Routing Table
+
+The severity tiers are the default an alert takes when no named branch above
+them matches:
 
 | Severity | Receivers | Repeat Interval |
 |----------|-----------|-----------------|
 | **critical** | Email (`ericsweiss1@gmail.com`) + Discord webhook | 4h |
 | **warning** | Discord webhook only | 12h |
 | **info** | Discord webhook only — a notice, not a fault | 24h |
-| **none** | null-routed (InfoInhibitor, NodeOutageStormControl) | — |
+| **none** | null-routed (InfoInhibitor, NodeOutageStormControl, DeployInProgress, the three `VPARecommendation*` advisories) | — |
 | **Watchdog** (always firing) | healthchecks.io heartbeat (`watchdog-heartbeat` receiver) | 1m configured, **~2m observed** |
 
-Alerts group on `alertname` + `namespace` + `instance` (30s group wait, 10m
-group interval). `instance` is in the key so host-level alerts — thermals,
-ZFS/corosync, node-exporter-host — group per host instead of collapsing into one
-empty-namespace bucket.
+Routes are **first-match with no `continue:`**, so these named branches sit
+between the `severity="none"` null route and the three severity branches, in
+this order. Each one is there because the default repeat or the default grouping
+is wrong for the condition:
 
-`HostLogShippingStale` is the one exception, with its own branch above the
-severity branches that groups on `alertname` alone (60s group wait). It ships as
-one generated rule per `alloy_host` host, and its trigger — the Loki push path —
-takes the whole fleet out at once, so the default key would make one Discord
-POST per host inside a single flush and the webhook answers 429. The thermal,
-ZFS and SMART families keep the per-instance key: each is an independent
-per-host fault, and their per-drive and per-sensor dimensions already collapse
-into one group per host. `scripts/test_host_log_staleness.py` asserts the
-branch, its `group_by` and its position, none of which
-`amtool config routes test` can show.
+| Branch | Receiver | Repeat | Why it is not the default |
+|---|---|---|---|
+| `alertname="HostLogShippingStale"`, `group_by: [alertname]`, 60s wait | Discord | 12h | one generated rule per host and a single trigger (the Loki push path), so the default key makes one POST per host inside one flush and the webhook answers 429 |
+| `alertname=~"HostSlabLeakSuspected\|MaintenanceRebootDeferred\|KubeletImageGCIneffective"` | Discord | 72h | the remedy is a scheduled window — a reboot, an image prune — so a nightly repeat says nothing new |
+| `severity="critical"`, `alertname=~"ZFSPoolNotOnline\|ZFSPoolDataErrors\|ArchiveBackupFailedProlonged\|ArchiveBackupStaleCritical\|CertRenewalFailedProlonged"` | Email + Discord | 24h | a resilver, a re-run or a parts order outlives the 4h default; after the first email the repeats only restate it |
+| `severity="warning"`, `alertname=~"SMART.*\|ZFSPool.*\|ArchiveBackup.*\|CertRenewal.*\|CertDistribution.*"` | Discord | 24h | the same remedies one tier down: a hand-run script or a scrub, not an hourly condition |
+| `alertname="EndpointDown"`, `group_by: [alertname]`, 60s wait | Discord | 12h | one app behind several hostnames is several targets and one incident. Safe to collapse: the load-bearing names carry `EndpointDownCritical` and the edge carries `ExternalIngressDown` |
+
+Everything else groups on `alertname` + `namespace` + `instance` (30s group
+wait, 10m group interval). `instance` is in the key so host-level alerts —
+thermals, ZFS/corosync, node-exporter-host — group per host instead of
+collapsing into one empty-namespace bucket.
+
+The two `group_by: [alertname]` branches are the only places that key is
+dropped, and both are fan-outs of one condition across many targets. The
+thermal, ZFS and SMART families keep the per-instance key: each is an
+independent per-host fault, and their per-drive and per-sensor dimensions
+already collapse into one group per host.
+`scripts/test_host_log_staleness.py` asserts the `HostLogShippingStale` branch,
+its `group_by` and its position — a branch carrying a `severity=` matcher above
+it would swallow the severity tiers — none of which `amtool config routes test`
+can show.
 
 **Inhibition.** The generic rule pairs `severity: critical` over
 `severity: warning` on `alertname`+`namespace`. Every pair that uses distinct
@@ -782,10 +847,45 @@ alertnames is inhibited explicitly on its own identity labels instead, because
 that generic rule cannot match them: CPU/GPU/NIC thermals on
 `instance`+`component`, SATA/NVMe on `instance`+`chip` (one host reports many
 drives under a single component label, so component-level pairing would let one
-drive silence another; the NVMe ladder carries one entry per step, so each step
-mutes every step below it), disk/inode on `instance`+`mountpoint`, PVC on
+drive silence another; the NVMe pager mutes the null-routed 75C step below it
+on the same chip, which tidies the Alertmanager UI and delivers nothing either
+way), disk/inode on `instance`+`mountpoint`, PVC on
 `namespace`+`persistentvolumeclaim`, ZFS space on `instance`+`pool`, and each
 backup/cert `*Prolonged` / `*Critical` on its warning twin.
+
+**Cause chains.** Four inhibits pair *different* conditions rather than two
+tiers of one, so a consequence never arrives beside its cause:
+
+| Source | Targets | `equal:` | The chain |
+|---|---|---|---|
+| `HostSlabLeakSuspected` | `HostMemAvailableLow`, `NASSwapNotClearing`, `SwapCleanFailed`, `SwapCleanStoppedGuests` | `instance` | unreclaimable slab is what takes MemAvailable down, keeps swap from clearing, aborts swap-clean unsafe and makes it stop guests; the one reboot clears all five. Another host out of RAM still pages, and `HostMemAvailableCritical` is not on the list, so the 2% floor pages through the latch |
+| `SMARTPendingSectorsGrowing` | `SMARTOfflineUncorrectableGrowing` | `instance`, `device` | both attributes increment on the same unrecovered read, so one sector is one page |
+| `DeployInProgress` | `KubePodNotReady`, `KubeDeploymentReplicasMismatch`, `KubeDeploymentRolloutStuck`, `KubeContainerWaiting` | `namespace` | `replicas: 1` + `strategy: Recreate` on an RWO volume has no overlap window, so the upstream `for:` is shorter than the real startup budget. Deployment kinds only: the source reads Deployment generations, so it cannot explain a StatefulSet or DaemonSet rollout |
+| `FluxKustomizationNotReady` | `FluxResourceNotReady` | `exported_namespace`, `name` | a Kustomization that will not build is why the resources under it are not Ready |
+
+**The InfoInhibitor exemption.** The chart's `InfoInhibitor` mutes
+`severity: info` on `equal: [namespace]`. An info alert carrying no namespace of
+its own matches an absent label to an absent one, so it would be muted whenever
+any namespace-less source fires — the two that must still arrive
+(`AlertmanagerNotificationsDropping`, `SwapCleanStoppedGuests`) are named in
+that rule's `alertname!~` matcher. `NVMeDriveTempHigh` is not on the list and
+does not need to be: it carries `severity: none`, so the null route takes it
+before any info branch or inhibit can.
+`scripts/test_info_inhibitor_exemption.py` fails when the list and the info tier
+disagree, and `check-alertmanager-behaviour.py` fails a namespace-less target
+that is not on it.
+
+Deploy-window suppression sources from **`DeployInProgress`**, a null-routed
+`severity: none` rule read from `kube_deployment_metadata_generation`: a
+namespace whose Deployment changed generation inside the last 30 minutes, has
+not observed a generation it changed inside the last hour, or was created inside
+that hour — a first rollout sits at generation 1, which `changes()` cannot see,
+so creation age from `kube_deployment_created` is what covers a new Deployment.
+It is scoped `equal: [namespace]` and bounded at roughly 90 minutes by the
+60-minute arms plus `keep_firing_for: 30m`, so a rollout that is genuinely stuck
+pages once the window closes instead of holding it open while the gap lasts. The window is detected from
+metrics, never from the clock, and no critical is on its target list. Measured
+over 14 days the busiest namespace sits inside it under 1% of the time.
 
 Node-outage suppression sources from **`NodeOutageStormControl`**, a null-routed
 `severity: none` rule that fires while the node was Ready within the last **7
@@ -824,13 +924,35 @@ out-of-band.
 
 ### Flux readiness alerting
 
-Flux controllers no longer export per-resource readiness, so
-`FluxResourceNotReady` is driven by kube-state-metrics
+Flux controllers no longer export per-resource readiness, so the Flux
+readiness alerts are driven by kube-state-metrics
 `customResourceState` (`gotk_resource_info`), covering `Kustomization`,
 `HelmRelease`, and the source kinds in use (`GitRepository`,
 `HelmRepository`, `HelmChart`) — a failing source therefore alerts even
 while workloads merely go stale. Add new kinds (e.g. `OCIRepository`)
 to the customResourceState config + RBAC when they're first adopted.
+
+Both arms aggregate with
+`max by (customresource_group, customresource_kind, customresource_version,
+exported_namespace, name)`, which drops kube-state-metrics' own
+`instance`/`pod` identity. Without it a KSM reschedule mid-incident splits one
+failing resource into several series — and because `instance` is an Alertmanager
+group key, each one arrives as a brand-new Discord group.
+
+The split is by **kind**, not by `reason`: a `Kustomization` Ready=False means
+nothing under that path is being applied, so `FluxKustomizationNotReady` pages
+at 5m, while a `HelmRelease` upgrade or a source blip is usually a rollout in
+progress and `FluxResourceNotReady` waits 30m. Both carry
+`keep_firing_for: 15m` so a resource that flaps Ready is one episode. What
+stops the double page is the 30m hold, not the `FluxKustomizationNotReady` ->
+`FluxResourceNotReady` inhibit: that pair keys on `exported_namespace`+`name`,
+and `gotk_resource_info` carries nothing that links a Kustomization to the
+objects it applies. The only pair it can match in this cluster is
+`flux-system/flux-system`, where the GitRepository is the Kustomization's
+source rather than its consequence, so the rule is kept as inert config.
+Splitting on `reason` instead would need a customResourceState change in
+`release.yaml` and would change series identity once, resolving and refiring
+every live Flux alert.
 
 ### Alert Rules
 
@@ -850,13 +972,13 @@ rule families; the `prometheus-config-lint` CI job runs them (docs/13).
 
 | Alert | Condition | Severity | For |
 |-------|-----------|----------|-----|
-| DiskUsageWarning / DiskUsageCritical | Filesystem usage > 80% / > 90% | warning / critical | 10m / 5m |
+| DiskUsageWarning / DiskUsageCritical | Filesystem usage > 80% for a full hour (`min_over_time[1h:5m]`, so a CI sawtooth never crosses it) / > 90% on the instant value | warning / critical | 10m / 5m |
 | PVCUsageWarning / PVCUsageCritical | PVC usage > 80% / > 90% | warning / critical | 10m / 5m |
 | InodeUsageWarning / InodeUsageCritical | Free inodes < 10% / < 5% (i.e. usage > 90% / > 95%) | warning / critical | 10m / 5m |
-| KubeletImageGCIneffective | a k3s node's root filesystem is above the kubelet `image-gc-high-threshold` of 70%, so image GC cannot reach its low watermark | warning | 30m |
+| KubeletImageGCIneffective | a k3s node's root filesystem is above the kubelet `image-gc-high-threshold` of 70%, so image GC cannot reach its low watermark. A sustained baseline rather than a spike, so it rides the 72h route | warning | 30m |
 | SMARTDeviceUnhealthy | smartctl overall-health != PASSED | warning | 15m |
-| SMARTReallocatedSectorsGrowing / SMARTPendingSectors / SMARTOfflineUncorrectable / SMARTMediaErrors | SMART attribute deltas (textfile collector) | warning | 5m / 15m / 15m / 15m |
-| SMARTCollectorStale | SMART textfile metric stopped updating (> 15m) or absent | warning | 5m |
+| SMARTReallocatedSectorsGrowing / SMARTPendingSectorsGrowing / SMARTOfflineUncorrectableGrowing / SMARTMediaErrors | SMART attribute deltas (textfile collector). The pending/offline pair is directional — latest reading minus the 24 h floor — so a standing count is silent, a replacement reset is not growth, and the alert closes 24 h after the count stops moving | warning | 5m / 15m / 15m / 15m |
+| SMARTCollectorStale | SMART textfile metric stopped updating (> 15m), absent fleet-wide, or gone on one scraped host whose peers still report. The lost-series arm is scoped to `job="node-exporter-host"` — 147 targets cluster-wide match a bare `up == 1` — and to a 30 d `devices_scanned` witness, so coverage lapses a month after a host's last successful scan. Every arm aggregates to `instance`, so one host is one group whichever arm sees it | warning | 5m |
 | NASSwapNotClearing | NAS swap above 2 GiB for 2 days (swap-clean textfile metric) | warning | 1h |
 | NASSwapGone | NAS has zero swap configured, and no encrypted-swap gauge covers it | warning | 30m |
 | EncryptedSwapRestoreFailed | encrypted-swap finalize left a host with no swap at all | warning | 30m |
@@ -879,7 +1001,8 @@ rule families; the `prometheus-config-lint` CI job runs them (docs/13).
 | LokiDiscardsOutOfOrder | Loki rejecting samples as `too_far_behind` / out-of-order (a sender WAL replay, not a limit) | warning | 5m |
 | LokiRulerRulesMissing / LokiRulerEvaluationFailures / LokiRulerNotificationFailures | meta-monitoring for the Loki-ruler alert path (see below) | warning | 15m |
 | FluxReconciliationFailure | Flux controller reconcile error rate > 0 | warning | 15m |
-| FluxResourceNotReady | gotk_resource_info shows Ready=False | warning | 15m |
+| FluxKustomizationNotReady | gotk_resource_info shows a Kustomization Ready=False — nothing under that path is being applied | warning | 5m |
+| FluxResourceNotReady | gotk_resource_info shows Ready=False for any other Flux kind (HelmRelease, sources); inhibited by FluxKustomizationNotReady on the same resource | warning | 30m |
 | OnePasswordConnectDown | Connect deployment has 0 available replicas | warning | 5m |
 | ExternalSecretSyncFailure | ExternalSecret Ready=False | warning | 15m |
 | DDNSStale | cloudflare-ddns hasn't succeeded recently | warning | 15m |
@@ -889,8 +1012,8 @@ rule families; the `prometheus-config-lint` CI job runs them (docs/13).
 | CertExpiringWarning | Certificate expires in < 14 days | warning | 1h |
 | CertExpiringCritical | Certificate expires in < 3 days | critical | 1h |
 | CertificateNotReady | a cert-manager Certificate is not Ready, including one that never issued | warning | 1h |
-| TraefikHighErrorRate | 5xx rate > 5% | warning | 5m |
-| VPARecommendationCapped | VPA uncapped memory target > 1.25x the capped one with a gap over 128Mi, or the ratio alone on CPU (maxAllowed ceiling outgrown — see docs/33) | warning | 24h |
+| TraefikHighErrorRate | 5xx rate > 5% — a cluster-wide aggregate with no labels, so one stopped backend reads as a Traefik fault | warning | 15m |
+| VPARecommendationCapped | VPA uncapped memory target > 1.25x the capped one with a gap over 128Mi, or the ratio alone on CPU (maxAllowed ceiling outgrown — see docs/33) | none | 24h |
 | WgEasyDown | wg-easy VPN target down | critical | 15m |
 | WgEasyEndpointVipMissing | the `.99` endpoint VIP is gone | critical | 10m |
 | MetalLBSpeakerNotScheduled | no metallb-speaker pod is scheduled, or the DaemonSet is gone, so every VIP stays assigned and unannounced | critical | 10m |
@@ -903,9 +1026,10 @@ rule families; the `prometheus-config-lint` CI job runs them (docs/13).
 | GitLabAgentDown | GitLab k8s agent down (Flux push-reconcile stops) | warning | 30m |
 | AuthentikWorkerDown | authentik-worker scrape target down — blueprints, outposts and mail stop while the server keeps serving stale config | warning | 15m |
 | AuthentikFlowLatencyHigh | login-flow planning p95 above 1s against a normal near 10ms, so every SSO-fronted app is slow or timing out | warning | 15m |
-| PostgresDown | `pg_up == 0` or absent for any of the five databases | warning | 10m |
+| PostgresDown | `pg_up == 0` or absent for any of the five databases; the live arm skips a pod whose `kube_pod_start_time` is under 45m old, so a metrics sidecar racing its own database is quiet | warning | 10m |
 | PostgresConnectionsHigh | `pg_stat_activity_count` near `max_connections` | warning | 15m |
-| VPARecommendationExceedsLimit | VPA target above the container's own limit (see docs/33) | warning | 6h |
+| VPARecommendationExceedsLimit | VPA target above the container's own limit (see docs/33) | none | 6h |
+| VPARecommendationExceedsRequest | VPA target over 1.25x the container's request with a gap over 128Mi (see docs/33) | none | 24h |
 
 #### Cluster & Platform Health (`homelab.monitoring`)
 
@@ -914,24 +1038,28 @@ rule families; the `prometheus-config-lint` CI job runs them (docs/13).
 | ProxmoxHostDown | pve_up == 0 for a cluster node | critical |
 | HAInfraGuestDown | HA-managed guest down — `pve_up` == 0 for lxc/150, lxc/151, lxc/160, or qemu/154 (covers the HAOS VM, not just the LXCs) | critical |
 | NFSServerDown | nfsd threads on pve-nas-01 == 0 or metric absent | critical |
-| NodeStuckCordoned / MaintenanceRebootDeferred / KuredRebootStuck | kured maintenance flow stuck (see docs/33 / docs/12) | warning |
+| NodeStuckCordoned / MaintenanceRebootDeferred / KuredRebootStuck | kured maintenance flow stuck (see docs/33 / docs/12). `MaintenanceRebootDeferred` counts its textfile marker only while `node_textfile_mtime_seconds` for that file is newer than `node_boot_time_seconds`, so the reboot clears it rather than the next maintenance run and a marker the reboot outlived never re-arms | warning |
 | CorosyncWedged / PmxcfsStale / CorosyncHealthCollectorStale | Proxmox cluster-stack health (textfile collector) | critical / warning |
-| ZFSPoolDeviceErrors / ZFSPoolDataErrors / ZFSPoolNotOnline / ZFSPoolScrubStale / ZFSPoolCollectorStale | zpool-health textfile collector (per-device read/write/cksum errors, data errors, pool state, scrub age, collector freshness) | warning-critical |
+| ZFSPoolDeviceErrors / ZFSPoolDataErrors / ZFSPoolNotOnline / ZFSPoolScrubStale / ZFSPoolCollectorStale | zpool-health textfile collector (per-device read/write/cksum errors, data errors, pool state, scrub age, collector freshness). `ZFSPoolDeviceErrors` is a directional 24 h delta: a pool re-import zeroing the counters reads as no growth, not as a fix, and `ZFSPoolDataErrors` plus `ZFSPoolScrubStale` are the durable backstops | warning-critical |
 | ZFSPoolSpaceWarning / ZFSPoolSpaceCritical | Pool allocated/size > 80% / > 90% (`zfs_pool_status_*` from the zpool-status **textfile collector**, so the five compute `local-ssd` pools are covered too — not the NAS-only `zfs_exporter`) | warning / critical |
-| EndpointDown | blackbox probe_success == 0 for 10m — four instances are excluded: the Windows RDP target (WindowsRdpDown), the three UniFi ICMP instances `10.0.10.1`, `10.0.1.2`, `10.0.1.3` (NetworkGearProbeFailed), and the `1.1.1.1` WAN witness, which ExternalIngressDown reads and InternetProbeMissing guards | warning |
-| EndpointDownCritical | probe_success == 0 for the critical endpoints (auth/git/home .esweiss.com) | critical |
+| EndpointDown | blackbox probe_success == 0 for 30m. The hold is a volume decision rather than an elimination: the longest run in the last fortnight is 32.5 min on `grafana.esweiss.com`, so 11 episodes at a 10m hold become 1, and the alertname-only route group turns a multi-hostname fan-out into one message. Four instances are excluded: the Windows RDP target (WindowsRdpDown), the three UniFi ICMP instances `10.0.10.1`, `10.0.1.2`, `10.0.1.3` (NetworkGearProbeFailed), and the `1.1.1.1` WAN witness, which ExternalIngressDown reads and InternetProbeMissing guards | warning |
+| EndpointDownCritical | probe_success == 0 for 10m on the critical endpoints (auth/git/home .esweiss.com) | critical |
 | KeyEndpointProbeMissing | fewer than three of the auth/git/home `.esweiss.com` probe series exist for 15m, so EndpointDownCritical covers less than it claims | warning |
 | DNSResolutionDown | blackbox DNS probe failing against a resolver | critical |
 | DNSResolverProbeMissing | the .150/.160 DNS probe series is absent (probe config lost) | warning |
 | BlackboxExporterDown | blackbox exporter itself unreachable (no `up == 1` for any blackbox target) | critical |
 | NodeMemoryPressure | Node available memory critically low | warning |
 | NodeOutageStormControl | null-routed source for the node-outage inhibit — fires while the node was Ready within 7d; no critical is on any inhibit target list, so a long outage never silences the critical tier | none |
+| DeployInProgress | null-routed source for the deploy-window inhibit — a Deployment changed generation inside 30m, has not observed a generation it changed inside 60m, or was created inside 60m (a first rollout never changes generation, so `kube_deployment_created` is what covers it). Namespace-scoped. Every arm expires inside the hour, so the window closes ~90m in and a rollout stalled for good stops masking `KubeDeploymentRolloutStuck`. It reads Deployments only, so its target list carries no StatefulSet or DaemonSet alert | none |
+| TargetDown | over 10% of a job's targets down for 30m (local copy of the chart's rule; `keep_firing_for: 15m`). The `exportarr-*` jobs are scoped out — 29 of the 31 episodes a 10m hold produced in 14 days were theirs | warning |
+| TargetDownExportarr | the same ratio for an `exportarr-*` job, held an hour: the *arr API stalls under Sonarr's library scan, the longest run on record is 54m, and exportarr offers no flag to drop the slow collectors | warning |
+| KubeVersionMismatch | two Kubernetes minors on the cluster for 12h, i.e. a node that never came back from an upgrade (local copy of the chart's rule) | warning |
 | NodeNotReadyProlonged | a node has been NotReady for 6h (takes over once the storm-control inhibit lifts) | critical |
 | EtcdQuorumAtRisk | `up{job="kube-etcd"}` at 2 of 3 (or absent) for 6h — one more loss is quorum | critical |
 | BlackboxCertExpiringSoon | a probed endpoint's served certificate expires soon | warning |
 | ProxmoxHostIOPressure | Proxmox host PSI I/O pressure sustained | warning |
 | ProxmoxHostMemoryPressure | Proxmox host PSI memory pressure sustained | warning |
-| ImmichDown | Immich scrape target down or absent | warning |
+| ImmichDown | Immich scrape target down or absent for 15m | warning |
 | NextcloudDown | `nextcloud_up` == 0 or absent | warning |
 | WindowsRdpDown | Windows VM RDP (10.0.10.155:3389) unreachable while powered on | warning |
 | NetworkGearProbeFailed | ICMP blackbox probe for a UniFi device (gateway `10.0.10.1`, switch `10.0.1.2`, AP `10.0.1.3`) failing for 5m — docs/46 | warning |
@@ -960,9 +1088,13 @@ already backfilled into the other groups.)
 | HostClockNotSynchronising | no NTP sync and max error >= 16s (etcd/corosync degrade on skew) | warning | 10m |
 | HostFilesystemReadOnly | a real filesystem remounted read-only (post-I/O-error) | critical | 5m |
 | HostConntrackEntriesHigh | conntrack table > 75% full | warning | 10m |
+| NodeSystemdServiceFailed / NodeSystemdServiceCrashlooping | a systemd unit in `failed`, or restarting more than twice in 5m. `NodeSystemdServiceFailed` also excludes the 12 timer-driven oneshots that own a `*_last_run_success` alert in `homelab.scripts`, so one failed backup run is one notification; every other oneshot (`zfs-load-key@`, `zfs-mount-encrypted`, `nftables`, `k3s-etcd-snapshot-copy`) keeps this as its only witness | warning | 15m |
 | NodeExporterHealthcheckRestartLoop | the liveness gate restarted node_exporter three or more times in an hour | warning | 15m |
 | ZfsEncryptedMountStuck / ZfsEncryptedMountStuckCritical | `zfs-mount-encrypted.service` still `activating`, so the encrypted datasets, the NFS exports and every gated guest stay down (docs/32) | warning / critical | 30m / 2h |
 | HostSlabCacheGrowing | `skbuff_ext_cache` grew more than 6 GiB in 24h — the leading arm for HostSlabLeakSuspected (docs/06) | warning | 1h |
+| HostSlabLeakSuspected | unreclaimable slab less ARC above 16 GiB (docs/06) — a latch that holds from the crossing until the host is rebooted, which is why it rides the 72h route and inhibits its four consequences. The latch held 87% of the last fortnight on pve-nas-01, so `HostMemAvailableCritical` is deliberately off its target list | warning | 24h |
+| HostMemAvailableLow | MemAvailable under 8% of MemTotal. The warning tier, and the one the slab latch mutes | warning | 30m |
+| HostMemAvailableCritical | MemAvailable under 2% of MemTotal — the floor a standing slab leak does not reach on its own (14d median available on the NAS is 18%, 1st percentile 2.4%), so it is never inhibited and a leak cannot mute the fleet's memory pager | critical | 15m |
 | SlabinfoCollectorDegraded | the slabinfo collector is stale, unreadable, or a named cache is gone, so the two slab alerts are blind | warning | 30m |
 
 #### Loki ruler alert path
@@ -1011,7 +1143,7 @@ These alerts use metrics exposed via the node_exporter textfile collector on Pro
 | CertDistributionTargetFailed | the renewed cert could not be installed on one named target host | warning | 25h |
 | CertExpiringSoon | host-distributed `*.esweiss.com` cert within 14 days of its real `notAfter` (`cert_local_expiry_timestamp_seconds`), or metric absent | warning | 1h |
 | CertExpiringSoonCritical | host-distributed cert within 3 days of expiry | critical | 1h |
-| CertRenewalFailedProlonged | cert renewal failing for over 3 days | critical | 72h |
+| CertRenewalFailedProlonged | cert renewal failing for over 14 days — the escalation is duration beyond plausible neglect, not a louder copy of `CertRenewalFailed`; acme.sh renews on a ~60 d cycle, so 14 days still leaves ~45 days and another renewal attempt. The fortnight is a `max_over_time` / `min_over_time` window over the gauges, not a `for:`, so a Prometheus restart cannot reset the clock (a pending `for:` only survives a gap inside `--rules.alert.for-outage-tolerance`, 1 h by default, and the monitoring stack has recreated its own Prometheus every ~15 min for two hours). `offset 14d` arms require the series to have existed at the start of the window | critical | 1h |
 | GitLabBackupFailed | gitlab-backup-run.sh last run exit code != 0 | warning | 1h |
 | GitLabBackupStale | GitLab backup last success > 2 days ago (or metric absent) | warning | 1h |
 | GitLabBackupStaleCritical | GitLab backup last success > 4 days ago | critical | 1h |
@@ -1054,11 +1186,11 @@ The offsite chain these metrics come from is documented in
 
 #### Other Groups
 
-- **`homelab.temperature`** — SATA/NVMe drive, CPU, host GPU (`HostGpuTemp*`, hwmon on the Proxmox host) and NIC temperature warning/critical pairs (drivetemp + hwmon via node_exporter_host), all scoped to the six physical hosts so the LXC guests do not double-page their host's sensors. NVMe is a three-step ladder rather than a pair: `NVMeDriveTempWarning` at 65C/30m for trends, `NVMeDriveTempHigh` at 75C/10m for the band the nightly vzdump drives the NAS nvme2 chip into, and `NVMeDriveTempCritical` at the 80C throttle point, so only real throttling pages. The 1660 Ti's own telemetry is the DCGM `GpuTemp*` pair in `homelab.gpu`.
+- **`homelab.temperature`** — SATA/NVMe drive, CPU, host GPU (`HostGpuTemp*`, hwmon on the Proxmox host) and NIC temperature warning/critical pairs (drivetemp + hwmon via node_exporter_host), all scoped to the six physical hosts so the LXC guests do not double-page their host's sensors. The SATA band is split by chip class: `SATADriveTempWarning` / `SATADriveTempCritical` at 50/55C are the archive `ST6000NM0024` HDDs, and the three Samsung 870 EVO SATA SSDs (chips `target5/6/8:0:0`, 70C spec, 50-52C in normal use) are excluded from that pair and carry `SATASsdTempWarning` at 65C/15m instead. NVMe is a two-step ladder: `NVMeDriveTempHigh` at 75C/10m is `severity: none` and null-routed — the band smartd's monthly Extended Self-Test drives all four NAS chips into is a Grafana and Alertmanager-UI notice, not a notification — and `NVMeDriveTempCritical` at the 80C throttle point is the page. The trend line below 75C lives on the Thermals dashboard. The 1660 Ti's own telemetry is the DCGM `GpuTemp*` pair in `homelab.gpu`.
 - **`homelab.gpu`** — GpuExporterDown, GpuTempWarning/Critical, HindsightGpuOffloadIdle, GpuTelemetryMissing (DCGM exporter on the pve-prec-01 1660 Ti; GpuTelemetryMissing catches "exporter up but zero GPU series"). See [docs/43](43-gpu-passthrough.md).
 - **`homelab.mail`** — PostfixQueueBacklog, PostfixDown, PostfixQueueCollectorStale (smtp-relay queue textfile collector).
 - **`homelab.dns`** — UnboundDown, UnboundExporterDown, UnboundSERVFAILRatioHigh (unbound_exporter on dns-01/dns-02; the exporter arm exists because `unbound_up` simply stops existing when the scrape dies). Nothing alerts on the cache-hit ratio: AdGuard caches in front, so a low ratio is this cluster's normal shape. AdGuard's own `:53` availability is `DNSResolutionDown` / `DNSResolverProbeMissing` in `homelab.monitoring`. See [docs/08](08-dns.md#unbound-alerts).
-- **`homelab.kubernetes-resources`** — the tuned KubeCPUOvercommit replacement (see Built-in Alerts below), plus ContainerMemoryNearLimit, PageCacheWorkloadRSSNearLimit (observability RSS within 10% of its limit, page cache excluded), HindsightLlamaMemoryNearLimit and ContainerOOMKilled (docs/33). The authentik-postgresql limit these
+- **`homelab.kubernetes-resources`** — the tuned KubeCPUOvercommit and NodeSystemSaturation replacements (see Built-in Alerts below), plus ContainerMemoryNearLimit, PageCacheWorkloadRSSNearLimit (observability RSS within 10% of its limit, page cache excluded), HindsightLlamaMemoryNearLimit and ContainerOOMKilled (docs/33). The authentik-postgresql limit these
   watch was sized from a real OOMKill.
 
 ### Built-in Alerts
@@ -1070,6 +1202,17 @@ The kube-prometheus-stack chart ships built-in alerts for Kubernetes components 
 **etcd IS scraped:** the k3s server nodes run with `etcd-expose-metrics: true` (the `weisssrv.infra.k3s` role), serving standard etcd metrics on `:2381` (plain HTTP, firewall-restricted to `k3s_nodes` — docs/11). `kubeEtcd.enabled: true` in the chart builds the Service/Endpoints from the server-node IPs and re-enables the upstream etcd alert rules (quorum, leader flapping, DB size).
 
 **Tuned replacement:** the upstream KubeCPUOvercommit is disabled and re-added (`homelab.kubernetes-resources`) with the `gitlab-runner*` namespaces' deliberately over-requested burst CPU subtracted, so CI bursts no longer flap it.
+
+**Retimed copies.** Three more chart rules sit in `defaultRules.disabled` with a
+local copy carrying the upstream expr verbatim under a
+`# Taken from kube-prometheus-stack <version>` marker, which
+`scripts/check-upstream-rule-mirror.py` holds to the chart pin: `TargetDown` at
+30m (10m paged on a slow *arr API scrape; the longest benign run on record is
+76 minutes, so 1h would still page and only delay a dead exporter),
+`KubeVersionMismatch` at 12h (it label_replaces to the minor, so it can only
+fire on a planned minor upgrade) and `NodeSystemSaturation` at 1h, keeping the
+upstream alertname so the `NodeOutageStormControl` target list still matches it
+(15m fires on by-design CI burst on the 2-3 core OptiPlex agents).
 
 **Inhibition rules:**
 - Critical alerts suppress warnings with the same `alertname` and `namespace` (avoids duplicate noise when a warning escalates to critical)
@@ -1214,6 +1357,19 @@ Flux controller metrics (source-controller, kustomize-controller, helm-controlle
    kubectl -n observability exec deploy/kube-prometheus-stack-grafana -c grafana -- \
      wget -qO- http://10.0.10.102:9134/metrics
    ```
+
+5. `TargetDownExportarr` instead of `TargetDown` means an `exportarr-*` job has
+   been down for an hour, which is past every *arr API stall measured so far.
+   The exporter logs one `Error getting <collector>` line per failed call, so
+   they name whether the app refused the connection or the call never returned:
+
+   ```bash
+   kubectl logs -n observability -l app.kubernetes.io/name=exportarr-sonarr | grep ERROR
+   ```
+
+   `connection refused` points at the *arr app, not the exporter. A call that
+   never returns is the library scan; the scrape budget is already 110s in a
+   120s interval and exportarr has no per-collector timeout to tighten.
 
 ### Alert Routing Debug
 

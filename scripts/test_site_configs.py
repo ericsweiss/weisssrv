@@ -1153,7 +1153,6 @@ class TestAlertHostSetsMatchTheInventory:
         "EtcdSnapshotStale": ("k3s_servers", "9101"),
         "ProxmoxHostIOPressure": ("proxmox", "9101"),
         "ProxmoxHostMemoryPressure": ("proxmox", "9101"),
-        "NVMeDriveTempWarning": ("proxmox", "9101"),
         "NVMeDriveTempHigh": ("proxmox", "9101"),
         "NVMeDriveTempCritical": ("proxmox", "9101"),
         "CPUTempWarning": ("proxmox", "9101"),
@@ -1161,9 +1160,10 @@ class TestAlertHostSetsMatchTheInventory:
         "HostGpuTempWarning": ("proxmox", "9101"),
         "HostGpuTempCritical": ("proxmox", "9101"),
         "NICTempWarning": ("proxmox", "9101"),
-        # Only the NAS carries spinning SATA disks.
+        # Only the NAS carries spinning SATA disks, and its three SATA SSDs.
         "SATADriveTempWarning": ("pve-nas-01", "9101"),
         "SATADriveTempCritical": ("pve-nas-01", "9101"),
+        "SATASsdTempWarning": ("pve-nas-01", "9101"),
         "DNSResolutionDown": ("dns", "53"),
     }
     # LAN matchers with no inventory source: the gateway and switch management

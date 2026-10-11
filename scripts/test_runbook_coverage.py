@@ -41,7 +41,6 @@ EXEMPT: set[tuple[str, str]] = {
     ("HindsightLlamaMemoryNearLimit", "43-gpu-passthrough.md"),
     ("HostBondingDegraded", "34-bond-mac-flapping.md"),
     ("HostConntrackEntriesHigh", "11-firewall.md"),
-    ("HostMemAvailableLow", "06-zfs.md"),
     ("HostNetworkInterfaceFlapping", "34-bond-mac-flapping.md"),
     ("HostNetworkReceiveErrs", "34-bond-mac-flapping.md"),
     ("HostNetworkTransmitErrs", "34-bond-mac-flapping.md"),
@@ -67,6 +66,12 @@ OFF_BASE: dict[str, str] = {
         "the upstream kube-prometheus-stack runbook, which this rule only retunes",
     "AlertmanagerClusterFailedToSendAlerts":
         "the upstream kube-prometheus-stack runbook for the chart's own alert",
+    "TargetDown":
+        "the upstream kube-prometheus-stack runbook, which this mirror only retimes",
+    "KubeVersionMismatch":
+        "the upstream kube-prometheus-stack runbook, which this mirror only retimes",
+    "NodeSystemSaturation":
+        "the upstream kube-prometheus-stack runbook, which this mirror only retimes",
 }
 
 

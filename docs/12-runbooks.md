@@ -35,12 +35,13 @@ here without an anchor land at the top of the page; this table routes them.
 | Alerts | Go to |
 |---|---|
 | `ProxmoxHostDown`, `NodeNotReadyProlonged`, `NodeOutageStormControl`, `NodeStuckCordoned`, `NodeMemoryPressure`, `ProxmoxHostIOPressure`, `ProxmoxHostMemoryPressure`, `CorosyncWedged`, `PmxcfsStale`, `CorosyncHealthCollectorStale` | § A Proxmox host or guest went dark, then `task diagnose:network` |
-| `MaintenanceRebootDeferred`, `KuredRebootStuck` | § Maintenance Windows |
-| `NodeSystemdServiceFailed`, `NodeSystemdServiceCrashlooping`, `HostFilesystemReadOnly`, `HostClockNotSynchronising` | the named host: `systemctl --failed`, `journalctl -u <unit>`, `timedatectl` |
+| `MaintenanceRebootDeferred`, `KuredRebootStuck` | § Maintenance Windows. `MaintenanceRebootDeferred` clears on the reboot itself, which leaves its marker file older than the boot, whether or not maintenance has run again since |
+| `DeployInProgress` | § A deploy is in progress — it never pages; it is the deploy-window inhibit source |
+| `NodeSystemdServiceFailed`, `NodeSystemdServiceCrashlooping`, `HostFilesystemReadOnly`, `HostClockNotSynchronising` | the named host: `systemctl --failed`, `journalctl -u <unit>`, `timedatectl`. `NodeSystemdServiceFailed` excludes the timer-driven oneshots that own a `*_last_run_success` alert of their own, so those report once, there |
 | `HostExporterDown`, `HostTextfileCollectorScrapeError`, `NodeExporterSystemdCollectorFailed` | the host-side exporter and its textfile collectors — [docs/31](31-observability.md) |
-| `DiskUsageWarning`, `DiskUsageCritical`, `InodeUsageWarning`, `InodeUsageCritical`, `PVCUsageWarning`, `PVCUsageCritical` | `df -h` / `df -i` on the named host; for the observability zvols, § Recovering Space on the Prometheus / Loki zvols |
-| `SATADriveTempWarning`, `SATADriveTempCritical`, `NVMeDriveTempWarning`, `NVMeDriveTempHigh`, `NVMeDriveTempCritical`, `CPUTempWarning`, `CPUTempCritical`, `HostGpuTempWarning`, `HostGpuTempCritical`, `NICTempWarning` | the Thermals dashboard in Grafana. Sustained drive over-temperature is a bay-airflow problem, not a disk fault. `NVMeDriveTempHigh` is the 75-80C band: expected nightly on the NAS nvme2 chip while vzdump reads the VM disks, a regression on any other chip |
-| `FluxReconciliationFailure`, `FluxResourceNotReady` | [docs/29](29-flux-operations.md) |
+| `DiskUsageWarning`, `DiskUsageCritical`, `InodeUsageWarning`, `InodeUsageCritical`, `PVCUsageWarning`, `PVCUsageCritical` | `df -h` / `df -i` on the named host; for the observability zvols, § Recovering Space on the Prometheus / Loki zvols. `DiskUsageWarning` floors the ratio over 1 h, so it is a sustained fill and never a CI sawtooth; `DiskUsageCritical` keeps the un-floored 90% fast path |
+| `SATADriveTempWarning`, `SATADriveTempCritical`, `SATASsdTempWarning`, `NVMeDriveTempHigh`, `NVMeDriveTempCritical`, `CPUTempWarning`, `CPUTempCritical`, `HostGpuTempWarning`, `HostGpuTempCritical`, `NICTempWarning` | the Thermals dashboard in Grafana. Sustained drive over-temperature is a bay-airflow problem, not a disk fault. The SATA pair is the archive HDDs at 50/55C; `SATASsdTempWarning` is the NAS's three 870 EVO SATA SSDs at 65C against their 70C spec — § SATA SSD over-temperature. `NVMeDriveTempHigh` is the 75-80C band, null-routed: the four NAS chips reach it together during smartd's monthly Extended Self-Test, and a new chip joining is a regression |
+| `FluxReconciliationFailure`, `FluxKustomizationNotReady`, `FluxResourceNotReady` | [docs/29](29-flux-operations.md) |
 | `ExternalSecretSyncFailure`, `OnePasswordConnectDown` | [docs/15](15-credential-rotation.md) and [docs/29](29-flux-operations.md) |
 | `VPARecommendationCapped` | [docs/33](33-autoscaling.md) |
 | `PostgresDown`, `PostgresConnectionsHigh`, `LokiRequestFailures`, `TraefikHighErrorRate`, `TraefikPublicVipMissing`, `TraefikInternalVipMissing` | [docs/31](31-observability.md) § Alert rules |
@@ -208,11 +209,15 @@ collector; all point here):
 - **SMARTReallocatedSectorsGrowing** — reallocated sector count is
   increasing. The drive is remapping bad sectors; replace before it degrades
   further.
-- **SMARTPendingSectors** — sectors awaiting reallocation (unreadable on
-  last access). Scrub the pool to force reads; if the count doesn't drop,
-  replace the drive.
-- **SMARTOfflineUncorrectable** — sectors the drive could not correct
-  offline. Same handling as pending sectors, higher urgency.
+- **SMARTPendingSectorsGrowing** — the pending-sector count rose inside the
+  last 24 h (unreadable on last access). Scrub the pool to force reads; if the
+  count doesn't drop, replace the drive. A count that stops rising closes the
+  alert 24 h later and belongs on the replacement worklist in
+  [docs/16](16-next-steps.md), not in the feed.
+- **SMARTOfflineUncorrectableGrowing** — the offline-uncorrectable count rose
+  in the last 24 h. Same handling as pending sectors, higher urgency; both
+  attributes increment on one unrecovered read, so the pending alert inhibits
+  this one for the same device.
 - **SMARTMediaErrors** — NVMe media/data-integrity errors. Replace the
   device.
 - **SMARTCollectorStale** — meta-alert: the SMART textfile collector is
@@ -227,7 +232,7 @@ collector; all point here):
 |---|---|---|
 | `ZFSPoolNotOnline` | the pool reports DEGRADED or worse | `zpool status -v <pool>`, then the replacement procedure below |
 | `ZFSPoolDataErrors` | `zpool status -v` lists unrecoverable data; a single-vdev pool cannot self-heal it | restore the listed files from the archive tier ([docs/42](42-offsite-backup.md)) |
-| `ZFSPoolDeviceErrors` | read/write/cksum errors while the pool may still read ONLINE — the silent-corruption signature | `zpool status -v <pool>`, fix the cause, then `zpool clear` |
+| `ZFSPoolDeviceErrors` | NEW read/write/cksum errors (a 24 h delta) while the pool may still read ONLINE — the silent-corruption signature | `zpool status -v <pool>`, fix the cause, then `zpool clear`. A re-import zeroes the counters without fixing anything, which is why the alert closes on the delta and not on the level |
 | `ZFSPoolScrubStale` | no completed scrub in 35 days, so latent corruption surfaces only when something reads it | `zpool scrub <pool>` and check the scrub timer |
 | `ZFSPoolSpaceWarning` / `ZFSPoolSpaceCritical` | the pool is above 80% / 90% capacity | `zfs list -o name,used,avail,usedbysnapshots`; prune snapshots |
 | `ZFSPoolCollectorStale` | the collector is stale or missing, so every alert above is serving old or no data | `systemctl status zpool-status-collector.timer` on the named host |
@@ -282,6 +287,27 @@ collector; all point here):
    # Run scrub after resilver
    sudo zpool scrub tank
    ```
+
+### SATA SSD over-temperature
+
+**SATASsdTempWarning** covers the three Samsung 870 EVO 4TB SATA SSDs on
+pve-nas-01, on the `target5:0:0`, `target6:0:0` and `target8:0:0` drivetemp
+chips. They spec 70C and sit at 50-52C in normal use, so the 50/55C
+`SATADriveTempWarning` / `SATADriveTempCritical` pair beside them — sized for
+the archive pool's `ST6000NM0024` HDDs, which run 43-47C — excludes those three
+chips by name. One of these SSDs has a corruption history, which is why they
+keep thermal coverage at their own band instead of losing it.
+
+First moves:
+
+1. Read the Thermals dashboard, SATA drive panel, and separate a step change
+   from a scrub or self-test excursion: `smartctl -a /dev/sdX | grep -i
+   temperature` names the drive behind the chip.
+2. If one chip is hot and its neighbours are not, it is that bay's airflow.
+   If all three climb together, it is the chassis.
+3. The chip names encode SCSI bus position rather than enumeration order, so
+   they survive a reboot — a chip that changes profile across a reboot is a
+   re-cabled or replaced drive, not a relabelled sensor.
 
 ---
 
@@ -385,7 +411,13 @@ Certificate expired or not renewing automatically.
   `cert_local_expiry_timestamp_seconds`, which the cert-reload script emits from
   the live cert.
 - **CertRenewalFailedProlonged** — renewal/distribution on the named host has
-  failed for 3 days straight. Same procedure, higher urgency.
+  failed for 14 days straight. Same procedure, higher urgency. The escalation is
+  duration beyond plausible neglect, not a second copy of **CertRenewalFailed**:
+  acme.sh renews on a ~60-day cycle, so a fortnight of a dead pipeline still
+  leaves ~45 days and another renewal attempt. The fortnight is measured as a
+  range window over the gauges rather than a 14-day `for:`, so a Prometheus
+  restart mid-break does not restart the count and its silence is evidence the
+  pipeline recovered, not that the clock was reset.
 - **CertRenewalStale** — no successful renewal or distribution on the named
   host for 75 days, past the ~60-day acme.sh cycle. This is the arm for a
   renewal that stopped *running*: a dead acme.sh cron never fails, so
@@ -969,6 +1001,12 @@ etcd snapshots to `pve-nas-01:/export/k3s-etcd` over TLS via
 - **EtcdSnapshotStale** — no fresh off-node copy. Check
   `systemctl status k3s-etcd-snapshot-copy.timer` and the TLS NFS mount on the
   server node. etcd restore procedure: docs/17.
+
+The copy unit emits `etcd_snapshot_last_copy_success` but no rule reads it, so
+`NodeSystemdServiceFailed` is the fast witness: it keeps the unit in scope and
+reports a failed run in 15 minutes rather than waiting out the 36h staleness
+window. A run that fails after touching the timestamp sentinel reaches
+`EtcdSnapshotStale` not at all.
 
 #### MediaMoverFailed / MediaMoverStale
 
@@ -1653,7 +1691,11 @@ three ways, on three inputs:
 | `proxmox_self_reboot_safe` | per-host, default true; false for pve-nas-01 |
 
 - **Defer** — the operator reboots by hand, and the host publishes
-  `maintenance_reboot_deferred` (alert `MaintenanceRebootDeferred`).
+  `maintenance_reboot_deferred` (alert `MaintenanceRebootDeferred`, which the
+  reboot clears: the rule counts the marker only while its textfile is newer
+  than the latest boot, so the reboot disarms it without waiting for the next
+  maintenance run, and a stale gauge never re-arms it. The defer path refreshes
+  the file's mtime when the marker it finds predates the boot).
 - **Detached** — a `systemd-run` timer that survives the CI job, armed and
   disarmed by the job's `after_script`.
 - **Synchronous** — reboot in place.
@@ -1702,6 +1744,37 @@ watched window.
 The escape hatch is `k3s_kube_vip_host_kubeconfig: true` in inventory: kube-vip
 mounts the node's cluster-admin kubeconfig instead of its ServiceAccount token.
 It re-renders the DaemonSet and restarts the kube-vip pod on every server.
+
+### A deploy is in progress
+
+Alerts: DeployInProgress.
+
+`DeployInProgress` is a null-routed `severity: none` rule, never a page: it is
+the source of the deploy-window inhibit in `alertmanager-config.yaml`. It fires
+for a namespace whose Deployment changed generation inside the last 30 minutes,
+has not observed a generation it changed inside the last hour, or was created
+inside that hour, and holds for a further 30 minutes (`keep_firing_for`). The
+creation arm is what covers a first rollout, which never changes generation. While it fires, that namespace's `KubePodNotReady`,
+`KubeDeploymentReplicasMismatch`, `KubeDeploymentRolloutStuck` and
+`KubeContainerWaiting` warnings are suppressed. The source reads Deployment
+generations, so no other workload kind is on the list: a StatefulSet or
+DaemonSet rollout still pages through the window. No critical is on that list
+either, and the scoping is `equal: [namespace]`, so another namespace still
+pages.
+
+If you are chasing a rollout that genuinely stalled, do not wait for the
+inhibit to lift — read the live state:
+
+```bash
+kubectl -n <ns> rollout status deploy/<name> --timeout=10s
+kubectl -n <ns> describe deploy/<name> | sed -n '/Conditions/,$p'
+kubectl -n <ns> get pods -o wide
+```
+
+`ProgressDeadlineExceeded` on a `replicas: 1` + `strategy: Recreate` workload on
+an RWO volume usually means the deadline is wrong rather than the rollout: those
+Deployments carry `progressDeadlineSeconds: 2400` because there is no overlap
+window and the startup budget exceeds Kubernetes' 600s default.
 
 ### Rollback Procedures
 

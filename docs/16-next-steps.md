@@ -416,6 +416,15 @@ Design, runbook and the codified-vs-manual contract:
   `increase(prober_probe_total{namespace="downloads", probe_type="Liveness",
   result="failed"}[1d])` above zero for a week is the gate
   ([docs/21](21-download-clients-deployment.md) § Troubleshooting).
+- [ ] **Decide on `/dev/sdd` — `ST6000NM0024-1HT17Z`, serial `Z4D1JQBA`
+  (archive).** FAULTED on an unrecovered read, cleared and resilvered, still in
+  the pool, SMART self-assessment PASSED, reallocated sectors 0. Either keep it
+  with a watch or order a replacement; the alerting tier is deliberately silent
+  about a drive that is sitting still.
+- [ ] **Decide on `/dev/sdf` — `ST22000NM000C-3WC103`, serial `ZXA0HR34`
+  (tank).** One pending and one offline-uncorrectable sector from a single
+  unrecovered read, flat since. `SMARTPendingSectorsGrowing` pages again if the
+  count moves, so this is a parts decision, not a pager question.
 - [ ] ZFS scrub-completion ZED email (per-scrub success/error notification;
   scrub *staleness* already ships via the `ZFSPoolScrubStale` alert).
 - [ ] Consider ZFS special devices for metadata acceleration.
