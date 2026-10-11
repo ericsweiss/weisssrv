@@ -85,6 +85,13 @@ nas_storage_zfs_pools:
         properties:
           mountpoint: /mnt/tank/immich-data
           encryption: aes-256-gcm
+      # Legacy machine backups: 410k files at or under 64K, so those blocks live
+      # on the special mirror; `encryption` is a plaintext-recreation guard.
+      - name: tank/backups
+        properties:
+          mountpoint: /mnt/tank/backups
+          encryption: aes-256-gcm
+          special_small_blocks: 64K
       # Logical-dump landing zone: its OWN dataset so the restore drill can
       # sample it separately. CREATE MANUALLY FIRST - nas_storage hard-fails
       # DATASET_MISSING. `encryption` is a plaintext-recreation guard.
