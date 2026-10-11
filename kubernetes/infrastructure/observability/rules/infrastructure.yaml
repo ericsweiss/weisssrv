@@ -802,7 +802,7 @@ spec:
 
         # The recommendation outgrew the container's memory limit. Advisory only
         # (severity: none): the target tracks working set, which is page cache
-        # here. PageCacheWorkloadRSSNearLimit and ContainerOOMKilled page.
+        # here. ContainerMemoryNearLimit (RSS) and ContainerOOMKilled page.
         - alert: VPARecommendationExceedsLimit
           expr: >-
             max by (namespace, verticalpodautoscaler, workload, container) (

@@ -490,11 +490,11 @@ tests:
         alertname: VPARecommendationExceedsRequest
         exp_alerts: []
 
-  # ContainerMemoryNearLimit: the leading indicator. 0.93 of the limit held past
-  # the 15m hold on a workload with no exclusion.
+  # ContainerMemoryNearLimit: the leading indicator. RSS at 0.93 of the limit
+  # held past the 15m hold on a workload with no exclusion.
   - interval: 1m
     input_series:
-      - series: 'container_memory_working_set_bytes{namespace="downloads", pod="pulsarr-0", container="pulsarr", node="k3s-agt-nas-01"}'
+      - series: 'container_memory_rss{namespace="downloads", pod="pulsarr-0", container="pulsarr", node="k3s-agt-nas-01"}'
         values: '1000000000+0x60'
       - series: 'kube_pod_container_resource_limits{namespace="downloads", pod="pulsarr-0", container="pulsarr", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
         values: '1073741824+0x60'
@@ -512,12 +512,70 @@ tests:
         alertname: ContainerMemoryNearLimit
         exp_alerts: []
 
-  # hindsight/llama is GPU/model-pinned with an Off VPA and sits above 0.9 for
-  # much of any month, so it is excluded by name from the 0.9 rule. Its own band
-  # (HindsightLlamaMemoryNearLimit, 0.95) stays silent at 0.93 too.
+  # Page cache is not a warning: a working set at 0.92 of the limit over an RSS
+  # of 0.17 (alloy-syslog's shape) and one above the limit over an RSS of 0.66
+  # (Loki's) both stay silent.
+  - interval: 1m
+    input_series:
+      - series: 'container_memory_working_set_bytes{namespace="observability", pod="alloy-syslog-0", container="alloy", node="k3s-agt-opt-01"}'
+        values: '247463936+0x60'
+      - series: 'container_memory_rss{namespace="observability", pod="alloy-syslog-0", container="alloy", node="k3s-agt-opt-01"}'
+        values: '46137344+0x60'
+      - series: 'kube_pod_container_resource_limits{namespace="observability", pod="alloy-syslog-0", container="alloy", resource="memory", unit="byte", node="k3s-agt-opt-01"}'
+        values: '268435456+0x60'
+      - series: 'container_memory_working_set_bytes{namespace="observability", pod="loki-0", container="loki", node="k3s-agt-nas-01"}'
+        values: '1238368256+0x60'
+      - series: 'container_memory_rss{namespace="observability", pod="loki-0", container="loki", node="k3s-agt-nas-01"}'
+        values: '713031680+0x60'
+      - series: 'kube_pod_container_resource_limits{namespace="observability", pod="loki-0", container="loki", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
+        values: '1073741824+0x60'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: ContainerMemoryNearLimit
+        exp_alerts: []
+
+  # Grafana and Prometheus carry no exclusion, so a synthetic RSS ratio above
+  # 0.9 fires for them like any other container and one at 0.8 does not.
+  - interval: 1m
+    input_series:
+      - series: 'container_memory_rss{namespace="observability", pod="kube-prometheus-stack-grafana-7d5b9c8f4-x2k9p", container="grafana", node="k3s-agt-nas-01"}'
+        values: '1059061760+0x60'
+      - series: 'kube_pod_container_resource_limits{namespace="observability", pod="kube-prometheus-stack-grafana-7d5b9c8f4-x2k9p", container="grafana", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
+        values: '1073741824+0x60'
+      - series: 'container_memory_rss{namespace="observability", pod="prometheus-kube-prometheus-stack-prometheus-0", container="prometheus", node="k3s-agt-nas-01"}'
+        values: '8160437862+0x60'
+      - series: 'kube_pod_container_resource_limits{namespace="observability", pod="prometheus-kube-prometheus-stack-prometheus-0", container="prometheus", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
+        values: '8589934592+0x60'
+      - series: 'container_memory_rss{namespace="observability", pod="prometheus-kube-prometheus-stack-prometheus-1", container="prometheus", node="k3s-agt-nas-01"}'
+        values: '6871947674+0x60'
+      - series: 'kube_pod_container_resource_limits{namespace="observability", pod="prometheus-kube-prometheus-stack-prometheus-1", container="prometheus", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
+        values: '8589934592+0x60'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: ContainerMemoryNearLimit
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: ContainerMemoryNearLimit
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: observability
+              pod: kube-prometheus-stack-grafana-7d5b9c8f4-x2k9p
+              container: grafana
+          - exp_labels:
+              severity: warning
+              namespace: observability
+              pod: prometheus-kube-prometheus-stack-prometheus-0
+              container: prometheus
+
+  # hindsight/llama is excluded by name from the RSS rule because
+  # HindsightLlamaMemoryNearLimit (0.95 working set) is its band; at 0.93 on
+  # both metrics neither fires.
   - interval: 1m
     input_series:
       - series: 'container_memory_working_set_bytes{namespace="hindsight", pod="llama-0", container="llama", node="k3s-agt-prec-01"}'
+        values: '1000000000+0x60'
+      - series: 'container_memory_rss{namespace="hindsight", pod="llama-0", container="llama", node="k3s-agt-prec-01"}'
         values: '1000000000+0x60'
       - series: 'kube_pod_container_resource_limits{namespace="hindsight", pod="llama-0", container="llama", resource="memory", unit="byte", node="k3s-agt-prec-01"}'
         values: '1073741824+0x60'
@@ -530,10 +588,12 @@ tests:
         exp_alerts: []
 
   # The llama leading indicator: 0.96 of the limit held past the 15m hold — the
-  # band an OOMKill climbs through.
+  # band an OOMKill climbs through. The RSS rule stays out of it at 0.96 too.
   - interval: 1m
     input_series:
       - series: 'container_memory_working_set_bytes{namespace="hindsight", pod="llama-0", container="llama", node="k3s-agt-prec-01"}'
+        values: '1030792151+0x60'
+      - series: 'container_memory_rss{namespace="hindsight", pod="llama-0", container="llama", node="k3s-agt-prec-01"}'
         values: '1030792151+0x60'
       - series: 'kube_pod_container_resource_limits{namespace="hindsight", pod="llama-0", container="llama", resource="memory", unit="byte", node="k3s-agt-prec-01"}'
         values: '1073741824+0x60'
@@ -550,134 +610,46 @@ tests:
               namespace: hindsight
               pod: llama-0
               container: llama
-      # Still excluded from the generic 0.9 rule.
       - eval_time: 25m
         alertname: ContainerMemoryNearLimit
         exp_alerts: []
 
-  # Prometheus and Loki count reclaimable page cache in their working set, so
-  # they live near the ceiling. The exclusion is (namespace, container), so a
-  # container named `prometheus` elsewhere is not excluded.
+  # authentik/postgresql is judged on its working set, which carries the
+  # shared buffers RSS omits: the live shape (RSS 76Mi, working set 393Mi,
+  # 1Gi limit) stays silent and a working set at 0.93 fires.
   - interval: 1m
     input_series:
-      - series: 'container_memory_working_set_bytes{namespace="observability", pod="prometheus-kube-prometheus-stack-prometheus-0", container="prometheus", node="k3s-agt-nas-01"}'
-        values: '6000000000+0x60'
-      - series: 'kube_pod_container_resource_limits{namespace="observability", pod="prometheus-kube-prometheus-stack-prometheus-0", container="prometheus", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
-        values: '6442450944+0x60'
-      - series: 'container_memory_working_set_bytes{namespace="hermes", pod="hermes-0", container="prometheus", node="k3s-agt-prec-01"}'
+      - series: 'container_memory_working_set_bytes{namespace="authentik", pod="authentik-postgresql-0", container="postgresql", node="k3s-agt-nas-01"}'
+        values: '411959296+0x60'
+      - series: 'container_memory_cache{namespace="authentik", pod="authentik-postgresql-0", container="postgresql", node="k3s-agt-nas-01"}'
+        values: '583532544+0x60'
+      - series: 'container_memory_rss{namespace="authentik", pod="authentik-postgresql-0", container="postgresql", node="k3s-agt-nas-01"}'
+        values: '79691776+0x60'
+      - series: 'kube_pod_container_resource_limits{namespace="authentik", pod="authentik-postgresql-0", container="postgresql", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
+        values: '1073741824+0x60'
+      - series: 'container_memory_working_set_bytes{namespace="authentik", pod="authentik-postgresql-1", container="postgresql", node="k3s-agt-nas-01"}'
         values: '1000000000+0x60'
-      - series: 'kube_pod_container_resource_limits{namespace="hermes", pod="hermes-0", container="prometheus", resource="memory", unit="byte", node="k3s-agt-prec-01"}'
+      - series: 'container_memory_rss{namespace="authentik", pod="authentik-postgresql-1", container="postgresql", node="k3s-agt-nas-01"}'
+        values: '79691776+0x60'
+      - series: 'kube_pod_container_resource_limits{namespace="authentik", pod="authentik-postgresql-1", container="postgresql", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
         values: '1073741824+0x60'
-    alert_rule_test:
-      - eval_time: 25m
-        alertname: ContainerMemoryNearLimit
-        exp_alerts:
-          - exp_labels:
-              severity: warning
-              namespace: hermes
-              pod: hermes-0
-              container: prometheus
-
-  # Grafana is page-cache-dominated too: its working set sits at ~99% of the
-  # 1Gi limit. The exclusion is (namespace, container), so a container named
-  # `grafana` elsewhere still alerts.
-  - interval: 1m
-    input_series:
-      - series: 'container_memory_working_set_bytes{namespace="observability", pod="kube-prometheus-stack-grafana-7d5b9c8f4-x2k9p", container="grafana", node="k3s-agt-nas-01"}'
-        values: '1062207488+0x60'
-      - series: 'kube_pod_container_resource_limits{namespace="observability", pod="kube-prometheus-stack-grafana-7d5b9c8f4-x2k9p", container="grafana", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
-        values: '1073741824+0x60'
-      - series: 'container_memory_working_set_bytes{namespace="hermes", pod="hermes-0", container="grafana", node="k3s-agt-prec-01"}'
-        values: '1062207488+0x60'
-      - series: 'kube_pod_container_resource_limits{namespace="hermes", pod="hermes-0", container="grafana", resource="memory", unit="byte", node="k3s-agt-prec-01"}'
-        values: '1073741824+0x60'
-    alert_rule_test:
-      - eval_time: 25m
-        alertname: ContainerMemoryNearLimit
-        exp_alerts:
-          - exp_labels:
-              severity: warning
-              namespace: hermes
-              pod: hermes-0
-              container: grafana
-
-  # PageCacheWorkloadRSSNearLimit: the RSS band that replaces the 0.9 working-set
-  # rule for the excluded pair. Non-reclaimable memory at ~0.94 of the limit.
-  - interval: 1m
-    input_series:
-      - series: 'container_memory_rss{namespace="observability", pod="kube-prometheus-stack-grafana-7d5b9c8f4-x2k9p", container="grafana", node="k3s-agt-nas-01"}'
-        values: '1059061760+0x60'
-      - series: 'kube_pod_container_resource_limits{namespace="observability", pod="kube-prometheus-stack-grafana-7d5b9c8f4-x2k9p", container="grafana", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
-        values: '1073741824+0x60'
-    alert_rule_test:
-      # Inside the 15m hold.
-      - eval_time: 10m
-        alertname: PageCacheWorkloadRSSNearLimit
-        exp_alerts: []
-      - eval_time: 25m
-        alertname: PageCacheWorkloadRSSNearLimit
-        exp_alerts:
-          - exp_labels:
-              severity: warning
-              namespace: observability
-              pod: kube-prometheus-stack-grafana-7d5b9c8f4-x2k9p
-              container: grafana
-
-  # Prometheus mmaps its TSDB blocks, so RSS is its band too: ~0.95 of the 6Gi
-  # limit fires, and the 0.9 working-set rule excludes the container.
-  - interval: 1m
-    input_series:
-      - series: 'container_memory_rss{namespace="observability", pod="prometheus-kube-prometheus-stack-prometheus-0", container="prometheus", node="k3s-agt-nas-01"}'
-        values: '6120328396+0x60'
-      - series: 'kube_pod_container_resource_limits{namespace="observability", pod="prometheus-kube-prometheus-stack-prometheus-0", container="prometheus", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
-        values: '6442450944+0x60'
     alert_rule_test:
       - eval_time: 10m
-        alertname: PageCacheWorkloadRSSNearLimit
-        exp_alerts: []
-      - eval_time: 25m
-        alertname: PageCacheWorkloadRSSNearLimit
-        exp_alerts:
-          - exp_labels:
-              severity: warning
-              namespace: observability
-              pod: prometheus-kube-prometheus-stack-prometheus-0
-              container: prometheus
-
-  # Prometheus at ~0.8 of the limit: inside the band, so nothing fires.
-  - interval: 1m
-    input_series:
-      - series: 'container_memory_rss{namespace="observability", pod="prometheus-kube-prometheus-stack-prometheus-0", container="prometheus", node="k3s-agt-nas-01"}'
-        values: '5153960755+0x60'
-      - series: 'kube_pod_container_resource_limits{namespace="observability", pod="prometheus-kube-prometheus-stack-prometheus-0", container="prometheus", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
-        values: '6442450944+0x60'
-    alert_rule_test:
-      - eval_time: 25m
-        alertname: PageCacheWorkloadRSSNearLimit
-        exp_alerts: []
-
-  # The live shape: Loki's working set sits above the 1Gi limit on page cache
-  # while its RSS is ~680Mi. Neither the excluded 0.9 rule nor the RSS band fires.
-  - interval: 1m
-    input_series:
-      - series: 'container_memory_working_set_bytes{namespace="observability", pod="loki-0", container="loki", node="k3s-agt-nas-01"}'
-        values: '1238368256+0x60'
-      - series: 'container_memory_rss{namespace="observability", pod="loki-0", container="loki", node="k3s-agt-nas-01"}'
-        values: '713031680+0x60'
-      - series: 'kube_pod_container_resource_limits{namespace="observability", pod="loki-0", container="loki", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
-        values: '1073741824+0x60'
-    alert_rule_test:
-      - eval_time: 25m
-        alertname: PageCacheWorkloadRSSNearLimit
+        alertname: ContainerMemoryNearLimit
         exp_alerts: []
       - eval_time: 25m
         alertname: ContainerMemoryNearLimit
-        exp_alerts: []
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: authentik
+              pod: authentik-postgresql-1
+              container: postgresql
 
   # A container comfortably inside its limit must stay silent.
   - interval: 1m
     input_series:
-      - series: 'container_memory_working_set_bytes{namespace="downloads", pod="sonarr-0", container="sonarr", node="k3s-agt-nas-01"}'
+      - series: 'container_memory_rss{namespace="downloads", pod="sonarr-0", container="sonarr", node="k3s-agt-nas-01"}'
         values: '500000000+0x60'
       - series: 'kube_pod_container_resource_limits{namespace="downloads", pod="sonarr-0", container="sonarr", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
         values: '1073741824+0x60'

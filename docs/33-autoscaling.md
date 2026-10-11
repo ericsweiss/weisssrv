@@ -512,7 +512,7 @@ the clamp.
 
 That loop is manual, so it can silently stop being run: authentik-postgresql's
 recorded target sat at 684Mi against a 512Mi limit for weeks and then OOMKilled
-the SSO database. Four alerts now close it:
+the SSO database. Three alerts now close it:
 
 - **`VPARecommendationExceedsLimit`** — the VPA's memory target has been above
   the container's configured memory limit for 6h. It compares the **larger of
@@ -523,7 +523,8 @@ the SSO database. Four alerts now close it:
   the `update_mode` / `controlled_values` labels. The `controlled_values` label
   reaches only a VPA that declares a `containerName: "*"` policy entry, so the
   per-container `alloy` and `alloy-syslog` VPAs are out of scope;
-  `ContainerMemoryNearLimit` is what covers the log-shipping plane.
+  `ContainerMemoryNearLimit` and `ContainerOOMKilled` cover the log-shipping
+  plane.
   `Auto` is excluded because a mutating VPA on the
   default `RequestsAndLimits` re-scales its own limit at the next admission and
   would otherwise page for hours on a condition it fixes itself. `Initial` is
@@ -535,18 +536,20 @@ the SSO database. Four alerts now close it:
   Both alerts read the recording rules `workload:vpa_recommendation_memory:max`
   and `workload:kube_pod_container_resource_memory:max` rather than repeating
   the join.
-- **`ContainerMemoryNearLimit`** — the leading indicator the other two lack:
-  live working set above 90% of the container's own memory limit for 15m,
-  independent of any VPA (the recommender lags a burst by hours). Four
-  containers are excluded because their steady state legitimately sits near the
-  ceiling: `hindsight/llama` (GPU/model-pinned, deliberate `Off` VPA — docs/43)
-  and observability's `prometheus`, `loki` and `grafana`, whose working sets
-  count reclaimable page cache.
-- **`PageCacheWorkloadRSSNearLimit`** — the RSS band that covers observability's
-  `grafana`, `loki` and `prometheus` in place of the working-set rule above. RSS is the
-  non-reclaimable half, which is what the OOM killer counts, so 90% of the limit
-  there is a real warning. `hindsight/llama` keeps its own band,
-  `HindsightLlamaMemoryNearLimit`, at 95%.
+- **`ContainerMemoryNearLimit`** — anonymous memory (RSS) above 90% of the
+  container's own memory limit for 15m, independent of any VPA. RSS is the
+  part of a container's charge the rule can judge without page cache: the
+  working set counts cache the kernel reclaims before it kills anything, so
+  Loki sits at its ceiling permanently and alloy-syslog reached 92% of its
+  256Mi limit on 190Mi of file cache over 44Mi of RSS. `authentik/postgresql`
+  is the one container judged on its working set instead: its shared buffers
+  are shared memory, charged against the limit but absent from RSS, and its
+  data set is too small for page cache to inflate the figure. The blind spots
+  that remain are the rest of a cgroup's charge elsewhere — tmpfs, slab and
+  kernel memory — and a burst that dies inside the 15m hold;
+  `ContainerOOMKilled` is the detector for both. `hindsight/llama` is excluded
+  because `HindsightLlamaMemoryNearLimit` is its band (working set at 95%,
+  docs/43): one page per condition.
 - **`ContainerOOMKilled`** — the kill itself. Upstream's rules only catch a
   container that stays down or crash-loops, so a clean OOM-and-restart was
   invisible.
@@ -570,10 +573,11 @@ under 1024, homarr 479 vs 334 under 896, Prometheus 5961 vs 2159. Zero OOMKills
 cluster-wide over the same window. A tier that pages on an inflated estimate
 spends real node reservation on page cache.
 
-Real OOM risk keeps two purpose-built pagers, both in
-`rules/kubernetes-resources.yaml` and both reading non-reclaimable memory:
-`PageCacheWorkloadRSSNearLimit` (RSS above 0.9 of the limit) and
-`ContainerOOMKilled`.
+Real OOM risk keeps three purpose-built pagers in
+`rules/kubernetes-resources.yaml`: `ContainerMemoryNearLimit` (RSS above 0.9
+of the limit, authentik/postgresql's working set), `HindsightLlamaMemoryNearLimit` (working set above 0.95, for
+the one workload whose ceiling is its mapped model) and `ContainerOOMKilled`
+(the kill itself, from the restart counter and the termination reason).
 
 Because none of the three pages, none of them needs an allowlist, and the
 hand-maintained `unless` exclusion arms they carried are gone. The

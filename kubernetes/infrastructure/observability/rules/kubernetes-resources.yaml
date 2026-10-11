@@ -35,28 +35,40 @@ spec:
               namespaces are excluded because their ResourceQuota
               deliberately over-requests for burst CI.
 
-        # Live working set against the container's own limit, the leading
-        # indicator ahead of an OOMKill. Excludes workloads that steadily sit
-        # near the ceiling: hindsight/llama, Prometheus, Loki and Grafana.
+        # RSS against the container's own limit, so page cache never counts.
+        # authentik/postgresql is judged on its working set instead (shared
+        # buffers are shmem, outside RSS); hindsight/llama has its own band.
         - alert: ContainerMemoryNearLimit
           expr: >-
             (
-              max by (namespace, pod, container) (
-                container_memory_working_set_bytes{container!="", container!="POD"}
-              )
-              / on (namespace, pod, container) group_left ()
-              max by (namespace, pod, container) (
-                kube_pod_container_resource_limits{resource="memory"}
-              )
-            ) > 0.9
-            unless on (namespace, container) (
-              kube_pod_container_resource_limits{resource="memory",
-                                                 namespace="hindsight",
-                                                 container="llama"}
-              or
-              kube_pod_container_resource_limits{resource="memory",
-                                                 namespace="observability",
-                                                 container=~"prometheus|loki|grafana"}
+              (
+                max by (namespace, pod, container) (
+                  container_memory_rss{container!="", container!="POD"}
+                )
+                / on (namespace, pod, container) group_left ()
+                max by (namespace, pod, container) (
+                  kube_pod_container_resource_limits{resource="memory"}
+                )
+              ) > 0.9
+              unless on (namespace, container)
+                kube_pod_container_resource_limits{resource="memory",
+                                                   namespace="hindsight",
+                                                   container="llama"}
+            )
+            or
+            (
+              (
+                max by (namespace, pod, container) (
+                  container_memory_working_set_bytes{namespace="authentik",
+                                                     container="postgresql"}
+                )
+                / on (namespace, pod, container) group_left ()
+                max by (namespace, pod, container) (
+                  kube_pod_container_resource_limits{resource="memory",
+                                                     namespace="authentik",
+                                                     container="postgresql"}
+                )
+              ) > 0.9
             )
           for: 15m
           labels:
@@ -65,44 +77,16 @@ spec:
             runbook_url: '${cluster_runbook_base_url}/33-autoscaling.md'
             summary: >-
               Container {{ $labels.namespace }}/{{ $labels.pod }}/{{ $labels.container }}
-              is within 10% of its memory limit
+              holds unreclaimable memory within 10% of its limit
             description: >-
-              Container {{ $labels.container }} in pod
-              {{ $labels.namespace }}/{{ $labels.pod }} has held above 90% of
-              its memory limit for 15 minutes
-              ({{ $value | humanizePercentage }}). Raise the limit in git and,
-              where the workload has a VPA, its maxAllowed alongside — docs/33
-              "Applying an Off-tier recommendation".
-
-        # Grafana, Loki and Prometheus, excluded from the 0.9 rule above. RSS is
-        # the non-reclaimable half, which is what the OOM killer counts.
-        - alert: PageCacheWorkloadRSSNearLimit
-          expr: >-
-            (
-              max by (namespace, pod, container) (
-                container_memory_rss{namespace="observability", container=~"grafana|loki|prometheus"}
-              )
-              / on (namespace, pod, container) group_left ()
-              max by (namespace, pod, container) (
-                kube_pod_container_resource_limits{resource="memory",
-                                                   namespace="observability",
-                                                   container=~"grafana|loki|prometheus"}
-              )
-            ) > 0.9
-          for: 15m
-          labels:
-            severity: warning
-          annotations:
-            runbook_url: '${cluster_runbook_base_url}/33-autoscaling.md'
-            summary: >-
-              {{ $labels.namespace }}/{{ $labels.container }} RSS is within 10%
-              of its memory limit
-            description: >-
-              Non-reclaimable memory in {{ $labels.namespace }}/{{ $labels.pod }}
-              has held above 90% of the container's memory limit for 15 minutes
-              ({{ $value | humanizePercentage }}). Unlike the working set this
-              is not page cache: raise the limit and the VPA maxAllowed in git
-              — docs/33 "Applying an Off-tier recommendation".
+              Memory the kernel cannot reclaim in container
+              {{ $labels.container }} of {{ $labels.namespace }}/{{ $labels.pod }}
+              (RSS; for authentik/postgresql the working set, which carries its
+              shared buffers) has held above 90% of the memory limit for 15
+              minutes ({{ $value | humanizePercentage }}). This is not page
+              cache: raise the limit in git and, where the workload has a VPA,
+              its maxAllowed alongside — docs/33 "Applying an Off-tier
+              recommendation".
 
         # hindsight/llama's own band, since the 0.9 rule above excludes it. Its
         # VPA is Off (docs/43), so without this an OOMKill is its only signal.
