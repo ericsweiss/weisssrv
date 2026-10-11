@@ -12,7 +12,7 @@
           - groups['nas_servers'] | default([]) | length == 1
           - groups['smb_clients'] | default([]) | length == 1
         fail_msg: >-
-          molecule.yml no longer produces nas_servers and smb_clients, so the
+          molecule.yml does not produce nas_servers and smb_clients, so the
           plays in this scenario match no hosts.
       run_once: true
 

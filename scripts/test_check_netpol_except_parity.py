@@ -582,3 +582,135 @@ def test_an_empty_policytypes_list_takes_the_inferred_default(tmp_path):
     doc["spec"]["policyTypes"] = []
     path = _write(tmp_path, doc)
     assert mod.check_paths([path]) != []
+
+
+# --- the corpora the gate judges, and the peer with no constraint ------------
+
+
+def test_an_empty_to_peer_allows_every_destination(tmp_path):
+    """`to: [- {}]` is a non-empty peer list carrying no constraint at all, so
+    Kubernetes reads it as every destination."""
+    path = _write(tmp_path, _egress_policy([{"to": [{}]}]))
+    violations = mod.check_paths([path])
+    assert len(violations) == 1
+    assert "EMPTY `to:` peer" in violations[0]
+    assert "EVERY destination" in violations[0]
+
+
+def test_a_ports_only_to_peer_allows_every_destination(tmp_path):
+    """The same hole dressed as a port peer: `ports:` lives on the rule, so a
+    peer spelling it carries none of the three constraints."""
+    doc = _egress_policy([{"to": [{"ports": [{"port": 443}]}]}])
+    path = _write(tmp_path, doc)
+    assert "EMPTY `to:` peer" in mod.check_paths([path])[0]
+
+
+def test_a_selector_only_to_peer_is_not_the_empty_peer(tmp_path):
+    """`podSelector: {}` selects every pod in the namespace — a real peer."""
+    doc = _egress_policy([{"to": [{"podSelector": {}}]}])
+    assert mod.check_paths([_write(tmp_path, doc)]) == []
+
+
+def test_an_empty_peer_beside_a_fenced_block_is_still_reported(tmp_path):
+    doc = _egress_policy(
+        [{"to": [{"ipBlock": {"cidr": "0.0.0.0/0", "except": list(mod.LAN_FENCE)}}, {}]}]
+    )
+    assert "EMPTY `to:` peer" in mod.check_paths([_write(tmp_path, doc)])[0]
+
+
+def test_json_manifests_are_scanned(tmp_path):
+    """A JSON manifest is a manifest; globbing YAML alone scanned nothing."""
+    import json as _json
+
+    (tmp_path / "netpol.json").write_text(_json.dumps(_policy(["10.0.0.0/8"])))
+    violations, scanned, errors = mod.scan_paths([tmp_path])
+    assert scanned == 1 and errors == [] and len(violations) == 1
+
+
+def test_a_json_list_manifest_is_scanned(tmp_path):
+    import json as _json
+
+    (tmp_path / "netpol.json").write_text(_json.dumps([_policy(["10.0.0.0/8"])]))
+    assert mod.scan_paths([tmp_path])[1] == 1
+
+
+def test_an_unparseable_json_manifest_is_an_operator_error(tmp_path, capsys):
+    (tmp_path / "netpol.json").write_text(
+        '{"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy",\n'
+    )
+    assert mod.main([str(tmp_path)]) == 2
+    assert "unparseable JSON" in capsys.readouterr().err
+
+
+def test_an_unparseable_json_file_named_outright_is_still_an_error(tmp_path, capsys):
+    """Whatever it holds, a file the gate was pointed at is its subject."""
+    path = tmp_path / "dashboard.json"
+    path.write_text("{\n")
+    assert mod.main([str(path)]) == 2
+    assert "unparseable JSON" in capsys.readouterr().err
+
+
+def test_a_json_file_of_another_shape_is_not_a_manifest(tmp_path):
+    """The default scan root holds the Grafana dashboards, and a netpol-fence
+    gate reporting a dashboard is a wrong attribution."""
+    import json as _json
+
+    (tmp_path / "dashboard.json").write_text(
+        _json.dumps({"title": "Cluster", "panels": [{"type": "timeseries"}]})
+    )
+    (tmp_path / "netpol.json").write_text(_json.dumps(_policy(["10.0.0.0/8"])))
+    violations, scanned, errors = mod.scan_paths([tmp_path])
+    assert scanned == 1 and errors == [] and len(violations) == 1
+
+
+def test_a_broken_dashboard_does_not_red_the_gate(tmp_path):
+    """A dashboard is hand-edited; a stray comma in one must not read as the
+    NetworkPolicy corpus being unreadable."""
+    (tmp_path / "dashboard.json").write_text('{"title": "Cluster",,}')
+    (tmp_path / "netpol.yaml").write_text(yaml.safe_dump(_policy(["10.0.0.0/8"])))
+    violations, scanned, errors = mod.scan_paths([tmp_path])
+    assert errors == [] and scanned == 1 and len(violations) == 1
+
+
+def test_a_placeholder_tree_passes_but_its_render_is_judged(tmp_path, capsys):
+    """The LAN-escape arm examines nothing while the CIDR is a placeholder; the
+    rendered corpus is where the escape becomes visible."""
+    doc = _egress_policy([{"to": [{"ipBlock": {"cidr": "${cluster_lan_cidr}"}}]}])
+    path = _write(tmp_path, doc)
+    assert mod.check_paths([path]) == []
+
+    corpus = tmp_path / "rendered.yaml"
+    corpus.write_text(yaml.safe_dump(doc).replace("${cluster_lan_cidr}", "10.0.0.0/8"))
+    assert mod.main(["--corpus", str(corpus)]) == 1
+    assert "reaches all of 10.0.0.0/8" in capsys.readouterr().out
+
+
+def test_a_leftover_placeholder_in_a_corpus_is_an_operator_error(tmp_path, capsys):
+    """In a rendered stream a `${...}` CIDR is a substitution the render missed."""
+    doc = _egress_policy([{"to": [{"ipBlock": {"cidr": "${cluster_lan_cidr}"}}]}])
+    corpus = tmp_path / "rendered.yaml"
+    corpus.write_text(yaml.safe_dump(doc))
+    assert mod.main(["--corpus", str(corpus)]) == 2
+    assert "unparseable CIDR" in capsys.readouterr().err
+
+
+def test_a_corpus_on_stdin_is_scanned(monkeypatch, capsys):
+    import io
+
+    doc = _egress_policy([{"to": [{"ipBlock": {"cidr": "0.0.0.0/0"}}]}])
+    monkeypatch.setattr("sys.stdin", io.StringIO(yaml.safe_dump(doc)))
+    assert mod.main(["--corpus", "-"]) == 1
+    assert "<stdin>" in capsys.readouterr().out
+
+
+def test_a_policy_less_corpus_is_an_operator_error(tmp_path, capsys):
+    """A render that never reached the policies must not read as a pass."""
+    corpus = tmp_path / "rendered.yaml"
+    corpus.write_text("apiVersion: v1\nkind: ConfigMap\nmetadata: {name: settings}\n")
+    assert mod.main(["--corpus", str(corpus)]) == 2
+    assert "scanned 0 NetworkPolicy manifests" in capsys.readouterr().err
+
+
+def test_a_missing_corpus_file_is_an_operator_error(tmp_path, capsys):
+    assert mod.main(["--corpus", str(tmp_path / "gone.yaml")]) == 2
+    assert "--corpus" in capsys.readouterr().err

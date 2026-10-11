@@ -608,7 +608,7 @@ class TestNetpolExceptConfig:
 
 
 class TestPendingAdoptionTable:
-    """docs/13's pending-adoption table is the adoption record.
+    """docs/13's pending-adoption table lists what each consumer still owns locally.
 
     Every row's library path exists and its local anchor is still defined, and
     every library template is included, pending, or declared not-consumed here.

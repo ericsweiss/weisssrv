@@ -175,23 +175,18 @@ Certificate in `kubernetes/apps/vm-ingress/`; internally they resolve via the
 AdGuard rewrites in `group_vars/dns.yml`, so there is no Terraform record for
 them.
 
-**DNS cutover verification:** If `git.ericsweiss.com` was previously a CNAME (e.g., pointing
-to `direct.ericsweiss.com`) and is being changed to an A record, verify the transition:
+**DNS verification:** `git.ericsweiss.com` is a DDNS-managed A record. Verify it
+resolves to the current WAN IP:
 
 ```bash
-# 1. Preview the change
+# The record itself is declared as local.dns_records["git"] in terraform/cloudflare/dns.tf;
+# an empty plan means the declaration and the zone agree.
 task terraform:cloudflare-plan
-# Look for: module.zone.cloudflare_record.protected_external_content["git"]
-#           changing type from CNAME to A (edit local.dns_records["git"] in dns.tf)
 
-# 2. Apply the change
-task terraform:cloudflare-apply
-
-# 3. Verify DNS resolution (may take a few minutes for propagation)
+# Resolution: expect the current public IP (same as direct.ericsweiss.com)
 dig +short git.ericsweiss.com
-# Should return your public IP (same as direct.ericsweiss.com)
 
-# 4. Verify GitLab is accessible
+# Reachability
 curl -sf --max-time 10 "https://git.ericsweiss.com/-/health"
 # Should return: GitLab OK
 ```
@@ -291,7 +286,7 @@ curl -I https://git.esweiss.com
 
 ### Step 8: Get Runner Authentication Token
 
-**Note**: GitLab 16.0+ uses runner authentication tokens (`glrt-*` format) instead of the deprecated registration tokens. The old `runnerRegistrationToken` method was removed in GitLab 18.0.
+**Note**: runners register with `glrt-*` authentication tokens.
 
 Two runners are needed:
 - **Shared runner** (unprivileged): For other GitLab projects and collaborators to deploy to k3s. Runs untagged jobs. Tag: `k8s-deploy`.
@@ -314,6 +309,15 @@ weisssrv project — never an instance runner**. Tags are cooperative routing
 (any project could declare `tags: [infrastructure]`), so the registration
 scope is the isolation boundary that keeps other projects' jobs away from
 root+DinD execution.
+
+> **Live state:** the running privileged runner is registered instance-wide, so
+> the boundary above is the target posture and not yet the estate — any project
+> on this GitLab can reach root+DinD by declaring `tags: [infrastructure]`.
+> Closing it is an owner action: create the project runner with the steps below,
+> store its new `glrt-*` token in the 1Password `GitLab Runner Privileged` item
+> ([docs/15](15-credential-rotation.md)) so ESO re-renders the Secret, then
+> delete the old instance runner in the Admin Area. Tracked in
+> [docs/16](16-next-steps.md) § Pending supervised steps.
 
 1. In the **weisssrv project**, navigate to **Settings → CI/CD → Runners**
 2. Click **New project runner**

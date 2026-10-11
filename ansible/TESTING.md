@@ -29,7 +29,7 @@ The scenarios pull the published `molecule-test` image from weisssrv-lib's
 registry. Override it for a local build:
 
 ```bash
-export MOLECULE_TEST_IMAGE=registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:v0.18.1
+export MOLECULE_TEST_IMAGE=registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:v0.19.0
 ```
 
 The collection itself is installed by molecule's `galaxy` dependency step from
@@ -216,5 +216,5 @@ NFS/Samba on the NAS, the certificate-distribution SSH path from dns-01, and
 
 - [Molecule](https://molecule.readthedocs.io/)
 - [molecule-plugins (docker driver)](https://github.com/ansible-community/molecule-plugins)
-- weisssrv-lib: the collection README and `MIGRATING.md` for the role-side
-  contract, and that repo's own testing docs for the per-role scenarios
+- weisssrv-lib: the collection README for the role-side contract, and that
+  repo's own testing docs for the per-role scenarios

@@ -58,17 +58,16 @@ the agent registration in GitLab. It is allowlisted in
 credentials and no `op://` references of their own, so every secret arrives as
 an inventory variable resolved by consumer 1 above. Several roles declare these
 values as required inputs rather than carrying a site default, so the reference
-must exist in this repo's inventory. The collection's migration guide
-§ "Externalized defaults" lists them.
+must exist in this repo's inventory. Each role's README in the collection lists
+every input it requires.
 
 ## Required 1Password Items
 
 This is the canonical, authoritative inventory of every item the deployment
 expects. Each subsection names its vault; unless stated otherwise the item lives
-in **Homelab**. CLAUDE.md, `docs/02-install.md`,
-`docs/13-ci-cd.md`, `docs/27-gitlab-deployment.md`, and
-`docs/28-gitlab-migration.md` all point here; update this list (not those files)
-when an item is added or its fields change.
+in **Homelab**. CLAUDE.md, `docs/02-install.md`, `docs/13-ci-cd.md` and
+`docs/27-gitlab-deployment.md` all point here; update this list (not those
+files) when an item is added or its fields change.
 
 The **Inventory** table below is the complete list. Items whose handling needs
 more than a table cell have a subsection under
@@ -262,8 +261,8 @@ converged the root, the empty plan is again the pass condition and any diff
 during a rotation is real drift, not an accepted exception. The key is also read by `unifi-drift-plan`. That job's `allow_failure` is scoped
 to `exit_codes: [2]`, so only real drift renders yellow — a revoked key (401) or
 a renamed field fails the job red and is visible on the next scheduled pipeline.
-See docs/48 § Expected breakage (all closed) for the "must be green after the
-first apply" rule.
+Once a supervised apply has converged the root, a yellow `unifi-drift-plan` is
+real drift (`terraform/unifi/README.md` owns the plan/apply rules).
 
 #### WiFi SSID pre-shared keys
 
@@ -357,10 +356,9 @@ is restarted.
 SQLite-stored integration credentials — **do not lose it**, or those stored
 credentials become unreadable.
 
-`admin-username` / `admin-password` are operator-set, not ESO-injected, and are a
-record of the onboarding bootstrap admin that was deleted at the SSO-only
-cutover. No current auth path consumes them; break-glass DR mints its own
-username and one-time password via `homarr-cli recreate-admin` (docs/41 § SSO).
+`admin-username` / `admin-password` are operator-set, not ESO-injected: a DR
+convenience no auth path consumes. Break-glass DR mints its own username and
+one-time password via `homarr-cli recreate-admin` (docs/41 § SSO).
 
 #### NZBGet
 
@@ -606,11 +604,11 @@ revoked credential is the failure being avoided.
 - Null client passwords: `/etc/postfix/sasl_passwd` updated on all Proxmox hosts
   and DNS LXCs by 4a, on the app VMs and k3s nodes by 4b
 - Postfix reloads on all affected hosts
-- Both roles rebuild the compiled `sasl_passwd.db` / `aliases.db` whenever they
-  no longer match their source, rather than relying on the `notify` handler
-  alone: a play that dies before `flush_handlers` used to leave a correct source
-  next to a stale database, and the host kept authenticating with the OLD
-  credential with nothing reporting changed
+- Both roles assert the compiled `sasl_passwd.db` / `aliases.db` against their
+  source on every run and rebuild on a mismatch, rather than relying on the
+  `notify` handler alone: a play that dies before `flush_handlers` would
+  otherwise leave a correct source next to a stale database, and the host would
+  keep authenticating with the old credential with nothing reporting changed
 
 **Affected Hosts**:
 - `smtp-relay` - Both passwords
@@ -715,11 +713,20 @@ breaking cert pushes until `acme_certs` re-seeds it.
 Re-provisioning a guest strands the same key for the same reason: the guest
 playbook runs `weisssrv.infra.base`, which rewrites `authorized_keys`. Each
 cert-target guest playbook (`plex.yml`, `immich.yml`, `nextcloud.yml`,
-`gitlab.yml`) therefore ends with a play on the `dns` group that includes
-`tasks/_reseed-cert-target.yml`, re-pinning that one target from the cert
-authority. A guest that was down at re-seed time is named in the playbook
-output; re-run it, or `task infra:deploy -- --tags acme_certs`, once it is back.
+`gitlab.yml`, `mail.yml`) therefore ends with a play on the `dns_primary`
+group that includes `tasks/_reseed-cert-target.yml`, re-pinning that target
+from the cert authority; `scripts/test_cert_reseed_coverage.py` fails a
+playbook that applies base to a target without it. A guest that is down at
+re-seed time is named in the playbook output; re-run it, or
+`task infra:deploy -- --tags acme_certs`, once it is back.
 Without the re-seed the loss is invisible until the next renewal fails.
+
+The pubkey the re-seed pins comes from `DNS01_SSH_PUBLIC_KEY` when the job
+carries it, and otherwise from `id_ed25519_certs.pub` on the authority host,
+which `acme_certs` wrote there. A deploy job that does not pass the env variable
+therefore still re-seeds; the loud skip in the playbook output means both
+sources were empty, and `task infra:deploy -- --tags acme_certs` (under `op
+run`) rewrites the key file.
 
 **Surfaces step 8 does not reach**: HAOS (.154) keeps the key in
 `/root/.ssh/authorized_keys` over port 22222 — remove it through the Files
@@ -1006,24 +1013,31 @@ ssh eric@10.0.10.150 "sudo systemctl status adguardhome-sync"
 
 ## Scheduled Rotation Policy
 
-**Recommended Schedule**:
+The table below is the policy *and* the input `scripts/check-credential-age.py`
+reads. The first column holds backticked 1Password item titles, `*` and `?`
+glob; the most specific pattern that matches a title owns it, a literal beating
+a glob. The second column is `<N>d` or `exempt`.
 
-| Credential Type | Rotation Frequency | Reason |
-|-----------------|-------------------|--------|
-| SSH Keys | Annually | Low risk, high impact if rotated incorrectly |
-| SMTP Passwords | Every 6 months | Medium risk, Gmail app passwords |
-| API Tokens | Every 6 months | Medium risk, scoped permissions |
-| AdGuard Password | Annually | Low exposure, local network only |
-| Samba NAS Password | Every 6 months | Medium risk, network file sharing |
-| Tailscale Auth Keys | Generate new for each node | One-time use |
+| Item (1Password title, glob) | Max age | Reason |
+|---|---|---|
+| `*` | 180d | Default for a scoped token, password or key pair |
+| `*SSH Key*` | 365d | Low risk, high impact if rotated incorrectly |
+| `AdGuard Home` | 365d | Low exposure, local network only |
+| `WiFi *` | 365d | A PSK rotation re-onboards every device on that SSID — see § WiFi SSID pre-shared keys |
+| `ZFS Pool * Passphrase` | 730d | Offline unlock material, and a rotation re-keys the pool |
+| `B2 Archive Backup` | 365d | Holds the restic repository password, rotated against the offsite repo itself |
+| `Email Config` | exempt | A mail alias, not a credential |
+| `Authentik User Identities` | exempt | Managed-user names and emails, not a credential |
+| `Tailscale Auth Key` | exempt | Minted per node and consumed at join, so the item holds no standing credential |
 
-**Automation** (future):
-
-```bash
-# Add to crontab or calendar reminder
-# Every 6 months: Review and rotate SMTP and API credentials
-# Every 12 months: Review and rotate SSH keys
-```
+**Measurement.** `task secrets:age` lists every `Homelab` item with its
+`updated_at` and flags the ones past the age above. It reads titles and
+timestamps only, never a field value, and exits 1 on a finding. `Homelab-Boot`
+and `Homelab-Admin` are separate grants, so they are opt-in:
+`python3 scripts/check-credential-age.py --vault Homelab --vault Homelab-Boot`.
+The `credential-age` CI job runs the default scope on the scheduled pipeline as
+an advisory check — the clock moves without a commit, so no merge gate can catch
+this. Rotating is still owner work; each item's procedure is § Item detail.
 
 ---
 

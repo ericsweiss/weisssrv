@@ -99,9 +99,9 @@ spec:
         resources:
           requests:
             cpu: 200m
-            memory: 4608Mi
+            memory: 7168Mi
           limits:
-            memory: 6Gi
+            memory: 8Gi
 
     alertmanager:
       alertmanagerSpec:
@@ -263,16 +263,13 @@ spec:
       initChownData:
         enabled: false
 
-      # NFS-ESTALE self-heal: liveness stats /var/lib/grafana so a stale handle
-      # restarts the pod. httpGet must stay explicitly nulled: helm merges into
-      # the subchart's default probe and the apiserver rejects two handlers.
+      # HTTP, not exec: the chart's grafana image is distroless, so an exec
+      # probe has no shell to run. A stale NFS handle or a dead DB answers
+      # /api/health 503, so the restart still covers both.
       livenessProbe:
-        httpGet: null
-        exec:
-          command:
-            - sh
-            - -c
-            - stat /var/lib/grafana >/dev/null 2>&1 || exit 1
+        httpGet:
+          path: /api/health
+          port: 3000
         initialDelaySeconds: 30
         periodSeconds: 30
         timeoutSeconds: 10

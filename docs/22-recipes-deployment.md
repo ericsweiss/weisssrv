@@ -130,10 +130,10 @@ Then create the two SSO items, whose values come from `terraform/authentik`
 |----------------|-------|---------|
 | **OpenAI API Key** | `api-key` | OpenAI API key for Mealie recipe parsing (configured in-app, not ESO-synced) |
 
-Since Mealie 3.x the OpenAI key is configured **in the Mealie UI** under
-Settings > AI (the legacy `OPENAI_*` env vars are no longer read at runtime —
-config lives in the `ai_providers` DB table). The 1Password item is just the
-key's storage location; deployment does not depend on it.
+Mealie 3.x reads AI provider config from its database (the `ai_providers`
+table), not from `OPENAI_*` env vars, so the key is configured **in the Mealie
+UI** under Settings > AI. The 1Password item is just the key's storage
+location; deployment does not depend on it.
 
 ### 3. DNS Configuration
 
@@ -289,6 +289,16 @@ curl -k https://bar.ericsweiss.com/api/server/version
 4. Configure:
    - Units and measurements
    - Default ingredients
+
+### Bar Assistant URL scheme
+
+`APP_URL` is what makes the API return `https://` absolute URLs: the `uploads`
+and `catalog` filesystem disks build their URLs from it rather than from the
+incoming request, so the plain-HTTP hop from Traefik never reaches a response.
+The image's `TrustProxies` middleware leaves `$proxies` null and ships no
+`config/trustedproxy.php`, so a `TRUSTED_PROXIES` env is inert here — do not
+add one back as a control. `ASSET_URL` reaches only the `asset()` helper, which
+a JSON API never calls.
 
 ### Restoring from Backup
 

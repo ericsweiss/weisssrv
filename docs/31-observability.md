@@ -22,7 +22,7 @@ The observability stack runs entirely in the `observability` namespace and is re
 | **ZFS Exporter** | `zfs_exporter` (on pve-nas-01) | ZFS pool and dataset metrics |
 | **AdGuard Exporter** | `adguard-exporter` | DNS query and filter metrics (dns-01 + dns-02) |
 | **Unbound Exporter** | `unbound_exporter` (on dns-01 + dns-02) | Recursive resolver metrics |
-| **Exportarr** | `ghcr.io/onedr0p/exportarr` | *arr application metrics (Sonarr, Radarr, Lidarr, Prowlarr) |
+| **Exportarr** | `ghcr.io/onedr0p/exportarr` | *arr application metrics (Sonarr, Radarr, Lidarr, Prowlarr). Scraped on a 120s interval with a 110s timeout: one scrape walks eight *arr API calls serially, and the nightly vzdump on the NAS slows them enough that a tighter budget reads as `up == 0` and trips the generic `TargetDown` |
 | **Redis Exporter** | `oliver006/redis_exporter` | Redis cache metrics (Bar Assistant) |
 | **DCGM Exporter (GPU)** | `nvcr.io/nvidia/k8s/dcgm-exporter` | NVIDIA GPU telemetry (util, VRAM, temp, power) on the pve-prec-01 1660 Ti — DaemonSet on the GPU node ([docs/43](43-gpu-passthrough.md)) |
 | **Node Exporter (host)** | `prometheus-node-exporter` (on Proxmox hosts) | Bare-metal hardware metrics (thermals, SMART, disk I/O) on port 9101 |
@@ -126,9 +126,8 @@ The `monitoring.coreos.com` CRDs are installed up-front by the
 under `apps/` (the qbittorrent PodMonitor, the authentik chart ServiceMonitor)
 and this stack's own ServiceMonitors render cleanly — no manual CRD pre-apply.
 kube-prometheus-stack runs with `crds.enabled: false` + `install/upgrade.crds:
-Skip` (the CRD stage owns them). See docs/29 (Fresh bootstrap / disaster
-recovery) for the one-time live-cluster CRD adoption. In steady state the CRDs
-persist even if this Kustomization temporarily fails, so apps are unaffected by
+Skip` (the CRD stage owns them — docs/29 § Fresh bootstrap / disaster
+recovery). In steady state the CRDs persist even if this Kustomization temporarily fails, so apps are unaffected by
 observability incidents.
 
 ### Namespace
@@ -166,6 +165,11 @@ Grafana uses an NFS-backed PV for its SQLite database (user preferences, service
 | Component | NFS Path | Size | Server |
 |-----------|----------|------|--------|
 | Grafana SQLite DB | `/appdata/grafana` (NFS) | 1Gi | `pve-nas-01.esweiss.com` (hostname only — `xprtsec=tls`, the cert has no IP SAN) |
+
+Grafana's liveness probe is `httpGet /api/health`, not an exec: the chart's
+grafana image is distroless, so an exec probe has no shell to run and reports
+`unknown state` forever. A stale NFS handle on that PV answers 503, so the
+restart still covers it.
 
 ### Log Collection
 
@@ -506,16 +510,9 @@ automount its token, and only the two sidecars get one — see the comments in t
 file. A Secret-backed dashboard/datasource needs `secrets` added back there AND
 the sidecar `resource:` widened, deliberately two edits.
 
-After the reconcile that first ships this, confirm Helm removed the objects it
-used to own (the replacements carry different names, which is what lets the
-binding change at all — `roleRef` is immutable):
-
-```bash
-kubectl get clusterrole,clusterrolebinding | grep grafana
-# expect ONLY kube-prometheus-stack-grafana-configmaps (role + binding);
-# a surviving kube-prometheus-stack-grafana-clusterrole/-clusterrolebinding
-# still grants cluster-wide secret reads and must be deleted by hand.
-```
+`kube-prometheus-stack-grafana-configmaps` (role + binding) is the only
+cluster-scoped grafana RBAC that should exist: any other grafana ClusterRole
+grants cluster-wide secret reads.
 
 Three more workloads shipped chart-default ClusterRoles granting cluster-wide
 `configmaps` + `secrets` reads: alloy, alloy-syslog and loki. After a reconcile
@@ -768,13 +765,25 @@ group interval). `instance` is in the key so host-level alerts — thermals,
 ZFS/corosync, node-exporter-host — group per host instead of collapsing into one
 empty-namespace bucket.
 
+`HostLogShippingStale` is the one exception, with its own branch above the
+severity branches that groups on `alertname` alone (60s group wait). It ships as
+one generated rule per `alloy_host` host, and its trigger — the Loki push path —
+takes the whole fleet out at once, so the default key would make one Discord
+POST per host inside a single flush and the webhook answers 429. The thermal,
+ZFS and SMART families keep the per-instance key: each is an independent
+per-host fault, and their per-drive and per-sensor dimensions already collapse
+into one group per host. `scripts/test_host_log_staleness.py` asserts the
+branch, its `group_by` and its position, none of which
+`amtool config routes test` can show.
+
 **Inhibition.** The generic rule pairs `severity: critical` over
 `severity: warning` on `alertname`+`namespace`. Every pair that uses distinct
 alertnames is inhibited explicitly on its own identity labels instead, because
 that generic rule cannot match them: CPU/GPU/NIC thermals on
 `instance`+`component`, SATA/NVMe on `instance`+`chip` (one host reports many
 drives under a single component label, so component-level pairing would let one
-drive silence another), disk/inode on `instance`+`mountpoint`, PVC on
+drive silence another; the NVMe ladder carries one entry per step, so each step
+mutes every step below it), disk/inode on `instance`+`mountpoint`, PVC on
 `namespace`+`persistentvolumeclaim`, ZFS space on `instance`+`pool`, and each
 backup/cert `*Prolonged` / `*Critical` on its warning twin.
 
@@ -1045,9 +1054,10 @@ The offsite chain these metrics come from is documented in
 
 #### Other Groups
 
-- **`homelab.temperature`** — SATA/NVMe drive, CPU, host GPU (`HostGpuTemp*`, hwmon on the Proxmox host) and NIC temperature warning/critical pairs (drivetemp + hwmon via node_exporter_host), all scoped to the six physical hosts so the LXC guests do not double-page their host's sensors. The 1660 Ti's own telemetry is the DCGM `GpuTemp*` pair in `homelab.gpu`.
+- **`homelab.temperature`** — SATA/NVMe drive, CPU, host GPU (`HostGpuTemp*`, hwmon on the Proxmox host) and NIC temperature warning/critical pairs (drivetemp + hwmon via node_exporter_host), all scoped to the six physical hosts so the LXC guests do not double-page their host's sensors. NVMe is a three-step ladder rather than a pair: `NVMeDriveTempWarning` at 65C/30m for trends, `NVMeDriveTempHigh` at 75C/10m for the band the nightly vzdump drives the NAS nvme2 chip into, and `NVMeDriveTempCritical` at the 80C throttle point, so only real throttling pages. The 1660 Ti's own telemetry is the DCGM `GpuTemp*` pair in `homelab.gpu`.
 - **`homelab.gpu`** — GpuExporterDown, GpuTempWarning/Critical, HindsightGpuOffloadIdle, GpuTelemetryMissing (DCGM exporter on the pve-prec-01 1660 Ti; GpuTelemetryMissing catches "exporter up but zero GPU series"). See [docs/43](43-gpu-passthrough.md).
 - **`homelab.mail`** — PostfixQueueBacklog, PostfixDown, PostfixQueueCollectorStale (smtp-relay queue textfile collector).
+- **`homelab.dns`** — UnboundDown, UnboundExporterDown, UnboundSERVFAILRatioHigh (unbound_exporter on dns-01/dns-02; the exporter arm exists because `unbound_up` simply stops existing when the scrape dies). Nothing alerts on the cache-hit ratio: AdGuard caches in front, so a low ratio is this cluster's normal shape. AdGuard's own `:53` availability is `DNSResolutionDown` / `DNSResolverProbeMissing` in `homelab.monitoring`. See [docs/08](08-dns.md#unbound-alerts).
 - **`homelab.kubernetes-resources`** — the tuned KubeCPUOvercommit replacement (see Built-in Alerts below), plus ContainerMemoryNearLimit, PageCacheWorkloadRSSNearLimit (observability RSS within 10% of its limit, page cache excluded), HindsightLlamaMemoryNearLimit and ContainerOOMKilled (docs/33). The authentik-postgresql limit these
   watch was sized from a real OOMKill.
 

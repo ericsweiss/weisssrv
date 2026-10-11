@@ -80,8 +80,7 @@ Three ZFS zvol passthrough disks (created by `proxmox_vm`, mounted by
   rides archive and restic B2 ([docs/42](42-offsite-backup.md)). It keeps
   `nextcloud_backup_keep_days` (7) there and emits `nextcloud_backup_*`
   node_exporter textfile metrics. `/mnt/backups-offsite` is the sole dump
-  location. The local `/mnt/nextcloud-app/backups` directory is superseded and
-  nothing prunes it, so sweep it by hand once.
+  location.
 - **Data ownership**: the container runs as `www-data` (uid/gid 33); the role
   chowns `/mnt/nextcloud-app/html` and `/mnt/nextcloud-data/data` to `33:33`.
 

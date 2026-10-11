@@ -30,9 +30,9 @@ proxmox_storage: local-ssd
 # would resolve to the controller — pull the address from the home inventory host.
 home_assistant_host: "{{ hostvars['home']['ansible_host'] }}"
 
-# Sources whose X-Forwarded-For HA trusts: the k3s nodes running Traefik, plus
-# both cluster CIDRs. Derived from the inventory groups rather than pasted, so
-# no other LAN host can forge a client address and a new node tracks itself.
+# Sources whose X-Forwarded-For a FRESH HA instance trusts: the k3s nodes
+# running Traefik, plus both cluster CIDRs. This instance is storage-backed, so
+# the live list is UI state and this value governs first boot only (docs/24).
 home_assistant_trusted_proxies: >-
   {{ (groups['k3s_servers'] + groups['k3s_agents'])
      | map('extract', hostvars, 'ansible_host') | select('defined') | list

@@ -39,7 +39,7 @@ here without an anchor land at the top of the page; this table routes them.
 | `NodeSystemdServiceFailed`, `NodeSystemdServiceCrashlooping`, `HostFilesystemReadOnly`, `HostClockNotSynchronising` | the named host: `systemctl --failed`, `journalctl -u <unit>`, `timedatectl` |
 | `HostExporterDown`, `HostTextfileCollectorScrapeError`, `NodeExporterSystemdCollectorFailed` | the host-side exporter and its textfile collectors — [docs/31](31-observability.md) |
 | `DiskUsageWarning`, `DiskUsageCritical`, `InodeUsageWarning`, `InodeUsageCritical`, `PVCUsageWarning`, `PVCUsageCritical` | `df -h` / `df -i` on the named host; for the observability zvols, § Recovering Space on the Prometheus / Loki zvols |
-| `SATADriveTempWarning`, `SATADriveTempCritical`, `NVMeDriveTempWarning`, `NVMeDriveTempCritical`, `CPUTempWarning`, `CPUTempCritical`, `HostGpuTempWarning`, `HostGpuTempCritical`, `NICTempWarning` | the Thermals dashboard in Grafana. Sustained drive over-temperature is a bay-airflow problem, not a disk fault |
+| `SATADriveTempWarning`, `SATADriveTempCritical`, `NVMeDriveTempWarning`, `NVMeDriveTempHigh`, `NVMeDriveTempCritical`, `CPUTempWarning`, `CPUTempCritical`, `HostGpuTempWarning`, `HostGpuTempCritical`, `NICTempWarning` | the Thermals dashboard in Grafana. Sustained drive over-temperature is a bay-airflow problem, not a disk fault. `NVMeDriveTempHigh` is the 75-80C band: expected nightly on the NAS nvme2 chip while vzdump reads the VM disks, a regression on any other chip |
 | `FluxReconciliationFailure`, `FluxResourceNotReady` | [docs/29](29-flux-operations.md) |
 | `ExternalSecretSyncFailure`, `OnePasswordConnectDown` | [docs/15](15-credential-rotation.md) and [docs/29](29-flux-operations.md) |
 | `VPARecommendationCapped` | [docs/33](33-autoscaling.md) |
@@ -381,10 +381,9 @@ Certificate expired or not renewing automatically.
 - **CertRenewalFailed** — the acme.sh renewal/distribution script exited non-zero.
 - **CertExpiringSoon** — the host-distributed `*.esweiss.com` cert is within 14
   days of its real `notAfter` (so renewal/distribution has actually stopped
-  working), or the metric is missing. This fires off
+  working), or the metric is missing. It fires off
   `cert_local_expiry_timestamp_seconds`, which the cert-reload script emits from
-  the live cert — it replaced the old "time since last renewal > 2 days" proxy
-  that false-fired for most of each ~60-day renewal cycle.
+  the live cert.
 - **CertRenewalFailedProlonged** — renewal/distribution on the named host has
   failed for 3 days straight. Same procedure, higher urgency.
 - **CertRenewalStale** — no successful renewal or distribution on the named
@@ -493,9 +492,34 @@ Also anchored here:
 
 Old addresses survive in stored state that nothing reconciles. Sweep 1Password
 item URLs, kubeconfigs, and any daemon still running with the old address in its
-config. Home Assistant is the trap worth naming: its `.storage/http` file
-regenerates on update, so a hand-edit can come back with the old address
-([docs/24](24-home-assistant-deployment.md)).
+config, then walk the holders below — each one stays wrong silently.
+
+- **Home Assistant trusted proxies** — `/config/.storage/http` on the HAOS
+  guest, not YAML, and it regenerates on update, so a hand-edit can come back
+  with the old address
+  ([docs/24](24-home-assistant-deployment.md) § Step 3: Configure HTTP Settings).
+- **Plex LAN Networks** — `Settings > Network > LAN Networks`, stored as
+  `LanNetworksBandwidth` in the server's `Preferences.xml`. A stale CIDR
+  classifies every current-VLAN client as *remote*
+  ([docs/20](20-plex-deployment.md) § LAN Networks (segmented VLANs)):
+
+  ```bash
+  ssh eric@10.0.10.152 \
+    "grep -o 'LanNetworksBandwidth=\"[^\"]*\"' \
+     '/var/lib/plexmediaserver/Library/Application Support/Plex Media Server/Preferences.xml'"
+  ```
+
+- **UniFi device Configure-IP** — each device's `config_network` keeps whatever
+  static address it was adopted with, inert while it is DHCP but stranding the
+  device on the retired subnet at the next static flip. The switch and AP still
+  carry theirs ([docs/46](46-unifi-network.md) § Client housekeeping).
+- **`known_hosts`** — an entry keyed by the old address keeps answering for a
+  host that has moved, and the new address prompts as unknown:
+
+  ```bash
+  ssh-keygen -F 10.0.10.153            # the new address: expect a hit
+  ssh-keygen -R 192.168.0.153          # drop the retired one
+  ```
 
 ### Cannot Reach Service
 
@@ -831,6 +855,14 @@ additionally guards ~2-day staleness.
 - **ArchiveBackupStale** — no fully successful run within the freshness
   window. Confirm the timer is enabled (`systemctl status archive-backup.timer`)
   and that the `archive` pool is imported and healthy (`zpool status archive`).
+- **ArchiveBackupExcludedOrphans** — one or more children in
+  `nas_storage_archive_backup_exclude` still have an archive-pool copy. A
+  `send -R -X` stream does not remove it, `receive -F` included, so the space is
+  never reclaimed. `journalctl -u archive-backup.service` on pve-nas-01 names
+  each orphan; destroy it with `zfs destroy -r archive/<path>`, or set
+  `nas_storage_archive_backup_exclude_destroy_ok: true` in pve-nas-01 host_vars
+  and let the next run do it. An excluded child also keeps no source-side
+  `archsync-*` snapshot, so neither copy is a backup tier (docs/06).
 - **ArchiveBackupDatasetStale / ArchiveBackupChronicallyDeferred** — one
   dataset's copy is aging (>2 days) or was deferred 3+ consecutive runs while
   the rest of the run succeeds. Almost always `tank/proxmox`: the 03:30 vzdump
@@ -1412,23 +1444,6 @@ config to dns-02, which the 5-minute timer does anyway; set
 `postflight_exercise_sync=false` to skip it while investigating a divergence
 between the two resolvers.
 
-### One-time cleanups pending
-
-**fail2ban chains on the GitLab guest (.153).** After the collection bump lands
-and deploys, run once on the guest:
-
-```bash
-ssh gitlab
-sudo iptables -F f2b-gitlab-ssh
-sudo systemctl restart fail2ban
-```
-
-Then drop the `f2b-*` chains, their INPUT jumps and the 13 frozen REJECT rules
-from `/etc/iptables/rules.v4`, or delete the file — the role no longer writes or
-reads it. The role re-applies only its own REDIRECT rules at boot through
-`gitlab-ssh-redirect.service`, so nothing else on the guest depends on
-`rules.v4` unless the site added rules by hand.
-
 ---
 
 ## K3s Cluster Maintenance
@@ -1904,7 +1919,7 @@ This checks:
 
 ## Proxmox HA Post-Failover Reconciliation
 
-When Proxmox HA migrates a VM/container to a different node (due to node failure or manual migration), ZFS replication must be reconfigured. Replication only works FROM the source node, so after failover the service is running on what was previously a target node.
+When Proxmox HA moves a VM or container to one of its replication targets, Proxmox reverses the replication job toward the new node: the job keeps its id, the old source becomes a target and the guest keeps replicating. The `proxmox_ha` role identifies a job by its VMID and target, reconciles its schedule and comment from the inventory entry for that target, and reports an id-to-target permutation instead of rewriting it. What the operator reconciles is the inventory: `source_node` and the HA home must follow a permanent move, and a temporary move is undone by migrating the guest back.
 
 ### Symptoms
 
@@ -2048,6 +2063,8 @@ Job IDs follow the format `<VMID>-<sequence>`:
 - `151-0`, `151-1`, `151-2`, `151-3` - smtp-relay to 4 targets
 - `160-0`, `160-1`, `160-2`, `160-3` - dns-02 to 4 targets
 - `154-0`, `154-1`, `154-2`, `154-3` - home-assistant to 4 targets
+
+Which target a given id points at changes every time Proxmox reverses a job after a migration, so the inventory's ids are labels, not a contract: the role matches on VMID and target, and a `maintenance-proxmox-ha` run prints the current permutation as information. Do not reorder inventory entries to chase it.
 
 ### Troubleshooting
 
@@ -2298,9 +2315,7 @@ the LAN).
 Every timestamp collect-state stamps itself is UTC: the `# Generated:` header
 and each `=== <host> - ... ===` banner. Command output inside a section (systemd
 timers, journal excerpts) stays in the host's local time, so each host banner is
-followed by a `Host timezone:` line. Snapshots taken before this change carry
-collector-local and host-local stamps instead, which is why their headers appear
-hours apart from their banners.
+followed by a `Host timezone:` line.
 
 ### Warning-event exclusions
 

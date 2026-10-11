@@ -374,3 +374,38 @@ class TestGitlabHealthCode:
     def test_both_down_reports_000(self, tmp_path):
         code, _ = _gitlab_code(tmp_path, {})
         assert code == "000"
+
+
+# gitlab_health_verdict: the code -> verdict mapping collect-state.sh feeds to
+# coerce_int. "unknown" is the collector's position, so it must not read as a
+# GitLab fault; anything the server actually failed on must.
+
+class TestGitlabHealthVerdict:
+    def test_200_is_healthy(self):
+        assert _run("gitlab_health_verdict 200").stdout == "1"
+
+    @pytest.mark.parametrize("code", ["401", "403", "404"])
+    def test_whitelist_gated_codes_are_unknown(self, code):
+        # /-/health and /-/readiness are monitoring_whitelist-gated, so these
+        # say "not probeable from here", never "GitLab is unhealthy".
+        assert _run(f"gitlab_health_verdict {code}").stdout == "unknown"
+
+    @pytest.mark.parametrize("code", ["000", "500", "502", "503", "301", ""])
+    def test_everything_else_is_unhealthy(self, code):
+        assert _run(f"gitlab_health_verdict '{code}'").stdout == "0"
+
+    def test_a_missing_argument_is_unhealthy_not_unknown(self):
+        assert _run("gitlab_health_verdict").stdout == "0"
+
+    def test_unknown_coerces_to_an_undegraded_verdict_and_a_null_json(self):
+        # The contract collect-state.sh relies on: coerce_int turns the sentinel
+        # into 1 for the verdict and null for the JSON.
+        src = Path(__file__).resolve().parent / "collect-state-lib.sh"
+        out = subprocess.run(
+            ["bash", "-c",
+             f'. {LIB}\n. {src}\nv=$(gitlab_health_verdict 403)\n'
+             'printf "%s %s" "$(coerce_int "$v" 1)" "$(coerce_int "$v" null)"'],
+            capture_output=True, text=True,
+        )
+        assert out.returncode == 0, out.stderr
+        assert out.stdout == "1 null"

@@ -1,11 +1,18 @@
 # Next Steps and TODO
 
 This document tracks **remaining** work for the weisssrv homelab: accepted
-risks, open work, and the deferred backlog. Completed work is summarised at the
-end under [Shipped](#shipped-historical) — git history is the real record.
+risks, open work, and the deferred backlog.
 
 Per-area detail lives in the numbered docs; this page carries only what is not
 done.
+
+**Related repositories.** The family is four repos: this one, the shared CI
+library `eric/weisssrv-lib`, the cluster scaffold `eric/weisssrv-cluster-template`
+that weisssrv was generalized into, and the tenant scaffold
+`eric/weisssrv-app-template`. Generalizable changes belong in the library or a
+template rather than here. [docs/13](13-ci-cd.md) § Shared CI library owns the
+pin/bump flow; [docs/30](30-multi-repo-onboarding.md) owns the app template's
+contents.
 
 ---
 
@@ -186,14 +193,15 @@ start as an entry in this section.
   skb_ext fix (`apt-get changelog proxmox-kernel-7.0`); after a fixed kernel
   installs, a flat week of
   `node_memory_SUnreclaim_bytes - node_zfs_arc_size` in Grafana retires the
-  reboot cadence and, optionally, `slub_nomerge`. The cache was formerly
-  displayed under the `file_lock_cache` alias; with `slub_nomerge` armed it
-  reports as `skbuff_ext_cache`. Arming `slub_nomerge` on the other five hosts,
+  reboot cadence and, optionally, `slub_nomerge`. With `slub_nomerge` armed the
+  cache reports as `skbuff_ext_cache`. Arming `slub_nomerge` on the other five hosts,
   to settle the fleet-wide 230-380 MB/host/day claim, is an owner decision and
-  its own MR. Mitigation to trial, staged: install `proxmox-firewall` and set
-  `proxmox_firewall_nftables: true` in one opt host's `host_vars`, verify the
-  guest firewall still filters (including `sg-syslog-vip` on the ingress
-  agents), watch the slab trend for a week, then the NAS. Keep the
+  its own MR. Mitigation under trial, staged: pve-opt-02 carries
+  `proxmox_firewall_nftables: true` in its `host_vars`, so verify the guest
+  firewall still filters there (including `sg-syslog-vip` on the ingress
+  agents), then watch that node's slab trend for a week — the per-host rate
+  flattening is the success metric. The NAS follows in its own supervised MR
+  once opt-02 holds. Keep the
   `HostSlabLeakSuspected` weekly reboot pager until a week of flat
   `node_memory_SUnreclaim_bytes - node_zfs_arc_size`. Mechanism, fingerprint,
   bpftrace recipe and the reboot procedure:
@@ -237,6 +245,15 @@ One-off operator actions, each removable from this list once applied.
   already declares 128G; `proxmox_vm` applies disk size at qm-create only, so
   this needs a drain in the next scheduled host window.
   `KubeletImageGCIneffective` is a true positive until then.
+- [ ] **Re-register the privileged runner as a project runner.** The
+  `gitlab-runner-privileged` token is registered instance-wide, so any project
+  on this GitLab can claim root+DinD execution by declaring
+  `tags: [infrastructure]` — the registration scope, not the tag, is the
+  isolation boundary. Create a project runner locked to weisssrv (tags
+  `infrastructure`, untagged no), store its `glrt-*` token in the 1Password
+  `GitLab Runner Privileged` item so ESO re-renders the Secret, restart the
+  runner Deployment, then delete the old instance runner. Steps:
+  [docs/27](27-gitlab-deployment.md) § Step 8.
 
 ### UniFi network follow-ups
 
@@ -329,9 +346,9 @@ Design, runbook and the codified-vs-manual contract:
   boundary.
 - [ ] **Move the Windows VM (.155) to the Home VLAN** — it is a client machine
   sitting on the homelab segment ([docs/39](39-windows-vm.md)).
-- [ ] **Re-verify the bond invariant against the new switch.** The docs/34
-  `all_slaves_active 0` invariant was last verified against the old switch, and
-  the three standby bond members (the opt nodes' `nic0`) show 9 link-down events
+- [ ] **Re-verify the bond invariant on the three bonded hosts.** Confirm the
+  docs/34 `all_slaves_active 0` invariant against the USW-Pro-XG-8-PoE. The
+  three standby bond members (the opt nodes' `nic0`) show 9 link-down events
   each over ~8 days while their partners show zero. Run
   `cat /sys/class/net/<bond>/bonding/all_slaves_active` (expect 0) on the three
   bonded hosts plus `ethtool -S nic0` / `journalctl -k` for e1000e
@@ -377,7 +394,7 @@ Design, runbook and the codified-vs-manual contract:
   record's Cloudflare content against the current WAN IP. The wrong fix is
   dropping a rewrite.
 - [ ] **UniFi client housekeeping** — unnamed IoT reservations, the two
-  unconfirmed `ESP_*` devices, `Panopticon` re-onboarding, the pre-renumber
+  unconfirmed `ESP_*` devices, `Panopticon` re-onboarding, the stale
   `config_network` on the switch and AP, and the optional Flex Mini / dock
   experiments. Detail: [docs/46](46-unifi-network.md) § Client housekeeping.
 
@@ -413,6 +430,16 @@ Design, runbook and the codified-vs-manual contract:
   `instance` labels match by construction — both come from the same node_exporter
   scrape). Add a recording rule or extend the existing alert once the join is
   confirmed in prod.
+
+- [ ] **Throttle the WAN scanner noise on git-over-SSH 2222.** The rule in
+  `group_vars/all.yml` opens 2222 to the WAN on purpose and carries `nolog`, so
+  the firewall logs nothing — but sshd logs every pre-auth attempt before the
+  gitlab-ssh jail bans the source, and `alloy_host` ships the gitlab guest's
+  whole journal, so the volume lands in Loki with no diagnostic value. Neither
+  throttle is weisssrv-local: a drop or sample stage needs a journal-stage input
+  on the library's `alloy_host` role (its `config.alloy.j2` has none), and a
+  fail2ban `recidive` jail needs the library's `gitlab` role. Keep successful
+  and post-auth lines intact either way.
 
 - [ ] **Push the `*.esweiss.com` wildcard to pveproxy on the scraped Proxmox
   nodes** (`acme_certs_distribution_targets`, `cert_dir /etc/pve/local`,
@@ -469,11 +496,14 @@ Design, runbook and the codified-vs-manual contract:
   `concurrent`, lower per-job requests, or more hardware), not an edit, and no
   new overcommit rule is warranted. Both quota headers point here.
 - [ ] **Move the k8s-touching CI jobs off the 1Password kubeconfig** onto the
-  GitLab agent's scoped, short-lived credential. The agent's `ci_access` grant
-  was removed — it was unused and its ServiceAccount is cluster-admin — so that
-  MR re-adds it, narrowed with the RBAC in
-  `kubernetes/apps/gitlab-agent/release.yaml`. The agent config comment points
-  here.
+  GitLab agent's scoped, short-lived credential. Today the agent config declares
+  no `ci_access` grant and the agent's ServiceAccount is cluster-admin (the
+  chart default `rbac.create` in `kubernetes/apps/gitlab-agent/release.yaml`),
+  so a standing grant would hand every MR pipeline that identity. The order is
+  therefore fixed: scope that RBAC below cluster-admin first, then grant
+  `ci_access` narrowed to the resources those jobs actually touch, and drop the
+  long-lived kubeconfig from the jobs' `variables:`. The agent config comment
+  points here.
 - [ ] **Whole-pipeline deploy atomicity via a deploy child pipeline.** Today's
   `resource_group`s are per target, so pipeline A's fleet-wide
   `deploy-ansible-base` can run concurrently with pipeline B's
@@ -504,8 +534,8 @@ Design, runbook and the codified-vs-manual contract:
   the SSH key, the Flux GitLab PAT, the UniFi credential and three Terraform
   tokens among them. Closing it means either per-namespace vaults or a
   per-namespace `SecretStore`. The manifest cites this section.
-- [ ] **A second download-client VPN provider.** Privado is the only wired one;
-  the half-wired VPN Unlimited branch was removed. Adding one is a single MR:
+- [ ] **A second download-client VPN provider.** Privado is the only wired one.
+  Adding one is a single MR:
   the provider credential fields on a 1Password item, matching `secretKey`
   entries in `kubernetes/apps/download-clients/externalsecret.yaml`, a `case`
   arm in `_vpn-sidecar/vpn-sidecar.yaml`, and the matching arms in
@@ -720,8 +750,8 @@ dependency, so none of it belongs in a general MR.
   the guest/storage inventory (hosts.yml, host_vars/pve-*) + kubernetes/infrastructure/,
   and a policy check (conftest) for risky manifest classes
 - Dedicated CI deploy SSH keypair, separate from the operator key: the
-  shared key's `from=` now includes the k3s pod CIDR (runner-pod hairpin,
-  !82). Splitting keys would let the operator key drop the pod range and
+  shared key's `from=` includes the k3s pod CIDR for the runner-pod hairpin.
+  Splitting keys would let the operator key drop the pod range and
   scope the CI key to exactly the deploy paths (new 1P item, CI variables
   swap, authorized_keys gains a second entry)
 
@@ -796,60 +826,10 @@ dependency, so none of it belongs in a general MR.
   (`OP_SERVICE_ACCOUNT_TOKEN` protection: **done** — it is protected, and
   docs/13 § Validate Stage carries the accepted costs)
 - k8s: add helm.sh/resource-policy=keep annotations for MetalLB/ESO CRDs;
-  consider a staging ClusterIssuer for cert iteration; gotk-sync.yaml carries
-  an obsolete migration comment block
+  consider a staging ClusterIssuer for cert iteration
 - Alertmanager: AlertmanagerClusterFailedToSendAlerts fires critical at tiny
   failure ratios during storms (1 failed Discord post in a 5m window) —
   consider routing it warning-severity or raising the threshold
-
----
-
-## Shipped (historical)
-
-Everything below is done and covered by a current doc. Kept as a one-line index
-only — the detail belongs to the owning document, and git history holds the
-implementation story.
-
-| Area | Outcome | Canonical doc |
-|---|---|---|
-| Base infrastructure | 6-node Proxmox cluster, ZFS pools, DNS pair + Unbound, SMTP relay, certs, firewall, Tailscale | [01](01-overview.md), [06](06-zfs.md), [08](08-dns.md), [11](11-firewall.md) |
-| K3s platform | 9 nodes (3 servers + 6 agents), kube-vip API VIP, MetalLB, Traefik, external-dns, ESO | [19](19-k3s-deployment.md) |
-| Proxmox HA | HA groups + storage replication for dns-01/dns-02/smtp-relay/HAOS | [12](12-runbooks.md), [25](25-multi-node-expansion.md) |
-| GitLab | Self-hosted EE on a NAS-pinned VM; registry, Pages, runners, agent, SAML SSO | [27](27-gitlab-deployment.md) |
-| GitOps | Flux CD reconciles all of `kubernetes/`; five chained infrastructure stages + apps, plus the off-chain metrics-server stage | [29](29-flux-operations.md) |
-| Observability | Prometheus + Grafana + Loki + Alloy, exporters, dashboards, alert routing | [31](31-observability.md) |
-| Autoscaling | VPA tiers, HPAs, CoreDNS pin, lint invariants | [33](33-autoscaling.md) |
-| Applications | Plex, download/media stack, recipes, Home Assistant, Hermes, Homarr, wg-easy, Immich, Nextcloud, Windows VM, Uptime Kuma | per-app docs 20-24, 35-41, [45](45-uptime-kuma.md) |
-| SSO | Authentik as the identity provider; objects codified in `terraform/authentik` | [40](40-authentik-terraform.md) |
-| Storage encryption | Per-dataset ZFS encryption roots, passphrase-from-Connect boot unlock | [32](32-zfs-encryption.md) |
-| Offsite backups | Nightly restic → Backblaze B2, GFS retention, client-side encryption | [42](42-offsite-backup.md) |
-| GPU | GTX 1660 Ti VFIO passthrough to the k3s GPU agent, time-sliced device plugin | [43](43-gpu-passthrough.md) |
-| k3s secrets encryption | Enabled cluster-wide; rotation stage `reencrypt_finished` | [17](17-disaster-recovery.md) |
-| NFS over TLS | Every k3s export line and `/export/tank-proxmox` require `xprtsec=tls`; PVs mount by hostname | [07](07-fileservices.md) |
-| metrics-server HA | Moved off the k3s static AddOn to a Flux HelmRelease: 2 replicas, PDB, anti-affinity, pinned limits; the live cutover landed 2026-08-13 | [33](33-autoscaling.md) |
-| Off-node etcd snapshots | `k3s_etcd_snapshot_offnode_enabled` copies each server's snapshots to the NAS | [17](17-disaster-recovery.md) |
-| Multi-repo tenants | Tenant onboarding via `weisssrv-app-template` + wiring under `kubernetes/clusters/weisssrv/tenants/` | [30](30-multi-repo-onboarding.md) |
-| UniFi network | UCG-Fiber + USW-Pro-XG-8-PoE + U7 Pro XGS; every VLAN its own firewall zone with inter-zone default-deny; the homelab renumbered to `10.0.10.0/24` | [46](46-unifi-network.md) |
-| Tailscale ACL | Least-privilege tailnet policy as code; all six Proxmox hosts carry `tag:subnet-router`, and no untagged device can self-approve the LAN route | [05](05-tailscale.md), [11](11-firewall.md) |
-| Vault split | `Homelab-Admin` holds the admin/CI items and `Homelab-Boot` the ZFS pool passphrases; the ESO `ClusterSecretStore` reads only `Homelab` | [15](15-credential-rotation.md) |
-| Authentik users | Usernames as code in `terraform/authentik/users.tf`, identities in 1Password, scaffolded by `task authentik:add-user` | [40](40-authentik-terraform.md) |
-| NIC firmware (AQC113) | pve-nas-01 stays at 1.5.38 factory-equivalent; the `nic_tuning` GRO disable is what keeps the link stable, and no published upgrade is worth the risk | [34](34-bond-mac-flapping.md) |
-| CI drift detection | The three Terraform drift-plan jobs allow only `exit_codes: [2]`, so a broken detector no longer renders as drift | [13](13-ci-cd.md) |
-| Link-local bypass closed | IPv6 off on pve-nas-01's `nic1`, so the Home VLAN has no unfiltered `fe80::` path to the NAS | [11](11-firewall.md) |
-| Drive decommission / RMA | A written SOP for wiping and returning a failed disk | [15](15-credential-rotation.md) |
-| Flannel wireguard-native | Pod-to-pod traffic encrypted on the wire (`k3s_flannel_backend` in `group_vars/k3s.yml`) | [19](19-k3s-deployment.md) |
-| AdGuard sync over HTTPS | `adguardhome-sync` targets the Traefik-fronted hostnames, so the dns-01 → dns-02 hop is end-to-end TLS | [08](08-dns.md) |
-| CI kubectl setup | One `.kubectl-setup` fragment replaces the duplicated kubectl and kubeconfig install blocks in the deploy jobs | [13](13-ci-cd.md) |
-| Flux substitution exports | `scripts/flux-render.sh` behind `scripts/flux-env.sh` is the single entry point for the substitution variables the Taskfile, deploy-verify and CI flux-lint all read | [29](29-flux-operations.md) |
-| deploy-preflight extraction | The gate is the library's `scripts/check-deploy-preflight.py`, vendored here with `scripts/ci_playbook_invocations.py` and `scripts/ci_yaml.py`, covered by `scripts/test_deploy_preflight.py` and `scripts/test_ci_playbook_invocations.py` | [13](13-ci-cd.md) |
-
-**Related repositories.** The family is four repos: this one, the shared CI
-library `eric/weisssrv-lib`, the cluster scaffold `eric/weisssrv-cluster-template`
-that weisssrv was generalized into, and the tenant scaffold
-`eric/weisssrv-app-template`. Generalizable changes belong in the library or a
-template rather than here. [docs/13](13-ci-cd.md) § Shared CI library owns the
-pin/bump flow; [docs/30](30-multi-repo-onboarding.md) owns the app template's
-contents.
 
 ---
 

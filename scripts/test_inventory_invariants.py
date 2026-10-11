@@ -384,6 +384,57 @@ def test_a_moved_ha_home_is_caught(hosts, all_vars):
     assert ha_triad_problems(hosts, broken)
 
 
+def replication_target_set_problems(all_vars: dict) -> list[str]:
+    """Each vmid's replication targets, which is the job set's only identity.
+
+    Proxmox permutes the job-id to target pairing on migration, so the drift that
+    matters is a duplicate target: `pvesr` refuses the second job to that node.
+    """
+    jobs = all_vars.get("proxmox_ha_replication_jobs") or []
+    if not jobs:
+        raise AssertionError(
+            "proxmox_ha_replication_jobs is empty — this gate is examining nothing"
+        )
+    by_vmid: dict[str, list[str]] = {}
+    for job in jobs:
+        vmid = str(job.get("id", "")).split("-", 1)[0]
+        by_vmid.setdefault(vmid, []).append(str(job.get("target_node")))
+    problems = []
+    for vmid, targets in sorted(by_vmid.items()):
+        duplicated = sorted({t for t in targets if targets.count(t) > 1})
+        if duplicated:
+            problems.append(
+                f"vmid {vmid}: {', '.join(duplicated)} appears twice in its "
+                "target set — pvesr allows one job per target node"
+            )
+    return problems
+
+
+def test_each_vmid_replicates_to_each_target_once(all_vars):
+    assert not replication_target_set_problems(all_vars), (
+        "replication target sets disagree:\n  "
+        + "\n  ".join(replication_target_set_problems(all_vars))
+    )
+
+
+def test_a_duplicated_replication_target_is_caught(all_vars):
+    """Mutation case: the set comparison must fire, or it is decorative."""
+    broken = copy.deepcopy(all_vars)
+    jobs = broken["proxmox_ha_replication_jobs"]
+    first = jobs[0]
+    twin = next(
+        job for job in jobs[1:]
+        if str(job["id"]).split("-", 1)[0] == str(first["id"]).split("-", 1)[0]
+    )
+    twin["target_node"] = first["target_node"]
+    assert replication_target_set_problems(broken)
+
+
+def test_an_emptied_replication_list_is_vacuous_not_green(all_vars):
+    with pytest.raises(AssertionError):
+        replication_target_set_problems({**all_vars, "proxmox_ha_replication_jobs": []})
+
+
 def test_a_replication_job_targeting_its_own_source_is_caught(hosts, all_vars):
     broken = copy.deepcopy(all_vars)
     job = broken["proxmox_ha_replication_jobs"][0]

@@ -53,8 +53,16 @@ spec:
               equal:
                 - instance
                 - chip
+            # Three-step NVMe ladder, so each step mutes every step below it.
             - source_matchers:
                 - alertname="NVMeDriveTempCritical"
+              target_matchers:
+                - alertname=~"NVMeDriveTempHigh|NVMeDriveTempWarning"
+              equal:
+                - instance
+                - chip
+            - source_matchers:
+                - alertname="NVMeDriveTempHigh"
               target_matchers:
                 - alertname="NVMeDriveTempWarning"
               equal:
@@ -256,6 +264,17 @@ spec:
               - receiver: "null"
                 matchers:
                   - severity="none"
+              # The generated per-host rules fan out to one group per host
+              # under the root instance key and the webhook 429s on the burst.
+              # The thermal/ZFS/SMART families stay per-instance: own faults.
+              - receiver: discord-default
+                matchers:
+                  - alertname="HostLogShippingStale"
+                group_by:
+                  - alertname
+                group_wait: 60s
+                group_interval: 10m
+                repeat_interval: 12h
               - receiver: email-and-discord
                 matchers:
                   - severity="critical"

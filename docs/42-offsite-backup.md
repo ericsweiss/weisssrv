@@ -246,8 +246,7 @@ those leave `retention_blocked 0`, so `ResticOffsitePruneFailed` and
 ### Unit start timeouts
 
 systemd disables `TimeoutStartSec` for `Type=oneshot`, so the role sets it on
-every unit from v0.18.0 on; an earlier collection pin leaves every oneshot
-unbounded. A run that exceeds its budget is SIGKILLed, which looks like a hang
+every unit. A run that exceeds its budget is SIGKILLed, which looks like a hang
 in the journal.
 
 | Variable | Default | Governs |
@@ -528,21 +527,19 @@ overruns pushes archive, and archive pushes the offsite upload.
   are IaC-rebuildable cattle (all persistent data on `backup=0` zvols, covered by
   archive + pg-dumps + B2); keeping OS-disk images also risks a **stale-member
   etcd restore** that can corrupt quorum. Saves ~200 G/night of dump I/O.
-- **bwlimit 61440** (60 MiB/s): measurement showed the previous 30 MiB/s was
-  the binding constraint rather than pool capability.
+- **bwlimit 61440** (60 MiB/s): the ceiling the pool sustains without the dump
+  I/O starving the NFS data plane sharing the same disks.
 
-**Measured window (2026-08):** the pve-nas-01 slice runs **03:30 → ~05:36**, not
-the ~04:45 originally projected. Windows 11 (VM 155) is the long pole at ~1h12m,
-with GitLab (153) ~29m and the two photo/cloud VMs ~11m each. That still lands
-before media-mover (06:00) and archive (06:30) and
-`archive_backup_dataset_deferred_runs{dataset="tank/proxmox"}` stays 0, so
-nothing is deferred — but the real headroom is about **24 minutes, not ~75**.
+**The window.** The pve-nas-01 slice runs **03:30 → ~05:36**. Windows 11
+(VM 155) is the long pole at ~1h12m, with GitLab (153) ~29m and the two
+photo/cloud VMs ~11m each. That lands before media-mover (06:00) and archive
+(06:30), and `archive_backup_dataset_deferred_runs{dataset="tank/proxmox"}`
+stays 0, so nothing is deferred — on about **24 minutes** of headroom.
 
 Read the current numbers rather than trusting this paragraph:
 `journalctl -u pvescheduler --since yesterday | grep -E '(Starting|Finished) Backup'`.
-The gate for raising the bwlimit further (a comfortable margin to 06:00) is
-therefore **not met**; a raise would have to be paired with shrinking or
-rescheduling the Windows dump.
+Raising the bwlimit further needs a comfortable margin to 06:00, so it has to be
+paired with shrinking or rescheduling the Windows dump.
 
 ## Setup reference (rebuild / new bucket)
 

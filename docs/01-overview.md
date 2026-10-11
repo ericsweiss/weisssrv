@@ -202,7 +202,6 @@ canonical home for implementation status.
 
 - [docs/00-hardware-setup.md](00-hardware-setup.md) — hardware inventory and Proxmox install
 - [docs/46-unifi-network.md](46-unifi-network.md) — the UniFi tier: VLANs, zone firewall, port map, day-2 ops
-- [docs/48-unifi-audit-and-migration.md](48-unifi-audit-and-migration.md) — the 2026-08 audit, bring-up and renumber record
 - [docs/11-firewall.md](11-firewall.md) — firewall IP sets and security groups
 - [docs/19-k3s-deployment.md](19-k3s-deployment.md) — the k3s cluster layer
 - [docs/16-next-steps.md](16-next-steps.md) — remaining work and accepted risks

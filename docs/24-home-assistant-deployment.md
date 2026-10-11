@@ -252,10 +252,9 @@ ignored, raises a repair, and stops working in 2027.2. Do not add one.
    - **SSL certificate / key paths**: `/ssl/fullchain.pem` / `/ssl/privkey.pem`
      (SSL profile Modern; TLS terminates on HAOS itself — the Traefik backend
      connects with scheme https on port 8123)
-   - **Trust X-Forwarded-For**: on, with **Trusted proxies**:
-     - `10.0.10.0/24` — homelab VLAN (the Traefik/k3s node sources)
-     - `10.42.0.0/16` — k3s pod network
-     - `10.43.0.0/16` — k3s service network
+   - **Trust X-Forwarded-For**: on, with **Trusted proxies** — the nine k3s node
+     addresses one per line (`10.0.10.222`, `.223`, `.227`, `.202`-`.207`), plus
+     `10.42.0.0/16` (k3s pod network) and `10.43.0.0/16` (k3s service network)
 4. Save (saving restarts Home Assistant)
 
 > **Trap.** `trusted_proxies` lives in `/config/.storage/http`, not YAML; a core
@@ -263,6 +262,14 @@ ignored, raises a repair, and stops working in 2027.2. Do not add one.
 > these settings UI-managed and the YAML block deleted. If the UI is unreachable
 > behind a 400, patch `data.*.trusted_proxies` in that store via
 > `qm guest exec 154` and `docker restart homeassistant`.
+>
+> The live list is the whole homelab VLAN, `10.0.10.0/24` plus the two cluster
+> CIDRs, so any host on VLAN 10 can forge a client address — a spoofed
+> `X-Forwarded-For` sent from `10.0.10.156` is accepted today. Narrowing it to
+> the nine node addresses above is an owner action in the UI or through the
+> `qm guest exec` patch route; `home_assistant_trusted_proxies` in
+> `host_vars/home.yml` derives exactly that list, but it reaches only a fresh
+> instance, never this one.
 
 ## Phase 4: Download/Media Access (Optional)
 
@@ -379,11 +386,10 @@ truth for the capture and rotation procedures.
 
 **Step 2: Verify SMTP Notifications**
 
-SMTP notifications are no longer defined in `configuration.yaml` — the YAML
-`smtp` notify platform is removed in HA 2027.1.0, and HA auto-imported the
-former config into a UI entry that now owns `notify.smtp_notify` (stored in
-HAOS `.storage`, captured by HA backups; manage it under Settings > Devices &
-Services). A from-scratch HAOS rebuild must re-add SMTP via the UI or restore
+SMTP notifications live in a UI entry that owns `notify.smtp_notify`, not in
+`configuration.yaml` — the YAML `smtp` notify platform is removed in HA
+2027.1.0. The entry is stored in HAOS `.storage` and captured by HA backups;
+manage it under Settings > Devices & Services. A from-scratch HAOS rebuild must re-add SMTP via the UI or restore
 from a backup. After a deploy, confirm the imported entry still works via
 Developer Tools > Actions:
 

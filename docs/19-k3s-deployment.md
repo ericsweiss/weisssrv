@@ -517,16 +517,10 @@ variable, then `task k3s:deploy -- --limit <host>` one server at a time (watch f
 agents. Two things bite:
 
 - Verify with `sudo wg show` on every node, not just the first — a partial
-  migration is silent.
-- The retired `flannel.1` device lingers with stale per-subnet `/24` routes that
-  out-rank the new `/16 dev flannel-wg` route, keeping some node pairs on
-  unmanaged VXLAN. Clean it up cluster-wide once every node has migrated:
-
-  ```bash
-  ansible k3s -m ansible.builtin.shell \
-    -a 'ip link del flannel.1 2>/dev/null; ip route | grep -c flannel.1'
-  # every host should report 0
-  ```
+  cutover is silent.
+- A `vxlan` backend leaves a `flannel.1` device behind whose per-subnet `/24`
+  routes out-rank the `/16 dev flannel-wg` route, keeping some node pairs on
+  unmanaged VXLAN. `ip link del flannel.1` on every node clears it.
 
 A rollback to `vxlan` also needs the UDP/8472 rule re-added to `sg-k3s-core` in
 `cluster.fw.j2` and the firewall redeployed.
@@ -534,9 +528,9 @@ A rollback to `vxlan` also needs the UDP/8472 rule re-added to `sg-k3s-core` in
 
 ## kube-apiserver audit logging
 
-`group_vars/k3s.yml` sets `k3s_audit_enabled: true`. k3s ships apiserver audit
-logging **off**, so before this the cluster kept no record of who read a Secret
-or granted themselves a ClusterRole. The k3s role renders a `kube-apiserver-arg`
+k3s ships apiserver audit logging off; `group_vars/k3s.yml` sets
+`k3s_audit_enabled: true`, so the cluster records who read a Secret or granted
+themselves a ClusterRole. The k3s role renders a `kube-apiserver-arg`
 block into `/etc/rancher/k3s/config.yaml` on the three servers and writes the
 policy it points at.
 

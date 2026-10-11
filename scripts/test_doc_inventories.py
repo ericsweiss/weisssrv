@@ -479,7 +479,7 @@ def test_readme_index_scan_finds_the_real_docs():
     """Guard the slice: an empty or mis-sliced section would pass vacuously."""
     section = _readme_documentation_section()
     assert "](docs/01-overview.md)" in section
-    assert section.count("](docs/") >= 40
+    assert section.count("](docs/") >= 45
 
 
 # --- docs/17's restore names vs the NAS backup inventory ---------------------

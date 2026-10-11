@@ -12,12 +12,8 @@ change**. The split is the contract: § Codified vs manual says who owns what,
 and a UI change to something in the codified column is drift that the next plan
 will try to revert.
 
-**Addressing.** The homelab moved from `192.168.0.0/24` to `10.0.10.0/24` on
-2026-08-25/26, preserving every last octet. Every address on this page is the
-current one. How the tier was brought up, how the renumber was run, and the
-2026-08 configuration audit whose `ZBF-xx` / `PORT-xx` / `ADM-xx` finding IDs
-are cited below are all in
-[docs/48-unifi-audit-and-migration.md](48-unifi-audit-and-migration.md).
+**Addressing.** VLAN 10 is `10.0.10.0/24`; every address on this page is the
+current one.
 
 ---
 
@@ -44,12 +40,41 @@ Same posture as `terraform/tailscale` and `terraform/authentik`:
 
 ---
 
+## Audit findings
+
+Each configuration finding on this tier carries an ID. Those IDs are the
+shorthand this page and `terraform/unifi/networks.tf` use when a row explains
+*why* it exists; this table is what each one means and where it stands.
+
+| ID | What it names | Standing |
+|---|---|---|
+| ADM-01 | The Terraform/CI credential is minted under the local `terraform` admin rather than the ui.com Owner, so it carries no cloud path | Closed — that is the live arrangement, and it is what bounds ADM-07 |
+| ADM-07 | Homelab workloads keep `:443` to the console, so any pod that holds the key reaches the login form and the API | Accepted residual — § Zones and policies |
+| GW-05 | Gateway services beyond `:443` must not be reachable from the trusted VLANs | Closed — BLOCK rows 24-25 |
+| PORT-01 | The access ports run the controller's default **All** port profile, so an attached device can VLAN-hop by emitting tagged frames | Open — a console change; `unifi_device.port_override` is unsafe at provider 0.55.0 (#438/#430/#431). Tracked in docs/16 |
+| PORT-06 | A wired Vizio display steered onto IoT sits on APIPA, because a per-MAC override forces tagged delivery through a tag-unaware dumb-switch chain | Accepted — it stays on native Home until that drop gets a managed port |
+| ZBF-01 | Hairpin NAT from homelab lands back in its own zone and would hit the intra-zone Block All, timing out in-cluster probes of grey-cloud names | Closed — ALLOW row 12 |
+| ZBF-02 | The gateway answers on `8080`, `8443`, `8843`, `8880` and `6789` beyond `22,80,443` | Closed — BLOCK rows 13-15 cover all tcp |
+| ZBF-03 | Home must not be exempt from the external-resolver block, or a device with a hard-coded resolver loses split-horizon DNS | Closed — Home is in BLOCK rows 16-19 |
+| ZBF-04 | A zone-wide `homelab → iot` policy would give every k3s pod reach into the unauthenticated IoT device APIs (pods SNAT to node addresses in VLAN 10) | Closed — scoped to Home Assistant (`.154`) alone |
+| ZBF-06 | The PORT-01 gap seen from the zone-policy side: the All profile lets a device bypass the zone matrix at L2, where no policy can see it | Open — same remediation as PORT-01 |
+| ZBF-07 | The trusted-VLAN half of the gateway-console fencing | Closed — BLOCK rows 24-25 |
+
+Two more findings are tracked outside this table: gateway
+SYN-flood protection (`usg.syn_cookies`) is console-owned and off
+(§ Codified vs manual, docs/16), and pve-nas-01's `nic1` IPv6 link-local
+adjacency to the Home VLAN is closed by `nic_tuning_disable_ipv6: [nic1]`.
+
+**A `unifi-drift-plan` that is yellow after a supervised apply is real drift**,
+not an accepted exception — the pass condition once the root has converged is an
+empty plan.
+
+---
+
 ## Design
 
-Findings cited below as `ZBF-xx` / `PORT-xx` / `ADM-xx` / `GW-xx` come from the
-2026-08 UniFi configuration audit — the table of what each one said and whether
-it is closed is
-[docs/48](48-unifi-audit-and-migration.md) § 2026-08 configuration audit.
+Findings cited below as `ZBF-xx` / `PORT-xx` / `ADM-xx` / `GW-xx` are defined in
+§ Audit findings above.
 
 ### Physical port map
 
@@ -96,7 +121,7 @@ regardless — but **UCG 1 carries the Hue bridge, an untrusted IoT appliance**,
 which is the case that actually motivates this, and the ConnA run (port 7) fans
 out to more untrusted devices still. Defence-in-depth wants native-VLAN-only
 profiles wherever a port is a genuine access port. It stays a **console**
-change, not codified: the audit established that `unifi_device.port_override` is
+change, not codified: `unifi_device.port_override` is
 unsafe at provider 0.55.0 (#438 wipes live overrides on an empty set,
 #430/#431). The genuine trunks that must stay
 All are USW **7** (ConnA, native Home + tagged 10/30), **8** (AP) and **10** (the
@@ -284,14 +309,14 @@ except where noted):
 | 9 | guest → homelab | tcp/udp `:53` → `.150`/`.160` | Resolvers only; everything else is internet-only |
 | 10 | homelab → Internal | icmp → `10.0.1.2`/`.3` | The blackbox switch/AP probes: they run in a pod, so their echo requests arrive from VLAN 10 |
 | 11 | Internal → homelab | icmp from `10.0.1.2`/`.3` | The echo *replies*. `create_allow_respond` is rejected for icmp, so the return direction is its own policy |
-| 12 | homelab → homelab | tcp `80,443` → `.100` | Hairpin NAT: a homelab source dialing the WAN address is DNAT'd back into its own zone and hits the intra-zone Block All, which is how in-cluster probes of grey-cloud names fail. Intra-VLAN traffic never traverses the gateway, so only hairpinned flows can match (audit ZBF-01). This row is the whole fix: a hairpin from a homelab host returns 200/302 with it in place (validation row 8c), so same-subnet SNAT is not a blocker here. The AdGuard cross-domain rewrites (docs/08) remain the primary, WAN-round-trip-free mechanism; this is the backstop. Validation record: docs/48 |
+| 12 | homelab → homelab | tcp `80,443` → `.100` | Hairpin NAT: a homelab source dialing the WAN address is DNAT'd back into its own zone and hits the intra-zone Block All, which is how in-cluster probes of grey-cloud names fail. Intra-VLAN traffic never traverses the gateway, so only hairpinned flows can match (audit ZBF-01). This row is the whole fix: a hairpin from a homelab host returns 200/302 with it in place (validation row 8c), so same-subnet SNAT is not a blocker here. The AdGuard cross-domain rewrites (docs/08) remain the primary, WAN-round-trip-free mechanism; this is the backstop. |
 
 **Thirteen `BLOCK` entries** — narrowing the two default-allow paths:
 
 | # | From → To | Scope | Why |
 |---|---|---|---|
-| 13-15 | {guest,iot,work} → Gateway | **all tcp**, logged | On a Cloud Gateway the console is a gateway service on *every* VLAN's own gateway address, so without these a guest with the WLAN PSK gets a login form at `https://10.0.40.1`. All of tcp rather than a port list: the 2026-08 audit found five listeners (`8080,8443,8843,8880,6789`) beyond the original `22,80,443`, and nothing on these VLANs has any legitimate TCP need to its gateway. DHCP is broadcast before the client has an address and is unaffected; ICMP stays up for troubleshooting |
-| 16-19 | {guest,iot,work,home} → External | tcp/udp `53,853`, logged | DHCP option 6 is a suggestion: Chromecast hardware queries `8.8.8.8` regardless and most TVs ship a vendor resolver, so `:53`/`:853` outbound is fenced. Home joined the set in the 2026-08 audit (ZBF-03) — it was silently exempt, losing split-horizon to any device that hard-codes a resolver. Homelab stays exempt — Unbound itself has to reach the internet |
+| 13-15 | {guest,iot,work} → Gateway | **all tcp**, logged | On a Cloud Gateway the console is a gateway service on *every* VLAN's own gateway address, so without these a guest with the WLAN PSK gets a login form at `https://10.0.40.1`. All of tcp rather than a port list: the gateway answers on `8080,8443,8843,8880,6789` as well as `22,80,443`, and nothing on these VLANs has any legitimate TCP need to its gateway. DHCP is broadcast before the client has an address and is unaffected; ICMP stays up for troubleshooting |
+| 16-19 | {guest,iot,work,home} → External | tcp/udp `53,853`, logged | DHCP option 6 is a suggestion: Chromecast hardware queries `8.8.8.8` regardless and most TVs ship a vendor resolver, so `:53`/`:853` outbound is fenced. Home is in the set (ZBF-03): exempting it loses split-horizon to any device that hard-codes a resolver. Homelab stays exempt — Unbound itself has to reach the internet |
 | 20-23 | {guest,iot,work,home} → Gateway | tcp/udp `53,853`, logged | The other way off the resolvers: a UniFi OS gateway answers DNS on *every* VLAN's own `.1` and forwards to the WAN DNS servers (`1.1.1.1`/`9.9.9.9`, § Site settings), i.e. straight past AdGuard. Rows 16-19 and these together are what make "the weisssrv resolvers or nothing" true on all four client VLANs. DHCP (udp `67`/`68`) is untouched |
 | 24-25 | {home,homelab} → Gateway | **tcp `1-442,444-65535`** (all tcp except 443), logged | The trusted-VLAN half: exactly `:443` stays open (console UI from admin devices, the CI drift plan, the `router.esweiss.com` Traefik backend); all other tcp is blocked as the complement of 443, so a listener a future firmware opens is fenced without a rule edit. DHCP/NTP are udp, homelab resolves via `.150`/`.160`, and `:22` has no listener |
 
@@ -536,7 +561,7 @@ them.
 
 | Setting | Value | Why |
 |---|---|---|
-| `mgmt.auto_upgrade` | `true` | **Deliberate.** The switch and AP take firmware nightly at 1 AM, which is hands-off patching for the Wi-Fi gear. Covers **device** firmware only; the console's own UniFi OS / application updates are a separate console-owned surface upgraded in a chosen window (§ Day-2). Ruling record: docs/48 |
+| `mgmt.auto_upgrade` | `true` | **Deliberate.** The switch and AP take firmware nightly at 1 AM, which is hands-off patching for the Wi-Fi gear. Covers **device** firmware only; the console's own UniFi OS / application updates are a separate console-owned surface upgraded in a chosen window (§ Day-2). |
 | `network_optimization.enabled` | `false` | Auto-optimize rewrites exactly the settings this repo codifies |
 | `usg.upnp_enabled` / `upnp_nat_pmp_enabled` | `false` | Port forwards are declared, never negotiated |
 | `igmp_snooping_networks` | `["home", "iot"]` | The two ends of the casting path. Homelab is deliberately out: snooping without a reliably elected querier prunes groups after the membership timeout, and VLAN 10 has nothing multicast-critical to gain (corosync is unicast knet) |
@@ -656,8 +681,8 @@ entry in `local.port_forwards`, not re-enabling UPnP.
 
 **"Drift plan is green" is not "the controller matches the repo."** The table
 above is the *manageable* surface; Terraform neither writes nor watches most of
-the console. The rest of `rest/setting` was read during the 2026-08 audit
-(docs/48) and the following are set as intended: UPnP/NAT-PMP off,
+the console. The rest of `rest/setting` is console-owned, and the following are
+set as intended: UPnP/NAT-PMP off,
 `broadcast_ping` off, ICMP redirects off both ways, DoH off, SSL inspection
 off, DPI on, netflow off, and no scheduled reboot/upgrade task
 (kured owns k3s reboots; `auto_upgrade` owns Wi-Fi-gear firmware). Two Ubiquiti
@@ -767,7 +792,7 @@ the live custom policy set (action, protocol, logging, `create_allow_respond`,
 both endpoints) matches all 25 codified policies (12 ALLOW + 13 BLOCK), and the
 five port forwards match too. So the policy half of the configuration is
 converged, and `unifi-drift-plan` green is a true statement about the manageable
-surface; its limits are in § Codified vs manual. Verification record: docs/48.
+surface; its limits are in § Codified vs manual.
 
 | # | Check | How | Expected |
 |---|---|---|---|
@@ -781,7 +806,7 @@ surface; its limits are in § Codified vs manual. Verification record: docs/48.
 | 7b | Gateway extras fenced on trusted VLANs | From home and a homelab host: `curl -m5 http://10.0.10.1/` and `nc -z -w3 10.0.10.1 8080` | Both **fail** (BLOCK rows 24-25) while `curl -k https://10.0.10.1` still answers — `:443` is the one listener the trusted VLANs keep |
 | 8 | External DNS fenced | From guest/iot/work/home: `dig @8.8.8.8 example.com`, `dig +tls @8.8.8.8 example.com` | Both **fail/time out** (BLOCK rows 16-19); `dig @10.0.10.150` still answers |
 | 8b | Gateway resolver fenced | From guest/iot/work/home: `dig @<that VLAN's .1> example.com` | **Fails/times out** (BLOCK rows 20-23). The rows exist because a UniFi OS gateway answers DNS on every VLAN's own `.1` by default |
-| 8c | Hairpin from homelab | From a homelab host: `curl -sk -m5 --resolve photos.ericsweiss.com:443:<WAN IP> https://photos.ericsweiss.com/` | **PASSES**: `photos` returns 200 and `ide.git` 302 from `10.0.10.102`, in ~20 ms. The `homelab → homelab` intra-zone Block All is the entire obstacle, so same-subnet SNAT is **not** a blocker on this gateway and in-cluster probes of grey-cloud names work without a rewrite. The AdGuard cross-domain rewrites (docs/08) stay in place as the primary, WAN-round-trip-free path; ALLOW row 12 is the backstop that also covers the `ide.git`/`photos` EndpointDown probes. Validation record: docs/48 |
+| 8c | Hairpin from homelab | From a homelab host: `curl -sk -m5 --resolve photos.ericsweiss.com:443:<WAN IP> https://photos.ericsweiss.com/` | **PASSES**: `photos` returns 200 and `ide.git` 302 from `10.0.10.102`, in ~20 ms. The `homelab → homelab` intra-zone Block All is the entire obstacle, so same-subnet SNAT is **not** a blocker on this gateway and in-cluster probes of grey-cloud names work without a rewrite. The AdGuard cross-domain rewrites (docs/08) stay in place as the primary, WAN-round-trip-free path; ALLOW row 12 is the backstop that also covers the `ide.git`/`photos` EndpointDown probes. |
 | 9a | Casting — the half that works | Cast a YouTube or Plex stream from a Home phone to an IoT TV/speaker | Device is discovered (site-level mDNS reflection) and plays |
 | 9b | Casting — the half that does not | Screen-mirror / cast a local photo from the same phone; AirPlay to two speakers at once | **Fails, by design** — the receiver would have to open a connection back to Home, and AirPlay 2 needs PTP multicast that does not route |
 | 10 | Plex local stream | Play from a TV — the Vizio pair and the Amazon units are reserved onto IoT, though the wired one only lands there if MAC-based assignment takes (§ DHCP reservations); check the client list for which VLAN it is actually on, then test | Direct play from `10.0.10.152:32400`, no transcode-over-WAN, from **either** VLAN — `iot-to-homelab-plex` and `home → homelab` both allow it. If it transcodes, check Plex's LAN Networks setting (docs/20) before suspecting the network |
@@ -915,10 +940,10 @@ change, so each one needs `-replace` (upstream #428, § DHCP reservations).
   matching the reservation. Re-joining `Panopticon` removes the Home credential
   and the reservation keeps steering identically afterward. Remaining holders of
   the Home PSK: the Kasa plugs and anything not yet re-joined by hand.
-- **Clear the pre-renumber `config_network` on the switch and AP (optional).**
-  Both still record their old `192.168.0.x` in the Configure-IP field. Inert
-  while DHCP, but it is the value either would take if flipped to static, on a
-  subnet the gateway no longer routes. Clear it in the console.
+- **Clear the stale `config_network` on the switch and AP (optional).** Both
+  record a `192.168.0.x` address in the Configure-IP field. Inert while DHCP,
+  but it is the value either would take if flipped to static, on a subnet the
+  gateway does not route. Clear it in the console.
 - **USW Flex Mini for the Connection A drops (optional).** Two standing limits of
   the dumb TP-Link chain behind port 7: tag-unaware wired devices cannot be
   steered to IoT (a per-MAC override forces tagged delivery, which black-holes
@@ -948,4 +973,3 @@ change, so each one needs `-replace` (upstream #428, § DHCP reservations).
 - [docs/38-wireguard-vpn.md](38-wireguard-vpn.md) — the wg-easy VIP the DHCP pool excludes
 - [docs/15-credential-rotation.md](15-credential-rotation.md) — the `UniFi Controller` and `WiFi *` 1Password items
 - [docs/16-next-steps.md](16-next-steps.md) — the open follow-ups from this work (UniFi metrics into Prometheus, the IPS engine upgrade and category re-baseline)
-- [docs/48-unifi-audit-and-migration.md](48-unifi-audit-and-migration.md) — the 2026-08 audit findings and the bring-up / renumber record

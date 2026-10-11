@@ -1,0 +1,8 @@
+---
+# pve-opt-02 specific configuration
+# Trial host for the nftables firewall implementation (docs/16)
+
+# nftables firewall implementation instead of the iptables pve-firewall: it
+# takes the bridge-netfilter hook out of this node's bridged path. Per node, so
+# the choice lives here; the proxmox-firewall package is installed fleet-wide.
+proxmox_firewall_nftables: true

@@ -20,7 +20,7 @@
           - groups['cert_servers'] | default([]) | length == 1
           - groups['cert_clients'] | default([]) | length == 2
         fail_msg: >-
-          molecule.yml no longer produces cert_servers and cert_clients, so the
+          molecule.yml does not produce cert_servers and cert_clients, so the
           guarded tasks and the per-group plays in this scenario skip.
       run_once: true
 

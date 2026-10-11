@@ -370,7 +370,7 @@ helm_chart_versions:
   cert_manager: "v1.21.2"
   external_dns: "1.23.0"  # App version 0.23.0
   external_secrets: "2.12.0"  # ESO with 1Password Connect provider
-  kube_prometheus_stack: "92.2.0"  # prometheus-operator v0.94.1 (92.x major = kubernetes.io/os=linux nodeSelector default)
+  kube_prometheus_stack: "92.3.0"  # prometheus-operator v0.94.1 (92.x major = kubernetes.io/os=linux nodeSelector default)
   # prometheus-community/prometheus-operator-crds. Owns the monitoring.coreos.com
   # CRDs in the infrastructure-crds stage (docs/29). COUPLING: its appVersion must
   # equal the pinned kube_prometheus_stack's operator appVersion (docs/12).
@@ -550,8 +550,8 @@ proxmox_firewall_security_groups:
       - "IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 5050 -log nolog"
       - "IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 8443 -log nolog"
       # Git-over-SSH on 2222 — INTENTIONALLY open to the WAN for external Git
-      # access. Protected by the gitlab-ssh fail2ban jail (5 failures = 1h ban);
-      # auth failures land in the journal.
+      # access. The gitlab-ssh fail2ban jail bans after 5 failures; `nolog`
+      # spares the firewall log, and sshd's pre-auth lines reach Loki unthrottled.
       - "IN ACCEPT -p tcp -dport 2222 -log nolog"
       # Git-over-SSH on 22 for internal access — ADMIN scope: pushes come from
       # an admin device or the tailnet, and the CI/cert paths live in the
@@ -729,12 +729,12 @@ proxmox_ha_resources:
     comment: "home-assistant (HAOS VM)"
     enabled: true
 
-# Storage replication, every 15 minutes. Each service replicates to ALL 4 other
-# local-ssd nodes so HA can fail over to any of them; pve-nas-01 has no
-# local-ssd. Schedules are explicit times so the four offsets stay deterministic.
+# Storage replication every 15 minutes to all 4 other local-ssd nodes (docs/25);
+# explicit times keep the four offsets deterministic. Proxmox permutes the
+# job-id<->target pairing on migration, so only the per-vmid target SET is read.
 proxmox_ha_replication_jobs:
-  # dns-01 (150), offset 0. source_node MUST track the affinity-dns-01 home and
-  # can never also be a target - asserted by scripts/test_inventory_invariants.py.
+  # dns-01 (150), offset 0. source_node tracks the affinity-dns-01 home and is
+  # never also a target - asserted by scripts/test_inventory_invariants.py.
   - id: "150-0"
     source_node: pve-prec-01
     target_node: pve-opt-02

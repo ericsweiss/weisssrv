@@ -251,7 +251,7 @@ Bootstrap COMPLETE for $HOST_IP. User '$ADMIN_USER' now has a console
 password, passwordless sudo and SSH key authentication.
 
 Next steps:
-  1. Create the local-ssd ZFS pool (docs/26-multi-node-implementation.md)
+  1. Create the local-ssd ZFS pool (docs/06-zfs.md)
   2. Add the host to ansible/inventories/prod/hosts.yml
   3. Run: task infra:base -- --limit <hostname>
 DONE

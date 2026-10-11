@@ -17,7 +17,7 @@
         that:
           - groups['qol_enabled'] | default([]) | length == 2
         fail_msg: >-
-          molecule.yml no longer produces qol_enabled, so the qol role is never
+          molecule.yml does not produce qol_enabled, so the qol role is never
           applied in this scenario.
       run_once: true
 

@@ -212,9 +212,9 @@ exporter and shared-helper roles — ship in the **`weisssrv.infra` collection**
 [ansible/requirements.yml](ansible/requirements.yml). This repo holds the site
 data those roles consume: inventory, playbooks, and the Taskfile/CI wiring.
 
-The collection's own README documents every role, its variables and defaults,
-and `MIGRATING.md` there is the variable map. Layout and conventions for the
-Ansible tree here: [ansible/README.md](ansible/README.md).
+The collection's own README documents every role, its variables and defaults.
+Layout and conventions for the Ansible tree here:
+[ansible/README.md](ansible/README.md).
 
 ## Secrets Management
 
@@ -350,7 +350,7 @@ the external name (auth.ericsweiss.com) even for an internal-only app.
 | [20-plex-deployment](docs/20-plex-deployment.md) | Plex Media Server deployment |
 | [21-download-clients-deployment](docs/21-download-clients-deployment.md) | Download clients and media stack |
 | [22-recipes-deployment](docs/22-recipes-deployment.md) | Recipe management (Mealie, Bar Assistant) |
-| [23-recipes-sso-setup](docs/23-recipes-sso-setup.md) | Recipes SSO and OpenAI configuration (the manual SSO walkthrough is **superseded** by terraform/authentik — docs/40) |
+| [23-recipes-sso-setup](docs/23-recipes-sso-setup.md) | Recipes SSO and OpenAI configuration (docs/40 is canonical for the Authentik objects — terraform/authentik owns them) |
 | [24-home-assistant-deployment](docs/24-home-assistant-deployment.md) | Home Assistant OS with Authentik SSO |
 | [27-gitlab-deployment](docs/27-gitlab-deployment.md) | GitLab EE deployment (VM, registry, pages, runners) |
 | [35-nextcloud](docs/35-nextcloud.md) | Nextcloud VM (Docker Compose, zvol storage, host-nginx TLS, Authentik OIDC SSO, backups, observability, runbooks) |
@@ -371,20 +371,11 @@ the external name (auth.ericsweiss.com) even for an internal-only app.
 | [16-next-steps](docs/16-next-steps.md) | TODO and feature roadmap |
 | [17-disaster-recovery](docs/17-disaster-recovery.md) | Disaster recovery and backup procedures |
 | [18-bootstrap-new-systems](docs/18-bootstrap-new-systems.md) | Bootstrapping new LXC containers and VMs |
-| [25-multi-node-expansion](docs/25-multi-node-expansion.md) | Multi-node expansion and Proxmox HA — the current HA-operations reference (docs/26 defers to it) |
+| [25-multi-node-expansion](docs/25-multi-node-expansion.md) | Multi-node expansion and Proxmox HA — the HA-operations reference |
 | [34-bond-mac-flapping](docs/34-bond-mac-flapping.md) | Host network faults: the active-backup bond `all_slaves_active` MAC-flap black-hole, the e1000e TX Hardware Unit Hang, and the br_netfilter skb_ext slab leak — diagnosis, recovery, nic_tuning fixes |
 | [42-offsite-backup](docs/42-offsite-backup.md) | Offsite backup (restic → Backblaze B2, client-side encrypted) + encrypted swap |
 | [44-storage-bootstrap](docs/44-storage-bootstrap.md) | Storage bootstrap: creating the ZFS pools and datasets a rebuilt NAS needs before restore |
 | [47-security-posture](docs/47-security-posture.md) | What is and is not encrypted, at rest and in transit, and why |
-
-### Historical (completed / superseded — read-only)
-
-| Document | Description |
-|----------|-------------|
-| [14-post-base-plan](docs/14-post-base-plan.md) | K3s platform roadmap and workload planning (superseded — historical record) |
-| [26-multi-node-implementation](docs/26-multi-node-implementation.md) | Step-by-step 6-node cluster implementation (completed — retained for rebuild reference) |
-| [28-gitlab-migration](docs/28-gitlab-migration.md) | GitHub to GitLab migration guide |
-| [48-unifi-audit-and-migration](docs/48-unifi-audit-and-migration.md) | The 2026-08 UniFi configuration audit findings (ZBF-xx / PORT-xx / ADM-xx / GW-xx) and the record of the bring-up, cutover and homelab renumber |
 
 ### Component docs (outside the numbered set)
 
@@ -405,9 +396,9 @@ the external name (auth.ericsweiss.com) even for an internal-only app.
 
 - **Numbered docs (`docs/NN-topic.md`)** are for a subsystem or an application
   someone has to operate. Numbers are assigned in order of creation and are
-  **not** re-used; the grouping above (Getting Started / Infrastructure /
-  Platform / Applications / Operations / Historical) is the taxonomy, the number
-  is just an identifier. Do not repeat the number in the document's `#` title —
+  **not** re-used; the grouping above (Getting Started / Infrastructure
+  Services / Platform / Applications / Operations and Planning) is the taxonomy,
+  the number is just an identifier. Do not repeat the number in the document's `#` title —
   that turns a renumber into a content edit.
 - **An app README** (`kubernetes/apps/<app>/README.md`) covers what lives in that
   folder. If a numbered doc owns the subject, say so in the README's first
@@ -432,14 +423,9 @@ the external name (auth.ericsweiss.com) even for an internal-only app.
   `ansible-playbook -i ansible/inventories/prod ansible/playbooks/…`, never a
   `cd ansible/`-relative form, since that is what the `task` wrappers and CI
   present.
-- **Superseded docs keep their number** and gain a status banner plus a row in
-  the Historical table above; they are never silently deleted, because older MRs
-  and runbooks link to them. `docs/14-post-base-plan.md` is the exemplar — its
-  `> **Status: superseded.**` blockquote sits immediately under the H1.
-  A doc whose *procedure* is superseded but whose *reference data* is still
-  current stays in its topical group instead, carries the banner at the point
-  the superseded procedure begins rather than at the top, and is annotated in
-  its index row — `docs/23-recipes-sso-setup.md` is that variant.
+- **A doc describes current state.** A doc with no current subject left is
+  deleted, its still-live facts folded into the doc that owns them; numbers are
+  still never re-used.
 - Every relative `.md` link is CI-checked (`lint-docs-links` over every tracked
   Markdown file), so a rename that breaks a cross-link fails the pipeline.
 

@@ -1,0 +1,74 @@
+---
+# Recursive-resolver health from unbound_exporter (:9167 on dns-01/dns-02,
+# job="unbound-exporter"). AdGuard in front is covered by the blackbox :53
+# probes in monitoring.yaml. Runbooks: docs/08-dns.md § Unbound alerts.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: homelab-dns
+  namespace: observability
+spec:
+  groups:
+    - name: homelab.dns
+      rules:
+        # unbound_up is the exporter's own verdict on the control socket, so it
+        # separates a dead resolver from a dead exporter. One resolver down is a
+        # warning: AdGuard on the other guest still recurses.
+        - alert: UnboundDown
+          expr: unbound_up{job="unbound-exporter"} == 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: '${cluster_runbook_base_url}/08-dns.md#unbound-alerts'
+            summary: 'Unbound is not answering the exporter on {{ $labels.instance }}'
+            description: >-
+              unbound_exporter on {{ $labels.instance }} has not been able to
+              read Unbound's control socket for 5 minutes. AdGuard on this
+              guest can still serve cached names but cannot recurse, so it
+              answers SERVFAIL for everything else. Check
+              `systemctl status unbound` and
+              `dig @127.0.0.1 -p 5335 google.com` on the guest.
+
+        # Counted against the two resolvers expected, so a target dropping out
+        # of service discovery is as loud as a failing scrape. Without this arm
+        # a dead exporter looks healthy: unbound_up just stops existing.
+        - alert: UnboundExporterDown
+          expr: >-
+            count(up{job="unbound-exporter"} == 1) < 2
+            or absent(up{job="unbound-exporter"} == 1)
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: '${cluster_runbook_base_url}/08-dns.md#unbound-alerts'
+            summary: 'unbound_exporter is not being scraped on both resolvers'
+            description: >-
+              Prometheus is scraping unbound_exporter (:9167) on fewer than
+              both resolvers (10.0.10.150 / 10.0.10.160) for 15 minutes, so
+              every Unbound alert is blind for the one it cannot see. Check
+              `systemctl status unbound_exporter` on the guest, then the
+              EndpointSlice addresses in
+              observability/exporters/unbound-exporter.yaml.
+
+        # rcode="nodata" is a subset of NOERROR, so it is excluded from the
+        # denominator. No cache-hit-ratio alert: AdGuard absorbs the repeats
+        # in front, so a low ratio is the normal shape here.
+        - alert: UnboundSERVFAILRatioHigh
+          expr: >-
+            sum by (instance) (rate(unbound_answer_rcodes_total{job="unbound-exporter", rcode="SERVFAIL"}[15m]))
+            / sum by (instance) (rate(unbound_answer_rcodes_total{job="unbound-exporter", rcode!="nodata"}[15m]))
+            > 0.05
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            runbook_url: '${cluster_runbook_base_url}/08-dns.md#unbound-alerts'
+            summary: 'Unbound on {{ $labels.instance }} is answering {{ $value | humanizePercentage }} SERVFAIL'
+            description: >-
+              More than 5% of the answers Unbound gave on
+              {{ $labels.instance }} were SERVFAIL for 15 minutes. The
+              DNS-over-TLS upstreams are unreachable, their certificates no
+              longer validate, or DNSSEC validation is failing. Check
+              `journalctl -u unbound` and
+              `dig @127.0.0.1 -p 5335 dnssec-failed.org` on the guest.

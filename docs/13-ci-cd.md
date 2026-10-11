@@ -54,7 +54,7 @@ list while `inputs:` binds per entry.
 | `/ci/lint/comment-length.yml` | `comment-length` | `config: "--config scripts/comment-length.yaml"` — the scope file listing the vendored copies, whose comments only a re-vendor can change |
 | `/ci/validate/terraform-drift-plan.yml` | `tailscale-drift-plan`, `authentik-drift-plan`, `unifi-drift-plan` (one include each) | `image: $TF_JOB_IMAGE` (the template default is an older patch, and a plan cannot read state an apply wrote with a newer one), `job_name`, `module_dir`, `state_name`, `changes`, `secrets_exports` (that module's `op read` block) and `tags: ["infrastructure"]`. `secrets_guard` stays at the default `"true"`: a credential in it would delete the scheduled detector instead of reding it |
 | `/ci/validate/terraform.yml` | `terraform-fmt` **and** `terraform-validate` | `image: hashicorp/terraform:1.16.5`, digest-pinned — the exact patch the plan/apply jobs run, so a plan cannot be refused by a different patch |
-| `/ci/validate/flux-lint.yml` | `flux-lint` | `substitute: true`, the kubeconform/kustomize/helm/PyYAML pins + sha256s, cluster/ConfigMap/script paths, `expected_skipped_file` (the committed unvalidated-kind baseline, so an unreachable catalog reds the job), a widened `changes`, and `extra_validation` (the weisssrv-local corpus gates) |
+| `/ci/validate/flux-lint.yml` | `flux-lint` | `substitute: true`, the kubeconform/kustomize/helm/flux/PyYAML pins + sha256s, cluster/ConfigMap/script paths, `expected_skipped_file` (the committed unvalidated-kind baseline, so an unreachable catalog reds the job), a widened `changes`, and `extra_validation` (the weisssrv-local corpus gates) |
 | `/ci/security/secret-detection.yml` | `secret_detection` | `cpu_selector: "esweiss.com/cpu=modern"` — gitleaks SIGILLs without POPCNT, so the scan is pinned off the Core 2 Quad opt nodes |
 | `/ci/test/python-tests.yml` | `python-tests` | `image: $PY_JOB_IMAGE` (the template default is below the Python ansible 14 needs), `changes` (adds the ansible + docs paths the suite validates), `setup_command` (clones weisssrv-lib so the vendored-byte-identity gate can run, then fetches jq with `scripts/ci-fetch-tools.py`), and `pytest_version` / `pyyaml_version`, so the repo `variables:` block stays the single source those pins are checked against |
 | `/ci/review/pr-agent.yml` | `pr-agent-review` | `secrets_source: env`, `gate: "$OPENAI__KEY && $GITLAB__PERSONAL_ACCESS_TOKEN"`, plus a `needs:` override limiting it to the lint + secret-detection jobs so the review does not wait on the DinD suite. Model, effort and timeouts are the template defaults, which already equal this repo's values |
@@ -84,9 +84,8 @@ Four fragments emit no job of their own and are consumed via `extends:` /
 `COPY --chmod`).
 
 **Pending adoption.** This table is the authority on what the library has
-extracted but this pipeline does not yet include (the library keeps no
-per-consumer ledger — since v0.9.0 each consumer records its own adoption
-state); each entry is blocked on the local block it would replace:
+extracted but this pipeline does not include. Each row names the local block it
+would replace and the blocker that keeps it local:
 
 | Library file | Local counterpart | Blocker |
 |---|---|---|
@@ -96,10 +95,9 @@ state); each entry is blocked on the local block it would replace:
 | `/ci/deploy/cluster-verify-base.yml` | the `.k3s-deploy-base` definition in `.gitlab-ci.yml` | the local base layers op, kubectl and a reachability probe the fragment does not carry |
 | `/ci/validate/cluster-drift-plan.yml` | the `.k3s-deploy-base` definition in `.gitlab-ci.yml` | depends on adopting `cluster-verify-base.yml` first: the template extends that fragment by name |
 
-Since the library keeps no per-consumer ledger, this table **is** this repo's
-adoption record. `scripts/test_ci_gates.py::TestPendingAdoptionTable` keeps it
-honest: it checks every row's library path and local anchor, and sweeps for
-library templates that are neither included, tabled, nor declared not-consumed.
+`scripts/test_ci_gates.py::TestPendingAdoptionTable` keeps the table honest: it
+checks every row's library path and local anchor, and sweeps for library
+templates that are neither included, tabled, nor declared not-consumed.
 
 Every row names its local counterpart as a backticked `.anchor`, because that is
 what the gate checks: the anchor's DEFINITION still existing is what "not yet
@@ -122,10 +120,9 @@ Rules of engagement:
   automatic) → bump every `ref:` in this repo's `include:` block in one MR.
   The library's `docs/VERSIONING.md` and `docs/INCLUDE-CONTRACT.md` own the
   input contract and the upgrade flow.
-- **The library tag also pins the Ansible roles.** Since the migration to the
-  `weisssrv.infra` collection, `ansible/requirements.yml` pins the same library
-  repo at a release tag. A library bump is therefore a CI change *and* a
-  platform change — bump both, and expect every `deploy-*` job to fire (they all
+- **The library tag also pins the Ansible roles.** `ansible/requirements.yml`
+  pins the same library repo at the same release tag, so a library bump is a CI
+  change *and* a platform change — bump both, and expect every `deploy-*` job to fire (they all
   list `ansible/requirements.yml` in `changes:`).
 - **Prove pipeline parity when bumping the ref**: compare the job list and each
   job's script/rules against the previous pipeline before merging. The library
@@ -247,9 +244,8 @@ Job-level `retry` does not include `script_failure`; transient build/push
 failures are retried by a bounded in-script loop instead, so a genuinely broken
 Dockerfile fails fast.
 
-The **Molecule images are no longer built here** — `molecule-ci` and
-`molecule-test` are published by `weisssrv-lib` and pulled at
-`$WEISSSRV_LIB_REF`.
+The **Molecule images ship from weisssrv-lib** — `molecule-ci` and
+`molecule-test` are published there and pulled at `$WEISSSRV_LIB_REF`.
 
 #### Lint Stage
 | Job | Triggers | Description |
@@ -320,6 +316,11 @@ The `run_check` list in the job is authoritative.
   hard-failing where the chart ships a `values.schema.json`.
 - Substitution comes from both the `cluster-versions` and `cluster-config`
   ConfigMaps, which is why `flux_render_script` is `scripts/flux-env.sh`.
+- Every render passes `flux envsubst --strict`, the authority on what
+  kustomize-controller's post-build accepts: the `flux_version`/`flux_sha256`
+  inputs fetch the cluster's own flux CLI, and the job fails when that pin and
+  the ConfigMap's `flux_version` disagree. `scripts/test_site_configs.py` holds
+  the include, the ConfigMap and `taskfiles/flux.yml` to one strict render.
 - Substitution keys come from `scripts/flux-env.sh`, which `deploy-verify` also
   uses, so both resolve `${cluster_*}` the same way; `flux-env.sh` delegates
   per-file parsing to the vendored `scripts/flux-render.sh`.
@@ -355,13 +356,14 @@ dependencies — nothing fails.
 |-----|----------|-------------|
 | `terraform-validate` | terraform/** | Terraform syntax |
 | `check-deploy-playbooks` | ansible/playbooks/**, ansible/inventories/prod/**, ansible/requirements.yml, ansible/ansible.cfg, `.gitlab-ci.yml` | Credential-free (no 1Password, no SSH) so it runs on MRs too. Installs the pinned collection, parses every `ansible-playbook` invocation out of each `deploy-*`/`maintenance-*` job's own `script:`, and asserts each playbook exists and each `--tags` selection reaches a real task — a bogus tag exits 0 having deployed nothing. Two known gaps, both stated in the job header: it cannot catch a job that forgot an `op://` variable, and it does not follow a `bash scripts/*.sh` wrapper, so the six invocations inside `scripts/maintenance-all-ops.sh` (which `maintenance-run-all` delegates to) are unchecked — they are duplicates of the individual maintenance jobs today, but a playbook or tag added only there would go unwalked |
-| `terraform-plan` | terraform/cloudflare/** + 1Password | Full Cloudflare plan with credentials (tailscale changes no longer re-plan the Cloudflare module). Its MR rule is **inert** while `OP_SERVICE_ACCOUNT_TOKEN` is protected — see the credential note below |
+| `terraform-plan` | terraform/cloudflare/** + 1Password | Full Cloudflare plan with credentials; its path list is scoped to the Cloudflare root, so a tailscale change does not re-plan it. Its MR rule is **inert** while `OP_SERVICE_ACCOUNT_TOKEN` is protected — see the credential note below |
 | `tailscale-drift-plan` | terraform/tailscale/** on **main** + schedules | Read-only `terraform plan` of the tailnet ACL module against its own state backend; advisory on exit 2 via `allow_failure: exit_codes: [2]`, so drift warns while a broken plan — plan error, expired credentials, unreachable endpoint, state lock — exits 1 and fails red; deliberately outside validation-gate. No MR rule — see the credential note below |
 | `authentik-drift-plan` | terraform/authentik/** on **main** + schedules | Read-only `terraform plan` of the Authentik SSO module against its own state path; catches out-of-band Admin-UI edits. Advisory, outside validation-gate. The apply stays a supervised `task terraform:authentik-apply` (docs/40). No MR rule — see the credential note below |
 | `unifi-drift-plan` | terraform/unifi/** on **main** + schedules | Read-only `terraform plan` of the UniFi network module (VLANs, firewall zones and policies, WLANs) against its own state path; catches out-of-band UniFi-console edits. Advisory, outside validation-gate. The apply stays a supervised `task terraform:unifi-apply` (docs/46). No MR rule — see the credential note below |
 | `cluster-drift-plan` | schedules (`allow_failure: exit_codes: [1]`: 0 clean, 1 drift, 2 error, so an auth or API error stays red instead of reading as allowed drift) | Reads the live cluster and runs `check-live-cpu-limits.py` and `check-unmanaged-secrets.py` against it — the drift classes no rendered-manifest gate can see |
 | `unifi-settings-drift` | scripts/unifi-settings-drift.py + scripts/unifi-settings.json on **main** (token-guarded) + schedules | Read-only check of the console-owned UniFi settings the terraform module ignores (IPS posture) against `scripts/unifi-settings.json`. Advisory on drift (exit 1); an auth or API error (exit 2) fails red. No MR rule — see the credential note below |
 | `b2-drift-plan` | scripts/b2-bucket-drift.py on **main** (token-guarded) + schedules | Read-only diff of the `weisssrv-backup` B2 bucket settings against the codified config via the raw B2 API (no terraform — see docs/42). Advisory; reconciling is the supervised `task b2:apply`. No MR rule — see the credential note below |
+| `credential-age` | scripts/check-credential-age.py + docs/15-credential-rotation.md on **main** (token-guarded) + schedules | Lists every `Homelab` item's title and `updated_at` and flags the ones past the age docs/15 § Scheduled Rotation Policy declares. Reads no field value. Advisory on a finding (exit 1); a vault or parse error (exit 2) fails red. Same job as `task secrets:age`. No MR rule — see the credential note below |
 
 > **Vault reads on merge-request pipelines.** `OP_SERVICE_ACCOUNT_TOKEN` **must
 > be masked and protected** — this pipeline is written for that posture, and it
@@ -379,9 +381,9 @@ dependencies — nothing fails.
 >   on main; `task terraform:cloudflare-plan` is the local substitute, and the
 >   deploy job's plan output is the human checkpoint.
 > - **`pr-agent-review` gates on `$OPENAI__KEY`,** not on the 1Password token —
->   its own credentials are CI variables (`secrets_source: env`), so it never
->   needed the vault, and gating on a variable that no longer exists on MR refs
->   would have silently deleted the job.
+>   its own credentials are CI variables (`secrets_source: env`), so it needs
+>   no vault. `OP_SERVICE_ACCOUNT_TOKEN` is protected and therefore absent on MR
+>   refs, so gating on it would silently delete the job.
 >
 > The six advisory drift plans do not run on MRs at all: their real detector is
 > the schedule and their applies are supervised, so the MR run bought nothing
@@ -494,8 +496,8 @@ agent's Flux integration (poll is the fallback — see docs/29-flux-operations.m
 
 #### Deploy Stage - Ansible Infrastructure
 
-> **Deploy triggers after the collection migration.** There are no role paths in
-> this repo to key on, so every `deploy-*` job triggers on three things:
+> **Deploy triggers.** Roles live in the collection, so every `deploy-*` job
+> triggers on three things:
 > **`ansible/requirements.yml`** (the collection pin — a library bump redeploys
 > everything), **the playbook(s) it runs**, and **its inventory inputs**
 > (`hosts.yml`, the relevant `group_vars`/`host_vars`, and `all.yml` where the
@@ -595,7 +597,7 @@ in this stage (see [Version bump bot](#version-bump-bot) below).
 |---------|------|
 | Merge request | Lint, validate (including the credential-free `check-deploy-playbooks`; drift plans excluded and `terraform-plan`'s rule inert), test (integration matrix excluded), security, AI review — no deploy, no verify |
 | Push to main | Full validation including the integration matrix, then `validation-gate`, the path-gated deploys, and the `verify` stage (which runs regardless of the deploy stage's outcome) |
-| Scheduled | Version checking, secret detection, and the six advisory drift checks — `tailscale-drift-plan`, `authentik-drift-plan`, `unifi-drift-plan`, `unifi-settings-drift`, `b2-drift-plan` and `cluster-drift-plan`. Their schedule rule carries no `$OP_SERVICE_ACCOUNT_TOKEN` guard: a guard would delete the detector when the credential is revoked or rescoped, so a missing token reds the job instead. All other jobs (lint, validate, test, ai-review, gate, deploy, maintenance) are excluded — **except** two `SCHEDULE_TYPE`-scoped opt-ins: `SCHEDULE_TYPE=full-test` also runs `integration-tests` as an external-dependency canary (catches upstream image/package breakage between code changes), and `SCHEDULE_TYPE=version-bump` runs `version-bump-bot` (below). |
+| Scheduled | Version checking, secret detection, and the advisory out-of-band checks — `tailscale-drift-plan`, `authentik-drift-plan`, `unifi-drift-plan`, `unifi-settings-drift`, `b2-drift-plan`, `cluster-drift-plan` and `credential-age`. Their schedule rule carries no `$OP_SERVICE_ACCOUNT_TOKEN` guard: a guard would delete the detector when the credential is revoked or rescoped, so a missing token reds the job instead. All other jobs (lint, validate, test, ai-review, gate, deploy, maintenance) are excluded — **except** two `SCHEDULE_TYPE`-scoped opt-ins: `SCHEDULE_TYPE=full-test` also runs `integration-tests` as an external-dependency canary (catches upstream image/package breakage between code changes), and `SCHEDULE_TYPE=version-bump` runs `version-bump-bot` (below). |
 | Manual (web) | Lint, validate, test stages only. AI review, deploy, gate, and maintenance jobs are excluded. Security (`secret_detection`) runs if branch is `main`. |
 
 The branch name is written **literally** as `main` in every rule. GitLab does

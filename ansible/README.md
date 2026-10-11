@@ -14,7 +14,7 @@ composition, and the integration tests that exercise the roles together.
 | `requirements.yml` | The `weisssrv.infra` pin (a release tag) + the galaxy collections it needs. Bumping the platform is a bump of `version:` here |
 | `inventories/prod/hosts.yml` | Host definitions, groups, VM/LXC sizing, `vm_additional_disks` (zvols) |
 | `inventories/prod/group_vars/all.yml` | Single source of truth for every version pin |
-| `inventories/prod/group_vars/<group>.yml`, `host_vars/<host>.yml` | Group/host overrides — and, since the roles are generic, all the site data they used to default to |
+| `inventories/prod/group_vars/<group>.yml`, `host_vars/<host>.yml` | Group/host overrides, and the site data the generic roles require |
 | `playbooks/` | Entry points (`site.yml` is the fan-out; per-area playbooks mirror the `deploy-*` CI jobs) |
 | `playbooks/tasks/` | Task files several playbooks include: the check-mode reachability guard, the PVE cluster probe, and the cert-target re-seed |
 | `integration-tests/` | Multi-role molecule stacks (DNS, mail, base, storage, certs) |
@@ -35,9 +35,9 @@ Roles are not edited here. The workflow is:
 
 Step 3 is not optional when the role's variables changed. Every role variable
 carries its role's prefix, and every lookup is `| default(...)` — so a name left
-un-renamed does not raise, it silently takes the role default. The collection's
-`MIGRATING.md` carries the complete old → new map, the variables whose *value*
-(not name) is now empty, and the inputs that are asserted.
+un-renamed does not raise, it silently takes the role default. Each role's
+README in the collection lists every variable it reads, its default, and which
+inputs the role asserts.
 
 To iterate against an unmerged library change, point `version:` at a branch,
 re-run `ansible-galaxy install -r requirements.yml --force`, and change it back
@@ -50,12 +50,12 @@ loses the `acme_certs` distribution key pinned there. Each guest that is a cert
 target (`plex.yml`, `immich.yml`, `nextcloud.yml`, `gitlab.yml`) ends with a
 play on the `dns_primary` group (dns-01, the cert authority) that includes
 `tasks/_reseed-cert-target.yml` with `reseed_cert_target_host` set to that
-guest. Two more playbooks carry the same re-seed: `base.yml` loops every
-`acme_certs_distribution_targets` entry after the fleet-wide base run, and
-`mail.yml` re-seeds the relay from its own inline block. Adding a new
-cert-target guest means adding the same play. `dns-02` needs none: `dns.yml`
-already runs `acme_certs` in full. Details are in
-`docs/15-credential-rotation.md`.
+guest. `base.yml` and `mail.yml` include the same task over a loop — every
+sudo `acme_certs_distribution_targets` entry, and the `mail` group's. Adding a new
+cert-target guest means adding the same play, and
+`scripts/test_cert_reseed_coverage.py` fails one that applies base without it.
+`dns-02` needs none: `dns.yml` already runs `acme_certs` in full. Details are
+in `docs/15-credential-rotation.md`.
 
 ## Code conventions
 

@@ -88,12 +88,13 @@ spec:
             requests:
               cpu: 100m
               memory: 256Mi
-              ephemeral-storage: 25Gi
+              ephemeral-storage: 8Gi
             limits:
               memory: 1Gi
-              # Above the emptyDir cap below, which shares this budget with the
-              # rotated container logs; at the cap the kubelet evicts first.
-              ephemeral-storage: 28Gi
+              # Above the emptyDir cap below and inside the ~24Gi free on the
+              # fullest node's 62.8Gi image filesystem: a larger cap meets
+              # disk-pressure eviction before it ever binds.
+              ephemeral-storage: 10Gi
           volumeMounts:
             - {name: config, mountPath: /etc/garage.toml, subPath: garage.toml, readOnly: true}
             - {name: data, mountPath: /var/lib/garage}
@@ -104,5 +105,6 @@ spec:
         - name: data
           emptyDir:
             # Bound: a runaway cache evicts the pod (cold restart) instead of
-            # filling the node. GitLab's per-cache zips are tens-of-MB class.
-            sizeLimit: 25Gi
+            # filling the node. GitLab's per-cache zips are tens-of-MB class and
+            # the live cache sits under 1Gi.
+            sizeLimit: 8Gi

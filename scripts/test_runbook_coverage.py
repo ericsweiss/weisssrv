@@ -53,7 +53,6 @@ EXEMPT: set[tuple[str, str]] = {
     ("SwapCleanStoppedGuests", "06-zfs.md"),
     ("TailscaleOperatorDown", "19-k3s-deployment.md"),
     ("TailscaleProxyDown", "19-k3s-deployment.md"),
-    ("VPARecommendationExceedsRequest", "33-autoscaling.md"),
     ("WgEasyEndpointVipMissing", "38-wireguard-vpn.md"),
     ("WgEasyMetricsMissing", "38-wireguard-vpn.md"),
     ("ZfsEncryptedMountStuck", "12-runbooks.md"),
@@ -265,7 +264,7 @@ def test_the_collector_reads_the_anchored_section(tmp_path):
 
 
 def test_a_runbook_url_off_the_placeholder_base_is_collected(tmp_path):
-    """Mutation case: an absolute URL used to leave the corpus reporting nothing."""
+    """Mutation case: an absolute URL must not leave the corpus reporting nothing."""
     (tmp_path / "doc.md").write_text("# Runbooks\n")
     off = [("ArchiveBackupStale", "https://runbooks.example/archive")]
     assert uncovered(off, tmp_path) == (

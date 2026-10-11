@@ -5,6 +5,7 @@ stop it, or the blocking deploy-verify-hosts job fails a deliberate state.
 """
 from __future__ import annotations
 
+import dataclasses
 import itertools
 import re
 from dataclasses import dataclass
@@ -114,11 +115,15 @@ def render(declared: object, state: dict[str, bool]) -> set[str]:
     return set(yaml.safe_load(rendered))
 
 
-def predict(declared: object, state: dict[str, bool]) -> set[str]:
-    """The units the roles would actually have running in one flag state."""
+def predict(declared: object, state: dict[str, bool], table=None) -> set[str]:
+    """The units the roles would actually have running in one flag state.
+
+    `table` swaps in a mutated UNIT_GATES, so a case can prove the comparison
+    reacts to a gate recorded with the wrong polarity.
+    """
     expected = set()
     for unit in units_named(declared):
-        gates = UNIT_GATES[unit]
+        gates = (table or UNIT_GATES)[unit]
         if all(state[gate.variable] == gate.keeps for gate in gates):
             expected.add(unit)
     return expected
@@ -266,9 +271,12 @@ class TestListsTrackTheFlags:
                 f"{sorted(mismatch[1])}"
             )
 
+    @pytest.mark.parametrize("baseline", ["keeps", "defaults"])
     @pytest.mark.parametrize("unit", GATED_UNITS)
-    def test_a_conditional_unit_is_absent_in_its_stopped_state(self, unit):
-        """Per unit, the state the roles stop it in yields a list without it."""
+    def test_a_conditional_unit_is_absent_in_its_stopped_state(self, unit, baseline):
+        """Per unit, the state the roles stop it in yields a list without it,
+        with the siblings both all overridden to keep their units running and
+        each at its own role default: one baseline can hide a misread flag."""
         plays = {
             play: declared
             for play, declared in unit_lists().items()
@@ -278,13 +286,16 @@ class TestListsTrackTheFlags:
         for play, declared in plays.items():
             for stopped in UNIT_GATES[unit]:
                 state = {
-                    gate.variable: gate.keeps
+                    gate.variable: (
+                        gate.keeps if baseline == "keeps" else bool(gate.default)
+                    )
                     for gate in gates_of(declared).values()
                 }
                 state[stopped.variable] = not stopped.keeps
                 assert unit not in render(declared, state), (
                     f"{play} still verifies {unit} with "
-                    f"{stopped.variable}={state[stopped.variable]}, which "
+                    f"{stopped.variable}={state[stopped.variable]} and its "
+                    f"siblings at their {baseline} values, which "
                     f"{stopped.role} stops it in"
                 )
 
@@ -331,6 +342,40 @@ class TestTheComparisonIsNotDecorative:
         state = {variable: True for variable in gates_of(wrong)}
         assert render(wrong, state) == predict(wrong, state)
         assert default_fallback_mismatch(wrong, gate) is not None
+
+    @pytest.mark.parametrize("gate", ALL_GATES, ids=lambda gate: gate.variable)
+    def test_a_gate_recorded_with_the_wrong_polarity_is_reported(self, gate):
+        """`keeps` is how this table records the polarity of the role's service
+        condition, and the variable being named in the role proves nothing about
+        it: flipping it must red the flag-state comparison."""
+        flipped = dataclasses.replace(gate, keeps=not gate.keeps)
+        table = {
+            unit: tuple(flipped if g == gate else g for g in gates)
+            for unit, gates in UNIT_GATES.items()
+        }
+        plays = [
+            declared
+            for declared in unit_lists().values()
+            if gate.variable in gates_of(declared)
+        ]
+        assert plays, f"no postflight list is subject to {gate.variable}"
+        agreed = disagreed = 0
+        for declared in plays:
+            variables = sorted(gates_of(declared))
+            for combination in itertools.product([False, True], repeat=len(variables)):
+                state = dict(zip(variables, combination))
+                rendered = render(declared, state)
+                assert rendered == predict(declared, state), (
+                    f"the unflipped table already disagrees in {state}, so this "
+                    "case cannot attribute a disagreement to the flip"
+                )
+                agreed += 1
+                if rendered != predict(declared, state, table):
+                    disagreed += 1
+        assert agreed and disagreed, (
+            f"flipping {gate.variable}.keeps changes no flag state, so the "
+            "comparison does not actually check that polarity"
+        )
 
     def test_dropping_the_smartd_service_gate_is_reported(self):
         """The second, independent gate on smartd: skipping its service step."""

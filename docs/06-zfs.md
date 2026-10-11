@@ -63,12 +63,14 @@ compression: lz4 (ssd/appdata; pool default zstd)
   authentik, gitlab, loki, mealie, nextcloud, prometheus). The `prometheus` and
   `loki` children are dropped from the recursive archive send
   (`nas_storage_archive_backup_exclude`): both TSDBs are re-derivable and huge,
-  and they are already out of restic. Adding an exclusion for a child that is
-  already replicated destroys its archive-side copy and snapshot history on the
-  first `-F` receive after the deploy, so send or snapshot anything worth keeping
-  somewhere else first. The Nextcloud VM
-  (156) adds `ssd/appdata/nextcloud/app` (20G, /mnt/nextcloud-app: compose +
-  html/config + backups) and `ssd/appdata/nextcloud/postgres` (16G, PGDATA).
+  and they are already out of restic. An excluded child keeps no source-side
+  `archsync-*` snapshot, and the stream leaves whatever archive-side copy it
+  has in place: the run warns, names it and counts it in
+  `archive_backup_excluded_orphans`, and reclaiming that space is an explicit
+  `zfs destroy -r` (docs/12 § ArchiveBackupFailed / ArchiveBackupStale). The
+  Nextcloud VM (156) adds `ssd/appdata/nextcloud/app` (20G,
+  /mnt/nextcloud-app: compose + html/config + backups) and
+  `ssd/appdata/nextcloud/postgres` (16G, PGDATA).
   Its bulk user data is a 2T **sparse** zvol `tank/nextcloud-data/disk` under the
   encrypted `tank/nextcloud-data` root (already in the archive SRC_LIST).
 - `ssd/databases` - Empty; an encryption root kept for shape, deliberately out
@@ -475,10 +477,7 @@ Proxmox VMs/LXCs back up nightly (`vzdump`, `all`) to:
 The Proxmox `storage.cfg` entry (`tank-proxmox`) and the nightly vzdump job
 are Ansible-managed by the `proxmox_backup` role (config in
 `host_vars/pve-nas-01.yml`). The codified storage entry mounts by hostname
-with `vers=4.2,xprtsec=tls`; migrating the legacy IP-based entry is a
-one-time supervised step (outside a backup window:
-`pvesh delete /storage/tank-proxmox` — config only, data untouched — then
-re-run the role). See weisssrv-lib `ansible_collections/weisssrv/infra/roles/proxmox_backup/README.md`.
+with `vers=4.2,xprtsec=tls`. See weisssrv-lib `ansible_collections/weisssrv/infra/roles/proxmox_backup/README.md`.
 
 ## Ansible Management
 

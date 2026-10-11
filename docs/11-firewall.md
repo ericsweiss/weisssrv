@@ -124,10 +124,9 @@ per-device 100.x pins. Accepted risk: this is a single-owner tailnet
 (docs/05-tailscale.md), per-device pins are brittle (onboarding/DR lockout)
 and partly moot — subnet-router SNAT means tailnet traffic to guests arrives
 as `admin_lan` anyway. Tailnet-side ACL tightening is codified in
-`terraform/tailscale/`. The VLAN migration re-opened and **closed** this
-question: the tailnet ACL already enforces device/user granularity, so
-narrowing the ipset would duplicate that layer while adding DR-lockout risk.
-Revisit only if the tailnet ever gains non-admin members.
+`terraform/tailscale/`. The ruling: the tailnet ACL already enforces
+device/user granularity, so narrowing the ipset would duplicate that layer
+while adding DR-lockout risk. Revisit only if the tailnet ever gains non-admin members.
 
 ### Security Groups
 
@@ -240,6 +239,20 @@ OUT DROP -log info
 GROUP sg-nfs-server
 GROUP sg-smb-server
 ```
+
+### Firewall implementation per node
+
+PVE 9 ships two implementations of the same rule files. pve-opt-02 runs the
+nftables one (`proxmox_firewall_nftables: true` in its `host_vars` renders
+`nftables: 1` into its `host.fw`, selecting the `proxmox-firewall` package);
+the other five hosts run the classic iptables `pve-firewall`. The choice is per
+node and the rule files are identical either way, so the security groups and
+ipsets above apply unchanged. nftables takes the bridge-netfilter hook out of
+that node's bridged path, which is why opt-02 is the trial host for the
+192-byte slab leak ([docs/16](16-next-steps.md)). Read the live result with
+`pve-firewall status` there, and confirm guest rules still apply — a VIP-bound
+flow is filtered by the *guest* firewall (below), so `sg-syslog-vip` on the
+ingress agents is the one to check.
 
 ### Host egress filtering
 

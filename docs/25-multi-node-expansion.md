@@ -342,7 +342,7 @@ VMs/containers.
 ```bash
 # On the NEW node, join the existing cluster
 # Get the join command from an existing cluster member first:
-ssh eric@10.0.10.102 "sudo pvecm create weisssrv"  # only if cluster does not exist yet (docs/26 Phase 2 owns cluster formation)
+ssh eric@10.0.10.102 "sudo pvecm create weisssrv"  # only if the cluster does not exist yet
 
 # On an existing member, get the join info:
 ssh eric@10.0.10.102 "sudo pvecm status"
@@ -577,7 +577,10 @@ task proxmox:ha-status
 
 Run these ON the source node — `pvesr create-local-job` creates the job where the
 guest currently runs, and the source node can never also be a target. dns-01
-sources from pve-prec-01, so its four targets are the other local-ssd nodes:
+sources from pve-prec-01, so its four targets are the other local-ssd nodes. A
+job's identity is `(VMID, target)`: Proxmox permutes which id carries which
+target when the guest migrates, so read the live pairing from
+`pvesh get /cluster/replication` and never edit the inventory to chase it.
 
 ```bash
 # Create a multi-target replication job (repeat for each target)

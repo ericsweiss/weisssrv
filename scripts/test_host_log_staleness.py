@@ -1,11 +1,12 @@
-"""Drift guard for the HostLogShippingStale alert host set.
+"""Drift guard for the HostLogShippingStale alert host set and its grouping.
 
-The rules in observability/loki/host-log-staleness.yaml must cover exactly the
-hosts the `alloy_host` play targets, derived by the generator that writes them.
+The rules must cover exactly the hosts the `alloy_host` play targets, derived by
+the generator that writes them, and reach Discord as one group, not one a host.
 """
 from __future__ import annotations
 
 import re
+import tempfile
 from pathlib import Path
 
 import yaml
@@ -196,4 +197,91 @@ class TestRulerMetaAlertThreshold:
             f"the dashboard turns green at {green[0]} ruler rules but "
             f"{self.THRESHOLD_ALERT} alerts below {self._threshold()} — the panel "
             "would read healthy while the alert fires."
+        )
+
+
+
+class TestDiscordGrouping:
+    """The fleet must reach Discord as one group, not one POST per host.
+
+    amtool resolves a receiver from labels alone and prints no grouping, so the
+    branch that collapses the fan-out is only assertable from the config itself.
+    """
+
+    ALERTNAME = "HostLogShippingStale"
+
+    def _config(self) -> dict:
+        """The Alertmanager config, rendered the way the promtool gate renders it."""
+        extract = load_script("extract-prometheus-config.py")
+        with tempfile.TemporaryDirectory() as scratch:
+            out = Path(scratch) / "alertmanager.yaml"
+            assert extract.extract_alertmanager(out, REPO / extract.DEFAULT_AM_CONFIG) == 0, (
+                "the Alertmanager config did not render"
+            )
+            return yaml.safe_load(out.read_text())
+
+    def _routes(self, config: dict) -> list[dict]:
+        """The root route's child branches, in the order Alertmanager reads them."""
+        routes = (config.get("route") or {}).get("routes") or []
+        assert routes, "the Alertmanager config declares no child routes"
+        return routes
+
+    def _index(self, routes: list[dict]) -> int:
+        for position, route in enumerate(routes):
+            if f'alertname="{self.ALERTNAME}"' in (route.get("matchers") or []):
+                return position
+        raise AssertionError(
+            f'no route branch matches alertname="{self.ALERTNAME}" — the fleet '
+            f"falls through to the severity=warning branch and groups per "
+            f"instance again, 23 Discord POSTs inside one group_wait"
+        )
+
+    def test_the_fan_out_the_grouping_exists_for_is_real(self):
+        rules = _alert_rules()
+        assert len(rules) > 1, (
+            "only one HostLogShippingStale rule ships, so the grouping branch "
+            "guards nothing — drop it, or the generator regressed"
+        )
+        severities = {r["labels"]["severity"] for r in rules}
+        assert severities == {"warning"}, (
+            f"the rules carry {sorted(severities)}; the grouping branch is placed "
+            f"to intercept them ahead of the severity=warning branch"
+        )
+
+    def test_the_branch_groups_on_alertname_alone(self):
+        routes = self._routes(self._config())
+        branch = routes[self._index(routes)]
+        assert branch.get("group_by") == ["alertname"], (
+            f"the {self.ALERTNAME} branch groups on {branch.get('group_by')!r}; "
+            f"any key that varies per host makes one Discord POST per host "
+            f"again, and the webhook 429s on the burst"
+        )
+        assert branch.get("group_wait"), (
+            f"the {self.ALERTNAME} branch inherits the root group_wait — set it "
+            f"explicitly so the whole fleet lands in one flush"
+        )
+
+    def test_the_branch_precedes_every_severity_branch(self):
+        routes = self._routes(self._config())
+        position = self._index(routes)
+        earlier = [
+            index
+            for index, route in enumerate(routes[:position])
+            if any(m.startswith("severity=") for m in (route.get("matchers") or []))
+            and 'severity="none"' not in (route.get("matchers") or [])
+        ]
+        assert not earlier, (
+            f"severity branches at {earlier} precede the {self.ALERTNAME} branch "
+            f"at {position}; the first matching child wins, so the grouping is dead"
+        )
+
+    def test_the_branch_still_reaches_a_discord_receiver(self):
+        config = self._config()
+        routes = self._routes(config)
+        name = routes[self._index(routes)].get("receiver")
+        receivers = {r["name"]: r for r in config.get("receivers") or []}
+        assert name in receivers, f"the {self.ALERTNAME} branch names receiver {name!r}"
+        assert receivers[name].get("discord_configs"), (
+            f"receiver {name!r} has no discord_configs, so the grouped fleet "
+            f"alert reaches nobody"
         )

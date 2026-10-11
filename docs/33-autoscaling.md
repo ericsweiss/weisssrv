@@ -196,10 +196,7 @@ The mirror image, and the more common one. A mutating VPA rewrites resources at
 **pod admission**, so a pod carries the request/limit pair it was admitted with
 for its whole lifetime. Commit a new limit — or flip `controlledValues` — on an
 `Initial`-tier (or low-churn `Auto`-tier) VPA and Flux applies it to the
-*template* while every running pod keeps the old numbers. external-dns ran for
-days at a 99Mi live ceiling against a declared 256Mi for exactly this reason: its
-pods were admitted under the previous `RequestsAndLimits` shape, which had
-ratio-scaled the limit down with the request, and nothing re-admitted them.
+*template* while every running pod keeps the old numbers.
 
 **So a commit that changes a memory limit or `controlledValues` needs a manual
 rollout restart in the same change window**, e.g.
@@ -321,7 +318,10 @@ when a chart injects a limit it must stop re-imposing). alloy and homarr are the
 most recent joiners: they were running on live limits ~4.8x and ~2.3x their
 declared ones, so the ceiling a pod admitted *without* the mutating webhook
 (which is `failurePolicy: Ignore`) would have received sat below their measured
-peak, and their limits were re-derived in the same commit. bar-assistant joined
+peak, and their limits were re-derived in the same commit. homarr's declared
+request tracks its VPA memory target for the same reason — left at the old
+256Mi, a pod admitted during a webhook outage ran at a third of its working set
+and held `VPARecommendationExceedsRequest` on for as long as it lived. bar-assistant joined
 the set after OOMKilling against a 276Mi ceiling its VPA had rescaled down from
 the declared 1Gi; its limit stays at 1Gi rather than the peak +60% figure,
 because the OOM shows the sampled 184Mi 30d peak understates the burst. Flipping one lowers
@@ -557,9 +557,10 @@ All of them are unit-tested in `scripts/prometheus-rule-tests/memory-sizing.test
 ## Hand-tuned request baselines
 
 Set from observed working sets. The `Off`-tier (recommendation-only)
-workloads keep these hand-tuned numbers permanently: Prometheus 4608Mi request /
-6Gi limit (retention is bounded by `retentionSize: 110GB`, with 365d as the outer
-bound); Loki 1Gi/1Gi; authentik-postgresql 640Mi/1Gi (raised
+workloads keep these hand-tuned numbers permanently: Prometheus 7168Mi request /
+8Gi limit (retention is bounded by `retentionSize: 110GB`, with 365d as the outer
+bound; the request tracks the VPA's uncapped memory target, which the mmapped
+TSDB head carries well above the process working set); Loki 1Gi/1Gi; authentik-postgresql 640Mi/1Gi (raised
 from a 512Mi limit that OOMKilled it — the worked example of applying an
 `Off`-tier recommendation). The `Initial`-tier workloads start from
 these baselines but let the VPA right-size them on the next natural restart:

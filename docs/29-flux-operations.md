@@ -14,7 +14,7 @@ Flux is the sole deploy mechanism for Kubernetes workloads in this cluster. The 
 - Cluster state: whatever Flux reconciles from that directory.
 - Operator action: edit YAML, commit, push. Flux does the rest.
 
-`kubectl apply` and `helm upgrade` are no longer part of the deploy path. They still work for
+Flux owns the deploy path. `kubectl apply` and `helm upgrade` still work for
 diagnostics (`kubectl describe`, `kubectl logs`) and emergency break-glass, but Flux will revert
 anything that drifts from the committed state on the next reconcile.
 
@@ -78,7 +78,7 @@ any controller renders a ServiceMonitor, and CRD-dependent configs run after the
 install their CRDs. Apps branch off `infrastructure-configs` in parallel with observability: with
 the monitoring CRDs now installed up-front by `infrastructure-crds`, the monitoring CRs under
 `apps/` and observability render cleanly on a fresh bootstrap, and in steady state observability
-failures no longer block apps.
+failures do not block apps.
 
 Tenant Kustomizations (external repos) live in `kubernetes/clusters/weisssrv/tenants/<repo>.yaml`
 and are reconciled by the root cluster Kustomization. See `docs/30-multi-repo-onboarding.md`.
@@ -90,26 +90,12 @@ The `monitoring.coreos.com` CRDs (`servicemonitors`, `podmonitors`,
 stage — the `prometheus-operator-crds` HelmRelease (`kubernetes/infrastructure/crds/`),
 pinned via `helm_chart_versions_prometheus_operator_crds` in `all.yml`. That stage
 `dependsOn: infrastructure-sources` with `wait: true`, and `infrastructure-controllers`
-now `dependsOn: infrastructure-crds`, so on a **fresh** cluster (or full DR rebuild)
-the CRDs are Established before any controller renders a ServiceMonitor. This
-removes the previous ordering caveat where Traefik (which always emits a
-`ServiceMonitor`, unlike cert-manager's `.Capabilities` guard) blocked the
-first-boot controllers stage until the CRDs arrived two stages later.
-kube-prometheus-stack runs with `crds.enabled: false` + `install/upgrade.crds: Skip`,
-so it no longer ships its own copies (which would tug ownership with the CRD stage).
-
-**On a truly fresh cluster nothing manual is needed** — the CRD stage installs
-the CRDs cleanly before controllers.
-
-**Adopting pre-existing CRDs.** On a cluster whose monitoring CRDs were
-installed by kube-prometheus-stack's `crds/` directory, they carry no Helm
-ownership metadata, so the first reconcile of the `prometheus-operator-crds`
-HelmRelease hits Helm's "invalid ownership metadata … cannot be imported" guard.
-The fix is a **metadata-only** adoption (labels/annotations only — the CRD spec is
-untouched, so existing CRs are unaffected). This has been applied here; the recipe
-is in the [historical appendix](#appendix-completed-one-time-migrations) for a
-rebuild that starts from an older cluster.
-
+`dependsOn: infrastructure-crds`, so on a **fresh** cluster (or full DR rebuild)
+the CRDs are Established before any controller renders a ServiceMonitor —
+Traefik always emits a `ServiceMonitor`, unlike cert-manager's `.Capabilities`
+guard. kube-prometheus-stack runs with `crds.enabled: false` +
+`install/upgrade.crds: Skip`, so the CRD stage is the sole owner of those CRDs.
+Nothing manual is needed: the CRD stage installs them cleanly before controllers.
 
 **Keep the CRD pin in lockstep with kube-prometheus-stack** (`prometheus_operator_crds`
 ↔ `kube_prometheus_stack` in `all.yml`) so the CRD set stays version-matched to the
@@ -135,8 +121,8 @@ before the manifest reconciles the corrected template.
 Two preventive controls now sit in front of that runbook, because the alert only
 fires *after* data is already being written to an unbacked-up disk:
 
-- `local-storage` is in `k3s_disable` (`group_vars/k3s.yml`), so k3s no longer
-  ships local-path-provisioner and **no default StorageClass exists** — a claim
+- `local-storage` is in `k3s_disable` (`group_vars/k3s.yml`), so k3s ships no
+  local-path-provisioner and **no default StorageClass exists** — a claim
   that omits `storageClassName` stays Pending instead of silently binding.
   Applying this restarts the k3s servers, so it needs a healthy etcd quorum.
 - `scripts/check-pvc-storageclass.py` (run by `task flux:lint`) fails CI on any
@@ -304,8 +290,8 @@ feature, not the bug — use it as guardrails.
   `Secret` into the app namespace → app consumes it normally.
 
 The only other manually-created Secrets are the per-tenant ESO bootstrap Secrets
-(`docs/30-multi-repo-onboarding.md`), each declared in the check script's allowlist. `op run --
-kubectl create secret` is no longer part of the workflow.
+(`docs/30-multi-repo-onboarding.md`), each declared in the check script's allowlist. Every other
+in-cluster Secret arrives through ESO.
 
 `scripts/check-unmanaged-secrets.py` enforces that: it reads every live Secret and
 fails on any that carries no ownership marker (ESO ownerReference, Flux/Helm
@@ -1065,45 +1051,6 @@ Flux CLI release as `HELD` and never count it as an actionable update. That is
 deliberate: bumping the GitOps control plane is a bootstrap-tested manual step
 (the sequence above), not an automated pin bump. `check-versions.py --update flux`
 prints the same rationale and refuses to write the new version.
-
-## Appendix: completed one-time migrations
-
-Both procedures below have been applied to this cluster. They are kept for a
-rebuild that starts from an older cluster state, not as standing operations.
-
-### Monitoring CRD Helm adoption
-
-```bash
-for crd in alertmanagerconfigs alertmanagers podmonitors probes prometheusagents \
-           prometheuses prometheusrules scrapeconfigs servicemonitors thanosrulers; do
-  kubectl label  crd ${crd}.monitoring.coreos.com app.kubernetes.io/managed-by=Helm --overwrite
-  kubectl annotate crd ${crd}.monitoring.coreos.com \
-    meta.helm.sh/release-name=prometheus-operator-crds \
-    meta.helm.sh/release-namespace=prometheus-operator-crds --overwrite
-done
-task flux:reconcile
-```
-
-Afterwards helm-controller applies identical CRD content — a steady-state no-op.
-Verify `infrastructure-crds` and the `prometheus-operator-crds` HelmRelease are
-Ready, that all ten `monitoring.coreos.com` CRDs carry an
-`operator.prometheus.io/version` annotation matching the pinned chart's operator
-version, and that `kube-prometheus-stack` is still Ready with no object churn.
-
-### Traefik NodePort de-allocation
-
-The Traefik Service sets `allocateLoadBalancerNodePorts: false` (MetalLB L2
-announces the VIP directly). Flipping that flag does not release NodePorts already
-allocated on an existing Service — neither Helm nor Flux SSA owns
-`spec.ports[*].nodePort` — so a cluster predating the flag needs one json-patch
-`remove` per port entry:
-
-```bash
-kubectl -n traefik patch svc traefik --type json \
-  -p '[{"op":"remove","path":"/spec/ports/0/nodePort"},{"op":"remove","path":"/spec/ports/1/nodePort"}]'
-```
-
-`healthCheckNodePort` stays — `externalTrafficPolicy: Local` requires it.
 
 ---
 

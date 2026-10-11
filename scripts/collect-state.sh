@@ -261,10 +261,11 @@ if [ "${1:-}" = "--json" ]; then
     ALERTS_FIRING=$(coerce_int "$ALERTS_FIRING" null)
 
     # GitLab is the GitOps source of truth, so its health degrades the verdict
-    # (never catastrophic) — see gitlab_health_code.
-    GITLAB_OK=0
-    GITLAB_HTTP=$(gitlab_health_code /-/health)
-    [ "$GITLAB_HTTP" = "200" ] && GITLAB_OK=1
+    # (never catastrophic). A whitelist-gated code is the collector's position,
+    # not a fault: the verdict input is 1 and the JSON carries null.
+    GITLAB_OK_RAW=$(gitlab_health_verdict "$(gitlab_health_code /-/health)")
+    GITLAB_OK_NUM=$(coerce_int "$GITLAB_OK_RAW" 1)
+    GITLAB_OK=$(coerce_int "$GITLAB_OK_RAW" null)
 
     # Collector context separates "cluster unhealthy" from "collector
     # misconfigured" (wrong kube_context, no ssh-agent keys, no LAN access).
@@ -286,7 +287,7 @@ if [ "${1:-}" = "--json" ]; then
     # decided by classify_json (collect-state-lib.sh, unit-tested); Warning
     # events are advisory and do not gate green.
     JSON_VERDICT=$(classify_json "$PVE_UP" "$PVE_TOTAL" "$K3S_API_OK" \
-        "$K3S_READY" "$K3S_TOTAL" "$FLUX_NOT_READY_NUM" "$ZFS_DEGRADED" "$GITLAB_OK" \
+        "$K3S_READY" "$K3S_TOTAL" "$FLUX_NOT_READY_NUM" "$ZFS_DEGRADED" "$GITLAB_OK_NUM" \
         "$ALERTS_FIRING_NUM")
     jq -n \
         --arg verdict "$JSON_VERDICT" \
@@ -319,7 +320,7 @@ if [ "${1:-}" = "--json" ]; then
             k3s: { nodes_ready: $k3s_ready, nodes_total: $k3s_total, api_reachable: $k3s_api_ok, version: $k3s_version, pods_running: $pod_running, pods_total: $pod_total },
             zfs: { pools: $zfs_pools, degraded_count: $zfs_degraded },
             flux: { not_ready_count: $flux_not_ready },
-            gitlab: { healthy: ($gitlab_ok == 1) },
+            gitlab: { healthy: (if $gitlab_ok == null then null else $gitlab_ok == 1 end) },
             events: { warnings_last_hour: $warning_events },
             alerts: { firing: $alerts_firing },
             collector_context: {
@@ -1652,10 +1653,16 @@ WARNING_EVENTS_REG=$(probe_warning_events --request-timeout=5s)
 ALERTS_FIRING_REG=$(probe_firing_alerts --request-timeout=5s)
 
 # GitLab application health — see gitlab_health_code. Unhealthy downgrades OK to
-# PARTIAL.
-GITLAB_OK_REG=0
+# PARTIAL; a whitelist-gated code is the collector's position, not a fault, so
+# it coerces to the undegraded 1 and the header says so.
 GITLAB_HTTP_REG=$(gitlab_health_code /-/health)
-[ "$GITLAB_HTTP_REG" = "200" ] && GITLAB_OK_REG=1
+GITLAB_OK_RAW_REG=$(gitlab_health_verdict "$GITLAB_HTTP_REG")
+GITLAB_OK_REG=$(coerce_int "$GITLAB_OK_RAW_REG" 1)
+if [ "$GITLAB_OK_RAW_REG" = "unknown" ]; then
+    GITLAB_HEALTH_NOTE=" — not probeable from this collector (monitoring_whitelist); verdict unaffected"
+else
+    GITLAB_HEALTH_NOTE=""
+fi
 
 {
     for host in ${PROXMOX_HOSTS[@]+"${PROXMOX_HOSTS[@]}"}; do
@@ -1777,7 +1784,7 @@ FAILING_PREDICATES=$(regular_failing_predicates "$PVE_REACHABLE_REG" "$K3S_API_O
     echo "# Flux not reconciling (not-Ready or suspended): $FLUX_NOT_READY_REG"
     echo "# ZFS degraded pools: $ZFS_DEGRADED_REG"
     [ -z "$ZFS_MISSING_REG" ] || echo "# ZFS pools not imported: $ZFS_MISSING_REG"
-    echo "# GitLab health (/-/health, internal then external): HTTP ${GITLAB_HTTP_REG:-unreachable}"
+    echo "# GitLab health (/-/health, internal then external): HTTP ${GITLAB_HTTP_REG:-unreachable}$GITLAB_HEALTH_NOTE"
     echo "# Firing alerts (Watchdog/InfoInhibitor exempt): $ALERTS_FIRING_REG"
     echo "# Warning events (last hour): $WARNING_EVENTS_REG"
     echo "# Coverage floor: $COVERAGE_FLOOR_PCT% (run is FAILED below this)"

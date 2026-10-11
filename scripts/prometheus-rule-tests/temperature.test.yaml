@@ -89,6 +89,10 @@ tests:
               component: storage
               instance: 10.0.10.102:9101
               chip: nvme_nvme0
+      # 66C is inside the trend band only: the High arm starts at 75C.
+      - eval_time: 40m
+        alertname: NVMeDriveTempHigh
+        exp_alerts: []
 
   - interval: 1m
     input_series:
@@ -131,12 +135,37 @@ tests:
         alertname: SATADriveTempWarning
         exp_alerts: []
 
-  # The critical twins of the two drive arms, each at its own floor.
+  # The nightly vzdump band on the NAS: 77C for 20 minutes is the High arm and
+  # must never reach the critical one. Both edges of the 10m hold are pinned.
   - interval: 1m
     input_series:
-      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="10.0.10.102:9101", chip="nvme_nvme0"}'
-        values: '76+0x30'
-      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="10.0.10.102:9101", chip="nvme_nvme0", chip_name="nvme"}'
+      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="10.0.10.102:9101", chip="nvme_nvme2"}'
+        values: '77+0x30'
+      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="10.0.10.102:9101", chip="nvme_nvme2", chip_name="nvme"}'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: NVMeDriveTempHigh
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: NVMeDriveTempHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: storage
+              instance: 10.0.10.102:9101
+              chip: nvme_nvme2
+      - eval_time: 20m
+        alertname: NVMeDriveTempCritical
+        exp_alerts: []
+
+  # 81C is the throttle point: critical fires, and the High arm stays on
+  # underneath it because Alertmanager inhibition, not the rule, suppresses it.
+  - interval: 1m
+    input_series:
+      - series: 'node_hwmon_temp_celsius{job="node-exporter-host", instance="10.0.10.102:9101", chip="nvme_nvme2"}'
+        values: '81+0x30'
+      - series: 'node_hwmon_chip_names{job="node-exporter-host", instance="10.0.10.102:9101", chip="nvme_nvme2", chip_name="nvme"}'
         values: '1+0x30'
     alert_rule_test:
       - eval_time: 20m
@@ -146,7 +175,17 @@ tests:
               severity: critical
               component: storage
               instance: 10.0.10.102:9101
-              chip: nvme_nvme0
+              chip: nvme_nvme2
+      - eval_time: 20m
+        alertname: NVMeDriveTempHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: storage
+              instance: 10.0.10.102:9101
+              chip: nvme_nvme2
+
+  # The SATA critical arm at its own floor.
 
   - interval: 1m
     input_series:

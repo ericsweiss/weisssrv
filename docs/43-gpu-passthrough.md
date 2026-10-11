@@ -84,7 +84,7 @@ has run (ARC cap + VFIO config staged on prec-01). Never run this while a
    relocate it.** Under PVE's default `conditional` HA policy the LRM *freezes*
    `vm:154` in place across a reboot (stopped, then restarted on the *same* node
    when it returns); only a full node **shutdown** relocates HA resources. So move
-   it by hand first (per docs/26):
+   it by hand first, per docs/25 § Section 3: Proxmox HA Configuration (Reference):
    `ssh pve-prec-01 "sudo ha-manager migrate vm:154 <target-node>"`, and confirm
    it lands and is healthy on the target before rebooting. (Skip this only if HA
    downtime for the whole reboot window is acceptable — then expect `vm:154` down
