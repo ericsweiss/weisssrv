@@ -2,7 +2,7 @@
 # `cloudflare-zone` module; dns.tf holds this site's records, and external-dns owns
 # the service CNAMEs. The `?ref=` is a check-lib-pins.py site (scripts/lib-ref-sites.yml).
 module "zone" {
-  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/cloudflare-zone?ref=v0.20.0"
+  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/cloudflare-zone?ref=v0.20.1"
 
   account_id = var.cloudflare_account_id
   zone_name  = var.external_domain
