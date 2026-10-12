@@ -215,7 +215,7 @@ plex_version: "1.43.4.10903-e5521bd8c"
 # GitLab EE (using CE features) - Omnibus package.
 # https://packages.gitlab.com/gitlab/gitlab-ee
 # The maintenance apt-upgrade honours the gitlab-ee hold and will not bump it.
-gitlab_version: "19.4.1-ee.0"
+gitlab_version: "19.4.2-ee.0"
 
 # https://gitlab.com/gitlab-org/charts/gitlab-runner/tags
 gitlab_runner_helm_version: "0.93.0"
@@ -283,7 +283,7 @@ hermes_claude_version: "2.1.296"
 # 1Password CLI (op), baked into the hermes image for Hermes' 1Password skill
 # (docs/37). Full DEB version string. NOT optional: upstream keeps exactly ONE
 # version, so a stale pin FAILS the build and version-check cannot see it.
-hermes_op_version: "2.40.0-1"
+hermes_op_version: "2.41.0-1"
 # Camofox browser server - the sidecar behind Hermes' camofox tool. Upstream
 # publishes no image; build-camofox-browser clones the repo at tag v<version>,
 # so the pin is the bare semver. https://github.com/jo-inc/camofox-browser/releases
