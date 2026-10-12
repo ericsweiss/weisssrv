@@ -30,12 +30,12 @@ tests:
         alertname: ArchiveBackupFailed
         exp_alerts: []
 
-  # ArchiveBackupRunning: fires while archive-backup.service is active and
-  # holds 20m after it exits, so the I/O-pressure page that lands at the end
-  # of a long run is still inhibited; gone once the tail passes.
+  # ArchiveBackupRunning: fires while archive-backup.service runs (a oneshot
+  # unit reports activating, never active) and holds 20m after it exits, so
+  # the I/O-pressure page at the end of a long run is still inhibited.
   - interval: 1m
     input_series:
-      - series: 'node_systemd_unit_state{job="node-exporter-host", instance="10.0.10.102:9101", name="archive-backup.service", state="active"}'
+      - series: 'node_systemd_unit_state{job="node-exporter-host", instance="10.0.10.102:9101", name="archive-backup.service", state="activating"}'
         values: '1+0x30 0+0x40'
     alert_rule_test:
       - eval_time: 10m
@@ -46,7 +46,7 @@ tests:
               job: node-exporter-host
               instance: 10.0.10.102:9101
               name: archive-backup.service
-              state: active
+              state: activating
       - eval_time: 45m
         alertname: ArchiveBackupRunning
         exp_alerts:
@@ -55,7 +55,7 @@ tests:
               job: node-exporter-host
               instance: 10.0.10.102:9101
               name: archive-backup.service
-              state: active
+              state: activating
       - eval_time: 60m
         alertname: ArchiveBackupRunning
         exp_alerts: []

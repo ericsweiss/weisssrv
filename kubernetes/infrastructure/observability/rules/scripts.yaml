@@ -29,11 +29,11 @@ spec:
               `journalctl -u archive-backup.service` on pve-nas-01.
 
         # Null-routed source for the archive-run inhibit: the NAS is I/O-bound
-        # while archive-backup.service runs. keep_firing_for outlasts the 15m
-        # hold plus the 5m rate window of ProxmoxHostIOPressure after it exits.
+        # while archive-backup.service runs, which a oneshot unit reports as
+        # activating. keep_firing_for outlasts the 15m hold plus the 5m window.
         - alert: ArchiveBackupRunning
           expr: >-
-            node_systemd_unit_state{job="node-exporter-host", name="archive-backup.service", state="active"} == 1
+            node_systemd_unit_state{job="node-exporter-host", name="archive-backup.service", state=~"activating|active"} == 1
           keep_firing_for: 20m
           labels:
             severity: none

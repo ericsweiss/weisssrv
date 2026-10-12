@@ -890,7 +890,9 @@ over 14 days the busiest namespace sits inside it under 1% of the time.
 
 Archive-run suppression sources from **`ArchiveBackupRunning`**, a null-routed
 `severity: none` rule read from the NAS host exporter's
-`node_systemd_unit_state` for `archive-backup.service`. The replication is the
+`node_systemd_unit_state` for `archive-backup.service` (a oneshot unit reports
+`activating` for its whole run, so the rule reads that state as well as
+`active`). The replication is the
 nightly writer the `ProxmoxHostIOPressure` hold was sized against, and a long
 run outlasts that hold, so the inhibit is scoped `equal: [instance]` and the
 source holds `keep_firing_for: 20m` past the unit's exit: the page that lands
