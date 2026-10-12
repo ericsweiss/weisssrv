@@ -5,7 +5,7 @@
 # here, in the root module, because `path.module` inside the module resolves to
 # the module's directory.
 module "tailnet" {
-  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/tailscale-acl?ref=v0.20.1"
+  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/tailscale-acl?ref=v0.20.2"
 
   acl_policy = file("${path.module}/policy.hujson")
   split_dns  = local.split_dns

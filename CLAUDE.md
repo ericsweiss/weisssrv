@@ -254,6 +254,10 @@ Workflow facts an agent must know (not obvious from `task --list`):
   from internal templates in the root file, and
   `scripts/test_taskfile_tree.py` fails when a new `kubernetes/apps` namespace
   with a workload ships without them.
+- **`.taskrc.yml` turns on Task's env precedence** so the root `env: PATH`
+  can lead with the pyenv shim directory: every command, child script and
+  precondition then resolves the `python3` the gates are tested on, however the
+  caller's PATH is ordered. The two settings only work together.
 - **All Ansible tasks are idempotent** — safe to re-run.
 - **Cluster Helm/image versions** live in
   `ansible/inventories/prod/group_vars/all.yml`; after editing, run

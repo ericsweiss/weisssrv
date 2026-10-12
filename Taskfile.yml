@@ -6,6 +6,13 @@ version: '3'
 # `task hosts:sync` after editing hosts.yml.
 dotenv: ['scripts/hosts.env']
 
+# Task resolves every command through the caller's PATH, where a Homebrew
+# python3 can shadow the pyenv interpreter the gates are tested on, so the shim
+# directory leads PATH whenever it exists (.taskrc.yml lets env override PATH).
+env:
+  PATH:
+    sh: '[ -d "$HOME/.pyenv/shims" ] && printf "%s:%s" "$HOME/.pyenv/shims" "$PATH" || printf "%s" "$PATH"'
+
 # One file per task namespace; task names are unchanged (`flux:lint` is `lint:`
 # in taskfiles/flux.yml). The root vars: and dotenv reach every included file.
 # A task calls another namespace's with a leading colon: `:flux:sync-versions`.

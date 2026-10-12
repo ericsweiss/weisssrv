@@ -73,7 +73,7 @@ data:
   prowlarr_version: 2.6.5.5623
   proxmox_exporter_version: 3.10.1
   proxmox_vm_virtio_win_version: 0.1.285
-  pulsarr_version: 0.19.5
+  pulsarr_version: 0.19.6
   qbittorrent_version: 5.2.4
   qol_vundle_version: v0.10.2
   radarr_version: 6.4.4.10685
