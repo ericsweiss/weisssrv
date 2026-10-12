@@ -31,6 +31,10 @@ EXEMPT = {
         "header comment naming the admin hostname, not an address the task "
         "resolves"
     ),
+    "taskfiles/ansible.yml": (
+        "the molecule-test image's registry host, which is the forge rather "
+        "than a cluster-config value"
+    ),
     "taskfiles/flux.yml": (
         "flux bootstrap targets the GitLab host, which is the forge rather than "
         "a cluster-config value"

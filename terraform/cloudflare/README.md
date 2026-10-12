@@ -25,11 +25,10 @@ only in the cluster template's render check.
 
 Two consequences:
 
-- **The ref is bumped by hand.** `scripts/check-lib-pins.py` gates the
-  `include:` list and `ansible/requirements.yml`; it does not read Terraform
-  module sources. Bump `?ref=` in this `main.tf` and in every other root's
-  `main.tf` under `terraform/` in the same MR as `variables.WEISSSRV_LIB_REF`
-  — `scripts/test_site_configs.py` fails if any of them disagrees.
+- **The ref is derived, not typed.** `scripts/lib-ref-sites.yml` declares
+  `terraform/*/main.tf` as a `check-lib-pins.py` site, so `--bump vX.Y.Z`
+  moves this `?ref=` with every other library pin and the gate fails on one
+  left behind.
 - **`terraform init` clones `weisssrv-lib` over HTTPS.** In CI that is already
   covered: `.gitlab-ci.yml`'s global `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_0` pair
   rewrites credential-less `https://$CI_SERVER_HOST/` URLs to the job token (the

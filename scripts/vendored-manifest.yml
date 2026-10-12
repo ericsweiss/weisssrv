@@ -16,6 +16,8 @@ vendored:
   - scripts/b2-bucket-drift.py
   - scripts/check-alertmanager-behaviour.py
   - scripts/check-backup-artifact-apps.py
+  # Imports ci_yaml.py from its own directory, registered below.
+  - scripts/check-ci-include-job-names.py
   # Reads the inventory through inventory_tree.py, registered below.
   - scripts/check-cluster-invariants.py
   - scripts/check-comment-length.py
@@ -38,7 +40,6 @@ vendored:
   - lib: tests/test_check_lib_pins.py
     consumer: scripts/test_check_lib_pins.py
   - scripts/check-live-cpu-limits.py
-  - scripts/check-molecule-image-pin.py
   - scripts/check-netpol-except-parity.py
   # The gate's canonical suite travels with it; scripts/test_netpol_except_gate.py
   # keeps the cases that run it over this repo's own policies.
@@ -49,6 +50,7 @@ vendored:
   - scripts/check-role-inputs.py
   - scripts/check-runbook-anchors.py
   - scripts/check-scrape-netpol.py
+  - scripts/check-scrape-wiring.py
   - scripts/check-secretstore-scope.py
   - scripts/check-taskfile.sh
   - scripts/check-version-checksums.py
@@ -63,6 +65,10 @@ vendored:
   - scripts/find-pve-host-for-vm.sh
   - scripts/find-reachable-host.sh
   - scripts/flux-env.sh
+  # The render/scan/kubeconform program the CI flux-lint job and
+  # `task flux:lint` both run. Drives flux-env.sh, kubeconform-skipped.py
+  # and flux-child-kustomizations.py by path, all registered here.
+  - scripts/flux-lint.sh
   - scripts/flux-render.sh
   # Reads a `kubectl get -o json` dump on stdin, so flux-rotate-secret.sh and an
   # operator's shell both drive it.
@@ -72,6 +78,7 @@ vendored:
   - scripts/generate-versions-configmap.py
   - scripts/inventory_tree.py
   - scripts/kubeconform-skipped.py
+  # Runs extract-prometheus-config.py by path, registered above.
   - scripts/lint-prometheus-config.sh
   - scripts/maintenance-run-with-verify.sh
   - scripts/molecule-retry.sh

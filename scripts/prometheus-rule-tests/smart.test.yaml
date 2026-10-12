@@ -6,7 +6,8 @@ rule_files:
   - rules.yaml
 evaluation_interval: 5m
 tests:
-  # Reallocated sectors: 24h max-min. A constant historical count is silent.
+  # Reallocated sectors: latest reading minus the 24h floor. A constant
+  # historical count is silent.
   - interval: 5m
     input_series:
       - series: 'smartmon_reallocated_sector_count{instance="10.0.10.102:9101", disk="sda"}'
@@ -29,6 +30,17 @@ tests:
               severity: warning
               instance: 10.0.10.102:9101
               disk: sda
+
+  # A replaced drive zeroes the counter: the delta is directional, so the drop
+  # reads as no growth and the alert stays silent through the swap.
+  - interval: 5m
+    input_series:
+      - series: 'smartmon_reallocated_sector_count{instance="10.0.10.102:9101", disk="sda"}'
+        values: '8+0x200 0+0x100'
+    alert_rule_test:
+      - eval_time: 24h
+        alertname: SMARTReallocatedSectorsGrowing
+        exp_alerts: []
 
   # The pending/offline-uncorrectable pair is DIRECTIONAL: latest reading minus
   # the 24h floor. A sector found days ago and never joined is silent.

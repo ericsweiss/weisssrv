@@ -785,3 +785,8 @@ restic_offsite_b2_application_key: >-
 restic_offsite_repo_password: >-
   {{ lookup('ansible.builtin.env', 'RESTIC_REPO_PASSWORD')
   or undef(hint='RESTIC_REPO_PASSWORD env var must be set (run via op run)') }}
+
+# nftables firewall implementation instead of the iptables pve-firewall: it
+# takes the bridge-netfilter hook, the path behind the skbuff_ext_cache growth,
+# out of this node's bridged NFS traffic; the proxmox-firewall package is installed.
+proxmox_firewall_nftables: true

@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from test_vendored_byte_identity import _lib_root, _pinned_ref, _ref_available
+from test_vendored_byte_identity import _lib_root, _pinned_ref, _require_ref
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO / "scripts"
@@ -32,15 +32,13 @@ def _gate(tree: Path) -> Path:
 
 @pytest.fixture(scope="module")
 def lib_tree(tmp_path_factory) -> Path:
-    """The library tree the `project:` includes resolve in, at the pinned ref.
+    """The library tree the `project:` includes resolve in, at the declared ref.
 
-    A checkout without the ref falls back to its working tree, as the
-    vendored-copy gate does.
+    The ref has to resolve in the checkout, as it does for the vendored-copy
+    gate; $WEISSSRV_LIB_REF_OVERRIDE names another commit-ish.
     """
     lib = _lib_root()
-    ref = _pinned_ref()
-    if not _ref_available(lib, ref):
-        return lib
+    ref = _require_ref(lib, _pinned_ref())
     out = tmp_path_factory.mktemp("lib-at-pin")
     archive = subprocess.run(
         ["git", "-C", str(lib), "archive", ref, "ci"], capture_output=True

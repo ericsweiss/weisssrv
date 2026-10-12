@@ -27,10 +27,6 @@ _GATE_SUFFIXES = (".py", ".sh")
 # Gates no runner names, each with how it runs instead. A reason naming a
 # `scripts/test_*.py` is cross-checked against that module below.
 RUNS_ELSEWHERE = {
-    "check-molecule-image-pin.py": (
-        "scripts/test_site_configs.py runs it against the real tree, so "
-        "`task scripts:test` and the python-tests job both cover it"
-    ),
     "check-tenant-traefik-isolation.py": (
         "scripts/test_site_configs.py runs it against the real tree, so "
         "`task scripts:test` and the python-tests job both cover it"

@@ -113,6 +113,11 @@ tasks:
   _molecule-run:
     internal: true
     dir: "{{.MOLECULE_DIR}}"
+    # The scenarios carry no image literal: every platform reads this, so a
+    # local run pulls the same image the CI jobs build from the declared ref.
+    env:
+      MOLECULE_TEST_IMAGE: >-
+        registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:{{.LIB_REF}}
     preconditions:
       - sh: "{{.ROOT_DIR}}/scripts/resolve-tool.sh molecule molecule >/dev/null"
         msg: "molecule not installed"

@@ -544,7 +544,8 @@ the SSO database. Three alerts now close it:
   256Mi limit on 190Mi of file cache over 44Mi of RSS. `authentik/postgresql`
   is the one container judged on its working set instead: its shared buffers
   are shared memory, charged against the limit but absent from RSS, and its
-  data set is too small for page cache to inflate the figure. The blind spots
+  data set is too small for page cache to inflate the figure; its `/dev/shm`
+  tmpfs is capped at 256Mi for the same reason. The blind spots
   that remain are the rest of a cgroup's charge elsewhere — tmpfs, slab and
   kernel memory — and a burst that dies inside the 15m hold;
   `ContainerOOMKilled` is the detector for both. `hindsight/llama` is excluded

@@ -43,23 +43,23 @@ the bot close its own MR on the next run.
 
 ## Bumping weisssrv-lib (CI templates + the weisssrv.infra collection)
 
-The library pin is not a version pin in `all.yml` — it lives in two places and
-both move together, in one MR:
+The library pin is not a version pin in `all.yml` — it is one declared input
+every other pin derives from, moved in one MR:
 
-1. `variables.WEISSSRV_LIB_REF` in `.gitlab-ci.yml`, then
-   `scripts/check-lib-pins.py --fix` to rewrite every literal `ref:` on the
-   include entries (the gate fails on drift or on a branch ref).
-2. The collection `version:` in `ansible/requirements.yml`, then
-   `ansible-galaxy install -r ansible/requirements.yml --force`.
+1. `scripts/check-lib-pins.py --bump vX.Y.Z`. It rewrites
+   `spec.inputs.lib_ref.default` in `.gitlab-ci.yml`'s `spec:` header, every
+   `include:` `ref:` and `variables.WEISSSRV_LIB_REF` (all reading
+   `$[[ inputs.lib_ref ]]`), the collection `version:` in
+   `ansible/requirements.yml`, and every match of `scripts/lib-ref-sites.yml` —
+   here the four Terraform module `?ref=` pins. The gate fails on a pin left
+   behind, on a site glob that matches nothing, and on a branch ref.
+2. `ansible-galaxy install -r ansible/requirements.yml --force`.
 
-Two more literals ride the same tag and are NOT in those two files: the
-`molecule-test:<tag>` fallbacks in the integration scenarios and
-`ansible/TESTING.md` (`scripts/check-molecule-image-pin.py --fix` rewrites them;
-CI overrides the image, so a stale one only breaks a local `molecule test`), and
-the Terraform `?ref=` module pins — **one per root under `terraform/`** — which
-are still bumped by hand. Both are gated by `scripts/test_site_configs.py`,
-which discovers the roots rather than counting them, so a new root is covered
-the moment it lands.
+The molecule test image needs no bump: each scenario's platform takes the bare
+`image: "${MOLECULE_TEST_IMAGE}"` and the `taskfiles/ansible.yml` wrappers
+export it from `{{.LIB_REF}}`, which is `check-lib-pins.py --print`.
+`scripts/test_site_configs.py` re-checks the Terraform refs by discovering the
+roots rather than counting them, so a new root is covered the moment it lands.
 
 While the new tag does not exist yet, both the pinned galaxy install and
 `task ansible:lint` fail on it. Lint against the library checkout instead:

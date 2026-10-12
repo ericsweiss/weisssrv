@@ -2,12 +2,12 @@
 # gateway's own segmentation — VLANs, firewall zones and policies, WLANs, DHCP
 # reservations, WAN port forwards, site settings — so a bad apply is a LAN you
 # cannot reach the controller from, not a failed pipeline.
-# The shape comes from the weisssrv-lib `unifi-network` module at the `?ref=`
-# below; the inventory is site data in networks.tf and the `wlans` map here.
-# The `?ref=` is bumped by hand with `variables.WEISSSRV_LIB_REF`.
+# The shape comes from the weisssrv-lib `unifi-network` module, whose `?ref=` is
+# a check-lib-pins.py site (scripts/lib-ref-sites.yml); the inventory is site
+# data in networks.tf and the `wlans` map here.
 # Segmentation and what stays console-owned: docs/46-unifi-network.md.
 module "network" {
-  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/unifi-network?ref=v0.19.0"
+  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/unifi-network?ref=v0.20.0"
 
   networks = local.networks
   zones    = local.zones

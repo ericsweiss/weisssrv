@@ -1,0 +1,12 @@
+---
+# Every file beyond .gitlab-ci.yml and ansible/requirements.yml that repeats the
+# library release tag, read by the vendored scripts/check-lib-pins.py. The paths
+# are site data, so the list lives here rather than in the script.
+
+# Each entry is a glob relative to the repo root plus a regex carrying exactly
+# ONE capture group — the ref, which must equal the declared one. A glob or
+# pattern that matches nothing FAILS the gate rather than passing vacuously.
+sites:
+  # The four terraform roots, each a thin caller of a library module at `?ref=`.
+  - path: terraform/*/main.tf
+    pattern: 'weisssrv-lib\.git//terraform/modules/[a-z-]+\?ref=(v\d+\.\d+\.\d+)(?=")'

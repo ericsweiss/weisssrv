@@ -351,10 +351,11 @@ spec:
               it backs.
 
         # A stable nonzero count from an old event is not actionable; growth is.
-        # max-min over 24h detects an increase while tolerating standby gaps.
+        # The delta is directional — latest reading minus the 24h floor — so a
+        # replacement zeroing the counter reads as no growth, not a drop.
         - alert: SMARTReallocatedSectorsGrowing
           expr: >-
-            max_over_time(smartmon_reallocated_sector_count[24h])
+            last_over_time(smartmon_reallocated_sector_count[1h])
             - min_over_time(smartmon_reallocated_sector_count[24h]) > 0
           for: 5m
           labels:

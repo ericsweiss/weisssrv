@@ -196,10 +196,10 @@ has no `.copier-answers.yml` and is never re-rendered. Improvements are ported
 between the two by hand, so a change that is not site data belongs in the
 template (or the library) as well as here.
 
-Every arrow is a pinned dependency: this repo pins the library tag in
-`variables.WEISSSRV_LIB_REF` (`.gitlab-ci.yml`, enforced by
-`scripts/check-lib-pins.py`) and in `ansible/requirements.yml`. Change library
-behaviour in the library, tag it, then bump the pins — see
+Every arrow is a pinned dependency: this repo declares the library tag once, as
+`spec.inputs.lib_ref.default` in `.gitlab-ci.yml`, and every other pin derives
+from it under `scripts/check-lib-pins.py`. Change library behaviour in the
+library, tag it, then `scripts/check-lib-pins.py --bump vX.Y.Z` — see
 [docs/13-ci-cd.md](docs/13-ci-cd.md) § Shared CI library and `CLAUDE.md`
 § Repo family.
 

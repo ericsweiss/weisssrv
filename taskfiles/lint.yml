@@ -217,11 +217,35 @@ tasks:
         [ "$PIN" = "$AV" ] || { echo "busybox pin (${PIN}) drifted from busybox_version (${AV}) — bump scripts/post-maintenance-verify.sh"; exit 1; }
 
   lib-pins:
-    desc: Check every weisssrv-lib include ref and the collection pin against variables.WEISSSRV_LIB_REF
+    desc: "Check every weisssrv-lib pin — include refs, the collection, the terraform sites — against the declared spec.inputs.lib_ref"
     cmds:
       - python3 scripts/check-lib-pins.py
     preconditions:
       - *needs_pyyaml
+
+  ci-include-job-names:
+    desc: "Every `needs: optional: true` resolves to a job the pipeline and its library includes create"
+    preconditions:
+      - *needs_pyyaml
+      - sh: test -d "${WEISSSRV_LIB_PATH:-../weisssrv-lib}/ci" || test -d "{{.LIB_DIR}}/ci"
+        msg: |
+          weisssrv-lib checkout not found at ${WEISSSRV_LIB_PATH:-../weisssrv-lib}
+          or {{.LIB_DIR}}. The gate reads each included template's job names out
+          of it. Fix with either:
+            task lib:sync
+            export WEISSSRV_LIB_PATH=/path/to/weisssrv-lib
+    cmds:
+      # --allow-unreadable-include: GitLab ships Secret-Detection with the
+      # instance, so neither checkout holds it. --require-optional-needs: a
+      # pipeline that declares none would pass over nothing.
+      - |
+        set -eu
+        LIB="${WEISSSRV_LIB_PATH:-../weisssrv-lib}"
+        [ -d "$LIB/ci" ] || LIB="{{.LIB_DIR}}"
+        python3 scripts/check-ci-include-job-names.py \
+          --lib-path "$LIB" \
+          --require-optional-needs \
+          --allow-unreadable-include "Jobs/Secret-Detection.gitlab-ci.yml=GitLab ships this template with the instance, so neither checkout holds it; the secret_detection job it creates is needed non-optionally"
 
   kustomization-coverage:
     desc: "Every manifest is listed by its kustomization, every listed name resolves, and no stage renders nothing"

@@ -242,17 +242,18 @@ GROUP sg-smb-server
 
 ### Firewall implementation per node
 
-PVE 9 ships two implementations of the same rule files. pve-opt-02 runs the
-nftables one (`proxmox_firewall_nftables: true` in its `host_vars` renders
-`nftables: 1` into its `host.fw`, selecting the `proxmox-firewall` package);
-the other five hosts run the classic iptables `pve-firewall`. The choice is per
-node and the rule files are identical either way, so the security groups and
-ipsets above apply unchanged. nftables takes the bridge-netfilter hook out of
-that node's bridged path, which is why opt-02 is the trial host for the
-192-byte slab leak ([docs/16](16-next-steps.md)). Read the live result with
-`pve-firewall status` there, and confirm guest rules still apply — a VIP-bound
-flow is filtered by the *guest* firewall (below), so `sg-syslog-vip` on the
-ingress agents is the one to check.
+PVE 9 ships two implementations of the same rule files. pve-nas-01 and
+pve-opt-02 run the nftables one (`proxmox_firewall_nftables: true` in their
+`host_vars` renders `nftables: 1` into `host.fw`, selecting the
+`proxmox-firewall` package); the other four hosts run the classic iptables
+`pve-firewall`. The choice is per node and the rule files are identical either
+way, so the security groups and ipsets above apply unchanged. nftables takes the
+bridge-netfilter hook out of that node's bridged path, which is the mitigation
+for the 192-byte slab leak ([docs/16](16-next-steps.md)) — the NAS is where that
+leak dominates, because the NFS data plane rides its bridge. Read the live
+result with `pve-firewall status` there, and confirm guest rules still apply — a
+VIP-bound flow is filtered by the *guest* firewall (below), so `sg-syslog-vip`
+on the ingress agents is the one to check.
 
 ### Host egress filtering
 

@@ -32,27 +32,21 @@ def _run(argv: list[str], cwd: Path | None = None, env: dict | None = None):
 
 @functools.lru_cache(maxsize=None)
 def _lib_paths(prefix: str = "") -> frozenset[str]:
-    """Repo-relative file paths the library ships at the ref .gitlab-ci.yml pins.
+    """Repo-relative file paths the library ships at the declared ref.
 
-    Falls back to the checkout's working tree only when the ref is not in it
-    yet, as the vendored-copy gate does.
+    The ref has to resolve in the checkout, as it does for the vendored-copy
+    gate; $WEISSSRV_LIB_REF_OVERRIDE names another commit-ish.
     """
-    from test_vendored_byte_identity import _lib_root, _pinned_ref, _ref_available
+    from test_vendored_byte_identity import _lib_root, _pinned_ref, _require_ref
 
     lib = _lib_root()
-    ref = _pinned_ref()
-    if _ref_available(lib, ref):
-        argv = ["git", "-C", str(lib), "ls-tree", "-r", "--name-only", ref]
-        if prefix:
-            argv += ["--", prefix]
-        out = subprocess.run(argv, capture_output=True, text=True, check=True).stdout
-        return frozenset(line for line in out.splitlines() if line)
-    base = lib / prefix if prefix else lib
-    if not base.is_dir():
-        return frozenset()
-    return frozenset(
-        path.relative_to(lib).as_posix() for path in base.rglob("*") if path.is_file()
-    )
+    ref = _require_ref(lib, _pinned_ref())
+    argv = ["git", "-C", str(lib), "ls-tree", "-r", "--name-only", ref]
+    if prefix:
+        argv += ["--", prefix]
+    out = subprocess.run(argv, capture_output=True, text=True, check=True).stdout
+    return frozenset(line for line in out.splitlines() if line)
+
 
 # check-collection-pin-trigger.py
 # A deploy job that runs a playbook but does not trigger on
@@ -950,6 +944,11 @@ class TestLintMirrorsTheCiLintStage:
             "the library's /ci/lint/docs-link-check.yml job runs it; the script "
             "name lives in that template, not here"
         ),
+        "scripts/check-ci-include-job-names.py": (
+            "the python-tests job runs scripts/test_ci_include_job_names.py, "
+            "which drives this gate against the library tree at the pin — the "
+            "only place in CI that holds a library checkout"
+        ),
         "scripts/check-kustomization-coverage.py": (
             "the python-tests job runs scripts/test_kustomization_coverage.py, "
             "which drives this gate over the real tree"
@@ -1230,21 +1229,18 @@ class TestTerraformDriftPlanJobs:
     def _template_doc(cls) -> dict:
         """The library template's job body at the pinned ref."""
         from test_vendored_byte_identity import (
-            _CILoader, _lib_root, _pinned_ref, _ref_available,
+            _CILoader, _lib_root, _pinned_ref, _require_ref,
         )
 
         lib = _lib_root()
-        ref = _pinned_ref()
+        ref = _require_ref(lib, _pinned_ref())
         relpath = cls.TEMPLATE.lstrip("/")
-        if _ref_available(lib, ref):
-            blob = subprocess.run(
-                ["git", "-C", str(lib), "show", f"{ref}:{relpath}"],
-                capture_output=True, text=True,
-            )
-            assert blob.returncode == 0, blob.stderr
-            text = blob.stdout
-        else:
-            text = (lib / relpath).read_text()
+        blob = subprocess.run(
+            ["git", "-C", str(lib), "show", f"{ref}:{relpath}"],
+            capture_output=True, text=True,
+        )
+        assert blob.returncode == 0, blob.stderr
+        text = blob.stdout
         docs = [d for d in yaml.load_all(text, Loader=_CILoader) if isinstance(d, dict)]
         assert len(docs) == 2, f"{relpath} is not a spec header plus a job body"
         return docs[1]
@@ -1513,9 +1509,11 @@ class TestInputsHeaderParsing:
         "  inputs:\n"
         "    stage:\n"
         "      default: deploy\n"
+        "    lib_ref:\n"
+        "      default: v0.1.2\n"
         "---\n"
         "variables:\n"
-        "  WEISSSRV_LIB_REF: v1.2.3\n"
+        "  WEISSSRV_LIB_REF: $[[ inputs.lib_ref ]]\n"
         ".acme-script:\n"
         "  script:\n"
         "    - ansible-playbook playbooks/acme.yml\n"
@@ -1544,11 +1542,9 @@ class TestInputsHeaderParsing:
             "variables", ".acme-script", "deploy-acme"
         }
 
-    def test_the_molecule_pin_gate_reads_the_ref_past_the_header(self, tmp_path):
-        pin = load_script("check-molecule-image-pin.py")
-        ci = tmp_path / ".gitlab-ci.yml"
-        ci.write_text(self.PIPELINE)
-        assert pin.declared_ref(ci) == "v1.2.3"
+    def test_the_lib_pin_gate_reads_the_declared_ref_from_the_header(self, tmp_path):
+        pin = load_script("check-lib-pins.py")
+        assert pin.declared_ref(self.PIPELINE, "lib_ref") == "v0.1.2"
 
     def test_the_matrix_coverage_gate_reads_the_jobs_document(self, tmp_path):
         """The gate reads the jobs document of a two-document pipeline file."""
@@ -1751,16 +1747,15 @@ def template_fragment_names(text: str, passed: dict | None = None) -> set[str]:
 
 
 def _lib_ci_text(relpath: str) -> str:
-    """One library CI file at the pinned ref, else from the checkout's tree."""
-    from test_vendored_byte_identity import _lib_root, _pinned_ref, _ref_available
+    """One library CI file at the declared ref."""
+    from test_vendored_byte_identity import _lib_root, _pinned_ref, _require_ref
 
-    lib, ref = _lib_root(), _pinned_ref()
-    if _ref_available(lib, ref):
-        return subprocess.run(
-            ["git", "-C", str(lib), "show", f"{ref}:{relpath}"],
-            capture_output=True, text=True, check=True,
-        ).stdout
-    return (lib / relpath).read_text(encoding="utf-8")
+    lib = _lib_root()
+    ref = _require_ref(lib, _pinned_ref())
+    return subprocess.run(
+        ["git", "-C", str(lib), "show", f"{ref}:{relpath}"],
+        capture_output=True, text=True, check=True,
+    ).stdout
 
 
 def _resolvable(doc: dict, select) -> dict[str, str]:

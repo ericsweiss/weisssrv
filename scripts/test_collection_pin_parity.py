@@ -1,7 +1,7 @@
 """Version pins duplicated in all.yml and the pinned collection stay equal.
 
-The library side is read at the ref `.gitlab-ci.yml` pins, falling back to the
-checkout (`$WEISSSRV_LIB_PATH`, else `../weisssrv-lib`) when the tag is uncut.
+The library side is read at the ref `.gitlab-ci.yml` declares, out of the
+checkout (`$WEISSSRV_LIB_PATH`, else `../weisssrv-lib`).
 """
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 import yaml
-from test_vendored_byte_identity import _lib_root, _pinned_ref
+from test_vendored_byte_identity import _lib_root, _pinned_ref, _require_ref
 
 REPO = Path(__file__).resolve().parent.parent
 ALL_VARS = REPO / "ansible/inventories/prod/group_vars/all.yml"
@@ -31,19 +31,19 @@ DUPLICATED_PINS = {
 
 
 def role_defaults(role: str) -> dict:
-    """The role's defaults at the pinned ref, else from the working tree."""
+    """The role's defaults at the declared ref."""
     lib, relpath = _lib_root(), ROLE_PATH.format(role=role)
     assert (lib / "ansible_collections/weisssrv/infra").is_dir(), (
         f"{lib} carries no weisssrv.infra collection. This gate never skips."
     )
+    ref = _require_ref(lib, _pinned_ref())
     shown = subprocess.run(
-        ["git", "-C", str(lib), "show", f"{_pinned_ref()}:{relpath}"],
+        ["git", "-C", str(lib), "show", f"{ref}:{relpath}"],
         capture_output=True,
         text=True,
-        check=False,
+        check=True,
     )
-    source = shown.stdout if shown.returncode == 0 else (lib / relpath).read_text()
-    return yaml.safe_load(source) or {}
+    return yaml.safe_load(shown.stdout) or {}
 
 
 def pin_mismatches(inventory: dict) -> list[str]:

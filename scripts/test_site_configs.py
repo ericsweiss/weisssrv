@@ -920,9 +920,11 @@ class TestB2BucketConfig:
 
 
 def test_ci_include_pins_agree_with_the_single_source():
-    """Every `include:` pinning weisssrv-lib must repeat variables.WEISSSRV_LIB_REF
-    (GitLab resolves includes before the variables block exists, so the literals
-    are unavoidable) and it must be a release tag."""
+    """Every library pin derives from `spec.inputs.lib_ref.default`.
+
+    Each `include:` ref, `variables.WEISSSRV_LIB_REF`, the collection pin and
+    every site in lib-ref-sites.yml read it, and it must be a release tag.
+    """
     run = subprocess.run(
         [sys.executable, str(SCRIPTS / "check-lib-pins.py")],
         capture_output=True, text=True, cwd=REPO,
@@ -931,10 +933,10 @@ def test_ci_include_pins_agree_with_the_single_source():
 
 
 def test_the_collection_pin_matches_the_ci_lib_ref():
-    """ansible/requirements.yml and variables.WEISSSRV_LIB_REF are one pin.
+    """ansible/requirements.yml and the declared ref are one pin.
 
-    check-lib-pins.py walks `include:` entries only, so the collection pin,
-    which decides which roles reach the cluster, is gated here.
+    The gate above drives check-lib-pins.py; this arm reads the file directly,
+    so the pin deciding which roles reach the cluster is checked two ways.
     """
     lib_ref = _pinned_ref()
 
@@ -949,9 +951,9 @@ def test_the_collection_pin_matches_the_ci_lib_ref():
     )
     assert git_entries[0].get("version") == lib_ref, (
         f"ansible/requirements.yml pins the collection at "
-        f"{git_entries[0].get('version')!r} but .gitlab-ci.yml pins the library "
-        f"at {lib_ref!r}. They are one pin — bump both, or the deploy jobs run "
-        f"roles from a different library revision than CI validated."
+        f"{git_entries[0].get('version')!r} but .gitlab-ci.yml declares "
+        f"{lib_ref!r}. They are one pin — `check-lib-pins.py --bump` moves "
+        f"both, or the deploy jobs run roles CI never validated."
     )
 
 
@@ -978,8 +980,8 @@ def test_the_ansible_pin_matches_the_ci_variable():
 def test_terraform_module_refs_match_the_ci_variable():
     """Every terraform root pins its module `?ref=` at the library release.
 
-    These refs are written by hand and check-lib-pins.py cannot see them, so a
-    stale one plans against a different library revision's modules.
+    scripts/lib-ref-sites.yml declares the glob check-lib-pins.py rewrites;
+    this arm discovers the roots instead, so a root outside that glob is found.
     """
     lib_ref = _pinned_ref()
 
@@ -1008,27 +1010,14 @@ def test_terraform_module_refs_match_the_ci_variable():
             pinned_roots.add(path.relative_to(tf_root).parts[0])
         for ref in refs:
             assert ref == str(lib_ref), (
-                f"{rel} pins ?ref={ref} but "
-                f"WEISSSRV_LIB_REF is {lib_ref!r}. The terraform refs move "
-                f"with the library pin — bump them together."
+                f"{rel} pins ?ref={ref} but the declared library ref is "
+                f"{lib_ref!r}. The terraform refs move with it — "
+                f"`check-lib-pins.py --bump` rewrites all four."
             )
     unpinned = sorted(set(roots) - pinned_roots)
     assert not unpinned, (
         f"terraform roots with no lib module `?ref=` pin: {unpinned}"
     )
-
-
-def test_molecule_image_literals_match_the_ci_variable():
-    """The `${MOLECULE_TEST_IMAGE:-...}` fallbacks match the library pin.
-
-    CI overrides the variable, so a stale literal only bites a local
-    `task ansible:test-integration-*`. Enforced by check-molecule-image-pin.py.
-    """
-    run = subprocess.run(
-        [sys.executable, str(SCRIPTS / "check-molecule-image-pin.py")],
-        capture_output=True, text=True, cwd=REPO,
-    )
-    assert run.returncode == 0, run.stdout + run.stderr
 
 
 def test_no_tenant_onboards_while_traefik_allows_cross_namespace():
@@ -1440,13 +1429,11 @@ _ANSIBLE_LINT_INCLUDE = "/ci/lint/ansible-lint.yml"
 
 
 def _lib_file_text(relpath: str) -> str:
-    """A library file at the ref .gitlab-ci.yml pins, else the checkout's copy."""
-    from test_vendored_byte_identity import _lib_root, _ref_available
+    """A library file at the ref .gitlab-ci.yml declares."""
+    from test_vendored_byte_identity import _lib_root, _require_ref
 
     lib = _lib_root()
-    ref = _pinned_ref()
-    if not _ref_available(lib, ref):
-        return (lib / relpath).read_text()
+    ref = _require_ref(lib, _pinned_ref())
     blob = subprocess.run(
         ["git", "-C", str(lib), "show", f"{ref}:{relpath}"],
         capture_output=True, text=True,
@@ -1615,11 +1602,15 @@ def test_both_render_paths_run_fluxs_strict_substitution():
     place a `${conf%/*}` class of expression is caught.
     """
     strict = "flux envsubst --strict"
+    program = "scripts/flux-lint.sh"
     local = (REPO / "taskfiles/flux.yml").read_text()
-    assert strict in local, f"taskfiles/flux.yml no longer runs `{strict}`"
+    assert program in local, f"taskfiles/flux.yml no longer runs `{program}`"
     job = _lib_file_text("ci/validate/flux-lint.yml")
-    assert strict in job, (
-        f"the pinned flux-lint template no longer runs `{strict}` — CI would "
+    assert "$FLUX_LINT_SCRIPT" in job, (
+        f"the pinned flux-lint template no longer runs the consumer's {program}"
+    )
+    assert strict in (REPO / program).read_text(), (
+        f"the vendored {program} no longer runs `{strict}` — both paths would "
         "render with GNU envsubst alone"
     )
 
@@ -1630,20 +1621,17 @@ def test_the_dind_service_matches_the_library_input_default():
     Nothing else holds this local job's digest-pinned daemon equal to the
     library's `dind_service` default, so a bump would leave it stale.
     """
-    from test_vendored_byte_identity import _lib_root, _ref_available
+    from test_vendored_byte_identity import _lib_root, _require_ref
 
     lib = _lib_root()
-    ref = _pinned_ref()
+    ref = _require_ref(lib, _pinned_ref())
     relpath = "ci/build/docker-build.yml"
-    if _ref_available(lib, ref):
-        blob = subprocess.run(
-            ["git", "-C", str(lib), "show", f"{ref}:{relpath}"],
-            capture_output=True, text=True,
-        )
-        assert blob.returncode == 0, blob.stderr
-        text = blob.stdout
-    else:
-        text = (lib / relpath).read_text()
+    blob = subprocess.run(
+        ["git", "-C", str(lib), "show", f"{ref}:{relpath}"],
+        capture_output=True, text=True,
+    )
+    assert blob.returncode == 0, blob.stderr
+    text = blob.stdout
 
     # A template file is two documents: the `spec.inputs` header, then the jobs.
     header = next(

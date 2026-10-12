@@ -196,12 +196,11 @@ start as an entry in this section.
   reboot cadence and, optionally, `slub_nomerge`. With `slub_nomerge` armed the
   cache reports as `skbuff_ext_cache`. Arming `slub_nomerge` on the other five hosts,
   to settle the fleet-wide 230-380 MB/host/day claim, is an owner decision and
-  its own MR. Mitigation under trial, staged: pve-opt-02 carries
-  `proxmox_firewall_nftables: true` in its `host_vars`, so verify the guest
-  firewall still filters there (including `sg-syslog-vip` on the ingress
-  agents), then watch that node's slab trend for a week — the per-host rate
-  flattening is the success metric. The NAS follows in its own supervised MR
-  once opt-02 holds. Keep the
+  its own MR. The mitigation is applied on pve-nas-01 and pve-opt-02, which
+  carry `proxmox_firewall_nftables: true` in their `host_vars`: verify the guest
+  firewall still filters on each (including `sg-syslog-vip` on the ingress
+  agents), then watch the NAS slab trend for a week — the per-host rate
+  flattening is the success metric. Keep the
   `HostSlabLeakSuspected` weekly reboot pager until a week of flat
   `node_memory_SUnreclaim_bytes - node_zfs_arc_size`. Mechanism, fingerprint,
   bpftrace recipe and the reboot procedure:
@@ -416,21 +415,34 @@ Design, runbook and the codified-vs-manual contract:
   `increase(prober_probe_total{namespace="downloads", probe_type="Liveness",
   result="failed"}[1d])` above zero for a week is the gate
   ([docs/21](21-download-clients-deployment.md) § Troubleshooting).
-- [ ] **Decide on `/dev/sdd` — `ST6000NM0024-1HT17Z`, serial `Z4D1JQBA`
+- [ ] **Replace `/dev/sdd` — `ST6000NM0024-1HT17Z`, serial `Z4D1JQBA`
   (archive).** FAULTED on an unrecovered read, cleared and resilvered, still in
-  the pool, SMART self-assessment PASSED, reallocated sectors 0. Either keep it
-  with a watch or order a replacement; the alerting tier is deliberately silent
-  about a drive that is sitting still.
+  the pool, SMART self-assessment PASSED, reallocated sectors 0. A 6 TB
+  replacement is on order: `zpool replace archive <old-id> <new-id>` with the
+  old disk still attached, no scrub during the resilver, and the old disk
+  becomes the shelf spare. The alerting tier is deliberately silent about a
+  drive that is sitting still.
 - [ ] **Decide on `/dev/sdf` — `ST22000NM000C-3WC103`, serial `ZXA0HR34`
   (tank).** One pending and one offline-uncorrectable sector from a single
   unrecovered read, flat since. `SMARTPendingSectorsGrowing` pages again if the
   count moves, so this is a parts decision, not a pager question.
 - [ ] ZFS scrub-completion ZED email (per-scrub success/error notification;
   scrub *staleness* already ships via the `ZFSPoolScrubStale` alert).
-- [ ] Consider ZFS special devices for metadata acceleration.
+- [ ] **Immich and Nextcloud libraries through virtiofs.** Both guests keep
+  their data on zvols today; once the full libraries are imported and the real
+  working set is visible, a virtiofs share of a `tank` dataset would let the
+  special vdev hold the small files (thumbnails, previews) by
+  `special_small_blocks` instead of the zvol's all-or-nothing block size
+  ([docs/06](06-zfs.md)). NFS for app libraries is rejected.
 
 ### Observability and autoscaling
 
+- [ ] **A memory-pressure precursor for the burst OOMKills.** Every OOMKill
+  in 90 days was a burst shorter than the 15m `ContainerMemoryNearLimit` hold,
+  so nothing pages ahead of it. cAdvisor already exports
+  `container_pressure_memory_*` (PSI); a rule on sustained memory stall for a
+  container with a limit is the candidate, sized against a month of data so
+  it pages only where an OOMKill followed ([docs/33](33-autoscaling.md)).
 - [ ] **Detect a wholly-absent
   `proxmox_corosync_health_collector_last_success_seconds`.**
   `CorosyncHealthCollectorStale` only catches "metric exists but stuck", not

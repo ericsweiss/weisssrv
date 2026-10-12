@@ -37,6 +37,7 @@ python3 ../weisssrv-lib/scripts/check-vendored-copies.py --repo-root . --list
 | Script | What it asserts | Origin |
 |---|---|---|
 | `check-backup-artifact-apps.py` | The backup-artifact app list and its alert arms stay paired | vendored |
+| `check-ci-include-job-names.py` | Every `needs: optional: true` resolves to a job this pipeline or one of its library includes creates — GitLab ignores an optional need naming no job, so a renamed template job turns the dependency off in silence | vendored |
 | `check-ci-pin-parity.sh` | Every `include:` input repeats its `variables:` pin exactly — `include:` resolves before `variables:` exists, so the literals are copies that have to be kept equal | local |
 | `check-collection-pin-trigger.py` | Every playbook-running `deploy-*` job also triggers on `ansible/requirements.yml`, the only in-repo signal that a role's content changed | local |
 | `check-deploy-coverage.sh` | Every changed deploy input is covered by a `deploy-*` job | vendored |
@@ -60,8 +61,7 @@ python3 ../weisssrv-lib/scripts/check-vendored-copies.py --repo-root . --list
 | `check-integration-matrix-coverage.py` | Every integration-test dir has a CI matrix entry, and every matrix entry names a dir | local |
 | `check-kubectl-version-pin.py` | The CI kubectl pin stays within ±1 minor of `k3s_version` | vendored |
 | `check-kustomization-coverage.py` | Every manifest beside a kustomization is listed by it, every listed name is on disk, and no kustomization renders nothing | local |
-| `check-lib-pins.py` | Every weisssrv-lib `include:` pins `WEISSSRV_LIB_REF`, and it is a release tag (`--fix` rewrites) | vendored |
-| `check-molecule-image-pin.py` | Every `molecule-test:<tag>` fallback in the integration scenarios and `ansible/TESTING.md` equals `WEISSSRV_LIB_REF` (`--fix` rewrites) — CI overrides the image, so only local runs read the literal | vendored |
+| `check-lib-pins.py` | Every weisssrv-lib pin derives from `spec.inputs.lib_ref.default` — the `include:` refs, `variables.WEISSSRV_LIB_REF`, the collection `version:` and every `lib-ref-sites.yml` site — and it is a release tag (`--bump vX.Y.Z` moves it, `--print` reads it) | vendored |
 | `check-netpol-except-parity.py` | Every public-egress NetworkPolicy uses the canonical reserved-CIDR except-list | vendored |
 | `check-nfs-tls.py` | Every NFS PersistentVolume mounts `xprtsec=tls`, by hostname (the cert has no IP SAN) | vendored |
 | `check-pvc-storageclass.py` | Every claim pins a `storageClassName` | vendored |
@@ -71,10 +71,12 @@ python3 ../weisssrv-lib/scripts/check-vendored-copies.py --repo-root . --list
 | `check-guest-endpoint-parity.py` | Every LAN address a hand-written EndpointSlice names is a real `ansible_host` in the prod inventory, or the LAN gateway | vendored |
 | `check-secret-rotation-coverage.py` | Every `remoteRef.key` is named in docs/15, and every ExternalSecret is reached by a rotation path or declared manual | forked |
 | `check-scrape-netpol.py` | Every scraped namespace admits Prometheus through its NetworkPolicies | vendored |
+| `check-scrape-wiring.py` | Every port a ServiceMonitor/PodMonitor scrapes is admitted from observability, and is a port some workload declares — the port half of the gate above, over the rendered corpus | vendored |
 | `check-secretstore-scope.py` | Each ClusterSecretStore is namespace-scoped and covers its consumers | vendored |
 | `check-tailnet-dns-parity.py` | The tailnet-dns override zone holds exactly the AdGuard rewrites that do not answer with the internal Traefik VIP | local |
 | `check-tailscale-policy.py` | `policy.hujson` parses, every `tag:` it references has a `tagOwners` entry, and `autoApprovers.routes` matches the inventory's `tailscale_advertise_routes` | local |
 | `check-taskfile.sh` | Taskfile references resolve (tasks, scripts, files) | vendored |
+| `flux-lint.sh` | Renders every stage, scans for substitution forms Flux mishandles or cannot resolve, and kubeconforms the result — the one program `task flux:lint` and the CI flux-lint job both run | vendored |
 | `flux-corpus-gates.sh` | Runs every weisssrv-local gate over the full rendered Flux corpus, so `task flux:lint` and the CI flux-lint job cannot drift | local |
 | `check-tenant-traefik-isolation.py` | No tenant is wired into `clusters/weisssrv/tenants/` while Traefik still sets `allowCrossNamespace: true` (docs/30 pre-onboarding checklist, as a gate) | local |
 | `check-tenant-wiring.py` | Every tenant wiring file carries its `serviceAccountName`, `prune`, `targetNamespace`, `dependsOn`, namespace labels, the ResourceQuota and LimitRange caps, both RoleBindings, and its `kustomization.yaml` entry, and every namespaced document names the tenant namespace | local |
@@ -198,6 +200,7 @@ re-vendor never has to be re-edited. Each is covered by `test_site_configs.py`.
 | `b2-bucket.json` | `b2-bucket-drift.py` | Bucket identity + its declared settings |
 | `unifi-settings.json` | `unifi-settings-drift.py` | The console-owned UniFi site settings and their expected values |
 | `netpol-except.yaml` | `check-netpol-except-parity.py` | The reserved-CIDR except-list + the peer-less egress policies allowed to omit it |
+| `lib-ref-sites.yml` | `check-lib-pins.py` | Every file beyond `.gitlab-ci.yml` and `ansible/requirements.yml` that repeats the library tag — here the four terraform `?ref=` pins |
 | `alertmanager-behaviour.yaml` | `check-alertmanager-behaviour.py` | The alert→receiver route cases and the upstream alerts that must stay routable |
 | `kubeconform-expected-skipped.txt` | `kubeconform-skipped.py` | The apiVersion/Kind pairs flux-lint accepts unvalidated |
 
@@ -234,12 +237,13 @@ weisssrv-lib next to the code. What runs here:
 | Test | What it asserts |
 |---|---|
 | `test_vendored_smoke.py` | The vendored copies are runnable |
-| `test_vendored_byte_identity.py` | The vendored copies are unmodified. Drives the library's `check-vendored-copies.py` against a weisssrv-lib checkout at the pinned ref, and never skips when that checkout is missing |
+| `test_vendored_byte_identity.py` | The vendored copies are unmodified. Drives the library's `check-vendored-copies.py` against a weisssrv-lib checkout at the declared ref, and never skips: a checkout without that commit fails, and `WEISSSRV_LIB_REF_OVERRIDE` is how a pre-tag run names the commit to compare at |
 | `test_scripts_have_tests.py` | Every local script is exercised by some suite |
 | `test_gate_exit_contract.py` | Every non-vendored gate exits 2 with one `ERROR` line, never 1 and never a traceback, when it cannot inspect its subject |
 | `test_playbook_extra_var_bools.py` | Every `when:` reading a pipeline `-e` extra var ENDS its filter chain in `\| bool`, or compares it — a filter after the coercion derives a string again. Walks each caller's whole extra-vars argument and every playbook, task file and role the call reaches, resolving `weisssrv.infra.<role>` to the installed collection. The walk fails closed: an edge it cannot follow raises instead of narrowing the set, a templated include target globs its `{{ ... }}` to `*` so every candidate sibling is inspected, and an include, import or role invoked through `action:`/`local_action:` is resolved like the key form or raises |
 | `test_postflight_unit_gates.py` | Every unit `postflight.yml` asserts active is one its role actually starts. Renders each play's `postflight_active_units` across every state of the role flags that gate those units, and compares it with what the installed collection leaves running — including the fallback case where the inventory overrides nothing |
 | `test_check_grafana_sidecar_init.py` | `check-grafana-sidecar-init.py` reports a watching init container and a listing long-running one, and separates those findings from a render or parse failure |
+| `test_ci_include_job_names.py` | Every optional `needs:` resolves against the job names the library templates create at the declared ref — the CI half of `task lint:ci-include-job-names` |
 | `test_site_configs.py` | The site configuration files above parse and match their consumers |
 | `test_prometheus_rule_coverage.py` | Every alert has a promtool rule unit test in `prometheus-rule-tests/`, or a declared exemption |
 

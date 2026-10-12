@@ -1,8 +1,8 @@
 # Authentik SSO state as code. The shape comes from the weisssrv-lib
-# `authentik-sso` module at a hand-bumped ?ref= that scripts/test_site_configs.py
-# holds equal to WEISSSRV_LIB_REF; this site's objects are in the sibling files.
+# `authentik-sso` module; this site's objects are in the sibling files. The
+# `?ref=` is a check-lib-pins.py site (scripts/lib-ref-sites.yml).
 module "sso" {
-  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/authentik-sso?ref=v0.19.0"
+  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/authentik-sso?ref=v0.20.0"
 
   # Flow slugs, signing key, grant types and mappings are passed explicitly so a
   # library default change cannot repoint provider identity on a ref bump.

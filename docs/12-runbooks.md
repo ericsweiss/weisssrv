@@ -904,6 +904,11 @@ additionally guards ~2-day staleness.
   is idle (a success clears both alerts), or if the overrun is the new normal,
   move `archive-backup.timer.j2` later / revisit the vzdump `bwlimit` in
   host_vars.
+- **ArchiveBackupRunning** — not actionable, and not routed anywhere: it fires
+  while `archive-backup.service` is active and for 20m after it exits, and it
+  exists to inhibit `ProxmoxHostIOPressure` on pve-nas-01, which the nightly
+  replication crosses for its whole run (docs/31). Seeing it in the
+  Alertmanager UI means the run is in progress, nothing more.
 
 #### ResticOffsite* / BackupArtifactStale
 

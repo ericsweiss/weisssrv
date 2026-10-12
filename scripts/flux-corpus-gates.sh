@@ -102,6 +102,13 @@ RC=0
 python3 scripts/check-scrape-netpol.py < "$RENDER_ALL" || RC=$?
 note_rc "check-scrape-netpol.py" "$RC"
 
+# Port granularity for the same invariant: the monitor's scraped port must be
+# the one a policy admits from observability, and a port some workload declares.
+echo "=== Checking scrape port/NetworkPolicy wiring ==="
+RC=0
+python3 scripts/check-scrape-wiring.py --corpus "$RENDER_ALL" || RC=$?
+note_rc "check-scrape-wiring.py" "$RC"
+
 # Every namespace that owns a workload must carry a namespace-wide ingress-deny
 # policy. The scrape gate above only inspects namespaces that already run one,
 # so an unfenced namespace is invisible to it.

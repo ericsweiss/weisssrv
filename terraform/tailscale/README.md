@@ -113,10 +113,11 @@ data.
 `moved.tf` is the permanent map of the pre-module state addresses: the blocks
 stay, and removing one rides a supervised plan and apply.
 
-Same two notes as `terraform/cloudflare`: the `?ref=` is bumped **by hand**
-(`scripts/check-lib-pins.py` does not read Terraform module sources), and
-`terraform init` clones `weisssrv-lib` over HTTPS — already covered in CI by the
-global `GIT_CONFIG_*` job-token URL rewrite in `.gitlab-ci.yml`.
+Same two notes as `terraform/cloudflare`: the `?ref=` moves with
+`scripts/check-lib-pins.py --bump`, which reads the site declared in
+`scripts/lib-ref-sites.yml`, and `terraform init` clones `weisssrv-lib` over
+HTTPS — already covered in CI by the global `GIT_CONFIG_*` job-token URL
+rewrite in `.gitlab-ci.yml`.
 
 ## Split-DNS (`split_dns.tf`)
 

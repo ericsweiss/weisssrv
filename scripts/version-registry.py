@@ -803,7 +803,7 @@ _SERVICES: list[dict] = [
         "notes": (
             "current is UNREADABLE here — the tag+digest lives in weisssrv-lib "
             "ci/review/pr-agent.yml. Compare Latest against that file, bump it "
-            "there, tag, then move WEISSSRV_LIB_REF."
+            "there, tag, then move the declared lib_ref."
         ),
         "source_url": "https://github.com/qodo-ai/pr-agent/releases",
     },

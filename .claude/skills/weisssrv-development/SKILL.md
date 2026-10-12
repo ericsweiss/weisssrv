@@ -70,15 +70,13 @@ change type.
   then a pin bump here (below). What this repo owns is site data: inventory,
   playbooks, Taskfile/CI wiring.
 - **Bumping weisssrv-lib is one atomic set of edits**, all in the same MR:
-  `variables.WEISSSRV_LIB_REF` in `.gitlab-ci.yml` → `scripts/check-lib-pins.py
-  --fix` (rewrites every literal `ref:`) → `scripts/check-molecule-image-pin.py
-  --fix` (the `molecule-test:<tag>` fallbacks in the integration scenarios and
-  `ansible/TESTING.md`; CI overrides the image, so a stale one only breaks a
-  local run) → the collection `version:` in `ansible/requirements.yml` → the
-  Terraform module `?ref=` pins, one per root under `terraform/`, bumped by hand
-  because `check-lib-pins.py` reads only the `include:` block and
-  `ansible/requirements.yml` (`scripts/test_site_configs.py` holds every root's
-  ref equal to `WEISSSRV_LIB_REF`) → re-vendor **every** file this repo's
+  `scripts/check-lib-pins.py --bump vX.Y.Z` moves the declared ref
+  (`spec.inputs.lib_ref.default` in `.gitlab-ci.yml`'s own `spec:` header) and
+  every pin derived from it — each `include:` `ref:`,
+  `variables.WEISSSRV_LIB_REF`, the collection `version:` in
+  `ansible/requirements.yml`, and the four Terraform module `?ref=` pins
+  declared as sites in `scripts/lib-ref-sites.yml` → re-vendor **every** file
+  this repo's
   `scripts/vendored-manifest.yml` lists (never a hand-remembered subset;
   `python3 <lib>/scripts/check-vendored-copies.py --manifest
   scripts/vendored-manifest.yml` lists and gates them) →
@@ -159,7 +157,7 @@ change type.
 | New Proxmox VM / LXC app | `references/add-vm-app.md` | `docs/35-nextcloud.md` + `docs/36-immich.md` (current-shape worked examples), `docs/27-gitlab-deployment.md` (the Omnibus/registry case), `docs/06-zfs.md`, `docs/11-firewall.md`, `docs/17-disaster-recovery.md`, `docs/18-bootstrap-new-systems.md` |
 | **Ansible role behaviour** (tasks, templates, defaults) | the role in `weisssrv-lib` — **not here** | the collection README + the role's README; back here for the pin bump (§ Invariants) |
 | Inventory / playbook / host or guest sizing | `ansible/README.md` (layout + conventions) + `CLAUDE.md` § Ansible roles | `docs/01-overview.md`, `docs/18-bootstrap-new-systems.md`, the role's README in the collection |
-| Terraform | `terraform/<module>/README.md` + neighbours — the four roots deploy differently: **cloudflare AUTO-APPLIES on merge** (`deploy-terraform`, `-auto-approve`), **tailscale** is plan-in-CI + supervised manual apply, **authentik** and **unifi** are supervised manual apply only. **all four** are thin callers of `weisssrv-lib//terraform/modules/{cloudflare-zone,tailscale-acl,authentik-sso,unifi-network}` at a hand-bumped `?ref=` holding only site data, and `check-lib-pins.py` does not cover module sources — `scripts/test_site_configs.py` holds the refs equal to `WEISSSRV_LIB_REF`. All four refs pin the same release as `WEISSSRV_LIB_REF`. `prevent_destroy` (authentik objects; unifi networks + zones) and the unbound-application precondition are **module-side** and a consumer cannot remove them: a rename needs a `moved {}` block, a removal needs `terraform state rm` first. **unifi** additionally has a codified-vs-UI split — device/port config, mDNS reflection and policy ordering are UI steps the provider cannot express, so read docs/46 before assuming a network change belongs in HCL | `docs/08-dns.md`, `docs/05-tailscale.md`, `docs/40-authentik-terraform.md`, `docs/46-unifi-network.md` |
+| Terraform | `terraform/<module>/README.md` + neighbours — the four roots deploy differently: **cloudflare AUTO-APPLIES on merge** (`deploy-terraform`, `-auto-approve`), **tailscale** is plan-in-CI + supervised manual apply, **authentik** and **unifi** are supervised manual apply only. **all four** are thin callers of `weisssrv-lib//terraform/modules/{cloudflare-zone,tailscale-acl,authentik-sso,unifi-network}` at a `?ref=` holding only site data, declared as a `check-lib-pins.py` site in `scripts/lib-ref-sites.yml`, so all four move with the declared `lib_ref` and `scripts/test_site_configs.py` re-checks every discovered root. `prevent_destroy` (authentik objects; unifi networks + zones) and the unbound-application precondition are **module-side** and a consumer cannot remove them: a rename needs a `moved {}` block, a removal needs `terraform state rm` first. **unifi** additionally has a codified-vs-UI split — device/port config, mDNS reflection and policy ordering are UI steps the provider cannot express, so read docs/46 before assuming a network change belongs in HCL | `docs/08-dns.md`, `docs/05-tailscale.md`, `docs/40-authentik-terraform.md`, `docs/46-unifi-network.md` |
 | SSO account or group membership (a person, not an app) | `terraform/authentik/users.tf` header + `groups.tf` | `docs/40-authentik-terraform.md` § Managed users. `task authentik:add-user -- <username> --name "…" --email …` scaffolds the entry and prints the 1Password snippet. `users.tf` holds LOGIN NAMES ONLY — display name and email live solely in the "Authentik User Identities" 1P item injected as `TF_VAR_user_identities`, because this repo mirrors to public GitHub. Membership goes on the group in `groups.tf`, never on the user. A PRE-EXISTING account also needs an `import {}` block in `terraform/authentik/imports.tf` landing in the SAME apply. Every user carries module-side `prevent_destroy`: rename with a `moved {}` block, never delete and recreate. Supervised `terraform:authentik-plan` then `:authentik-apply` — never the UI |
 | CI pipeline (`.gitlab-ci.yml`, `.gitlab/ci/`) | `CLAUDE.md` § Repo family — check whether the job is included from the library before editing | `docs/13-ci-cd.md` (§ Shared CI library), the library's `docs/INCLUDE-CONTRACT.md` |
 | `scripts/` | `scripts/README.md` — its **Origin** column says whether the file is local, vendored, or a declared fork | `docs/13-ci-cd.md` |
@@ -194,9 +192,8 @@ out the per-change-type checklist.
   gates in `taskfiles/lint.yml`, and `scripts:test`, which runs every
   `scripts/test_*.py`). A new gate therefore enters `task lint` either as a
   `taskfiles/lint.yml` command or as a pytest suite that exercises it against
-  the real tree — `check-skill-refs.py`, `check-molecule-image-pin.py` and
-  `check-tenant-traefik-isolation.py` are enforced the second way, by their
-  pytest suites.
+  the real tree — `check-skill-refs.py` and `check-tenant-traefik-isolation.py`
+  are enforced the second way, by their pytest suites.
 - **The Taskfile is an `includes:` tree.** `Taskfile.yml` holds the top-level
   tasks and one file per namespace lives under `taskfiles/<ns>.yml`; task names
   are unchanged, so `flux:lint` is the task `lint:` in `taskfiles/flux.yml` and

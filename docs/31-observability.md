@@ -810,7 +810,7 @@ them matches:
 | **critical** | Email (`ericsweiss1@gmail.com`) + Discord webhook | 4h |
 | **warning** | Discord webhook only | 12h |
 | **info** | Discord webhook only — a notice, not a fault | 24h |
-| **none** | null-routed (InfoInhibitor, NodeOutageStormControl, DeployInProgress, the three `VPARecommendation*` advisories) | — |
+| **none** | null-routed (InfoInhibitor, NodeOutageStormControl, DeployInProgress, ArchiveBackupRunning, the three `VPARecommendation*` advisories) | — |
 | **Watchdog** (always firing) | healthchecks.io heartbeat (`watchdog-heartbeat` receiver) | 1m configured, **~2m observed** |
 
 Routes are **first-match with no `continue:`**, so these named branches sit
@@ -861,6 +861,7 @@ tiers of one, so a consequence never arrives beside its cause:
 | `HostSlabLeakSuspected` | `HostMemAvailableLow`, `NASSwapNotClearing`, `SwapCleanFailed`, `SwapCleanStoppedGuests` | `instance` | unreclaimable slab is what takes MemAvailable down, keeps swap from clearing, aborts swap-clean unsafe and makes it stop guests; the one reboot clears all five. Another host out of RAM still pages, and `HostMemAvailableCritical` is not on the list, so the 2% floor pages through the latch |
 | `SMARTPendingSectorsGrowing` | `SMARTOfflineUncorrectableGrowing` | `instance`, `device` | both attributes increment on the same unrecovered read, so one sector is one page |
 | `DeployInProgress` | `KubePodNotReady`, `KubeDeploymentReplicasMismatch`, `KubeDeploymentRolloutStuck`, `KubeContainerWaiting` | `namespace` | `replicas: 1` + `strategy: Recreate` on an RWO volume has no overlap window, so the upstream `for:` is shorter than the real startup budget. Deployment kinds only: the source reads Deployment generations, so it cannot explain a StatefulSet or DaemonSet rollout |
+| `ArchiveBackupRunning` | `ProxmoxHostIOPressure` | `instance` | the archive replication is the nightly writer the I/O-pressure hold was sized against, and a long run outlasts that hold; the source holds 20m past the unit's exit so the page that lands as the run ends is covered too |
 | `FluxKustomizationNotReady` | `FluxResourceNotReady` | `exported_namespace`, `name` | a Kustomization that will not build is why the resources under it are not Ready |
 
 **The InfoInhibitor exemption.** The chart's `InfoInhibitor` mutes
@@ -886,6 +887,14 @@ It is scoped `equal: [namespace]` and bounded at roughly 90 minutes by the
 pages once the window closes instead of holding it open while the gap lasts. The window is detected from
 metrics, never from the clock, and no critical is on its target list. Measured
 over 14 days the busiest namespace sits inside it under 1% of the time.
+
+Archive-run suppression sources from **`ArchiveBackupRunning`**, a null-routed
+`severity: none` rule read from the NAS host exporter's
+`node_systemd_unit_state` for `archive-backup.service`. The replication is the
+nightly writer the `ProxmoxHostIOPressure` hold was sized against, and a long
+run outlasts that hold, so the inhibit is scoped `equal: [instance]` and the
+source holds `keep_firing_for: 20m` past the unit's exit: the page that lands
+as the run ends is still covered, and nothing else is on its target list.
 
 Node-outage suppression sources from **`NodeOutageStormControl`**, a null-routed
 `severity: none` rule that fires while the node was Ready within the last **7
@@ -977,7 +986,7 @@ rule families; the `prometheus-config-lint` CI job runs them (docs/13).
 | InodeUsageWarning / InodeUsageCritical | Free inodes < 10% / < 5% (i.e. usage > 90% / > 95%) | warning / critical | 10m / 5m |
 | KubeletImageGCIneffective | a k3s node's root filesystem is above the kubelet `image-gc-high-threshold` of 70%, so image GC cannot reach its low watermark. A sustained baseline rather than a spike, so it rides the 72h route | warning | 30m |
 | SMARTDeviceUnhealthy | smartctl overall-health != PASSED | warning | 15m |
-| SMARTReallocatedSectorsGrowing / SMARTPendingSectorsGrowing / SMARTOfflineUncorrectableGrowing / SMARTMediaErrors | SMART attribute deltas (textfile collector). The pending/offline pair is directional — latest reading minus the 24 h floor — so a standing count is silent, a replacement reset is not growth, and the alert closes 24 h after the count stops moving | warning | 5m / 15m / 15m / 15m |
+| SMARTReallocatedSectorsGrowing / SMARTPendingSectorsGrowing / SMARTOfflineUncorrectableGrowing / SMARTMediaErrors | SMART attribute deltas (textfile collector). The three growth rules are directional — latest reading minus the 24 h floor — so a standing count is silent, a replacement reset is not growth, and the alert closes 24 h after the count stops moving | warning | 5m / 15m / 15m / 15m |
 | SMARTCollectorStale | SMART textfile metric stopped updating (> 15m), absent fleet-wide, or gone on one scraped host whose peers still report. The lost-series arm is scoped to `job="node-exporter-host"` — 147 targets cluster-wide match a bare `up == 1` — and to a 30 d `devices_scanned` witness, so coverage lapses a month after a host's last successful scan. Every arm aggregates to `instance`, so one host is one group whichever arm sees it | warning | 5m |
 | NASSwapNotClearing | NAS swap above 2 GiB for 2 days (swap-clean textfile metric) | warning | 1h |
 | NASSwapGone | NAS has zero swap configured, and no encrypted-swap gauge covers it | warning | 30m |
@@ -1051,6 +1060,7 @@ rule families; the `prometheus-config-lint` CI job runs them (docs/13).
 | NodeMemoryPressure | Node available memory critically low | warning |
 | NodeOutageStormControl | null-routed source for the node-outage inhibit — fires while the node was Ready within 7d; no critical is on any inhibit target list, so a long outage never silences the critical tier | none |
 | DeployInProgress | null-routed source for the deploy-window inhibit — a Deployment changed generation inside 30m, has not observed a generation it changed inside 60m, or was created inside 60m (a first rollout never changes generation, so `kube_deployment_created` is what covers it). Namespace-scoped. Every arm expires inside the hour, so the window closes ~90m in and a rollout stalled for good stops masking `KubeDeploymentRolloutStuck`. It reads Deployments only, so its target list carries no StatefulSet or DaemonSet alert | none |
+| ArchiveBackupRunning | null-routed source for the archive-run inhibit — `archive-backup.service` is active on the NAS (`node_systemd_unit_state`), held 20m past its exit. Instance-scoped; its only target is `ProxmoxHostIOPressure` | none |
 | TargetDown | over 10% of a job's targets down for 30m (local copy of the chart's rule; `keep_firing_for: 15m`). The `exportarr-*` jobs are scoped out — 29 of the 31 episodes a 10m hold produced in 14 days were theirs | warning |
 | TargetDownExportarr | the same ratio for an `exportarr-*` job, held an hour: the *arr API stalls under Sonarr's library scan, the longest run on record is 54m, and exportarr offers no flag to drop the slow collectors | warning |
 | KubeVersionMismatch | two Kubernetes minors on the cluster for 12h, i.e. a node that never came back from an upgrade (local copy of the chart's rule) | warning |

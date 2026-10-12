@@ -254,6 +254,10 @@ spec:
       enabled: true
       image:
         tag: "${postgresql_version}"
+      # /dev/shm is tmpfs charged to the container's 1Gi limit and invisible to
+      # the RSS near-limit rule, so it is bounded: parallel-query segments fit.
+      shmVolume:
+        sizeLimit: 256Mi
       # postgres_exporter sidecar; its scrape is the chart-rendered ServiceMonitor
       # and its ingress allow is in networkpolicy.yaml. It connects as the postgres
       # superuser, which exists with the admin password the ExternalSecret declares.

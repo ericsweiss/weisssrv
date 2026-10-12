@@ -147,10 +147,10 @@ map per object class, and the module is planned here against the live IdP, so a
 behavioural module change surfaces as a real plan instead of only in the cluster
 template's static render.
 
-The terraform `?ref=` pins are bumped **by hand** — `scripts/check-lib-pins.py
---fix` does not touch them — and `scripts/test_site_configs.py` fails when one is
-not equal to `WEISSSRV_LIB_REF`. Confirm with `terraform init -upgrade` before
-the plan.
+The terraform `?ref=` pins move with `scripts/check-lib-pins.py --bump`:
+`scripts/lib-ref-sites.yml` declares `terraform/*/main.tf` as a site, so the
+gate rewrites all four and fails on one left behind. Confirm with
+`terraform init -upgrade` before the plan.
 
 **A pin that lands before its tag exists is red until the tag.** `terraform init`
 cannot resolve a `?ref=` that no release carries yet, so `task

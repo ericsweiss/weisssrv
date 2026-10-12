@@ -574,8 +574,8 @@ The mitigation is `proxmox_firewall_nftables: true`, which renders `nftables: 1`
 into the node's `host.fw`. That option selects the `proxmox-firewall` package,
 which programs nftables and takes the bridge-netfilter hook out of the node's
 bridged path. The package must be installed on the node first, and the choice is
-per node, so it goes in `host_vars`. Validate it on one opt host before the NAS
-and keep the reboot pager until a week of flat slab proves it.
+per node, so it goes in `host_vars`. pve-nas-01 and pve-opt-02 carry it; the
+reboot pager stays until a week of flat slab proves it on the NAS.
 
 - `HostSlabLeakSuspected` (SUnreclaim minus ARC above 16 GiB for 24 h) is the
   reboot pager. It is a latch, not a weekly nudge: it holds from the 16 GiB

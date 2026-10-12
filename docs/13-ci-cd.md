@@ -30,14 +30,13 @@ and the table below explains only what this repo overrides:
 
 ```yaml
 - project: eric/weisssrv-lib
-  ref: <WEISSSRV_LIB_REF>   # the literal tag; see variables: in .gitlab-ci.yml
+  ref: $[[ inputs.lib_ref ]]
   file: /ci/lint/yaml-lint.yml
 ```
 
-Every entry carries the same literal tag, and `scripts/check-lib-pins.py`
-enforces that it equals `variables.WEISSSRV_LIB_REF` (`--fix` rewrites them). It
-does not scan Markdown, so this snippet deliberately shows the variable name
-rather than a tag that would go stale here.
+Every entry reads the same declared input, `spec.inputs.lib_ref.default` in the
+pipeline's own `spec:` header, and `scripts/check-lib-pins.py` enforces that
+(`--fix` rewrites them, `--bump vX.Y.Z` moves the declaration first).
 
 Templates that take **no inputs** share a single entry, because `file:` accepts a
 list while `inputs:` binds per entry.
@@ -129,35 +128,46 @@ Rules of engagement:
   is consumed by more than one repo, so an input default changed there silently
   changes this pipeline.
 - **The pin in git is the record of what was validated.** A pipeline proves this
-  cluster state against the tag in `variables.WEISSSRV_LIB_REF` at that commit,
-  and the gates hold `ansible/requirements.yml` and the four Terraform `?ref=`
-  pins equal to it. After a rollback, `git show <sha>:.gitlab-ci.yml` names the
-  library release that state was tested against, so no separate table is kept.
-- **`variables.WEISSSRV_LIB_REF` is the single source for the pin, and
-  `scripts/check-lib-pins.py` enforces it.** `include:` is resolved at
-  pipeline-creation time, before that variable exists, so every entry has to
-  repeat the tag as a literal — `ref: $WEISSSRV_LIB_REF` silently does not work.
-  (A project-level CI/CD variable *is* readable there, but it would move the pin
-  out of git, where a bump no longer shows up in a diff and cannot be reverted as
-  an MR.) The gate fails the pipeline if any entry drifts from the variable or
-  pins a **branch**, which the include contract forbids: a branch deleted after
-  merge takes the include with it, and until then the pipeline can change
-  behaviour with no commit here at all. Bump the variable, then run
-  `scripts/check-lib-pins.py --fix`. It runs in `python-tests` (and `task lint`
-  via `scripts:test`), and `.gitlab-ci.yml` is in that job's `changes` list, so
-  it fires on its own subject. The script is **vendored byte-identical** from
-  the library (`weisssrv-lib/scripts/check-lib-pins.py`) like
-  `version-bump-mr.py`; re-copy it when the ref moves rather than editing it
-  here.
-- **The molecule fallback image tags ride the same pin.** Each integration
-  scenario writes `${MOLECULE_TEST_IMAGE:-…/molecule-test:vX.Y.Z}` and
-  `ansible/TESTING.md` repeats it. CI always overrides the variable
-  (`.gitlab/ci/integration-jobs.yml` builds it from `$WEISSSRV_LIB_REF`), so a
-  stale literal is invisible in the pipeline and only makes a LOCAL
-  `task ansible:test-integration` run validate against an old image.
-  `scripts/check-molecule-image-pin.py` gates them (via `python-tests` /
-  `scripts:test`) and `--fix` rewrites them. It is site-local rather than part of
-  `check-lib-pins.py` because that script is vendored byte-identical.
+  cluster state against the declared ref at that commit, and the same gate holds
+  `ansible/requirements.yml` and the four Terraform `?ref=` pins equal to it.
+  After a rollback, `git show <sha>:.gitlab-ci.yml` names the library release
+  that state was tested against, so no separate table is kept.
+- **`spec.inputs.lib_ref.default` is the single source for the pin, and
+  `scripts/check-lib-pins.py` derives every other pin from it.** An input
+  interpolates before `include:` is resolved, which is why `$[[ inputs.lib_ref ]]`
+  reaches a `ref:` while `$WEISSSRV_LIB_REF` cannot — `variables:` does not exist
+  yet at that point. (A project-level CI/CD variable *is* readable there, but it
+  would move the pin out of git, where a bump no longer shows up in a diff and
+  cannot be reverted as an MR.) The four pin families are the `include:` refs and
+  `variables.WEISSSRV_LIB_REF`, the `weisssrv.infra` collection `version:` in
+  `ansible/requirements.yml`, and every match of `scripts/lib-ref-sites.yml` —
+  here, the four `terraform/*/main.tf` module `?ref=` pins. The gate fails on a
+  pin left behind, on a site glob that matches nothing, and on a **branch**,
+  which the include contract forbids: a branch deleted after merge takes the
+  include with it, and until then the pipeline can change behaviour with no
+  commit here at all. Move everything with
+  `scripts/check-lib-pins.py --bump vX.Y.Z`; `--print` hands the tag to a shell,
+  which is how `Taskfile.yml`'s `LIB_REF` reads it. The gate runs in
+  `check-repo-policies` and in `python-tests` (and `task lint` via `lint:lib-pins`
+  / `scripts:test`), and `.gitlab-ci.yml` is in both jobs' `changes` lists, so it
+  fires on its own subject. The script is **vendored byte-identical** from the
+  library (`weisssrv-lib/scripts/check-lib-pins.py`) like `version-bump-mr.py`;
+  re-copy it when the ref moves rather than editing it here.
+- **The molecule test image derives from the same pin.** Each integration
+  scenario's platform takes the bare `image: "${MOLECULE_TEST_IMAGE}"`, and the
+  `taskfiles/ansible.yml` wrappers export that from `{{.LIB_REF}}` while
+  `.gitlab/ci/integration-jobs.yml` builds it from `$WEISSSRV_LIB_REF`. Both read
+  the declared input, so a local run and a pipeline run pull the same image by
+  construction; a bare `molecule test` outside the task wrapper resolves an empty
+  image, which is why the wrapper is the only supported entry point
+  (`ansible/TESTING.md`).
+- **The vendored-byte-identity gate compares at the declared ref and never
+  degrades.** `scripts/test_vendored_byte_identity.py` resolves the ref in the
+  weisssrv-lib checkout and FAILS when it is absent, rather than silently
+  comparing against that checkout's working tree. In the window between a
+  library MR merging and its tag being cut, point it at the commit the copies
+  came from with `WEISSSRV_LIB_REF_OVERRIDE=<commit-ish>`; every suite that
+  reads the library at the pin honours it.
 - **Pins duplicated into `include:` inputs are gated too.** `include:` inputs
   cannot read `variables:`, so `kustomize_version`, `kustomize_sha256`,
   `pytest_version` and `pyyaml_version` appear both places. The `ci-pin-parity`
@@ -264,7 +274,7 @@ The **Molecule images ship from weisssrv-lib** — `molecule-ci` and
 | `python-lint` | `scripts/**/*.py`, `kubernetes/**/*.py`, `ruff.toml`, `.gitlab-ci.yml` | `ruff check` over `scripts` and `kubernetes` (the ConfigMap-mounted Python) against the repo-root `ruff.toml` (vendored from the library) |
 | `terraform-fmt` | terraform/** | Terraform formatting |
 | `terraform-tflint` | terraform/** | `tflint --recursive` over all four roots at `--minimum-failure-severity=error` |
-| `flux-lint` | `kubernetes/**`, `all.yml`, the gate scripts and the site-data files they read (the `changes:` list on the include is the source of truth) | `kustomize build` + two-ConfigMap envsubst + kubeconform on every Flux Kustomization, then the corpus gates — see below |
+| `flux-lint` | `kubernetes/**`, `all.yml`, the gate scripts and the site-data files they read (the `changes:` list on the include is the source of truth) | `scripts/flux-lint.sh` — `kustomize build` + two-ConfigMap envsubst + kubeconform on every Flux Kustomization — then the corpus gates. `task flux:lint` runs the same file; see below |
 
 #### What `check-repo-policies` asserts
 
@@ -306,6 +316,12 @@ The `run_check` list in the job is authoritative.
 
 #### What `flux-lint` adds beyond kubeconform
 
+- **One program, two callers.** The render/scan/kubeconform loop is
+  `scripts/flux-lint.sh`, vendored from the library and named by the job's
+  `flux_lint_script` input; `task flux:lint` runs the same file with the same
+  argv, so the stage loop, the substitution scans and every floor below reach
+  local lint and CI together. Only the job installs the cluster's pinned flux
+  CLI, so the local run passes `--check-flux-version false`.
 - Each cluster root is built as well as each Flux Kustomization.
 - The tenants directory is appended to the rendered corpus, which is what lets
   `check-secretstore-scope.py` see tenant stores at all.
@@ -320,7 +336,8 @@ The `run_check` list in the job is authoritative.
   kustomize-controller's post-build accepts: the `flux_version`/`flux_sha256`
   inputs fetch the cluster's own flux CLI, and the job fails when that pin and
   the ConfigMap's `flux_version` disagree. `scripts/test_site_configs.py` holds
-  the include, the ConfigMap and `taskfiles/flux.yml` to one strict render.
+  the include, the ConfigMap and the vendored `scripts/flux-lint.sh` to one
+  strict render.
 - Substitution keys come from `scripts/flux-env.sh`, which `deploy-verify` also
   uses, so both resolve `${cluster_*}` the same way; `flux-env.sh` delegates
   per-file parsing to the vendored `scripts/flux-render.sh`.
@@ -399,7 +416,7 @@ dependencies — nothing fails.
 | Job | Triggers | Description |
 |-----|----------|-------------|
 | `integration-tests` | main / web / scheduled `full-test` only (`ansible/integration-tests/**`, `ansible/molecule/**`, `ansible/playbooks/**`, `ansible/requirements.yml`, `group_vars/all.yml`, the retry script) | The five-stack matrix — `base-infrastructure`, `cert-distribution`, `dns-stack`, `mail-stack`, `storage-stack` — converged against the collection's roles by FQCN. Requires Docker-in-Docker. all.yml IS a trigger (the converges `vars_files` it), and `ansible/molecule/**` is too (the converges import its shared prep) |
-| `python-tests` | scripts/**, all.yml, ansible/playbooks/**, ansible/integration-tests/**, docs/**, README.md, CLAUDE.md, .claude/**, `Taskfile.yml` plus `taskfiles/**/*`, .gitlab-ci.yml | pytest on the scripts/ suite. Beyond the script unit tests it carries the doc gates in `test_doc_inventories.py`: every documented `ansible-playbook --tags <tag>` must reach a real tag (a bogus tag exits 0 having done nothing), and every `` `task <ns>:<name>` `` in docs/ + the agent files must exist in the Taskfile `includes:` tree (resolved through `scripts/taskfile_tree.py`, so `taskfiles/<ns>.yml` definitions count). Library job (`/ci/test/python-tests.yml`) with weisssrv's full path list |
+| `python-tests` | scripts/**, all.yml, ansible/playbooks/**, ansible/integration-tests/**, docs/**, README.md, CLAUDE.md, .claude/**, `Taskfile.yml` plus `taskfiles/**/*`, .gitlab-ci.yml | pytest on the scripts/ suite. The job clones weisssrv-lib at the declared ref, which is what lets the vendored-byte-identity gate, `test_include_contract.py` and `test_ci_include_job_names.py` (every optional `needs:` against the job names the includes create) read the library at the pin. Beyond the script unit tests it carries the doc gates in `test_doc_inventories.py`: every documented `ansible-playbook --tags <tag>` must reach a real tag (a bogus tag exits 0 having done nothing), and every `` `task <ns>:<name>` `` in docs/ + the agent files must exist in the Taskfile `includes:` tree (resolved through `scripts/taskfile_tree.py`, so `taskfiles/<ns>.yml` definitions count). Library job (`/ci/test/python-tests.yml`) with weisssrv's full path list |
 | `test-aggregate-integration` | main pushes | Status-only fan-in over the integration matrix (`artifacts: false`), so `validation-gate` depends on one job instead of five |
 
 **The role-scenario Molecule matrix does not live here any more.** The roles are

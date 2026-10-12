@@ -25,12 +25,12 @@ pip install -r ../requirements.txt   # molecule + molecule-plugins[docker], pinn
 docker info                          # Docker must be running
 ```
 
-The scenarios pull the published `molecule-test` image from weisssrv-lib's
-registry. Override it for a local build:
-
-```bash
-export MOLECULE_TEST_IMAGE=registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:v0.19.0
-```
+Each platform takes the bare `image: "${MOLECULE_TEST_IMAGE}"`, and the
+`ansible:test-integration-*` task wrappers export it from the declared library
+ref (`scripts/check-lib-pins.py --print`), as the CI jobs do — so a local run
+and a pipeline run pull the same `molecule-test` image. **Go through the task**:
+a bare `molecule` invocation resolves an empty image unless you export the
+variable yourself, which is also how to point a scenario at a local build.
 
 The collection itself is installed by molecule's `galaxy` dependency step from
 `ansible/requirements.yml`, so a scenario always exercises the pinned tag — not
@@ -42,7 +42,7 @@ whatever happens to be in the operator's collections path.
 task ansible:test                       # every stack
 task ansible:test-integration-dns       # one stack (also -mail, -base, -storage, -certs)
 
-# By hand, from the stack directory:
+# By hand, from the stack directory (export MOLECULE_TEST_IMAGE first):
 cd ansible/integration-tests/dns-stack
 molecule test                           # full cycle
 molecule converge                       # apply only

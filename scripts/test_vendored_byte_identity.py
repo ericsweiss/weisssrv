@@ -1,7 +1,7 @@
 """Every file vendored from weisssrv-lib must still be byte-identical to it.
 
-Drives the library's check-vendored-copies.py against scripts/vendored-manifest.yml
-at the ref .gitlab-ci.yml pins; a checkout without that ref reports unverified.
+Drives check-vendored-copies.py against scripts/vendored-manifest.yml at the ref
+.gitlab-ci.yml declares; $WEISSSRV_LIB_REF_OVERRIDE reads another commit-ish.
 """
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 import yaml
 from ci_yaml import NullTagCILoader as _CILoader
-from ci_yaml import load_ci, parse_ci
+from ci_yaml import load_ci, parse_ci, spec_inputs
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO / "scripts"
@@ -22,6 +22,9 @@ MANIFEST = SCRIPTS / "vendored-manifest.yml"
 GATE_RELPATH = "scripts/check-vendored-copies.py"
 # Where `task lib:sync` puts the checkout (Taskfile.yml's LIB_DIR).
 LOCAL_CHECKOUT = ".weisssrv-lib"
+# Compares at this commit-ish instead of the declared ref, for the window
+# before the declared tag is cut.
+REF_OVERRIDE_ENV = "WEISSSRV_LIB_REF_OVERRIDE"
 
 # Config files carry site data, not library code, so a same-named one is not a
 # vendored copy. `test_` files are this repo's own smoke suites.
@@ -62,25 +65,47 @@ def test_the_loader_nulls_every_gitlab_tag():
 
 
 def _pinned_ref() -> str:
-    ci = load_ci_doc(REPO / ".gitlab-ci.yml")
-    ref = (ci.get("variables") or {}).get("WEISSSRV_LIB_REF")
-    assert ref, ".gitlab-ci.yml variables.WEISSSRV_LIB_REF is the single source of the pin"
+    """The declared pin: `spec.inputs.lib_ref.default` in .gitlab-ci.yml.
+
+    What every pin-parity assertion compares against. Reading library CONTENT
+    goes through _require_ref, which honours the override.
+    """
+    text = (REPO / ".gitlab-ci.yml").read_text(encoding="utf-8")
+    entry = spec_inputs(text, _CILoader).get("lib_ref")
+    ref = entry.get("default") if isinstance(entry, dict) else None
+    assert ref, (
+        ".gitlab-ci.yml spec.inputs.lib_ref.default is the single source of the "
+        "library pin"
+    )
     return str(ref)
 
 
-def _ref_available(lib: Path, ref: str) -> bool:
-    return subprocess.run(
-        ["git", "-C", str(lib), "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
+def _require_ref(lib: Path, ref: str) -> str:
+    """The commit-ish to read library content at, once it resolves in `lib`.
+
+    CRITICAL: no working-tree fallback — that would certify the copies against an
+    unreleased library state. $WEISSSRV_LIB_REF_OVERRIDE reads another commit-ish.
+    """
+    wanted = os.environ.get(REF_OVERRIDE_ENV) or ref
+    resolved = subprocess.run(
+        ["git", "-C", str(lib), "rev-parse", "--verify", "--quiet", f"{wanted}^{{commit}}"],
         capture_output=True,
-    ).returncode == 0
+    )
+    assert resolved.returncode == 0, (
+        f"{lib} has no {wanted} (a library tag is cut when its MR merges), and "
+        f"this gate never compares against a working tree. Set "
+        f"${REF_OVERRIDE_ENV} to the commit the copies came from, or declare a "
+        "ref that exists."
+    )
+    return wanted
 
 
 def _lib_script_names(lib: Path, ref: str) -> set[str]:
-    """Names under the library's `scripts/` at `ref`, or in its working tree when
-    the checkout has no such ref. A file the pin does not ship is not yet a twin.
+    """Names under the library's `scripts/` at `ref`.
+
+    A file the pin does not ship is not yet a twin.
     """
-    if not _ref_available(lib, ref):
-        return {p.name for p in (lib / "scripts").iterdir() if p.is_file()}
+    ref = _require_ref(lib, ref)
     listing = subprocess.run(
         ["git", "-C", str(lib), "ls-tree", "--name-only", f"{ref}:scripts"],
         capture_output=True,
@@ -111,16 +136,15 @@ def _run_gate(
 
 
 def _lib_blob(relpath: str) -> str:
-    """One library file at the pinned ref, else from the checkout's tree."""
-    lib, ref = _lib_root(), _pinned_ref()
-    if _ref_available(lib, ref):
-        blob = subprocess.run(
-            ["git", "-C", str(lib), "show", f"{ref}:{relpath}"],
-            capture_output=True, text=True,
-        )
-        assert blob.returncode == 0, f"{ref}:{relpath} is not in {lib}:\n{blob.stderr}"
-        return blob.stdout
-    return (lib / relpath).read_text(encoding="utf-8")
+    """One library file at the pinned ref."""
+    lib = _lib_root()
+    ref = _require_ref(lib, _pinned_ref())
+    blob = subprocess.run(
+        ["git", "-C", str(lib), "show", f"{ref}:{relpath}"],
+        capture_output=True, text=True,
+    )
+    assert blob.returncode == 0, f"{ref}:{relpath} is not in {lib}:\n{blob.stderr}"
+    return blob.stdout
 
 
 def registered_consumer_entries() -> list[tuple[str, str]]:
@@ -165,39 +189,16 @@ def registered() -> list[tuple[str, str, str]]:
 
 def test_lib_checkout_carries_the_pinned_ref():
     """Drift against a ref the copies never came from misleads whoever
-    re-vendors. Under $CI the working-tree fallback is not acceptable: it
-    certifies the copies against an unreleased library state.
-    """
-    lib = _lib_root()
-    ref = _pinned_ref()
-    if _ref_available(lib, ref):
-        return
-    message = (
-        f"{lib} has no {ref} (the library tag is cut when its MR merges); "
-        "byte-identity was compared against the checkout's working tree"
-    )
-    if os.environ.get("CI"):
-        pytest.fail(
-            message + ". Fetch the library tags in the job image, or bump "
-            "WEISSSRV_LIB_REF to a tag that exists."
-        )
-    pytest.skip(message)
+    re-vendors, so the declared ref has to resolve in the checkout."""
+    _require_ref(_lib_root(), _pinned_ref())
 
 
 def test_registered_copies_are_reconciled(registered):
     """Every vendored copy is identical and every fork still reconciled, at the pin."""
-    ref = _pinned_ref()
-    at_pin = _ref_available(_lib_root(), ref)
-    result = _run_gate(*(["--ref", ref] if at_pin else []))
+    ref = _require_ref(_lib_root(), _pinned_ref())
+    result = _run_gate("--ref", ref)
     assert result.returncode != 2, f"the vendored-copy gate could not run:\n{result.stderr}"
     if result.returncode == 0:
-        if not at_pin:
-            # Byte-identity is a claim about the pin, so a clean working-tree
-            # comparison is unverified, never a pass.
-            pytest.skip(
-                f"{_lib_root()} has no {ref}, so the copies were compared against its "
-                f"working tree: clean there does not certify them at {ref}"
-            )
         return
 
     # Distinguish the two failures that read identically but need opposite
@@ -208,14 +209,13 @@ def test_registered_copies_are_reconciled(registered):
         "script's config file, never in the copy. A fork must ABSORB the library's "
         "change, then have its reconciled_sha256 updated in scripts/vendored-manifest.yml."
     )
-    if at_pin and _run_gate().returncode == 0:
+    if _run_gate().returncode == 0:
         hint = (
             f"These copies ARE current with the library working tree — they match it "
-            f"exactly — but WEISSSRV_LIB_REF still pins {ref}, and the pin is what "
-            f"the pipeline installs. This is the expected pre-release state while a "
-            f"library tag is being cut. Resolve it by bumping the pin (WEISSSRV_LIB_REF, "
-            f"ansible/requirements.yml, the terraform module ?ref= pins) once the tag "
-            f"exists — not by re-vendoring backwards."
+            f"exactly — but the declared ref is still {ref}, and the pin is what the "
+            f"pipeline installs. This is the expected pre-release state while a "
+            f"library tag is being cut. Resolve it with `check-lib-pins.py --bump "
+            f"vX.Y.Z` once the tag exists — not by re-vendoring backwards."
         )
     raise AssertionError(f"{result.stdout}{result.stderr}\n{hint}")
 
@@ -234,7 +234,7 @@ def test_the_engine_reports_a_mutated_copy(registered, tmp_path):
     manifest.write_text(f"vendored:\n  - lib: {lib_path}\n    consumer: {consumer}\n")
     copy = tmp_path / consumer
     copy.parent.mkdir(parents=True, exist_ok=True)
-    at_pin = ["--ref", _pinned_ref()] if _ref_available(_lib_root(), _pinned_ref()) else []
+    at_pin = ["--ref", _require_ref(_lib_root(), _pinned_ref())]
 
     copy.write_text(content)
     clean = _run_gate(*at_pin, manifest=manifest, repo_root=tmp_path)
@@ -294,17 +294,16 @@ MOLECULE_SHARED = "ansible_collections/weisssrv/infra/molecule-shared"
 
 
 def _lib_offer(lib: Path, ref: str) -> set[str]:
-    """The library's offer list at `ref`, or its working tree when the checkout
-    has no such ref. An entry absent from the offer is not yet registerable."""
-    relpath = "scripts/vendorable-paths.yml"
-    if _ref_available(lib, ref):
-        blob = subprocess.run(
-            ["git", "-C", str(lib), "show", f"{ref}:{relpath}"],
-            capture_output=True, text=True,
-        )
-        raw = blob.stdout if blob.returncode == 0 else ""
-    else:
-        raw = (lib / relpath).read_text() if (lib / relpath).is_file() else ""
+    """The library's offer list at `ref`.
+
+    An entry absent from the offer is not yet registerable.
+    """
+    ref = _require_ref(lib, ref)
+    blob = subprocess.run(
+        ["git", "-C", str(lib), "show", f"{ref}:scripts/vendorable-paths.yml"],
+        capture_output=True, text=True,
+    )
+    raw = blob.stdout if blob.returncode == 0 else ""
     return set((yaml.safe_load(raw) or {}).get("vendorable") or [])
 
 

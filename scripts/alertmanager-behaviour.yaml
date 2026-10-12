@@ -16,6 +16,9 @@ route_cases:
   # asserted, not assumed: it must never reach Discord.
   - receiver: "null"
     labels: [alertname=DeployInProgress, severity=none]
+  # The archive-run source: null-routed, it exists only to inhibit.
+  - receiver: "null"
+    labels: [alertname=ArchiveBackupRunning, severity=none]
   # The three VPA tiers are advisory: severity=none keeps them in Grafana and
   # the Alertmanager UI and out of Discord.
   - receiver: "null"
@@ -61,6 +64,14 @@ route_cases:
 # root receiver.
 synthetic_route_alerts:
   - SomeUnlabelledAlert
+
+# Rule trees the Prometheus extractor never reads: Loki's ruler evaluates these
+# as plain `groups:` documents, so the alertnames and severities they own are
+# invisible to the route and inhibit arms without this.
+rule_corpora:
+  - kubernetes/infrastructure/observability/loki/host-log-staleness.yaml
+  - kubernetes/infrastructure/observability/loki/runner-reaper.yaml
+  - kubernetes/infrastructure/observability/loki/unifi-syslog.yaml
 
 # Alerts shipped by the kube-prometheus-stack chart's own rule groups. Every
 # alertname in an inhibit rule must resolve to a rule under observability/rules/

@@ -28,7 +28,6 @@ Anything the operator or reviewer must know before this reaches the cluster:
 new 1Password items to create in the Homelab vault, Flux-side wiring a new
 Kustomization needs (both substituteFrom ConfigMaps, a dependsOn edge, a
 netpol-baseline default-deny), a host that must be deployed with Ansible
-before Flux reconciles, a weisssrv.infra pin bump that needs a re-vendor and
-the four Terraform ?ref= pins by hand, a supervised Terraform apply, or how
-to roll back. "None" is a valid answer.
+before Flux reconciles, a weisssrv.infra pin bump that needs a re-vendor, a
+supervised Terraform apply, or how to roll back. "None" is a valid answer.
 -->

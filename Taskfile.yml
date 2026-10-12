@@ -58,9 +58,10 @@ vars:
   # lib:sync and scripts:test only; no deploy path touches it.
   LIB_DIR: .weisssrv-lib
   LIB_URL: https://git.ericsweiss.com/eric/weisssrv-lib.git
-  # Single source for the ref: variables.WEISSSRV_LIB_REF in .gitlab-ci.yml.
+  # The declared ref, read through the gate that owns it: the pin lives in
+  # .gitlab-ci.yml's `spec:` header as spec.inputs.lib_ref.default.
   LIB_REF:
-    sh: awk -F'"' '/WEISSSRV_LIB_REF/{print $2; exit}' .gitlab-ci.yml
+    sh: scripts/check-lib-pins.py --print
 
 # Anchors aliased by the tasks below. YAML anchors do not cross files, so each
 # namespace file carries the precondition list it uses.
@@ -264,6 +265,7 @@ tasks:
       - task: lint:busybox-version-pin
       - task: lint:image-gc-threshold
       - task: lint:ci-policy
+      - task: lint:ci-include-job-names
       - task: lint:deploy-preflight
       - task: lint:netpol-except-parity
       - task: lint:vpn-provider-parity
@@ -318,9 +320,10 @@ tasks:
           against the library and never skips. Fix with either:
             task lib:sync
             export WEISSSRV_LIB_PATH=/path/to/weisssrv-lib
-          The gate compares at the tag in variables.WEISSSRV_LIB_REF
-          (.gitlab-ci.yml) and falls back to the checkout's working tree when
-          that tag has not been cut yet. See
+          The gate compares at the declared ref (.gitlab-ci.yml's
+          spec.inputs.lib_ref.default) and FAILS when the checkout has no such
+          commit: set WEISSSRV_LIB_REF_OVERRIDE to compare at another commit-ish
+          while the tag is uncut. See
           .claude/skills/weisssrv-development/references/cluster-access.md.
 
   op:check:

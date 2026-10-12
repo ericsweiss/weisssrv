@@ -190,6 +190,15 @@ spec:
                 - alertname=~"KubePodNotReady|KubeDeploymentReplicasMismatch|KubeDeploymentRolloutStuck|KubeContainerWaiting"
               equal:
                 - namespace
+            # The archive replication is the nightly writer the I/O-pressure
+            # hold was sized against. equal on instance; the source lifts 20m
+            # after the unit exits, and no critical is on the list.
+            - source_matchers:
+                - alertname="ArchiveBackupRunning"
+              target_matchers:
+                - alertname="ProxmoxHostIOPressure"
+              equal:
+                - instance
             # One remedy, five alerts: the slab leak takes the NAS out of RAM
             # and keeps swap-clean from completing. equal on instance; the latch
             # holds 87% of a fortnight, so no critical is on this list.

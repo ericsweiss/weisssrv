@@ -11,9 +11,9 @@ managed vs deliberately unmanaged, the secret-injection table, provider
 quirks, and the add-an-app recipe; this page covers day-2 operations.
 
 The resource **shape** comes from the weisssrv-lib `authentik-sso` module at the
-`?ref=` pinned in `main.tf` — held equal to `WEISSSRV_LIB_REF` by
-`scripts/test_site_configs.py`; the files here hold this site's data as one map
-per object class.
+`?ref=` pinned in `main.tf` — a `scripts/lib-ref-sites.yml` site, so
+`scripts/check-lib-pins.py` holds it equal to the declared library ref; the
+files here hold this site's data as one map per object class.
 
 **Ground rules** (same posture as `terraform/tailscale`):
 
@@ -34,11 +34,11 @@ Two consequences of the module adoption an operator meets first:
   `terraform state rm 'module.sso.<resource>.this["<key>"]'`, then the map entry,
   then the object in authentik. Renaming a map key is a destroy+create in
   disguise — add a `moved {}` block instead.
-- **Bumping the module `?ref=` is a supervised change like any other.** The pin
-  is not gated by `scripts/check-lib-pins.py`; bump it by hand, run
-  `terraform init -upgrade`, and read the plan — a library default change lands
-  as a live provider diff, which is why this root passes the flow slugs, signing
-  key name, grant types and mapping lists explicitly.
+- **Bumping the module `?ref=` is a supervised change like any other.**
+  `scripts/check-lib-pins.py --bump vX.Y.Z` moves the pin with every other
+  library pin; then run `terraform init -upgrade` and read the plan — a library
+  default change lands as a live provider diff, which is why this root passes
+  the flow slugs, signing key name, grant types and mapping lists explicitly.
 
 ## Managed users
 

@@ -11,7 +11,6 @@ vars:
   # to a sha so a catalog rewrite cannot change what this gate accepts; CI
   # follows the library template's own catalog pin.
   CRD_CATALOG_REF: ad3b08c5045129d7bb1eeffd8e61719b2c8dd1e2
-  CRD_CATALOG: 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/{{.CRD_CATALOG_REF}}/{{`{{.Group}}`}}/{{`{{.ResourceKind}}`}}_{{`{{.ResourceAPIVersion}}`}}.json'
 
 tasks:
   install-cli:
@@ -383,142 +382,32 @@ tasks:
       - |
         set -eo pipefail
         FAILED=0
-        # Both substitution ConfigMaps into env so envsubst resolves ${var}
-        # before kubeconform runs. scripts/flux-env.sh is the entry point CI
-        # shares, so the two paths cannot drift.
         VERSIONS_CONFIGMAP={{.VERSIONS_CM}}
-        VARS=$(scripts/flux-env.sh export-versions "$VERSIONS_CONFIGMAP") || exit 1
-        eval "$VARS"
-
-        # MAJOR.MINOR.0 from k3s_version, mirroring the CI flux-lint job so both
-        # validate against the same API schemas.
-        K8S_VER=$(scripts/flux-env.sh k8s-version "$VERSIONS_CONFIGMAP")
-        echo "kubeconform -kubernetes-version: $K8S_VER (from versions-configmap k3s_version)"
-
-        # The corpus gates need every namespace's rendered output at once, so
-        # accumulate it all into one file.
+        # The corpus gates below need every stage's rendered output at once, so
+        # the accumulating file is owned here rather than by the render program.
         RENDER_ALL=$(mktemp)
         trap 'rm -f "$RENDER_ALL"' EXIT
 
-        # Stage list from the same helper deploy-verify.sh uses: name<TAB>path
-        # in dependsOn order, derived from the cluster dir rather than listed.
-        KS_PATHS=$(python3 scripts/flux-child-kustomizations.py --paths) \
-          || { echo "ERROR: could not derive the stage source paths from {{.CLUSTER_DIR}}/"; exit 1; }
+        # The program the CI flux-lint job runs, so the strict render and every
+        # floor reach both. Local-only: the dependsOn enumerator, and the CLI
+        # equality arm off because only the job installs the pinned flux.
+        bash scripts/flux-lint.sh \
+          --cluster-dir {{.CLUSTER_DIR}} \
+          --versions-configmap "$VERSIONS_CONFIGMAP" \
+          --render-script scripts/flux-env.sh \
+          --child-kustomizations scripts/flux-child-kustomizations.py \
+          --skipped-script scripts/kubeconform-skipped.py \
+          --expected-skipped scripts/kubeconform-expected-skipped.txt \
+          --crd-catalog-ref {{.CRD_CATALOG_REF}} \
+          --render-all "$RENDER_ALL" \
+          --check-flux-version false || FAILED=1
 
-        while IFS=$'\t' read -r NAME SRCPATH; do
-          if [ -z "$SRCPATH" ]; then
-            # Flux reconciles the repository root when spec.path is absent,
-            # which this gate cannot build: the path is required, not skipped.
-            [ -n "$NAME" ] || continue
-            echo "ERROR: $NAME is a Flux Kustomization with no spec.path: spell the path it reconciles"
-            FAILED=1
-            continue
-          fi
-          echo "=== Validating $NAME (path $SRCPATH) ==="
-          if ! RAW=$(kustomize build "$SRCPATH" 2>&1); then
-            echo "ERROR: kustomize build failed for $SRCPATH:"
-            echo "$RAW"
-            FAILED=1
-            continue
-          fi
-          # Flux's Go envsubst PARSE-errors on `${` before a non-name character
-          # and silently EATS `${1}`; GNU envsubst below ignores both. `$${` is
-          # Flux's escape, stripped first and exempt.
-          MALFORMED=$(printf '%s\n' "$RAW" | sed 's/\$\$[{]/__FLUX_ESCAPED__/g' | grep -nE '\$\{[^A-Za-z_]' || true)
-          if [ -n "$MALFORMED" ]; then
-            echo "ERROR: $SRCPATH renders a \${ sequence Flux's envsubst mishandles (escape as \$\${ or assemble at runtime):"
-            echo "$MALFORMED" | head -5 | sed 's/^/  /'
-            FAILED=1
-            continue
-          fi
-          MISSING=""
-          # A key present with an EMPTY value is its own failure: envsubst
-          # renders `image: foo:${x}` as `foo:`, which yamllint and kubeconform
-          # both pass, so the broken reference only shows up in-cluster.
-          EMPTY=""
-          # Strip Flux's `$${` escape first (mirrors the CI template + the
-          # MALFORMED check above): an escaped sequence still CONTAINS
-          # `${var}` textually and would false-positive as a missing key.
-          for ref in $(echo "$RAW" | sed 's/\$\$[{]/__FLUX_ESCAPED__/g' | grep -oE '\$\{[A-Za-z_][A-Za-z0-9_]*\}' | sort -u); do
-            varname=${ref#\$\{}
-            varname=${varname%\}}
-            if [ -z "${!varname+x}" ]; then
-              MISSING="$MISSING $varname"
-            elif [ -z "${!varname}" ]; then
-              EMPTY="$EMPTY $varname"
-            fi
-          done
-          MISSING=$(echo "$MISSING" | tr ' ' '\n' | grep -v '^$' | sort -u || true)
-          if [ -n "$MISSING" ]; then
-            echo "ERROR: placeholders in $SRCPATH reference keys in neither substitution ConfigMap:"
-            echo "$MISSING" | sed 's/^/  - /'
-            FAILED=1
-            continue
-          fi
-          EMPTY=$(echo "$EMPTY" | tr ' ' '\n' | grep -v '^$' | sort -u || true)
-          if [ -n "$EMPTY" ]; then
-            echo "ERROR: $SRCPATH references keys that are present but EMPTY in the versions or cluster-config ConfigMap:"
-            echo "$EMPTY" | sed 's/^/  - /'
-            echo "  Give each one a value, or drop the key and the reference together."
-            FAILED=1
-            continue
-          fi
-          # Flux's own envsubst in strict mode is the authority: every form it
-          # reads as a variable, bash modifiers included, must resolve, or the
-          # Kustomization's post-build fails in-cluster and nothing reconciles.
-          if ! STRICT_ERR=$(printf '%s\n' "$RAW" | flux envsubst --strict 2>&1 >/dev/null); then
-            echo "ERROR: $SRCPATH fails Flux's strict substitution: $STRICT_ERR"
-            FAILED=1
-            continue
-          fi
-          # printf '%s\n', NOT echo: the rendered manifests carry Grafana
-          # dashboard JSON with literal \n inside block scalars, which echo would
-          # expand into real newlines and corrupt the YAML stream.
-          RENDERED=$(printf '%s\n' "$RAW" | envsubst "$FLUX_ENVSUBST_VARS")
-          # kubeconform exits 0 on an empty stream, so a stage that renders
-          # nothing would validate nothing and still pass.
-          if [ -z "$(printf '%s' "$RENDERED" | tr -d '[:space:]')" ]; then
-            echo "ERROR: $SRCPATH rendered no resources"
-            FAILED=1
-            continue
-          fi
-          printf '%s\n---\n' "$RENDERED" >> "$RENDER_ALL"
-          if ! printf '%s\n' "$RENDERED" | kubeconform -strict -ignore-missing-schemas \
-              -kubernetes-version "$K8S_VER" \
-              -schema-location default \
-              -schema-location '{{.CRD_CATALOG}}' \
-              -summary; then
-            FAILED=1
-          fi
-        done <<<"$KS_PATHS"
-
-        # A gate that inspects nothing is not a gate: every check below reads
-        # $RENDER_ALL.
-        if [ ! -s "$RENDER_ALL" ]; then
-          echo "ERROR: no Kustomization under {{.CLUSTER_DIR}} rendered any manifest"
-          FAILED=1
-        fi
-
-        # Which kinds no schema validated, against the same baseline the CI
-        # flux-lint job passes: a pair outside it fails here too. Through a
-        # file, so kubeconform's own status is not read as a skip verdict.
-        SKIPPED_JSON=$(mktemp)
-        kubeconform -verbose -ignore-missing-schemas -kubernetes-version "$K8S_VER" \
-          -schema-location default \
-          -schema-location '{{.CRD_CATALOG}}' \
-          -output json < "$RENDER_ALL" > "$SKIPPED_JSON" || true
-        python3 scripts/kubeconform-skipped.py scripts/kubeconform-expected-skipped.txt \
-          < "$SKIPPED_JSON" || FAILED=1
-        rm -f "$SKIPPED_JSON"
-
-        if ! scripts/flux-corpus-gates.sh "$RENDER_ALL" "$VERSIONS_CONFIGMAP"; then
-          FAILED=1
-        fi
+        # Consumer-owned gates over the corpus, the same argv the CI job's
+        # extra_validation input runs.
+        scripts/flux-corpus-gates.sh "$RENDER_ALL" "$VERSIONS_CONFIGMAP" || FAILED=1
 
         # Chart-rendered, so the corpus above cannot see it: each Grafana
         # k8s-sidecar must run the METHOD its position requires.
-        if ! python3 scripts/check-grafana-sidecar-init.py; then
-          FAILED=1
-        fi
+        python3 scripts/check-grafana-sidecar-init.py || FAILED=1
 
         exit $FAILED

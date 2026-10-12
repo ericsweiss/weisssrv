@@ -10,9 +10,10 @@
   `task scripts:test` inside `task lint`) **never skips** — a gate that
   disables itself when it cannot find its comparison source is not a gate — so a
   single-repo clone fails it with an actionable AssertionError rather than a
-  green pass. It compares at the ref `.gitlab-ci.yml` pins and falls back to the
-  checkout's working tree when that tag has not been cut yet, announcing the
-  fallback.
+  green pass. It compares at the ref `.gitlab-ci.yml` declares and FAILS when
+  the checkout has no such commit: while a tag is being prepared, set
+  `WEISSSRV_LIB_REF_OVERRIDE=<commit-ish>` to compare against the state the
+  copies came from.
 - `ansible-galaxy install -r ansible/requirements.yml` pulls the `weisssrv.infra`
   collection at the pinned tag — nothing Ansible-side resolves without it, and it
   needs read access to `git.ericsweiss.com/eric/weisssrv-lib`. Re-run with

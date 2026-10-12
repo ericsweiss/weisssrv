@@ -194,7 +194,7 @@ prowlarr_version: "2.6.5.5623"
 sonarr_version: "4.0.20.3014"
 radarr_version: "6.4.4.10685"
 lidarr_version: "3.1.0.4875"
-pulsarr_version: "0.19.4"
+pulsarr_version: "0.19.5"
 
 # wg-easy WireGuard VPN (internet-exit VPN for the user + friends/family).
 # Container tag has NO leading "v" (upstream convention: :15.3.0, not :v15.3.0).

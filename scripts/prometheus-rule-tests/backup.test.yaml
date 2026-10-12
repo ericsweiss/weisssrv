@@ -30,6 +30,36 @@ tests:
         alertname: ArchiveBackupFailed
         exp_alerts: []
 
+  # ArchiveBackupRunning: fires while archive-backup.service is active and
+  # holds 20m after it exits, so the I/O-pressure page that lands at the end
+  # of a long run is still inhibited; gone once the tail passes.
+  - interval: 1m
+    input_series:
+      - series: 'node_systemd_unit_state{job="node-exporter-host", instance="10.0.10.102:9101", name="archive-backup.service", state="active"}'
+        values: '1+0x30 0+0x40'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: ArchiveBackupRunning
+        exp_alerts:
+          - exp_labels:
+              severity: none
+              job: node-exporter-host
+              instance: 10.0.10.102:9101
+              name: archive-backup.service
+              state: active
+      - eval_time: 45m
+        alertname: ArchiveBackupRunning
+        exp_alerts:
+          - exp_labels:
+              severity: none
+              job: node-exporter-host
+              instance: 10.0.10.102:9101
+              name: archive-backup.service
+              state: active
+      - eval_time: 60m
+        alertname: ArchiveBackupRunning
+        exp_alerts: []
+
   # PveClusterBackupFailed: a failed /etc/pve tar pages. The fail-closed
   # unmounted-dataset guard writes this metric on exit, so it is the only signal
   # separating "guard tripped" from "ran fine" inside the 50h artefact window.

@@ -54,11 +54,12 @@ Improvements flow between the two by hand, in both directions.
 
 This repo consumes four things from the library, all pinned:
 
-1. **CI templates**, `include:`d at a literal `ref:`. The `include:` block in
-   `.gitlab-ci.yml` is the source of truth for which ones — do not keep a count
-   anywhere. `variables.WEISSSRV_LIB_REF` is the single source for the tag and
-   `scripts/check-lib-pins.py` (`--fix` rewrites) enforces that every entry
-   matches it and is a release tag.
+1. **CI templates**, `include:`d at `ref: $[[ inputs.lib_ref ]]`. The `include:`
+   block in `.gitlab-ci.yml` is the source of truth for which ones — do not keep
+   a count anywhere. `spec.inputs.lib_ref.default` in that file's own `spec:`
+   header is the single source for the tag, and `scripts/check-lib-pins.py`
+   (`--bump vX.Y.Z` moves it, `--print` reads it) enforces that every pin derives
+   from it and is a release tag.
 2. **The `weisssrv.infra` collection**, pinned in `ansible/requirements.yml`.
    Playbooks reference roles as `weisssrv.infra.<role>`; there is no
    local roles directory under `ansible/` any more.
@@ -77,11 +78,10 @@ This repo consumes four things from the library, all pinned:
    `terraform/tailscale`, `terraform/authentik`, `terraform/unifi`) are thin
    callers of
    `weisssrv-lib//terraform/modules/{cloudflare-zone,tailscale-acl,authentik-sso,unifi-network}`
-   at a `?ref=` pin, holding only site data. All four pin the same release
-   as `WEISSSRV_LIB_REF`. Those `?ref=`
-   pins are bumped **by hand** — `scripts/check-lib-pins.py` reads only the
-   `include:` block and `ansible/requirements.yml` — but a missed one fails
-   `scripts/test_site_configs.py` (the refs must equal `WEISSSRV_LIB_REF`).
+   at a `?ref=` pin, holding only site data. All four pin the same release as
+   the declared `lib_ref`: `scripts/lib-ref-sites.yml` declares
+   `terraform/*/main.tf` as a `check-lib-pins.py` site, so `--bump` rewrites
+   them and a pin left behind fails the gate.
 
 Consequences an agent must not miss:
 
@@ -373,14 +373,12 @@ the collection (its README + each role's README).
 
 1. Make the change in `weisssrv-lib` (`ansible_collections/weisssrv/infra/roles/<role>/`)
    with its molecule scenario, MR it, and have a release tag cut.
-2. Here: bump the collection `version:` in `ansible/requirements.yml`, bump
-   `variables.WEISSSRV_LIB_REF` in `.gitlab-ci.yml` and run
-   `scripts/check-lib-pins.py --fix` **and**
-   `scripts/check-molecule-image-pin.py --fix` (the molecule-test fallback tags
-   in the integration scenarios and `ansible/TESTING.md` — CI overrides the
-   image, so only local runs read them), re-vendor the byte-identical scripts,
-   then `ansible-galaxy install -r ansible/requirements.yml --force` and re-run
-   the gates. The four Terraform `?ref=` pins are still bumped by hand.
+2. Here: re-vendor the byte-identical scripts, run
+   `scripts/check-lib-pins.py --bump vX.Y.Z` (it moves the declared ref, every
+   `include:` pin, `variables.WEISSSRV_LIB_REF`, the collection `version:` in
+   `ansible/requirements.yml` and the four Terraform `?ref=` sites), then
+   `ansible-galaxy install -r ansible/requirements.yml --force` and re-run the
+   gates.
 3. Land the inventory changes the role's variables require **in the same MR**.
    Every role variable is role-prefixed and `| default(...)`-guarded, so an
    inventory name that does not match the role's README does not fail — it

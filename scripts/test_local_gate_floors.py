@@ -63,8 +63,14 @@ def test_the_local_flux_lint_task_keeps_the_empty_render_floor():
     assert FLUX_TASKFILE.is_file(), "taskfiles/flux.yml is missing"
     task = _task(FLUX_TASKFILE, "lint")
     assert task, "taskfiles/flux.yml declares no `lint` task"
+    assert any("scripts/flux-lint.sh" in c for c in _cmds(task)), (
+        "taskfiles/flux.yml's lint task no longer runs scripts/flux-lint.sh, the "
+        "program the CI flux-lint job runs — the empty-render floor and the "
+        "strict render would then live in one path only."
+    )
+    # A hand-rolled build re-added beside it is held to the floor directly.
     assert not empty_render_floor_missing(task), (
-        "taskfiles/flux.yml's lint task builds each Kustomization with no "
+        "taskfiles/flux.yml's lint task builds a Kustomization with no "
         "empty-render floor: an emptied resources: list would pass. Restore the "
         "guard that fails with 'rendered no resources'."
     )
