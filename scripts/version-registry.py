@@ -148,6 +148,9 @@ _SERVICES: list[dict] = [
         "version_prefix": "rust-v",
         "strip_prefix": True,
         "tag_filter": r"^rust-v\d+\.\d+\.\d+$",
+        # Every codex release carries dozens of assets, so a 100-release page
+        # runs to tens of megabytes and times out or truncates.
+        "releases_per_page": 25,
         "coupled_vars": ["hermes_image_version"],
         "notes": (
             "Baked into the image, which the pods pull IfNotPresent: a new CLI "

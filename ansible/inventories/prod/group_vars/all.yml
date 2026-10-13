@@ -215,7 +215,7 @@ plex_version: "1.43.4.10903-e5521bd8c"
 # GitLab EE (using CE features) - Omnibus package.
 # https://packages.gitlab.com/gitlab/gitlab-ee
 # The maintenance apt-upgrade honours the gitlab-ee hold and will not bump it.
-gitlab_version: "19.4.1-ee.0"
+gitlab_version: "19.4.2-ee.0"
 
 # https://gitlab.com/gitlab-org/charts/gitlab-runner/tags
 gitlab_runner_helm_version: "0.93.0"
@@ -271,7 +271,7 @@ hermes_git_sha: "f97608f178d1ffeca59860195ab7da295f7c8e5f"
 # PUBLISHED image tag = <hermes_version>-r<N>. The image is upstream + our
 # patches, so a patch change without an upstream bump MUST produce a new tag or
 # the IfNotPresent cache serves the unpatched image. Reset to -r1 on a bump.
-hermes_image_version: "v2026.9.24-r4"
+hermes_image_version: "v2026.9.24-r5"
 # OpenAI Codex CLI, baked into the hermes image by Dockerfile.codex. Requires
 # >=0.130.0 for the Hermes runtime. Build-time only — not substituted into any
 # manifest. https://github.com/openai/codex/releases (npm @openai/codex)
@@ -283,7 +283,7 @@ hermes_claude_version: "2.1.296"
 # 1Password CLI (op), baked into the hermes image for Hermes' 1Password skill
 # (docs/37). Full DEB version string. NOT optional: upstream keeps exactly ONE
 # version, so a stale pin FAILS the build and version-check cannot see it.
-hermes_op_version: "2.40.0-1"
+hermes_op_version: "2.41.0-1"
 # Camofox browser server - the sidecar behind Hermes' camofox tool. Upstream
 # publishes no image; build-camofox-browser clones the repo at tag v<version>,
 # so the pin is the bare semver. https://github.com/jo-inc/camofox-browser/releases

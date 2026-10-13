@@ -2,7 +2,7 @@
 # `authentik-sso` module; this site's objects are in the sibling files. The
 # `?ref=` is a check-lib-pins.py site (scripts/lib-ref-sites.yml).
 module "sso" {
-  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/authentik-sso?ref=v0.20.3"
+  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/authentik-sso?ref=v0.20.5"
 
   # Flow slugs, signing key, grant types and mappings are passed explicitly so a
   # library default change cannot repoint provider identity on a ref bump.

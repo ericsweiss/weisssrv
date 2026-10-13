@@ -5,7 +5,7 @@
 spec:
   inputs:
     lib_ref:
-      default: v0.20.3
+      default: v0.20.5
 ---
 # GitLab CI/CD pipeline for the weisssrv homelab. Stages, the job matrix per
 # pipeline source and the deploy/verify contract are docs/13-ci-cd.md.
