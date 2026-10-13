@@ -7,7 +7,7 @@
 # data in networks.tf and the `wlans` map here.
 # Segmentation and what stays console-owned: docs/46-unifi-network.md.
 module "network" {
-  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/unifi-network?ref=v0.20.5"
+  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/unifi-network?ref=v0.20.6"
 
   networks = local.networks
   zones    = local.zones

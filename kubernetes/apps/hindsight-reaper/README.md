@@ -32,7 +32,7 @@ evidence to investigate, not a corpse to sweep. The program is
   to the reaper's ServiceAccount: pod-delete is confined to `hindsight` at the
   RBAC layer, no cluster-wide pod access anywhere. No `get` — the script lists
   and deletes by name.
-- **Digest-pinned `python:3.14-slim`** (the image the runner reaper and
+- **Digest-pinned `python:3.15-slim`** (the image the runner reaper and
   cloudflare-ddns already run) — stdlib only, no new image or version-pin.
 - **uid precondition** on every delete, so a stale list cannot delete a newer pod
   that reused the name.

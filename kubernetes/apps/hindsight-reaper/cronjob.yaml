@@ -42,7 +42,7 @@ spec:
             - name: reaper
               # The same digest-pinned image the runner reaper and cloudflare-ddns
               # run. Digest-pinned because this workload deletes pods.
-              image: python:3.14-slim@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c5320d762a27986facfc3355c1
+              image: python:3.15-slim@sha256:ea4f1f290e071bf7d28199cfb3e09f5dbad31b50e9c32fd58f2f2d7be915f3ae
               command:
                 - python3
                 - /opt/reaper/hindsight-reaper.py
