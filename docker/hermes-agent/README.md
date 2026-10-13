@@ -72,6 +72,10 @@ The `build-hermes-agent` CI job (`.gitlab-ci.yml`) does both stages.
   pushed as `:<hermes_image_version>` (the tag the cluster pulls) alongside
   `:<hermes_version>`, `:latest` and `:<commit-sha>`, and the job then verifies
   the registry actually resolves `:<hermes_image_version>` before finishing.
+  Both builds run with `--provenance=false --sbom=false`, so what is pushed is
+  a plain image manifest: docker 29's containerd image store would otherwise
+  keep BuildKit's attestation manifest and push an OCI index, and the registry
+  refuses the index's child image manifest ("blob unknown to registry").
 - **Pull**: the in-cluster Deployment
   (`kubernetes/apps/hermes/deployment.yaml`) references
   `registry.git.esweiss.com/eric/weisssrv/hermes-agent:${hermes_image_version}` — the

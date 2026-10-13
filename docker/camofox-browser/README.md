@@ -35,7 +35,9 @@ The `build-camofox-browser` CI job (`.gitlab-ci.yml`) does the build.
 - **Push**: tagged
   `registry.git.ericsweiss.com/eric/weisssrv/camofox-browser:<version>`. MR
   pipelines build-only; the load-bearing `:<version>` and `:latest` tags are
-  pushed only on `main`.
+  pushed only on `main`. The build runs with `--provenance=false --sbom=false`
+  for the same reason as hermes-agent: a plain image manifest is what the
+  registry accepts from docker 29's containerd image store.
 - **Pull**: the `camofox` container of the hermes pod
   (`kubernetes/apps/hermes/deployment.yaml`) references
   `registry.git.esweiss.com/eric/weisssrv/camofox-browser:${hermes_camofox_version}`
