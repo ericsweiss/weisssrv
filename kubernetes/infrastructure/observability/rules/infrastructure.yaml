@@ -801,12 +801,12 @@ spec:
               HelmRelease and re-derive the cap in the same commit (docs/33).
 
         # The recommendation outgrew the container's memory limit. Advisory only
-        # (severity: none): the target tracks working set, which is page cache
-        # here. ContainerMemoryNearLimit (RSS) and ContainerOOMKilled page.
+        # (severity: none); radarr and lidarr are left out, their working set is
+        # mostly NFS page cache (docs/33). ContainerMemoryNearLimit (RSS) pages.
         - alert: VPARecommendationExceedsLimit
           expr: >-
             max by (namespace, verticalpodautoscaler, workload, container) (
-              workload:vpa_recommendation_memory:max
+              workload:vpa_recommendation_memory:max{verticalpodautoscaler!~"radarr|lidarr"}
             )
             > on (namespace, workload, container) group_left () 1.1 *
             workload:kube_pod_container_resource_memory:max{kind="limits"}
@@ -828,20 +828,20 @@ spec:
               "Applying an Off-tier recommendation").
 
         # The same drift one band earlier, at the request the scheduler and the
-        # kubelet's eviction ranking see. Advisory only (severity: none): the
-        # worklist lives in docs/33 and the autoscaling dashboard.
+        # kubelet's eviction ranking see. Advisory only (severity: none); radarr
+        # and lidarr are left out as above. The worklist lives in docs/33.
         - alert: VPARecommendationExceedsRequest
           expr: >-
             (
               max by (namespace, verticalpodautoscaler, workload, container) (
-                workload:vpa_recommendation_memory:max{source="target"}
+                workload:vpa_recommendation_memory:max{source="target", verticalpodautoscaler!~"radarr|lidarr"}
               )
               - on (namespace, workload, container) group_left ()
               workload:kube_pod_container_resource_memory:max{kind="requests"}
             ) > 134217728
             and
             max by (namespace, verticalpodautoscaler, workload, container) (
-              workload:vpa_recommendation_memory:max{source="target"}
+              workload:vpa_recommendation_memory:max{source="target", verticalpodautoscaler!~"radarr|lidarr"}
             )
             > on (namespace, workload, container) group_left () 1.25 *
             workload:kube_pod_container_resource_memory:max{kind="requests"}

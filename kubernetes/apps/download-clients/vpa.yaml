@@ -126,8 +126,8 @@ spec:
       - containerName: seed-external-auth
         mode: "Off"
       # Cap == the container's 1Gi limit (_arr/deployment.yaml). The working set
-      # is dominated by reclaimable NFS page cache (30d RSS peak ~290Mi), so the
-      # memory series is excluded from both VPA sizing alerts (docs/33).
+      # is mostly reclaimable NFS page cache, so the memory series is left out
+      # of both VPA sizing alerts (docs/33).
       - containerName: "*"
         minAllowed: {cpu: 25m, memory: 128Mi}
         maxAllowed: {cpu: 2, memory: 1Gi}
@@ -148,8 +148,8 @@ spec:
       - containerName: seed-external-auth
         mode: "Off"
       # Cap == the container's 1Gi limit (_arr/deployment.yaml). The working set
-      # is dominated by reclaimable NFS page cache (30d RSS peak ~290Mi), so the
-      # memory series is excluded from both VPA sizing alerts (docs/33).
+      # is mostly reclaimable NFS page cache, so the memory series is left out
+      # of both VPA sizing alerts (docs/33).
       - containerName: "*"
         minAllowed: {cpu: 25m, memory: 128Mi}
         maxAllowed: {cpu: 2, memory: 1Gi}

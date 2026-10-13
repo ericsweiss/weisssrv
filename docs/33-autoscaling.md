@@ -535,7 +535,11 @@ the SSO database. Three alerts now close it:
   the cap tracks the limit.
   Both alerts read the recording rules `workload:vpa_recommendation_memory:max`
   and `workload:kube_pod_container_resource_memory:max` rather than repeating
-  the join.
+  the join. Both leave out the `radarr` and `lidarr` VPAs: over 30 days their
+  RSS peaks stay under half of their working-set peaks, the rest being
+  reclaimable NFS page cache, so the target overstates the need. `sonarr` stays
+  in, its RSS being nearly its whole working set; `ContainerMemoryNearLimit`
+  still judges all three on RSS.
 - **`ContainerMemoryNearLimit`** — anonymous memory (RSS) above 90% of the
   container's own memory limit for 15m, independent of any VPA. RSS is the
   part of a container's charge the rule can judge without page cache: the

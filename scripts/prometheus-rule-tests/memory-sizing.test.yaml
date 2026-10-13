@@ -357,8 +357,8 @@ tests:
               container: nzbget
 
   # radarr and lidarr hold reclaimable NFS page cache against a maxAllowed equal
-  # to their 1Gi limit. Advisory, so memory and CPU both list: the memory arm
-  # needs the 1.25x ratio and the 128Mi gap, the CPU arm the ratio alone.
+  # to their 1Gi limit: the cap alert lists them (memory needs the 1.25x ratio
+  # and the 128Mi gap, CPU the ratio alone), the limit alert leaves them out.
   - interval: 1m
     input_series:
       - series: 'vpa_recommendation_target{exported_namespace="downloads", namespace="observability", verticalpodautoscaler="radarr", target_name="radarr", target_kind="Deployment", container="radarr", resource="memory", unit="byte", update_mode="Initial", controlled_values="RequestsOnly"}'
@@ -376,13 +376,7 @@ tests:
     alert_rule_test:
       - eval_time: 7h
         alertname: VPARecommendationExceedsLimit
-        exp_alerts:
-          - exp_labels:
-              severity: none
-              namespace: downloads
-              workload: radarr
-              verticalpodautoscaler: radarr
-              container: radarr
+        exp_alerts: []
       - eval_time: 30h
         alertname: VPARecommendationCapped
         exp_alerts:
@@ -401,7 +395,7 @@ tests:
               resource: memory
               unit: byte
 
-  # lidarr is the same shape with memory alone, so both tiers list it once.
+  # lidarr is the same shape with memory alone: capped once, never the limit alert.
   - interval: 1m
     input_series:
       - series: 'vpa_recommendation_target{exported_namespace="downloads", namespace="observability", verticalpodautoscaler="lidarr", target_name="lidarr", target_kind="Deployment", container="lidarr", resource="memory", unit="byte", update_mode="Initial", controlled_values="RequestsOnly"}'
@@ -415,13 +409,7 @@ tests:
     alert_rule_test:
       - eval_time: 7h
         alertname: VPARecommendationExceedsLimit
-        exp_alerts:
-          - exp_labels:
-              severity: none
-              namespace: downloads
-              workload: lidarr
-              verticalpodautoscaler: lidarr
-              container: lidarr
+        exp_alerts: []
       - eval_time: 30h
         alertname: VPARecommendationCapped
         exp_alerts:
@@ -469,6 +457,23 @@ tests:
       - series: 'kube_pod_container_resource_requests{namespace="authentik", pod="authentik-postgresql-0", container="metrics", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
         values: '33554432+0x2000'
       - series: 'namespace_workload_pod:kube_pod_owner:relabel{namespace="authentik", workload="authentik-postgresql", workload_type="statefulset", pod="authentik-postgresql-0"}'
+        values: '1+0x2000'
+    alert_rule_test:
+      - eval_time: 25h
+        alertname: VPARecommendationExceedsRequest
+        exp_alerts: []
+
+  # The request band leaves radarr and lidarr out too (docs/33): a target far
+  # above the request stays silent for them; the RSS alert is their band.
+  - interval: 1m
+    input_series:
+      - series: 'vpa_recommendation_target{exported_namespace="downloads", namespace="observability", verticalpodautoscaler="radarr", target_name="radarr", target_kind="Deployment", container="radarr", resource="memory", unit="byte", update_mode="Initial"}'
+        values: '1288490188+0x2000'
+      - series: 'kube_pod_container_resource_requests{namespace="downloads", pod="radarr-0", container="radarr", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
+        values: '410701824+0x2000'
+      - series: 'kube_pod_container_resource_limits{namespace="downloads", pod="radarr-0", container="radarr", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
+        values: '1073741824+0x2000'
+      - series: 'namespace_workload_pod:kube_pod_owner:relabel{namespace="downloads", workload="radarr", workload_type="deployment", pod="radarr-0"}'
         values: '1+0x2000'
     alert_rule_test:
       - eval_time: 25h
