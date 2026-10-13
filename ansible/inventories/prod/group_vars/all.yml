@@ -321,7 +321,7 @@ dcgm_exporter_version: "4.6.0-4.8.3-distroless"
 
 # Homarr (docs/41). The Docker tag is v-PREFIXED — a bare semver 404s.
 # https://github.com/homarr-labs/homarr/releases
-homarr_version: "v1.77.1"
+homarr_version: "v2.4.1"
 
 # Uptime Kuma (docs/45). BARE semver tag on Docker Hub; the manifest appends
 # "-rootless", the same release built with USER node, which is what lets the

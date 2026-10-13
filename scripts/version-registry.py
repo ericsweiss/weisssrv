@@ -70,14 +70,6 @@ _SERVICES: list[dict] = [
         "version_prefix": "v",
         "strip_prefix": False,
         "tag_filter": r"^v\d+\.\d+\.\d+$",
-        "held": True,
-        "notes": (
-            "Held on 1.x. v2 migrates the SQLite database in place and 1.x "
-            "cannot read it afterwards, so putting the old image back is not a "
-            "rollback. Unholding needs a snapshot of the /appdata PV, the "
-            "SECRET_ENCRYPTION_KEY retained, and a board re-layout for v2's "
-            "200px fixed cells. Rationale in docs/41."
-        ),
     },
     {
         # Tracked on Docker Hub because the manifest pins the Docker tag
