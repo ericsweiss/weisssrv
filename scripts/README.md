@@ -138,6 +138,7 @@ python3 ../weisssrv-lib/scripts/check-vendored-copies.py --repo-root . --list
 | `verify-windows.sh` | Windows VM smoke test: RDP reachability (`task windows:verify`) | local |
 | `wait-for-reloader-roll.sh` | Waits for Reloader to roll a Deployment after its ConfigMap was patched | vendored |
 | `flux-rotate-secret.sh` | Refreshes one app's ExternalSecret and restarts the pods that consume it (`task flux:rotate-secret`) | local |
+| `flux-rotate-db-password.sh` | Rotates an app's in-cluster Postgres role passwords end to end: 1Password first, `ALTER USER` in the pod, then the ExternalSecret refresh and restarts (`task flux:rotate-db-password -- <authentik\|mealie>`). | weisssrv |
 | `flux-secret-consumers.py` | The workloads in one namespace that read a named Secret, from a `kubectl get deployment,statefulset,daemonset -o json` dump; `flux-rotate-secret.sh` uses it to name a consumer its arm does not restart | vendored |
 | `molecule-retry.sh` | `molecule test` with in-job destroy + jittered retry | vendored |
 | `sanitize-junit-expected-failures.py` | Downgrades declared negative-path junit failures | vendored |

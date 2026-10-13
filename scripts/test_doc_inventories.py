@@ -230,6 +230,7 @@ _OP_URI_RE = re.compile(
 # They are real vault items: entered in an app's own UI, read from a CI variable
 # rather than an `op://` URI, or kept for an alternate provider.
 _DOC_ONLY_ITEMS = {
+    "Flux Git Deploy Token": "the flux-system git Secret, written by task flux:bootstrap and rotated by hand",
     "Flux Webhook Token": "optional Flux Receiver path; the GitLab agent drives reconcile",
     "GitLab Version Bump Bot Token": "read as the VERSION_BUMP_BOT_TOKEN CI variable",
     "Homarr Integrations": "DR record of credentials entered in the Homarr UI",

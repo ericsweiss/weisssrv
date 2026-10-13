@@ -171,7 +171,7 @@ k3s_install_script_checksum: "sha256:ed01f89fd977bf20ac1516bbebf8370bf3ddbaa55da
 kube_vip_version: "v1.2.4"
 # Flux CLI used by CI deploy-verify; the job pins a matching sha256 —
 # update both together when bumping.
-flux_version: "2.9.0"
+flux_version: "2.9.6"
 
 # Authentik SSO identity provider
 authentik_version: "2026.8.3"

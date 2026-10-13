@@ -19,7 +19,7 @@ data:
   docker_engine_compose_plugin_version: 5.3.1-1~debian.13~trixie
   docker_engine_containerd_version: 2.2.6-1~debian.13~trixie
   exportarr_version: v2.3.0
-  flux_version: 2.9.0
+  flux_version: 2.9.6
   garage_version: v2.4.1
   gitlab_agent_helm_version: 2.32.0
   gitlab_runner_helm_version: 0.93.0

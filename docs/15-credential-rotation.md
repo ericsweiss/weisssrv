@@ -135,7 +135,8 @@ token).
 | K3s Cluster Token | `credential` | server join |
 | K3s Agent Token | `credential` | agent (worker) join — the lower-privilege token; see docs/19 |
 | K3s Kubeconfig | kubeconfig file content | `.k3s-deploy-base` CI template fallback (the GitLab agent is preferred) |
-| Flux GitLab PAT | personal access token | Flux `GitRepository` read access |
+| Flux GitLab PAT | `credential` (the `flux-bootstrap` project access token: `api`, `read_repository`, `write_repository`, Maintainer) | `task flux:bootstrap` only |
+| Flux Git Deploy Token | `username`, `credential` (project deploy token, `read_repository`) | the `flux-system` Secret source-controller fetches `GitRepository` with; rotate by minting a new deploy token, rewriting that Secret, then revoking the old token |
 | Flux Webhook Token | hex token | optional Flux `Receiver` path; day-to-day reconcile comes from the GitLab agent (docs/29) |
 | Service Account Auth Token weisssrv | service-account token | `OP_SERVICE_ACCOUNT_TOKEN` in CI |
 | GitHub Token | `credential` | version-checker API rate limits (`task maintenance:check-versions`, the `version-bump-bot` CI job) |
@@ -163,7 +164,7 @@ them.
 
 | Item | Fields | Consumed by |
 |---|---|---|
-| Authentik Secrets | `secret-key`, `postgresql-password`, `postgresql-admin-password` | Authentik server/worker; `postgresql-admin-password` is also the password of the hand-created `postgres` superuser the exporter sidecar connects as, so rotating it needs a matching `ALTER ROLE` — see `kubernetes/apps/authentik/README.md` § 1Password items |
+| Authentik Secrets | `secret-key`, `postgresql-password`, `postgresql-admin-password` | Authentik server/worker; `postgresql-admin-password` is also the password of the hand-created `postgres` superuser the exporter sidecar connects as, so rotating it needs a matching `ALTER ROLE` — see `kubernetes/apps/authentik/README.md` § 1Password items. `secret-key` never rotates: authentik derives user identifiers from it. The two Postgres passwords rotate with `task flux:rotate-db-password -- authentik` |
 | Authentik Terraform Token | `credential` (admin API token) | `terraform/authentik` — see [detail](#authentik-terraform-token) |
 | Authentik User Identities | the item's **Notes** (`notesPlain`) holds ONLY a JSON object: `{"<username>": {"name": …, "email": …}, …}` covering every username in `terraform/authentik/users.tf` | `terraform/authentik` — keeps managed-user names + emails out of the public-mirrored repo (docs/40 § Managed users) |
 | Mealie SSO | `oidc-client-id`, `oidc-client-secret` | Mealie (password login disabled) |
@@ -183,7 +184,7 @@ them.
 | VPN Unlimited Credentials | four openvpn-* fields | alternate Gluetun provider — see [detail](#vpn-unlimited-credentials) |
 | Download Client API Keys | `sonarr-api-key`, `radarr-api-key`, `lidarr-api-key`, `prowlarr-api-key`, `gluetun-control-apikey` | the \*arr apps and the gluetun-exporter — see [detail](#download-client-api-keys) |
 | WireGuard VPN | `init-username`, `init-password`, `metrics-token` | wg-easy first-boot admin + `/metrics/prometheus` bearer (docs/38) |
-| Mealie Secrets | `postgres-password` | Mealie Postgres |
+| Mealie Secrets | `postgres-password` | Mealie Postgres — `task flux:rotate-db-password -- mealie` |
 | Bar Assistant Secrets | `meilisearch-master-key` | Meilisearch |
 | OpenAI API Key | `api-key` | Mealie recipe parsing — entered in Mealie's UI, not ESO-synced |
 | Hermes Secrets | five synced fields + three reserve fields | Hermes gateway/dashboard — see [detail](#hermes-secrets) |
@@ -664,21 +665,32 @@ kubectl -n <ns> delete pod -l <selector>   # delete, not `rollout restart`:
 **Rotation Procedure**:
 
 ```bash
-# 1. Generate new key pair
-ssh-keygen -t ed25519 -C "eric@MacBookPro.esweiss.com" -f ~/.ssh/id_ed25519_new
+# 1. Generate the new pair INSIDE 1Password. The CLI can neither edit nor
+#    import an SSH Key item, so the item is replaced. First, in the 1Password
+#    app, rename the current "SSH Key" item to a retired title such as
+#    "SSH Key (retired)": the SSH agent and every op:// reference select the
+#    item by title, and an archived item still answers to its title, so the
+#    live title must belong to exactly one item before the new one exists.
+op item create --category "SSH Key" --title "SSH Key" --vault Homelab --ssh-generate-key ed25519
 
-# 2. Update BOTH halves in 1Password
-#    public key  <- ~/.ssh/id_ed25519_new.pub
-#    private key <- ~/.ssh/id_ed25519_new
-#    fingerprint <- ssh-keygen -lf ~/.ssh/id_ed25519_new.pub
+# 2. Local copy for scripted use (the 1Password agent serves the item itself);
+#    the files exist with mode 0600 before any key byte is written.
+install -m 600 /dev/null ~/.ssh/id_ed25519_new
+op read "op://Homelab/SSH Key/private key?ssh-format=openssh" > ~/.ssh/id_ed25519_new
+op read "op://Homelab/SSH Key/public key" > ~/.ssh/id_ed25519_new.pub
 
-# 3. Verify the item holds a matching pair
-op read "op://Homelab/SSH Key/public key"
-op read "op://Homelab/SSH Key/private key" | ssh-keygen -y -f /dev/stdin
-#    ^ must print the same public key as the line above
+# 3. Verify the item holds a matching pair, then register the public key on
+#    GitLab (Preferences -> SSH Keys, or POST /user/keys) and GitHub before
+#    step 4: the git remotes authenticate with it too.
+ssh-keygen -y -f ~/.ssh/id_ed25519_new | awk '{print $1" "$2}'
+op read "op://Homelab/SSH Key/public key" | awk '{print $1" "$2}'
+#    ^ the two lines must match
 
-# 4. Deploy new key to all hosts
-task infra:base -- --tags ssh
+# 4. Deploy the new key to every host, authenticating with the old key the
+#    hosts still trust: the agent now serves the new item by title, and the
+#    old private key stays at its path until step 6.
+task infra:base -- --tags ssh --private-key "$HOME/.ssh/id_ed25519" \
+  --ssh-extra-args="-o IdentityAgent=none -o IdentitiesOnly=yes"
 
 # 5. Test SSH with new key (before removing old one!)
 ssh -i ~/.ssh/id_ed25519_new eric@10.0.10.102
@@ -691,7 +703,8 @@ mv ~/.ssh/id_ed25519_new.pub ~/.ssh/id_ed25519.pub
 ssh-add -D
 ssh-add ~/.ssh/id_ed25519
 
-# 8. Revoke the old key — the additive deploy in step 4 never removes it
+# 8. Revoke the old key — the additive deploy in step 4 never removes it —
+#    then archive the retired item and remove the old GitLab/GitHub user keys.
 ansible -i ansible/inventories/prod 'all:!home:!windows' -b -m ansible.posix.authorized_key \
   -a "user=eric key='ssh-ed25519 <OLD-PUBKEY>' state=absent"
 ```
@@ -729,8 +742,11 @@ sources were empty, and `task infra:deploy -- --tags acme_certs` (under `op
 run`) rewrites the key file.
 
 **Surfaces step 8 does not reach**: HAOS (.154) keeps the key in
-`/root/.ssh/authorized_keys` over port 22222 — remove it through the Files
-add-on (docs/24). The LXC guests' file is additionally rewritten wholesale by
+`/root/.ssh/authorized_keys` over port 22222 — add the new key there before
+step 4's deploy jobs need it (`task home-assistant:deploy-config` pre-flights
+over that port) and remove the old one afterwards, through the Files add-on
+(docs/24) or as root over port 22222. The same file holds the cert
+authority's key, so a DNS-01 SSH Key rotation appends there too. The LXC guests' file is additionally rewritten wholesale by
 `proxmox_lxc` on the next deploy. The `!home:!windows` exclusion is load-bearing:
 both are `ansible_connection: local`, so a bare `ansible all` would edit the
 control laptop's own file.
@@ -1211,6 +1227,10 @@ If `hdparm`, `dd`, and `nvme sanitize` all fail:
 4. **Verify**: Always run verification checks after rotation
 5. **Backup**: Keep old credentials in 1Password archive for 30 days before deleting
 6. **Audit logs**: Check logs after rotation for failed auth attempts
+7. **Password-category items need a primary value**: `op item edit` (2.40) refuses
+   to save a Password item whose built-in `password` field is empty, so an item
+   that only carries labelled custom fields mirrors its principal secret into
+   `password` as well. The labelled fields stay what ESO and `op://` references read.
 
 ---
 

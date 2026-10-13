@@ -315,6 +315,12 @@ tasks:
     cmds:
       - bash scripts/flux-rotate-secret.sh {{.CLI_ARGS}}
 
+  rotate-db-password:
+    desc: "Rotate an app's in-cluster Postgres role passwords end to end (usage: task flux:rotate-db-password -- <authentik|mealie>)"
+    preconditions: *flux_preconditions
+    cmds:
+      - bash scripts/flux-rotate-db-password.sh {{.CLI_ARGS}}
+
   sync-versions:
     desc: Regenerate kubernetes/infrastructure/sources/versions-configmap.yaml from all.yml
     preconditions:

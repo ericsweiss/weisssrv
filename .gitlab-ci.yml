@@ -5,7 +5,7 @@
 spec:
   inputs:
     lib_ref:
-      default: v0.20.6
+      default: v0.21.1
 ---
 # GitLab CI/CD pipeline for the weisssrv homelab. Stages, the job matrix per
 # pipeline source and the deploy/verify contract are docs/13-ci-cd.md.
@@ -32,7 +32,7 @@ stages:
   - maintenance
 
 default:
-  image: python:3.13-slim
+  image: python:3.14-slim
   # The privileged infrastructure runner. The shared non-privileged runner
   # (k8s-deploy) serves other GitLab projects.
   tags: [infrastructure]
@@ -70,8 +70,8 @@ variables:
   CHECK_DOC_LINKS_IGNORE: "docs/[A-Z]* lint/* molecule/default/expected-junit-failures.txt docker/molecule-ci/requirements.txt terraform/state/* */tfplan */check-vendored-copies.py"
   # Digest-pinned: these images run in jobs that have already been handed vault
   # credentials, so a repointed upstream tag would execute there. Lint-only jobs
-  # float. CI is on 3.13, above ansible 14's floor; CronJobs run 3.14.
-  PY_JOB_IMAGE: "python:3.13-slim@sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0"
+  # float. CI is on 3.14, above ansible 14's floor; CronJobs run 3.15.
+  PY_JOB_IMAGE: "python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170"
   TF_JOB_IMAGE: "hashicorp/terraform:1.16.5@sha256:c7926feace05d0f7e73542842bf3945924e955a1f782cf000ccbb8d18fa42d77"
   # git reads these three as config, so ansible-galaxy's clone of the
   # weisssrv.infra collection authenticates with the job token and no
@@ -308,7 +308,7 @@ workflow:
       - runner_system_failure
       - scheduler_failure
   stage: build
-  image: python:3.13
+  image: python:3.14
 
 # Upstream Hermes Agent publishes no container image: this clones it at the
 # pinned tag, builds their Dockerfile, then layers docker/hermes-agent/
@@ -501,7 +501,7 @@ build-camofox-browser:
 check-generated-files:
   needs: []
   stage: lint
-  image: python:3.13-slim
+  image: python:3.14-slim
   before_script:
     - pip install --quiet "pyyaml==${PYYAML_VERSION}"
   script:
@@ -576,8 +576,8 @@ check-generated-files:
 check-repo-policies:
   needs: []
   stage: lint
-  # python:3.13-slim (not alpine): these checks need bash + coreutils.
-  image: python:3.13-slim
+  # python:3.14-slim (not alpine): these checks need bash + coreutils.
+  image: python:3.14-slim
   variables:
     # check-deploy-coverage.sh's `git merge-base --is-ancestor` guard rejects
     # unrelated histories, which a depth-20 clone produces whenever the MR base
@@ -696,7 +696,7 @@ check-repo-policies:
 check-integration-matrix:
   needs: []
   stage: lint
-  image: python:3.13-slim
+  image: python:3.14-slim
   before_script:
     - pip install --no-cache-dir --quiet "PyYAML==${PYYAML_VERSION}"
   script:
@@ -743,7 +743,7 @@ check-role-inputs:
   needs: []
   stage: lint
   # Full image, not slim: ansible-galaxy installs weisssrv.infra from a git+ URL.
-  image: python:3.13
+  image: python:3.14
   before_script:
     - apt-get update -qq && apt-get install -y -qq --no-install-recommends git
     - pip install --quiet "ansible==${ANSIBLE_VERSION}" "pyyaml==${PYYAML_VERSION}"
@@ -776,7 +776,7 @@ check-role-inputs:
 prometheus-config-lint:
   needs: []
   stage: lint
-  image: python:3.13-slim
+  image: python:3.14-slim
   # The promtool unit tests dominate this job: promtool re-evaluates the whole
   # rule corpus once per evaluation_interval, per test file. Shard the files
   # across parallel instances so wall time is the slowest shard, not the sum.
@@ -1043,7 +1043,7 @@ check-deploy-playbooks:
   needs: []
   stage: validate
   # Full image, not slim: ansible-galaxy installs weisssrv.infra from a git+ URL.
-  image: python:3.13
+  image: python:3.14
   before_script:
     - apt-get update -qq && apt-get install -y -qq --no-install-recommends git
     - pip install --quiet "ansible==${ANSIBLE_VERSION}" "pyyaml==${PYYAML_VERSION}"
@@ -1100,14 +1100,13 @@ include:
       hosts_env: "scripts/hosts.env"
       tags: ["infrastructure"]
 
-  # docker-dind: the `.docker-dind` fragment both image builds extend.
-  # dind_service is held at 24.0 — its embedded BuildKit frontend accepts
-  # upstream hermes' symbolic `COPY --chmod`, which 27.x rejects.
+  # docker-dind: the `.docker-dind` fragment both image builds extend; the
+  # tag and its digest move together.
   - project: eric/weisssrv-lib
     ref: $[[ inputs.lib_ref ]]
     file: /ci/templates/docker-dind.yml
     inputs:
-      dind_service: "docker:24.0-dind@sha256:167bad11bade46d4d9a88646ed7f9b11014dfdb898ba75c5a390eb03f21f0c45"
+      dind_service: "docker:29.9.0-dind@sha256:0b6d18a4a222e71c88be6034926b4f6cde2fc33c2218643d03ccfddc65995470"
 
   # kubectl-setup: the `.kubectl-setup` fragment every kubectl-using job pulls
   # into its before_script. The vendored check-kubectl-version-pin.py reads
@@ -1277,7 +1276,7 @@ include:
       collections_path: ""
       # Full image, not slim: galaxy installs the collection from a git+ URL,
       # which needs the git executable.
-      image: python:3.13
+      image: python:3.14
       changes:
         - "ansible/**/*"
         - ".ansible-lint"
@@ -1406,8 +1405,8 @@ include:
       # The strict parser must be the release kustomize-controller runs, so this
       # is the cluster's own flux_version; the job fails on a mismatch.
       # scripts/test_site_configs.py holds it equal to the versions ConfigMap.
-      flux_version: "2.9.0"
-      flux_sha256: "7aa9779fc7ec6d030e609dab7dbed8c6fc9e3a7f4670834ad02369268aaf341f"
+      flux_version: "2.9.6"
+      flux_sha256: "b4d22673e9246cbd628881f1a9ef3b090085dced291e42d804555cee8e8d42c5"
       pyyaml_version: "6.0.2"
       cluster_dir: "kubernetes/clusters/weisssrv"
       versions_configmap: "kubernetes/infrastructure/sources/versions-configmap.yaml"
@@ -2181,7 +2180,7 @@ deploy-gitlab-verify:
   # curl and netcat only: no Ansible, SSH key, kubeconfig or 1Password, so it
   # does not extend the heavy .deploy-base. Infrastructure runner pods egress
   # unrestricted and SNAT to a node IP, which sg-gitlab admits on :22 and :2222.
-  image: python:3.13-slim
+  image: python:3.14-slim
   interruptible: false
   before_script:
     - apt-get update -qq && apt-get install -y -qq --no-install-recommends curl ca-certificates netcat-openbsd
@@ -2219,10 +2218,10 @@ deploy-verify:
       set -eo pipefail
       # flux CLI alongside the kubectl .k3s-deploy-base installs: verification
       # queries Flux CRs. Version and sha256 are one pin, so bump both.
-      FLUX_VERSION="2.9.0"
+      FLUX_VERSION="2.9.6"
       dl=$(mktemp -d)
       curl -fsSL "https://github.com/fluxcd/flux2/releases/download/v${FLUX_VERSION}/flux_${FLUX_VERSION}_linux_amd64.tar.gz" -o "$dl/flux.tar.gz"
-      echo "7aa9779fc7ec6d030e609dab7dbed8c6fc9e3a7f4670834ad02369268aaf341f  $dl/flux.tar.gz" | sha256sum -c -
+      echo "b4d22673e9246cbd628881f1a9ef3b090085dced291e42d804555cee8e8d42c5  $dl/flux.tar.gz" | sha256sum -c -
       tar xzf "$dl/flux.tar.gz" -C /usr/local/bin flux
       rm -rf "$dl"
       flux --version
@@ -2455,9 +2454,9 @@ version-bump-bot:
   # runtime), so it starts immediately instead of waiting out earlier stages.
   needs: []
   stage: maintenance
-  # Full image, NOT python:3.13-slim: the bot commits and force-pushes a branch,
+  # Full image, NOT python:3.14-slim: the bot commits and force-pushes a branch,
   # and the slim images ship no git.
-  image: python:3.13
+  image: python:3.14
   # Force-pushes a branch and mutates one MR, so it must neither race itself nor
   # be cancelled mid-push. Its own group, never infrastructure-maintenance: it
   # touches no host and must not queue behind a long maintenance op.
