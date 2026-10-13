@@ -373,12 +373,14 @@ build-hermes-agent:
       # loop covers both (either can hit a transient registry/npm hiccup).
       upstream_ref="${ref}:upstream-${CI_COMMIT_SHORT_SHA}"
       attempt=1; max=3
+      # No attestation manifests: docker 29's containerd store would push an
+      # OCI index, whose child manifest the registry refuses as a blob.
       # shellcheck disable=SC2086  # intentional word-split of cache_args
-      until docker build $cache_args \
+      until docker build --provenance=false --sbom=false $cache_args \
               --build-arg HERMES_GIT_SHA="$HERMES_SHA" \
               -t "$upstream_ref" \
               /tmp/hermes-src \
-            && docker build \
+            && docker build --provenance=false --sbom=false \
               --build-arg HERMES_IMAGE="$upstream_ref" \
               --build-arg HERMES_CODEX_VERSION="$HERMES_CODEX_VERSION" \
               --build-arg HERMES_CLAUDE_VERSION="$HERMES_CLAUDE_VERSION" \
@@ -459,8 +461,10 @@ build-camofox-browser:
       # Bounded retry: the build pulls the Camoufox release zip + yt-dlp, so a
       # transient blip re-attempts cheaply on cached layers.
       attempt=1; max=3
+      # No attestation manifests: docker 29's containerd store would push an
+      # OCI index, whose child manifest the registry refuses as a blob.
       # shellcheck disable=SC2086  # intentional word-split of cache_args
-      until docker build $cache_args \
+      until docker build --provenance=false --sbom=false $cache_args \
               -t "${ref}:${CAMOFOX_VERSION}" \
               -t "${ref}:${CI_COMMIT_SHORT_SHA}" \
               /tmp/camofox-src; do
