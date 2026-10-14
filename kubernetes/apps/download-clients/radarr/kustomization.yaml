@@ -36,6 +36,9 @@ patches:
       - op: replace
         path: /spec/template/spec/volumes/0/persistentVolumeClaim/claimName
         value: radarr-config
+      - op: replace
+        path: /spec/template/spec/initContainers/0/env/1/value
+        value: movies.${cluster_internal_domain},radarr.downloads.svc.cluster.local,radarr
   - target:
       kind: Service
       name: arr

@@ -20,3 +20,6 @@ patches:
       - op: test
         path: /spec/template/spec/volumes/0/name
         value: config
+      - op: test
+        path: /spec/template/spec/initContainers/0/env/1/name
+        value: ALLOWED_HOSTS

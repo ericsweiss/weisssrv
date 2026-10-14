@@ -518,6 +518,21 @@ clients (Homarr, Pulsarr, exportarr, intra-*arr) are untouched. Trust model is
 Pulsarr's below — NetworkPolicy plus `authentik-auth` and the `media-admins`
 binding, with `kubectl port-forward` as break-glass.
 
+The same container seeds **`<AllowedHosts>`**, the Host-header allowlist Sonarr,
+Radarr and Prowlarr check on every request (their health page warns while it is
+empty; Lidarr's build has no such setting yet, so there the element waits).
+The list is every name a request arrives under: the ingress hostname
+(`tv.`/`movies.`/`music.`/`prowlarr.` on the internal domain, which Traefik
+forwards unchanged and the Home Assistant bypass routes share), the Service FQDN
+Homarr and exportarr use (`<app>.downloads.svc.cluster.local`), the short
+Service name Prowlarr's application sync and Pulsarr use (`http://<app>:<port>`),
+and `localhost`, which the script adds itself because the kubelet probes send it
+as their `Host` (the pod address they would send otherwise is not listable).
+Each overlay patches its own `ALLOWED_HOSTS` env onto the shared init container;
+an empty list fails the pod rather than booting an app no route can reach, and
+`scripts/test_arr_external_auth.py` checks every app's list names its own
+ingress host and Service names.
+
 ### 2. NZBGet — basic-auth credential injection (codified)
 
 NZBGet validates HTTP Basic against `ControlUsername`/`ControlPassword`

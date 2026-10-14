@@ -36,6 +36,9 @@ patches:
       - op: replace
         path: /spec/template/spec/volumes/0/persistentVolumeClaim/claimName
         value: lidarr-config
+      - op: replace
+        path: /spec/template/spec/initContainers/0/env/1/value
+        value: music.${cluster_internal_domain},lidarr.downloads.svc.cluster.local,lidarr
   - target:
       kind: Service
       name: arr

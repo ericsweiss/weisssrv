@@ -33,6 +33,9 @@ patches:
       - op: replace
         path: /spec/template/spec/volumes/0/persistentVolumeClaim/claimName
         value: sonarr-config
+      - op: replace
+        path: /spec/template/spec/initContainers/0/env/1/value
+        value: tv.${cluster_internal_domain},sonarr.downloads.svc.cluster.local,sonarr
   - target:
       kind: Service
       name: arr

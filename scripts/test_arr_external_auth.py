@@ -28,7 +28,11 @@ INIT_NAME = "seed-external-auth"
 METHOD = "<AuthenticationMethod>External</AuthenticationMethod>"
 # The manifest spells the CIDR as the env var the script reads, never a literal.
 NETWORKS = "<TrustedNetworks>$TRUSTED_NETWORKS</TrustedNetworks>"
+# localhost is the script's own addition: the kubelet probes send it as Host.
+HOSTS = "<AllowedHosts>localhost,$ALLOWED_HOSTS</AllowedHosts>"
+TEST_HOSTS = "tv.example.test,sonarr.downloads.svc.cluster.local,sonarr"
 CONFIG_PATH = "/config/config.xml"
+SERVICE_SUFFIX = ".downloads.svc.cluster.local"
 
 
 @pytest.fixture(scope="module")
@@ -68,6 +72,7 @@ def test_every_arr_runs_the_seeder_before_the_app(rendered, app):
     script = _seeder(rendered[app])["command"][-1]
     assert METHOD in script, f"{app}'s {INIT_NAME} does not set External"
     assert NETWORKS in script, f"{app}'s {INIT_NAME} does not set TrustedNetworks"
+    assert HOSTS in script, f"{app}'s {INIT_NAME} does not set AllowedHosts"
     assert CONFIG_PATH in script
 
 
@@ -101,9 +106,59 @@ def test_prowlarr_has_not_drifted_from_the_shared_skeleton(rendered):
     assert len(set(scripts.values())) == 1, (
         "the seeder script differs between apps: " + ", ".join(sorted(scripts))
     )
-    envs = {app: str(sorted((e["name"], e.get("value")) for e in c.get("env") or []))
-            for app, c in seeders.items()}
+    # ALLOWED_HOSTS is the one value each app spells for itself; every other
+    # value, TRUSTED_NETWORKS included, still has to agree.
+    envs = {
+        app: str(sorted(
+            (e["name"], None if e["name"] == "ALLOWED_HOSTS" else e.get("value"))
+            for e in c.get("env") or []
+        ))
+        for app, c in seeders.items()
+    }
     assert len(set(envs.values())) == 1, "the seeder env differs between apps"
+
+
+@pytest.fixture(scope="module")
+def ingress_hosts() -> dict[str, str]:
+    """service name -> the Host() the overlay's IngressRoutes match for it."""
+    build = subprocess.run(
+        ["kustomize", "build", str(OVERLAY)],
+        capture_output=True, text=True, check=False,
+    )
+    assert build.returncode == 0, build.stderr
+    hosts: dict[str, str] = {}
+    for doc in yaml.safe_load_all(build.stdout):
+        if not (isinstance(doc, dict) and doc.get("kind") == "IngressRoute"):
+            continue
+        for route in doc["spec"].get("routes", []):
+            match = re.search(r"Host\(`([^`]+)`\)", route.get("match", ""))
+            if not match:
+                continue
+            for svc in route.get("services", []):
+                hosts.setdefault(svc["name"], match.group(1))
+    return hosts
+
+
+@pytest.mark.parametrize("app", ARR_APPS)
+def test_every_app_allows_exactly_its_own_names(rendered, ingress_hosts, app):
+    """The ingress name, the Service FQDN Homarr and exportarr call, and the
+    short Service name Prowlarr's sync and Pulsarr call; nothing else."""
+    env = {e["name"]: e.get("value") for e in _seeder(rendered[app]).get("env") or []}
+    listed = env.get("ALLOWED_HOSTS", "")
+    assert listed, f"{app} sets no ALLOWED_HOSTS"
+    assert app in ingress_hosts, f"no IngressRoute matches a Host for {app}"
+    assert set(listed.split(",")) == {ingress_hosts[app], app + SERVICE_SUFFIX, app}, (
+        f"{app}: {listed!r} is not its ingress host plus its two Service names"
+    )
+
+
+@pytest.mark.parametrize("app", ARR_APPS)
+def test_the_probes_send_a_host_the_list_always_holds(rendered, app):
+    """kubelet would send the pod address, which AllowedHosts cannot list."""
+    container = rendered[app]["containers"][0]
+    for probe in ("livenessProbe", "readinessProbe"):
+        headers = container[probe]["httpGet"].get("httpHeaders") or []
+        assert {"name": "Host", "value": "localhost"} in headers, f"{app} {probe}"
 
 
 def test_the_replacement_is_atomic_and_the_temp_name_unguessable(rendered):
@@ -129,7 +184,14 @@ EMPTY_ELEMENT = (
     "  <AuthenticationMethod>Forms</AuthenticationMethod>\n"
     "  <AuthenticationRequired>DisabledForLocalAddresses</AuthenticationRequired>\n"
     "  <TrustedNetworks></TrustedNetworks>\n"
+    "  <AllowedHosts></AllowedHosts>\n"
     "</Config>"
+)
+# A list from before the overlay's, plus a self-closing copy, in front.
+STALE_HOSTS = (
+    "<Config>\n  <AllowedHosts>old.example.test</AllowedHosts>\n"
+    "  <AuthenticationMethod>External</AuthenticationMethod>\n"
+    "  <AllowedHosts />\n  <Port>8989</Port>\n</Config>\n"
 )
 NO_ELEMENT = (
     "<Config>\n  <Port>8686</Port>\n"
@@ -196,7 +258,7 @@ UNSTRIPPABLE = (
 )
 SHAPES = [EMPTY_ELEMENT, NO_ELEMENT, SELF_CLOSING, COMPACT, DUPLICATES,
           STALE_BEFORE_DESIRED, MULTILINE, WHITESPACE_IN_TAGS, MIXED,
-          COMMENTED_ROOT, COMMENTED_ELEMENT]
+          COMMENTED_ROOT, COMMENTED_ELEMENT, STALE_HOSTS]
 
 
 @pytest.fixture(scope="module")
@@ -221,11 +283,12 @@ def shim_path(tmp_path_factory) -> str:
     return f"{shim_dir}:{os.environ.get('PATH', '/usr/bin:/bin')}"
 
 
-def _run(script: str, conf: Path, cidr: str, path: str) -> subprocess.CompletedProcess:
+def _run(script: str, conf: Path, cidr: str, path: str,
+         hosts: str = TEST_HOSTS) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["sh", "-ec", script.replace(CONFIG_PATH, str(conf))],
         capture_output=True, text=True, check=False,
-        env={"TRUSTED_NETWORKS": cidr, "PATH": path},
+        env={"TRUSTED_NETWORKS": cidr, "ALLOWED_HOSTS": hosts, "PATH": path},
     )
 
 
@@ -239,8 +302,8 @@ def pod_cidr(cluster_config) -> str:
     return cluster_config["cluster_pod_cidr"]
 
 
-def _elements(conf: Path) -> tuple[list[str], list[str]]:
-    """(AuthenticationMethod values, TrustedNetworks values) as written.
+def _elements(conf: Path) -> tuple[list[str], list[str], list[str]]:
+    """(AuthenticationMethod, TrustedNetworks, AllowedHosts) values as written.
 
     Read with a regex rather than an XML parser: the subject is exactly the text
     the script emits, and counting occurrences is what catches a duplicate.
@@ -248,14 +311,15 @@ def _elements(conf: Path) -> tuple[list[str], list[str]]:
     text = conf.read_text()
     return tuple(
         re.findall(rf"<{tag}>([^<]*)</{tag}>", text)
-        for tag in ("AuthenticationMethod", "TrustedNetworks")
+        for tag in ("AuthenticationMethod", "TrustedNetworks", "AllowedHosts")
     )
 
 
-def _any_spelling(conf: Path) -> tuple[int, int]:
+def _any_spelling(conf: Path) -> tuple[int, int, int]:
     """How many of each element the file holds, self-closing ones included."""
     text = conf.read_text()
-    return (text.count("<AuthenticationMethod"), text.count("<TrustedNetworks"))
+    return (text.count("<AuthenticationMethod"), text.count("<TrustedNetworks"),
+            text.count("<AllowedHosts"))
 
 
 @pytest.mark.parametrize("before", SHAPES)
@@ -265,8 +329,26 @@ def test_both_elements_land_exactly_once(script, tmp_path, pod_cidr, shim_path, 
     conf.write_text(before)
     result = _run(script, conf, pod_cidr, shim_path)
     assert result.returncode == 0, result.stderr
-    assert _elements(conf) == (["External"], [pod_cidr])
-    assert _any_spelling(conf) == (1, 1)
+    assert _elements(conf) == (["External"], [pod_cidr], ["localhost," + TEST_HOSTS])
+    assert _any_spelling(conf) == (1, 1, 1)
+
+
+def test_an_empty_host_list_fails_closed(script, tmp_path, pod_cidr, shim_path):
+    """Only localhost would answer, so the pod must not boot into that."""
+    conf = tmp_path / "config.xml"
+    conf.write_text(EMPTY_ELEMENT)
+    result = _run(script, conf, pod_cidr, shim_path, hosts="")
+    assert result.returncode != 0
+    assert "ALLOWED_HOSTS is empty" in result.stderr
+    assert conf.read_text() == EMPTY_ELEMENT
+
+
+def test_a_stale_host_list_is_replaced(script, tmp_path, pod_cidr, shim_path):
+    conf = tmp_path / "config.xml"
+    conf.write_text(STALE_HOSTS)
+    assert _run(script, conf, pod_cidr, shim_path).returncode == 0
+    assert "old.example.test" not in conf.read_text()
+    assert _any_spelling(conf) == (1, 1, 1)
 
 
 def test_a_stale_pair_before_a_correct_one_is_removed(script, tmp_path, pod_cidr, shim_path):
@@ -347,11 +429,12 @@ def test_a_fresh_install_is_seeded_not_skipped(script, tmp_path, pod_cidr, shim_
     result = _run(script, conf, pod_cidr, shim_path)
     assert result.returncode == 0, result.stderr
     assert conf.exists(), "a fresh install was left with no config.xml"
-    assert _elements(conf) == (["External"], [pod_cidr])
-    assert _any_spelling(conf) == (1, 1)
+    assert _elements(conf) == (["External"], [pod_cidr], ["localhost," + TEST_HOSTS])
+    assert _any_spelling(conf) == (1, 1, 1)
     assert [p.name for p in tmp_path.iterdir()] == ["config.xml"]
     # Only the two elements, so nothing here can contradict an app default.
-    assert conf.read_text().count("<") == 6
+    # Root plus the three seeded elements, nothing else.
+    assert conf.read_text().count("<") == 8
 
 
 def test_an_unstrippable_element_is_refused_not_duplicated(
@@ -381,7 +464,7 @@ def test_a_planted_symlink_at_the_predictable_path_is_not_followed(
     assert _run(script, conf, pod_cidr, shim_path).returncode == 0
     assert victim.read_text() == "do not clobber"
     assert planted.is_symlink()
-    assert _elements(conf) == (["External"], [pod_cidr])
+    assert _elements(conf) == (["External"], [pod_cidr], ["localhost," + TEST_HOSTS])
 
 
 @pytest.mark.parametrize("before", [COMMENTED_ROOT, COMMENTED_ELEMENT])
@@ -397,7 +480,7 @@ def test_a_commented_span_is_never_the_insertion_point(
     text = conf.read_text()
     assert "<!--" not in text and "-->" not in text
     assert "Forms" not in text and "Basic" not in text
-    assert _elements(conf) == (["External"], [pod_cidr])
+    assert _elements(conf) == (["External"], [pod_cidr], ["localhost," + TEST_HOSTS])
     assert "<Port>8989</Port>" in text
 
 

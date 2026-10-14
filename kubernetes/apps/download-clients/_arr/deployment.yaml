@@ -59,6 +59,10 @@ spec:
             # request from outside it is non-local whatever address it carries.
             - name: TRUSTED_NETWORKS
               value: ${cluster_pod_cidr}
+            # Every name the app answers to; each overlay sets its own list and
+            # the script adds localhost for the kubelet probes.
+            - name: ALLOWED_HOSTS
+              value: ""
           command:
             - sh
             - -ec
@@ -66,13 +70,20 @@ spec:
               conf=/config/config.xml
               auth='<AuthenticationMethod>External</AuthenticationMethod>'
               net="<TrustedNetworks>$TRUSTED_NETWORKS</TrustedNetworks>"
+              # An empty list would leave only localhost answering, so it fails
+              # the pod instead of booting an app no route can reach.
+              if [ -z "$ALLOWED_HOSTS" ]; then
+                echo "[seed-external-auth] ERROR: ALLOWED_HOSTS is empty" >&2
+                exit 1
+              fi
+              hosts="<AllowedHosts>localhost,$ALLOWED_HOSTS</AllowedHosts>"
               # Unguessable name beside the target: a symlink planted at a
               # predictable path would be followed, and the mv must not cross a
               # filesystem. The trap clears it on every exit path.
               tmp=$(mktemp "$conf.seed-tmp.XXXXXX")
               trap 'rm -f "$tmp"' EXIT
               if [ ! -f "$conf" ]; then
-                printf '<Config>\n  %s\n  %s\n</Config>\n' "$auth" "$net" > "$tmp"
+                printf '<Config>\n  %s\n  %s\n  %s\n</Config>\n' "$auth" "$net" "$hosts" > "$tmp"
                 # Owned like the config directory, so the app's own uid can
                 # rewrite what this seeds.
                 chown "$(stat -c '%u:%g' "$(dirname "$conf")")" "$tmp"
@@ -83,7 +94,7 @@ spec:
               # Normalize rather than patch, over the file as ONE string so an
               # element split across lines is stripped too, then reinsert
               # exactly one of each.
-              awk -v auth="$auth" -v net="$net" '
+              awk -v auth="$auth" -v net="$net" -v hosts="$hosts" '
                 { all = all $0 "\n" }
                 END {
                   # Comment spans go first, newlines included: a commented-out
@@ -98,6 +109,8 @@ spec:
                   gsub(/<AuthenticationMethod[ \t\n]*>[^<]*<\/AuthenticationMethod[ \t\n]*>/, "", all)
                   gsub(/<TrustedNetworks[ \t\n]*\/>/, "", all)
                   gsub(/<TrustedNetworks[ \t\n]*>[^<]*<\/TrustedNetworks[ \t\n]*>/, "", all)
+                  gsub(/<AllowedHosts[ \t\n]*\/>/, "", all)
+                  gsub(/<AllowedHosts[ \t\n]*>[^<]*<\/AllowedHosts[ \t\n]*>/, "", all)
                   m = split(all, line, "\n")
                   for (i = 1; i <= m; i++) {
                     if (line[i] ~ /^[ \t]*$/) continue
@@ -108,6 +121,7 @@ spec:
                     print substr(line[i], 1, idx + 7)
                     print "  " auth
                     print "  " net
+                    print "  " hosts
                     rest = substr(line[i], idx + 8)
                     if (rest != "") print rest
                     done = 1
@@ -118,9 +132,10 @@ spec:
               # exactly one of each element, counting every spelling.
               a_seen=$(grep -o '<AuthenticationMethod' "$tmp" | wc -l | tr -d ' \n')
               n_seen=$(grep -o '<TrustedNetworks' "$tmp" | wc -l | tr -d ' \n')
-              if [ "$a_seen" != 1 ] || [ "$n_seen" != 1 ] \
-                 || ! grep -qF "$auth" "$tmp" || ! grep -qF "$net" "$tmp"; then
-                echo "[seed-external-auth] ERROR: refusing to replace config.xml — AuthenticationMethod x$a_seen, TrustedNetworks x$n_seen" >&2
+              h_seen=$(grep -o '<AllowedHosts' "$tmp" | wc -l | tr -d ' \n')
+              if [ "$a_seen" != 1 ] || [ "$n_seen" != 1 ] || [ "$h_seen" != 1 ] \
+                 || ! grep -qF "$auth" "$tmp" || ! grep -qF "$net" "$tmp" || ! grep -qF "$hosts" "$tmp"; then
+                echo "[seed-external-auth] ERROR: refusing to replace config.xml — AuthenticationMethod x$a_seen, TrustedNetworks x$n_seen, AllowedHosts x$h_seen" >&2
                 exit 1
               fi
               if cmp -s "$tmp" "$conf"; then
@@ -132,7 +147,7 @@ spec:
               chown "$(stat -c '%u:%g' "$conf")" "$tmp"
               chmod "$(stat -c '%a' "$conf")" "$tmp"
               mv -f "$tmp" "$conf"
-              echo "[seed-external-auth] External auth, trusted proxy $TRUSTED_NETWORKS"
+              echo "[seed-external-auth] External auth, trusted proxy $TRUSTED_NETWORKS, allowed hosts localhost,$ALLOWED_HOSTS"
           resources:
             requests:
               cpu: 5m
@@ -169,6 +184,10 @@ spec:
             httpGet:
               path: /ping
               port: http
+              # AllowedHosts rejects the pod address kubelet would send.
+              httpHeaders:
+                - name: Host
+                  value: localhost
             initialDelaySeconds: 60
             periodSeconds: 30
             timeoutSeconds: 30
@@ -177,6 +196,10 @@ spec:
             httpGet:
               path: /ping
               port: http
+              # AllowedHosts rejects the pod address kubelet would send.
+              httpHeaders:
+                - name: Host
+                  value: localhost
             initialDelaySeconds: 30
             periodSeconds: 15
             timeoutSeconds: 20
